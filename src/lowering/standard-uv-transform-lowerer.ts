@@ -27,9 +27,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import {
-    type PinnedBinding,
-} from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 /** The module the extension and both its writers live in. */
@@ -126,9 +124,8 @@ function pinnedChannels(context: LoweringContext): PinnedChannel[] {
         return {
             name: text(0),
             textureKey: text(3),
-            coordIndexKey: coordIndex.kind === ts.SyntaxKind.NullKeyword
-                ? null
-                : text(4),
+            coordIndexKey:
+                coordIndex.kind === ts.SyntaxKind.NullKeyword ? null : text(4),
         };
     });
 }
@@ -153,20 +150,22 @@ function channelArguments(
                 "compose while its texture read as absent.",
         );
     }
-    const texture = slot === null
-        ? "nullptr"
-        : `(${present}) ? &${slot} : nullptr`;
+    const texture =
+        slot === null ? "nullptr" : `(${present}) ? &${slot} : nullptr`;
     // `coordIndexKey !== null && material[coordIndexKey] === 1`: the first
     // conjunct is the table's own answer, and the second folds to false for a
     // UV set the generated loader never records.
-    const coordIndex = channel.coordIndexKey === null
-        ? null
-        : sources.coordIndex[channel.coordIndexKey] ?? null;
+    const coordIndex =
+        channel.coordIndexKey === null
+            ? null
+            : (sources.coordIndex[channel.coordIndexKey] ?? null);
     return {
         texture,
         usesUv2: coordIndex === null ? "false" : `${coordIndex} == 1`,
-        legacyFlipV: channel.textureKey === LIGHTMAP_SLOT && slot !== null
-            ? `(${present}) && ${slot}.uv_transform.u_ang == ${Math.PI}` : "false",
+        legacyFlipV:
+            channel.textureKey === LIGHTMAP_SLOT && slot !== null
+                ? `(${present}) && ${slot}.uv_transform.u_ang == ${Math.PI}`
+                : "false",
     };
 }
 
@@ -207,7 +206,10 @@ export function lowerStandardUvTransformWriter(
         ["materialOffsetY", { cpp: "material_offset_y", type: "scalar" }],
         ["usesUv2", { cpp: "uses_uv2", type: "bool" }],
         ["legacyFlipV", { cpp: "legacy_flip_v", type: "bool" }],
-        ["FLOATS_PER_CHANNEL", { cpp: `${floatsPerChannel}.0`, type: "scalar" }],
+        [
+            "FLOATS_PER_CHANNEL",
+            { cpp: `${floatsPerChannel}.0`, type: "scalar" },
+        ],
         [
             "texture",
             {

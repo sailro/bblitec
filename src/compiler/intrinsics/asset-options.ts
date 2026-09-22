@@ -13,7 +13,10 @@ import type { LoweringServices } from "../lowering-services.js";
 // asset.ts calls these through its context.
 import type ts from "typescript";
 import { imageCodecForFileName } from "../../image-codec-manifest.js";
-import { compileDynamicPackagedAsset, type StaticFetchContext } from "../static-fetch.js";
+import {
+    compileDynamicPackagedAsset,
+    type StaticFetchContext,
+} from "../static-fetch.js";
 import {
     compileOptionalStaticBoolean,
     type StaticBooleanContext,
@@ -24,17 +27,19 @@ import {
 } from "../option-helpers.js";
 
 export interface AssetOptionContext
-    extends ObjectValidationContext,
-    StaticFetchContext,
-    PositiveIntegerContext,
-    StaticBooleanContext,
-    Pick<LoweringServices,
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "compileNumber"
-        | "compileStringLiteral"
-        | "compileVec3"
-    > {}
+    extends
+        ObjectValidationContext,
+        StaticFetchContext,
+        PositiveIntegerContext,
+        StaticBooleanContext,
+        Pick<
+            LoweringServices,
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "compileNumber"
+            | "compileStringLiteral"
+            | "compileVec3"
+        > {}
 
 export function compileEnvironmentOptions(
     context: AssetOptionContext,
@@ -66,8 +71,14 @@ export function compileEnvironmentOptions(
     const skyboxUrl = context.objectProperty(object, "skyboxUrl");
     const skyboxSize = context.objectProperty(object, "skyboxSize");
     const brdfUrl = context.objectProperty(object, "brdfUrl");
-    const brdfPathCpp = brdfUrl ? compileDynamicPackagedAsset(context, brdfUrl, "texture",
-        source => imageCodecForFileName(source) !== undefined)?.dynamicAssetPathCpp : undefined;
+    const brdfPathCpp = brdfUrl
+        ? compileDynamicPackagedAsset(
+              context,
+              brdfUrl,
+              "texture",
+              (source) => imageCodecForFileName(source) !== undefined,
+          )?.dynamicAssetPathCpp
+        : undefined;
     // `skipSkybox` and `skipGround` decide whether `loadEnvironment`'s
     // deferred builder pushes a background renderable at all, so they are
     // read rather than tolerated: the solid-colour skybox is what a scene
@@ -80,7 +91,9 @@ export function compileEnvironmentOptions(
             name,
         );
     return {
-        groundTextureUrl: groundTextureUrl ? context.compileStringLiteral(groundTextureUrl) : "",
+        groundTextureUrl: groundTextureUrl
+            ? context.compileStringLiteral(groundTextureUrl)
+            : "",
         skyboxUrl: skyboxUrl ? context.compileStringLiteral(skyboxUrl) : "",
         // Zero asks the loader for the pinned default rather than
         // inventing one here: `createDefaultEnvironment`'s skyboxSize is
@@ -89,7 +102,10 @@ export function compileEnvironmentOptions(
         // far plane to clip it, which shows as a straight-edged hole in
         // the background once the camera moves off the reference pose.
         skyboxSize: skyboxSize ? context.compileNumber(skyboxSize) : "0.0f",
-        brdfUrl: brdfUrl && !brdfPathCpp ? context.compileStringLiteral(brdfUrl) : "",
+        brdfUrl:
+            brdfUrl && !brdfPathCpp
+                ? context.compileStringLiteral(brdfUrl)
+                : "",
         ...(brdfPathCpp ? { brdfPathCpp } : {}),
         skipSkybox: skipFlag("skipSkybox"),
         skipGround: skipFlag("skipGround"),
@@ -194,7 +210,9 @@ export function compileHdrEnvironmentOptions(
     );
     const faceSizeExpression = context.objectProperty(object, "faceSize");
     const faceSize = faceSizeExpression
-        ? Number(compilePositiveInteger(context, faceSizeExpression).slice(0, -1))
+        ? Number(
+              compilePositiveInteger(context, faceSizeExpression).slice(0, -1),
+          )
         : 256;
     if ((faceSize & (faceSize - 1)) !== 0 || faceSize > 2048) {
         context.fail(

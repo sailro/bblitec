@@ -47,4 +47,3 @@ test("an eye that leaves its factory refuses generation", () => {
         /Expected one nested function 'localEyePosition'/,
     );
 });
-

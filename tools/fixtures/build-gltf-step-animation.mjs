@@ -96,12 +96,7 @@ const WEIGHT_KEYS = scalarAccessor([0, 1, 0]);
 
 const names = ["StepTranslation", "StepRotation", "StepScale", "StepWeights"];
 const paths = ["translation", "rotation", "scale", "weights"];
-const outputs = [
-    TRANSLATION_KEYS,
-    ROTATION_KEYS,
-    SCALE_KEYS,
-    WEIGHT_KEYS,
-];
+const outputs = [TRANSLATION_KEYS, ROTATION_KEYS, SCALE_KEYS, WEIGHT_KEYS];
 const SPACING = 1.2;
 const materials = names.map((name, index) => ({
     name: `${name}Material`,
@@ -134,11 +129,7 @@ const meshes = names.map((name, index) => ({
 const nodes = names.map((name, index) => ({
     name,
     mesh: index,
-    translation: [
-        (index - (names.length - 1) / 2) * SPACING,
-        0,
-        0,
-    ],
+    translation: [(index - (names.length - 1) / 2) * SPACING, 0, 0],
 }));
 
 writeFixture(
@@ -146,8 +137,7 @@ writeFixture(
     {
         asset: {
             version: "2.0",
-            generator:
-                "bblitec tools/fixtures/build-gltf-step-animation.mjs",
+            generator: "bblitec tools/fixtures/build-gltf-step-animation.mjs",
         },
         scene: 0,
         scenes: [{ nodes: nodes.map((_node, index) => index) }],

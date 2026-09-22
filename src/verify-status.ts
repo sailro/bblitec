@@ -70,9 +70,10 @@ export function parseCanvasCell(
             dawn: [perBackend[3]!, perBackend[4]!],
         };
     }
-    const both = /canvas-only MAD: (\d+\.\d+) \/ (\d+\.\d+) on both backends/.exec(
-        coverage,
-    );
+    const both =
+        /canvas-only MAD: (\d+\.\d+) \/ (\d+\.\d+) on both backends/.exec(
+            coverage,
+        );
     if (both) {
         const pair: [string, string] = [both[1]!, both[2]!];
         return { sdl_gpu: pair, dawn: pair };
@@ -80,17 +81,13 @@ export function parseCanvasCell(
     return undefined;
 }
 
-export function parsePublishedRows(
-    status: string,
-): PublishedRow[] {
+export function parsePublishedRows(status: string): PublishedRow[] {
     const rows: PublishedRow[] = [];
     const lines = status.split(/\r?\n/);
     for (let index = 0; index < lines.length; index++) {
         const line = lines[index]!;
         if (!line.startsWith("|")) continue;
-        const sceneId = /images\/scenes\/([A-Za-z0-9-]+)\.png/.exec(
-            line,
-        )?.[1];
+        const sceneId = /images\/scenes\/([A-Za-z0-9-]+)\.png/.exec(line)?.[1];
         if (!sceneId) continue;
         // Two cell forms: a value in the green band prints plain, and a
         // cell holding any yellow/red value keeps the colored math span.
@@ -103,7 +100,7 @@ export function parsePublishedRows(
         )) {
             if (cell[1] !== undefined) {
                 colors.push(GREEN, GREEN);
-                values.push(cell[1]!, cell[2]!);
+                values.push(cell[1], cell[2]!);
             } else {
                 colors.push(cell[3]!, cell[5]!);
                 values.push(cell[4]!, cell[6]!);
@@ -140,9 +137,7 @@ export function outOfOrderRows(
     const problems: string[] = [];
     const numbered = rows.flatMap((row) => {
         const id = /^scene([0-9]+)$/.exec(row.sceneId)?.[1];
-        return id === undefined
-            ? []
-            : [{ row, id: Number(id) }];
+        return id === undefined ? [] : [{ row, id: Number(id) }];
     });
     for (let index = 1; index < numbered.length; index++) {
         const previous = numbered[index - 1]!;
@@ -252,12 +247,7 @@ function measured(
     ) as ParityReportSummary;
     return {
         source: `${gpuPath} + ${dawnPath}`,
-        values: [
-            gpu.full.mad,
-            gpu.region.mad,
-            dawn.full.mad,
-            dawn.region.mad,
-        ],
+        values: [gpu.full.mad, gpu.region.mad, dawn.full.mad, dawn.region.mad],
     };
 }
 
@@ -304,10 +294,7 @@ export function canvasProblems(
                 measuredPair.foregroundMad.toFixed(3),
             ];
             const published = row.canvas[backend];
-            if (
-                rendered[0] !== published[0] ||
-                rendered[1] !== published[1]
-            ) {
+            if (rendered[0] !== published[0] || rendered[1] !== published[1]) {
                 problems.push(
                     `${statusPath}:${row.line} ${row.sceneId} canvas-only ${label}: published ${published.join(" / ")}, measured ${rendered.join(" / ")}`,
                 );
@@ -334,17 +321,13 @@ export interface StatusVerdict {
     exempt: string[];
 }
 
-export function verifyStatus(
-    options: VerifyStatusOptions = {},
-): StatusVerdict {
+export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
     const statusPath = options.statusPath ?? "docs/status.md";
     const parityRoot = options.parityRoot ?? "artifacts/parity";
     const canvasRoot = options.canvasRoot ?? "artifacts/parity-canvas";
     const problems: string[] = [];
     const exempt: string[] = [];
-    const rows = parsePublishedRows(
-        readFileSync(statusPath, "utf8"),
-    );
+    const rows = parsePublishedRows(readFileSync(statusPath, "utf8"));
     if (rows.length === 0) {
         problems.push(
             `${statusPath}: no measured rows found; the table format changed.`,
@@ -406,7 +389,9 @@ function main(): void {
         ...(artifacts !== undefined
             ? {
                   parityRoot: resolve(artifacts, "parity"),
-                  canvasRoot: resolve(canvas ?? resolve(artifacts, "parity-canvas")),
+                  canvasRoot: resolve(
+                      canvas ?? resolve(artifacts, "parity-canvas"),
+                  ),
               }
             : canvas !== undefined
               ? { canvasRoot: canvas }

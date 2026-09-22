@@ -4,12 +4,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
-test("partial record projections enumerate initialized keys in source order", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "partial record projections enumerate initialized keys in source order",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         interface Item { label: string; count: number; }
         type Key = "first" | "second" | "unused";
         const second: Item = { label: "second", count: 2 };
@@ -25,17 +31,33 @@ test("partial record projections enumerate initialized keys in source order", { 
         if (entries[0][0] !== "second" || entries[0][1] !== second)
             throw new Error("entry projection");
     `);
-    const output = resolve("artifacts/partial-record-projections");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+        const output = resolve("artifacts/partial-record-projections");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
-test("empty asserted output records retain missing fields and shared writes", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "empty asserted output records retain missing fields and shared writes",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         interface Projection { x: number; y: number; inside: boolean; }
         function project(x: number, out: Projection = {} as Projection): Projection {
             out.x = x;
@@ -54,12 +76,25 @@ test("empty asserted output records retain missing fields and shared writes", { 
             throw new Error("fresh output allocation");
         if (!("x" in alias)) throw new Error("initialized field presence");
     `);
-    assert.match(result.cpp, /Nullable<double>/);
-    const output = resolve("artifacts/partial-records");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+        assert.match(result.cpp, /Nullable<double>/);
+        const output = resolve("artifacts/partial-records");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

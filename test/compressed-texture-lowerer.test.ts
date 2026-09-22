@@ -27,9 +27,17 @@ function lowerer(): CompressedTextureLowerer {
 test("packaging preserves the pinned KTX header and truncation refusals", async () => {
     assert.equal(isKtx1(new Uint8Array([1, 2, 3])), false);
     const compressed = lowerer();
-    const bytes = writeKtx1({ gpuFormat: "bc7-rgba-unorm", width: 4, height: 4, mips: [
-        { width: 4, height: 4, bytes: new Uint8Array(16) },
-    ] }, compressed.magicBytes(), compressed.glInternalFormat("bc7-rgba-unorm"), compressed.headerLayout());
+    const bytes = writeKtx1(
+        {
+            gpuFormat: "bc7-rgba-unorm",
+            width: 4,
+            height: 4,
+            mips: [{ width: 4, height: 4, bytes: new Uint8Array(16) }],
+        },
+        compressed.magicBytes(),
+        compressed.glInternalFormat("bc7-rgba-unorm"),
+        compressed.headerLayout(),
+    );
     assert.equal(isKtx1(bytes), true);
     await assert.rejects(packageKtx1(bytes.subarray(0, 20)));
     await assert.rejects(packageKtx1(bytes.subarray(0, bytes.length - 1)));
@@ -63,9 +71,9 @@ test("reads the KTX1 header layout off the pinned parser", () => {
 
 test("emits the block-compressed rows both backends bind", () => {
     const emitted = lowerer().lower();
-    const names = [
-        ...emitted.header.matchAll(/"((?:bc|astc-)[^"]+)"/g),
-    ].map((match) => match[1]!);
+    const names = [...emitted.header.matchAll(/"((?:bc|astc-)[^"]+)"/g)].map(
+        (match) => match[1]!,
+    );
     assert.deepEqual(
         [...new Set(names)].sort(),
         [...uploadableCompressedFormats].sort(),
@@ -73,9 +81,16 @@ test("emits the block-compressed rows both backends bind", () => {
     // The pin maps two GL enums onto BC1 (its RGB and RGBA spellings), so
     // the row count exceeds the format count by exactly that pair.
     assert.equal(names.length, uploadableCompressedFormats.length + 1);
-    const nativeFormats = [...readFileSync("native/src/pal_compressed_formats.hpp", "utf8")
-        .matchAll(/F\(\w+, "([^"]+)"/g)].map(match => match[1]!);
-    assert.deepEqual(nativeFormats.sort(), [...uploadableCompressedFormats].sort());
+    const nativeFormats = [
+        ...readFileSync(
+            "native/src/pal_compressed_formats.hpp",
+            "utf8",
+        ).matchAll(/F\(\w+, "([^"]+)"/g),
+    ].map((match) => match[1]!);
+    assert.deepEqual(
+        nativeFormats.sort(),
+        [...uploadableCompressedFormats].sort(),
+    );
     assert.ok(!emitted.header.includes("etc2-"));
     assert.ok(emitted.header.includes("astc-8x8-unorm"));
 });
@@ -199,31 +214,56 @@ test("refuses to package a format the pinned table has no enum for", () => {
 });
 
 test("preserves KTX candidate priority rather than selecting the generation host's BC variant", () => {
-    assert.deepEqual(compressedTextureUrls("https://host/grid.png?v=2", ["-astc.ktx", "-dxt.ktx", "-etc2.ktx"]), [
-        "https://host/grid-astc.ktx?v=2", "https://host/grid-dxt.ktx?v=2",
-    ]);
-    assert.deepEqual(compressedTextureUrls("https://host/grid.png", ["-dxt.ktx", "-astc.ktx"]), [
-        "https://host/grid-dxt.ktx", "https://host/grid-astc.ktx",
-    ]);
+    assert.deepEqual(
+        compressedTextureUrls("https://host/grid.png?v=2", [
+            "-astc.ktx",
+            "-dxt.ktx",
+            "-etc2.ktx",
+        ]),
+        ["https://host/grid-astc.ktx?v=2", "https://host/grid-dxt.ktx?v=2"],
+    );
+    assert.deepEqual(
+        compressedTextureUrls("https://host/grid.png", [
+            "-dxt.ktx",
+            "-astc.ktx",
+        ]),
+        ["https://host/grid-dxt.ktx", "https://host/grid-astc.ktx"],
+    );
     const result = compileSource(`
 import { createEngine, loadKtxTexture2D } from "@babylonjs/lite";
 const engine = await createEngine(document.getElementById("renderCanvas"));
 const texture = await loadKtxTexture2D(engine, "https://host/grid.png", ["-astc.ktx", "-dxt.ktx"]);
 `);
     assert.match(result.cpp, /load_compressed_texture_variants\(/);
-    assert.deepEqual(result.manifest.assets.map(asset => asset.source), [
-        "https://host/grid-astc.ktx", "https://host/grid-dxt.ktx",
-    ]);
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source),
+        ["https://host/grid-astc.ktx", "https://host/grid-dxt.ktx"],
+    );
 });
 
 test("packages every pinned ASTC block size and its sRGB twin", async () => {
     const compressed = lowerer();
-    for (const format of uploadableCompressedFormats.filter(format => format.startsWith("astc-"))) {
+    for (const format of uploadableCompressedFormats.filter((format) =>
+        format.startsWith("astc-"),
+    )) {
         const block = compressed.blockSize(format);
-        const container = writeKtx1({
-            gpuFormat: format, width: block.width, height: block.height,
-            mips: [{ width: block.width, height: block.height, bytes: new Uint8Array(16) }],
-        }, compressed.magicBytes(), compressed.glInternalFormat(format), compressed.headerLayout());
+        const container = writeKtx1(
+            {
+                gpuFormat: format,
+                width: block.width,
+                height: block.height,
+                mips: [
+                    {
+                        width: block.width,
+                        height: block.height,
+                        bytes: new Uint8Array(16),
+                    },
+                ],
+            },
+            compressed.magicBytes(),
+            compressed.glInternalFormat(format),
+            compressed.headerLayout(),
+        );
         await packageKtx1(container);
     }
     assert.equal(compressed.glInternalFormat("astc-8x8-unorm"), 0x93b7);

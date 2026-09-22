@@ -2,18 +2,24 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test, {type TestContext} from "node:test";
+import test, { type TestContext } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 // The generic TypeScript user-code surface: every source below runs its own
 // assertions in JavaScript first, then the generated C++ must build and run
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
-check("record-arrow-lexical-this", `
+check(
+    "record-arrow-lexical-this",
+    `
     function select(values: number[], options: {test: (value: number) => boolean}): number[] {
         function filter(test: (value: number) => boolean): number[] {
             const selected: number[] = [];
@@ -30,9 +36,12 @@ check("record-arrow-lexical-this", `
     }
     const result = new Selection().run();
     if (result.join(",") !== "2,4") throw new Error("arrow receiver");
-`);
+`,
+);
 
-check("constant-null-guard", `
+check(
+    "constant-null-guard",
+    `
     function sum(x: number, y: number): number { return x + y; }
     function select(x: number | null, y: number | null): number {
         const valid = x !== null && y !== null && x >= 0 && y >= 0;
@@ -40,17 +49,23 @@ check("constant-null-guard", `
         return sum(x, y);
     }
     if (select(null, null) !== -1 || select(2, 3) !== 5) throw new Error("guarded arithmetic");
-`);
+`,
+);
 
-check("callback-helper-signatures", `
+check(
+    "callback-helper-signatures",
+    `
     function accepts(callback: (value: number) => boolean): boolean { return callback(7); }
     function invokes(count: number): number {
         return accepts(() => true) ? count + 1 : count;
     }
     if (invokes(1) !== 2 || invokes(3) !== 4) throw new Error("omitted callback parameter");
-`);
+`,
+);
 
-check("ambient-typeof-guards", `
+check(
+    "ambient-typeof-guards",
+    `
     declare const OPTIONAL_BUILD: boolean | undefined;
     declare function OPTIONAL_HOOK(): void;
     declare namespace OPTIONAL_PACKAGE { function run(): void; }
@@ -70,32 +85,67 @@ check("ambient-typeof-guards", `
     let effects=0;
     function receiver(): {value:number} { effects++; return {value:7}; }
     if (typeof receiver().value !== "number" || effects !== 1) throw new Error("member operand evaluation");
-`);
+`,
+);
 
 test("absent typeof support preserves errors for unprovided reads and imported implementations", () => {
-    assert.throws(() => compileSource('declare const OPTIONAL_BUILD: boolean; const value=OPTIONAL_BUILD;'), /Unknown or unsupported variable/);
-    assert.throws(() => compileSource('declare const OPTIONAL_BUILD: {value:number}; const value=typeof OPTIONAL_BUILD.value;'), /Unknown or unsupported variable/);
-    const directory=resolve("artifacts/ambient-typeof-import");
-    mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"provider.ts"),'export declare const supplied: number;');
-    assert.throws(() => compileSource('import {supplied} from "./provider.js"; const kind=typeof supplied;', {fileName:join(directory,"entry.ts")}));
+    assert.throws(
+        () =>
+            compileSource(
+                "declare const OPTIONAL_BUILD: boolean; const value=OPTIONAL_BUILD;",
+            ),
+        /Unknown or unsupported variable/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "declare const OPTIONAL_BUILD: {value:number}; const value=typeof OPTIONAL_BUILD.value;",
+            ),
+        /Unknown or unsupported variable/,
+    );
+    const directory = resolve("artifacts/ambient-typeof-import");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "provider.ts"),
+        "export declare const supplied: number;",
+    );
+    assert.throws(() =>
+        compileSource(
+            'import {supplied} from "./provider.js"; const kind=typeof supplied;',
+            { fileName: join(directory, "entry.ts") },
+        ),
+    );
 });
 
-test("ambient availability guards settle through imported helpers", async t => {
-    const directory=resolve("artifacts/ambient-typeof-module");
-    mkdirSync(directory,{recursive:true});
-    const module=`declare const OPTIONAL_LABEL: string | undefined;
+test("ambient availability guards settle through imported helpers", async (t) => {
+    const directory = resolve("artifacts/ambient-typeof-module");
+    mkdirSync(directory, { recursive: true });
+    const module = `declare const OPTIONAL_LABEL: string | undefined;
         export const label = typeof OPTIONAL_LABEL === "undefined" ? "baseline" : OPTIONAL_LABEL;
         export function describe(prefix="value"): string { return prefix+":"+label; }`;
-    writeFileSync(join(directory,"feature.ts"),module);
-    const javascript=ts.transpileModule(module,{compilerOptions:{target:ts.ScriptTarget.ESNext,module:ts.ModuleKind.CommonJS}}).outputText;
-    assert.equal(runInNewContext('const exports={};'+javascript+';exports.describe()'),"value:baseline");
-    const result=compileSource('import {describe,label} from "./feature.js"; if(describe()!=="value:baseline" || label!=="baseline") throw new Error("module fallback");',
-        {fileName:join(directory,"entry.ts")});
-    await executeGeneratedAssertions(t,"ambient-typeof-module",result.cpp);
+    writeFileSync(join(directory, "feature.ts"), module);
+    const javascript = ts.transpileModule(module, {
+        compilerOptions: {
+            target: ts.ScriptTarget.ESNext,
+            module: ts.ModuleKind.CommonJS,
+        },
+    }).outputText;
+    assert.equal(
+        runInNewContext(
+            "const exports={};" + javascript + ";exports.describe()",
+        ),
+        "value:baseline",
+    );
+    const result = compileSource(
+        'import {describe,label} from "./feature.js"; if(describe()!=="value:baseline" || label!=="baseline") throw new Error("module fallback");',
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(t, "ambient-typeof-module", result.cpp);
 });
 
-check("optional-container-method-continuations", `
+check(
+    "optional-container-method-continuations",
+    `
     const original = new Set<number>([4]);
     const groups = new Map<string, Set<number>>([['entry', original]]);
     let calls = 0;
@@ -117,9 +167,12 @@ check("optional-container-method-continuations", `
         rows.filter(row => row.code?.startsWith('n')).length !== 1 ||
         !rows.some(row => row.code?.startsWith('s')) || rows.every(row => row.code?.startsWith('n')))
         throw new Error('predicate truthiness after unchecked lookup');
-`);
+`,
+);
 
-check("nullable-coalesce-widening", `
+check(
+    "nullable-coalesce-widening",
+    `
     type Tag = "north" | "south";
     const values: (Tag | null)[] = ["north", null, "south"];
     let calls = 0;
@@ -156,9 +209,12 @@ check("nullable-coalesce-widening", `
         turn();
         if (String(record.tag ?? "") !== "south") throw new Error("live tag after narrowed helper call");
     }
-`);
+`,
+);
 
-check("scalar-union-strict-comparisons", `
+check(
+    "scalar-union-strict-comparisons",
+    `
     const values:(string|number|boolean)[] = ['head',2,false,NaN];
     if(values[0] !== 'head' || values[1] !== 2 || values[2] !== false) throw new Error('matching type and value');
     if(values[1] === '2' || values[2] === 0 || values[3] === values[3]) throw new Error('strict types and NaN');
@@ -185,9 +241,12 @@ check("scalar-union-strict-comparisons", `
         if(tag === 'north') continue;
         if(tag !== 3 || tag === 'outside') throw new Error('tagged scalar equality');
     }
-`);
+`,
+);
 
-check("mixed-tuple-rest-bindings", `
+check(
+    "mixed-tuple-rest-bindings",
+    `
     const object = {score:4};
     const source:[string,number,{score:number}|null] = ['head',2,object];
     const [head,...tail] = source;
@@ -241,9 +300,12 @@ check("mixed-tuple-rest-bindings", `
         if(list[index] === 'changed') throw new Error('array entry rest');
     }
     for(const [,,...rest] of entries) if(rest.length !== 0) throw new Error('empty entry rest');
-`);
+`,
+);
 
-check("iterable-parameter-storage", `
+check(
+    "iterable-parameter-storage",
+    `
     class Collector {
         items:string[] = [];
         append(values:Iterable<string>):void {
@@ -262,9 +324,12 @@ check("iterable-parameter-storage", `
     }
     if(collector.items.join(',') !== 'one,two,three' || count(iterator) !== 2 || count(iterator) !== 0)
         throw new Error('iterable uses its actual collection');
-`);
+`,
+);
 
-check("mixed-tuple-mutations", `
+check(
+    "mixed-tuple-mutations",
+    `
     const pair:[string,number] = ['head',2];
     const alias = pair;
     const positions:number[] = [0,1];
@@ -283,9 +348,12 @@ check("mixed-tuple-mutations", `
     pair.length = 0 as 2;
     if(alias.length !== 0 || pair.pop() !== undefined || pair.shift() !== undefined) throw new Error('empty mutation results');
     for(const index of positions) if(pair[index] !== undefined) throw new Error('out of range after truncation');
-`);
+`,
+);
 
-check("mixed-tuple-mutation-boundaries", `
+check(
+    "mixed-tuple-mutation-boundaries",
+    `
     const source:[string,number] = ['head',2];
     const positions:number[] = [0];
     for(const index of positions) source[index] = 4;
@@ -318,9 +386,12 @@ check("mixed-tuple-mutation-boundaries", `
     if(numbers[1] !== 5 || numbers[2] !== 6 || numbers[3] !== 8) throw new Error('spread arguments evaluated before mutation');
     numbers.push(...numbers);
     if(numbers.length !== 8 || numbers[5] !== 5) throw new Error('self spread');
-`);
+`,
+);
 
-check("mixed-tuple-destructuring-assignments", `
+check(
+    "mixed-tuple-destructuring-assignments",
+    `
     const row:[string,number,boolean] = ['head',2,true];
     let head = '';
     let tail:(number|boolean)[] = [];
@@ -357,9 +428,12 @@ check("mixed-tuple-destructuring-assignments", `
     if(empty.length !== 0) throw new Error('empty assigned rest');
     [...tail] = [];
     if(tail.length !== 0) throw new Error('empty literal rest');
-`);
+`,
+);
 
-check("mixed-tuple-dynamic-reads", `
+check(
+    "mixed-tuple-dynamic-reads",
+    `
     let pair: [string, number] = ["value", 7];
     const indices = [0, 1, 2, -1, 0.5, NaN];
     let observed = "";
@@ -382,9 +456,12 @@ check("mixed-tuple-dynamic-reads", `
         if (typeof value === "object" && value !== null) value.score++;
     }
     if (item.score !== 4) throw new Error("dynamic tuple object identity");
-`);
+`,
+);
 
-check("set-entry-iteration", `
+check(
+    "set-entry-iteration",
+    `
     const values = new Set<number>([2, 3, 4]);
     let seen = "";
     for (const [first, second] of values.entries()) {
@@ -428,9 +505,12 @@ check("set-entry-iteration", `
     const original = source.values;
     const rewritten = Array.from(source.values, value => { source.values = new Set<number>([9]); value += 10; return value; });
     if (rewritten.join(",") !== "11,12" || Array.from(original).join(",") !== "1,2") throw new Error("mapper receiver and value snapshots");
-`);
+`,
+);
 
-check("stored-set-entry-iterators", `
+check(
+    "stored-set-entry-iterators",
+    `
     const values = new Set<number>([2,3]);
     const entries = values.entries();
     const alias = entries;
@@ -493,9 +573,12 @@ check("stored-set-entry-iterators", `
     if(keys.next().value !== 2 || scalarValues.next().value !== 2) throw new Error('independent cursors');
     const keysArray = [...keys];
     if(keysArray.join(',') !== '3') throw new Error('key cursor');
-`);
+`,
+);
 
-check("string-replacement-callbacks", `
+check(
+    "string-replacement-callbacks",
+    `
     let calls = 0;
     let input = "aba";
     const result = input.replaceAll("a", (match, index: number, original: string) => {
@@ -521,9 +604,12 @@ check("string-replacement-callbacks", `
     function search(): string { order += "p"; return "x"; }
     function callback(): (value: string) => string { order += "c"; return value => { order += "r"; return value; }; }
     if (source().replace(search(), callback()) !== "x" || order !== "spcr") throw new Error("replacement evaluation order");
-`);
+`,
+);
 
-check("known-nullish-string-conversion", `
+check(
+    "known-nullish-string-conversion",
+    `
     function show(value: unknown): string { return String(value); }
     const missing = undefined;
     const empty = null;
@@ -531,9 +617,12 @@ check("known-nullish-string-conversion", `
     if (show(missing) !== "undefined" || show(empty) !== "null") throw new Error("nullish String");
     if ("value=" + missing !== "value=undefined" || "value=" + empty !== "value=null") throw new Error("nullish concatenation");
     if (\`value=\${missing}\` !== "value=undefined" || \`value=\${empty}\` !== "value=null") throw new Error("nullish interpolation");
-`);
+`,
+);
 
-check("array-predicates-preserve-effects-and-absence", `
+check(
+    "array-predicates-preserve-effects-and-absence",
+    `
     let calls = 0;
     function numbers(): number[] { calls++; return [1, 2]; }
     function record(): {value:number} { calls++; return {value: 1}; }
@@ -542,9 +631,12 @@ check("array-predicates-preserve-effects-and-absence", `
     const inputs = [true, false];
     for (const input of inputs) if (Array.isArray(optional(input)) !== input) throw new Error("absent array");
     if (Array.isArray(undefined) || Array.isArray(null) || Array.isArray(new Float32Array(2))) throw new Error("nonarrays");
-`);
+`,
+);
 
-check("tuple-aliases-survive-binding-replacement", `
+check(
+    "tuple-aliases-survive-binding-replacement",
+    `
     let numeric: [number, number] = [1, 2];
     const oldNumeric = numeric;
     numeric = [3, 4];
@@ -555,18 +647,24 @@ check("tuple-aliases-survive-binding-replacement", `
     mixed = ["new", 2];
     mixed[1] = 3;
     if (oldMixed[0] !== "old" || oldMixed[1] !== 1 || mixed[1] !== 3) throw new Error("mixed tuple binding");
-`);
+`,
+);
 
-check("empty-audio-resource-collections", `
+check(
+    "empty-audio-resource-collections",
+    `
     const nodes = new Map<AudioNode, number>();
     const parameters = new Map<AudioParam, number>();
     const contexts = new Set<AudioContext>();
     const streams = new Map<MediaStream, number>();
     const tracks = new Set<MediaStreamTrack>();
     if (nodes.size + parameters.size + contexts.size + streams.size + tracks.size !== 0) throw new Error("resource collections");
-`);
+`,
+);
 
-check("enum-parameter-defaults", `
+check(
+    "enum-parameter-defaults",
+    `
     enum Tone { Soft = "soft", Bold = "bold" }
     enum Mode { First = 3, Second }
     function tone(value: Tone = Tone.Soft): string { return value; }
@@ -580,9 +678,12 @@ check("enum-parameter-defaults", `
         if (Object.keys(labels).join(",") !== "bold,soft" || Object.values(labels).join(",") !== "b,bs") throw new Error("enum record order");
     }
     main();
-`);
+`,
+);
 
-check("object-prototype-own-property-call", `
+check(
+    "object-prototype-own-property-call",
+    `
     const entries: Record<string, number> = {first: 2, second: 3};
     delete entries["first"];
     const keys = ["first", "second", "toString", "missing"];
@@ -594,9 +695,12 @@ check("object-prototype-own-property-call", `
     let calls = 0;
     function owner(): Record<string, number> { calls++; return entries; }
     if (!Object.prototype.hasOwnProperty.call(owner(), "second") || calls !== 1) throw new Error("own property effects");
-`);
+`,
+);
 
-check("callback-factory-record-assignment", `
+check(
+    "callback-factory-record-assignment",
+    `
     let count = 0;
     function handler(step: number): () => void { count++; return () => { count += step; }; }
     const registry = { identity: <T>(value: T): T => value, action: (): void => {} };
@@ -604,9 +708,12 @@ check("callback-factory-record-assignment", `
     registry.action = handler(3);
     registry.action();
     if (registry.identity(count) !== 4) throw new Error("callback factory assignment");
-`);
+`,
+);
 
-check("ignored-generic-record-returns-preserve-branch-effects", `
+check(
+    "ignored-generic-record-returns-preserve-branch-effects",
+    `
     let visits = 0;
     function createHook() { visits += 10; return {identity: <T>(value:T):T => value}; }
     function install(ready: boolean) {
@@ -633,9 +740,12 @@ check("ignored-generic-record-returns-preserve-branch-effects", `
     const values = [3, 1, 2];
     values.sort((a,b) => a-b);
     if (values.join(",") !== "1,2,3") throw new Error("discarded sort still consumes comparator result");
-`);
+`,
+);
 
-check("record-method-rebinding-is-visible-to-retained-callbacks", `
+check(
+    "record-method-rebinding-is-visible-to-retained-callbacks",
+    `
     let count = 0;
     function handler(step: number): () => void { count++; return () => { count += step; }; }
     const registry = {identity: <T>(value:T):T => value, action: ():void => { count += 10; }};
@@ -647,9 +757,12 @@ check("record-method-rebinding-is-visible-to-retained-callbacks", `
         callbacks[0]!();
     }
     if (registry.identity(count) !== 14) throw new Error("retained callback method slot");
-`);
+`,
+);
 
-check("nullable-string-enum-assertions", `
+check(
+    "nullable-string-enum-assertions",
+    `
     const keys = ["low", "high"] as const;
     type Key = typeof keys[number];
     function parse(raw: string | null): Key | null {
@@ -658,37 +771,76 @@ check("nullable-string-enum-assertions", `
     const inputs: Array<string | null> = ["high", null, "unknown", "low"];
     const parsed = inputs.map(parse);
     if (parsed[0] !== "high" || parsed[1] !== null || parsed[2] !== null || parsed[3] !== "low") throw new Error("nullable enum assertion");
-`);
+`,
+);
 
-async function executeGeneratedAssertions(t: TestContext, name: string, source: string): Promise<void> {
-    await t.test("generated C++ executes the same assertions", {skip:!native}, () => {
-        const directory=resolve("artifacts/language-constructs",name);
-        mkdirSync(directory,{recursive:true});
-        const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-        writeFileSync(cpp,source);
-        runNativeFixtureCompiler(native!,[
-            "/nologo","/std:c++20","/W4","/WX","/permissive-","/EHsc","/MD","/fp:precise","/utf-8",
-            "/I","native/include","/I",join(nativeFixtureVcpkgRoot,"include"),`/Fo:${directory}/`,`/Fe:${exe}`,cpp,
-        ]);
-        execFileSync(exe,{stdio:"pipe"});
-    });
+async function executeGeneratedAssertions(
+    t: TestContext,
+    name: string,
+    source: string,
+): Promise<void> {
+    await t.test(
+        "generated C++ executes the same assertions",
+        { skip: !native },
+        () => {
+            const directory = resolve("artifacts/language-constructs", name);
+            mkdirSync(directory, { recursive: true });
+            const cpp = join(directory, "check.cpp"),
+                exe = join(directory, "check.exe");
+            writeFileSync(cpp, source);
+            runNativeFixtureCompiler(native!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/MD",
+                "/fp:precise",
+                "/utf-8",
+                "/I",
+                "native/include",
+                "/I",
+                join(nativeFixtureVcpkgRoot, "include"),
+                `/Fo:${directory}/`,
+                `/Fe:${exe}`,
+                cpp,
+            ]);
+            execFileSync(exe, { stdio: "pipe" });
+        },
+    );
 }
 
 /**
  * The snippet sees one deployment query on both sides: the Node run reads
  * it as `location.search`, the compiler folds it as the reference query.
  */
-function check(name: string, source: string, { search = "" }: { search?: string } = {}): void {
-    test(name, async t => {
-        runInNewContext(ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.None },
-        }).outputText, { location: { search }, URLSearchParams });
-        const result = compileSource(source, { fileName: `${name}.ts`, search });
-        await executeGeneratedAssertions(t,name,result.cpp);
+function check(
+    name: string,
+    source: string,
+    { search = "" }: { search?: string } = {},
+): void {
+    test(name, async (t) => {
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+            { location: { search }, URLSearchParams },
+        );
+        const result = compileSource(source, {
+            fileName: `${name}.ts`,
+            search,
+        });
+        await executeGeneratedAssertions(t, name, result.cpp);
     });
 }
 
-check("constant-tables-use-literals-outside-local-scopes", `
+check(
+    "constant-tables-use-literals-outside-local-scopes",
+    `
     type Row = [number, number, "run" | null, boolean?];
     const first = 3, second = 7, enabled = true;
     const totals: number[] = [];
@@ -699,9 +851,12 @@ check("constant-tables-use-literals-outside-local-scopes", `
     }
     append([[first, 4, null, enabled], [second, 2, null, enabled]]);
     if (totals.join(",") !== "13,15") throw new Error("constant tuple table");
-`);
+`,
+);
 
-check("mixed-tuple-storage", `
+check(
+    "mixed-tuple-storage",
+    `
     interface Item { score: number; }
     const item: Item = {score: 3};
     const pairs: [string, Item][] = [["b", item], ["a", {score: 5}]];
@@ -733,9 +888,12 @@ check("mixed-tuple-storage", `
     weights.set("a", 2); weights.set("b", 1);
     const sortedKeys: string[] = ["a", "b"];
     if (sortedKeys.sort((a, b) => weights.get(a)! - weights.get(b)!).join("") !== "ba") throw new Error("asserted Map result");
-`);
+`,
+);
 
-check("conditional-json-null", `
+check(
+    "conditional-json-null",
+    `
     function parse(text: string): number {
         const value = text ? JSON.parse(text) : null;
         return value === null ? -1 : value.count;
@@ -752,9 +910,12 @@ check("conditional-json-null", `
     let modes = "";
     for (const input of inputs) modes += mode(input) + ";";
     if (modes !== "slow;fast;normal;normal;") throw new Error("guarded JSON enum");
-`);
+`,
+);
 
-check("fixed-record-entry-projection", `
+check(
+    "fixed-record-entry-projection",
+    `
     type Action = "left" | "right";
     type Scheme = "first" | "second";
     const definitions = [
@@ -769,9 +930,12 @@ check("fixed-record-entry-projection", `
     let visits = 0;
     const values = Object.fromEntries(["x", "x", "y"].map(key => [key, ++visits]));
     if (visits !== 3 || values.x !== 2 || values.y !== 3) throw new Error("duplicate entry effects");
-`);
+`,
+);
 
-check("compound-union-tags", `
+check(
+    "compound-union-tags",
+    `
     type Key = {kind: "motion"; action: "up" | "down"} | {kind: "command"; action: "save" | "load"};
     type Result = {ok: true; value: number; displaced?: Key} | {ok: false; reason: "invalid"} | {ok: false; reason: "blocked"; key: Key};
     function result(index: number): Result {
@@ -787,9 +951,12 @@ check("compound-union-tags", `
         else text += entry.reason;
     }
     if (text !== "invalidup3") throw new Error("compound tag narrowing");
-`);
+`,
+);
 
-check("contextual-string-array-results", `
+check(
+    "contextual-string-array-results",
+    `
     interface Definition { name: "first" | "second" | null; }
     interface Group { names: readonly string[]; }
     const definitions: Definition[] = [{name:"first"}, {name:null}, {name:"second"}];
@@ -801,18 +968,24 @@ check("contextual-string-array-results", `
     const mapped: string[] = definitions.filter(value => value.name !== null).map(value => value.name!);
     mapped.push("extra");
     if (mapped.join(",") !== "first,second,extra") throw new Error("contextual map");
-`);
+`,
+);
 
-check("stored-array-predicates", `
+check(
+    "stored-array-predicates",
+    `
     interface Filter { run: (accept: (value: number) => boolean) => number[]; }
     const numbers: number[] = [1, 2, 3];
     const filter: Filter = {run: accept => [...numbers].filter(accept)};
     if (filter.run(value => value > 1).join(",") !== "2,3") throw new Error("stored predicate");
     let predicate: (value: number) => boolean = value => { predicate = () => false; return value > 0; };
     if (numbers.filter(predicate).length !== 3 || numbers.filter(predicate).length !== 0) throw new Error("callback argument snapshot");
-`);
+`,
+);
 
-check("assigned-optional-array-result", `
+check(
+    "assigned-optional-array-result",
+    `
     function group(values: readonly string[]): string[][] {
         const rows: string[][] = [];
         let selected: string[] | null = null;
@@ -823,9 +996,12 @@ check("assigned-optional-array-result", `
         return rows;
     }
     if (group(["a", "b"]).map(row => row.join("")).join(",") !== "ab") throw new Error("assignment returns initialized array");
-`);
+`,
+);
 
-check("constructor-callback-instance-capture", `
+check(
+    "constructor-callback-instance-capture",
+    `
     interface Hooks { change: () => number; }
     class Counter {
         value = 0;
@@ -834,9 +1010,12 @@ check("constructor-callback-instance-capture", `
     }
     const counter = new Counter({change: () => counter.value});
     if (counter.next() !== 1 || counter.next() !== 2) throw new Error("constructor closure observes instance");
-`);
+`,
+);
 
-check("absent-optional-iteration", `
+check(
+    "absent-optional-iteration",
+    `
     const input: {items?: readonly number[]} = {};
     let visited = 0;
     for (const item of input.items ?? []) {
@@ -845,9 +1024,12 @@ check("absent-optional-iteration", `
         if (item === 4) break;
     }
     if (visited !== 0) throw new Error("absent iterable");
-`);
+`,
+);
 
-check("constant-array-slices", `
+check(
+    "constant-array-slices",
+    `
     const entries = [{score: 2}, {score: 7}, {score: 11}] as const;
     const gaps = entries.slice(1).map((entry, index) => entry.score - entries[index]!.score);
     if (Math.min(...gaps) !== 4 || entries.slice(-2, -0.5).length !== 0) throw new Error("constant slice bounds");
@@ -857,9 +1039,12 @@ check("constant-array-slices", `
     if (first[0] !== 1 || visits !== 3) throw new Error("discarded slice effects");
     const minimum = Math.min(...[2, 7, 11].map(value => value + 1));
     if (minimum !== 3 || Math.max(...[]) !== -Infinity) throw new Error("constant numeric spread");
-`);
+`,
+);
 
-check("indexed-and-union-string-parts", `
+check(
+    "indexed-and-union-string-parts",
+    `
     function token(text: string): string { let i = 0, value = ""; while (i < text.length) value += text[i++]; return value; }
     if (token("text") !== "text") throw new Error("indexed concat");
     let index = 0;
@@ -868,9 +1053,12 @@ check("indexed-and-union-string-parts", `
     interface Label { text: (value: string | number) => string; }
     const label: Label = {text: value => \`value:\${value}\`};
     if (label.text(3) !== "value:3" || label.text("name") !== "value:name") throw new Error("union template");
-`);
+`,
+);
 
-check("logical-assignment", `
+check(
+    "logical-assignment",
+    `
     function verify(seed: number | undefined, flag: number): number {
         let a = seed;
         a ??= 2;
@@ -896,9 +1084,12 @@ check("logical-assignment", `
     }
     if (verify(undefined, 0) !== 2 + 4 + 5 + 7 + 1 + 2 + 1 + 6) throw new Error("nullish and falsy stores");
     if (verify(1, 5) !== 1 + 6 + 5 + 7 + 1 + 2 + 1 + 6) throw new Error("present values keep their value");
-`);
+`,
+);
 
-check("logical-string-selection", `
+check(
+    "logical-string-selection",
+    `
     let effects = 0;
     function read(value: string): string { effects++; return value; }
     function fallback(): string { effects += 10; return "fallback"; }
@@ -910,17 +1101,23 @@ check("logical-string-selection", `
     if ((read("kept") && fallback()) !== "fallback" || effects !== 24) throw new Error("selected AND");
     if (selector.choose(null) !== "fallback" || effects !== 34) throw new Error("nullable OR");
     if (selector.choose("present") !== "present" || effects !== 34) throw new Error("present OR");
-`);
+`,
+);
 
-check("retained-nonfinite-records", `
+check(
+    "retained-nonfinite-records",
+    `
     function entry() { return {invalid: Number.NaN, high: Number.POSITIVE_INFINITY, low: Number.NEGATIVE_INFINITY}; }
     const entries = Array.from({length: 3}, () => entry());
     for (const value of entries) {
         if (!Number.isNaN(value.invalid) || value.high !== Infinity || value.low !== -Infinity) throw new Error("nonfinite retained fields");
     }
-`);
+`,
+);
 
-check("contextual-conditional-arrays", `
+check(
+    "contextual-conditional-arrays",
+    `
     type Key = "first" | "second" | "third";
     class Catalog {
         values(key: Key): readonly Key[] {
@@ -935,9 +1132,12 @@ check("contextual-conditional-arrays", `
     const defaults = ["first", "second", "first"] as const;
     const unique = new Set<string>(defaults);
     if (unique.size !== 2 || !unique.has("second")) throw new Error("constant iterable constructor");
-`);
+`,
+);
 
-check("recursive-array-callback", `
+check(
+    "recursive-array-callback",
+    `
     function evaluate(seed: number): number {
         const memo = new Map<number, number>();
         const depth = (value: number): number => {
@@ -951,9 +1151,12 @@ check("recursive-array-callback", `
         return depth(seed);
     }
     if (evaluate(6) !== 5 || evaluate(3) !== 2) throw new Error("recursive array callback captures");
-`);
+`,
+);
 
-check("error-values", `
+check(
+    "error-values",
+    `
     if (String(new Error()) !== "Error" || String(new RangeError("limit")) !== "RangeError: limit") throw new Error("error string conversion");
     let text = "first";
     const held = new Error(text);
@@ -981,9 +1184,12 @@ check("error-values", `
     function inner(): void { try { throw new Error("x"); } catch (e) { throw e; } }
     try { inner(); } catch (e) { rethrown = (e as Error).message.length; }
     if (rethrown !== 1) throw new Error("rethrow");
-`);
+`,
+);
 
-check("object-statics", `
+check(
+    "object-statics",
+    `
     const TABLE = Object.freeze({ a: 1, b: 2 });
     const XS = Object.freeze([1, 2, 3]);
     if (TABLE.a + TABLE.b + XS.length + XS[2]! !== 9) throw new Error("freeze is the value");
@@ -1006,9 +1212,12 @@ check("object-statics", `
     const fromMap = Object.fromEntries(source);
     if ((fromPairs["x"] ?? 0) + (fromPairs["y"] ?? 0) + (fromMap["z"] ?? 0) !== 6) throw new Error("fromEntries");
     if (Object.entries(record).length !== 2 || Object.entries(record)[1]![1] !== 5) throw new Error("record entries");
-`);
+`,
+);
 
-check("string-indexing", `
+check(
+    "string-indexing",
+    `
     function at(value: string, index: number): string | undefined { return value[index]; }
     const text = "Aé😀Z";
     if (at(text, 0) !== "A" || at(text, 1) !== "é" || at(text, 4) !== "Z") throw new Error("code unit indexing");
@@ -1021,9 +1230,12 @@ check("string-indexing", `
     const axes = [[0, 1, 2], [1, 0, 2], [2, 1, 0]] as const;
     const names = axes.map(row => row.map(index => "xyz"[index]).join(""));
     if (names.join(",") !== "xyz,yxz,zyx") throw new Error("static string projection");
-`);
+`,
+);
 
-check("string-indexing-parameter-lifetime", `
+check(
+    "string-indexing-parameter-lifetime",
+    `
     function scan(text: string): number {
         let sum = 0;
         const n = text.length;
@@ -1049,9 +1261,12 @@ check("string-indexing-parameter-lifetime", `
     }
     const first = retained("ab"), second = retained("cd");
     if (first() !== "ab" || second() !== "cd") throw new Error("retained string capture");
-`);
+`,
+);
 
-check("literal-key-record-lookup", `
+check(
+    "literal-key-record-lookup",
+    `
     type Mode = "low" | "high";
     interface Settings { amount: number; enabled: boolean; }
     const options: Readonly<Record<Mode, Settings>> = {
@@ -1060,9 +1275,12 @@ check("literal-key-record-lookup", `
     const selected: Mode = "high";
     const settings = options[selected];
     if (settings.amount !== 3 || !settings.enabled) throw new Error("literal key lookup");
-`);
+`,
+);
 
-check("constant-filter-effects", `
+check(
+    "constant-filter-effects",
+    `
     let calls = 0;
     function step(value: number): number { calls++; return value; }
     const input = [step(1), "skip", step(2)] as const;
@@ -1074,9 +1292,12 @@ check("constant-filter-effects", `
         return value > 0;
     });
     if (early.join(",") !== "2,3") throw new Error("early predicate returns");
-`);
+`,
+);
 
-check("readonly-record-array-lookup", `
+check(
+    "readonly-record-array-lookup",
+    `
     interface Attachment { position: readonly [number, number, number]; }
     interface Entry { id: string; attachment: Attachment | null; }
     const catalog: readonly Entry[] = [
@@ -1088,9 +1309,12 @@ check("readonly-record-array-lookup", `
     const match = find(key);
     if (!match || !match.attachment || match.attachment.position[1] !== 2) throw new Error("runtime lookup");
     if (find("a")?.attachment !== null || find("missing") !== undefined) throw new Error("nullable lookup");
-`);
+`,
+);
 
-check("iterators", `
+check(
+    "iterators",
+    `
     function walk(xs: number[]): number {
         let total = 0;
         for (const [index, value] of xs.entries()) total += index * value;
@@ -1123,9 +1347,12 @@ check("iterators", `
     let lanesTotal = 0;
     for (const lane of lanes) lanesTotal += lane;
     if (lanesTotal !== 4) throw new Error("typed array iteration");
-`);
+`,
+);
 
-check("dictionaries", `
+check(
+    "dictionaries",
+    `
     interface Table { fallback: number; [id: string]: number }
     function lookup(table: Table, key: string): number {
         return table[key] ?? table.fallback;
@@ -1141,9 +1368,12 @@ check("dictionaries", `
     const groups: Record<string, string[]> = {};
     for (const [key, value] of Object.entries({ x: "1", y: "2" })) (groups[key] ??= []).push(value);
     if (groups["x"]?.join() !== "1" || groups["y"]?.join() !== "2") throw new Error("dictionary of arrays");
-`);
+`,
+);
 
-check("weak-collections", `
+check(
+    "weak-collections",
+    `
     interface Item { id: number }
     const seen = new WeakMap<Item, number>();
     const marked = new WeakSet<Item>();
@@ -1154,9 +1384,12 @@ check("weak-collections", `
     if (seen.get(item) !== 2 || seen.has(other) || !marked.has(item) || marked.has(other)) throw new Error("identity keys");
     seen.delete(item);
     if (seen.has(item)) throw new Error("delete");
-`);
+`,
+);
 
-check("destructuring", `
+check(
+    "destructuring",
+    `
     function lanes(xs: number[]): number {
         const [first = 5, second = 7, ...rest] = xs;
         let a = 1;
@@ -1177,9 +1410,12 @@ check("destructuring", `
         return width + height;
     }
     if (struct({ height: 1 }) + struct({ width: 1, height: 1 }) !== 9) throw new Error("struct defaults");
-`);
+`,
+);
 
-check("generics", `
+check(
+    "generics",
+    `
     function first<T>(xs: readonly T[]): T | undefined { return xs[0]; }
     function mapAll<T, U>(xs: readonly T[], f: (x: T) => U): U[] { const out: U[] = []; for (const x of xs) out.push(f(x)); return out; }
     function longest<T extends { length: number }>(a: T, b: T): T { return a.length >= b.length ? a : b; }
@@ -1208,9 +1444,12 @@ check("generics", `
     type Result<T> = { ok: true; value: T } | { ok: false; error: string };
     function unwrap(r: Result<number>): number { return r.ok ? r.value : -1; }
     if (unwrap({ ok: true, value: 2 }) + unwrap({ ok: false, error: "e" }) !== 1) throw new Error("literal-tagged union alias");
-`);
+`,
+);
 
-check("function-parameters", `
+check(
+    "function-parameters",
+    `
     function sum(...xs: number[]): number { let t = 0; for (const x of xs) t += x; return t; }
     function join(separator: string, ...parts: string[]): string { return parts.join(separator); }
     function sum3(a: number, b: number, c: number): number { return a + b + c; }
@@ -1219,9 +1458,12 @@ check("function-parameters", `
     if (sum(1, 2) + sum() + sum(...spread) !== 12) throw new Error("rest parameters");
     if (join("-", "a", "b") !== "a-b" || join("+") !== "") throw new Error("rest after fixed");
     if (sum3(...args) !== 6) throw new Error("tuple spread call");
-`);
+`,
+);
 
-check("module-state", `
+check(
+    "module-state",
+    `
     const items: number[] = [];
     const stats = { hits: 0, nested: { depth: 1 } };
     const cache = new Map<string, number>();
@@ -1241,9 +1483,12 @@ check("module-state", `
     if (items.length !== 2 || stats.hits !== 2 || stats.nested.depth !== 4) throw new Error("mutated module containers");
     if (memo("ab") + memo("ab") + cache.size !== 5 || fired !== 1) throw new Error("module cache and listeners");
     if (api.get() !== 12) throw new Error("module record method");
-`);
+`,
+);
 
-check("class-shapes", `
+check(
+    "class-shapes",
+    `
     class A { v = 1; }
     class B { w = 2; }
     class Counter { constructor(private n: number) {} get doubled(): number { return this.n * 2; } read(): number { return [1].map(x => x + this.n)[0] ?? 0; } }
@@ -1253,9 +1498,12 @@ check("class-shapes", `
     for (const item of items) total += item instanceof A ? item.v : item.w;
     if (total !== 3 || tag(new A()) + tag(new B()) + tag(3) !== 3) throw new Error("instanceof");
     if (new Counter(2).doubled + new Counter(3).read() !== 8) throw new Error("temporaries as receivers");
-`);
+`,
+);
 
-check("binary-data", `
+check(
+    "binary-data",
+    `
     const buffer = new ArrayBuffer(16);
     const view = new DataView(buffer);
     view.setFloat32(0, 1.5, true);
@@ -1273,9 +1521,12 @@ check("binary-data", `
     const words = new Uint32Array(buffer, 4, 2);
     words[0] = 0x01020304;
     if (bytes[4] !== 4 || bytes[7] !== 1) throw new Error("buffer views");
-`);
+`,
+);
 
-check("buffer-view-storage", `
+check(
+    "buffer-view-storage",
+    `
     interface Payload { data: ArrayBufferView; read(): ArrayBufferView | null; }
     const buffer = new ArrayBuffer(32);
     const floats = new Float32Array(buffer, 8, 3);
@@ -1305,9 +1556,12 @@ check("buffer-view-storage", `
     const views = new Set<ArrayBufferView>();
     views.add(floats); views.add(floats); views.add(bytes);
     if (views.size !== 2 || !views.has(floats)) throw new Error("view keys");
-`);
+`,
+);
 
-check("contextual-record-map-spreads", `
+check(
+    "contextual-record-map-spreads",
+    `
     interface Item { name: string; category: "first" | "second"; metadata: { size: number } | null; }
     const first: string[] = ["a", "b"];
     const second: string[] = ["long"];
@@ -1319,9 +1573,12 @@ check("contextual-record-map-spreads", `
         throw new Error("contextual record fields");
     if (items.filter(item => item.metadata === null).map(item => item.name).join(",") !== "a,b")
         throw new Error("contextual record filtering");
-`);
+`,
+);
 
-check("spread-string-literal-sets", `
+check(
+    "spread-string-literal-sets",
+    `
     const labels = { first: "warm", second: "cool", duplicate: "warm" } as const;
     type Label = "start" | "warm" | "cool" | "end";
     const values: readonly Label[] = ["start", ...new Set(Object.values(labels)), "end"];
@@ -1334,9 +1591,12 @@ check("spread-string-literal-sets", `
         throw new Error("string methods on literal unions");
     const selected = values[2]!;
     if (selected.length !== 4 || selected[1] !== "o") throw new Error("literal union string members");
-`);
+`,
+);
 
-check("flat-map-tuple-alternatives", `
+check(
+    "flat-map-tuple-alternatives",
+    `
     type Tag = "a" | "b";
     const tags: Tag[] = ["a", "b"];
     function location(tag: Tag | "unused" | undefined): "north" | "south" | null { return tag === "unused" ? null : tag === "a" ? "north" : null; }
@@ -1351,9 +1611,12 @@ check("flat-map-tuple-alternatives", `
     const widened: Map<string, number> = new Map(original);
     widened.set("extra", 3);
     if (widened.get("b") !== 2 || original.size !== 2) throw new Error("fresh widened map");
-`);
+`,
+);
 
-check("runtime-parameter-defaults", `
+check(
+    "runtime-parameter-defaults",
+    `
     let calls = 0;
     function fallback(): number { calls++; return 7; }
     function scale(value = fallback(), multiplier = 2): number { return value * multiplier; }
@@ -1380,9 +1643,12 @@ check("runtime-parameter-defaults", `
     if (!fresh || fresh.score !== 3 || choose(records[1]!.value) !== original) throw new Error("reference defaults");
     function invoke(callback: () => number = () => 2): number { return callback(); }
     if (invoke(records[0]!.callback) !== 2 || invoke(records[1]!.callback) !== 6) throw new Error("callback defaults");
-`);
+`,
+);
 
-check("fixed-record-enumeration", `
+check(
+    "fixed-record-enumeration",
+    `
     type Key = "north" | "south";
     interface Entry { bounds: readonly [number, number]; }
     const table: Record<Key, Entry> = { south: { bounds: [2, 4] }, north: { bounds: [1, 3] } };
@@ -1393,9 +1659,12 @@ check("fixed-record-enumeration", `
     function width(key: Key): number { return table[key].bounds[1] - table[key].bounds[0]; }
     const largest = Math.max(...(Object.keys(table) as Key[]).map(key => width(key) * table[key].bounds[1]));
     if (largest !== 8) throw new Error("typed key callbacks");
-`);
+`,
+);
 
-check("readonly-numeric-dictionaries", `
+check(
+    "readonly-numeric-dictionaries",
+    `
     const samples = new Float32Array([2, 4]);
     const writable: Record<number, Float32Array> = {};
     writable[7] = samples;
@@ -1407,9 +1676,12 @@ check("readonly-numeric-dictionaries", `
     channels[key]![0] = 9;
     if (samples[0] !== 9) throw new Error("readonly dictionary retains mutable values");
     if (channels[8] !== undefined || !(key in channels) || 8 in channels) throw new Error("key presence");
-`);
+`,
+);
 
-check("numeric-index-outputs", `
+check(
+    "numeric-index-outputs",
+    `
     interface Output { [index: number]: number; }
     interface Projector { write(out: Output, index: number, value: number): void; changed?: () => void; }
     const projectors: Projector[] = [{ write(out, index, value) { out[index] = value; } }];
@@ -1428,9 +1700,12 @@ check("numeric-index-outputs", `
     projectors[0]!.changed = () => { changed++; };
     projectors[0]!.changed?.();
     if (changed !== 1) throw new Error("optional interface callbacks");
-`);
+`,
+);
 
-check("strings-and-numbers", `
+check(
+    "strings-and-numbers",
+    `
     function text(s: string): string { return s.charAt(0) + s.charAt(9) + s.padEnd(4, "-") + s.trimStart().trimEnd() + "|"; }
     if (text(" ab") !== " " + " ab-" + "ab|") throw new Error("string methods");
     function spell(n: number): string { return n.toString(16) + ":" + n.toString(2) + ":" + n.toString(); }
@@ -1443,9 +1718,12 @@ check("strings-and-numbers", `
     let a = 1;
     const comma = (a += 1, a * 10);
     if (comma !== 20 || Date.now() <= 0) throw new Error("comma and clock");
-`);
+`,
+);
 
-check("nullish-equality", `
+check(
+    "nullish-equality",
+    `
     function absent(value: number | null | undefined): boolean { return value == null; }
     function present(value: string | null | undefined): boolean { return value != null; }
     if (!absent(null) || !absent(undefined) || absent(0) || absent(NaN)) throw new Error("numeric absence");
@@ -1454,25 +1732,34 @@ check("nullish-equality", `
     if (document.nil != null || document.missing != null || document.zero == null || document.empty == null || document.no == null)
         throw new Error("JSON nullish values");
     if (document.nil === undefined || document.missing === null) throw new Error("strict null distinction");
-`);
+`,
+);
 
 test("raw text imports read the file beside the module", () => {
     const result = compileSource(
         'import shader from "./raw-text-import.wgsl?raw";\nif (shader.length !== 27) throw new Error("raw text length");\n',
         { fileName: "test/fixtures/raw-text-import.ts" },
     );
-    assert.ok(result.manifest.inputs.includes("test/fixtures/raw-text-import.wgsl"), "the text file is a recorded input");
+    assert.ok(
+        result.manifest.inputs.includes("test/fixtures/raw-text-import.wgsl"),
+        "the text file is a recorded input",
+    );
 });
 
 test("raw text imports support constant string replacement through helpers", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import shader from "./raw-text-import.wgsl?raw";
         function replacement(): string { return "return"; }
         const expanded = shader.replace(" r ", " " + replacement() + " ").replaceAll("1.0", "2.0");
         if (!expanded.includes("return 2.0")) throw new Error("raw text expansion");
-    `, { fileName: "test/fixtures/raw-text-import.ts" });
+    `,
+        { fileName: "test/fixtures/raw-text-import.ts" },
+    );
     assert.ok(result.cpp.includes("return 2.0"));
-    assert.ok(result.manifest.inputs.includes("test/fixtures/raw-text-import.wgsl"));
+    assert.ok(
+        result.manifest.inputs.includes("test/fixtures/raw-text-import.wgsl"),
+    );
 });
 
 test("constant numeric tables support runtime indexing and static string projections", () => {
@@ -1505,7 +1792,9 @@ test("static early returns preserve shader composition records", () => {
     assert.ok(result.cpp.includes("enabled:disabled"));
 });
 
-check("static-return-paths", `
+check(
+    "static-return-paths",
+    `
     let visits = 0;
     function select(enabled: boolean): number {
         visits++;
@@ -1518,19 +1807,38 @@ check("static-return-paths", `
     if (first !== 1 || second !== 3 || visits !== 3) throw new Error("static return effects");
     function dynamic(flag: number): number { return select(flag > 0); }
     if (dynamic(1) !== 4 || dynamic(0) !== 6 || visits !== 6) throw new Error("dynamic fallback effects");
-`);
+`,
+);
 
 test("unsupported language shapes refuse explicitly", () => {
     for (const [source, message] of [
-        ["function* gen(): Generator<number> { yield 1; } for (const v of gen()) {}", /Generator functions/],
-        ["const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}", /Object.is compares/],
-        ["function f(n: number): boolean { return \"x\" in n; } f(1);", /'in' is decided/],
-        ["function f(r: { a: number }): void { delete r.a; } f({ a: 1 });", /required field/],
-        ["function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);", /must not contain a call/],
-    ] as const) assert.throws(() => compileSource(source), message);
+        [
+            "function* gen(): Generator<number> { yield 1; } for (const v of gen()) {}",
+            /Generator functions/,
+        ],
+        [
+            "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",
+            /Object.is compares/,
+        ],
+        [
+            'function f(n: number): boolean { return "x" in n; } f(1);',
+            /'in' is decided/,
+        ],
+        [
+            "function f(r: { a: number }): void { delete r.a; } f({ a: 1 });",
+            /required field/,
+        ],
+        [
+            "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
+            /must not contain a call/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
 });
 
-check("promise-rejection-parameters", `
+check(
+    "promise-rejection-parameters",
+    `
     let seen = "";
     let calm = 0;
     let armed = true;
@@ -1548,9 +1856,12 @@ check("promise-rejection-parameters", `
     void risky().catch((error) => { if (error.message.length !== 4) return; seen += "!"; });
     armed = false;
     void risky().catch((error) => { throw new Error("unexpected " + error.message); });
-`);
+`,
+);
 
-check("private-class-members", `
+check(
+    "private-class-members",
+    `
     interface Request { id: number; text: string; }
     class Queue<T extends Request> {
         readonly #pending: T[] = [];
@@ -1597,9 +1908,12 @@ check("private-class-members", `
     let total = 0;
     for (const slot of slots) total += slot.touch() + slot.touch();
     if (total !== 15) throw new Error("stored generic private fields " + total);
-`);
+`,
+);
 
-check("struct-results-evaluate-once", `
+check(
+    "struct-results-evaluate-once",
+    `
     interface Item { id: number; }
     const queue: Item[] = [{ id: 1 }, { id: 2 }, { id: 3 }];
     let current: Item | null = null;
@@ -1620,9 +1934,12 @@ check("struct-results-evaluate-once", `
     const nodes: Node[] = [new Node(1), new Node(2)];
     nodes.pop()?.bump();
     if (nodes.length !== 1 || nodes[0].id !== 1) throw new Error("receiver once");
-`);
+`,
+);
 
-check("string-append-storage", `
+check(
+    "string-append-storage",
+    `
     class Log {
         private parts: string[] = ["a", "b"];
         private text = "";
@@ -1650,9 +1967,12 @@ check("string-append-storage", `
     let joined = emoji.at(0) ?? "";
     joined += emoji.at(1) ?? "";
     if (joined !== emoji || joined.codePointAt(0) !== 128512) throw new Error("surrogate append");
-`);
+`,
+);
 
-check("resolved-query-values-in-native-expressions", `
+check(
+    "resolved-query-values-in-native-expressions",
+    `
     const qs = new URLSearchParams(location.search);
     const labTest = qs.has("labtest");
     const godMode = qs.has("godmode");
@@ -1677,9 +1997,13 @@ check("resolved-query-values-in-native-expressions", `
     if (count !== 14 || matched !== 1) throw new Error("query constants beside natives " + count + " " + matched);
     const driveName = (qs.get("drive") || "Studio").toLowerCase();
     if (driveName !== "studio" || (qs.get("mode") ?? "").length !== 3) throw new Error("query receivers " + driveName);
-`, { search: "?godmode&count=4&mode=fly" });
+`,
+    { search: "?godmode&count=4&mode=fly" },
+);
 
-check("query-helpers-with-parameters", `
+check(
+    "query-helpers-with-parameters",
+    `
     const qs = new URLSearchParams(location.search);
     const num = (k: string, d: number): number => {
         const v = qs.get(k);
@@ -1699,9 +2023,13 @@ check("query-helpers-with-parameters", `
     const moduleKeys: string[] = ["mode", "h"];
     for (const key of moduleKeys) report += "," + (qs.get(key) ?? "-");
     if (report !== "6:6;-1:none;-1:fly;6:true,fly,-") throw new Error(report);
-`, { search: "?w=6&wire=1&mode=fly" });
+`,
+    { search: "?w=6&wire=1&mode=fly" },
+);
 
-check("narrowed-type-parameters", `
+check(
+    "narrowed-type-parameters",
+    `
     interface Save { size: number; }
     type Plan<S> = { kind: "fresh" } | { kind: "restore"; save: S };
     interface Intent<S> { plan: Plan<S>; skipSplash: boolean; }
@@ -1724,19 +2052,28 @@ check("narrowed-type-parameters", `
     if (saves[index] === null) seen += "null;";
     if (saves[index]) seen += "truthy;";
     if (seen !== "null;") throw new Error(seen);
-`);
+`,
+);
 
 test("private brand checks refuse explicitly", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
         if (!Tagged.has(new Tagged())) throw new Error("brand");
-    `), /Private brand checks are outside the supported subset/);
+    `),
+        /Private brand checks are outside the supported subset/,
+    );
 });
 
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         let calm = 0;
         async function risky(): Promise<void> { calm++; }
         void risky().catch((error, extra) => { if (error || extra) calm++; });
-    `), /declares more parameters than the operation supplies/);
+    `),
+        /declares more parameters than the operation supplies/,
+    );
 });

@@ -49,9 +49,7 @@ export function writeReport(
                 ...(meta.backend !== undefined
                     ? { backend: meta.backend }
                     : {}),
-                ...(generatedStamp !== undefined
-                    ? { generatedStamp }
-                    : {}),
+                ...(generatedStamp !== undefined ? { generatedStamp } : {}),
                 writtenAt: new Date().toISOString(),
                 ...payload,
             },

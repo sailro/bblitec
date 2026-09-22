@@ -51,11 +51,7 @@ export interface DdsCubemap {
 }
 
 export function parseDdsCubemap(bytes: Uint8Array): DdsCubemap {
-    const view = new DataView(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength,
-    );
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (bytes.byteLength < 128 || view.getUint32(0, true) !== ddsMagic) {
         throw new Error("Invalid DDS: missing magic.");
     }
@@ -68,8 +64,7 @@ export function parseDdsCubemap(bytes: Uint8Array): DdsCubemap {
         );
     }
     if (width <= 0) throw new Error("DDS environment has no pixels.");
-    const dataOffset =
-        view.getInt32(84, true) === dx10FourCc ? 128 + 20 : 128;
+    const dataOffset = view.getInt32(84, true) === dx10FourCc ? 128 + 20 : 128;
 
     const faces: Uint16Array[][] = [];
     let offset = dataOffset;

@@ -101,7 +101,10 @@ async function playAction(
     } else if ("wheel" in action) {
         await page.mouse.wheel(0, action.wheel);
     } else if ("resize" in action) {
-        await page.setViewportSize({ width: action.resize[0], height: action.resize[1] });
+        await page.setViewportSize({
+            width: action.resize[0],
+            height: action.resize[1],
+        });
     } else if ("fill" in action) {
         await page.locator(action.fill.selector).fill(action.fill.text);
     } else if ("style" in action) {
@@ -115,7 +118,8 @@ async function playAction(
         if (action.as !== undefined) extras[action.as] = value;
     } else if ("workerEvaluate" in action) {
         const worker = page.workers()[0];
-        if (worker === undefined) throw new Error("the page started no worker to evaluate in");
+        if (worker === undefined)
+            throw new Error("the page started no worker to evaluate in");
         const value: unknown = await worker.evaluate(action.workerEvaluate);
         if (action.as !== undefined) extras[action.as] = value;
     } else {
@@ -152,7 +156,8 @@ async function navigateReady(
     await gotoScenePage(page, origin, search);
     if (ready === "none") return;
     await page.waitForFunction(
-        (flag: string) => document.getElementById("renderCanvas")?.dataset[flag] === "true",
+        (flag: string) =>
+            document.getElementById("renderCanvas")?.dataset[flag] === "true",
         ready,
         { timeout: 120_000 },
     );
@@ -168,12 +173,15 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
     );
     writeFileSync(resolve(outputDirectory, "module.js"), module);
     const goldenPath = scene.parity?.reference.path;
-    const hostPage = spec.hostPage === false ? undefined : scene.parity?.referenceHostPage;
+    const hostPage =
+        spec.hostPage === false ? undefined : scene.parity?.referenceHostPage;
     const server = createSuiteSceneServer(module, {
         sourcePath: scene.source,
         seededRandom: usesSeededRandom(scene),
         ...(hostPage !== undefined ? { hostPage } : {}),
-        ...(scene.nativeHostUi ? { hostUi: readNativeHostUi(scene.nativeHostUi) } : {}),
+        ...(scene.nativeHostUi
+            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
+            : {}),
     });
     const viewport = spec.viewport ?? [1280, 720];
     const stateExpression = spec.state ?? DEFAULT_STATE_EXPRESSION;
@@ -181,15 +189,24 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
         spec.initScriptFile === undefined
             ? undefined
             : readFileSync(resolve(spec.initScriptFile), "utf8");
-    const captureFrames: Array<{ frame: number; image: string; state: unknown }> = [];
+    const captureFrames: Array<{
+        frame: number;
+        image: string;
+        state: unknown;
+    }> = [];
     const steps: RecordedStep[] = [];
-    let goldenComparison: { image: string; mad: number; maxDiff: number } | undefined;
+    let goldenComparison:
+        { image: string; mad: number; maxDiff: number } | undefined;
     const checkGolden = async (page: Page, name: string): Promise<void> => {
         if (goldenComparison !== undefined || goldenPath === undefined) return;
         const image = resolve(outputDirectory, name);
         await page.screenshot({ path: image });
         const comparison = compareImages(image, resolve(goldenPath));
-        goldenComparison = { image: name, mad: comparison.mad, maxDiff: comparison.maxDiff };
+        goldenComparison = {
+            image: name,
+            mad: comparison.mad,
+            maxDiff: comparison.maxDiff,
+        };
         console.log(
             `observe ${checkId}: hooked page vs golden MAD ${comparison.mad.toFixed(6)}, max ${comparison.maxDiff}`,
         );
@@ -216,15 +233,24 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                 pageErrors.push(error.message);
             });
             for (const frame of spec.captureFrames ?? []) {
-                await navigateReady(page, origin, spec.captureReady ?? spec.ready, `?captureFrame=${frame}`);
+                await navigateReady(
+                    page,
+                    origin,
+                    spec.captureReady ?? spec.ready,
+                    `?captureFrame=${frame}`,
+                );
                 const state: unknown = await page.evaluate(stateExpression);
                 const name = `frame-${frame}.png`;
                 await checkGolden(page, name);
                 if (goldenComparison?.image !== name) {
-                    await page.screenshot({ path: resolve(outputDirectory, name) });
+                    await page.screenshot({
+                        path: resolve(outputDirectory, name),
+                    });
                 }
                 captureFrames.push({ frame, image: name, state });
-                console.log(`observe ${checkId}: captureFrame ${frame} observed`);
+                console.log(
+                    `observe ${checkId}: captureFrame ${frame} observed`,
+                );
             }
             let ready = false;
             for (const step of spec.steps) {
@@ -236,15 +262,24 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     await page.route("**/scene.html", async (route) => {
                         const response = await route.fetch();
                         const html = (await response.text())
-                            .replaceAll("width:1280px;height:720px", `width:${width}px;height:${height}px`)
-                            .replaceAll('width="1280" height="720"', `width="${width}" height="${height}"`);
+                            .replaceAll(
+                                "width:1280px;height:720px",
+                                `width:${width}px;height:${height}px`,
+                            )
+                            .replaceAll(
+                                'width="1280" height="720"',
+                                `width="${width}" height="${height}"`,
+                            );
                         await route.fulfill({ response, body: html });
                     });
                     await navigateReady(page, origin, spec.ready);
                     await page.unroute("**/scene.html");
                     ready = true;
                 } else if (!ready || spec.reloadEachStep) {
-                    await page.setViewportSize({ width: viewport[0], height: viewport[1] });
+                    await page.setViewportSize({
+                        width: viewport[0],
+                        height: viewport[1],
+                    });
                     await navigateReady(page, origin, spec.ready);
                     ready = true;
                     await checkGolden(page, "observed.png");
@@ -252,19 +287,26 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                 for (const action of step.actions ?? []) {
                     await playAction(page, action, extras);
                 }
-                if (step.settleFrames !== undefined) await letFramesPass(page, step.settleFrames);
+                if (step.settleFrames !== undefined)
+                    await letFramesPass(page, step.settleFrames);
                 const state: unknown =
-                    step.state === false ? undefined : await page.evaluate(stateExpression);
+                    step.state === false
+                        ? undefined
+                        : await page.evaluate(stateExpression);
                 let image: string | undefined;
                 if ((step.screenshot ?? "page") !== "none") {
                     image = `${step.id}.png`;
                     const hidden =
                         step.hideStyle === undefined
                             ? undefined
-                            : await page.addStyleTag({ content: step.hideStyle });
+                            : await page.addStyleTag({
+                                  content: step.hideStyle,
+                              });
                     const path = resolve(outputDirectory, image);
                     if (step.screenshot === "canvas") {
-                        await page.locator("#renderCanvas").screenshot({ path });
+                        await page
+                            .locator("#renderCanvas")
+                            .screenshot({ path });
                     } else {
                         await page.screenshot({ path });
                     }
@@ -279,13 +321,17 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     ...(image !== undefined ? { image } : {}),
                     ...(state !== undefined ? { state } : {}),
                     ...(Object.keys(extras).length > 0 ? { extras } : {}),
-                    ...(pageErrors.length > 0 ? { errors: [...pageErrors] } : {}),
+                    ...(pageErrors.length > 0
+                        ? { errors: [...pageErrors] }
+                        : {}),
                 });
                 console.log(`observe ${checkId}: step ${step.id} observed`);
             }
         },
     );
-    const reportPath = observationsPath(resolve(defaultCheckDirectory(checkId)));
+    const reportPath = observationsPath(
+        resolve(defaultCheckDirectory(checkId)),
+    );
     writeReport(
         reportPath,
         { tool: "observe" },
@@ -303,6 +349,8 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
             steps,
         },
     );
-    console.log(`observe ${checkId}: ${captureFrames.length} frame(s), ${steps.length} step(s). Observations: ${reportPath}`);
+    console.log(
+        `observe ${checkId}: ${captureFrames.length} frame(s), ${steps.length} step(s). Observations: ${reportPath}`,
+    );
     return reportPath;
 }

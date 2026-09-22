@@ -132,9 +132,10 @@ function assertFullscreenEffectContract(
 }
 
 /** The stems the two deployed stages of one effect take. */
-export function effectStageStems(
-    index: number,
-): { vertexStem: string; fragmentStem: string } {
+export function effectStageStems(index: number): {
+    vertexStem: string;
+    fragmentStem: string;
+} {
     return {
         vertexStem: `effect-${index}.vert`,
         fragmentStem: `effect-${index}.frag`,
@@ -345,12 +346,7 @@ TaskHandle create_effect_render_task(
             "effect binding index match",
         );
         this.context.assertExpressionShape(
-            returnedExpression(
-                this.context,
-                effectModule,
-                "matchesBinding",
-                1,
-            ),
+            returnedExpression(this.context, effectModule, "matchesBinding", 1),
             "layout.name === bindingNameOrIndex || " +
                 "String(layout.binding) === bindingNameOrIndex",
             "effect binding name match",

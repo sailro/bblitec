@@ -11,9 +11,39 @@ static_assert(std::is_same_v<ts::ArrayBuffer, js::ArrayBuffer>);
 static_assert(std::is_same_v<ts::Uint8Array, js::U8Array>);
 static_assert(std::is_same_v<ts::DataView, js::DataView>);
 
-struct Point { double x, y, z; };
+struct Point {
+    double x, y, z;
+};
+
+struct CountedValue {
+    inline static int copies = 0;
+    std::string value;
+
+    explicit CountedValue(std::string text) : value(std::move(text)) {}
+    CountedValue(const CountedValue& other) : value(other.value) { ++copies; }
+    CountedValue(CountedValue&&) = default;
+    CountedValue& operator=(const CountedValue& other) {
+        value = other.value;
+        ++copies;
+        return *this;
+    }
+    CountedValue& operator=(CountedValue&&) = default;
+    bool operator==(const CountedValue&) const = default;
+};
 
 int main() {
+    {
+        CountedValue temporary{"transferred"};
+        const auto transferred = js::take_temporary(temporary);
+        assert(transferred.value == "transferred" && CountedValue::copies == 0);
+        double scalar = 7;
+        assert(js::take_temporary(scalar) == 7 && scalar == 7);
+        auto reference = js::make_ref<Point>(Point{1, 2, 3});
+        const auto* node = js::gc::registry.nodes.back();
+        assert(node->owners() == 1);
+        auto owner = js::take_temporary(reference);
+        assert(!reference && owner->x == 1 && node->owners() == 1);
+    }
     const Sprite2DLayerRecord layer;
     assert(layer.dirty_sprite_begin == invalid_handle && layer.dirty_sprite_end == 0);
     assert(layer.pipeline_version == 0);
@@ -33,12 +63,14 @@ int main() {
 
     const std::vector<Point> points{{1.25, 2.5, 3.75}, {-4, -5, -6}};
     std::vector<js::Ref<Point>> references;
-    for (const auto& point : points) references.push_back(js::make_ref<Point>(point));
+    for (const auto& point : points)
+        references.push_back(js::make_ref<Point>(point));
     const auto direct = vec3_path(points);
     const auto indirect = vec3_path(references);
     assert(direct.size() == 2 && indirect.size() == 2);
     for (std::size_t i = 0; i < direct.size(); ++i) {
-        assert(direct[i].x == indirect[i].x && direct[i].y == indirect[i].y && direct[i].z == indirect[i].z);
+        assert(direct[i].x == indirect[i].x && direct[i].y == indirect[i].y &&
+               direct[i].z == indirect[i].z);
     }
     references[0]->x = 9;
     assert(vec3_path(references)[0].x == 9 && vec3_path(points)[0].x == 1.25);
@@ -61,9 +93,8 @@ int main() {
     const auto nodes = js::managed_node_count();
     {
         Scene scene;
-        scene.disposables.push_back(js::make_closure(std::tuple{scene}, [](auto& captures) {
-            std::get<0>(captures).disposed = true;
-        }));
+        scene.disposables.push_back(js::make_closure(
+            std::tuple{scene}, [](auto& captures) { std::get<0>(captures).disposed = true; }));
         assert(js::collect_cycles() == 0);
         scene.disposables.front()();
         assert(scene.disposed);
@@ -104,12 +135,64 @@ int main() {
         }
         auto live = keys.back();
         keys.clear();
-        for (int i = 0; i < 9; ++i) assert(map.get(live.weak_identity()));
-        for (std::size_t i = 0; i + 1 < weak_values.size(); ++i) assert(weak_values[i].expired());
+        for (int i = 0; i < 9; ++i)
+            assert(map.get(live.weak_identity()));
+        for (std::size_t i = 0; i + 1 < weak_values.size(); ++i)
+            assert(weak_values[i].expired());
         assert(!weak_values.back().expired());
         live = {};
         js::collect_cycles();
         assert(weak_values.back().expired());
+    }
+    assert(js::managed_node_count() == nodes);
+
+    {
+        js::Map<std::string, CountedValue> map;
+        map.set("first", CountedValue{"original"});
+        assert(CountedValue::copies == 0 && map.at("first").value == "original");
+        map.set("first", CountedValue{"replacement"});
+        assert(CountedValue::copies == 0 && map.at("first").value == "replacement");
+        auto alias = map;
+        const CountedValue retained{"retained"};
+        alias.set("second", retained);
+        assert(CountedValue::copies == 1 && retained.value == "retained");
+        map.set("first", retained);
+        assert(CountedValue::copies == 2 && map.at("first").value == "retained");
+        map.set("first", std::move(map.at("first")));
+        assert(CountedValue::copies == 2 && alias.at("first").value == "retained");
+        map.set("third", map.at("first"));
+        assert(CountedValue::copies == 3 && map.at("third").value == "retained");
+
+        auto entry = map.begin();
+        assert(entry->first == "first");
+        assert(map.erase(entry->first));
+        assert(!alias.has("first"));
+        alias.set("first", CountedValue{"reinserted"});
+        assert(map.has("first") && map.at("first").value == "reinserted");
+        ++entry;
+        assert(entry->first == "second");
+        ++entry;
+        assert(entry->first == "third");
+        ++entry;
+        assert(entry->first == "first" && entry->second.value == "reinserted");
+        ++entry;
+        assert(entry == map.end() && map.size() == 3);
+
+        js::Map<std::string, std::string> strings;
+        std::string shared = "shared";
+        strings.set(shared, std::move(shared));
+        assert(strings.at("shared") == "shared");
+        strings.set("shared", std::move(strings.at("shared")));
+        assert(strings.at("shared") == "shared");
+        strings.set("literal", "converted");
+        assert(strings.at("literal") == "converted");
+
+        js::Map<CountedValue, CountedValue> keyed;
+        CountedValue key{"aliased"};
+        CountedValue::copies = 0;
+        keyed.set(key, std::move(key));
+        assert(CountedValue::copies == 2);
+        assert(keyed.at(CountedValue{"aliased"}).value == "aliased");
     }
     assert(js::managed_node_count() == nodes);
 

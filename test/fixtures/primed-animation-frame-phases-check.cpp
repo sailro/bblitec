@@ -7,16 +7,17 @@ namespace bbl {
 void run_deferred_callbacks(Engine& engine) {
     auto callbacks = std::move(engine.deferred_callbacks);
     engine.deferred_callbacks.clear();
-    for (const auto& callback : callbacks) callback();
+    for (const auto& callback : callbacks)
+        callback();
 }
 void run_timeout_callbacks(Engine&) {}
 void run_interval_callbacks(Engine&) {}
-}
+} // namespace bbl
 namespace bbl::pal {
 double performance_milliseconds() { return 16.0; }
 // Execute the real conductor, with GPU work replaced by the observing scene.
 #include "dispatch.hpp"
-}
+} // namespace bbl::pal
 
 namespace bbl {
 std::vector<js::Callback<void(float)>> render_callbacks;
@@ -35,14 +36,15 @@ void defer_start_continuation(Engine& engine, std::function<void()> callback) {
 void start_engine(Engine& engine) {
     for (int frame = 0; frame < 4; ++frame) {
         pal::run_animation_frame_callbacks(engine);
-        for (const auto& callback : render_callbacks) callback(16.0f);
+        for (const auto& callback : render_callbacks)
+            callback(16.0f);
         pal::finish_frame(engine);
     }
     assert(engine.animation_frame_once_callbacks.empty());
     assert(engine.post_render_animation_frame_once_callbacks.empty());
     render_callbacks.clear();
 }
-}
+} // namespace bbl
 
 int main() {
     // Advancing one engine must not select the phase of another engine's RAF.

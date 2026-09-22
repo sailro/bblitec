@@ -1,36 +1,74 @@
 import assert from "node:assert/strict";
-import {execFile} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {createServer} from "node:http";
-import {resolve} from "node:path";
+import { execFile } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { resolve } from "node:path";
 import test from "node:test";
-import {promisify} from "node:util";
-import {compileSource} from "../src/compiler.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { promisify } from "node:util";
+import { compileSource } from "../src/compiler.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("runtime HTTP preserves request bytes, response status, body consumption and rejection", async t => {
+test("runtime HTTP preserves request bytes, response status, body consumption and rejection", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const requests: {path:string; method:string; body:string; contentType:string|undefined}[] = [];
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const requests: {
+        path: string;
+        method: string;
+        body: string;
+        contentType: string | undefined;
+    }[] = [];
     const server = createServer((request, response) => {
-        const chunks:Buffer[] = [];
-        request.on("data", (chunk:Buffer) => chunks.push(chunk));
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
         request.on("end", () => {
-            requests.push({path:request.url!, method:request.method!, body:Buffer.concat(chunks).toString("utf8"), contentType:request.headers["content-type"]});
-            if (request.url === "/redirect") { response.writeHead(303, {location:"/final"}); response.end(); return; }
-            if (request.url === "/bytes") { response.end(Buffer.from([0xef,0xbb,0xbf,0x61,0xe0,0x80,0xe2,0x82])); return; }
-            if (request.url === "/disconnect") { request.socket.destroy(); return; }
-            response.writeHead(request.url === "/missing" ? 404 : 201, {"content-type":"application/json"});
+            requests.push({
+                path: request.url!,
+                method: request.method!,
+                body: Buffer.concat(chunks).toString("utf8"),
+                contentType: request.headers["content-type"],
+            });
+            if (request.url === "/redirect") {
+                response.writeHead(303, { location: "/final" });
+                response.end();
+                return;
+            }
+            if (request.url === "/bytes") {
+                response.end(
+                    Buffer.from([
+                        0xef, 0xbb, 0xbf, 0x61, 0xe0, 0x80, 0xe2, 0x82,
+                    ]),
+                );
+                return;
+            }
+            if (request.url === "/disconnect") {
+                request.socket.destroy();
+                return;
+            }
+            response.writeHead(request.url === "/missing" ? 404 : 201, {
+                "content-type": "application/json",
+            });
             response.end('{"answer":42}');
         });
     });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => { server.closeAllConnections(); server.close(); });
+    await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+    );
+    t.after(() => {
+        server.closeAllConnections();
+        server.close();
+    });
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const base = `http://127.0.0.1:${address.port}`;
     const directory = resolve("artifacts/runtime-http");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -64,17 +102,47 @@ test("runtime HTTP preserves request bytes, response status, body consumption an
     `;
     const entry = resolve(directory, "entry.ts");
     writeFileSync(entry, source);
-    const compiled = compileSource(source, {fileName:entry});
+    const compiled = compileSource(source, { fileName: entry });
     assert.ok(compiled.manifest.features.includes("platform:http"));
     assert.ok(compiled.manifest.runtimeSources.includes("src/pal_http.cpp"));
-    const cpp = resolve(directory, "main.cpp"), executable = resolve(directory, "check.exe");
+    const cpp = resolve(directory, "main.cpp"),
+        executable = resolve(directory, "check.exe");
     writeFileSync(cpp, compiled.cpp);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, `/I${nativeFixtureVcpkgRoot}/include`, cpp, "native/src/pal_http.cpp",
-        `/Fo${directory}/`, `/Fe${executable}`, "/link", "winhttp.lib"]);
-    const output = await promisify(execFile)(executable, [], {timeout:15000});
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        `/I${nativeFixtureVcpkgRoot}/include`,
+        cpp,
+        "native/src/pal_http.cpp",
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+        "/link",
+        "winhttp.lib",
+    ]);
+    const output = await promisify(execFile)(executable, [], {
+        timeout: 15000,
+    });
     assert.equal(output.stdout + output.stderr, "");
-    assert.deepEqual(requests[0], {path:"/submit", method:"POST", body:'{"message":"hello 🌍"}', contentType:"application/json"});
-    assert.deepEqual(requests.filter(request => request.path === "/final").map(request => [request.method, request.body]), [["GET", ""]]);
-    assert.equal(requests.find(request => request.path === "/redirect")?.contentType, "text/plain;charset=UTF-8");
+    assert.deepEqual(requests[0], {
+        path: "/submit",
+        method: "POST",
+        body: '{"message":"hello 🌍"}',
+        contentType: "application/json",
+    });
+    assert.deepEqual(
+        requests
+            .filter((request) => request.path === "/final")
+            .map((request) => [request.method, request.body]),
+        [["GET", ""]],
+    );
+    assert.equal(
+        requests.find((request) => request.path === "/redirect")?.contentType,
+        "text/plain;charset=UTF-8",
+    );
 });

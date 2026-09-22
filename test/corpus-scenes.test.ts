@@ -4,10 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import test from "node:test";
 import { suiteBrowserModuleDigest } from "../src/capture-suite-reference.js";
-import {
-    getScene,
-    scenes,
-} from "../src/scene-registry.js";
+import { getScene, scenes } from "../src/scene-registry.js";
 import { compareImages, compareRegion } from "../src/parity.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
@@ -47,15 +44,8 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
         pin,
     );
 
-    const entries = new Map(
-        manifest.scenes.map((entry) => [
-            entry.id,
-            entry,
-        ]),
-    );
-    const registered = scenes.filter(({ id }) =>
-        /^scene\d+$/.test(id),
-    );
+    const entries = new Map(manifest.scenes.map((entry) => [entry.id, entry]));
+    const registered = scenes.filter(({ id }) => /^scene\d+$/.test(id));
     assert.deepEqual(
         [...entries.keys()].sort(),
         registered.map(({ id }) => id).sort(),
@@ -67,14 +57,10 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
         assert.equal(scene.source, entry.source);
         assert.match(
             entry.upstreamPath,
-            new RegExp(
-                `^lab/lite/src/lite/${scene.id}\\.ts$`,
-            ),
+            new RegExp(`^lab/lite/src/lite/${scene.id}\\.ts$`),
         );
         const bytes = readFileSync(entry.source);
-        const digest = createHash("sha256")
-            .update(bytes)
-            .digest("hex");
+        const digest = createHash("sha256").update(bytes).digest("hex");
         assert.equal(
             digest,
             entry.sha256,
@@ -115,10 +101,7 @@ test("keeps pinned build tooling byte-identical to the pin", () => {
         ["scripts/wgsl-minify-plugin.ts"],
     );
     for (const file of tooling) {
-        assert.equal(
-            file.source,
-            `corpus/babylon-lite/${file.upstreamPath}`,
-        );
+        assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
         const digest = createHash("sha256")
             .update(readFileSync(file.source))
             .digest("hex");
@@ -145,10 +128,7 @@ test("keeps staged corpus files byte-identical to the pin", () => {
             file.upstreamPath,
             /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/demos\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html)$/,
         );
-        assert.equal(
-            file.source,
-            `corpus/babylon-lite/${file.upstreamPath}`,
-        );
+        assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
         // A staged row that registers moves to `scenes`; a copy left
         // behind would let the two rows pin different bytes.
         assert.ok(
@@ -200,9 +180,7 @@ test("lists every corpus file in the pinned manifest", () => {
         withFileTypes: true,
     })) {
         if (!entry.isFile()) continue;
-        const source = join(entry.parentPath, entry.name)
-            .split(sep)
-            .join("/");
+        const source = join(entry.parentPath, entry.name).split(sep).join("/");
         if (pinned.has(source) || allowedUnpinned.has(source)) {
             continue;
         }
@@ -218,31 +196,15 @@ test("lists every corpus file in the pinned manifest", () => {
 test("keeps exact-source corpus references immutable", () => {
     const sources = readBabylonLiteCorpus();
     const value: unknown = JSON.parse(
-        readFileSync(
-            "reference/exact-corpus-manifest.json",
-            "utf8",
-        ),
+        readFileSync("reference/exact-corpus-manifest.json", "utf8"),
     );
-    if (
-        typeof value !== "object" ||
-        value === null ||
-        Array.isArray(value)
-    ) {
-        throw new Error(
-            "Invalid corpus reference manifest.",
-        );
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("Invalid corpus reference manifest.");
     }
-    const references =
-        value as CorpusReferenceManifest;
-    assert.equal(
-        references.sourceVersion,
-        sources.sourceVersion,
-    );
+    const references = value as CorpusReferenceManifest;
+    assert.equal(references.sourceVersion, sources.sourceVersion);
     const sourceEntries = new Map(
-        sources.scenes.map((entry) => [
-            entry.id,
-            entry,
-        ]),
+        sources.scenes.map((entry) => [entry.id, entry]),
     );
     assert.deepEqual(
         references.scenes.map(({ id }) => id).sort(),
@@ -261,14 +223,9 @@ test("keeps exact-source corpus references immutable", () => {
             reference.referenceSha256,
             `${reference.id} golden differs from exact-source evidence.`,
         );
-        const scene = scenes.find(
-            ({ id }) => id === reference.id,
-        );
+        const scene = scenes.find(({ id }) => id === reference.id);
         assert.ok(scene?.parity);
-        assert.equal(
-            reference.reference,
-            scene.parity.reference.path,
-        );
+        assert.equal(reference.reference, scene.parity.reference.path);
         const moduleDigest = suiteBrowserModuleDigest(
             scene.source,
             scene.parity.referenceTimeSeconds,
@@ -286,11 +243,18 @@ test("keeps exact-source corpus references immutable", () => {
             scene.parity.referenceSearch,
             `${reference.id} capture query differs from golden provenance.`,
         );
-        assert.equal(reference.referenceHostPage, scene.parity.referenceHostPage);
+        assert.equal(
+            reference.referenceHostPage,
+            scene.parity.referenceHostPage,
+        );
         if (reference.referenceHostPage) {
-            assert.equal(reference.referenceHostPageSha256,
-                createHash("sha256").update(readFileSync(reference.referenceHostPage)).digest("hex"),
-                `${reference.id} host HTML differs from golden provenance.`);
+            assert.equal(
+                reference.referenceHostPageSha256,
+                createHash("sha256")
+                    .update(readFileSync(reference.referenceHostPage))
+                    .digest("hex"),
+                `${reference.id} host HTML differs from golden provenance.`,
+            );
         }
     }
 });

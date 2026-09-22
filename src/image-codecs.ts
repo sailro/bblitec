@@ -10,15 +10,23 @@ function* strings(value: unknown): Generator<string> {
         for (const item of value) yield* strings(item);
     } else {
         const object = asObject(value);
-        if (object) for (const item of Object.values(object)) yield* strings(item);
+        if (object)
+            for (const item of Object.values(object)) yield* strings(item);
     }
 }
 
 function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
     if (!bytes) return undefined;
-    return imageCodecs.find(({ signatures }) => signatures.every((signature) =>
-        bytes.subarray(signature.offset, signature.offset + signature.bytes.length).equals(signature.bytes),
-    ))?.codec;
+    return imageCodecs.find(({ signatures }) =>
+        signatures.every((signature) =>
+            bytes
+                .subarray(
+                    signature.offset,
+                    signature.offset + signature.bytes.length,
+                )
+                .equals(signature.bytes),
+        ),
+    )?.codec;
 }
 
 export function reachedImageCodecs(
@@ -37,9 +45,12 @@ export function reachedImageCodecs(
         if (encoded) reached.add(encoded);
         const references = [asset.output];
         if (bytes && asset.kind === "gltf") {
-            const document = asObject(JSON.parse(glbJsonText(bytes) ?? bytes.toString("utf8")));
+            const document = asObject(
+                JSON.parse(glbJsonText(bytes) ?? bytes.toString("utf8")),
+            );
             for (const image of asRecords(document?.images)) {
-                if (typeof image.mimeType === "string") references.push(image.mimeType);
+                if (typeof image.mimeType === "string")
+                    references.push(image.mimeType);
                 if (typeof image.uri === "string") references.push(image.uri);
             }
         } else if (bytes && asset.kind === "babylon") {
@@ -47,9 +58,12 @@ export function reachedImageCodecs(
         }
         for (const reference of references) {
             const lower = reference.toLowerCase();
-            const codec = imageCodecs.find(({ mimeType }) =>
-                lower === mimeType || lower.startsWith(`data:${mimeType};`),
-            ) ?? imageCodecForFileName(reference);
+            const codec =
+                imageCodecs.find(
+                    ({ mimeType }) =>
+                        lower === mimeType ||
+                        lower.startsWith(`data:${mimeType};`),
+                ) ?? imageCodecForFileName(reference);
             if (codec) reached.add(codec.codec);
         }
     }

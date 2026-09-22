@@ -53,8 +53,14 @@ test("scene camera bindings preserve nullable-handle presence", () => {
         result.cpp,
         /auto v_present = v_scene\.camera;\s*\[\[maybe_unused\]\] const bool (v_[A-Za-z0-9_]*element_found[A-Za-z0-9_]*) = \(v_present\.value != bbl::invalid_handle\);/,
     );
-    assert.match(result.cpp, /missingByComparison = !\(v_[A-Za-z0-9_]*element_found/);
-    assert.match(result.cpp, /presentByComparison = v_[A-Za-z0-9_]*element_found/);
+    assert.match(
+        result.cpp,
+        /missingByComparison = !\(v_[A-Za-z0-9_]*element_found/,
+    );
+    assert.match(
+        result.cpp,
+        /presentByComparison = v_[A-Za-z0-9_]*element_found/,
+    );
 
     const guardedCamera = result.cpp.match(
         /auto (v_[A-Za-z0-9_]*cam) = v_[A-Za-z0-9_]*scene\.camera;\s*\[\[maybe_unused\]\] const bool (v_[A-Za-z0-9_]*element_found[A-Za-z0-9_]*) = \(\1\.value != bbl::invalid_handle\);/,
@@ -177,10 +183,7 @@ test("a class-held scene camera narrows through the Handles-style guard", () => 
         "bbl::upstream::build_view_projection(",
         guard,
     );
-    const handleValidation = result.cpp.indexOf(
-        ".cameras.at(",
-        projection,
-    );
+    const handleValidation = result.cpp.indexOf(".cameras.at(", projection);
     assert.ok(guard >= 0);
     assert.ok(projection > guard);
     assert.ok(handleValidation > projection);
@@ -279,7 +282,9 @@ test("projection intrinsic keeps f32 lanes and widens ArrayLike calls once", () 
     assert.ok(projectionStorage);
     assert.match(
         result.cpp,
-        new RegExp(`bbl::js::F32Array v_vp = ${projectionStorage[1]};`),
+        new RegExp(
+            `bbl::js::F32Array v_vp = bbl::js::snapshot_value\\(${projectionStorage[1]}\\);`,
+        ),
     );
     assert.match(
         result.cpp,
@@ -378,10 +383,22 @@ test("Sandblox-shaped camera construction stays live and reaches its sources", (
     assert.match(result.cmake, /upstream\/src\/camera_controls\.cpp/);
     assert.match(result.cmake, /upstream\/src\/renderer_plan\.cpp/);
     assert.match(result.cpp, /\.far_plane = 10000\.0;/);
-    assert.match(result.cpp, /const double (\w+) = \([^;]+ \+ 0\.25\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha, \1\);/);
-    assert.match(result.cpp, /const double (\w+) = 1\.1;\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::beta, \1\);/);
-    assert.match(result.cpp, /const double (\w+) = \([^;]+ \+ 0\.5\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::radius, \1\);/);
-    assert.match(result.cpp, /const double (\w+) = 2\.0;\s+bbl::write_camera_vector_component\([^;]+ &bbl::CameraRecord::target, &bbl::Vec3d::x, \1\);/);
+    assert.match(
+        result.cpp,
+        /const double (\w+) = \([^;]+ \+ 0\.25\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha, \1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /const double (\w+) = 1\.1;\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::beta, \1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /const double (\w+) = \([^;]+ \+ 0\.5\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::radius, \1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /const double (\w+) = 2\.0;\s+bbl::write_camera_vector_component\([^;]+ &bbl::CameraRecord::target, &bbl::Vec3d::x, \1\);/,
+    );
     assert.match(
         result.cpp,
         /bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha,[\s\S]*bbl::upstream::build_view_projection\(/,
@@ -402,11 +419,15 @@ test("a program with no camera keeps camera projection output absent", () => {
         }
     `);
 
-    assert.ok(!result.manifest.features.some((feature) =>
-        feature.startsWith("camera:"),
-    ));
-    assert.ok(!result.manifest.generatedSources.some((source) =>
-        source.includes("camera_"),
-    ));
+    assert.ok(
+        !result.manifest.features.some((feature) =>
+            feature.startsWith("camera:"),
+        ),
+    );
+    assert.ok(
+        !result.manifest.generatedSources.some((source) =>
+            source.includes("camera_"),
+        ),
+    );
     assert.doesNotMatch(result.cpp, /camera_math\.hpp|renderer_plan\.hpp/);
 });

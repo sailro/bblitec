@@ -1,14 +1,15 @@
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
-test("callbacks passed through helpers keep per-evaluation identity and removal", t => {
+test("callbacks passed through helpers keep per-evaluation identity and removal", (t) => {
     const directory = resolve("artifacts/dom-callback-factories");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const target = document.createElement("button");
@@ -51,7 +52,9 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         if (labels !== 2) throw new Error("discarded assignment must evaluate its right side once per call");
         log.textContent = "complete";
         globalThis.close();
-    `, {fileName:join(directory,"entry.ts")});
-    writeFileSync(join(directory,"program.hpp"), result.cpp);
-    runRmlUiFixture(t,"dom-callback-factories");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "dom-callback-factories");
 });

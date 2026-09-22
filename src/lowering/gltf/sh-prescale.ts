@@ -95,16 +95,18 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
     );
     index += 1;
     const outNew = unwrapExpression(outBinding.initializer);
-    const outSize = ts.isNewExpression(outNew) &&
-            ts.isIdentifier(outNew.expression) &&
-            (outNew.expression.text === "F32" ||
-                outNew.expression.text === "Float32Array") &&
-            outNew.arguments?.length === 1 &&
-            ts.isNumericLiteral(unwrapExpression(outNew.arguments[0]!))
-        ? Number(
-            (unwrapExpression(outNew.arguments[0]!) as ts.NumericLiteral).text,
-        )
-        : undefined;
+    const outSize =
+        ts.isNewExpression(outNew) &&
+        ts.isIdentifier(outNew.expression) &&
+        (outNew.expression.text === "F32" ||
+            outNew.expression.text === "Float32Array") &&
+        outNew.arguments?.length === 1 &&
+        ts.isNumericLiteral(unwrapExpression(outNew.arguments[0]!))
+            ? Number(
+                  (unwrapExpression(outNew.arguments[0]!) as ts.NumericLiteral)
+                      .text,
+              )
+            : undefined;
     if (outSize !== 36) {
         refuseNode(
             symbol,
@@ -128,8 +130,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         !ts.isIdentifier(loop.initializer.declarations[0]!.name) ||
         !loop.condition ||
         !ts.isBinaryExpression(loop.condition) ||
-        loop.condition.operatorToken.kind !==
-            ts.SyntaxKind.LessThanToken ||
+        loop.condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
         !ts.isNumericLiteral(unwrapExpression(loop.condition.right)) ||
         Number(
             (unwrapExpression(loop.condition.right) as ts.NumericLiteral).text,
@@ -143,9 +144,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
             "no longer loops once per color channel",
         );
     }
-    const channelName = (
-        loop.initializer.declarations[0]!.name as ts.Identifier
-    ).text;
+    const channelName = loop.initializer.declarations[0]!.name.text;
     const slotOf = (
         expression: ts.Expression,
         stride: number,
@@ -194,13 +193,14 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
     for (let slot = 0; slot < 9; slot += 1) {
         const statement = body[bodyIndex];
         bodyIndex += 1;
-        const assignment = statement !== undefined &&
-                ts.isExpressionStatement(statement) &&
-                ts.isBinaryExpression(statement.expression) &&
-                statement.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken
-            ? statement.expression
-            : undefined;
+        const assignment =
+            statement !== undefined &&
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.EqualsToken
+                ? statement.expression
+                : undefined;
         const target = assignment
             ? unwrapExpression(assignment.left)
             : undefined;

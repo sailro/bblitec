@@ -11,95 +11,252 @@ import { lowerGltfMaterialTextures } from "../src/lowering/gltf/material-texture
 import { gltfMaterialValueRuntime } from "../src/lowering/gltf/material-value-runtime.js";
 import { lowerGltfTextureCache } from "../src/lowering/gltf/texture-cache.js";
 import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
-import { transpileCommonJs } from "../src/typescript-transpile.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
-import { cppFunction, cppRecord, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-const loaderModule = "src/loader-gltf/load-gltf.ts", materialModule = "src/loader-gltf/gltf-material.ts";
+const loaderModule = "src/loader-gltf/load-gltf.ts",
+    materialModule = "src/loader-gltf/gltf-material.ts";
 
-test("glTF material and extension image caches retain identities, null results and rejected promises", async t => {
+test("glTF material and extension image caches retain identities, null results and rejected promises", async (t) => {
     const tools = optionalNativeFixtureTools();
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
-    const contexts = [new LoweringContext(),
-        doctoredContext(loaderModule, "matExts.length ? [] : null", "matExts.length > 1 ? [] : null"),
-        doctoredContext(loaderModule, "if (!texInfo || !extFetchImg)", "if (!texInfo || !extFetchImg || sRGB)"),
-        doctoredContext(loaderModule, "getCachedTexture(img, sRGB)", "getCachedTexture(img, !sRGB)"),
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const contexts = [
+        new LoweringContext(),
+        doctoredContext(
+            loaderModule,
+            "matExts.length ? [] : null",
+            "matExts.length > 1 ? [] : null",
+        ),
+        doctoredContext(
+            loaderModule,
+            "if (!texInfo || !extFetchImg)",
+            "if (!texInfo || !extFetchImg || sRGB)",
+        ),
+        doctoredContext(
+            loaderModule,
+            "getCachedTexture(img, sRGB)",
+            "getCachedTexture(img, !sRGB)",
+        ),
     ];
-    const document = { textures: [{ source: 0 }, { source: 0 }, { source: 1 }, { source: 2 }, { source: 3 }], materials: [
-        { pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, normalTexture: { index: 1 }, emissiveTexture: { index: 2 } },
-        { pbrMetallicRoughness: { baseColorTexture: { index: 3 } }, normalTexture: { index: 4 } },
-        { alphaMode: "BROKEN" }, {},
-    ] };
+    const document = {
+        textures: [
+            { source: 0 },
+            { source: 0 },
+            { source: 1 },
+            { source: 2 },
+            { source: 3 },
+        ],
+        materials: [
+            {
+                pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+                normalTexture: { index: 1 },
+                emissiveTexture: { index: 2 },
+            },
+            {
+                pbrMetallicRoughness: { baseColorTexture: { index: 3 } },
+                normalTexture: { index: 4 },
+            },
+            { alphaMode: "BROKEN" },
+            {},
+        ],
+    };
     const requests = [0, 0, 1, 1, 2, 2, 3, null, null, 0];
-    const infos = [null, { index: 0 }, { index: 1 }, { index: 0 }, { index: 2 }, { index: 2 },
-        { index: 3 }, { index: 3 }, { index: 4 }, { index: 0 }];
+    const infos = [
+        null,
+        { index: 0 },
+        { index: 1 },
+        { index: 0 },
+        { index: 2 },
+        { index: 2 },
+        { index: 3 },
+        { index: 3 },
+        { index: 4 },
+        { index: 0 },
+    ];
     const rows = [];
     for (const context of contexts) {
         type Core = { _alphaMode: string; _baseColorImage: object | null };
         const reads: number[] = [];
         const resolveImage = (_json: object, _bin: object, index: number) => {
             reads.push(index);
-            return index === 2 ? Promise.reject(new Error("image2")) : Promise.resolve(index === 1 ? null : { index });
+            return index === 2
+                ? Promise.reject(new Error("image2"))
+                : Promise.resolve(index === 1 ? null : { index });
         };
-        const assemblySource = ["assembleMaterial", "makeImageFetcher"].map(name => context.functionDeclaration(materialModule, name).declaration.getText()).join("\n") +
-            context.functionDeclaration("src/loader-gltf/gltf-parser.ts", "getTextureImageIndex").declaration.getText();
-        const assembly = new Function("exports", "resolveImage", `${transpileCommonJs(assemblySource, materialModule)}\nreturn {assembleMaterial,makeImageFetcher};`)({}, resolveImage) as {
-            assembleMaterial(...args: unknown[]): Promise<Core>; makeImageFetcher(...args: unknown[]): (info: object) => Promise<object | null>;
+        const assemblySource =
+            ["assembleMaterial", "makeImageFetcher"]
+                .map((name) =>
+                    context
+                        .functionDeclaration(materialModule, name)
+                        .declaration.getText(),
+                )
+                .join("\n") +
+            context
+                .functionDeclaration(
+                    "src/loader-gltf/gltf-parser.ts",
+                    "getTextureImageIndex",
+                )
+                .declaration.getText();
+        const assembly = createJavaScriptFunction(
+            "exports",
+            "resolveImage",
+            `${transpileCommonJs(assemblySource, materialModule)}\nreturn {assembleMaterial,makeImageFetcher};`,
+        )({}, resolveImage) as {
+            assembleMaterial(...args: unknown[]): Promise<Core>;
+            makeImageFetcher(
+                this: void,
+                ...args: unknown[]
+            ): (info: object) => Promise<object | null>;
         };
-        const imageCache: unknown[] = [], outputs = [];
+        const imageCache: unknown[] = [],
+            outputs = [];
         let coreImage: object | null = null;
         for (const index of requests) {
             try {
-                const core = await assembly.assembleMaterial(document, {}, index ?? -1, "", imageCache);
+                const core = await assembly.assembleMaterial(
+                    document,
+                    {},
+                    index ?? -1,
+                    "",
+                    imageCache,
+                );
                 if (index === 0) coreImage = core._baseColorImage;
-                outputs.push({alpha: core._alphaMode, error: ""});
-            } catch (error) { assert.ok(error instanceof Error); outputs.push({error: error.message}); }
+                outputs.push({ alpha: core._alphaMode, error: "" });
+            } catch (error) {
+                assert.ok(error instanceof Error);
+                outputs.push({ error: error.message });
+            }
         }
-        const materialReads = [...reads], extensions = [];
-        const upload = context.functionDeclaration(loaderModule, "uploadMeshes").declaration.body!.statements;
-        const first = upload.findIndex(statement => statement.getText().startsWith("const extImageCache"));
+        const materialReads = [...reads],
+            extensions = [];
+        const upload = context.functionDeclaration(loaderModule, "uploadMeshes")
+            .declaration.body!.statements;
+        const first = upload.findIndex((statement) =>
+            statement.getText().startsWith("const extImageCache"),
+        );
         assert.ok(first >= 0);
-        const extensionJs = transpileCommonJs(upload.slice(first, first + 3).map(statement => statement.getText()).join("\n"), loaderModule);
+        const extensionJs = transpileCommonJs(
+            upload
+                .slice(first, first + 3)
+                .map((statement) => statement.getText())
+                .join("\n"),
+            loaderModule,
+        );
         for (const count of [0, 1, 2]) {
             reads.length = 0;
-            let uploads = 0, wraps = 0;
-            const cache = new Map<object, Map<boolean, { image: object; srgb: boolean }>>();
+            let uploads = 0,
+                wraps = 0;
+            const cache = new Map<
+                object,
+                Map<boolean, { image: object; srgb: boolean }>
+            >();
             const getCached = (image: object, srgb: boolean) => {
-                let entries = cache.get(image); if (!entries) { entries = new Map(); cache.set(image, entries); }
-                let texture = entries.get(srgb); if (!texture) { ++uploads; texture = { image, srgb }; entries.set(srgb, texture); }
+                let entries = cache.get(image);
+                if (!entries) {
+                    entries = new Map();
+                    cache.set(image, entries);
+                }
+                let texture = entries.get(srgb);
+                if (!texture) {
+                    ++uploads;
+                    texture = { image, srgb };
+                    entries.set(srgb, texture);
+                }
                 return texture;
             };
-            const ext = new Function("matExts", "makeImageFetcher", "json", "binChunk", "baseUrl", "engine", "getCachedTexture", "wrapTex",
-                `${extensionJs}\nreturn extCtx;`)(Array(count).fill({}), assembly.makeImageFetcher, document, {}, "", {}, getCached,
-                    (texture: { image: object; srgb: boolean }) => { ++wraps; return texture; }) as {
-                        _texture(info: object | null, srgb: boolean): Promise<{ image: object; srgb: boolean } | undefined>;
-                    };
+            const ext = createJavaScriptFunction(
+                "matExts",
+                "makeImageFetcher",
+                "json",
+                "binChunk",
+                "baseUrl",
+                "engine",
+                "getCachedTexture",
+                "wrapTex",
+                `${extensionJs}\nreturn extCtx;`,
+            )(
+                Array(count).fill({}),
+                assembly.makeImageFetcher,
+                document,
+                {},
+                "",
+                {},
+                getCached,
+                (texture: { image: object; srgb: boolean }) => {
+                    ++wraps;
+                    return texture;
+                },
+            ) as {
+                _texture(
+                    info: object | null,
+                    srgb: boolean,
+                ): Promise<{ image: object; srgb: boolean } | undefined>;
+            };
             const selected = [];
             for (const [index, info] of infos.entries()) {
                 try {
                     const texture = await ext._texture(info, index % 2 === 1);
-                    selected.push(texture ? { state: "texture", srgb: texture.srgb, image: (texture.image as { index: number }).index,
-                        sharedWithCore: texture.image === coreImage } : { state: "absent" });
-                } catch (error) { assert.ok(error instanceof Error); selected.push({ state: error.message }); }
+                    selected.push(
+                        texture
+                            ? {
+                                  state: "texture",
+                                  srgb: texture.srgb,
+                                  image: (texture.image as { index: number })
+                                      .index,
+                                  sharedWithCore: texture.image === coreImage,
+                              }
+                            : { state: "absent" },
+                    );
+                } catch (error) {
+                    assert.ok(error instanceof Error);
+                    selected.push({ state: error.message });
+                }
             }
-            extensions.push({ count, reads: [...reads], uploads, wraps, selected });
+            extensions.push({
+                count,
+                reads: [...reads],
+                uploads,
+                wraps,
+                selected,
+            });
         }
-        rows.push({outputs, reads: materialReads, extensions});
+        rows.push({ outputs, reads: materialReads, extensions });
     }
     const directory = resolve("artifacts/gltf-material-cache");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "cases.json"), JSON.stringify({ document, requests, infos, rows }));
+    writeFileSync(
+        join(directory, "cases.json"),
+        JSON.stringify({ document, requests, infos, rows }),
+    );
     const loader = new GltfLowerer(contexts[0]!).lowerLoaderAdapter().source;
-    const file = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+    const file = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
         #include <bblite/pal_image_canvas.hpp>
         #include <bblite/ts_runtime.hpp>
         #include <fstream>
         namespace bbl {
             using JsonObject = ts::JsonValue::Object;
             using JsonArray = ts::JsonValue::Array;
-            ${["const ts::JsonValue* optional(", "std::vector<double> double_array("].map(signature => cppFunction(loader, signature)).join("\n")}
-            ${contexts.map((context, variant) => `namespace variant${variant} {
+            ${["const ts::JsonValue* optional(", "std::vector<double> double_array("].map((signature) => cppFunction(loader, signature)).join("\n")}
+            ${contexts
+                .map(
+                    (context, variant) => `namespace variant${variant} {
                 ${lowerGltfParserJson(context)}
                 ${lowerGltfMaterialAssembly(context)}
                 using GltfMaterialSampler = std::shared_ptr<const TextureSamplerState>;
@@ -154,12 +311,30 @@ test("glTF material and extension image caches retain identities, null results a
                         assert(uploads == row.at("uploads") && wraps == row.at("wraps") && nlohmann::json(reads) == row.at("reads"));
                     }
                 }
-            }`).join("\n")}
+            }`,
+                )
+                .join("\n")}
         }
         int main() { nlohmann::json cases; std::ifstream("cases.json") >> cases;
             ${contexts.map((_context, index) => `bbl::variant${index}::check(cases);`).join("\n")}
-        }`);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/bigobj", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        "/I", "native/include", `/external:I${join(nativeFixtureVcpkgRoot, "include")}`, "/external:W0", `/Fo:${directory}/`, `/Fe:${executable}`, file]);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/bigobj",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+        "/external:W0",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        file,
+    ]);
     execFileSync(executable, { cwd: directory, stdio: "pipe" });
 });

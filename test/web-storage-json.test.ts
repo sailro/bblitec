@@ -117,23 +117,29 @@ test("localStorage lowers to the PAL store behind its own feature", () => {
     assert.match(result.cpp, /#include <bblite\/js_json\.hpp>/);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_set_item;\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_set_item\);\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_remove_item;\s*\1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_remove_item\);\s*\1\("sandblox-world"\)/,
     );
     // The reads and writes are inside the source's own try/catch, so a PAL
     // failure takes the arm the browser's quota error takes.
-    assert.match(result.cpp, /try \{[\s\S]*local_storage_set_item[\s\S]*\} catch \(\.\.\.\) \{/);
+    assert.match(
+        result.cpp,
+        /try \{[\s\S]*local_storage_set_item[\s\S]*\} catch \(\.\.\.\) \{/,
+    );
     assert.deepEqual(
         result.manifest.adaptations
             .map(({ id }) => id)
-            .filter((id) => id === "native-web-storage" || id === "json-data-bridge"),
+            .filter(
+                (id) =>
+                    id === "native-web-storage" || id === "json-data-bridge",
+            ),
         ["json-data-bridge", "native-web-storage"],
     );
 });
@@ -149,13 +155,10 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     `);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
     );
     // Absent AND empty are both falsy, which `has_value()` alone is not.
-    assert.match(
-        result.cpp,
-        /if \(bbl::js::nullable_truthy\(\w+\)\)/,
-    );
+    assert.match(result.cpp, /if \(bbl::js::nullable_truthy\(\w+\)\)/);
 });
 
 test("a shadowed localStorage is not the Web Storage global", () => {
@@ -198,9 +201,10 @@ test("JSON.stringify emits codecs for the records it reaches, in order", () => {
         result.cpp,
         /inline void json_write\(bbl::js::JsonWriter& writer, const WorldPartDataData& value\);/,
     );
-    const codec = /inline void json_write\(bbl::js::JsonWriter& writer, const WorldPartDataData& value\) \{([\s\S]*?)\n\}/.exec(
-        result.cpp,
-    );
+    const codec =
+        /inline void json_write\(bbl::js::JsonWriter& writer, const WorldPartDataData& value\) \{([\s\S]*?)\n\}/.exec(
+            result.cpp,
+        );
     assert.ok(codec, "the part codec is emitted");
     const keys = [...codec[1]!.matchAll(/writer\.key\("([^"]+)"\)/g)].map(
         (match) => match[1],
@@ -215,7 +219,10 @@ test("JSON.stringify emits codecs for the records it reaches, in order", () => {
         /if \(value\.sh\.has_value\(\)\) \{/,
         "a property the source declared optional is omitted when absent",
     );
-    assert.match(result.cpp, /bbl::js::json_stringify\(bblscene::serializeWorld\(\)\)/);
+    assert.match(
+        result.cpp,
+        /bbl::js::json_stringify\(bblscene::serializeWorld\(\)\)/,
+    );
 });
 
 test("JSON.stringify carries a generation-known indent and refuses a replacer", () => {
@@ -301,10 +308,17 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     assert.match(result.cpp, /std::isfinite\(\w+\.to_number\(\)\)/);
     // `.length === n` and the indexed reads inside the guard.
     assert.match(result.cpp, /\.length\(\)/);
-    const receivers = [...result.cpp.matchAll(/const auto (\w+) = [^;\n]+\.get\("s"\);/g)];
-    assert.ok(receivers.some(([, name]) => result.cpp.includes(
-        `${name}.get(bbl::js::number_to_string(0.0)).to_number()`,
-    )), "indexed reads use the retained receiver and JavaScript property-key conversion");
+    const receivers = [
+        ...result.cpp.matchAll(/\bauto (\w+) = [^;\n]+\.get\("s"\);/g),
+    ];
+    assert.ok(
+        receivers.some(([, name]) =>
+            result.cpp.includes(
+                `${name}.get(bbl::js::number_to_string(0.0)).to_number()`,
+            ),
+        ),
+        "indexed reads use the retained receiver and JavaScript property-key conversion",
+    );
     // The optional `sh` is a strict comparison over a possibly-absent key.
     assert.match(result.cpp, /\.get\("sh"\)\.strict_equals\(1\.0\)/);
 });
@@ -343,7 +357,10 @@ test("a scene that reaches neither carries neither", () => {
     assert.deepEqual(
         result.manifest.adaptations
             .map(({ id }) => id)
-            .filter((id) => id === "native-web-storage" || id === "json-data-bridge"),
+            .filter(
+                (id) =>
+                    id === "native-web-storage" || id === "json-data-bridge",
+            ),
         [],
     );
 });
@@ -358,7 +375,10 @@ test("nlohmann is linked only where a loader or the JSON bridge reaches it", () 
 test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     const source = readFileSync(resolve("native/src/pal_storage.cpp"), "utf8");
     // SDL owns "where may this program write"; nothing here names a path.
-    assert.match(source, /SDL_GetPrefPath\(kPrefOrganisation, kPrefApplication\)/);
+    assert.match(
+        source,
+        /SDL_GetPrefPath\(kPrefOrganisation, kPrefApplication\)/,
+    );
     assert.match(source, /SDL_free\(preferences\)/);
     // A key becomes a file name through an injective encoding: every byte
     // outside [A-Za-z0-9-] is escaped, and the escape character too.
@@ -367,10 +387,7 @@ test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     // The shared PAL helper stages beside the destination and atomically
     // replaces it, so Web Storage and selected-file downloads cannot drift.
     assert.match(source, /detail::write_file_atomically/);
-    const fileIo = readFileSync(
-        resolve("native/src/pal_file_io.hpp"),
-        "utf8",
-    );
+    const fileIo = readFileSync(resolve("native/src/pal_file_io.hpp"), "utf8");
     assert.match(fileIo, /random_staging_token/);
     assert.match(fileIo, /CREATE_NEW/);
     assert.match(fileIo, /O_CREAT \| O_EXCL \| O_NOFOLLOW/);
@@ -379,10 +396,7 @@ test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
     // Reads are bounded and removing an absent key is not a failure.
     assert.match(source, /kMaximumEntryBytes/);
-    assert.match(
-        source,
-        /error == std::errc::no_such_file_or_directory/,
-    );
+    assert.match(source, /error == std::errc::no_such_file_or_directory/);
     // A test root keeps the user's own preferences out of a run.
     assert.match(source, /BBLITE_LOCAL_STORAGE_ROOT/);
     // No OS API outside PAL: the header the scene includes is a thin shim.
@@ -399,8 +413,14 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
         resolve("src/compiler/output-projection.ts"),
         "utf8",
     );
-    assert.match(projection, /features\.includes\("data:json"\)[\s\S]{0,120}js_json\.hpp/);
-    assert.match(projection, /features\.includes\("storage:local"\)[\s\S]{0,120}js_storage\.hpp/);
+    assert.match(
+        projection,
+        /features\.includes\("data:json"\)[\s\S]{0,120}js_json\.hpp/,
+    );
+    assert.match(
+        projection,
+        /features\.includes\("storage:local"\)[\s\S]{0,120}js_storage\.hpp/,
+    );
     const runtime = readFileSync(
         resolve("native/include/bblite/js_json.hpp"),
         "utf8",
@@ -440,8 +460,11 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
  */
 const nativeTools = optionalNativeFixtureTools();
 
-test("runtime typeof strings survive conditional and parameter sinks", {skip:!nativeTools}, () => {
-    const result = compileSource(`
+test(
+    "runtime typeof strings survive conditional and parameter sinks",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         function accept(value: string): string { return value; }
         function describe(source: string): string {
             const parsed: unknown = JSON.parse(source);
@@ -459,17 +482,34 @@ test("runtime typeof strings survive conditional and parameter sinks", {skip:!na
         if(String(condition ? typeof read() : "absent") !== "number" || calls !== 2)
             throw new Error("selected typeof branch");
     `);
-    const directory = resolve("artifacts/json-typeof-sinks");
-    mkdirSync(directory, {recursive:true});
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, source]);
-    execFileSync(executable, {stdio:"pipe"});
-});
+        const directory = resolve("artifacts/json-typeof-sinks");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            `/I${nativeFixtureVcpkgRoot}/include`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
-test("JSON serialization preserves string enums at roots and in stored containers", {skip:!nativeTools}, () => {
-    const result = compileSource(`
+test(
+    "JSON serialization preserves string enums at roots and in stored containers",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         type Phase = "ready" | "running";
         type Tone = "light" | "dark";
         interface State { phase: Phase; tone?: Tone; }
@@ -484,14 +524,28 @@ test("JSON serialization preserves string enums at roots and in stored container
         const phases:Phase[] = ["ready", "running"];
         if (JSON.stringify(phases) !== '["ready","running"]') throw new Error("enum array");
     `);
-    const directory = resolve("artifacts/json-enum-check");
-    mkdirSync(directory, {recursive:true});
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, source]);
-    execFileSync(executable, {stdio:"pipe"});
-});
+        const directory = resolve("artifacts/json-enum-check");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            `/I${nativeFixtureVcpkgRoot}/include`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
 test(
     "the native JSON bridge and storage PAL hold their contract",

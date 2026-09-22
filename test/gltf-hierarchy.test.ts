@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {LoweringContext} from "../src/lowering/context.js";
-import {lowerGltfHierarchy} from "../src/lowering/gltf/hierarchy.js";
-import {gltfMatrixReaderCpp} from "../src/lowering/gltf/local-matrix.js";
-import {lowerGltfParserJson} from "../src/lowering/gltf/parser-json.js";
-import {GltfLowerer} from "../src/lowering/gltf-lowerer.js";
-import {importPinnedModule} from "../src/pinned-shader-composer.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
-import {doctoredContext} from "./doctored-store.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerGltfHierarchy } from "../src/lowering/gltf/hierarchy.js";
+import { gltfMatrixReaderCpp } from "../src/lowering/gltf/local-matrix.js";
+import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
+import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 interface PinnedParser {
@@ -19,38 +27,89 @@ interface PinnedParser {
     getTextureImageIndex(json: object): number;
 }
 function executeParser(context: LoweringContext): PinnedParser {
-    const declarations = ["buildParentMap", "getTextureImageIndex"]
-        .map(symbol => context.functionDeclaration(parserModule, symbol).declaration.getText());
+    const declarations = ["buildParentMap", "getTextureImageIndex"].map(
+        (symbol) =>
+            context
+                .functionDeclaration(parserModule, symbol)
+                .declaration.getText(),
+    );
     const code = transpileCommonJs(declarations.join("\n"), parserModule);
-    return new Function("exports", `${code}\nreturn {buildParentMap,getTextureImageIndex};`)({}) as PinnedParser;
+    return createJavaScriptFunction(
+        "exports",
+        `${code}\nreturn {buildParentMap,getTextureImageIndex};`,
+    )({}) as PinnedParser;
 }
 
-test("glTF parent publication and texture sources follow the pin; matrix storage validates its boundary", async t => {
+test("glTF parent publication and texture sources follow the pin; matrix storage validates its boundary", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const context = new LoweringContext();
-    const original = await importPinnedModule<PinnedParser>("loader-gltf/gltf-parser.js");
-    const inputs = [{nodes: [{}]}, {nodes: [{children: [1]}, {children: [2]}, {}]},
-        {nodes: [{}, {children: [0]}, {children: [1]}]}, {nodes: [{children: [2]}, {children: [2]}, {}]},
-        {nodes: [{children: null}, {children: false}, {children: []}]}];
-    const mapContext = doctoredContext(parserModule, "if (children) {", "if (children && i > 0) {");
+    const original = await importPinnedModule<PinnedParser>(
+        "loader-gltf/gltf-parser.js",
+    );
+    const inputs = [
+        { nodes: [{}] },
+        { nodes: [{ children: [1] }, { children: [2] }, {}] },
+        { nodes: [{}, { children: [0] }, { children: [1] }] },
+        { nodes: [{ children: [2] }, { children: [2] }, {}] },
+        { nodes: [{ children: null }, { children: false }, { children: [] }] },
+    ];
+    const mapContext = doctoredContext(
+        parserModule,
+        "if (children) {",
+        "if (children && i > 0) {",
+    );
     const changedMap = executeParser(mapContext);
-    const parents = (pin: PinnedParser) => inputs.map(input => {
-        const map = pin.buildParentMap(input);
-        return input.nodes.map((_node, index) => map.get(index) ?? -1);
-    });
-    const textureContext = doctoredContext(parserModule, "tex.extensions?.EXT_texture_webp?.source", "tex.extensions?.EXT_alternate?.source");
+    const parents = (pin: PinnedParser) =>
+        inputs.map((input) => {
+            const map = pin.buildParentMap(input);
+            return input.nodes.map((_node, index) => map.get(index) ?? -1);
+        });
+    const textureContext = doctoredContext(
+        parserModule,
+        "tex.extensions?.EXT_texture_webp?.source",
+        "tex.extensions?.EXT_alternate?.source",
+    );
     const changedTexture = executeParser(textureContext);
-    const textures = [{source: 2}, {source: 2, extensions: null}, {source: 2, extensions: {EXT_texture_webp: null}},
-        {source: 2, extensions: {EXT_texture_webp: {source: null}}},
-        {source: 2, extensions: {EXT_texture_webp: {source: 0}, EXT_alternate: {source: 7}}},
-        {source: 5, extensions: {EXT_texture_webp: {}}}];
-    const textureOutputs = textures.map(texture => [original.getTextureImageIndex(texture), changedTexture.getTextureImageIndex(texture)]);
-    const directory = resolve("artifacts/test-gltf-hierarchy"); mkdirSync(directory, {recursive: true});
-    writeFileSync(join(directory, "cases.json"), JSON.stringify({inputs, parents: parents(original), changedParents: parents(changedMap), textures, textureOutputs}));
+    const textures = [
+        { source: 2 },
+        { source: 2, extensions: null },
+        { source: 2, extensions: { EXT_texture_webp: null } },
+        { source: 2, extensions: { EXT_texture_webp: { source: null } } },
+        {
+            source: 2,
+            extensions: {
+                EXT_texture_webp: { source: 0 },
+                EXT_alternate: { source: 7 },
+            },
+        },
+        { source: 5, extensions: { EXT_texture_webp: {} } },
+    ];
+    const textureOutputs = textures.map((texture) => [
+        original.getTextureImageIndex(texture),
+        changedTexture.getTextureImageIndex(texture),
+    ]);
+    const directory = resolve("artifacts/test-gltf-hierarchy");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "cases.json"),
+        JSON.stringify({
+            inputs,
+            parents: parents(original),
+            changedParents: parents(changedMap),
+            textures,
+            textureOutputs,
+        }),
+    );
     const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/ts_runtime.hpp>
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        source,
+        `#include <bblite/ts_runtime.hpp>
 #include <cassert>
 #include <fstream>
 namespace bbl {
@@ -95,8 +154,25 @@ int main() {
     const auto matrix=ts::json_parse("[1,0,0,0,0,1,0,0,0,0,1,0,16777217,0.2,0.3,1]");
     assert(gltf_matrix_from_json(&matrix)[12] == 16777216.0f);
     reject([&]{texture_image_index(JsonObject{});});
-}`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
-        "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+}`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        source,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });

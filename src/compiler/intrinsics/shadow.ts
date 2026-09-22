@@ -1,11 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type {
-    Feature,
-    ShadowCasterMeshManifest,
-    Value,
-} from "../types.js";
+import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
@@ -15,27 +11,29 @@ import {
 } from "../option-helpers.js";
 
 export interface ShadowIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "noteTemporalRecordBoundary"
-        | "compileNumber"
-        | "compileF32ArrayCallback"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "handleCollections"
-        | "requireEngine"
-        | "ensureDefaultRenderTask"
-        | "fail"
-        | "recordShadowGenerator"
-        | "recordShadowCasters"
-        | "recordDynamicShadowCasters"
-        | "recordDynamicShadowCastersForUnknownGenerator"
-        | "esmGeneratorOrdinal"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "noteTemporalRecordBoundary"
+            | "compileNumber"
+            | "compileF32ArrayCallback"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "handleCollections"
+            | "requireEngine"
+            | "ensureDefaultRenderTask"
+            | "fail"
+            | "recordShadowGenerator"
+            | "recordShadowCasters"
+            | "recordDynamicShadowCasters"
+            | "recordDynamicShadowCastersForUnknownGenerator"
+            | "esmGeneratorOrdinal"
+        > {}
 
 /**
  * The options `createPcfSpotlightShadowGenerator` takes.
@@ -47,13 +45,7 @@ export interface ShadowIntrinsicContext
  * unreached and refuse by name rather than compiling to a value the pin
  * would have used differently.
  */
-const spotOptions = [
-    "mapSize",
-    "bias",
-    "darkness",
-    "near",
-    "far",
-] as const;
+const spotOptions = ["mapSize", "bias", "darkness", "near", "far"] as const;
 
 /**
  * The options `createPcfDirectionalShadowGenerator` takes.
@@ -156,10 +148,7 @@ const esmDirectionalEmitted = [
  */
 interface ShadowGeneratorFactory {
     kind:
-        | "pcf-spot"
-        | "pcf-directional"
-        | "csm-directional"
-        | "esm-directional";
+        "pcf-spot" | "pcf-directional" | "csm-directional" | "esm-directional";
     lightKind: "spot" | "directional";
     /** How a refusal names this family, e.g. "A PCF spotlight". */
     article: string;
@@ -378,9 +367,7 @@ function compileShadowGeneratorFactory(
         // never alias the valid first light. addSceneLight patches this
         // sentinel before composition or manifest finalization.
         lightIndex: light.lightIdentity?.sceneLightIndex ?? -1,
-        ...(light.lightIdentity
-            ? { lightIdentity: light.lightIdentity }
-            : {}),
+        ...(light.lightIdentity ? { lightIdentity: light.lightIdentity } : {}),
         ...(spec.kind === "esm-directional" ? { esm: sizes } : {}),
     });
     for (const feature of spec.features) {
@@ -514,13 +501,17 @@ export function compileShadowIntrinsic(
                 context.handleCollections.staticHandleList(listNode);
             if (!entries) {
                 const list = context.compileValue(listNode);
-                const collection = list.kind === "handle-collection" && list.handleCollection?.elementKind === "mesh"
-                    ? list.handleCollection : undefined;
+                const collection =
+                    list.kind === "handle-collection" &&
+                    list.handleCollection?.elementKind === "mesh"
+                        ? list.handleCollection
+                        : undefined;
                 if (
-                    !collection && (list.kind !== "data" ||
-                    list.dataType?.kind !== "vector" ||
-                    list.dataType.element.kind !== "handle" ||
-                    list.dataType.element.handle !== "mesh")
+                    !collection &&
+                    (list.kind !== "data" ||
+                        list.dataType?.kind !== "vector" ||
+                        list.dataType.element.kind !== "handle" ||
+                        list.dataType.element.handle !== "mesh")
                 ) {
                     context.fail(
                         listNode,
@@ -572,10 +563,7 @@ export function compileShadowIntrinsic(
             if (generatorIndex === undefined) {
                 context.recordDynamicShadowCastersForUnknownGenerator();
             } else {
-                context.recordShadowCasters(
-                    generatorIndex,
-                    casters,
-                );
+                context.recordShadowCasters(generatorIndex, casters);
                 if (hasDynamicCaster) {
                     context.recordDynamicShadowCasters(generatorIndex);
                 }
@@ -610,7 +598,12 @@ export function compileShadowIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
-            context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
+            context.noteTemporalRecordBoundary(
+                call,
+                importedName,
+                "registration",
+                scene,
+            );
             context.reachFeature("shadow:task", call);
             context.reachFeature("frame-graph:resources", call);
             // The pin's shadow task is a frame-graph task unshifted ahead of
@@ -620,7 +613,8 @@ export function compileShadowIntrinsic(
             const defaultTask = context.ensureDefaultRenderTask(scene, call);
             return {
                 kind: "void",
-                cpp: `${defaultTask.setup};\n` +
+                cpp:
+                    `${defaultTask.setup};\n` +
                     `        bbl::register_scene_with_shadow_support(${defaultTask.sceneCpp})`,
             };
         }

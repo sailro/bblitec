@@ -6,7 +6,10 @@
 
 namespace {
 using namespace bbl;
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void require(bool condition, const char* message) {
+    if (!condition)
+        throw std::runtime_error(message);
+}
 
 struct Record {
     double value = 0;
@@ -15,14 +18,23 @@ struct Record {
     js::Array<js::Ref<Record>> children;
     js::ArrayBuffer bytes;
     template <typename Visit> friend void clone_fields(const Record& item, Visit visit) {
-        visit("value", item.value); visit("text", item.text); visit("next", item.next);
-        visit("children", item.children); visit("bytes", item.bytes);
+        visit("value", item.value);
+        visit("text", item.text);
+        visit("next", item.next);
+        visit("children", item.children);
+        visit("bytes", item.bytes);
     }
     template <typename Visit> friend void clone_fields(Record& item, Visit visit) {
-        visit("value", item.value); visit("text", item.text); visit("next", item.next);
-        visit("children", item.children); visit("bytes", item.bytes);
+        visit("value", item.value);
+        visit("text", item.text);
+        visit("next", item.next);
+        visit("children", item.children);
+        visit("bytes", item.bytes);
     }
-    void gc_trace(const js::TraceVisitor& visit) const { visit(next); visit(children); }
+    void gc_trace(const js::TraceVisitor& visit) const {
+        visit(next);
+        visit(children);
+    }
 };
 
 void graph_clone() {
@@ -43,13 +55,15 @@ void graph_clone() {
         auto copy = js::clone_read<js::Ref<Record>>(reader, reader.root());
         require(copy->text == "before posting", "Message was not snapshotted when posted");
         require(std::signbit(copy->value), "Negative zero was lost");
-        require(copy->next == copy && copy->children[0] == copy && copy->children[1] == copy, "Clone lost graph identity");
+        require(copy->next == copy && copy->children[0] == copy && copy->children[1] == copy,
+                "Clone lost graph identity");
         require(copy->bytes.data()[0] == 4, "Message bytes still alias sender storage");
         copy->bytes.data()[1] = 88;
         copy->text = "receiver changed";
     });
     worker.join();
-    require(source->text == "after posting" && source->bytes.data()[1] == 5, "Receiver mutated sender state");
+    require(source->text == "after posting" && source->bytes.data()[1] == 5,
+            "Receiver mutated sender state");
 }
 
 struct NativeBytes final : pal::TransferredResource {
@@ -60,7 +74,8 @@ struct TransferBuffer final : pal::Transferable {
     std::vector<std::uint8_t> bytes{1, 2, 3};
     bool detached = false;
     std::unique_ptr<pal::TransferredResource> transfer() override {
-        if (detached) throw pal::DataCloneError("Buffer is detached");
+        if (detached)
+            throw pal::DataCloneError("Buffer is detached");
         auto result = std::make_unique<NativeBytes>(std::move(bytes));
         detached = true;
         return result;
@@ -70,8 +85,11 @@ struct TransferBuffer final : pal::Transferable {
 void transfers() {
     TransferBuffer buffer;
     pal::Transferable* duplicated[]{&buffer, &buffer};
-    try { pal::CloneWriter writer(duplicated); throw std::runtime_error("Duplicate transfer accepted"); }
-    catch (const pal::DataCloneError&) {}
+    try {
+        pal::CloneWriter writer(duplicated);
+        throw std::runtime_error("Duplicate transfer accepted");
+    } catch (const pal::DataCloneError&) {
+    }
     require(!buffer.detached, "Duplicate validation detached sender");
     pal::Transferable* transfer[]{&buffer};
     const auto* bytes = buffer.bytes.data();
@@ -83,13 +101,17 @@ void transfers() {
     auto received = reader.take_transfer(root);
     const auto* received_bytes = dynamic_cast<NativeBytes*>(received.get());
     require(received_bytes && received_bytes->bytes.data() == bytes, "Transfer copied the buffer");
-    try { auto duplicate = reader.take_transfer(root); throw std::runtime_error("Received twice"); }
-    catch (const pal::DataCloneError&) {}
+    try {
+        auto duplicate = reader.take_transfer(root);
+        throw std::runtime_error("Received twice");
+    } catch (const pal::DataCloneError&) {
+    }
     try {
         pal::CloneWriter repeated(transfer);
         auto result = std::move(repeated).finish(0);
         throw std::runtime_error("Detached buffer transferred twice");
-    } catch (const pal::DataCloneError&) {}
+    } catch (const pal::DataCloneError&) {
+    }
 }
 
 void serialization_before_detachment() {
@@ -98,15 +120,22 @@ void serialization_before_detachment() {
     try {
         auto message = js::serialize_message([] {}, transfer);
         throw std::runtime_error("Function was cloned");
-    } catch (const pal::DataCloneError&) {}
+    } catch (const pal::DataCloneError&) {
+    }
     require(!buffer.detached, "Serialization failure detached a buffer");
 }
 
 struct OptionalMessage {
     std::string type;
     js::Nullable<std::string> detail;
-    template <typename Visit> friend void clone_fields(OptionalMessage& item, Visit visit) { visit("type", item.type); visit("detail", item.detail); }
-    template <typename Visit> friend void clone_fields(const OptionalMessage& item, Visit visit) { visit("type", item.type); visit("detail", item.detail); }
+    template <typename Visit> friend void clone_fields(OptionalMessage& item, Visit visit) {
+        visit("type", item.type);
+        visit("detail", item.detail);
+    }
+    template <typename Visit> friend void clone_fields(const OptionalMessage& item, Visit visit) {
+        visit("type", item.type);
+        visit("detail", item.detail);
+    }
 };
 void optional_properties() {
     pal::CloneWriter writer;
@@ -114,7 +143,8 @@ void optional_properties() {
     const auto root = writer.add(pal::CloneObject{{{"type", type}}});
     pal::CloneReader reader(std::move(writer).finish(root));
     auto message = js::clone_read<OptionalMessage>(reader, reader.root());
-    require(message.type == "started" && !message.detail, "Absent optional message field was not undefined");
+    require(message.type == "started" && !message.detail,
+            "Absent optional message field was not undefined");
     message.detail = "available";
     pal::CloneReader second(js::serialize_message(message));
     const auto copy = js::clone_read<OptionalMessage>(second, second.root());
@@ -125,13 +155,15 @@ void indexed_properties() {
     pal::CloneWriter writer;
     pal::CloneObject object;
     for (int index = 0; index < 40; ++index) {
-        object.properties.emplace_back("field" + std::to_string(index), writer.add(static_cast<double>(index)));
+        object.properties.emplace_back("field" + std::to_string(index),
+                                       writer.add(static_cast<double>(index)));
     }
     const auto root = writer.add(std::move(object));
     pal::CloneReader reader(std::move(writer).finish(root));
     for (int index = 39; index >= 0; --index) {
         const auto value = reader.property(root, "field" + std::to_string(index));
-        require(js::clone_read<double>(reader, value) == index, "Indexed clone property returned another field");
+        require(js::clone_read<double>(reader, value) == index,
+                "Indexed clone property returned another field");
     }
     require(!reader.find_property(root, "absent"), "Indexed clone invented an absent field");
 }

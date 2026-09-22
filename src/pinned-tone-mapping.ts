@@ -63,9 +63,8 @@ export async function pinnedToneMapping(
                 `exports ${toneMappingExportNames().join(", ")}.`,
         );
     }
-    const module = await importPinnedModule<
-        Record<string, PinnedToneMapping>
-    >(modulePath);
+    const module =
+        await importPinnedModule<Record<string, PinnedToneMapping>>(modulePath);
     const record = module[importedName];
     if (!record) {
         throw new Error(

@@ -102,7 +102,9 @@ struct TextRunState;
 using TextRun = std::shared_ptr<TextRunState>;
 using TextRunRef = std::variant<double, TextRun>;
 
-struct TextQuaternion { double x = 0, y = 0, z = 0, w = 1; };
+struct TextQuaternion {
+    double x = 0, y = 0, z = 0, w = 1;
+};
 struct TextRenderableOptions {
     std::optional<Vec3d> position;
     std::optional<TextQuaternion> rotation_quaternion;

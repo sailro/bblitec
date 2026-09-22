@@ -5,21 +5,20 @@
 #include <string>
 
 namespace {
-void point(bbl::Vec3d value) {
-    std::cout << ' ' << value.x << ' ' << value.y << ' ' << value.z;
-}
+void point(bbl::Vec3d value) { std::cout << ' ' << value.x << ' ' << value.y << ' ' << value.z; }
 
 void edge(const bbl::GizmoFrustumEdge& value) {
-    std::cout << ' ' << value.height << ' ' << value.diameterTop
-              << ' ' << value.diameterBottom << ' ' << value.tessellation;
+    std::cout << ' ' << value.height << ' ' << value.diameterTop << ' ' << value.diameterBottom
+              << ' ' << value.tessellation;
     point(value.position);
     point(value.scaling);
-    for (const double lane : value.rotation) std::cout << ' ' << lane;
+    for (const double lane : value.rotation)
+        std::cout << ' ' << lane;
 }
 
-template <typename Values>
-void read(Values& values) {
-    for (auto& value : values) std::cin >> value;
+template <typename Values> void read(Values& values) {
+    for (auto& value : values)
+        std::cin >> value;
 }
 
 bbl::Vec3d read_point() {
@@ -27,7 +26,7 @@ bbl::Vec3d read_point() {
     std::cin >> value.x >> value.y >> value.z;
     return value;
 }
-}
+} // namespace
 
 int main() {
     std::cout << std::setprecision(17);
@@ -38,27 +37,32 @@ int main() {
             double segments = 0.0, diameter = 0.0;
             std::cin >> segments >> diameter;
             const auto geometry = bbl::gizmo_hemisphere_geometry(segments, diameter);
-            std::cout << ' ' << geometry.positions.size() << ' ' << geometry.normals.size()
-                      << ' ' << geometry.indices.size() << ' ' << geometry.uvs.size();
-            for (const float lane : geometry.positions) std::cout << ' ' << lane;
-            for (const float lane : geometry.normals) std::cout << ' ' << lane;
-            for (const std::uint32_t lane : geometry.indices) std::cout << ' ' << lane;
-            for (const float lane : geometry.uvs) std::cout << ' ' << lane;
+            std::cout << ' ' << geometry.positions.size() << ' ' << geometry.normals.size() << ' '
+                      << geometry.indices.size() << ' ' << geometry.uvs.size();
+            for (const float lane : geometry.positions)
+                std::cout << ' ' << lane;
+            for (const float lane : geometry.normals)
+                std::cout << ' ' << lane;
+            for (const std::uint32_t lane : geometry.indices)
+                std::cout << ' ' << lane;
+            for (const float lane : geometry.uvs)
+                std::cout << ' ' << lane;
         } else if (operation == "lines") {
             double levels = 0.0;
             std::cin >> levels;
             const auto definitions = bbl::line_defs_for_level(levels);
             std::cout << ' ' << definitions.size();
             for (const auto& line : definitions) {
-                std::cout << ' ' << line.pivotY << ' ' << line.pivotZ << ' ' << line.posY
-                          << ' ' << line.sx << ' ' << line.sy << ' ' << line.sz;
+                std::cout << ' ' << line.pivotY << ' ' << line.pivotZ << ' ' << line.posY << ' '
+                          << line.sx << ' ' << line.sy << ' ' << line.sz;
             }
         } else if (operation == "frustum") {
             double fov = 0.0, aspect = 0.0, near_plane = 0.0, far_plane = 0.0;
             std::cin >> fov >> aspect >> near_plane >> far_plane;
             const auto edges = bbl::gizmo_frustum_geometry(fov, aspect, near_plane, far_plane);
             std::cout << ' ' << edges.size();
-            for (const auto& value : edges) edge(value);
+            for (const auto& value : edges)
+                edge(value);
         } else if (operation == "edge") {
             double thickness = 0.0;
             std::cin >> thickness;
@@ -91,7 +95,8 @@ int main() {
             auto bounds = bbl::gizmo_bounds_initial();
             for (std::size_t index = 0; index < count; ++index) {
                 std::array<std::array<double, 3>, 2> aabb{};
-                for (auto& corner : aabb) read(corner);
+                for (auto& corner : aabb)
+                    read(corner);
                 bbl::gizmo_bounds_fold(bounds, aabb);
             }
             bounds = bbl::gizmo_bounds_finish(bounds);
@@ -102,7 +107,8 @@ int main() {
         } else {
             return 2;
         }
-        if (!std::cin) return 3;
+        if (!std::cin)
+            return 3;
         std::cout << '\n';
     }
     return 0;

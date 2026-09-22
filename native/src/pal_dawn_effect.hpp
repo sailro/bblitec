@@ -37,18 +37,11 @@ namespace bbl::pal {
  * a single texel is every sampler. Nothing here rounds -- the pin's own
  * rounding happened once, in the lowered `create_solid_texture`.
  */
-inline DawnSampledTexture upload_dawn_solid_texture(
-    WGPUDevice device,
-    WGPUQueue queue,
-    const SolidTexture& texture) {
+inline DawnSampledTexture upload_dawn_solid_texture(WGPUDevice device, WGPUQueue queue,
+                                                    const SolidTexture& texture) {
     DawnSampledTexture sampled;
-    sampled.texture = upload_dawn_rgba_texture(
-        device,
-        queue,
-        texture.texel.data(),
-        texture.texel.size(),
-        1,
-        1);
+    sampled.texture =
+        upload_dawn_rgba_texture(device, queue, texture.texel.data(), texture.texel.size(), 1, 1);
     sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
     sampled.sampler = create_texture_sampler(device, TextureSamplerState{});
     return sampled;
@@ -80,16 +73,11 @@ inline void release_dawn_effect_pass(DawnEffectPass& pass) {
  * The pin caches a pipeline per `targetSignatureKey`, so the format and the
  * sample count belong to the pipeline rather than to the wrapper.
  */
-inline DawnEffectPass create_dawn_effect_pass(
-    DawnDevice& device_state,
-    const Engine& engine,
-    EffectWrapperHandle handle,
-    WGPUTextureFormat format,
-    std::uint32_t samples) {
-    const EffectWrapperRecord& wrapper =
-        engine.effect_wrappers.at(handle.value);
-    const upstream::EffectVariantEntry& entry =
-        upstream::effect_variants.at(wrapper.variant);
+inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const Engine& engine,
+                                              EffectWrapperHandle handle, WGPUTextureFormat format,
+                                              std::uint32_t samples) {
+    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
     DawnEffectPass pass;
 
     // The descriptor's own layout, entry for entry: `bindingLayoutEntry`
@@ -108,11 +96,10 @@ inline DawnEffectPass create_dawn_effect_pass(
             layout.buffer.type = WGPUBufferBindingType_Uniform;
             pass.uniform_bytes = binding.uniform_bytes;
             WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-            descriptor.usage =
-                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
             descriptor.size = binding.uniform_bytes;
-            pass.uniforms =
-                require_dawn_resource(wgpuDeviceCreateBuffer(device_state.device, &descriptor), "effect uniform buffer");
+            pass.uniforms = require_dawn_resource(
+                wgpuDeviceCreateBuffer(device_state.device, &descriptor), "effect uniform buffer");
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
             group.buffer = pass.uniforms;
@@ -123,10 +110,9 @@ inline DawnEffectPass create_dawn_effect_pass(
             layout.texture.viewDimension = WGPUTextureViewDimension_2D;
             // The lookup and its not-set refusal are the shared
             // `effect_texture_for_binding`.
-            pass.textures.push_back(upload_dawn_solid_texture(
-                device_state.device,
-                device_state.queue,
-                effect_texture_for_binding(wrapper, binding.name)));
+            pass.textures.push_back(
+                upload_dawn_solid_texture(device_state.device, device_state.queue,
+                                          effect_texture_for_binding(wrapper, binding.name)));
             const DawnSampledTexture& sampled = pass.textures.back();
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
@@ -139,9 +125,8 @@ inline DawnEffectPass create_dawn_effect_pass(
             // effect's texture rows -- so the sampler indexes what was
             // uploaded rather than rescanning for a binding number.
             if (binding.texture >= pass.textures.size()) {
-                throw std::runtime_error(
-                    "Effect sampler binding names a texture the wrapper "
-                    "does not carry.");
+                throw std::runtime_error("Effect sampler binding names a texture the wrapper "
+                                         "does not carry.");
             }
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
@@ -151,37 +136,33 @@ inline DawnEffectPass create_dawn_effect_pass(
         layout_entries.push_back(layout);
     }
 
-    WGPUBindGroupLayoutDescriptor layout_descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    WGPUBindGroupLayoutDescriptor layout_descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     layout_descriptor.entryCount = layout_entries.size();
     layout_descriptor.entries = layout_entries.data();
-    pass.group_layout = require_dawn_resource(wgpuDeviceCreateBindGroupLayout(
-        device_state.device,
-        &layout_descriptor), "effect bind group layout");
-    WGPUPipelineLayoutDescriptor pipeline_layout =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pass.group_layout = require_dawn_resource(
+        wgpuDeviceCreateBindGroupLayout(device_state.device, &layout_descriptor),
+        "effect bind group layout");
+    WGPUPipelineLayoutDescriptor pipeline_layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     pipeline_layout.bindGroupLayoutCount = 1;
     const auto group_layout = pass.group_layout.get();
     pipeline_layout.bindGroupLayouts = &group_layout;
-    pass.pipeline_layout = require_dawn_resource(wgpuDeviceCreatePipelineLayout(
-        device_state.device,
-        &pipeline_layout), "effect pipeline layout");
+    pass.pipeline_layout =
+        require_dawn_resource(wgpuDeviceCreatePipelineLayout(device_state.device, &pipeline_layout),
+                              "effect pipeline layout");
     if (!group_entries.empty()) {
-        WGPUBindGroupDescriptor group_descriptor =
-            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        WGPUBindGroupDescriptor group_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         group_descriptor.layout = pass.group_layout;
         group_descriptor.entryCount = group_entries.size();
         group_descriptor.entries = group_entries.data();
-        pass.group =
-            require_dawn_resource(wgpuDeviceCreateBindGroup(device_state.device, &group_descriptor), "effect bind group");
+        pass.group = require_dawn_resource(
+            wgpuDeviceCreateBindGroup(device_state.device, &group_descriptor), "effect bind group");
     }
 
     // Both entry points live in one module, deployed once under the
     // fragment stem (the vertex stem declares only compiled artifacts), so
     // the fragment file is the module.
-    DawnShaderModule module{load_wgsl_module(
-        device_state.device,
-        std::string(entry.fragment_stem))};
+    DawnShaderModule module{
+        load_wgsl_module(device_state.device, std::string(entry.fragment_stem))};
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
@@ -189,8 +170,7 @@ inline DawnEffectPass create_dawn_effect_pass(
     fragment.entryPoint = string_view("effectFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pass.pipeline_layout;
     descriptor.vertex.module = module;
     descriptor.vertex.entryPoint = string_view("effectFullscreenVertex");
@@ -199,9 +179,9 @@ inline DawnEffectPass create_dawn_effect_pass(
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     descriptor.fragment = &fragment;
-    pass.pipeline =
-        wgpuDeviceCreateRenderPipeline(device_state.device, &descriptor);
-    if (!pass.pipeline) dawn_error("effect pipeline creation failed.");
+    pass.pipeline = wgpuDeviceCreateRenderPipeline(device_state.device, &descriptor);
+    if (!pass.pipeline)
+        dawn_error("effect pipeline creation failed.");
     return pass;
 }
 
@@ -213,38 +193,26 @@ inline DawnEffectPass create_dawn_effect_pass(
  * reached slice never mutates one, since the per-frame `update` callback is
  * not lowered, so this is one queue write at startup rather than one a frame.
  */
-inline void upload_dawn_effect_pass(
-    WGPUQueue queue,
-    Engine& engine,
-    const DawnEffectPass& pass,
-    EffectWrapperHandle handle) {
-    if (!pass.uniforms || pass.uniform_bytes == 0) return;
+inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnEffectPass& pass,
+                                    EffectWrapperHandle handle) {
+    if (!pass.uniforms || pass.uniform_bytes == 0)
+        return;
     EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
-    if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty()) return;
+    if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty())
+        return;
     // The symmetric size validation (pal_gpu_shared.hpp): a short write
     // leaves a stale tail behind the declared size.
     require_effect_uniform_size(wrapper, pass.uniform_bytes);
-    wgpuQueueWriteBuffer(
-        queue,
-        pass.uniforms,
-        0,
-        wrapper.uniform_values.data(),
-        wrapper.uniform_values.size() * sizeof(float));
+    wgpuQueueWriteBuffer(queue, pass.uniforms, 0, wrapper.uniform_values.data(),
+                         wrapper.uniform_values.size() * sizeof(float));
     wrapper.uniforms_dirty = false;
 }
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
-inline void record_dawn_effect_pass(
-    WGPURenderPassEncoder render_pass,
-    const DawnEffectPass& pass) {
+inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const DawnEffectPass& pass) {
     wgpuRenderPassEncoderSetPipeline(render_pass, pass.pipeline);
     if (pass.group) {
-        wgpuRenderPassEncoderSetBindGroup(
-            render_pass,
-            0,
-            pass.group,
-            0,
-            nullptr);
+        wgpuRenderPassEncoderSetBindGroup(render_pass, 0, pass.group, 0, nullptr);
     }
     wgpuRenderPassEncoderDraw(render_pass, 3, 1, 0, 0);
 }

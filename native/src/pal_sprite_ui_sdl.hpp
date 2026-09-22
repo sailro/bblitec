@@ -50,9 +50,8 @@ enum class SpriteUiSdlShader {
     vertex,
 };
 
-inline SDL_GPUShader* create_sprite_ui_sdl_shader(
-    SDL_GPUDevice* device,
-    SpriteUiSdlShader shader_kind) {
+inline SDL_GPUShader* create_sprite_ui_sdl_shader(SDL_GPUDevice* device,
+                                                  SpriteUiSdlShader shader_kind) {
     const unsigned char* spirv = nullptr;
     std::size_t spirv_size = 0;
     const unsigned char* dxil = nullptr;
@@ -63,33 +62,33 @@ inline SDL_GPUShader* create_sprite_ui_sdl_shader(
     Uint32 samplers = 0;
     Uint32 uniforms = 0;
     switch (shader_kind) {
-        case SpriteUiSdlShader::color_fragment:
-            spirv = shader_frag_color_spirv;
-            spirv_size = sizeof(shader_frag_color_spirv);
-            dxil = shader_frag_color_dxil;
-            dxil_size = sizeof(shader_frag_color_dxil);
-            msl = shader_frag_color_msl;
-            msl_size = sizeof(shader_frag_color_msl);
-            break;
-        case SpriteUiSdlShader::texture_fragment:
-            spirv = shader_frag_texture_spirv;
-            spirv_size = sizeof(shader_frag_texture_spirv);
-            dxil = shader_frag_texture_dxil;
-            dxil_size = sizeof(shader_frag_texture_dxil);
-            msl = shader_frag_texture_msl;
-            msl_size = sizeof(shader_frag_texture_msl);
-            samplers = 1;
-            break;
-        case SpriteUiSdlShader::vertex:
-            spirv = shader_vert_spirv;
-            spirv_size = sizeof(shader_vert_spirv);
-            dxil = shader_vert_dxil;
-            dxil_size = sizeof(shader_vert_dxil);
-            msl = shader_vert_msl;
-            msl_size = sizeof(shader_vert_msl);
-            stage = SDL_GPU_SHADERSTAGE_VERTEX;
-            uniforms = 2;
-            break;
+    case SpriteUiSdlShader::color_fragment:
+        spirv = shader_frag_color_spirv;
+        spirv_size = sizeof(shader_frag_color_spirv);
+        dxil = shader_frag_color_dxil;
+        dxil_size = sizeof(shader_frag_color_dxil);
+        msl = shader_frag_color_msl;
+        msl_size = sizeof(shader_frag_color_msl);
+        break;
+    case SpriteUiSdlShader::texture_fragment:
+        spirv = shader_frag_texture_spirv;
+        spirv_size = sizeof(shader_frag_texture_spirv);
+        dxil = shader_frag_texture_dxil;
+        dxil_size = sizeof(shader_frag_texture_dxil);
+        msl = shader_frag_texture_msl;
+        msl_size = sizeof(shader_frag_texture_msl);
+        samplers = 1;
+        break;
+    case SpriteUiSdlShader::vertex:
+        spirv = shader_vert_spirv;
+        spirv_size = sizeof(shader_vert_spirv);
+        dxil = shader_vert_dxil;
+        dxil_size = sizeof(shader_vert_dxil);
+        msl = shader_vert_msl;
+        msl_size = sizeof(shader_vert_msl);
+        stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        uniforms = 2;
+        break;
     }
 
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
@@ -124,16 +123,14 @@ inline SDL_GPUShader* create_sprite_ui_sdl_shader(
     info.num_samplers = samplers;
     info.num_uniform_buffers = uniforms;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
-    if (!shader) gpu_error("SDL_CreateGPUShader sprite UI");
+    if (!shader)
+        gpu_error("SDL_CreateGPUShader sprite UI");
     return shader;
 }
 
-inline SDL_GPUGraphicsPipeline* create_sprite_ui_sdl_pipeline(
-    SDL_GPUDevice* device,
-    SDL_GPUShader* vertex,
-    SDL_GPUShader* fragment,
-    SDL_GPUTextureFormat format,
-    bool additive = false) {
+inline SDL_GPUGraphicsPipeline*
+create_sprite_ui_sdl_pipeline(SDL_GPUDevice* device, SDL_GPUShader* vertex, SDL_GPUShader* fragment,
+                              SDL_GPUTextureFormat format, bool additive = false) {
     SDL_GPUColorTargetDescription target{};
     target.format = format;
     target.blend_state.enable_blend = true;
@@ -147,62 +144,42 @@ inline SDL_GPUGraphicsPipeline* create_sprite_ui_sdl_pipeline(
         additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
 
     const std::array<SDL_GPUVertexAttribute, 3> attributes{
-        SDL_GPUVertexAttribute{
-            0,
-            0,
-            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-            static_cast<Uint32>(offsetof(UiRenderVertex, x))},
-        SDL_GPUVertexAttribute{
-            1,
-            0,
-            SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,
-            static_cast<Uint32>(offsetof(UiRenderVertex, red))},
-        SDL_GPUVertexAttribute{
-            2,
-            0,
-            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-            static_cast<Uint32>(offsetof(UiRenderVertex, u))},
+        SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+                               static_cast<Uint32>(offsetof(UiRenderVertex, x))},
+        SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,
+                               static_cast<Uint32>(offsetof(UiRenderVertex, red))},
+        SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+                               static_cast<Uint32>(offsetof(UiRenderVertex, u))},
     };
-    const SDL_GPUVertexBufferDescription vertex_buffer{
-        0,
-        sizeof(UiRenderVertex),
-        SDL_GPU_VERTEXINPUTRATE_VERTEX,
-        0};
+    const SDL_GPUVertexBufferDescription vertex_buffer{0, sizeof(UiRenderVertex),
+                                                       SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex;
     info.fragment_shader = fragment;
-    info.vertex_input_state = SDL_GPUVertexInputState{
-        &vertex_buffer,
-        1,
-        attributes.data(),
-        static_cast<Uint32>(attributes.size())};
+    info.vertex_input_state = SDL_GPUVertexInputState{&vertex_buffer, 1, attributes.data(),
+                                                      static_cast<Uint32>(attributes.size())};
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    SDL_GPUGraphicsPipeline* pipeline =
-        create_sdl_graphics_pipeline(device, &info);
-    if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline sprite UI");
+    SDL_GPUGraphicsPipeline* pipeline = create_sdl_graphics_pipeline(device, &info);
+    if (!pipeline)
+        gpu_error("SDL_CreateGPUGraphicsPipeline sprite UI");
     return pipeline;
 }
 
-inline void create_sprite_ui_sdl_resources(
-    SDL_GPUDevice* device,
-    SDL_GPUTextureFormat format,
-    SpriteUiSdlResources& ui) {
-    if (ui.color_pipeline) return;
-    SDL_GPUShader* vertex = create_sprite_ui_sdl_shader(
-        device, SpriteUiSdlShader::vertex);
-    SDL_GPUShader* color = create_sprite_ui_sdl_shader(
-        device, SpriteUiSdlShader::color_fragment);
-    SDL_GPUShader* texture = create_sprite_ui_sdl_shader(
-        device, SpriteUiSdlShader::texture_fragment);
-    ui.color_pipeline = create_sprite_ui_sdl_pipeline(
-        device, vertex, color, format);
-    ui.texture_pipeline = create_sprite_ui_sdl_pipeline(
-        device, vertex, texture, format);
+inline void create_sprite_ui_sdl_resources(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
+                                           SpriteUiSdlResources& ui) {
+    if (ui.color_pipeline)
+        return;
+    SDL_GPUShader* vertex = create_sprite_ui_sdl_shader(device, SpriteUiSdlShader::vertex);
+    SDL_GPUShader* color = create_sprite_ui_sdl_shader(device, SpriteUiSdlShader::color_fragment);
+    SDL_GPUShader* texture =
+        create_sprite_ui_sdl_shader(device, SpriteUiSdlShader::texture_fragment);
+    ui.color_pipeline = create_sprite_ui_sdl_pipeline(device, vertex, color, format);
+    ui.texture_pipeline = create_sprite_ui_sdl_pipeline(device, vertex, texture, format);
     SDL_ReleaseGPUShader(device, vertex);
     SDL_ReleaseGPUShader(device, color);
     SDL_ReleaseGPUShader(device, texture);
@@ -215,7 +192,8 @@ inline void create_sprite_ui_sdl_resources(
     sampler.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     ui.sampler = SDL_CreateGPUSampler(device, &sampler);
-    if (!ui.sampler) gpu_error("SDL_CreateGPUSampler sprite UI");
+    if (!ui.sampler)
+        gpu_error("SDL_CreateGPUSampler sprite UI");
     sampler.min_filter = SDL_GPU_FILTER_NEAREST;
     sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
     ui.nearest_sampler = SDL_CreateGPUSampler(device, &sampler);
@@ -224,52 +202,47 @@ inline void create_sprite_ui_sdl_resources(
     }
 }
 
-inline void ensure_sprite_ui_sdl_backdrop_pipeline(
-    SDL_GPUDevice* device,
-    SpriteUiSdlResources& ui) {
-    if (ui.backdrop.pipeline) return;
-    SDL_GPUShader* vertex = create_sprite_ui_sdl_shader(
-        device, SpriteUiSdlShader::vertex);
-    SDL_GPUShader* texture = create_sprite_ui_sdl_shader(
-        device, SpriteUiSdlShader::texture_fragment);
+inline void ensure_sprite_ui_sdl_backdrop_pipeline(SDL_GPUDevice* device,
+                                                   SpriteUiSdlResources& ui) {
+    if (ui.backdrop.pipeline)
+        return;
+    SDL_GPUShader* vertex = create_sprite_ui_sdl_shader(device, SpriteUiSdlShader::vertex);
+    SDL_GPUShader* texture =
+        create_sprite_ui_sdl_shader(device, SpriteUiSdlShader::texture_fragment);
     ui.backdrop.pipeline = create_sprite_ui_sdl_pipeline(
-        device,
-        vertex,
-        texture,
-        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
-        true);
+        device, vertex, texture, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, true);
     SDL_ReleaseGPUShader(device, vertex);
     SDL_ReleaseGPUShader(device, texture);
 }
 
-inline void ensure_sprite_ui_sdl_buffer(
-    SDL_GPUDevice* device,
-    SDL_GPUBuffer*& buffer,
-    std::uint32_t& capacity,
-    std::uint32_t required,
-    SDL_GPUBufferUsageFlags usage) {
-    if (buffer && capacity >= required) return;
-    if (buffer) SDL_ReleaseGPUBuffer(device, buffer);
+inline void ensure_sprite_ui_sdl_buffer(SDL_GPUDevice* device, SDL_GPUBuffer*& buffer,
+                                        std::uint32_t& capacity, std::uint32_t required,
+                                        SDL_GPUBufferUsageFlags usage) {
+    if (buffer && capacity >= required)
+        return;
+    if (buffer)
+        SDL_ReleaseGPUBuffer(device, buffer);
     capacity = std::max<std::uint32_t>(4096, capacity);
-    while (capacity < required) capacity *= 2;
+    while (capacity < required)
+        capacity *= 2;
     const SDL_GPUBufferCreateInfo info{usage, capacity, {}};
     buffer = SDL_CreateGPUBuffer(device, &info);
-    if (!buffer) gpu_error("SDL_CreateGPUBuffer sprite UI");
+    if (!buffer)
+        gpu_error("SDL_CreateGPUBuffer sprite UI");
 }
 
-inline OwnedSdlTransfer upload_sprite_ui_sdl_buffer(
-    SDL_GPUDevice* device,
-    SDL_GPUCopyPass* copy,
-    SDL_GPUBuffer* destination,
-    const void* data,
-    std::uint32_t size) {
+inline OwnedSdlTransfer upload_sprite_ui_sdl_buffer(SDL_GPUDevice* device, SDL_GPUCopyPass* copy,
+                                                    SDL_GPUBuffer* destination, const void* data,
+                                                    std::uint32_t size) {
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     transfer_info.size = size;
     OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer.get()) gpu_error("SDL_CreateGPUTransferBuffer sprite UI");
+    if (!transfer.get())
+        gpu_error("SDL_CreateGPUTransferBuffer sprite UI");
     void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
-    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer sprite UI");
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer sprite UI");
     std::memcpy(mapped, data, size);
     SDL_UnmapGPUTransferBuffer(device, transfer.get());
     const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
@@ -279,36 +252,25 @@ inline OwnedSdlTransfer upload_sprite_ui_sdl_buffer(
 }
 
 template <typename ExternalTexture = std::nullptr_t>
-inline void render_sprite_ui_sdl_frame(
-    SDL_GPUDevice* device,
-    SDL_GPUCommandBuffer* command,
-    SDL_GPUTexture* target,
-    SDL_GPUTextureFormat target_format,
-    SpriteUiSdlResources& ui,
-    const UiRenderFrame& frame,
-    ExternalTexture external_texture = nullptr) {
-    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0) return;
+inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                       SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
+                                       SpriteUiSdlResources& ui, const UiRenderFrame& frame,
+                                       ExternalTexture external_texture = nullptr) {
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0)
+        return;
     create_sprite_ui_sdl_resources(device, target_format, ui);
     if (!frame.backdrops.empty()) {
         ensure_sprite_ui_sdl_backdrop_pipeline(device, ui);
     }
 
-    const std::uint32_t vertex_bytes = static_cast<std::uint32_t>(
-        frame.vertices.size() * sizeof(UiRenderVertex));
-    const std::uint32_t index_bytes = static_cast<std::uint32_t>(
-        frame.indices.size() * sizeof(std::uint32_t));
-    ensure_sprite_ui_sdl_buffer(
-        device,
-        ui.vertices,
-        ui.vertex_capacity,
-        vertex_bytes,
-        SDL_GPU_BUFFERUSAGE_VERTEX);
-    ensure_sprite_ui_sdl_buffer(
-        device,
-        ui.indices,
-        ui.index_capacity,
-        index_bytes,
-        SDL_GPU_BUFFERUSAGE_INDEX);
+    const std::uint32_t vertex_bytes =
+        static_cast<std::uint32_t>(frame.vertices.size() * sizeof(UiRenderVertex));
+    const std::uint32_t index_bytes =
+        static_cast<std::uint32_t>(frame.indices.size() * sizeof(std::uint32_t));
+    ensure_sprite_ui_sdl_buffer(device, ui.vertices, ui.vertex_capacity, vertex_bytes,
+                                SDL_GPU_BUFFERUSAGE_VERTEX);
+    ensure_sprite_ui_sdl_buffer(device, ui.indices, ui.index_capacity, index_bytes,
+                                SDL_GPU_BUFFERUSAGE_INDEX);
 
     for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
         if (ui_frame_uses_texture(frame, texture->first)) {
@@ -319,20 +281,13 @@ inline void render_sprite_ui_sdl_frame(
         texture = ui.textures.erase(texture);
     }
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy) gpu_error("SDL_BeginGPUCopyPass sprite UI");
+    if (!copy)
+        gpu_error("SDL_BeginGPUCopyPass sprite UI");
     std::vector<OwnedSdlTransfer> transfers;
-    transfers.push_back(upload_sprite_ui_sdl_buffer(
-        device,
-        copy,
-        ui.vertices,
-        frame.vertices.data(),
-        vertex_bytes));
-    transfers.push_back(upload_sprite_ui_sdl_buffer(
-        device,
-        copy,
-        ui.indices,
-        frame.indices.data(),
-        index_bytes));
+    transfers.push_back(upload_sprite_ui_sdl_buffer(device, copy, ui.vertices,
+                                                    frame.vertices.data(), vertex_bytes));
+    transfers.push_back(
+        upload_sprite_ui_sdl_buffer(device, copy, ui.indices, frame.indices.data(), index_bytes));
     for (const UiRenderTexture& source_texture : frame.textures) {
         if (ui.textures.contains(source_texture.id) || !source_texture.rgba) {
             continue;
@@ -348,37 +303,26 @@ inline void render_sprite_ui_sdl_frame(
         texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
         OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
         auto* texture = texture_owner.get();
-        if (!texture) gpu_error("SDL_CreateGPUTexture sprite UI source");
+        if (!texture)
+            gpu_error("SDL_CreateGPUTexture sprite UI source");
         SDL_GPUTransferBufferCreateInfo transfer_info{};
         transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         transfer_info.size = static_cast<Uint32>(source_texture.rgba->size());
-        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info),
+                                        {device}};
         auto* transfer = transfer_owner.get();
         if (!transfer) {
             gpu_error("SDL_CreateGPUTransferBuffer sprite UI texture");
         }
         void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-        if (!mapped) gpu_error("SDL_MapGPUTransferBuffer sprite UI texture");
-        std::memcpy(
-            mapped,
-            source_texture.rgba->data(),
-            source_texture.rgba->size());
+        if (!mapped)
+            gpu_error("SDL_MapGPUTransferBuffer sprite UI texture");
+        std::memcpy(mapped, source_texture.rgba->data(), source_texture.rgba->size());
         SDL_UnmapGPUTransferBuffer(device, transfer);
-        const SDL_GPUTextureTransferInfo source{
-            transfer,
-            0,
-            source_texture.width,
-            source_texture.height};
+        const SDL_GPUTextureTransferInfo source{transfer, 0, source_texture.width,
+                                                source_texture.height};
         const SDL_GPUTextureRegion destination{
-            texture,
-            0,
-            0,
-            0,
-            0,
-            0,
-            source_texture.width,
-            source_texture.height,
-            1};
+            texture, 0, 0, 0, 0, 0, source_texture.width, source_texture.height, 1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
         transfers.push_back(std::move(transfer_owner));
         ui.textures.emplace(source_texture.id, texture);
@@ -388,82 +332,98 @@ inline void render_sprite_ui_sdl_frame(
     transfers.clear();
 
     ui.filters.begin_frame();
-    for_each_ui_segment(frame, [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
-        auto* draw_target = ui.filters.target(device, command, target, target_format, frame, layer);
-        SDL_GPUColorTargetInfo color_target{};
-        color_target.texture = draw_target;
-        color_target.load_op = SDL_GPU_LOADOP_LOAD;
-        color_target.store_op = SDL_GPU_STOREOP_STORE;
-        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
-        if (!pass) gpu_error("SDL_BeginGPURenderPass sprite UI");
-        const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
-        const SDL_GPUBufferBinding index_binding{ui.indices, 0};
-        SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-        SDL_BindGPUIndexBuffer(
-            pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-        const std::array<float, 16> projection{
-            2.0f / frame.width, 0, 0, 0,
-            0, -2.0f / frame.height, 0, 0,
-            0, 0, 0.0001f, 0,
-            -1, 1, 0, 1};
-        const std::array<float, 2> translation{0, 0};
-        SDL_PushGPUVertexUniformData(
-            command, 0, projection.data(), sizeof(projection));
-        SDL_PushGPUVertexUniformData(
-            command, 1, translation.data(), sizeof(translation));
-        for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-            const UiRenderDraw& draw = frame.draws[draw_index];
-            const std::optional<UiScissorRect> scissor =
-                clamped_ui_scissor(draw, frame.width, frame.height);
-            if (!scissor) continue;
-            const SDL_Rect clip{
-                scissor->left, scissor->top, scissor->width, scissor->height};
-            SDL_SetGPUScissor(pass, &clip);
-            if (draw.texture_id) {
-                const auto owned = ui.textures.find(draw.texture_id);
-                SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
-                if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
-                    if (!texture) texture = external_texture(draw.texture_id);
+    for_each_ui_segment(
+        frame,
+        [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
+            auto* draw_target =
+                ui.filters.target(device, command, target, target_format, frame, layer);
+            SDL_GPUColorTargetInfo color_target{};
+            color_target.texture = draw_target;
+            color_target.load_op = SDL_GPU_LOADOP_LOAD;
+            color_target.store_op = SDL_GPU_STOREOP_STORE;
+            SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
+            if (!pass)
+                gpu_error("SDL_BeginGPURenderPass sprite UI");
+            const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
+            const SDL_GPUBufferBinding index_binding{ui.indices, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+            SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            const std::array<float, 16> projection{2.0f / frame.width,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   -2.0f / frame.height,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0.0001f,
+                                                   0,
+                                                   -1,
+                                                   1,
+                                                   0,
+                                                   1};
+            const std::array<float, 2> translation{0, 0};
+            SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
+            SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+            for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+                const UiRenderDraw& draw = frame.draws[draw_index];
+                const std::optional<UiScissorRect> scissor =
+                    clamped_ui_scissor(draw, frame.width, frame.height);
+                if (!scissor)
+                    continue;
+                const SDL_Rect clip{scissor->left, scissor->top, scissor->width, scissor->height};
+                SDL_SetGPUScissor(pass, &clip);
+                if (draw.texture_id) {
+                    const auto owned = ui.textures.find(draw.texture_id);
+                    SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
+                    if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                        if (!texture)
+                            texture = external_texture(draw.texture_id);
+                    }
+                    if (!texture)
+                        continue;
+                    SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
+                    const SDL_GPUTextureSamplerBinding texture_binding{
+                        texture, draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
+                    SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+                } else {
+                    SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
                 }
-                if (!texture) continue;
-                SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
-                const SDL_GPUTextureSamplerBinding texture_binding{
-                    texture,
-                    draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
-                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-            } else {
-                SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
+                SDL_DrawGPUIndexedPrimitives(pass, draw.index_count, 1, draw.first_index, 0, 0);
             }
-            SDL_DrawGPUIndexedPrimitives(
-                pass, draw.index_count, 1, draw.first_index, 0, 0);
-        }
-        pass.end();
-    }, [&](const UiRenderOperation& operation) {
-        if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
-            ui.filters.reset_layer(operation.index);
-        } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
-            render_ui_backdrop_sdl(device, command, target, target_format,
-                ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline, ui.backdrop, frame, operation.index);
-        } else {
-            render_ui_composite_sdl(device, command, target, target_format,
-                ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline, ui.filters, frame, operation.index);
-        }
-    });
+            pass.end();
+        },
+        [&](const UiRenderOperation& operation) {
+            if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
+                ui.filters.reset_layer(operation.index);
+            } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
+                render_ui_backdrop_sdl(device, command, target, target_format, ui.vertices,
+                                       ui.indices, ui.sampler, ui.texture_pipeline, ui.backdrop,
+                                       frame, operation.index);
+            } else {
+                render_ui_composite_sdl(device, command, target, target_format, ui.vertices,
+                                        ui.indices, ui.sampler, ui.texture_pipeline, ui.filters,
+                                        frame, operation.index);
+            }
+        });
     ui.filters.finish_frame(device, frame.composites.size());
 }
 
-inline void release_sprite_ui_sdl_resources(
-    SDL_GPUDevice* device,
-    SpriteUiSdlResources& ui) {
+inline void release_sprite_ui_sdl_resources(SDL_GPUDevice* device, SpriteUiSdlResources& ui) {
     ui.backdrop.release(device);
     ui.filters.release(device);
     for (const auto& [id, texture] : ui.textures) {
         static_cast<void>(id);
         SDL_ReleaseGPUTexture(device, texture);
     }
-    if (ui.vertices) SDL_ReleaseGPUBuffer(device, ui.vertices);
-    if (ui.indices) SDL_ReleaseGPUBuffer(device, ui.indices);
-    if (ui.sampler) SDL_ReleaseGPUSampler(device, ui.sampler);
+    if (ui.vertices)
+        SDL_ReleaseGPUBuffer(device, ui.vertices);
+    if (ui.indices)
+        SDL_ReleaseGPUBuffer(device, ui.indices);
+    if (ui.sampler)
+        SDL_ReleaseGPUSampler(device, ui.sampler);
     if (ui.nearest_sampler) {
         SDL_ReleaseGPUSampler(device, ui.nearest_sampler);
     }

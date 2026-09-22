@@ -33,9 +33,7 @@ let cached: LineLowerer | undefined;
 
 function lineLowerer(): LineLowerer {
     if (!cached) {
-        cached = new LineLowerer(
-            new LoweringContext(sharedUpstreamStore()),
-        );
+        cached = new LineLowerer(new LoweringContext(sharedUpstreamStore()));
     }
     return cached;
 }

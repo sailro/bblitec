@@ -22,7 +22,10 @@ test("TAA refuses lossy image key writes through scene aliases and helper parame
     ]) {
         assert.doesNotThrow(() => compileSource(prefix + body));
         for (const source of [prefix + body + taa, prefix + taa + body]) {
-            assert.throws(() => compileSource(source), /imageProcessing\.(exposure|contrast).*double-precision TAA cache-key/);
+            assert.throws(
+                () => compileSource(source),
+                /imageProcessing\.(exposure|contrast).*double-precision TAA cache-key/,
+            );
         }
     }
     // Paths with no owned image-processing representation already refuse;
@@ -33,38 +36,83 @@ test("TAA refuses lossy image key writes through scene aliases and helper parame
         `const key="exposure";scene.imageProcessing[key]=2;`,
         `const bag={owner:scene};bag.owner.imageProcessing.exposure=2;`,
         `Object.assign(scene.imageProcessing,{exposure:2});`,
-    ]) for (const source of [prefix + body + taa, prefix + taa + body]) {
-        assert.throws(() => compileSource(source), /unsupported|not supported|Cannot|does not lower|requires tracked|Expected|Only property assignments/i);
-    }
+    ])
+        for (const source of [prefix + body + taa, prefix + taa + body]) {
+            assert.throws(
+                () => compileSource(source),
+                /unsupported|not supported|Cannot|does not lower|requires tracked|Expected|Only property assignments/i,
+            );
+        }
 });
 
 test("pin image keys invalidate below float32 precision and reveal a changed contributor", async () => {
-    const {createArcRotateCamera} = await importPinnedModule<{
-        createArcRotateCamera(a:number,b:number,r:number,target:object):object;
+    const { createArcRotateCamera } = await importPinnedModule<{
+        createArcRotateCamera(
+            this: void,
+            a: number,
+            b: number,
+            r: number,
+            target: object,
+        ): object;
     }>("camera/arc-rotate.js");
-    const {_writePassSceneUBO} = await importPinnedModule<{
-        _writePassSceneUBO(task:object,engine:object,scene:object,camera:object):void;
+    const { _writePassSceneUBO } = await importPinnedModule<{
+        _writePassSceneUBO(
+            this: void,
+            task: object,
+            engine: object,
+            scene: object,
+            camera: object,
+        ): void;
     }>("frame-graph/render-task.js");
-    const {setClipPlane} = await importPinnedModule<{setClipPlane(scene:object,plane:number[]):void}>("scene/scene-ubo-extras.js");
-    const camera=createArcRotateCamera(-1,1,10,{x:0,y:0,z:0});
+    const { setClipPlane } = await importPinnedModule<{
+        setClipPlane(this: void, scene: object, plane: number[]): void;
+    }>("scene/scene-ubo-extras.js");
+    const camera = createArcRotateCamera(-1, 1, 10, { x: 0, y: 0, z: 0 });
     for (const property of ["exposure", "contrast"] as const) {
-        const source={_config:{rt:{_width:128,_height:64},cs:false},_sceneUboCacheKey:[] as unknown[],
-            _suData:new Float32Array(92),_sceneUBO:new Float32Array(92)};
-        let writes=0;
-        const engine={canvas:{width:128,height:64},_device:{queue:{
-            writeBuffer(target:Float32Array,_offset:number,data:Float32Array){target.set(data);writes++;},
-        }}};
-        const scene={imageProcessing:{exposure:1,contrast:1,toneMappingEnabled:false}};
-        setClipPlane(scene,[0,0,0,0]);
-        _writePassSceneUBO(source,engine,scene,camera);
-        setClipPlane(scene,[1,0,0,0]);
-        _writePassSceneUBO(source,engine,scene,camera);
-        assert.equal(writes,1); assert.equal(source._sceneUBO[88],0);
-        scene.imageProcessing[property]=1+2**-25;
-        assert.equal(Math.fround(scene.imageProcessing[property]),1);
-        _writePassSceneUBO(source,engine,scene,camera);
-        assert.equal(writes,2); assert.equal(source._sceneUBO[88],1);
-        assert.equal(source._sceneUboCacheKey[property==="exposure"?4:5],1+2**-25);
+        const source = {
+            _config: { rt: { _width: 128, _height: 64 }, cs: false },
+            _sceneUboCacheKey: [] as unknown[],
+            _suData: new Float32Array(92),
+            _sceneUBO: new Float32Array(92),
+        };
+        let writes = 0;
+        const engine = {
+            canvas: { width: 128, height: 64 },
+            _device: {
+                queue: {
+                    writeBuffer(
+                        target: Float32Array,
+                        _offset: number,
+                        data: Float32Array,
+                    ) {
+                        target.set(data);
+                        writes++;
+                    },
+                },
+            },
+        };
+        const scene = {
+            imageProcessing: {
+                exposure: 1,
+                contrast: 1,
+                toneMappingEnabled: false,
+            },
+        };
+        setClipPlane(scene, [0, 0, 0, 0]);
+        _writePassSceneUBO(source, engine, scene, camera);
+        setClipPlane(scene, [1, 0, 0, 0]);
+        _writePassSceneUBO(source, engine, scene, camera);
+        assert.equal(writes, 1);
+        assert.equal(source._sceneUBO[88], 0);
+        scene.imageProcessing[property] = 1 + 2 ** -25;
+        assert.equal(Math.fround(scene.imageProcessing[property]), 1);
+        _writePassSceneUBO(source, engine, scene, camera);
+        assert.equal(writes, 2);
+        assert.equal(source._sceneUBO[88], 1);
+        assert.equal(
+            source._sceneUboCacheKey[property === "exposure" ? 4 : 5],
+            1 + 2 ** -25,
+        );
     }
 });
 
@@ -72,7 +120,10 @@ test("TAA refuses explicit environment cache invalidation in either reach order"
     const rotation = `setEnvironmentRotation(scene,.5);`;
     assert.doesNotThrow(() => compileSource(prefix + rotation));
     for (const source of [prefix + rotation + taa, prefix + taa + rotation]) {
-        assert.throws(() => compileSource(source), /setEnvironmentRotation invalidates source-task caches/);
+        assert.throws(
+            () => compileSource(source),
+            /setEnvironmentRotation invalidates source-task caches/,
+        );
     }
 });
 
@@ -93,12 +144,29 @@ test("TAA leaves material and contributor admission to the prepared pass", () =>
 
 test("TAA preparation requires one proven registered scene while preserving same-scene aliases", () => {
     const second = `const other=createSceneContext(engine,{defaultRenderTask:false});`;
-    for (const registration of ["registerScene(scene);registerScene(other);", "registerScene(other);registerScene(scene);"]) {
-        assert.doesNotThrow(() => compileSource(prefix + second + registration));
-        assert.throws(() => compileSource(prefix + second + taa + registration), /one proven registered scene/);
-        assert.throws(() => compileSource(prefix + second + registration + taa), /before initial scene registration/);
+    for (const registration of [
+        "registerScene(scene);registerScene(other);",
+        "registerScene(other);registerScene(scene);",
+    ]) {
+        assert.doesNotThrow(() =>
+            compileSource(prefix + second + registration),
+        );
+        assert.throws(
+            () => compileSource(prefix + second + taa + registration),
+            /one proven registered scene/,
+        );
+        assert.throws(
+            () => compileSource(prefix + second + registration + taa),
+            /before initial scene registration/,
+        );
     }
-    assert.doesNotThrow(() => compileSource(prefix + taa + `const alias=scene;registerScene(scene);registerScene(alias);`));
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix +
+                taa +
+                `const alias=scene;registerScene(scene);registerScene(alias);`,
+        ),
+    );
 });
 
 test("TAA pass signatures refuse missing depth, alternate depth and multisampled or unproven sampling", () => {
@@ -109,17 +177,41 @@ test("TAA pass signatures refuse missing depth, alternate depth and multisampled
         prefix.replace("format:engine.format", 'format:"rgba16float"'),
     ]) {
         assert.doesNotThrow(() => compileSource(source));
-        assert.throws(() => compileSource(source + taa), /engine color format and depth24plus-stencil8/);
+        assert.throws(
+            () => compileSource(source + taa),
+            /engine color format and depth24plus-stencil8/,
+        );
     }
     const multisampled = prefix.replace("samples:1", "samples:4");
     assert.doesNotThrow(() => compileSource(multisampled));
-    assert.throws(() => compileSource(multisampled + taa), /proven single-sample source texture/);
+    assert.throws(
+        () => compileSource(multisampled + taa),
+        /proven single-sample source texture/,
+    );
     const derived = `const pass=createBlackAndWhitePostProcessTask({sourceTexture:rt},engine,scene);`;
-    assert.throws(() => compileSource(prefix + derived + taa.replace("sourceTexture:rt", "sourceTexture:pass.outputTexture")),
-        /proven single-sample source texture/);
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    derived +
+                    taa.replace(
+                        "sourceTexture:rt",
+                        "sourceTexture:pass.outputTexture",
+                    ),
+            ),
+        /proven single-sample source texture/,
+    );
     // A multisampled source pass may resolve into the separately proven 1x
     // texture sampled by TAA. It shares the same clean/retained Scene UBO.
     const resolve = `const resolved=createRenderTarget({format:engine.format,samples:1,size:engine});`;
-    assert.doesNotThrow(() => compileSource(multisampled.replace("const source=", resolve + "const source=")
-        .replace("createRenderTask({rt}", "createRenderTask({rt,rst:resolved}") + taa.replace("sourceTexture:rt", "sourceTexture:resolved")));
+    assert.doesNotThrow(() =>
+        compileSource(
+            multisampled
+                .replace("const source=", resolve + "const source=")
+                .replace(
+                    "createRenderTask({rt}",
+                    "createRenderTask({rt,rst:resolved}",
+                ) + taa.replace("sourceTexture:rt", "sourceTexture:resolved"),
+        ),
+    );
 });

@@ -19,10 +19,7 @@ import {
     compileEngineIntrinsic,
     type EngineIntrinsicContext,
 } from "./engine.js";
-import {
-    compileLightIntrinsic,
-    type LightIntrinsicContext,
-} from "./light.js";
+import { compileLightIntrinsic, type LightIntrinsicContext } from "./light.js";
 import {
     compileClusteredLightIntrinsic,
     runtimeOnlyClusteredLightIntrinsics,
@@ -32,10 +29,7 @@ import {
     compileEffectIntrinsic,
     type EffectIntrinsicContext,
 } from "./effect.js";
-import {
-    compileLineIntrinsic,
-    type LineIntrinsicContext,
-} from "./line.js";
+import { compileLineIntrinsic, type LineIntrinsicContext } from "./line.js";
 import {
     compileMaterialConstant,
     compileMaterialIntrinsic,
@@ -51,10 +45,7 @@ import {
     runtimeOnlyPickingIntrinsics,
     type PickingIntrinsicContext,
 } from "./picking.js";
-import {
-    compileGizmoIntrinsic,
-    type GizmoIntrinsicContext,
-} from "./gizmo.js";
+import { compileGizmoIntrinsic, type GizmoIntrinsicContext } from "./gizmo.js";
 import {
     compileParticleIntrinsic,
     type ParticleIntrinsicContext,
@@ -63,10 +54,7 @@ import {
     compilePhysicsIntrinsic,
     type PhysicsIntrinsicContext,
 } from "./physics.js";
-import {
-    compileSceneIntrinsic,
-    type SceneIntrinsicContext,
-} from "./scene.js";
+import { compileSceneIntrinsic, type SceneIntrinsicContext } from "./scene.js";
 import {
     compileSkeletonIntrinsic,
     type SkeletonIntrinsicContext,
@@ -84,19 +72,14 @@ import {
     compileNavigationIntrinsic,
     type NavigationIntrinsicContext,
 } from "./navigation.js";
-import {
-    compileAudioIntrinsic,
-    type AudioIntrinsicContext,
-} from "./audio.js";
-import {
-    compileVatIntrinsic,
-    type VatIntrinsicContext,
-} from "./vat.js";
+import { compileAudioIntrinsic, type AudioIntrinsicContext } from "./audio.js";
+import { compileVatIntrinsic, type VatIntrinsicContext } from "./vat.js";
 import type { Value } from "../types.js";
 import { compileTextIntrinsic, type TextIntrinsicContext } from "./text.js";
 
 export interface IntrinsicContext
-    extends AnimationIntrinsicContext,
+    extends
+        AnimationIntrinsicContext,
         AssetIntrinsicContext,
         AudioIntrinsicContext,
         CameraIntrinsicContext,
@@ -137,19 +120,36 @@ export const runtimeOnlyIntrinsics: ReadonlySet<string> = new EmissionSet([
 ]);
 
 /** Repeated data work still uses its normal lowerer to record stream facts. */
-export const nativeDataIterationIntrinsics: ReadonlySet<string> = new EmissionSet([
-    ...runtimeOnlyIntrinsics,
-    ...nativeMeshDataIntrinsics,
-    // These operations update native instances or closed bindings; their
-    // ordinary lowerers still validate options and record reached features.
-    "addSprite2DIndex", "addSprite2D", "updateSprite2DIndex", "updateSprite2D",
-    "clearSprite2DLayer", "removeSprite2D",
-    "createPhysicsAggregate", "setPhysicsShapeFilterMembershipMask",
-    "createPhysicsBody", "createPhysicsShape", "setPhysicsBodyShape",
-    "setParent", "markMeshDirty", "setMeshVisible", "setSubtreeVisible",
-    "createStorageBuffer", "setShaderStorageBuffer", "updateStorageBuffer", "disposeStorageBuffer",
-    "setShaderUniform", "setShaderFloat", "setShaderVector3", "setShaderTexture",
-]);
+export const nativeDataIterationIntrinsics: ReadonlySet<string> =
+    new EmissionSet([
+        ...runtimeOnlyIntrinsics,
+        ...nativeMeshDataIntrinsics,
+        // These operations update native instances or closed bindings; their
+        // ordinary lowerers still validate options and record reached features.
+        "addSprite2DIndex",
+        "addSprite2D",
+        "updateSprite2DIndex",
+        "updateSprite2D",
+        "clearSprite2DLayer",
+        "removeSprite2D",
+        "createPhysicsAggregate",
+        "setPhysicsShapeFilterMembershipMask",
+        "createPhysicsBody",
+        "createPhysicsShape",
+        "setPhysicsBodyShape",
+        "setParent",
+        "markMeshDirty",
+        "setMeshVisible",
+        "setSubtreeVisible",
+        "createStorageBuffer",
+        "setShaderStorageBuffer",
+        "updateStorageBuffer",
+        "disposeStorageBuffer",
+        "setShaderUniform",
+        "setShaderFloat",
+        "setShaderVector3",
+        "setShaderTexture",
+    ]);
 
 type IntrinsicCompiler = (
     context: IntrinsicContext,
@@ -183,14 +183,22 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileVatIntrinsic,
 ];
 
-export interface IntrinsicRoute { name: string; lowerer?: string; outcome: "accepted" | "refused" | "missing"; }
+export interface IntrinsicRoute {
+    name: string;
+    lowerer?: string;
+    outcome: "accepted" | "refused" | "missing";
+}
 let routeObserver: ((route: IntrinsicRoute) => void) | undefined;
 
 /** Tooling can distinguish a claimed name from an unregistered fallthrough. */
-export function observeIntrinsicRouting(next: (route: IntrinsicRoute) => void): () => void {
+export function observeIntrinsicRouting(
+    next: (route: IntrinsicRoute) => void,
+): () => void {
     const previous = routeObserver;
     routeObserver = next;
-    return () => { routeObserver = previous; };
+    return () => {
+        routeObserver = previous;
+    };
 }
 
 /**
@@ -201,9 +209,11 @@ export function observeIntrinsicRouting(next: (route: IntrinsicRoute) => void): 
 export function compileRegisteredConstant(
     importedName: string,
 ): Value | undefined {
-    return compileSpriteConstant(importedName) ??
+    return (
+        compileSpriteConstant(importedName) ??
         compileMaterialConstant(importedName) ??
-        compileAssetConstant(importedName);
+        compileAssetConstant(importedName)
+    );
 }
 
 export function compileRegisteredIntrinsic(
@@ -213,16 +223,23 @@ export function compileRegisteredIntrinsic(
 ): Value | undefined {
     for (const compile of intrinsicCompilers) {
         let value: Value | undefined;
-        try { value = compile(
-            context,
-            importedName,
-            call,
-        ); } catch (error) {
-            if (error instanceof CompileError) routeObserver?.({ name: importedName, lowerer: compile.name, outcome: "refused" });
+        try {
+            value = compile(context, importedName, call);
+        } catch (error) {
+            if (error instanceof CompileError)
+                routeObserver?.({
+                    name: importedName,
+                    lowerer: compile.name,
+                    outcome: "refused",
+                });
             throw error;
         }
         if (value) {
-            routeObserver?.({ name: importedName, lowerer: compile.name, outcome: "accepted" });
+            routeObserver?.({
+                name: importedName,
+                lowerer: compile.name,
+                outcome: "accepted",
+            });
             return value;
         }
     }

@@ -16,16 +16,14 @@ namespace bbl {
  * already selected for the current dispatch. JavaScript callback wrappers
  * still share their callable identity and mutable captures across snapshots.
  */
-template <typename T>
-class SnapshotList {
-  public:
+template <typename T> class SnapshotList {
+public:
     using Storage = std::vector<T>;
     using const_iterator = typename Storage::const_iterator;
     using iterator = typename Storage::iterator;
 
     SnapshotList() = default;
-    SnapshotList(std::initializer_list<T> values)
-        : entries_(js::make_gc_shared<Storage>(values)) {}
+    SnapshotList(std::initializer_list<T> values) : entries_(js::make_gc_shared<Storage>(values)) {}
 
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(entries_); }
 
@@ -52,19 +50,24 @@ class SnapshotList {
         return target.erase(target.begin() + begin_offset, target.begin() + end_offset);
     }
     void clear() {
-        if (!entries_) return;
-        if (entries_.use_count() == 1) entries_->clear();
-        else entries_.reset();
+        if (!entries_)
+            return;
+        if (entries_.use_count() == 1)
+            entries_->clear();
+        else
+            entries_.reset();
     }
 
-  private:
+private:
     [[nodiscard]] const Storage& values() const {
         static const Storage empty;
         return entries_ ? *entries_ : empty;
     }
     Storage& writable() {
-        if (!entries_) entries_ = js::make_gc_shared<Storage>();
-        else if (entries_.use_count() != 1) entries_ = js::make_gc_shared<Storage>(*entries_);
+        if (!entries_)
+            entries_ = js::make_gc_shared<Storage>();
+        else if (entries_.use_count() != 1)
+            entries_ = js::make_gc_shared<Storage>(*entries_);
         return *entries_;
     }
     std::shared_ptr<Storage> entries_;

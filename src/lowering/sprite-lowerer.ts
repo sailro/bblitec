@@ -1,8 +1,5 @@
 import ts from "typescript";
-import {
-    PinnedShaderText,
-    ShaderTextBinding,
-} from "./pinned-shader-text.js";
+import { PinnedShaderText, ShaderTextBinding } from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -123,10 +120,7 @@ export class SpriteLowerer {
             file,
         );
         const defaultCapacity = this.context.numericValue(
-            this.context.variableInitializer(
-                file,
-                "DEFAULT_CAPACITY",
-            ),
+            this.context.variableInitializer(file, "DEFAULT_CAPACITY"),
             file,
         );
         if (
@@ -213,7 +207,7 @@ export class SpriteLowerer {
             [
                 "variable statement",
                 "if statement",
-                ...Array(7).fill("expression statement"),
+                ...Array<string>(7).fill("expression statement"),
             ],
         ],
         [
@@ -222,7 +216,7 @@ export class SpriteLowerer {
                 "variable statement",
                 "if statement",
                 "if statement",
-                ...Array(6).fill("expression statement"),
+                ...Array<string>(6).fill("expression statement"),
             ],
         ],
         [
@@ -230,7 +224,7 @@ export class SpriteLowerer {
             [
                 "variable statement",
                 "if statement",
-                ...Array(8).fill("expression statement"),
+                ...Array<string>(8).fill("expression statement"),
             ],
         ],
         ["packRange", ["variable statement", "for statement"]],
@@ -246,7 +240,7 @@ export class SpriteLowerer {
                 "variable statement",
                 "variable statement",
                 "if statement",
-                ...Array(5).fill("expression statement"),
+                ...Array<string>(5).fill("expression statement"),
                 "return statement",
             ],
         ],
@@ -460,9 +454,7 @@ export class SpriteLowerer {
         ) {
             return undefined;
         }
-        const argument = this.context.unwrapExpression(
-            node.argumentExpression,
-        );
+        const argument = this.context.unwrapExpression(node.argumentExpression);
         if (
             !ts.isBinaryExpression(argument) ||
             argument.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
@@ -470,10 +462,7 @@ export class SpriteLowerer {
         ) {
             return undefined;
         }
-        return this.context.numericValue(
-            argument.right,
-            node.getSourceFile(),
-        );
+        return this.context.numericValue(argument.right, node.getSourceFile());
     }
 
     /**
@@ -494,8 +483,7 @@ export class SpriteLowerer {
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === "_uvScrollAttr",
         )[0];
@@ -600,10 +588,7 @@ export class SpriteLowerer {
                         );
                     }
                     offsetBytes = this.context.numericValue(
-                        this.context.variableInitializer(
-                            file,
-                            reference.text,
-                        ),
+                        this.context.variableInitializer(file, reference.text),
                         file,
                     );
                 } else if (name === "format") {
@@ -616,17 +601,14 @@ export class SpriteLowerer {
                             "Expected a sprite attribute format string.",
                         );
                     }
-                    const match = /^float32(?:x([234]))?$/.exec(
-                        format.text,
-                    );
+                    const match = /^float32(?:x([234]))?$/.exec(format.text);
                     if (!match) {
                         return this.context.contractError(
                             format,
                             `Unsupported sprite attribute format '${format.text}'.`,
                         );
                     }
-                    floatCount =
-                        match[1] === undefined ? 1 : Number(match[1]);
+                    floatCount = match[1] === undefined ? 1 : Number(match[1]);
                 }
             }
             if (
@@ -645,8 +627,7 @@ export class SpriteLowerer {
         // attribute ends where PURE_2D_INSTANCE_FLOATS_PER_SPRITE says the
         // instance does, or the two pinned modules disagree.
         const lastEnd = rows.reduce(
-            (max, row) =>
-                Math.max(max, row.offsetBytes + row.floatCount * 4),
+            (max, row) => Math.max(max, row.offsetBytes + row.floatCount * 4),
             0,
         );
         if (lastEnd !== instanceFloats * 4) {
@@ -846,17 +827,14 @@ export class SpriteLowerer {
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isElementAccessExpression(node.left) &&
                 ts.isIdentifier(node.left.expression) &&
                 node.left.expression.text === "data",
         );
         for (const [slot, source] of expected) {
             const write = writes.find(
-                (node) =>
-                    elementIndexText(node.left) ===
-                    `base + ${slot}`,
+                (node) => elementIndexText(node.left) === `base + ${slot}`,
             );
             if (!write) {
                 this.context.contractError(
@@ -874,9 +852,7 @@ export class SpriteLowerer {
         // add default), so it is checked by count rather than by shape.
         for (const slot of [9, 10, 11, 12]) {
             const found = writes.filter(
-                (node) =>
-                    elementIndexText(node.left) ===
-                    `base + ${slot}`,
+                (node) => elementIndexText(node.left) === `base + ${slot}`,
             );
             if (found.length !== 2) {
                 this.context.contractError(
@@ -886,8 +862,7 @@ export class SpriteLowerer {
             }
         }
         const depthWrite = writes.find(
-            (node) =>
-                elementIndexText(node.left) === "base + 13",
+            (node) => elementIndexText(node.left) === "base + 13",
         );
         if (!depthWrite) {
             this.context.contractError(
@@ -908,18 +883,12 @@ export class SpriteLowerer {
         // The flip resolution is what makes flipX absolute rather than a
         // toggle, and the swap is what a preserved orientation means.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "currentFlipX",
-            ),
+            this.context.variableInitializer(declaration, "currentFlipX"),
             "uMin > uMax",
             "writeInstance currentFlipX",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "wantsFlipX",
-            ),
+            this.context.variableInitializer(declaration, "wantsFlipX"),
             "props.flipX !== undefined ? props.flipX === true : prevFlipX",
             "writeInstance wantsFlipX",
         );
@@ -944,24 +913,15 @@ export class SpriteLowerer {
         );
         const preserved: ReadonlyArray<[string, string]> = [
             ["isAdd", "prev === null"],
-            [
-                "posX",
-                "props.positionPx ? props.positionPx[0] : prev![0]!",
-            ],
-            [
-                "posY",
-                "props.positionPx ? props.positionPx[1] : prev![1]!",
-            ],
+            ["posX", "props.positionPx ? props.positionPx[0] : prev![0]!"],
+            ["posY", "props.positionPx ? props.positionPx[1] : prev![1]!"],
             ["prevFlipX", "!isAdd && prev![4]! > prev![6]!"],
             ["prevFlipY", "!isAdd && prev![5]! > prev![7]!"],
             ["rotation", "props.rotation ?? (prev ? prev[8]! : 0)"],
         ];
         for (const [name, source] of preserved) {
             this.context.assertExpressionShape(
-                this.context.variableInitializer(
-                    declaration,
-                    name,
-                ),
+                this.context.variableInitializer(declaration, name),
                 source,
                 `writeInstance ${name}`,
             );
@@ -995,10 +955,7 @@ export class SpriteLowerer {
             "updateSprite2DIndex",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                update.declaration,
-                "prev",
-            ),
+            this.context.variableInitializer(update.declaration, "prev"),
             "layer._instanceData.subarray(base, base + layer._instanceFloatsPerSprite)",
             "updateSprite2DIndex prev",
         );
@@ -1021,21 +978,11 @@ export class SpriteLowerer {
                 "layer._savedSize.fill(0, 0, count * SAVED_SIZE_FLOATS_PER_SPRITE)",
                 "clearSprite2DLayer shadow clear",
             ],
-            [
-                "_setSprite2DCount(layer, 0)",
-                "clearSprite2DLayer count reset",
-            ],
-            [
-                "(layer._version + 1) | 0",
-                "clearSprite2DLayer version bump",
-            ],
+            ["_setSprite2DCount(layer, 0)", "clearSprite2DLayer count reset"],
+            ["(layer._version + 1) | 0", "clearSprite2DLayer version bump"],
         ];
         for (const [source, label] of statements) {
-            this.context.expectShapeCount(
-                declaration,
-                source,
-                label,
-            );
+            this.context.expectShapeCount(declaration, source, label);
         }
         // The early return is why an empty layer does not bump the version:
         // clearing nothing is not an edit, and a bump would re-upload.
@@ -1072,10 +1019,7 @@ export class SpriteLowerer {
             "removeSpriteRendererLayer",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                remove.declaration,
-                "index",
-            ),
+            this.context.variableInitializer(remove.declaration, "index"),
             "sr.layers.indexOf(layer)",
             "removeSpriteRendererLayer lookup",
         );
@@ -1116,18 +1060,12 @@ export class SpriteLowerer {
             "writeInstance",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "base",
-            ),
+            this.context.variableInitializer(declaration, "base"),
             "slotIndex * layer._instanceFloatsPerSprite",
             "writeInstance base",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "savedBase",
-            ),
+            this.context.variableInitializer(declaration, "savedBase"),
             "slotIndex * SAVED_SIZE_FLOATS_PER_SPRITE",
             "writeInstance savedBase",
         );
@@ -1140,34 +1078,22 @@ export class SpriteLowerer {
             "createGridSpriteAtlas",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "cols",
-            ),
+            this.context.variableInitializer(declaration, "cols"),
             "options.columns ?? Math.max(1, Math.floor((texture.width - margin * 2 + spacing) / (cellW + spacing)))",
             "createGridSpriteAtlas columns",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "rows",
-            ),
+            this.context.variableInitializer(declaration, "rows"),
             "options.rows ?? Math.max(1, Math.floor((texture.height - margin * 2 + spacing) / (cellH + spacing)))",
             "createGridSpriteAtlas rows",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "x",
-            ),
+            this.context.variableInitializer(declaration, "x"),
             "margin + c * (cellW + spacing)",
             "createGridSpriteAtlas frame x",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "y",
-            ),
+            this.context.variableInitializer(declaration, "y"),
             "margin + r * (cellH + spacing)",
             "createGridSpriteAtlas frame y",
         );
@@ -1175,15 +1101,11 @@ export class SpriteLowerer {
             declaration,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
+                ts.isPropertyAccessExpression(node.expression) &&
                 node.expression.name.text === "push",
         )[0];
         const frame = push
-            ? this.context.unwrapExpression(
-                  push.arguments[0]!,
-              )
+            ? this.context.unwrapExpression(push.arguments[0]!)
             : undefined;
         if (!frame || !ts.isObjectLiteralExpression(frame)) {
             this.context.contractError(
@@ -1198,10 +1120,7 @@ export class SpriteLowerer {
             ["pivot", "[pivot[0], pivot[1]]"],
         ] as const) {
             this.context.assertExpressionShape(
-                this.context.propertyInitializer(
-                    frame,
-                    name,
-                ),
+                this.context.propertyInitializer(frame, name),
                 source,
                 `createGridSpriteAtlas frame ${name}`,
             );
@@ -1216,8 +1135,7 @@ export class SpriteLowerer {
         );
         const guard = this.context.findNodes(
             declaration,
-            (node): node is ts.IfStatement =>
-                ts.isIfStatement(node),
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
         )[0];
         if (!guard) {
             this.context.contractError(
@@ -1233,8 +1151,7 @@ export class SpriteLowerer {
         const returned = this.context.findNodes(
             declaration,
             (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node) &&
-                node.expression !== undefined,
+                ts.isReturnStatement(node) && node.expression !== undefined,
         )[0];
         this.context.assertExpressionShape(
             returned!.expression!,
@@ -1249,10 +1166,7 @@ export class SpriteLowerer {
             atlasModule,
             "loadSpriteAtlas",
         );
-        const options = this.context.objectInitializer(
-            declaration,
-            "texOpts",
-        );
+        const options = this.context.objectInitializer(declaration, "texOpts");
         for (const [name, source] of [
             ["invertY", "false"],
             ["addressModeU", '"clamp-to-edge"'],
@@ -1266,26 +1180,15 @@ export class SpriteLowerer {
                 "magFilter",
                 'options.sampling === "nearest" ? "nearest" : "linear"',
             ],
-            [
-                "premultiplyAlpha",
-                "options.premultiplyOnLoad ?? false",
-            ],
+            ["premultiplyAlpha", "options.premultiplyOnLoad ?? false"],
         ] as const) {
             this.context.assertExpressionShape(
-                this.context.propertyInitializer(
-                    options,
-                    name,
-                ),
+                this.context.propertyInitializer(options, name),
                 source,
                 `loadSpriteAtlas ${name}`,
             );
         }
-        if (
-            !this.context.hasCall(
-                declaration,
-                "createGridSpriteAtlas",
-            )
-        ) {
+        if (!this.context.hasCall(declaration, "createGridSpriteAtlas")) {
             this.context.contractError(
                 file,
                 "Pinned loadSpriteAtlas no longer partitions the texture into a grid.",
@@ -1310,17 +1213,14 @@ export class SpriteLowerer {
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isElementAccessExpression(node.left) &&
                 ts.isIdentifier(node.left.expression) &&
                 node.left.expression.text === arrayName,
         );
         for (const [slot, source] of expected) {
             const write = writes.find(
-                (node) =>
-                    elementIndexText(node.left) ===
-                    String(slot),
+                (node) => elementIndexText(node.left) === String(slot),
             );
             if (!write) {
                 this.context.contractError(
@@ -1408,8 +1308,7 @@ export class SpriteLowerer {
         // the straight arm is reached, and it has to be the `else`.
         const branch = this.context.findNodes(
             declaration,
-            (node): node is ts.IfStatement =>
-                ts.isIfStatement(node),
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
         )[0];
         if (
             !branch?.elseStatement ||
@@ -1417,8 +1316,7 @@ export class SpriteLowerer {
                 branch.expression,
                 (node) =>
                     ts.isPropertyAccessExpression(node) &&
-                    node.name.text ===
-                        "_premultipliedOpacity",
+                    node.name.text === "_premultipliedOpacity",
             )
         ) {
             this.context.contractError(
@@ -1427,10 +1325,7 @@ export class SpriteLowerer {
             );
         }
         const bytes = this.context.numericValue(
-            this.context.variableInitializer(
-                file,
-                "LAYER_UBO_BYTES",
-            ),
+            this.context.variableInitializer(file, "LAYER_UBO_BYTES"),
             file,
         );
         if (bytes !== 64) {
@@ -1445,10 +1340,7 @@ export class SpriteLowerer {
     private assertQuad(): void {
         const file = this.context.sourceFile(pipelineModule);
         const indices = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                file,
-                "SHARED_SPRITE_INDEX_DATA",
-            ),
+            this.context.variableInitializer(file, "SHARED_SPRITE_INDEX_DATA"),
         );
         this.context.assertExpressionShape(
             indices,
@@ -1463,9 +1355,7 @@ export class SpriteLowerer {
             declaration,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
+                ts.isPropertyAccessExpression(node.expression) &&
                 node.expression.name.text === "drawIndexed",
         )[0];
         if (!draw) {
@@ -1520,10 +1410,7 @@ export class SpriteLowerer {
                       "makeCustomSpriteWgsl",
                       new Map<string, ShaderTextBinding>([
                           ...permutation,
-                          [
-                              "extraTextures",
-                              extraTextureRecords(extraTextures),
-                          ],
+                          ["extraTextures", extraTextureRecords(extraTextures)],
                           ["fragment", customFragment],
                       ]),
                   );
@@ -1581,8 +1468,6 @@ export class SpriteLowerer {
         };
     }
 
-
-
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -1603,11 +1488,7 @@ export class SpriteLowerer {
         // descriptor the default names has to be one the pin still exports.
         // Everything about its factors is read, not asserted -- a hand-typed
         // expectation here would fail a bump the table lowers correctly.
-        if (
-            !blends.some(
-                (blend) => blend.exportName === "spriteBlendAlpha",
-            )
-        ) {
+        if (!blends.some((blend) => blend.exportName === "spriteBlendAlpha")) {
             this.context.contractError(
                 this.context.sourceFile(blendModule),
                 "Pinned sprite blends no longer export spriteBlendAlpha, which the default names.",
@@ -1617,9 +1498,7 @@ export class SpriteLowerer {
             layout.pureInstanceFloats,
         );
         const depthRow = this.depthAttribute();
-        const uvScrollRow = this.uvScrollAttribute(
-            layout.pureInstanceFloats,
-        );
+        const uvScrollRow = this.uvScrollAttribute(layout.pureInstanceFloats);
         this.assertGridAtlas();
         assertFrameAtlasRule(this.context);
         this.assertFrameResolution();
@@ -1654,7 +1533,9 @@ export class SpriteLowerer {
             modulePath: layerModule,
             symbolName:
                 "createSprite2DLayer,addSprite2DIndex,updateSprite2DIndex,clearSprite2DLayer,loadSpriteAtlas,createSpriteRenderer,addSpriteRendererLayer,removeSpriteRendererLayer,disposeSpriteRenderer" +
-                (ySort ? ",enableSprite2DYSort,setSprite2DYSortHandleBias" : ""),
+                (ySort
+                    ? ",enableSprite2DYSort,setSprite2DYSortHandleBias"
+                    : ""),
             header: `#pragma once
 
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
@@ -2728,7 +2609,7 @@ void update_sprite_2d_id(
         engine,
         layer_handle,
         sprite_2d_handle_index(engine, layer_handle, sprite_id),
-        std::move(props));
+        props);
 }${ySortEntryPoints}
 
 SpriteRendererHandle create_sprite_renderer(
@@ -3208,8 +3089,8 @@ SpriteInstanceUpload stage_y_sort_upload(
         state->dirty_max = 0u;
         return {state->packed_instances.data(), 0u, 0u};
     }
-    std::uint32_t lo = layer.count;
-    std::uint32_t hi = 0u;
+    std::uint32_t lo;
+    std::uint32_t hi;
     if (state->full_upload ||
         (dirty_begin == 0u && dirty_end >= layer.count)) {
         lo = 0u;
@@ -3363,5 +3244,4 @@ void set_sprite_2d_y_sort_bias_id(
 `
             : "";
     }
-
 }

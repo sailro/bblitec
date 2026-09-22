@@ -11,13 +11,27 @@ import { CameraMutationLowerer } from "../src/lowering/camera-mutation-lowerer.j
 import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 interface PinCamera {
-    alpha: number; beta: number; radius: number; worldMatrixVersion: number;
-    target: { x: number; y: number; z: number; set(x: number, y: number, z: number): void };
-    inertialAlphaOffset: number; inertialBetaOffset: number; inertialRadiusOffset: number;
-    inertialPanningX: number; inertialPanningY: number;
+    alpha: number;
+    beta: number;
+    radius: number;
+    worldMatrixVersion: number;
+    target: {
+        x: number;
+        y: number;
+        z: number;
+        set(x: number, y: number, z: number): void;
+    };
+    inertialAlphaOffset: number;
+    inertialBetaOffset: number;
+    inertialRadiusOffset: number;
+    inertialPanningX: number;
+    inertialPanningY: number;
 }
 
 function cameraSources(output: string, tracking = true): string[] {
@@ -32,55 +46,128 @@ function cameraSources(output: string, tracking = true): string[] {
     writeFileSync(join(headers, "camera_math.hpp"), camera.header);
     // Keep the production factory itself; matrix functions are outside this
     // setter/owner fixture and require the renderer's generated matrix header.
-    const start = camera.source.indexOf("CameraHandle create_arc_rotate_camera(");
+    const start = camera.source.indexOf(
+        "CameraHandle create_arc_rotate_camera(",
+    );
     assert.ok(start >= 0);
     const end = camera.source.indexOf("\n}\n", start);
     assert.ok(end > start);
-    writeFileSync(join(output, "factory.cpp"), `#include <bblite/runtime.hpp>\nnamespace bbl {\n${camera.source.slice(start, end + 3)}\n}`);
+    writeFileSync(
+        join(output, "factory.cpp"),
+        `#include <bblite/runtime.hpp>\nnamespace bbl {\n${camera.source.slice(start, end + 3)}\n}`,
+    );
     return [join(output, "controls.cpp"), join(output, "factory.cpp")];
 }
 
 test("camera transform versions observe pinned setters, reentrant limits and input order", async (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const { createArcRotateCamera } = await importPinnedModule<{
-        createArcRotateCamera(a: number, b: number, r: number, target: object): PinCamera;
+        createArcRotateCamera(
+            this: void,
+            a: number,
+            b: number,
+            r: number,
+            target: object,
+        ): PinCamera;
     }>("camera/arc-rotate.js");
     const { setCameraLimits, attachControl } = await importPinnedModule<{
-        setCameraLimits(camera: PinCamera, limits: object): () => void;
-        attachControl(camera: PinCamera, canvas: object, scene: object): () => void;
+        setCameraLimits(
+            this: void,
+            camera: PinCamera,
+            limits: object,
+        ): () => void;
+        attachControl(
+            this: void,
+            camera: PinCamera,
+            canvas: object,
+            scene: object,
+        ): () => void;
     }>("camera/arc-rotate-controls.js");
     const camera = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
     const scene = { _beforeRender: [] as (() => void)[] };
-    attachControl(camera, { addEventListener() {}, removeEventListener() {} }, scene);
+    attachControl(
+        camera,
+        { addEventListener() {}, removeEventListener() {} },
+        scene,
+    );
     const expected: number[][] = [];
-    const observe = () => expected.push([camera.worldMatrixVersion, camera.alpha, camera.beta, camera.radius,
-        camera.target.x, camera.target.y, camera.target.z, camera.inertialAlphaOffset,
-        camera.inertialBetaOffset, camera.inertialRadiusOffset, camera.inertialPanningX, camera.inertialPanningY]);
+    const observe = () =>
+        expected.push([
+            camera.worldMatrixVersion,
+            camera.alpha,
+            camera.beta,
+            camera.radius,
+            camera.target.x,
+            camera.target.y,
+            camera.target.z,
+            camera.inertialAlphaOffset,
+            camera.inertialBetaOffset,
+            camera.inertialRadiusOffset,
+            camera.inertialPanningX,
+            camera.inertialPanningY,
+        ]);
     observe();
-    camera.alpha = 0; observe();
-    camera.alpha = 2; camera.alpha = 0; observe();
-    camera.target.x = 0; observe();
-    camera.target.set(0, 0, 0); observe();
-    camera.target.x = 3; camera.target.x = 0; observe();
-    setCameraLimits(camera, { lowerRadiusLimit: 2, upperRadiusLimit: 5, lowerAlphaLimit: -0.1, upperAlphaLimit: 0.1 }); observe();
-    camera.radius = 9; observe();
-    camera.alpha = 4; observe();
-    camera.inertialAlphaOffset = 0.3; camera.inertialBetaOffset = -1.5; camera.inertialRadiusOffset = 4;
-    camera.inertialPanningX = 10; camera.inertialPanningY = -8;
-    scene._beforeRender[0]!(); observe();
-    scene._beforeRender[0]!(); observe();
+    camera.alpha = 0;
+    observe();
+    camera.alpha = 2;
+    camera.alpha = 0;
+    observe();
+    camera.target.x = 0;
+    observe();
+    camera.target.set(0, 0, 0);
+    observe();
+    camera.target.x = 3;
+    camera.target.x = 0;
+    observe();
+    setCameraLimits(camera, {
+        lowerRadiusLimit: 2,
+        upperRadiusLimit: 5,
+        lowerAlphaLimit: -0.1,
+        upperAlphaLimit: 0.1,
+    });
+    observe();
+    camera.radius = 9;
+    observe();
+    camera.alpha = 4;
+    observe();
+    camera.inertialAlphaOffset = 0.3;
+    camera.inertialBetaOffset = -1.5;
+    camera.inertialRadiusOffset = 4;
+    camera.inertialPanningX = 10;
+    camera.inertialPanningY = -8;
+    scene._beforeRender[0]!();
+    observe();
+    scene._beforeRender[0]!();
+    observe();
     const nonFinite = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
     const nonFiniteScene = { _beforeRender: [] as (() => void)[] };
-    attachControl(nonFinite, { addEventListener() {}, removeEventListener() {} }, nonFiniteScene);
-    nonFinite.beta = NaN; nonFinite.radius = NaN;
-    nonFinite.inertialAlphaOffset = 1; nonFinite.inertialRadiusOffset = 1;
+    attachControl(
+        nonFinite,
+        { addEventListener() {}, removeEventListener() {} },
+        nonFiniteScene,
+    );
+    nonFinite.beta = NaN;
+    nonFinite.radius = NaN;
+    nonFinite.inertialAlphaOffset = 1;
+    nonFinite.inertialRadiusOffset = 1;
     nonFiniteScene._beforeRender[0]!();
     assert.ok(Number.isNaN(nonFinite.beta) && Number.isNaN(nonFinite.radius));
     const duplicate = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
     const duplicateScene = { _beforeRender: [] as (() => void)[] };
-    attachControl(duplicate, { addEventListener() {}, removeEventListener() {} }, duplicateScene);
-    attachControl(duplicate, { addEventListener() {}, removeEventListener() {} }, duplicateScene);
+    attachControl(
+        duplicate,
+        { addEventListener() {}, removeEventListener() {} },
+        duplicateScene,
+    );
+    attachControl(
+        duplicate,
+        { addEventListener() {}, removeEventListener() {} },
+        duplicateScene,
+    );
     duplicate.inertialAlphaOffset = 0.2;
     for (const callback of duplicateScene._beforeRender) callback();
     assert.equal(duplicate.worldMatrixVersion, 2);
@@ -88,7 +175,9 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
     const output = resolve("artifacts/camera-mutations");
     const sources = cameraSources(output);
     const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        fixture,
+        `#include <bblite/runtime.hpp>
 #include <bblite/upstream/camera_controls.hpp>
 #include <cassert>
 #include <cmath>
@@ -129,16 +218,34 @@ int main() {
     assert(std::isnan(non_finite.beta) && std::isnan(non_finite.radius));
     assert(non_finite.world_matrix_version == ${nonFinite.worldMatrixVersion});
 }
-`);
+`,
+    );
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", join(output, "include"), fixture, ...sources]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(output, "include"),
+        fixture,
+        ...sources,
+    ]);
     execFileSync(executable);
 });
 
 test("camera compiler writes preserve the original owner, scalar snapshots and vector aliases", (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const source = `import {createEngine,createArcRotateCamera,setCameraLimits} from "babylon-lite";
         import type { Camera } from "babylon-lite";
         const engine = await createEngine({});
@@ -177,78 +284,201 @@ test("camera compiler writes preserve the original owner, scalar snapshots and v
     const sources = cameraSources(output);
     writeFileSync(join(output, "program.hpp"), compiled);
     const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        fixture,
+        `#include <bblite/runtime.hpp>
 #define main generated_main
 #include "program.hpp"
 #undef main
 namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
 int main() { return generated_main(); }
-`);
+`,
+    );
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", join(output, "include"), fixture, ...sources]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(output, "include"),
+        fixture,
+        ...sources,
+    ]);
     execFileSync(executable);
 });
 
 test("camera setter lowering consumes pin changes and refuses unrepresented dirty behavior", () => {
     class EditedStore extends UpstreamSourceStore {
-        constructor(private readonly module: string, private readonly edit: (source: string) => string) { super(); }
+        constructor(
+            private readonly module: string,
+            private readonly edit: (source: string) => string,
+        ) {
+            super();
+        }
         override getSourceFile(module: string): ts.SourceFile {
-            return module === this.module ? ts.createSourceFile(module, this.edit(super.getSource(module)), ts.ScriptTarget.Latest, true) : super.getSourceFile(module);
+            return module === this.module
+                ? ts.createSourceFile(
+                      module,
+                      this.edit(super.getSource(module)),
+                      ts.ScriptTarget.Latest,
+                      true,
+                  )
+                : super.getSourceFile(module);
         }
     }
-    const mutated = new CameraMutationLowerer(new LoweringContext(new EditedStore("src/math/observable-vec3.ts",
-        (source) => source.replace("this._x = x;\n        this._y = y;\n        this._z = z;\n        this._onDirty();", "this._x = x + 2;\n        this._y = y;\n        this._z = z;\n        this._onDirty();")))).setters();
+    const mutated = new CameraMutationLowerer(
+        new LoweringContext(
+            new EditedStore("src/math/observable-vec3.ts", (source) =>
+                source.replace(
+                    "this._x = x;\n        this._y = y;\n        this._z = z;\n        this._onDirty();",
+                    "this._x = x + 2;\n        this._y = y;\n        this._z = z;\n        this._onDirty();",
+                ),
+            ),
+        ),
+    ).setters();
     assert.match(mutated, /value.x \+ 2.0/);
-    assert.throws(() => new CameraMutationLowerer(new LoweringContext(new EditedStore("src/camera/arc-rotate.ts",
-        (source) => source.replace("onDirty();", "onDirty(); unknownHook();")))).setters(), /unknownHook/);
+    assert.throws(
+        () =>
+            new CameraMutationLowerer(
+                new LoweringContext(
+                    new EditedStore("src/camera/arc-rotate.ts", (source) =>
+                        source.replace(
+                            "onDirty();",
+                            "onDirty(); unknownHook();",
+                        ),
+                    ),
+                ),
+            ).setters(),
+        /unknownHook/,
+    );
 });
 
 test("native camera animation uses the pinned scalar setter and limit hook on each seek", async (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const { createArcRotateCamera } = await importPinnedModule<{
-        createArcRotateCamera(a: number, b: number, r: number, target: object): PinCamera;
+        createArcRotateCamera(
+            this: void,
+            a: number,
+            b: number,
+            r: number,
+            target: object,
+        ): PinCamera;
     }>("camera/arc-rotate.js");
     const { setCameraLimits } = await importPinnedModule<{
-        setCameraLimits(camera: PinCamera, limits: object): () => void;
+        setCameraLimits(
+            this: void,
+            camera: PinCamera,
+            limits: object,
+        ): () => void;
     }>("camera/arc-rotate-controls.js");
-    const { createAnimationManager } = await importPinnedModule<{ createAnimationManager(): object }>("animation/animation-manager.js");
-    const { createPropertyAnimationClip, createPropertyAnimationGroup } = await importPinnedModule<{
-        createPropertyAnimationClip(name: string, tracks: object[], options: object): object;
-        createPropertyAnimationGroup(manager: object, target: object, clip: object, options: object): object;
-    }>("animation/property-animation.js");
-    const { goToFrame } = await importPinnedModule<{ goToFrame(group: object, frame: number): void }>("animation/animation-group.js");
+    const { createAnimationManager } = await importPinnedModule<{
+        createAnimationManager(this: void): object;
+    }>("animation/animation-manager.js");
+    const { createPropertyAnimationClip, createPropertyAnimationGroup } =
+        await importPinnedModule<{
+            createPropertyAnimationClip(
+                this: void,
+                name: string,
+                tracks: object[],
+                options: object,
+            ): object;
+            createPropertyAnimationGroup(
+                this: void,
+                manager: object,
+                target: object,
+                clip: object,
+                options: object,
+            ): object;
+        }>("animation/property-animation.js");
+    const { goToFrame } = await importPinnedModule<{
+        goToFrame(this: void, group: object, frame: number): void;
+    }>("animation/animation-group.js");
     const camera = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
     setCameraLimits(camera, { upperAlphaLimit: 1 });
-    const clip = createPropertyAnimationClip("alpha", [{ path: "alpha", keys: [{ frame: 0, value: 0 }, { frame: 10, value: 4 }] }], { frameRate: 10 });
-    const group = createPropertyAnimationGroup(createAnimationManager(), camera, clip, { loop: false });
-    goToFrame(group, 5); goToFrame(group, 5);
+    const clip = createPropertyAnimationClip(
+        "alpha",
+        [
+            {
+                path: "alpha",
+                keys: [
+                    { frame: 0, value: 0 },
+                    { frame: 10, value: 4 },
+                ],
+            },
+        ],
+        { frameRate: 10 },
+    );
+    const group = createPropertyAnimationGroup(
+        createAnimationManager(),
+        camera,
+        clip,
+        { loop: false },
+    );
+    goToFrame(group, 5);
+    goToFrame(group, 5);
     assert.equal(camera.worldMatrixVersion, 4);
-    const program = compileSource(`import {createEngine,createArcRotateCamera,setCameraLimits,
+    const program =
+        compileSource(`import {createEngine,createArcRotateCamera,setCameraLimits,
         createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,goToFrame} from "babylon-lite";
         const engine=await createEngine({}); const camera=createArcRotateCamera(0,1,5,{x:0,y:0,z:0});
         setCameraLimits(camera,{upperAlphaLimit:1}); const manager=createAnimationManager({engine});
         const clip=createPropertyAnimationClip("alpha",[{path:"alpha",keys:[{frame:0,value:0},{frame:10,value:4}]}],{frameRate:10});
         const group=createPropertyAnimationGroup(manager,camera,clip,{loop:false}); goToFrame(group,5);goToFrame(group,5);
-    `).cpp.replace("        return 0;", `        assert(v_engine.cameras[v_camera.value].world_matrix_version == ${camera.worldMatrixVersion});\n        assert(v_engine.cameras[v_camera.value].alpha == ${camera.alpha});\n        return 0;`);
+    `).cpp.replace(
+            "        return 0;",
+            `        assert(v_engine.cameras[v_camera.value].world_matrix_version == ${camera.worldMatrixVersion});\n        assert(v_engine.cameras[v_camera.value].alpha == ${camera.alpha});\n        return 0;`,
+        );
     const output = resolve("artifacts/camera-mutations-animation");
     const sources = cameraSources(output);
-    const animation = new AnimationLowerer(new LoweringContext()).lowerPropertyAnimation({ cameraVersions: true });
-    writeFileSync(join(output, "include/bblite/upstream/property_animation.hpp"), animation.header);
+    const animation = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation({ cameraVersions: true });
+    writeFileSync(
+        join(output, "include/bblite/upstream/property_animation.hpp"),
+        animation.header,
+    );
     writeFileSync(join(output, "animation.cpp"), animation.source);
     writeFileSync(join(output, "program.hpp"), program);
     const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `#include <bblite/runtime.hpp>\n#include <cassert>
+    writeFileSync(
+        fixture,
+        `#include <bblite/runtime.hpp>\n#include <cassert>
 #define main generated_main
 #include "program.hpp"
 #undef main
 namespace bbl { Engine create_engine(EngineOptions) { return {}; } void mark_mesh_runtime_transform(Engine&, MeshHandle) {} }
 int main() { return generated_main(); }
-`);
+`,
+    );
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", join(output, "include"), fixture, ...sources, join(output, "animation.cpp")]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(output, "include"),
+        fixture,
+        ...sources,
+        join(output, "animation.cpp"),
+    ]);
     execFileSync(executable);
 });
 
@@ -278,24 +508,103 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         `attachControl(camera,engine.canvas,scene);const alias=camera;attachControl(alias,engine.canvas,scene);`,
     ]) {
         assert.doesNotThrow(() => compileSource(prefix + body));
-        assert.throws(() => compileSource(prefix + body + taa), /input.ts:\d+:\d+: TAA requires tracked camera mutations:/);
-        assert.throws(() => compileSource(prefix + taa + body), /TAA requires tracked camera mutations:/);
+        assert.throws(
+            () => compileSource(prefix + body + taa),
+            /input.ts:\d+:\d+: TAA requires tracked camera mutations:/,
+        );
+        assert.throws(
+            () => compileSource(prefix + taa + body),
+            /TAA requires tracked camera mutations:/,
+        );
     }
-    assert.doesNotThrow(() => compileSource(prefix + `createFreeCamera([0,0,0],[0,0,1]);` + taa));
-    assert.throws(() => compileSource(prefix + `await registerScene(scene);await startEngine(engine);` + taa), /TAA task creation after frame execution/);
-    assert.throws(() => compileSource(prefix + `await registerScene(scene);` + taa), /TAA tasks must be constructed and attached before initial scene registration/);
-    assert.throws(() => compileSource(prefix + `await registerSceneWithShadowSupport(scene);` + taa), /TAA tasks must be constructed and attached before initial scene registration/);
-    assert.throws(() => compileSource(prefix + taa + `await registerSceneWithShadowSupport(scene);addTask(scene,taa);`), /TAA task record epochs.*addTask/);
-    assert.throws(() => compileSource(prefix + taa + `await registerScene(scene);await startEngine(engine);attachControl(camera,engine.canvas,scene);`), /TAA supports one startup control attachment/);
-    assert.throws(() => compileSource(prefix + taa + `await registerScene(scene);addTask(scene,taa);`), /TAA task record epochs.*addTask/);
-    assert.throws(() => compileSource(prefix + `rebuildSceneRenderables(scene);` + taa), /TAA task record epochs.*rebuildSceneRenderables/);
-    for (const operation of ["await registerScene(scene);", "unregisterScene(scene);", "addTask(scene,source);", "addTaskAtStart(scene,source);"]) {
+    assert.doesNotThrow(() =>
+        compileSource(prefix + `createFreeCamera([0,0,0],[0,0,1]);` + taa),
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    `await registerScene(scene);await startEngine(engine);` +
+                    taa,
+            ),
+        /TAA task creation after frame execution/,
+    );
+    assert.throws(
+        () => compileSource(prefix + `await registerScene(scene);` + taa),
+        /TAA tasks must be constructed and attached before initial scene registration/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix + `await registerSceneWithShadowSupport(scene);` + taa,
+            ),
+        /TAA tasks must be constructed and attached before initial scene registration/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    taa +
+                    `await registerSceneWithShadowSupport(scene);addTask(scene,taa);`,
+            ),
+        /TAA task record epochs.*addTask/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    taa +
+                    `await registerScene(scene);await startEngine(engine);attachControl(camera,engine.canvas,scene);`,
+            ),
+        /TAA supports one startup control attachment/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix + taa + `await registerScene(scene);addTask(scene,taa);`,
+            ),
+        /TAA task record epochs.*addTask/,
+    );
+    assert.throws(
+        () => compileSource(prefix + `rebuildSceneRenderables(scene);` + taa),
+        /TAA task record epochs.*rebuildSceneRenderables/,
+    );
+    for (const operation of [
+        "await registerScene(scene);",
+        "unregisterScene(scene);",
+        "addTask(scene,source);",
+        "addTaskAtStart(scene,source);",
+    ]) {
         const startup = `addTask(scene,source);await registerScene(scene);await startEngine(engine);`;
         assert.doesNotThrow(() => compileSource(prefix + startup + operation));
-        assert.throws(() => compileSource(prefix + taa + startup + operation), /input.ts:\d+:\d+: TAA task record epochs/);
+        assert.throws(
+            () => compileSource(prefix + taa + startup + operation),
+            /input.ts:\d+:\d+: TAA task record epochs/,
+        );
     }
-    assert.doesNotThrow(() => compileSource(prefix + taa + `addTask(scene,source);addTask(scene,taa);await registerScene(scene);await startEngine(engine);`));
-    assert.doesNotThrow(() => compileSource(prefix + `function configuredScene() { ${taa} addTask(scene,taa); return scene; } await registerScene(configuredScene());`));
-    assert.doesNotThrow(() => compileSource(prefix + `const target=camera.target; target.x=0; target.set(0,0,0);` + taa));
-    assert.doesNotThrow(() => compileSource(prefix + `attachControl(camera,engine.canvas,scene);` + taa));
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix +
+                taa +
+                `addTask(scene,source);addTask(scene,taa);await registerScene(scene);await startEngine(engine);`,
+        ),
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix +
+                `function configuredScene() { ${taa} addTask(scene,taa); return scene; } await registerScene(configuredScene());`,
+        ),
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix +
+                `const target=camera.target; target.x=0; target.set(0,0,0);` +
+                taa,
+        ),
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix + `attachControl(camera,engine.canvas,scene);` + taa,
+        ),
+    );
 });

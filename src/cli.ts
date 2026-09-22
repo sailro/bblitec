@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {prepareAssetDecoders, type AssetDecoders} from "./asset-decoders.js";
+import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
     CompileAsset,
     CompileError,
@@ -38,10 +44,7 @@ import {
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
 import { composeEsmShadow } from "./pinned-esm-shadow.js";
-import {
-    composeComposite,
-    composePostProcess,
-} from "./pinned-post-process.js";
+import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
 import { readNativeHostUi } from "./native-host-ui.js";
 import {
@@ -105,7 +108,10 @@ import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { refuseGeneration } from "./generation-refusal.js";
-import { composeDefaultTextPipelines, composeStandaloneTextPipelines } from "./pinned-text-pipeline-cpp.js";
+import {
+    composeDefaultTextPipelines,
+    composeStandaloneTextPipelines,
+} from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
 import {
     composeSplatModule,
@@ -127,8 +133,7 @@ import type {
 
 /** What a run produces: a generated tree, or a survey's census in its place. */
 type CliTarget =
-    | { kind: "generate"; output: string }
-    | { kind: "survey"; census: string };
+    { kind: "generate"; output: string } | { kind: "survey"; census: string };
 
 interface CliOptions {
     input: string;
@@ -145,7 +150,9 @@ interface CliOptions {
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> (--out <directory> | --survey <census.json>) [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]");
+    console.error(
+        "Usage: bblitec <entry.ts> (--out <directory> | --survey <census.json>) [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]",
+    );
     process.exit(2);
 }
 
@@ -224,8 +231,12 @@ function parseArguments(arguments_: string[]): CliOptions {
                 break;
             case "--env": {
                 const equals = value?.indexOf("=") ?? -1;
-                if (!value || equals <= 0) throw new Error("--env expects NAME=value.");
-                environment.set(value.slice(0, equals), value.slice(equals + 1));
+                if (!value || equals <= 0)
+                    throw new Error("--env expects NAME=value.");
+                environment.set(
+                    value.slice(0, equals),
+                    value.slice(equals + 1),
+                );
                 index += 1;
                 break;
             }
@@ -329,12 +340,11 @@ async function materializeAsset(
     // same execution, one decoder each for what the export returned. The
     // `pixels` kind can also name already-baked inline bytes (the fetched
     // Canvas2D atlas), so kind alone is not an execution contract.
-    const bake =
-        asset.source.startsWith(pixelsSourcePrefix)
-            ? bakePixelBytes
-            : asset.source.startsWith(spriteAtlasSourcePrefix)
-              ? drawSpriteAtlasPng
-              : undefined;
+    const bake = asset.source.startsWith(pixelsSourcePrefix)
+        ? bakePixelBytes
+        : asset.source.startsWith(spriteAtlasSourcePrefix)
+          ? drawSpriteAtlasPng
+          : undefined;
     if (bake) {
         writeFileSync(
             destination,
@@ -349,27 +359,37 @@ async function materializeAsset(
     }
 
     if (asset.kind === "babylon") {
-        await packageBabylon(source, dirname(inputPath), destination,
-            meshWalks.map((walk, index) => asset.meshWalks?.includes(index) ? walk : undefined),
-            asset.babylonTextureModes?.includes(true) ?? true);
+        await packageBabylon(
+            source,
+            dirname(inputPath),
+            destination,
+            meshWalks.map((walk, index) =>
+                asset.meshWalks?.includes(index) ? walk : undefined,
+            ),
+            asset.babylonTextureModes?.includes(true) ?? true,
+        );
         return;
     }
 
-    if (asset.kind === "gltf" && (
-        /\.(?:gltf|glb)(?:[?#]|$)/i.test(source) ||
-        (asset.meshWalks?.length ?? 0) > 0
-    )) {
+    if (
+        asset.kind === "gltf" &&
+        (/\.(?:gltf|glb)(?:[?#]|$)/i.test(source) ||
+            (asset.meshWalks?.length ?? 0) > 0)
+    ) {
         writeFileSync(
             destination,
             await packageGltfLoadPlan(
                 await packageGltf(
-                    source, dirname(inputPath), sourceTextureReads,
+                    source,
+                    dirname(inputPath),
+                    sourceTextureReads,
                     meshWalks.map((walk, index) =>
-                        asset.meshWalks?.includes(index) ? walk : undefined),
+                        asset.meshWalks?.includes(index) ? walk : undefined,
+                    ),
                     decoders,
                 ),
                 source,
-                {cameras: asset.gltfCameras === true},
+                { cameras: asset.gltfCameras === true },
                 decoders,
             ),
         );
@@ -377,9 +397,8 @@ async function materializeAsset(
     }
 
     if (SPLAT_ASSET_KINDS.has(asset.kind)) {
-        const { packageSplat, packageSog, packageSpz } = await import(
-            "./splat-packager.js"
-        );
+        const { packageSplat, packageSog, packageSpz } =
+            await import("./splat-packager.js");
         const bytes = await assetBytes(source, inputPath);
         // The one lane a pinned loader writes on the cloud it attached rides
         // the facts rather than the packaged file, for the reason the
@@ -414,9 +433,8 @@ async function materializeAsset(
         // uploaded. The file itself rides the ordinary download cache and is
         // served back to the page from the loopback origin, so a recompile
         // asks the CDN for the transcoder alone.
-        const { transcodeBasisTexture, writeKtx1 } = await import(
-            "./basis-transcode.js"
-        );
+        const { transcodeBasisTexture, writeKtx1 } =
+            await import("./basis-transcode.js");
         const lowerer = compressedTextureLowerer();
         const transcoded = await transcodeBasisTexture(
             source,
@@ -424,12 +442,14 @@ async function materializeAsset(
         );
         writeFileSync(
             destination,
-            await packageKtx1(writeKtx1(
-                transcoded,
-                lowerer.magicBytes(),
-                lowerer.glInternalFormat(transcoded.gpuFormat),
-                lowerer.headerLayout(),
-            )),
+            await packageKtx1(
+                writeKtx1(
+                    transcoded,
+                    lowerer.magicBytes(),
+                    lowerer.glInternalFormat(transcoded.gpuFormat),
+                    lowerer.headerLayout(),
+                ),
+            ),
         );
         return;
     }
@@ -460,22 +480,25 @@ async function materializeAsset(
     // a scheme test is what made a data URL have to be taught to two
     // predicates in this file rather than one.
     const bytes = await assetBytes(source, inputPath);
-    writeFileSync(destination, asset.kind === "texture" && isKtx1(bytes)
-        ? await packageKtx1(bytes)
-        : await packageGltfLoadPlan(bytes, source, {cameras: asset.gltfCameras === true}, decoders));
+    writeFileSync(
+        destination,
+        asset.kind === "texture" && isKtx1(bytes)
+            ? await packageKtx1(bytes)
+            : await packageGltfLoadPlan(
+                  bytes,
+                  source,
+                  { cameras: asset.gltfCameras === true },
+                  decoders,
+              ),
+    );
 }
 
-function materializedAssetSource(
-    source: string,
-    inputPath: string,
-): string {
+function materializedAssetSource(source: string, inputPath: string): string {
     if (
         !source.startsWith("/") ||
         !inputPath
             .replace(/\\/g, "/")
-            .includes(
-                "/corpus/babylon-lite/lab/lite/src/lite/",
-            )
+            .includes("/corpus/babylon-lite/lab/lite/src/lite/")
     ) {
         return source;
     }
@@ -534,8 +557,7 @@ async function bakeNodeParticleSystems(
                 : undefined;
         const assigned = program.textures.find(
             (entry) =>
-                entry.set === system.set &&
-                entry.system === system.system,
+                entry.set === system.set && entry.system === system.system,
         );
         return {
             bake: system,
@@ -562,12 +584,17 @@ async function bakeNodeParticleSystems(
     // driver fetched when the URL was a browser object URL.
     for (const entry of bake.live) {
         const { bytes, mediaType, ...texture } = entry.texture;
-        const source = bytes !== undefined
-            ? `data:${mediaType || "image/png"};base64,${bytes}`
-            : texture.url;
-        const asset = texture.sceneAssigned ? undefined : assetRecord(source, "texture", assetPayloads);
-        const assigned = program.textures.find((texture) =>
-            texture.set === entry.set && texture.system === entry.system);
+        const source =
+            bytes !== undefined
+                ? `data:${mediaType || "image/png"};base64,${bytes}`
+                : texture.url;
+        const asset = texture.sceneAssigned
+            ? undefined
+            : assetRecord(source, "texture", assetPayloads);
+        const assigned = program.textures.find(
+            (texture) =>
+                texture.set === entry.set && texture.system === entry.system,
+        );
         systems.push({
             bake: {
                 set: entry.set,
@@ -588,9 +615,22 @@ async function bakeNodeParticleSystems(
             exactBlend: exactBlendOf(entry.set),
             textureAsset: asset?.output ?? "",
             ...(asset ? { asset } : {}),
-            ...(assigned ? { texturePixels: { source: assigned.source, asset: assigned.asset,
-                width: assigned.width, height: assigned.height, options: assigned.options } } : {}),
-            live: { graph: entry.graph, facts: entry.facts, ...(entry.provider ? { provider: true as const } : {}) },
+            ...(assigned
+                ? {
+                      texturePixels: {
+                          source: assigned.source,
+                          asset: assigned.asset,
+                          width: assigned.width,
+                          height: assigned.height,
+                          options: assigned.options,
+                      },
+                  }
+                : {}),
+            live: {
+                graph: entry.graph,
+                facts: entry.facts,
+                ...(entry.provider ? { provider: true as const } : {}),
+            },
         });
     }
     // The bake reports which systems each pure-2D binding walked, because a
@@ -611,9 +651,7 @@ async function bakeNodeParticleSystems(
             ...(request.visible === undefined
                 ? {}
                 : { visible: request.visible }),
-            ...(request.order === undefined
-                ? {}
-                : { order: request.order }),
+            ...(request.order === undefined ? {} : { order: request.order }),
             systems: expansion.systems,
         };
     });
@@ -649,8 +687,11 @@ function writeSurvey(
             `(${report.refusals.length} sites, ${report.classes.length} classes) -> ${censusPath}`,
     );
     for (const entry of report.classes.slice(0, 12)) {
-        const cascades = entry.cascades > 0 ? `, ${entry.cascades} cascade(s)` : "";
-        console.log(`  ${entry.sites} site(s)${cascades}, ${entry.occurrences} lowering(s): ${entry.class}`);
+        const cascades =
+            entry.cascades > 0 ? `, ${entry.cascades} cascade(s)` : "";
+        console.log(
+            `  ${entry.sites} site(s)${cascades}, ${entry.occurrences} lowering(s): ${entry.class}`,
+        );
     }
     if (!report.complete) {
         console.error(`Survey incomplete: ${report.terminal}`);
@@ -693,10 +734,7 @@ async function main(): Promise<void> {
     // tree as the browser spends simulating, and the two overlap. It is
     // joined below, before the first consumer of what it produces.
     const bakingNodeParticles = result.nodeParticles
-        ? bakeNodeParticleSystems(
-              result.nodeParticles,
-              result.assetPayloads,
-          )
+        ? bakeNodeParticleSystems(result.nodeParticles, result.assetPayloads)
         : undefined;
 
     mkdirSync(outputPath, { recursive: true });
@@ -711,7 +749,7 @@ async function main(): Promise<void> {
         const key = JSON.stringify(asset.assetDecoders ?? {});
         let decoders = decoderSets.get(key);
         if (!decoders) {
-            decoders = prepareAssetDecoders(asset.assetDecoders, source => {
+            decoders = prepareAssetDecoders(asset.assetDecoders, (source) => {
                 decoderSources.add(source);
                 return assetBytes(source, inputPath);
             });
@@ -726,7 +764,9 @@ async function main(): Promise<void> {
                 inputPath,
                 outputPath,
                 result.assetPayloads,
-                result.manifest.features.includes("material:source-texture-read"),
+                result.manifest.features.includes(
+                    "material:source-texture-read",
+                ),
                 result.manifest.meshWalks,
                 decodersFor(asset),
             ),
@@ -782,9 +822,9 @@ async function main(): Promise<void> {
             refuseGeneration(
                 "loader:splat",
                 `This scene's ${container.kind.toUpperCase()} containers ` +
-                    `attach clouds at different rotations (${[
-                        ...distinct,
-                    ].join("; ")}); the pinned ${container.loader} writes ` +
+                    `attach clouds at different rotations (${[...distinct].join(
+                        "; ",
+                    )}); the pinned ${container.loader} writes ` +
                     "one, so a difference means it now forks on the " +
                     "container.",
                 result.manifest.featureSites,
@@ -806,8 +846,10 @@ async function main(): Promise<void> {
     );
     const splatSpzRotation = splatContainerRotations.get("spz");
     const splatSogRotation = splatContainerRotations.get("sog");
-    const specializationFeatures =
-        emitAssetSpecializations(outputPath, result.manifest.assets);
+    const specializationFeatures = emitAssetSpecializations(
+        outputPath,
+        result.manifest.assets,
+    );
     // KHR_interactivity is the asset's feature, as the pinned loader's
     // document predicate makes it: each interactive asset joins the
     // feature in the per-asset join below, where its graphs are parsed
@@ -943,7 +985,9 @@ async function main(): Promise<void> {
                 inputPath,
                 outputPath,
                 result.assetPayloads,
-                result.manifest.features.includes("material:source-texture-read"),
+                result.manifest.features.includes(
+                    "material:source-texture-read",
+                ),
                 result.manifest.meshWalks,
             );
         }
@@ -951,10 +995,9 @@ async function main(): Promise<void> {
 
     const shaderPrograms: CompiledShaderProgram[] =
         result.manifest.shaderVariants.map((name) => {
-            const custom =
-                result.manifest.customShaderPrograms.find(
-                    (program) => program.name === name,
-                );
+            const custom = result.manifest.customShaderPrograms.find(
+                (program) => program.name === name,
+            );
             if (custom) {
                 return custom;
             }
@@ -999,7 +1042,7 @@ async function main(): Promise<void> {
         // EXT_lights_image_based installs the asset's own environment, which
         // composes the same arms `environment:ibl` does.
         if (gltfHasImageBasedLight(assetPath)) {
-            assetFeatures.push("environment:ibl" as Feature);
+            assetFeatures.push("environment:ibl");
         }
         // KHR_gaussian_splatting resolves to the pin's own splat row buffer
         // at packaging, and the clouds the loader then builds draw through
@@ -1007,19 +1050,19 @@ async function main(): Promise<void> {
         // selects. No scene API names the extension, so the asset joins the
         // feature the way its punctual lights join `light:*`.
         if (gltfHasGaussianSplats(assetPath)) {
-            assetFeatures.push("loader:splat" as Feature);
+            assetFeatures.push("loader:splat");
         }
         // Packaged KHR_texture_basisu mip payloads reach the compressed reader.
         if (gltfHasCompressedImages(assetPath)) {
-            assetFeatures.push("texture:compressed" as Feature);
+            assetFeatures.push("texture:compressed");
         }
         // The source applyAsset result owns activation, including an empty
         // result when the extension creates no usable graph.
         const document = parseGlbJson(assetPath);
         const graphs = await parseFlowGraphs(asset.output, document);
         if (graphs.length) {
-            flowGraphs.push({asset: asset.output, graphs});
-            assetFeatures.push("flow-graph:interactivity" as Feature);
+            flowGraphs.push({ asset: asset.output, graphs });
+            assetFeatures.push("flow-graph:interactivity");
         }
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
@@ -1039,17 +1082,18 @@ async function main(): Promise<void> {
         // holding a plain cloud beside one with harmonics still attributes
         // the feature -- and names the parser below -- from the one that
         // answered the degree.
-        const splatAsset = result.manifest.assets[
-            materializedFacts.findIndex(
-                (facts) => (facts?.splatHarmonicDegree ?? 0) > 0,
-            )
-        ];
+        const splatAsset =
+            result.manifest.assets[
+                materializedFacts.findIndex(
+                    (facts) => (facts?.splatHarmonicDegree ?? 0) > 0,
+                )
+            ];
         result.manifest.features.push("loader:splat-sh");
         assetJoinedFeatures.set(
             "loader:splat-sh",
             splatAsset?.output ?? "splat",
         );
-            // Pushed HERE rather than in `compileAdaptations`, beside the two
+        // Pushed HERE rather than in `compileAdaptations`, beside the two
         // siblings below, because `loader:splat-sh` is an asset-joined
         // feature: the compiler decides its adaptations from the entry AST
         // and this one is not known until the pin has parsed the container
@@ -1173,9 +1217,9 @@ async function main(): Promise<void> {
         if (asset.kind !== "babylon") continue;
         const materialized = resolve(outputPath, "assets", asset.output);
         if (!existsSync(materialized)) continue;
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as { lights?: BabylonLight[] };
+        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
+            lights?: BabylonLight[];
+        };
         if (
             (document.lights ?? []).some((light) => light.type === 0) &&
             !result.manifest.features.includes("light:point")
@@ -1189,7 +1233,7 @@ async function main(): Promise<void> {
         // projection, both rendered at compile time; re-render them from the
         // same authorities so the joined features stay declared everywhere.
         result.manifest.generatedSources = reachedGeneratedSources(
-            result.manifest.features as Feature[],
+            result.manifest.features,
         );
         result.cmake = renderFeaturesCmake(
             result.manifest.features as Feature[],
@@ -1270,15 +1314,15 @@ async function main(): Promise<void> {
               // than an option, composed only where a scene armed it.
               ...(result.manifest.features.includes("picking:detailed")
                   ? {
-                        detailed:
-                            await composeDetailedMeshPickingShader(),
+                        detailed: await composeDetailedMeshPickingShader(),
                     }
                   : {}),
               deform: await composeDeformPickingShaders({
                   meshFeatures: renderableMeshFeatures,
                   skeleton: gpuDeformation && pinnedSkeletonPalette,
                   morph: morphStorage,
-                  detailed: result.manifest.features.includes("picking:detailed"),
+                  detailed:
+                      result.manifest.features.includes("picking:detailed"),
               }),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
@@ -1286,10 +1330,9 @@ async function main(): Promise<void> {
               ...(result.manifest.features.includes("picking:billboard")
                   ? {
                         billboard: {
-                            facing:
-                                await composeBillboardPickingShader(
-                                    "facing",
-                                ),
+                            facing: await composeBillboardPickingShader(
+                                "facing",
+                            ),
                             ...(result.manifest.features.includes(
                                 "sprite:billboard-axis-locked",
                             )
@@ -1422,9 +1465,19 @@ async function main(): Promise<void> {
         );
     }
     const emitOptions: UpstreamEmitOptions = {
-        ...(result.manifest.features.includes("text:renderable") ? { textPipelines: await composeDefaultTextPipelines() } : {}),
-        ...(result.manifest.features.includes("renderer:text") ? { textPipelines: await composeStandaloneTextPipelines(result.manifest.features.includes("text:weight")) } : {}),
-        ...(result.manifest.textData ? { textData: result.manifest.textData } : {}),
+        ...(result.manifest.features.includes("text:renderable")
+            ? { textPipelines: await composeDefaultTextPipelines() }
+            : {}),
+        ...(result.manifest.features.includes("renderer:text")
+            ? {
+                  textPipelines: await composeStandaloneTextPipelines(
+                      result.manifest.features.includes("text:weight"),
+                  ),
+              }
+            : {}),
+        ...(result.manifest.textData
+            ? { textData: result.manifest.textData }
+            : {}),
         idDiagnostics: options.idDiagnostics,
         ...(result.manifest.engineMsaaSamples !== undefined
             ? { msaaSamples: result.manifest.engineMsaaSamples }
@@ -1443,17 +1496,14 @@ async function main(): Promise<void> {
         postProcessComposites,
         ...(screenSpaceTasks.length > 0 ? { screenSpaceTasks } : {}),
         ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
-        ...(nodeParticleSprite2d.length > 0
-            ? { nodeParticleSprite2d }
-            : {}),
+        ...(nodeParticleSprite2d.length > 0 ? { nodeParticleSprite2d } : {}),
         ...(nodeParticleRegistrations.length > 0
             ? { nodeParticleRegistrations }
             : {}),
         gpuDeformation,
         animatedWorldBounds: specializationFeatures.animatedWorldBounds,
         morphStorage,
-        nonTrianglePrimitives:
-            specializationFeatures.nonTrianglePrimitives,
+        nonTrianglePrimitives: specializationFeatures.nonTrianglePrimitives,
         // No scene API reaches KHR_gaussian_splatting, so the asset alone
         // decides -- the shape the spec-gloss workflow replacement takes.
         gaussianSplats: specializationFeatures.gaussianSplats,
@@ -1465,7 +1515,8 @@ async function main(): Promise<void> {
         // materializes the cascade at load, and scene code writes the same
         // per-mesh boolean directly. Either reaches the render-plan skip
         // and the camera-bounds skip that read it.
-        nodeVisibility: specializationFeatures.nodeVisibility ||
+        nodeVisibility:
+            specializationFeatures.nodeVisibility ||
             result.manifest.features.includes("mesh:visible"),
         gltfNodeVisibility: specializationFeatures.nodeVisibility,
         gltfInteractivity: specializationFeatures.interactivity,
@@ -1479,15 +1530,12 @@ async function main(): Promise<void> {
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLightLists: reachedStandardLightLists(
-            reachedBabylonLights,
-        ),
+        standardLightLists: reachedStandardLightLists(reachedBabylonLights),
         standardDiffuseUv2: reachedDiffuseUv2(
             outputPath,
             result.manifest.assets,
         ),
-        animationPointer:
-            specializationFeatures.animationPointer,
+        animationPointer: specializationFeatures.animationPointer,
         animationPointerMaterials:
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
@@ -1499,16 +1547,13 @@ async function main(): Promise<void> {
             result.manifest.assets.find(
                 (asset) => asset.selectedVariant !== undefined,
             )?.selectedVariant ?? "",
-        textureTransform:
-            specializationFeatures.textureTransform,
-        imageBasedLighting:
-            specializationFeatures.imageBasedLighting,
+        textureTransform: specializationFeatures.textureTransform,
+        imageBasedLighting: specializationFeatures.imageBasedLighting,
         gpuInstancing,
         gpuInstanceColors: result.manifest.features.includes(
             "mesh:thin-instance-colors",
         ),
-        punctualLights:
-            specializationFeatures.punctualLights,
+        punctualLights: specializationFeatures.punctualLights,
         // The arms the composed set carries, read off the composition
         // itself: a glTF material's, a scene-code material's and a caster
         // view's variants all report through `pinnedVariantArms`, so what
@@ -1519,17 +1564,15 @@ async function main(): Promise<void> {
         ...(nodeVariants.length > 0 ? { nodeVariants } : {}),
         ...(standardComposition !== undefined
             ? {
-                pinnedStandardVariants: standardComposition.variants,
-                pinnedStandardSelectors: standardComposition.selectors,
-                standardRenderableMeshFeatures:
-                    standardRenderableMeshFeatures ?? [],
-                ...(standardRuntimeMeshFeatures !== undefined
-                    ? { standardRuntimeMeshFeatures }
-                    : {}),
-                ...(standardPluginBindings
-                    ? { standardPluginBindings }
-                    : {}),
-            }
+                  pinnedStandardVariants: standardComposition.variants,
+                  pinnedStandardSelectors: standardComposition.selectors,
+                  standardRenderableMeshFeatures:
+                      standardRenderableMeshFeatures ?? [],
+                  ...(standardRuntimeMeshFeatures !== undefined
+                      ? { standardRuntimeMeshFeatures }
+                      : {}),
+                  ...(standardPluginBindings ? { standardPluginBindings } : {}),
+              }
             : {}),
         // Every handle the runtime will hold: the assets' materials, the
         // scene's own creations of any family (handles are creation-ordered
@@ -1542,9 +1585,7 @@ async function main(): Promise<void> {
         renderableMeshFeatures,
         pinnedSkeletonPalette,
         ...(meshProfiles ? { meshProfiles } : {}),
-        ...(runtimeMeshFeatures !== undefined
-            ? { runtimeMeshFeatures }
-            : {}),
+        ...(runtimeMeshFeatures !== undefined ? { runtimeMeshFeatures } : {}),
         iridescence: composedArms.iridescence,
         specularGlossiness: composedArms.specularGlossiness,
         dispersion: composedArms.dispersion,
@@ -1557,10 +1598,7 @@ async function main(): Promise<void> {
         tree,
     );
     tree.write("main.cpp", result.cpp);
-    const imageCodecs = reachedImageCodecs(
-        outputPath,
-        result.manifest.assets,
-    );
+    const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);
     const imageCodecLines = imageCodecs
         .map((codec) => `    "${codec}"`)
         .join("\n");
@@ -1596,12 +1634,19 @@ ${imageCodecLines || '    ""'}
         const local = localAssetPath(source, inputPath);
         if (local !== undefined) listInput(local);
     }
-    if (decoderSources.size) result.manifest.adaptations.push({
-        id:"configured-asset-decoders", category:"asset-materialization", risk:"medium",
-        sourceSemantics:"Decoder setup selects the JavaScript and WebAssembly files loaded when the browser first reaches compressed geometry or KTX2 images.",
-        nativeSemantics:"Packaging executes the configured decoder files and stores decoded geometry or transcoded texture bytes. Decoder reads remain lazy, their contents distinguish cached results, and local files participate in scene input tracking.",
-        validation:["asset-decoders: configured Draco execution, KTX2 URL overrides and cache invalidation by decoder bytes"],
-    });
+    if (decoderSources.size)
+        result.manifest.adaptations.push({
+            id: "configured-asset-decoders",
+            category: "asset-materialization",
+            risk: "medium",
+            sourceSemantics:
+                "Decoder setup selects the JavaScript and WebAssembly files loaded when the browser first reaches compressed geometry or KTX2 images.",
+            nativeSemantics:
+                "Packaging executes the configured decoder files and stores decoded geometry or transcoded texture bytes. Decoder reads remain lazy, their contents distinguish cached results, and local files participate in scene input tracking.",
+            validation: [
+                "asset-decoders: configured Draco execution, KTX2 URL overrides and cache invalidation by decoder bytes",
+            ],
+        });
     result.manifest.inputs = [...new Set(result.manifest.inputs)].sort();
     tree.write(
         "manifest.json",
@@ -1636,10 +1681,9 @@ ${imageCodecLines || '    ""'}
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),
                 pinnedMaxLights: readPinnedMaxLights(),
                 interleave: {
-                    sceneMeshGltfAssetsBefore:
-                        result.manifest.sceneMeshes.map(
-                            (mesh) => mesh.gltfAssetsBefore,
-                        ),
+                    sceneMeshGltfAssetsBefore: result.manifest.sceneMeshes.map(
+                        (mesh) => mesh.gltfAssetsBefore,
+                    ),
                     scenePbrMaterialGltfAssetsBefore:
                         result.manifest.scenePbrMaterials.map(
                             (material) => material.gltfAssetsBefore,
@@ -1681,7 +1725,9 @@ ${imageCodecLines || '    ""'}
     console.log(`Generated ${outputPath}`);
     console.log(`Features: ${result.manifest.features.join(", ")}`);
     if (result.manifest.assets.length > 0) {
-        console.log(`Assets: ${result.manifest.assets.map((asset) => asset.output).join(", ")}`);
+        console.log(
+            `Assets: ${result.manifest.assets.map((asset) => asset.output).join(", ")}`,
+        );
     }
 }
 

@@ -2,10 +2,12 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -15,7 +17,8 @@ int main() {
     {
         Engine engine;
         const auto panel = ui_create_element(engine, "div");
-        const std::string authored = "display:block;width:100px;padding:1px 2px 3px 4px;overflow-wrap:anywhere;";
+        const std::string authored =
+            "display:block;width:100px;padding:1px 2px 3px 4px;overflow-wrap:anywhere;";
         ui_set_attribute(engine, panel, "style", authored);
         ui_set_style_property(engine, panel, "padding-left", "10px");
         ui_set_style_property(engine, panel, "padding", "20px");
@@ -30,9 +33,10 @@ int main() {
         const auto update = [&]() { pal::update_ui_rml_runtime(runtime, 640, 480); };
         const auto padding = [&](float top, float right, float bottom, float left) {
             update();
-            for (const auto& [id, expected] : {
-                std::pair{Rml::PropertyId::PaddingTop, top}, {Rml::PropertyId::PaddingRight, right},
-                {Rml::PropertyId::PaddingBottom, bottom}, {Rml::PropertyId::PaddingLeft, left}})
+            for (const auto& [id, expected] : {std::pair{Rml::PropertyId::PaddingTop, top},
+                                               {Rml::PropertyId::PaddingRight, right},
+                                               {Rml::PropertyId::PaddingBottom, bottom},
+                                               {Rml::PropertyId::PaddingLeft, left}})
                 assert(std::abs(raw->GetProperty(id)->Get<float>() - expected) < .01f);
         };
         padding(20, 30, 20, 20);

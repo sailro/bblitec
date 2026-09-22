@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 /**
  * The demand-driven runtime representation of a local class.
@@ -122,6 +125,37 @@ const workspaceOverParts = `
     }
 `;
 
+test("void class methods and setters avoid closures unless a return needs its own scope", () => {
+    const source = `
+        import {createEngine, createStandardMaterial, markMaterialUboDirty} from "@babylonjs/lite";
+        const COLORS: readonly [number, number, number] = [0.4, 0.75, 1];
+        class Tint {
+            private color: [number, number, number] = [0, 0, 0];
+            private material = createStandardMaterial();
+            constructor() { this.material.emissiveColor = this.color; }
+            setColor(rgb: readonly [number, number, number]): void {
+                this.color[0] = rgb[0]; this.color[1] = rgb[1]; this.color[2] = rgb[2];
+                markMaterialUboDirty(this.material);
+            }
+            set blue(value: number) { this.color[2] = value; }
+        }
+        const engine = await createEngine({});
+        const tint = new Tint();
+        tint.setColor(COLORS);
+        tint.blue = 0.5;
+    `;
+    const straight = compileSource(source).cpp;
+    assert.doesNotMatch(straight, /\[&\]\(\) -> void \{/);
+    assert.match(straight, /mark_material_ubo_dirty/);
+    const returning = compileSource(
+        source.replace(
+            "set blue(value: number) {",
+            "set blue(value: number) { if (value < 0) return;",
+        ),
+    ).cpp;
+    assert.match(returning, /\[&\]\(\) -> void \{/);
+});
+
 test("keeps a class nothing stores as a compile-time record", () => {
     const result = compileSource(`
         class Counter {
@@ -161,10 +195,22 @@ test("stores a class an array element demands as a shared object", () => {
         result.cpp,
         /struct PartData \{\s*bool locked;\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed;\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
-    const trace = result.cpp.match(/friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/)?.[0];
+    const trace = result.cpp.match(
+        /friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/,
+    )?.[0];
     assert.ok(trace);
-    for (const field of ["locked", "_size", "_position", "_quat", "_destroyed", "_changeHandlers"]) {
-        assert.ok(trace.includes(`visitor(record.${field});`), `${field} participates in managed ownership tracing`);
+    for (const field of [
+        "locked",
+        "_size",
+        "_position",
+        "_quat",
+        "_destroyed",
+        "_changeHandlers",
+    ]) {
+        assert.ok(
+            trace.includes(`visitor(record.${field});`),
+            `${field} participates in managed ownership tracing`,
+        );
     }
     assert.match(result.cpp, /using Part = bbl::js::Ref<PartData>;/);
     assert.match(
@@ -195,8 +241,11 @@ test("inlines a method on an instance read back out of a container", () => {
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("stored constructor properties preserve generic values, defaults, optional fields and array ownership", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "stored constructor properties preserve generic values, defaults, optional fields and array ownership",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         let defaults = 0;
         function defaultTitle(): string { defaults += 1; return "default"; }
         class Item<T> {
@@ -226,18 +275,54 @@ test("stored constructor properties preserve generic values, defaults, optional 
         if (retained[0]!.values !== values) throw new Error("constructor array identity");
         values[1] = 8;
         if (retained[0]!.total() !== 12) throw new Error("constructor array alias mutation");
+        class Selected {
+            constructor(public id: number) {}
+            visit(callback: () => void): number {
+                callback();
+                return this.id;
+            }
+        }
+        let selections = 0;
+        const selected: Selected[] = [new Selected(11)];
+        function choose(): Selected {
+            selections += 1;
+            return selected[0]!;
+        }
+        const observed = choose().visit(() => { selected[0] = new Selected(13); });
+        if (observed !== 11 || selections !== 1 || selected[0]!.id !== 13)
+            throw new Error("computed receiver lifetime and evaluation order");
     `);
-    const output = resolve("artifacts/class-parameter-properties");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+        assert.match(
+            result.cpp,
+            /const auto& (\w+) = [^;\n]+;\s*\[\[maybe_unused\]\] auto \w+ = \1\.lifetime_owner\(\);/,
+        );
+        const output = resolve("artifacts/class-parameter-properties");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
-test("optional class getters skip absent receivers and evaluate present false/true results once", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "optional class getters skip absent receivers and evaluate present false/true results once",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         class Item {
             enabled = true;
             state = { enabled: true };
@@ -275,17 +360,27 @@ test("optional class getters skip absent receivers and evaluate present false/tr
         }
         if (hits !== 5 || active.reads !== 4 || inactive.reads !== 4) throw new Error("container getter evaluation");
     `);
-    const output = resolve("artifacts/optional-class-getters");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source,
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+        const output = resolve("artifacts/optional-class-getters");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
 test("keeps object identity and null on stored instances", () => {
     const result = compileSource(`
@@ -373,9 +468,7 @@ test("gives one callback declaration one identity at every materialization", () 
     `);
 
     const identities = [
-        ...result.cpp.matchAll(
-            /bbl::js::Callback<void\(\)> \w+\{(\d+)u,/g,
-        ),
+        ...result.cpp.matchAll(/bbl::js::Callback<void\(\)> \w+\{(\d+)u,/g),
     ].map((match) => match[1]);
     assert.equal(identities.length, 2);
     assert.equal(identities[0], identities[1]);
@@ -462,14 +555,13 @@ test("keeps two instantiations of one generic interface apart", () => {
     `);
 
     const hits = [
-        ...result.cpp.matchAll(/struct (Hit\d*)Data \{\s*bblscene::(\w+) part;/g),
+        ...result.cpp.matchAll(
+            /struct (Hit\d*)Data \{\s*bblscene::(\w+) part;/g,
+        ),
     ];
     assert.equal(hits.length, 2);
     assert.notEqual(hits[0]![1], hits[1]![1]);
-    assert.deepEqual(
-        [hits[0]![2], hits[1]![2]].sort(),
-        ["Block", "Marker"],
-    );
+    assert.deepEqual([hits[0]![2], hits[1]![2]].sort(), ["Block", "Marker"]);
 });
 
 test("refuses a stored class whose hoisted field differs per construction", () => {
@@ -505,8 +597,11 @@ test("refuses a stored class that would need dynamic dispatch", () => {
     );
 });
 
-test("stored class callbacks retain per-instance identity, captures and nullable replacement", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "stored class callbacks retain per-instance identity, captures and nullable replacement",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
                 class Alarm {
                     private _fired = 0;
                     readonly ring = (): void => { this._fired += 1; };
@@ -539,14 +634,27 @@ test("stored class callbacks retain per-instance identity, captures and nullable
                 alarms.splice(0, 2);
                 first();
     `);
-    const output = resolve("artifacts/stored-class-callbacks");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+        const output = resolve("artifacts/stored-class-callbacks");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
 test("keeps a compile-time instance out of a container that shares objects", () => {
     assert.throws(
@@ -600,8 +708,8 @@ test("emits the one constructor write a hoisted field was proven from", () => {
     // `this._renderer = renderer` emitted nothing beside it.
     const local =
         /auto (v_bblite_class_field_freed_\d+) = bbl::js::make_gc_shared<double>\(0\.0\);/.exec(
-        result.cpp,
-    )?.[1];
+            result.cpp,
+        )?.[1];
     assert.ok(local);
     assert.match(result.cpp, new RegExp(`\\(\\*${local}\\) \\+= 1\\.0;`));
 });
@@ -808,10 +916,7 @@ test("keeps two instantiations of one inline object type apart", () => {
     ];
     assert.equal(hits.length, 2);
     assert.notEqual(hits[0]![1], hits[1]![1]);
-    assert.deepEqual(
-        [hits[0]![2], hits[1]![2]].sort(),
-        ["Block", "Marker"],
-    );
+    assert.deepEqual([hits[0]![2], hits[1]![2]].sort(), ["Block", "Marker"]);
 });
 
 test("keeps two instantiations of an intersecting inline type apart", () => {
@@ -850,8 +955,5 @@ test("keeps two instantiations of an intersecting inline type apart", () => {
     ];
     assert.equal(hits.length, 2);
     assert.notEqual(hits[0]![1], hits[1]![1]);
-    assert.deepEqual(
-        [hits[0]![2], hits[1]![2]].sort(),
-        ["Block", "Marker"],
-    );
+    assert.deepEqual([hits[0]![2], hits[1]![2]].sort(), ["Block", "Marker"]);
 });

@@ -4,7 +4,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("closed string helpers retain literal results through stylesheet installation", () => {
     const result = compileSource(`
@@ -28,12 +31,20 @@ test("closed string helpers retain literal results through stylesheet installati
         }
         void main();
     `);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"history"[^\n]*border:5px #123456/);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"plain"[^\n]*border:3px #123456/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"history"[^\n]*border:5px #123456/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"plain"[^\n]*border:3px #123456/,
+    );
 });
 
 test("runtime inputs cannot become static stylesheet strings through helpers", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createEngine } from "@babylonjs/lite";
         function frame(width: number): string { return \`.history { width: \${width}px; }\`; }
         async function main() {
@@ -43,7 +54,9 @@ test("runtime inputs cannot become static stylesheet strings through helpers", (
             document.head.appendChild(sheet);
         }
         void main();
-    `), /Expected a string literal/);
+    `),
+        /Expected a string literal/,
+    );
 });
 
 test("numeric template substitutions share constant evaluation beside string helpers", () => {
@@ -64,33 +77,48 @@ test("numeric template substitutions share constant evaluation beside string hel
         }
         void main();
     `);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:\s*20px;\s*margin-left:\s*-2px/);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"other"[^\n]*margin-top: 3\.141592653589793px; padding: 20\.0px/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"panel"[^\n]*width:\s*20px;\s*margin-left:\s*-2px/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"other"[^\n]*margin-top: 3\.141592653589793px; padding: 20\.0px/,
+    );
 });
 
 test("unknown explicit formatting precision cannot fold as omitted precision", () => {
     for (const method of ["toFixed", "toPrecision", "toExponential"]) {
-        assert.throws(() => compileSource(`
+        assert.throws(
+            () =>
+                compileSource(`
             function main() {
                 const text = \`\${(1.25).${method}(Math.random())}\`;
                 if (text === "") throw new Error("unexpected empty value");
             }
             main();
-        `), /requires a static number and integer precision/);
+        `),
+            /requires a static number and integer precision/,
+        );
     }
 });
 
 test("materialized modules retain computed constant facts across imports", () => {
     const directory = resolve("artifacts/static-string-module-constants");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "dimensions.ts"), `
+    writeFileSync(
+        join(directory, "dimensions.ts"),
+        `
         const edge = 7;
         export const width: number = 2 * (edge + 3);
         let calls = 0;
         export function next(): number { calls++; return width + calls; }
         next();
-    `);
-    writeFileSync(join(directory, "styles.ts"), `
+    `,
+    );
+    writeFileSync(
+        join(directory, "styles.ts"),
+        `
         import { width, next } from "./dimensions";
         const height = width / 2;
         function unit(): string { return "px"; }
@@ -101,7 +129,8 @@ test("materialized modules retain computed constant facts across imports", () =>
             sheet.textContent = css;
             document.head.appendChild(sheet);
         }
-    `);
+    `,
+    );
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const entry = join(directory, "entry.ts");
     const source = `
@@ -113,7 +142,10 @@ test("materialized modules retain computed constant facts across imports", () =>
     `;
     writeFileSync(entry, source);
     const result = compileSource(source, { fileName: entry });
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"module-panel"[^\n]*width: 20px; height: 10px/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"module-panel"[^\n]*width: 20px; height: 10px/,
+    );
 });
 
 test("enum-indexed constant palettes preserve strings through nested stylesheet helpers", () => {
@@ -138,13 +170,22 @@ test("enum-indexed constant palettes preserve strings through nested stylesheet 
         }
         void main();
     `);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"water"[^\n]*background-color: #123456; color: white/);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"beach"[^\n]*background-color: #fedcba; color: black/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"water"[^\n]*background-color: #123456; color: white/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"beach"[^\n]*background-color: #fedcba; color: black/,
+    );
 });
 
-test("static string specialization evaluates argument effects once and preserves mutable reads", t => {
+test("static string specialization evaluates argument effects once and preserves mutable reads", (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("The native compiler is required."); return; }
+    if (!tools) {
+        t.skip("The native compiler is required.");
+        return;
+    }
     const result = compileSource(`
         enum Tone { Ocean = "ocean", Sand = "sand" }
         const labels: Record<Tone, string> = { [Tone.Ocean]: "Water", [Tone.Sand]: "Beach" };
@@ -183,14 +224,59 @@ test("static string specialization evaluates argument effects once and preserves
         function mutateFlag(value: boolean): string { value = !value; return \`\${value}\`; }
         if (mutateText("ready") !== "ready!" || mutateFlag(true) !== "false")
             throw new Error("mutable primitive template parameters");
+        let text = "before";
+        function replaceText():string { text = "after"; return "/"; }
+        const textOrder = \`\${text}\${replaceText()}\${text}\`;
+        if (textOrder !== "before/after") throw new Error("template text snapshot before mutation");
+        function stripDigits(value: string): string { return value.replace(/\\d+$/, ""); }
+        if (stripDigits(text + "12") !== "after") throw new Error("pure replacement");
+        let replaced = "aba";
+        const callbackResult = replaced.replaceAll("a", () => { replaced = "changed"; return "x"; });
+        if (callbackResult !== "xbx" || replaced !== "changed") throw new Error("replacement callback snapshot");
+        replaced = "aba";
+        function chooseSearch(): string { replaced = "after"; return "a"; }
+        const searchResult = replaced.replace(chooseSearch(), "x");
+        if (searchResult !== "xba" || replaced !== "after") throw new Error("replacement argument snapshot");
         }
         main();
     `);
     const output = resolve("artifacts/static-string-helpers");
     mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
+    const source = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
     writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/include", source]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        source,
+    ]);
     execFileSync(executable, { stdio: "pipe" });
+});
+
+test("pure replacement arguments do not copy a stable named string receiver", () => {
+    const result = compileSource(`
+        function stripDigits(value: string): string { return value.replace(/\\d+$/, ""); }
+        const source = String(Math.random());
+        const result = stripDigits(source);
+        if (result.length > source.length) throw new Error("replacement length");
+    `);
+    assert.match(result.cpp, /\.replace\([^;\n]+, ""\)/);
+    assert.doesNotMatch(result.cpp, /v_bblite_replace_source_/);
+});
+
+test("pure string interpolation borrows its values without intermediate string copies", () => {
+    const result = compileSource(`
+        function label(left:string, right:string):string { return \`\${left}:\${right}\`; }
+        const labels: ((left:string,right:string)=>string)[] = [label];
+        if (labels[0]!("left","right") !== "left:right") throw new Error("template output");
+    `);
+    assert.doesNotMatch(result.cpp, /std::string v_bblite_template_part_/);
 });

@@ -28,36 +28,41 @@ class TraceVisitor;
 namespace gc {
 struct Node;
 struct Registry {
-    Node* first = nullptr;
-    std::size_t size = 0;
+    std::vector<Node*> nodes;
     std::size_t allocations = 0;
     std::size_t total_allocations = 0;
     unsigned frames_since_collection = 0;
     bool collecting = false;
+    ~Registry() noexcept;
 };
 // Generated JavaScript values belong to the control thread, as Ref counts do.
 inline thread_local Registry registry;
 
 struct Node {
-    Node* previous = nullptr;
-    Node* next = nullptr;
+    std::size_t registry_index = 0;
     std::size_t incoming = 0;
     bool reachable = false;
-    bool payload_alive = true;
+    bool payload_alive = false;
+    bool linked = false;
     Node() {
-        next = registry.first;
-        if (next) next->previous = this;
-        registry.first = this;
-        ++registry.size;
         ++registry.allocations;
         ++registry.total_allocations;
     }
-    virtual ~Node() {
-        if (previous) previous->next = next;
-        else registry.first = next;
-        if (next) next->previous = previous;
-        --registry.size;
+    void attach() {
+        const auto index = registry.nodes.size();
+        registry.nodes.push_back(this);
+        registry_index = index;
+        linked = true;
     }
+    void detach() noexcept {
+        if (!linked)
+            return;
+        registry.nodes[registry_index] = registry.nodes.back();
+        registry.nodes[registry_index]->registry_index = registry_index;
+        registry.nodes.pop_back();
+        linked = false;
+    }
+    virtual ~Node() { detach(); }
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
     virtual void trace(const TraceVisitor&) const = 0;
@@ -71,20 +76,24 @@ using SharedNodes = std::vector<std::pair<std::weak_ptr<const void>, Node*>>;
 
 inline Node* find_shared_node(const SharedNodes& shared, const std::weak_ptr<const void>& owner) {
     const std::owner_less<> less;
-    const auto found = std::lower_bound(shared.begin(), shared.end(), owner,
+    const auto found = std::lower_bound(
+        shared.begin(), shared.end(), owner,
         [less](const auto& entry, const auto& key) { return less(entry.first, key); });
     // lower_bound already establishes !less(found->first, owner).
     return found != shared.end() && !less(owner, found->first) ? found->second : nullptr;
 }
-}
+} // namespace gc
 
 /** Enumerates owning edges; traversing a reference never traverses its payload. */
 class TraceVisitor {
-  public:
+public:
     using Edge = void (*)(gc::Node*, void*);
     TraceVisitor(const gc::SharedNodes& shared, Edge edge, void* state = nullptr)
         : shared_(shared), edge_(edge), state_(state) {}
-    void edge(gc::Node* node) const { if (node) edge_(node, state_); }
+    void edge(gc::Node* node) const {
+        if (node)
+            edge_(node, state_);
+    }
     template <typename T> void operator()(const T& value) const {
         if constexpr (requires { gc_trace_edges(value, *this); }) {
             gc_trace_edges(value, *this);
@@ -95,15 +104,18 @@ class TraceVisitor {
         // retained by their opaque storage remain external roots conservatively.
     }
     template <typename T> void operator()(const std::shared_ptr<T>& value) const {
-        if (!value) return;
+        if (!value)
+            return;
         edge(gc::find_shared_node(shared_, std::weak_ptr<const void>(value)));
     }
     template <typename T> void operator()(const std::weak_ptr<T>&) const {}
     template <typename T> void operator()(const std::optional<T>& value) const {
-        if (value) (*this)(*value);
+        if (value)
+            (*this)(*value);
     }
     template <typename... Ts> void operator()(const std::variant<Ts...>& value) const {
-        if (!value.valueless_by_exception()) std::visit([&](const auto& item) { (*this)(item); }, value);
+        if (!value.valueless_by_exception())
+            std::visit([&](const auto& item) { (*this)(item); }, value);
     }
     template <typename... Ts> void operator()(const std::tuple<Ts...>& value) const {
         trace_tuple(value, std::index_sequence_for<Ts...>{});
@@ -111,18 +123,34 @@ class TraceVisitor {
     template <typename A, typename B> void operator()(const std::pair<A, B>& value) const {
         trace_tuple(value, std::index_sequence<0, 1>{});
     }
-    template <typename T, std::size_t N> void operator()(const std::array<T, N>& value) const { trace_range(value); }
-    template <typename T, typename A> void operator()(const std::vector<T, A>& value) const { trace_range(value); }
-    template <typename T, typename A> void operator()(const std::deque<T, A>& value) const { trace_range(value); }
-    template <typename T, typename A> void operator()(const std::list<T, A>& value) const { trace_range(value); }
+    template <typename T, std::size_t N> void operator()(const std::array<T, N>& value) const {
+        trace_range(value);
+    }
+    template <typename T, typename A> void operator()(const std::vector<T, A>& value) const {
+        trace_range(value);
+    }
+    template <typename T, typename A> void operator()(const std::deque<T, A>& value) const {
+        trace_range(value);
+    }
+    template <typename T, typename A> void operator()(const std::list<T, A>& value) const {
+        trace_range(value);
+    }
     template <typename K, typename V, typename C, typename A>
-    void operator()(const std::map<K, V, C, A>& value) const { trace_range(value); }
+    void operator()(const std::map<K, V, C, A>& value) const {
+        trace_range(value);
+    }
     template <typename K, typename V, typename H, typename E, typename A>
-    void operator()(const std::unordered_map<K, V, H, E, A>& value) const { trace_range(value); }
+    void operator()(const std::unordered_map<K, V, H, E, A>& value) const {
+        trace_range(value);
+    }
     template <typename K, typename C, typename A>
-    void operator()(const std::set<K, C, A>& value) const { trace_range(value); }
+    void operator()(const std::set<K, C, A>& value) const {
+        trace_range(value);
+    }
     template <typename K, typename H, typename E, typename A>
-    void operator()(const std::unordered_set<K, H, E, A>& value) const { trace_range(value); }
+    void operator()(const std::unordered_set<K, H, E, A>& value) const {
+        trace_range(value);
+    }
     // Views borrow their elements. Counting them would subtract another owner's
     // references and could collect objects that still have a live root.
     template <typename T, std::size_t N> void operator()(const std::span<T, N>&) const {}
@@ -133,12 +161,14 @@ class TraceVisitor {
     template <typename C, typename Tr>
     void operator()(const std::basic_string_view<C, Tr>&) const {}
 
-  private:
+private:
     template <typename T> void trace_range(const T& values) const {
-        for (const auto& value : values) (*this)(value);
+        for (const auto& value : values)
+            (*this)(value);
     }
     template <std::size_t I, typename T> void trace_tuple_field(const T& value) const {
-        if constexpr (!std::is_reference_v<std::tuple_element_t<I, T>>) (*this)(std::get<I>(value));
+        if constexpr (!std::is_reference_v<std::tuple_element_t<I, T>>)
+            (*this)(std::get<I>(value));
     }
     template <typename T, std::size_t... I>
     void trace_tuple(const T& value, std::index_sequence<I...>) const {
@@ -149,45 +179,92 @@ class TraceVisitor {
     void* state_;
 };
 
+inline gc::Registry::~Registry() noexcept {
+    // Pin the complete registry before clearing cycles; payload destruction
+    // can publish more nodes, which join the same teardown.
+    collecting = true;
+    std::size_t pinned = 0;
+    std::size_t cleared = 0;
+    for (;;) {
+        while (pinned < nodes.size()) {
+            nodes[pinned]->pin();
+            ++pinned;
+        }
+        while (cleared < pinned) {
+            nodes[cleared]->clear();
+            ++cleared;
+        }
+        if (pinned == nodes.size())
+            break;
+    }
+    // Longer-lived invalid roots must not touch a destroyed thread registry.
+    while (!nodes.empty()) {
+        auto* node = nodes.back();
+        node->detach();
+        node->unpin();
+    }
+}
+
 namespace gc {
 template <typename T> struct SharedBlock final : Node {
     template <typename... Args>
-    explicit SharedBlock(Args&&... args) : value(std::in_place, std::forward<Args>(args)...) {}
-    ~SharedBlock() override { clear(); }
-    std::optional<T> value;
+    explicit SharedBlock(Args&&... args) : value(std::forward<Args>(args)...) {
+        payload_alive = true;
+    }
+    ~SharedBlock() override {
+        detach();
+        clear();
+    }
+    union {
+        T value;
+    };
     std::weak_ptr<const void> identity;
     std::shared_ptr<const void> retained;
-    void trace(const TraceVisitor& visitor) const override { if (value) visitor(*value); }
-    void clear() noexcept override { payload_alive = false; value.reset(); }
-    std::size_t owners() const noexcept override { return static_cast<std::size_t>(identity.use_count()); }
+    void trace(const TraceVisitor& visitor) const override {
+        if (payload_alive)
+            visitor(value);
+    }
+    void clear() noexcept override {
+        if (std::exchange(payload_alive, false))
+            std::destroy_at(std::addressof(value));
+    }
+    std::size_t owners() const noexcept override {
+        return static_cast<std::size_t>(identity.use_count());
+    }
     void pin() noexcept override { retained = identity.lock(); }
     void unpin() noexcept override { auto release = std::move(retained); }
     std::weak_ptr<const void> shared_owner() const noexcept override { return identity; }
 };
-}
+} // namespace gc
 
 /** Shared storage with ordinary shared_ptr alias/weak semantics and a visitor. */
 template <typename T, typename... Args>
 [[nodiscard]] std::shared_ptr<T> make_gc_shared(Args&&... args) {
     auto block = std::make_shared<gc::SharedBlock<T>>(std::forward<Args>(args)...);
     block->identity = block;
-    auto* value = std::addressof(*block->value);
-    if constexpr (requires { value->gc_bind_node(block.get()); }) value->gc_bind_node(block.get());
+    block->attach();
+    auto* value = std::addressof(block->value);
+    if constexpr (requires { value->gc_bind_node(block.get()); })
+        value->gc_bind_node(block.get());
     return {std::move(block), value};
+}
+
+template <typename T> [[nodiscard]] auto make_gc_cell(T&& value) {
+    return make_gc_shared<std::decay_t<T>>(std::forward<T>(value));
 }
 
 /** Collect unreachable cycles at a control-thread boundary. Acyclic values
  * still die immediately through their existing reference-count operations. */
 inline std::size_t collect_cycles() {
     auto& registry = gc::registry;
-    if (registry.collecting || !registry.first) return 0;
-    std::vector<gc::Node*> nodes;
-    nodes.reserve(registry.size);
+    if (registry.collecting || registry.nodes.empty())
+        return 0;
+    const auto nodes = registry.nodes;
     gc::SharedNodes shared;
-    for (auto* node = registry.first; node; node = node->next) {
-        nodes.push_back(node);
+    for (auto* node : nodes) {
         auto identity = node->shared_owner();
-        if (!identity.expired()) shared.emplace_back(std::move(identity), node);
+        if (!identity.expired())
+            shared.emplace_back(std::move(identity), node);
     }
     std::sort(shared.begin(), shared.end(), [](const auto& left, const auto& right) {
         return std::owner_less<>{}(left.first, right.first);
@@ -199,7 +276,8 @@ inline std::size_t collect_cycles() {
     struct Collection {
         const std::vector<gc::Node*>& nodes;
         ~Collection() {
-            for (auto* node : nodes) node->unpin();
+            for (auto* node : nodes)
+                node->unpin();
             gc::registry.collecting = false;
         }
     } collection{nodes};
@@ -209,25 +287,30 @@ inline std::size_t collect_cycles() {
         node->reachable = false;
     }
     const TraceVisitor count(shared, [](gc::Node* node, void*) { ++node->incoming; });
-    for (const auto* node : nodes) node->trace(count);
-    const TraceVisitor mark(shared, [](gc::Node* node, void* state) {
-        if (node->reachable) return;
-        node->reachable = true;
-        static_cast<std::vector<gc::Node*>*>(state)->push_back(node);
-    }, &pending);
+    for (const auto* node : nodes)
+        node->trace(count);
+    const TraceVisitor mark(
+        shared,
+        [](gc::Node* node, void* state) {
+            if (node->reachable)
+                return;
+            node->reachable = true;
+            static_cast<std::vector<gc::Node*>*>(state)->push_back(node);
+        },
+        &pending);
     for (auto* node : nodes) {
         // Every counted edge is one owner, and the pin taken above is
         // another, so a node reporting fewer owners than edges has a tracer
         // that enumerated one edge twice. Clearing it would free a live
         // value, so the collector refuses instead.
         if (node->owners() < node->incoming + 1) {
-            throw std::logic_error(
-                std::string("A gc_trace over-reports the edges into a ") +
-                typeid(*node).name() + ": " + std::to_string(node->incoming) +
-                " incoming edge(s) against " + std::to_string(node->owners()) +
-                " owner(s).");
+            throw std::logic_error(std::string("A gc_trace over-reports the edges into a ") +
+                                   typeid(*node).name() + ": " + std::to_string(node->incoming) +
+                                   " incoming edge(s) against " + std::to_string(node->owners()) +
+                                   " owner(s).");
         }
-        if (node->owners() > node->incoming + 1) mark.edge(node);
+        if (node->owners() > node->incoming + 1)
+            mark.edge(node);
     }
     while (!pending.empty()) {
         auto* node = pending.back();
@@ -236,7 +319,8 @@ inline std::size_t collect_cycles() {
     }
     std::size_t collected = 0;
     for (auto* node : nodes) {
-        if (node->reachable) continue;
+        if (node->reachable)
+            continue;
         node->clear();
         ++collected;
     }
@@ -245,12 +329,13 @@ inline std::size_t collect_cycles() {
     return collected;
 }
 
-inline std::size_t managed_node_count() noexcept { return gc::registry.size; }
+inline std::size_t managed_node_count() noexcept { return gc::registry.nodes.size(); }
 
 /** Bounded cadence also handles dropping the last root without allocating. */
 inline void collect_at_frame_boundary() {
     auto& registry = gc::registry;
-    if (!registry.first) return;
+    if (registry.nodes.empty())
+        return;
     ++registry.frames_since_collection;
     if (registry.frames_since_collection >= 60 ||
         (registry.frames_since_collection >= 8 && registry.allocations >= 1024)) {
@@ -261,8 +346,10 @@ inline void collect_at_frame_boundary() {
 /** Declare before generated locals so collection follows their normal teardown. */
 struct CollectOnExit {
     ~CollectOnExit() noexcept {
-        try { collect_cycles(); }
-        catch (const std::bad_alloc&) { /* Process teardown still releases acyclic owners. */ }
+        try {
+            collect_cycles();
+        } catch (const std::bad_alloc&) { /* Process teardown still releases acyclic owners. */
+        }
     }
 };
 

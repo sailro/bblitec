@@ -11,27 +11,27 @@ import type { Value } from "./types.js";
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-interface BrowserFileContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "unwrap"
-        | "resolveStaticExpression"
-        | "lookupOptional"
-        | "isDefaultLibraryIdentifier"
-        | "propertyName"
-        | "compileValue"
-        | "compileStringLiteral"
-        | "compileNumber"
-        | "cppString"
-        | "expectArgumentCount"
-        | "expectKind"
-        | "expectSameEngine"
-        | "requireEngine"
-        | "requireDefaultEngine"
-        | "reachFeature"
-        | "reachJsData"
-        | "fail"
-    > {}
+interface BrowserFileContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "unwrap"
+    | "resolveStaticExpression"
+    | "lookupOptional"
+    | "isDefaultLibraryIdentifier"
+    | "propertyName"
+    | "compileValue"
+    | "compileStringLiteral"
+    | "compileNumber"
+    | "cppString"
+    | "expectArgumentCount"
+    | "expectKind"
+    | "expectSameEngine"
+    | "requireEngine"
+    | "requireDefaultEngine"
+    | "reachFeature"
+    | "reachJsData"
+    | "fail"
+> {}
 
 const knownAcceptMimeExtensions = new EmissionMap<string, readonly string[]>([
     ["application/json", ["json"]],
@@ -50,8 +50,10 @@ function isDefaultGlobal(
     expression: ts.Expression,
     name: string,
 ): expression is ts.Identifier {
-    return browserGlobalNamed(context, expression)?.text === name &&
-        ts.isIdentifier(expression);
+    return (
+        browserGlobalNamed(context, expression)?.text === name &&
+        ts.isIdentifier(expression)
+    );
 }
 
 function staticPropertyName(
@@ -60,10 +62,7 @@ function staticPropertyName(
 ): string {
     return (
         context.propertyName(name) ??
-        context.fail(
-            name,
-            "Blob options require statically named properties.",
-        )
+        context.fail(name, "Blob options require statically named properties.")
     );
 }
 
@@ -101,9 +100,7 @@ function blobType(
     options: ts.Expression | undefined,
 ): string {
     if (!options) return "";
-    const resolved = context.unwrap(
-        context.resolveStaticExpression(options),
-    );
+    const resolved = context.unwrap(context.resolveStaticExpression(options));
     if (!ts.isObjectLiteralExpression(resolved)) {
         return context.fail(
             options,
@@ -288,9 +285,7 @@ export function compileBrowserFileElementAccess(
     expression: ts.ElementAccessExpression,
 ): Value | undefined {
     const ownerExpression = context.unwrap(expression.expression);
-    const ownerType = context.checker.getTypeAtLocation(
-        expression.expression,
-    );
+    const ownerType = context.checker.getTypeAtLocation(expression.expression);
     const propertyFiles =
         ts.isPropertyAccessExpression(ownerExpression) &&
         ownerExpression.name.text === "files";
@@ -303,8 +298,7 @@ export function compileBrowserFileElementAccess(
         (propertyFiles &&
             ((propertyBase &&
                 ts.isIdentifier(propertyBase) &&
-                context.lookupOptional(propertyBase)?.kind ===
-                    "ui-element") ||
+                context.lookupOptional(propertyBase)?.kind === "ui-element") ||
                 ownerType.getSymbol()?.getName() === "FileList"));
     if (!mayBeFileList) return undefined;
     const owner = context.compileValue(expression.expression);
@@ -337,7 +331,7 @@ export function compileBrowserFileProperty(
         if (owner.uiTag !== "input") {
             context.fail(
                 expression,
-                "The native files list exists only on a retained <input type=\"file\">.",
+                'The native files list exists only on a retained <input type="file">.',
             );
         }
         if (!owner.uiFileInput) {
@@ -408,10 +402,7 @@ export function validateFileAccept(
     const extensions = new EmissionSet<string>();
     for (const token of tokens) {
         if (token.length === 0) {
-            context.fail(
-                node,
-                "File input accept contains an empty entry.",
-            );
+            context.fail(node, "File input accept contains an empty entry.");
         }
         if (/^\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}$/.test(token)) {
             const extension = token.toLowerCase();
@@ -419,11 +410,7 @@ export function validateFileAccept(
             canonical.push(extension);
             continue;
         }
-        if (
-            !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(
-                token,
-            )
-        ) {
+        if (!/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(token)) {
             context.fail(
                 node,
                 `File input accept entry '${token}' is not supported; use an exact MIME type or a safe extension such as '.json'.`,
@@ -480,10 +467,7 @@ export function isNativeBrowserFileExpression(
     let filesOwner: ts.Expression | undefined;
     if (ts.isElementAccessExpression(value)) {
         const list = context.unwrap(value.expression);
-        if (
-            ts.isPropertyAccessExpression(list) &&
-            list.name.text === "files"
-        ) {
+        if (ts.isPropertyAccessExpression(list) && list.name.text === "files") {
             filesOwner = context.unwrap(list.expression);
         }
     } else if (

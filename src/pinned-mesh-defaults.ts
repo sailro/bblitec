@@ -49,18 +49,14 @@ function pinnedDefaultExpression(
     local: string,
 ): ts.Expression {
     const context = reader();
-    const { declaration } = context.functionDeclaration(
-        modulePath,
-        factory,
-    );
+    const { declaration } = context.functionDeclaration(modulePath, factory);
     const initializer = context.variableInitializer(declaration, local);
     let found: ts.BinaryExpression | undefined;
     const visit = (node: ts.Node): void => {
         if (found) return;
         if (
             ts.isBinaryExpression(node) &&
-            node.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
         ) {
             found = node;
             return;
@@ -108,10 +104,7 @@ export function pinnedMeshOptionLocals(
     factory: string,
 ): readonly string[] {
     const context = reader();
-    const { declaration } = context.functionDeclaration(
-        modulePath,
-        factory,
-    );
+    const { declaration } = context.functionDeclaration(modulePath, factory);
     const options = declaration.parameters[0];
     if (!options || !ts.isIdentifier(options.name)) {
         return context.contractError(
@@ -142,8 +135,7 @@ export function pinnedMeshOptionLocals(
             let left = context.unwrapExpression(initializer.left);
             while (
                 ts.isBinaryExpression(left) &&
-                left.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken
+                left.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
             ) {
                 left = context.unwrapExpression(left.left);
             }
@@ -244,12 +236,9 @@ const transformParameters = [
     "sz",
 ] as const;
 
-export type TransformNodeParameter =
-    (typeof transformParameters)[number];
+export type TransformNodeParameter = (typeof transformParameters)[number];
 
-let transformDefaults:
-    | ReadonlyMap<TransformNodeParameter, number>
-    | undefined;
+let transformDefaults: ReadonlyMap<TransformNodeParameter, number> | undefined;
 
 export function transformNodeDefaults(): ReadonlyMap<
     TransformNodeParameter,
@@ -262,11 +251,7 @@ export function transformNodeDefaults(): ReadonlyMap<
         transformNodeFactory,
     );
     const name = declaration.parameters[0];
-    if (
-        !name ||
-        !ts.isIdentifier(name.name) ||
-        name.name.text !== "name"
-    ) {
+    if (!name || !ts.isIdentifier(name.name) || name.name.text !== "name") {
         context.contractError(
             name ?? declaration,
             "Expected createTransformNode to take a name first.",
@@ -288,10 +273,7 @@ export function transformNodeDefaults(): ReadonlyMap<
                     "with a default.",
             );
         }
-        defaults.set(
-            parameter,
-            context.numericValue(initializer, file),
-        );
+        defaults.set(parameter, context.numericValue(initializer, file));
     }
     transformDefaults = defaults;
     return defaults;

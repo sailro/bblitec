@@ -17,7 +17,10 @@ test("packages external glTF buffers and images into a GLB", async () => {
     try {
         mkdirSync(join(directory, "textures"));
         writeFileSync(join(directory, "mesh.bin"), Buffer.from([1, 2, 3, 4]));
-        writeFileSync(join(directory, "textures", "color.png"), Buffer.from([5, 6, 7]));
+        writeFileSync(
+            join(directory, "textures", "color.png"),
+            Buffer.from([5, 6, 7]),
+        );
         writeFileSync(
             join(directory, "scene.gltf"),
             JSON.stringify({
@@ -33,27 +36,46 @@ test("packages external glTF buffers and images into a GLB", async () => {
         assert.equal(glb.readUInt32LE(0), 0x46546c67);
         const jsonLength = glb.readUInt32LE(12);
         const document = JSON.parse(
-            glb.subarray(20, 20 + jsonLength).toString("utf8").trim(),
+            glb
+                .subarray(20, 20 + jsonLength)
+                .toString("utf8")
+                .trim(),
         ) as {
             buffers: Array<{ byteLength: number }>;
-            bufferViews: Array<{ buffer: number; byteOffset: number; byteLength: number }>;
-            images: Array<{ bufferView: number; mimeType: string; uri?: string }>;
+            bufferViews: Array<{
+                buffer: number;
+                byteOffset: number;
+                byteLength: number;
+            }>;
+            images: Array<{
+                bufferView: number;
+                mimeType: string;
+                uri?: string;
+            }>;
             materials: Array<{
                 normalTexture: { index: number; scale: number };
             }>;
         };
         assert.equal(document.buffers.length, 1);
         assert.equal(document.bufferViews.length, 2);
-        assert.deepEqual(document.images, [{ bufferView: 1, mimeType: "image/png" }]);
+        assert.deepEqual(document.images, [
+            { bufferView: 1, mimeType: "image/png" },
+        ]);
         assert.equal(document.images[0]?.uri, undefined);
         assert.deepEqual(document.materials[0]?.normalTexture, {
             index: 0,
             scale: 0.35,
         });
         assert.equal(GLTF_SOURCE_ALBEDO_IDENTITIES in document, false);
-        const observed = readGlbFixture(Buffer.from(await packageGltf("scene.gltf", directory, true)));
+        const observed = readGlbFixture(
+            Buffer.from(await packageGltf("scene.gltf", directory, true)),
+        );
         assert.deepEqual(observed.document[GLTF_SOURCE_ALBEDO_IDENTITIES], {
-            materials: [0, 1], fallbackTexels: {0: [255, 255, 255, 255], 1: [255, 255, 255, 255]},
+            materials: [0, 1],
+            fallbackTexels: {
+                0: [255, 255, 255, 255],
+                1: [255, 255, 255, 255],
+            },
         });
     } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -254,10 +276,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
             // independently, and leaves the pinned hook to materialize the
             // same decoded view as the URI-less form above.
             writeFileSync(join(directory, "compressed.bin"), compressed);
-            writeFileSync(
-                join(directory, "fallback.bin"),
-                Buffer.alloc(1152),
-            );
+            writeFileSync(join(directory, "fallback.bin"), Buffer.alloc(1152));
             writeFileSync(
                 join(directory, "uri-fallback.gltf"),
                 JSON.stringify({
@@ -322,7 +341,8 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 0,
             );
             assert.equal(
-                uriPackagedView[0]!.extensions.EXT_meshopt_compression.byteOffset,
+                uriPackagedView[0]!.extensions.EXT_meshopt_compression
+                    .byteOffset,
                 0,
             );
             const uriResolved = readGlbFixture(
@@ -441,9 +461,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                         meshes: [
                             {
                                 name: "Combined",
-                                primitives: [
-                                    { attributes: { POSITION: 0 } },
-                                ],
+                                primitives: [{ attributes: { POSITION: 0 } }],
                             },
                         ],
                         nodes: [{ name: "CombinedNode", mesh: 0 }],
@@ -609,7 +627,9 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
 });
 
 test("rejects a malformed meshopt fallback buffer before packaging", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-meshopt-invalid-"));
+    const directory = mkdtempSync(
+        join(tmpdir(), "bblitec-gltf-meshopt-invalid-"),
+    );
     try {
         writeFileSync(join(directory, "compressed.bin"), Buffer.from([1]));
         writeFileSync(
@@ -627,9 +647,7 @@ test("rejects a malformed meshopt fallback buffer before packaging", async () =>
                         },
                     },
                 ],
-                bufferViews: [
-                    { buffer: 1, byteOffset: 0, byteLength: 4 },
-                ],
+                bufferViews: [{ buffer: 1, byteOffset: 0, byteLength: 4 }],
             }),
         );
 
@@ -685,7 +703,9 @@ test("rejects a URI-less meshopt fallback absent from extensionsUsed", async () 
 });
 
 test("rejects invalid meshopt fallback and compressed source ranges", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-meshopt-range-"));
+    const directory = mkdtempSync(
+        join(tmpdir(), "bblitec-gltf-meshopt-range-"),
+    );
     try {
         writeFileSync(join(directory, "compressed.bin"), Buffer.from([1]));
         const document = {
@@ -764,7 +784,10 @@ test("embeds an external image referenced by a GLB beside that GLB", async () =>
         assert.deepEqual(packaged.document.images, [
             { name: "color", bufferView: 1, mimeType: "image/png" },
         ]);
-        assert.deepEqual([...packaged.binary.subarray(0, 7)], [1, 2, 3, 4, 5, 6, 7]);
+        assert.deepEqual(
+            [...packaged.binary.subarray(0, 7)],
+            [1, 2, 3, 4, 5, 6, 7],
+        );
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }

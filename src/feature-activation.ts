@@ -27,10 +27,7 @@
 //   a new activation unit cannot land without naming what it mirrors.
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
-import {
-    nodeShadowInputs,
-    shadowCapabilities,
-} from "./shadow-capabilities.js";
+import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { imageCodecs } from "./image-codec-manifest.js";
@@ -174,11 +171,29 @@ const INVENTORY: readonly FeatureActivationConsumer[] = ["inventory"];
  * error: a new `Feature` union member cannot land without a row here.
  */
 const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
-    "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
-    "text:layout": { provenance: "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData", consumers: CMAKE },
-    "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
-    "renderer:text": { provenance: "src/text/text-renderer.ts#createTextRenderer + registerTextRenderer", consumers: CMAKE },
-    "text:weight": { provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset", consumers: CMAKE },
+    "text:data": {
+        provenance: "src/text/default-text-data.ts#createDefaultTextData",
+        consumers: CMAKE,
+    },
+    "text:layout": {
+        provenance:
+            "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData",
+        consumers: CMAKE,
+    },
+    "text:renderable": {
+        provenance:
+            "src/text/text-renderable.ts#createTextRenderable + addTextRenderable",
+        consumers: CMAKE,
+    },
+    "renderer:text": {
+        provenance:
+            "src/text/text-renderer.ts#createTextRenderer + registerTextRenderer",
+        consumers: CMAKE,
+    },
+    "text:weight": {
+        provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset",
+        consumers: CMAKE,
+    },
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
@@ -253,7 +268,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "masked node's channels, so it keeps its rest-pose TRS)",
         consumers: CMAKE,
     },
-    "core": {
+    core: {
         provenance:
             "src/engine/engine.ts + src/scene/scene-core.ts " +
             "(lowered engine and scene core; every scene reaches it)",
@@ -266,11 +281,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "engine:device-recovery": {
-        provenance: "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
+        provenance:
+            "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
         consumers: CMAKE,
     },
     "input:dom": {
-        provenance: "DOM event target/phase dispatch; native-architecture: owned input packets and realm-local listeners",
+        provenance:
+            "DOM event target/phase dispatch; native-architecture: owned input packets and realm-local listeners",
         consumers: CMAKE,
     },
     "input:gamepad": {
@@ -304,8 +321,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "camera:view-projection": {
-        provenance:
-            "src/camera/camera.ts (getViewProjectionMatrix)",
+        provenance: "src/camera/camera.ts (getViewProjectionMatrix)",
         consumers: CMAKE,
     },
     "environment:ibl": {
@@ -317,8 +333,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: ["features.cmake", "variant table"],
     },
     "environment:env": {
-        provenance:
-            "src/loader-env/load-env.ts + src/loader-env/env-parse.ts",
+        provenance: "src/loader-env/load-env.ts + src/loader-env/env-parse.ts",
         consumers: CMAKE,
     },
     "environment:hdr": {
@@ -475,17 +490,26 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "material:source-texture-read": {
-        provenance: "src/material/pbr/pbr-material.ts#createPbrMaterial + " +
+        provenance:
+            "src/material/pbr/pbr-material.ts#createPbrMaterial + " +
             "src/material/standard/standard-material.ts#diffuseTexture + src/loader-gltf/load-gltf.ts#uploadMeshes",
         consumers: ["loader flag", "generation gate"],
     },
     "material:clearcoat": {
         provenance: "src/material/pbr/set-clearcoat.ts",
-        consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
     },
     "material:sheen": {
         provenance: "src/material/pbr/set-sheen.ts",
-        consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
     },
     "material:sheen-albedo-scaling": {
         provenance:
@@ -511,7 +535,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
-        consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
     },
     "material:lightmap": {
         provenance:
@@ -526,11 +554,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         ],
     },
     "material:local-cubemap": {
-        provenance: "src/material/pbr/enable-pbr-local-cubemap.ts (executed validation, probe packing and setters)",
-        consumers: ["features.cmake", "variant table", "render_capabilities.hpp", "fidelity.json"],
+        provenance:
+            "src/material/pbr/enable-pbr-local-cubemap.ts (executed validation, probe packing and setters)",
+        consumers: [
+            "features.cmake",
+            "variant table",
+            "render_capabilities.hpp",
+            "fidelity.json",
+        ],
     },
     "renderer:surface": {
-        provenance: "src/engine/surface.ts createSurface; native-architecture: retained canvas presentation in one OS window",
+        provenance:
+            "src/engine/surface.ts createSurface; native-architecture: retained canvas presentation in one OS window",
         consumers: ["renderer plan", "fidelity.json"],
     },
     "material:anisotropy": {
@@ -583,7 +618,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: ["features.cmake", "variant table"],
     },
     "material:node-inputs": {
-        provenance: "src/material/node/node-material.ts inputs and texture slots",
+        provenance:
+            "src/material/node/node-material.ts inputs and texture slots",
         consumers: ["variant table"],
     },
     "material:standard": {
@@ -596,15 +632,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "material:standard-skeleton": {
-        provenance: "src/material/standard/enable-standard-mesh-features.ts enableStandardSkeleton",
+        provenance:
+            "src/material/standard/enable-standard-mesh-features.ts enableStandardSkeleton",
         consumers: ["variant table"],
     },
     "material:standard-uv-offset": {
-        provenance: "src/material/standard/enable-standard-mesh-features.ts enableStandardUvOffset",
+        provenance:
+            "src/material/standard/enable-standard-mesh-features.ts enableStandardUvOffset",
         consumers: ["variant table"],
     },
     "mesh:vertex-alpha": {
-        provenance: "src/material/standard/standard-renderable.ts rebuildSingle",
+        provenance:
+            "src/material/standard/standard-renderable.ts rebuildSingle",
         consumers: ["variant table", "renderer plan"],
     },
     "mesh:box": {
@@ -712,7 +751,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "mesh:clone": {
-        provenance: "src/scene/transform-node.ts#cloneMeshNode; src/mesh/mesh.ts#initMeshTransform",
+        provenance:
+            "src/scene/transform-node.ts#cloneMeshNode; src/mesh/mesh.ts#initMeshTransform",
         consumers: CMAKE,
     },
     "mesh:geometry-access": {
@@ -742,7 +782,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "math:normalize-vec3": {
-        provenance: "src/math/normalize-vec3-tuple-or-up.ts + src/math/normalize-vec3.ts",
+        provenance:
+            "src/math/normalize-vec3-tuple-or-up.ts + src/math/normalize-vec3.ts",
         consumers: CMAKE,
     },
     "math:mat4-invert": {
@@ -750,7 +791,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "math:mat4-create": {
-        provenance: "src/math/compose-mat4.ts + src/math/create-identity-mat4.ts + src/math/create-translation-mat4.ts",
+        provenance:
+            "src/math/compose-mat4.ts + src/math/create-identity-mat4.ts + src/math/create-translation-mat4.ts",
         consumers: CMAKE,
     },
     "math:look-direction": {
@@ -916,7 +958,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "material:standard-lightmap": {
-        provenance: "src/material/standard/set-std-lightmap.ts + fragments/std-lightmap-fragment.ts",
+        provenance:
+            "src/material/standard/set-std-lightmap.ts + fragments/std-lightmap-fragment.ts",
         consumers: CMAKE,
     },
     "material:standard-diffuse-file-texture": {
@@ -963,8 +1006,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "texture:file": {
-        provenance:
-            "src/texture/texture-2d.ts + src/texture/solid-texture.ts",
+        provenance: "src/texture/texture-2d.ts + src/texture/solid-texture.ts",
         consumers: CMAKE,
     },
     "texture:compressed": {
@@ -1026,7 +1068,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "navigation:crowd": {
-        provenance: "src/navigation/navigation.ts createNavCrowd reaches DetourCrowd",
+        provenance:
+            "src/navigation/navigation.ts createNavCrowd reaches DetourCrowd",
         consumers: CMAKE,
     },
     "audio:engine": {
@@ -1049,13 +1092,41 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "and decodes it through BaseAudioContext.decodeAudioData",
         consumers: CMAKE,
     },
-    "audio:decode-wav": { provenance: "WAVE container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-wv": { provenance: "WavPack container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-mpc": { provenance: "Musepack container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-flac": { provenance: "FLAC container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-mp3": { provenance: "MP3 container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-opus": { provenance: "Opus container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
-    "audio:decode-ogg": { provenance: "Vorbis container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-wav": {
+        provenance:
+            "WAVE container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-wv": {
+        provenance:
+            "WavPack container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-mpc": {
+        provenance:
+            "Musepack container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-flac": {
+        provenance:
+            "FLAC container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-mp3": {
+        provenance:
+            "MP3 container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-opus": {
+        provenance:
+            "Opus container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
+    "audio:decode-ogg": {
+        provenance:
+            "Vorbis container bytes or unproven encoded input reach decodeAudioData",
+        consumers: CMAKE,
+    },
     "audio:oscillator": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createOscillator()",
@@ -1089,23 +1160,28 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "physics:character-controller": {
-        provenance: "src/physics/character-controller.ts PhysicsCharacterController over Havok query collectors",
+        provenance:
+            "src/physics/character-controller.ts PhysicsCharacterController over Havok query collectors",
         consumers: CMAKE,
     },
     "physics:container": {
-        provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
+        provenance:
+            "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
         consumers: CMAKE,
     },
     "physics:viewer": {
-        provenance: "src/physics/physics-viewer.ts body lifecycle + physics-debug-line-material.ts pipeline",
+        provenance:
+            "src/physics/physics-viewer.ts body lifecycle + physics-debug-line-material.ts pipeline",
         consumers: CMAKE,
     },
     "physics:constraints": {
-        provenance: "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
+        provenance:
+            "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
         consumers: CMAKE,
     },
     "physics:heightfield": {
-        provenance: "src/physics/havok-heightfield.ts ground mesh bounds, sample grid and Havok constructor inputs",
+        provenance:
+            "src/physics/havok-heightfield.ts ground mesh bounds, sample grid and Havok constructor inputs",
         consumers: CMAKE,
     },
     "physics:trigger": {
@@ -1116,7 +1192,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: INVENTORY,
     },
     "physics:thin-instances": {
-        provenance: "src/physics/havok-thin-instances.ts, enabled by enableHavokThinInstancePhysics",
+        provenance:
+            "src/physics/havok-thin-instances.ts, enabled by enableHavokThinInstancePhysics",
         consumers: INVENTORY,
     },
     "physics:floating-origin": {
@@ -1190,9 +1267,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "renderer:transmission": {
-        provenance:
-            "src/frame-graph/transmission.ts (enableSceneTransmission)",
-        consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+        provenance: "src/frame-graph/transmission.ts (enableSceneTransmission)",
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
     },
     "material:pbr-linear-image-processing": {
         provenance:
@@ -1201,8 +1281,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: ["variant table"],
     },
     "renderer:fog": {
-        provenance:
-            "src/shader/wgsl-fog.ts (scene fog state in scene-core.ts)",
+        provenance: "src/shader/wgsl-fog.ts (scene fog state in scene-core.ts)",
         consumers: ["features.cmake", "variant table"],
     },
     "renderer:clip-plane": {
@@ -1247,19 +1326,23 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "platform:workers": {
-        provenance: "the HTML dedicated Worker, module graph, event loop and structured-clone host services",
+        provenance:
+            "the HTML dedicated Worker, module graph, event loop and structured-clone host services",
         consumers: CMAKE,
     },
     "platform:http": {
-        provenance: "runtime HTTP(S) requests and response data through native platform transport",
+        provenance:
+            "runtime HTTP(S) requests and response data through native platform transport",
         consumers: CMAKE,
     },
     "platform:packaged-fetch": {
-        provenance: "owned fetch responses from the closed packaged asset manifest, without network transport",
+        provenance:
+            "owned fetch responses from the closed packaged asset manifest, without network transport",
         consumers: CMAKE,
     },
     "platform:window": {
-        provenance: "the Window document, layout observers and native presentation host, independent of application and worker execution",
+        provenance:
+            "the Window document, layout observers and native presentation host, independent of application and worker execution",
         consumers: CMAKE,
     },
     "ui:rml": {
@@ -1273,7 +1356,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "data:locale": {
-        provenance: "ECMAScript string normalization and locale collation through the platform ICU C API",
+        provenance:
+            "ECMAScript string normalization and locale collation through the platform ICU C API",
         consumers: CMAKE,
     },
     "data:json": {
@@ -1314,9 +1398,7 @@ function activation(
     parts: ReadonlyArray<readonly [boolean, string]>,
     inactive: string,
 ): { active: boolean; activatedBy: string } {
-    const reasons = parts
-        .filter(([on]) => on)
-        .map(([, reason]) => reason);
+    const reasons = parts.filter(([on]) => on).map(([, reason]) => reason);
     return reasons.length > 0
         ? { active: true, activatedBy: reasons.join("; ") }
         : { active: false, activatedBy: inactive };
@@ -1394,7 +1476,7 @@ function assetJoinReason(name: string, joinedBy: string): string {
         // load-babylon.ts's, not a glTF extension's.
         return joinedBy.endsWith(".babylon")
             ? ` carries a .babylon ${kind} light ` +
-              "(src/loader-babylon/load-babylon.ts)"
+                  "(src/loader-babylon/load-babylon.ts)"
             : ` carries KHR_lights_punctual kind "${kind}"`;
     }
     return "";
@@ -1404,7 +1486,10 @@ function runtimeFeatureRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
     const rows: FeatureActivationRow[] = [];
-    const emit = (name: string, entry: RuntimeFeatureEntry | undefined): void => {
+    const emit = (
+        name: string,
+        entry: RuntimeFeatureEntry | undefined,
+    ): void => {
         const active = inputs.features.includes(name);
         const joinedBy = inputs.assetJoinedFeatures.get(name);
         // The first reaching scene-source call site, recorded by the
@@ -1414,12 +1499,10 @@ function runtimeFeatureRows(
         const activatedBy = !active
             ? "not reached"
             : joinedBy !== undefined
-                ? `asset-joined: ${joinedBy}${
-                      assetJoinReason(name, joinedBy)
-                  }`
-                : site !== undefined
-                    ? `scene source: reached at ${site}`
-                    : "scene source: reached by the compiled scene TypeScript";
+              ? `asset-joined: ${joinedBy}${assetJoinReason(name, joinedBy)}`
+              : site !== undefined
+                ? `scene source: reached at ${site}`
+                : "scene source: reached by the compiled scene TypeScript";
         rows.push(
             row(
                 name,
@@ -1471,8 +1554,7 @@ function capabilityRows(
         nodePcfCasters: nodePcfCasterCount,
     });
     const nodeVariantCount = nodeVariantList.length;
-    const nodeGeometryViewCount =
-        nodeGeometryVariants(nodeVariantList).length;
+    const nodeGeometryViewCount = nodeGeometryVariants(nodeVariantList).length;
     const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
     const taa = emit.postProcessComposites.some(
         (composite) => composite.taa !== undefined,
@@ -1513,24 +1595,58 @@ function capabilityRows(
             "BBLITE_LOCAL_CUBEMAP",
             "capability",
             has("material:local-cubemap"),
-            [[has("material:local-cubemap"), "scene source reached material:local-cubemap"]],
+            [
+                [
+                    has("material:local-cubemap"),
+                    "scene source reached material:local-cubemap",
+                ],
+            ],
             "no scene material enables local cubemap probes",
             "src/material/pbr/enable-pbr-local-cubemap.ts: enablePbrLocalCubemap installs the probe binding and packing state",
-            ["render_capabilities.hpp", "material_texture_slots.hpp", "variant table"],
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
         ),
-        ...([
-            ["BBLITE_MATERIAL_ANISOTROPY_MAP", "anisotropyTexture_", "anisotropy"],
-            ["BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP", "translucencyColorTexture_", "subsurface"],
-            ["BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP", "translucencyIntensityTexture_", "subsurface"],
-        ] as const).map(([name, binding, fragment]) => checkedRow(
-            name,
-            "capability",
-            pbrBindingNames.has(binding),
-            [[pbrBindingNames.has(binding), `a composed PBR variant binds ${binding}`]],
-            `no composed PBR variant binds ${binding}`,
-            `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
-            ["render_capabilities.hpp", "material_texture_slots.hpp", "variant table"],
-        )),
+        ...(
+            [
+                [
+                    "BBLITE_MATERIAL_ANISOTROPY_MAP",
+                    "anisotropyTexture_",
+                    "anisotropy",
+                ],
+                [
+                    "BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP",
+                    "translucencyColorTexture_",
+                    "subsurface",
+                ],
+                [
+                    "BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP",
+                    "translucencyIntensityTexture_",
+                    "subsurface",
+                ],
+            ] as const
+        ).map(([name, binding, fragment]) =>
+            checkedRow(
+                name,
+                "capability",
+                pbrBindingNames.has(binding),
+                [
+                    [
+                        pbrBindingNames.has(binding),
+                        `a composed PBR variant binds ${binding}`,
+                    ],
+                ],
+                `no composed PBR variant binds ${binding}`,
+                `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
+                [
+                    "render_capabilities.hpp",
+                    "material_texture_slots.hpp",
+                    "variant table",
+                ],
+            ),
+        ),
         // A plain row: the define is this disjunction and nothing else, so
         // a checked row here would compare the expression against itself.
         row(
@@ -1556,10 +1672,7 @@ function capabilityRows(
             "capability",
             emit.gpuDeformation,
             [
-                [
-                    spec.gpuDeformation,
-                    "a glTF asset carries animations",
-                ],
+                [spec.gpuDeformation, "a glTF asset carries animations"],
                 [
                     has("mesh:morph-targets"),
                     "scene-source morph targets need the deformation " +
@@ -1581,10 +1694,15 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
-            "BBLITE_DEFORM_PICKING", "capability",
+            "BBLITE_DEFORM_PICKING",
+            "capability",
             (emit.pickingShaders?.deform?.length ?? 0) > 0,
-            [[(emit.pickingShaders?.deform?.length ?? 0) > 0,
-                "a GPU pick composes at least one live skeleton or morph projection"]],
+            [
+                [
+                    (emit.pickingShaders?.deform?.length ?? 0) > 0,
+                    "a GPU pick composes at least one live skeleton or morph projection",
+                ],
+            ],
             "no GPU pick reaches a transported skeleton or morph pose",
             "src/picking/deform-picking-projection.ts: the pin selects a regular " +
                 "projection per candidate for both basic and detailed picking. " +
@@ -1593,10 +1711,18 @@ function capabilityRows(
             ["render_capabilities.hpp", "variant table", "deployed shaders"],
         ),
         checkedRow(
-            "BBLITE_DEFORM_PICKING_MORPH", "capability",
-            emit.pickingShaders?.deform?.some((variant) => variant.morph) ?? false,
-            [[emit.pickingShaders?.deform?.some((variant) => variant.morph) ?? false,
-                "a composed deformation projection reads morph storage"]],
+            "BBLITE_DEFORM_PICKING_MORPH",
+            "capability",
+            emit.pickingShaders?.deform?.some((variant) => variant.morph) ??
+                false,
+            [
+                [
+                    emit.pickingShaders?.deform?.some(
+                        (variant) => variant.morph,
+                    ) ?? false,
+                    "a composed deformation projection reads morph storage",
+                ],
+            ],
             "no composed deformation projection reads morph storage",
             "src/picking/deform-picking-projection.ts: each projection declares " +
                 "its own bone and morph bindings; picking_projection.hpp carries " +
@@ -1676,10 +1802,7 @@ function capabilityRows(
             "capability",
             emit.gpuInstancing,
             [
-                [
-                    spec.gpuInstancing,
-                    "an asset uses EXT_mesh_gpu_instancing",
-                ],
+                [spec.gpuInstancing, "an asset uses EXT_mesh_gpu_instancing"],
                 [
                     has("mesh:thin-instances"),
                     "scene source reached mesh:thin-instances",
@@ -1721,7 +1844,12 @@ function capabilityRows(
             "BBLITE_MATERIAL_CLEARCOAT",
             "capability",
             emit.clearcoat,
-            [[composed.clearcoat, composedArm("clearcoat", "material:clearcoat")]],
+            [
+                [
+                    composed.clearcoat,
+                    composedArm("clearcoat", "material:clearcoat"),
+                ],
+            ],
             "no composed PBR variant carries the pin's clearcoat fragment",
             "src/material/pbr/fragments/clearcoat-fragment.ts, registered " +
                 "through _registerPbrExt by src/loader-gltf/gltf-ext-clearcoat.ts " +
@@ -1755,10 +1883,12 @@ function capabilityRows(
             "BBLITE_MATERIAL_IRIDESCENCE",
             "capability",
             emit.iridescence,
-            [[
-                composed.iridescence,
-                composedArm("iridescence", "material:iridescence"),
-            ]],
+            [
+                [
+                    composed.iridescence,
+                    composedArm("iridescence", "material:iridescence"),
+                ],
+            ],
             "no composed PBR variant carries the pin's iridescence fragment",
             "src/material/pbr/fragments/iridescence-fragment.ts, registered " +
                 "through _registerPbrExt by " +
@@ -1778,11 +1908,16 @@ function capabilityRows(
             composed.lightmap,
             [
                 [
-                    has("material:lightmap") && pbrBindingNames.has("lmTexture"),
+                    has("material:lightmap") &&
+                        pbrBindingNames.has("lmTexture"),
                     "scene source reached material:lightmap and a composed " +
                         "variant binds lmTexture",
                 ],
-                [has("material:standard-lightmap") && composed.standardLightmap, "scene source reached material:standard-lightmap and a composed variant binds lT"],
+                [
+                    has("material:standard-lightmap") &&
+                        composed.standardLightmap,
+                    "scene source reached material:standard-lightmap and a composed variant binds lT",
+                ],
             ],
             "no composed material binds a lightmap",
             "src/material/pbr/enable-pbr-lightmap.ts and src/material/standard/set-std-lightmap.ts register their lightmap fragments",
@@ -1798,7 +1933,8 @@ function capabilityRows(
             composed.metallicReflectanceMap,
             [
                 [
-                    (has("material:metallic-reflectance") || spec.materialSpecular) &&
+                    (has("material:metallic-reflectance") ||
+                        spec.materialSpecular) &&
                         composed.metallicReflectanceMap,
                     "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds metallicReflectanceMap",
@@ -1820,7 +1956,8 @@ function capabilityRows(
             composed.reflectanceMap,
             [
                 [
-                    (has("material:metallic-reflectance") || spec.materialSpecular) &&
+                    (has("material:metallic-reflectance") ||
+                        spec.materialSpecular) &&
                         composed.reflectanceMap,
                     "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds reflectanceMap",
@@ -1892,7 +2029,7 @@ function capabilityRows(
             composed.standardBump,
             composed.standardBump
                 ? "a composed Standard variant binds the pin's bump pair " +
-                    "(bT/bS)"
+                      "(bT/bS)"
                 : "no composed Standard variant binds a bump texture",
             "src/material/standard/fragments/normal-map-fragment.ts: the " +
                 "pinned Standard material composes its normal-map fragment " +
@@ -1913,7 +2050,7 @@ function capabilityRows(
             composed.standardReflection,
             composed.standardReflection
                 ? "a composed Standard variant binds the pin's 2D " +
-                    "reflection pair (rT/rS)"
+                      "reflection pair (rT/rS)"
                 : "no composed Standard variant binds a 2D reflection",
             "src/material/standard/fragments/std-reflection-fragment.ts: " +
                 "the pinned Standard material composes its std-reflection " +
@@ -1976,7 +2113,7 @@ function capabilityRows(
             ],
             shadows.reached
                 ? "reached a shadow generator but composes no Standard " +
-                    "variant"
+                      "variant"
                 : "not reached",
             "src/material/standard/fragments/std-shadow-fragment.ts",
             ["render_capabilities.hpp"],
@@ -2041,7 +2178,7 @@ function capabilityRows(
             ],
             shadows.reached
                 ? "reached a shadow generator but no node graph receives " +
-                    "or casts"
+                      "or casts"
                 : "not reached",
             "src/material/node/node-shadow.ts",
             ["render_capabilities.hpp"],
@@ -2146,7 +2283,7 @@ function capabilityRows(
             variantCount > 0,
             variantCount > 0
                 ? `${variantCount} variant(s) composed by the pin over ` +
-                    "the scene's materials, mesh feature sets, and scene arms"
+                      "the scene's materials, mesh feature sets, and scene arms"
                 : "no glTF or scene-code PBR materials compose variants",
             "the pin's own composed PBR stages " +
                 "(src/material/pbr/pbr-template.ts and its fragments), one " +
@@ -2160,8 +2297,8 @@ function capabilityRows(
             standardVariantCount > 0,
             standardVariantCount > 0
                 ? `${standardVariantCount} Standard variant(s) composed ` +
-                    "by the pin over the scene's .babylon and scene-code " +
-                    "Standard materials"
+                      "by the pin over the scene's .babylon and scene-code " +
+                      "Standard materials"
                 : "no Standard materials compose variants",
             "the pin's own composed Standard stages " +
                 "(src/material/standard/standard-template.ts and its " +
@@ -2175,7 +2312,7 @@ function capabilityRows(
             nodeVariantCount > 0,
             nodeVariantCount > 0
                 ? `${nodeVariantCount} node graph(s) compiled by the ` +
-                    "pin's own node-material emitter for this scene"
+                      "pin's own node-material emitter for this scene"
                 : "no node materials compile graphs",
             "the pin's own node-material emitter " +
                 "(src/material/node/node-material.ts " +
@@ -2195,8 +2332,7 @@ function capabilityRows(
                 // graph. A scene with graphs and no task composes none, and
                 // so does a scene with a task and no graph.
                 [
-                    nodeVariantCount > 0 &&
-                        emit.geometryOutputTasks.length > 0,
+                    nodeVariantCount > 0 && emit.geometryOutputTasks.length > 0,
                     `${nodeGeometryViewCount} geometry view(s) composed ` +
                         `from ${nodeVariantCount} node graph(s) over ` +
                         `${emit.geometryOutputTasks.length} ` +
@@ -2205,7 +2341,7 @@ function capabilityRows(
             ],
             nodeVariantCount > 0
                 ? "node graphs compose, but the scene registers no " +
-                    "geometry-renderer task"
+                      "geometry-renderer task"
                 : "no node materials compile graphs",
             "the pin's own node geometry view " +
                 "(src/material/node/node-geometry-view.ts " +
@@ -2225,15 +2361,13 @@ function capabilityRows(
             variantCount > 0 ||
                 standardVariantCount > 0 ||
                 nodeVariantCount > 0,
-            variantCount > 0 ||
-                standardVariantCount > 0 ||
-                nodeVariantCount > 0
+            variantCount > 0 || standardVariantCount > 0 || nodeVariantCount > 0
                 ? "derived: a composed family " +
-                    `(${[
-                        ...(variantCount > 0 ? ["PBR"] : []),
-                        ...(standardVariantCount > 0 ? ["Standard"] : []),
-                        ...(nodeVariantCount > 0 ? ["node"] : []),
-                    ].join(", ")}) draws through the pin's own group scheme`
+                      `(${[
+                          ...(variantCount > 0 ? ["PBR"] : []),
+                          ...(standardVariantCount > 0 ? ["Standard"] : []),
+                          ...(nodeVariantCount > 0 ? ["node"] : []),
+                      ].join(", ")}) draws through the pin's own group scheme`
                 : "no composed family reaches the pinned group scheme",
             "native-architecture: the derived define " +
                 "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 " +
@@ -2247,11 +2381,11 @@ function capabilityRows(
             variantCount > 0 || standardVariantCount > 0,
             variantCount > 0 || standardVariantCount > 0
                 ? "derived: a material family " +
-                    `(${[
-                        ...(variantCount > 0 ? ["PBR"] : []),
-                        ...(standardVariantCount > 0 ? ["Standard"] : []),
-                    ].join(", ")}) reaches the thin-instance arm and the ` +
-                    "geometry contract"
+                      `(${[
+                          ...(variantCount > 0 ? ["PBR"] : []),
+                          ...(standardVariantCount > 0 ? ["Standard"] : []),
+                      ].join(", ")}) reaches the thin-instance arm and the ` +
+                      "geometry contract"
                 : "no material family composes variants",
             "native-architecture: the derived define " +
                 "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0` " +
@@ -2269,11 +2403,11 @@ function capabilityRows(
                 standardVariantCount > 0 ||
                 nodeGeometryViewCount > 0
                 ? "derived: a family with an MRT arm " +
-                    `(${[
-                        ...(variantCount > 0 ? ["PBR"] : []),
-                        ...(standardVariantCount > 0 ? ["Standard"] : []),
-                        ...(nodeGeometryViewCount > 0 ? ["node"] : []),
-                    ].join(", ")}) can draw into a geometry-output task`
+                      `(${[
+                          ...(variantCount > 0 ? ["PBR"] : []),
+                          ...(standardVariantCount > 0 ? ["Standard"] : []),
+                          ...(nodeGeometryViewCount > 0 ? ["node"] : []),
+                      ].join(", ")}) can draw into a geometry-output task`
                 : "no family composes a geometry-output arm",
             "native-architecture: the derived define " +
                 "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 " +
@@ -2293,8 +2427,8 @@ function capabilityRows(
             taa
                 ? "a composed post-process composite is the pin's TAA task"
                 : has("renderer:post-process")
-                    ? "reached post-process but no composite is the TAA task"
-                    : "not reached",
+                  ? "reached post-process but no composite is the TAA task"
+                  : "not reached",
             "src/frame-graph/taa-post-process.ts createTaaPostProcessTask: " +
                 "the lowered post-process header carries the jitter, " +
                 "history and scene-UBO blocks only for a scene composing " +
@@ -2308,11 +2442,11 @@ function capabilityRows(
             has("material:standard-skeleton") && standardVariantCount > 0,
             has("material:standard-skeleton") && standardVariantCount > 0
                 ? "scene source reached enableStandardSkeleton and the " +
-                    "scene composes Standard variants"
+                      "scene composes Standard variants"
                 : has("material:standard-skeleton")
-                    ? "reached enableStandardSkeleton but composes no " +
-                        "Standard variant"
-                    : "not reached",
+                  ? "reached enableStandardSkeleton but composes no " +
+                    "Standard variant"
+                  : "not reached",
             "src/material/standard/fragments/std-skeleton-fragment.ts " +
                 "stdSkeletonExt, registered by " +
                 "src/material/standard/enable-standard-mesh-features.ts " +
@@ -2346,7 +2480,9 @@ function codecRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
     return imageCodecs.map(({ codec, mimeType }) => {
         const reached = inputs.imageCodecs.includes(codec);
         return row(
-            codec, "codec", reached,
+            codec,
+            "codec",
+            reached,
             reached
                 ? `a materialized asset needs ${mimeType} decoding`
                 : `no materialized asset needs ${mimeType} decoding`,
@@ -2370,7 +2506,7 @@ function emitOptionRows(
             emit.animatedWorldBounds,
             emit.animatedWorldBounds
                 ? "a glTF asset carries animations, so the loader records " +
-                    "live world boxes"
+                      "live world boxes"
                 : "no glTF asset carries animations",
             "native-architecture: upstream recomputes node worlds live and " +
                 "composes boxes per frame (expandWorldAabbForMesh — " +
@@ -2386,7 +2522,7 @@ function emitOptionRows(
             emit.nonTrianglePrimitives
                 ? "a glTF primitive has mode !== 4"
                 : "every glTF primitive is a triangle list (or there are " +
-                    "no glTF assets)",
+                      "no glTF assets)",
             "src/loader-gltf/gltf-feature-registry.ts primitive row, the " +
                 "anyPrimitive(mode !== 4) half -> gltf-feature-primitive.js; " +
                 "the hasNegDetNode half is unconditional inline code in the " +
@@ -2398,10 +2534,7 @@ function emitOptionRows(
             "emit-option",
             emit.nodeVisibility,
             [
-                [
-                    emit.gltfNodeVisibility,
-                    "an asset uses KHR_node_visibility",
-                ],
+                [emit.gltfNodeVisibility, "an asset uses KHR_node_visibility"],
                 [
                     features.includes("mesh:visible"),
                     "scene code writes mesh.visible",
@@ -2457,7 +2590,7 @@ function emitOptionRows(
             emit.assetTransmission
                 ? "a glTF material's transmissionFactor > 0"
                 : "no glTF material carries transmissionFactor > 0 (a " +
-                    "declared extension with a zero factor reaches nothing)",
+                      "declared extension with a zero factor reaches nothing)",
             "src/loader-gltf/gltf-ext-dielectric.ts sets _transmissive and " +
                 "the refraction intensity from transmissionFactor; " +
                 "registerPbrTransmission " +
@@ -2471,11 +2604,11 @@ function emitOptionRows(
             emit.materialSpecular,
             emit.materialSpecular
                 ? "a KHR_materials_specular material reaches the specular " +
-                    "half of the pinned needsReflectance (a texture, factor " +
-                    "!= 1, or a non-white colour)"
+                      "half of the pinned needsReflectance (a texture, factor " +
+                      "!= 1, or a non-white colour)"
                 : "no material reaches the specular half of " +
-                    "needsReflectance (the ior-alone arm folds exactly; " +
-                    "factor 1 with white colour reaches nothing)",
+                      "needsReflectance (the ior-alone arm folds exactly; " +
+                      "factor 1 with white colour reaches nothing)",
             "src/loader-gltf/gltf-ext-dielectric.ts needsReflectance, the " +
                 "specular half; the ior !== 1.5 arm is folded exactly by " +
                 "the generated loader's reflectance fold and " +
@@ -2500,10 +2633,10 @@ function emitOptionRows(
             emit.gaussianSplats,
             emit.gaussianSplats
                 ? "an asset uses KHR_gaussian_splatting (its GS primitives " +
-                    "were converted to the pin's own splat rows at " +
-                    "packaging, and the loader builds one cloud per row " +
-                    "buffer and registers it through the container's scene " +
-                    "hook)"
+                      "were converted to the pin's own splat rows at " +
+                      "packaging, and the loader builds one cloud per row " +
+                      "buffer and registers it through the container's scene " +
+                      "hook)"
                 : "no asset uses KHR_gaussian_splatting",
             "src/loader-gltf/gltf-feature-registry.ts: " +
                 "KHR_gaussian_splatting -> " +
@@ -2518,8 +2651,8 @@ function emitOptionRows(
             emit.imageBasedLighting,
             emit.imageBasedLighting
                 ? "an asset uses EXT_lights_image_based (installs the " +
-                    "asset's own environment, adds the pinned BRDF LUT " +
-                    "asset, and joins environment:ibl)"
+                      "asset's own environment, adds the pinned BRDF LUT " +
+                      "asset, and joins environment:ibl)"
                 : "no asset uses EXT_lights_image_based",
             "src/loader-gltf/gltf-ext-lights-image-based.ts",
             ["renderer plan"],
@@ -2555,7 +2688,7 @@ function emitOptionRows(
             emit.standardDiffuseUv2,
             emit.standardDiffuseUv2
                 ? "a .babylon material authors its diffuse texture against " +
-                    "the second UV set"
+                      "the second UV set"
                 : "no .babylon diffuse texture selects coordinatesIndex 1",
             "src/loader-babylon/load-babylon.ts reads " +
                 "diffuseTexture.coordinatesIndex; the pinned Standard " +
@@ -2570,7 +2703,7 @@ function emitOptionRows(
             emit.dispersion,
             emit.dispersion
                 ? "a composed PBR variant refracts with the pin's " +
-                    "chromatic dispersion"
+                      "chromatic dispersion"
                 : "no composed PBR variant carries a dispersion",
             "src/material/pbr/fragments/refraction-rtt-fragment.ts reads " +
                 "_subsurface.refraction.dispersion off the material the " +
@@ -2616,11 +2749,11 @@ function emitOptionRows(
             emit.pinnedSkeletonPalette ?? false,
             (emit.pinnedSkeletonPalette ?? false)
                 ? "the composed variants carry the pin's own skeleton " +
-                    "mesh bit, so the bone palette rides its per-bone " +
-                    "texture (which caps no joint count)"
+                      "mesh bit, so the bone palette rides its per-bone " +
+                      "texture (which caps no joint count)"
                 : "no composed variant carries the skeleton bit; a " +
-                    "skinned asset would take the transcribed 64-matrix " +
-                    "uniform palette",
+                      "skinned asset would take the transcribed 64-matrix " +
+                      "uniform palette",
             "src/loader-gltf/gltf-feature-skeleton.ts: the pin uploads " +
                 "its bone palette as a per-bone texture; which transport " +
                 "a scene takes is decided by whether its composed " +
@@ -2635,8 +2768,8 @@ function emitOptionRows(
             emit.spriteCustomShaders.length > 0,
             emit.spriteCustomShaders.length > 0
                 ? `${emit.spriteCustomShaders.length} scene-code custom ` +
-                    "fragment(s) composed into the pin's own builder(s): " +
-                    customShaderFamilies
+                      "fragment(s) composed into the pin's own builder(s): " +
+                      customShaderFamilies
                 : "no scene-code sprite-family custom shaders",
             "src/sprite/sprite-custom-shader.ts makeCustomSpriteWgsl + " +
                 "src/sprite/billboard-custom-shader.ts " +
@@ -2651,9 +2784,9 @@ function emitOptionRows(
             emit.effects.length > 0,
             emit.effects.length > 0
                 ? `${emit.effects.length} createEffectWrapper ` +
-                    "descriptor(s), each composed as the pin's own " +
-                    "fullscreen vertex stage plus the caller's fragment " +
-                    "and deployed under both entry points"
+                      "descriptor(s), each composed as the pin's own " +
+                      "fullscreen vertex stage plus the caller's fragment " +
+                      "and deployed under both entry points"
                 : "no effect wrappers",
             "src/effect/effect-renderer.ts createEffectWrapper " +
                 "(DEFAULT_VERTEX_WGSL plus the caller's fragment); the " +
@@ -2668,9 +2801,9 @@ function emitOptionRows(
             emit.plainSpriteLayer
                 ? "a scene-code layer draws the stock sprite program"
                 : "every scene-code layer opts into a custom shader, so " +
-                    "the stock fragment deploys only if a node-particle " +
-                    "bridge needs it (the bridges answer for their own " +
-                    "layers from the pin's pass table)",
+                      "the stock fragment deploys only if a node-particle " +
+                      "bridge needs it (the bridges answer for their own " +
+                      "layers from the pin's pass table)",
             "src/sprite/sprite-pipeline.ts makeSpriteWgsl: the stock " +
                 "fragment deploys only where a plain layer draws with it; " +
                 "upstream-lower.ts ORs this option with the " +
@@ -2684,9 +2817,9 @@ function emitOptionRows(
             emit.plainBillboardSystem
                 ? "a scene-code system draws the stock billboard program"
                 : "every scene-code system opts into a custom shader, so " +
-                    "the stock pair deploys only if a node-particle " +
-                    "system needs it (mode 4's second pass draws the " +
-                    "stock program over the same instances)",
+                      "the stock pair deploys only if a node-particle " +
+                      "system needs it (mode 4's second pass draws the " +
+                      "stock program over the same instances)",
             "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
                 "stock pair deploys only where a plain system draws with " +
                 "it; upstream-lower.ts ORs this option with the " +
@@ -2720,10 +2853,10 @@ function compositionRows(
             variantCount > 0,
             variantCount > 0
                 ? "composed over light modes: no-light" +
-                    (kinds.length > 0
-                        ? `, single-light [${kinds.join(", ")}], multi-light`
-                        : "") +
-                    "; the runtime selects the arm its own light walk produces"
+                      (kinds.length > 0
+                          ? `, single-light [${kinds.join(", ")}], multi-light`
+                          : "") +
+                      "; the runtime selects the arm its own light walk produces"
                 : "no composed PBR variants consume the scene arms",
             "src/material/pbr/fragments/multilight-wgsl.ts and the " +
                 "single-light modules; generation cannot know how many " +
@@ -2762,9 +2895,7 @@ function compositionRows(
             composition.linearImageProcessing,
             [
                 [
-                    features.includes(
-                        "material:pbr-linear-image-processing",
-                    ),
+                    features.includes("material:pbr-linear-image-processing"),
                     "scene source reached linear PBR image processing",
                 ],
                 [
@@ -2788,8 +2919,8 @@ function compositionRows(
             taskCount > 0,
             taskCount > 0
                 ? `${taskCount} geometry-output task(s); a PBR mesh drawn ` +
-                    "in one resolves the pin's own MRT arm for that task's " +
-                    "attachment list"
+                      "in one resolves the pin's own MRT arm for that task's " +
+                      "attachment list"
                 : "no geometry-output tasks",
             "src/material/pbr/pbr-geometry-output-shader.ts (attachmentExpr)",
             ["variant table"],
@@ -2800,13 +2931,13 @@ function compositionRows(
             passCount > 0,
             passCount > 0
                 ? `${passCount} post-process pass(es), composed by running ` +
-                    `each effect's own factory: ${[
-                        ...new Set(
-                            emit.postProcessTasks.map(
-                                (task) => task.intrinsic,
-                            ),
-                        ),
-                    ].join(", ")}`
+                      `each effect's own factory: ${[
+                          ...new Set(
+                              emit.postProcessTasks.map(
+                                  (task) => task.intrinsic,
+                              ),
+                          ),
+                      ].join(", ")}`
                 : "no post-process passes",
             "src/frame-graph/post-process-task.ts getShaderModule, over " +
                 "each effect module's own _shader record",
@@ -2818,9 +2949,9 @@ function compositionRows(
             standardVariantCount > 0,
             standardVariantCount > 0
                 ? `${standardVariantCount} Standard variant(s) composed ` +
-                    "by the pin over the scene's .babylon and scene-code " +
-                    "Standard materials, deployed under the variant-std- " +
-                    "stems beside standard_variants.hpp"
+                      "by the pin over the scene's .babylon and scene-code " +
+                      "Standard materials, deployed under the variant-std- " +
+                      "stems beside standard_variants.hpp"
                 : "no Standard materials compose variants",
             "src/material/standard/standard-template.ts and its " +
                 "fragments, composed per (material, mesh bits, scene arm) " +
@@ -2833,9 +2964,9 @@ function compositionRows(
             nodeVariantCount > 0,
             nodeVariantCount > 0
                 ? `${nodeVariantCount} node graph(s) compiled by the ` +
-                    "pin's own node-material emitter, one module per " +
-                    "graph deployed under both entry points beside " +
-                    "node_variants.hpp"
+                      "pin's own node-material emitter, one module per " +
+                      "graph deployed under both entry points beside " +
+                      "node_variants.hpp"
                 : "no node materials compile graphs",
             "src/material/node/node-material.ts " +
                 "parseNodeMaterialFromSnippet + the pin's own " +
@@ -2849,7 +2980,7 @@ function compositionRows(
             features.includes("loader:splat"),
             features.includes("loader:splat")
                 ? "the pin's own Gaussian-splat module, split at its two " +
-                    "entry points (splat.vert/splat.frag)"
+                      "entry points (splat.vert/splat.frag)"
                 : "no splat assets",
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts " +
                 "WGSL: the pin ships the module text itself; nothing " +
@@ -2862,8 +2993,8 @@ function compositionRows(
             emit.splatShaderModule !== undefined,
             emit.splatShaderModule !== undefined
                 ? "the pin's own applyGsFragments spliced this scene's " +
-                    "GsShaderFragment plugins into the splat module and " +
-                    "ran its field-name mangler over the result"
+                      "GsShaderFragment plugins into the splat module and " +
+                      "ran its field-name mangler over the result"
                 : "no loadSplat call passed shader fragments",
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts " +
                 "applyGsFragments: upstream inlines its mangling table so " +
@@ -2877,13 +3008,11 @@ function compositionRows(
             emit.shaderPrograms.length > 0,
             emit.shaderPrograms.length > 0
                 ? `${emit.shaderPrograms.length} shader-material ` +
-                    `program(s) composed into deployed stages: ${
-                        emit.shaderPrograms
-                            .map((program) => program.name)
-                            .join(", ")
-                    }`
+                      `program(s) composed into deployed stages: ${emit.shaderPrograms
+                          .map((program) => program.name)
+                          .join(", ")}`
                 : "no shader materials (the line family, a mesh plus a " +
-                    "ShaderMaterial, rides this list too)",
+                      "ShaderMaterial, rides this list too)",
             "src/material/shader/shader-material.ts: each program's WGSL " +
                 "composes through the scene-local variant table, and the " +
                 "line system's own stages travel as one of these programs",
@@ -2895,9 +3024,9 @@ function compositionRows(
             spriteFamilies.length > 0,
             spriteFamilies.length > 0
                 ? "the pinned sprite-family builders' text reconstructed " +
-                    `for the reached permutations (${
-                        spriteFamilies.join(", ")
-                    })`
+                      `for the reached permutations (${spriteFamilies.join(
+                          ", ",
+                      )})`
                 : "no sprite or billboard renderer",
             "src/sprite/sprite-pipeline.ts makeSpriteWgsl + " +
                 "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
@@ -2912,8 +3041,8 @@ function compositionRows(
             emit.effects.length > 0,
             emit.effects.length > 0
                 ? `${emit.effects.length} composed effect module(s): the ` +
-                    "pin's fullscreen vertex stage concatenated with each " +
-                    "caller's fragment, one module per descriptor"
+                      "pin's fullscreen vertex stage concatenated with each " +
+                      "caller's fragment, one module per descriptor"
                 : "no effect wrappers compose stages",
             "src/effect/effect-renderer.ts createEffectWrapper: " +
                 "DEFAULT_VERTEX_WGSL plus the caller's fragment, in one " +
@@ -2936,9 +3065,7 @@ function interleaveRow(
     gltfAssetCount: number,
     upstreamProvenance: string,
 ): FeatureActivationRow {
-    const interleaved = counts.some(
-        (before) => before !== gltfAssetCount,
-    );
+    const interleaved = counts.some((before) => before !== gltfAssetCount);
     if (interleaved) {
         return row(
             name,
@@ -2957,18 +3084,16 @@ function interleaveRow(
         false,
         counts.length > 0
             ? `checked ${counts.length} scene-code ${kind} ` +
-                `creation(s) against ${gltfAssetCount} glTF load(s): ` +
-                `every one was created after the last load, so the ` +
-                `creation-order key does not interleave`
+                  `creation(s) against ${gltfAssetCount} glTF load(s): ` +
+                  `every one was created after the last load, so the ` +
+                  `creation-order key does not interleave`
             : `no scene-code ${kind} creations to check`,
         upstreamProvenance,
         ["generation gate"],
     );
 }
 
-function refusalRows(
-    inputs: FeatureActivationInputs,
-): FeatureActivationRow[] {
+function refusalRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
     const { specialization: spec, emit, features, gltfAssetNames } = inputs;
     const checkedAssets =
         gltfAssetNames.length > 0
@@ -3045,13 +3170,13 @@ function refusalRows(
             false,
             emit.assetLightNodes !== undefined
                 ? `checked: the largest per-asset KHR_lights_punctual ` +
-                    `light-node count is ${emit.assetLightNodes.count} ` +
-                    `(${emit.assetLightNodes.asset}), within the frozen ` +
-                    `pinned MAX_LIGHTS${maxLightsSuffix}`
+                      `light-node count is ${emit.assetLightNodes.count} ` +
+                      `(${emit.assetLightNodes.asset}), within the frozen ` +
+                      `pinned MAX_LIGHTS${maxLightsSuffix}`
                 : "no glTF asset carries KHR_lights_punctual light nodes" +
-                    (inputs.pinnedMaxLights !== undefined
-                        ? ` (frozen pinned MAX_LIGHTS${maxLightsSuffix})`
-                        : ""),
+                      (inputs.pinnedMaxLights !== undefined
+                          ? ` (frozen pinned MAX_LIGHTS${maxLightsSuffix})`
+                          : ""),
             "src/loader-gltf/gltf-feature-lights-punctual.ts setMaxLights: " +
                 "the pin grows MAX_LIGHTS (src/light/types.ts) at run time; " +
                 "this port freezes the constant and the native writers stop " +
@@ -3062,45 +3187,45 @@ function refusalRows(
         ...(inputs.interleave === undefined
             ? []
             : [
-                interleaveRow(
-                    "refusal:scene-mesh-interleave",
-                    "mesh",
-                    inputs.interleave.sceneMeshGltfAssetsBefore,
-                    inputs.interleave.gltfAssetCount,
-                    "native-architecture: the generated variant table " +
-                        "keys renderables by creation-order mesh handle " +
-                        "(each glTF load appends its renderables in the " +
-                        "pinned loader's node-order walk while scene-code " +
-                        "builders append where reached; recordSceneMesh in " +
-                        "compiler.ts records gltfAssetsBefore per creation, " +
-                        "and compose-pipeline.ts interleaves those rows); " +
-                        "the pin composes shaders at run time and keys no " +
-                        "static table",
-                ),
-                interleaveRow(
-                    "refusal:scene-material-interleave",
-                    "PBR material",
-                    inputs.interleave.scenePbrMaterialGltfAssetsBefore,
-                    inputs.interleave.gltfAssetCount,
-                    "native-architecture: the generated variant table " +
-                        "keys materials by creation-order handle (each " +
-                        "glTF load and scene-code creation appends where " +
-                        "reached; compilePbrMaterialOptions records " +
-                        "gltfAssetsBefore per creation, and " +
-                        "compose-pipeline.ts maps those rows to absolute " +
-                        "handles); the pin composes per-material at run " +
-                        "time and keys no static table",
-                ),
-            ]),
+                  interleaveRow(
+                      "refusal:scene-mesh-interleave",
+                      "mesh",
+                      inputs.interleave.sceneMeshGltfAssetsBefore,
+                      inputs.interleave.gltfAssetCount,
+                      "native-architecture: the generated variant table " +
+                          "keys renderables by creation-order mesh handle " +
+                          "(each glTF load appends its renderables in the " +
+                          "pinned loader's node-order walk while scene-code " +
+                          "builders append where reached; recordSceneMesh in " +
+                          "compiler.ts records gltfAssetsBefore per creation, " +
+                          "and compose-pipeline.ts interleaves those rows); " +
+                          "the pin composes shaders at run time and keys no " +
+                          "static table",
+                  ),
+                  interleaveRow(
+                      "refusal:scene-material-interleave",
+                      "PBR material",
+                      inputs.interleave.scenePbrMaterialGltfAssetsBefore,
+                      inputs.interleave.gltfAssetCount,
+                      "native-architecture: the generated variant table " +
+                          "keys materials by creation-order handle (each " +
+                          "glTF load and scene-code creation appends where " +
+                          "reached; compilePbrMaterialOptions records " +
+                          "gltfAssetsBefore per creation, and " +
+                          "compose-pipeline.ts maps those rows to absolute " +
+                          "handles); the pin composes per-material at run " +
+                          "time and keys no static table",
+                  ),
+              ]),
         row(
             "refusal:physics-shapes",
             "generation-refusal",
             false,
             features.includes("physics:aggregate")
                 ? "checked: every reached physics shape names one of the " +
-                    "primitive shapes createPrimitivePhysicsShapeHandle " +
-                    "builds, or one of the two createPhysicsShape derives " +
-                    "from a mesh"
+                      "primitive shapes createPrimitivePhysicsShapeHandle " +
+                      "builds, or one of the two createPhysicsShape derives " +
+                      "from a mesh"
                 : "no physics shapes to check",
             "src/physics/havok.ts createPhysicsShape: the reached slice is " +
                 "the four mesh-free primitives plus the mesh-derived " +
@@ -3115,8 +3240,8 @@ function refusalRows(
             false,
             features.includes("texture:compressed")
                 ? "checked: every loadKtxTexture2D call lists a " +
-                    "supported block-compression suffix; packaged BC/ASTC " +
-                    "candidates retain source order for device selection"
+                      "supported block-compression suffix; packaged BC/ASTC " +
+                      "candidates retain source order for device selection"
                 : "no compressed-texture loads to check",
             "src/texture/compressed-formats.ts: the pin keeps every " +
                 "suffix whose device feature the adapter reports and falls " +
@@ -3132,7 +3257,7 @@ function refusalRows(
             false,
             features.includes("loader:splat")
                 ? "checked: every splat asset parsed as plain PLY or the " +
-                    ".splat row layout"
+                      ".splat row layout"
                 : "no splat assets to check",
             "src/loader-splat/splat-data.ts: a compressed or " +
                 "spherical-harmonic PLY needs the pin's second parser and " +
@@ -3152,9 +3277,9 @@ function refusalRows(
             false,
             (emit.nodeParticles ?? []).length > 0
                 ? `checked ${(emit.nodeParticles ?? []).length} frozen ` +
-                    "node-particle system(s): every registered one holds " +
-                    "updateSpeed 0 with a further step measured as the " +
-                    "identity, and every one carries an unflipped texture"
+                      "node-particle system(s): every registered one holds " +
+                      "updateSpeed 0 with a further step measured as the " +
+                      "identity, and every one carries an unflipped texture"
                 : "no frozen node-particle systems to check",
             "src/particle/particle-scene.ts registerNodeParticleSet " +
                 "installs the pin's per-frame animate+sync callback, which " +
@@ -3171,8 +3296,8 @@ function refusalRows(
             spec.eightInfluenceSkinning,
             spec.eightInfluenceSkinning
                 ? "an asset carries JOINTS_1/WEIGHTS_1; recorded as the " +
-                    "four-influence-skinning fidelity adaptation instead of " +
-                    "refusing (the second pair carries the small weight tail)"
+                      "four-influence-skinning fidelity adaptation instead of " +
+                      "refusing (the second pair carries the small weight tail)"
                 : "no asset carries a second influence pair",
             "src/loader-gltf/gltf-feature-skeleton.ts reads the second " +
                 "influence pair and skins eight influences " +

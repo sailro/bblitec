@@ -156,7 +156,9 @@ function generationInputFingerprint(
         `arguments ${JSON.stringify(compilerArguments)}`,
         ...[...inputs]
             .sort()
-            .map((input) => `${input}\t${inputIdentity(input, repositoryRoot)}`),
+            .map(
+                (input) => `${input}\t${inputIdentity(input, repositoryRoot)}`,
+            ),
     ]);
 }
 
@@ -173,20 +175,16 @@ function isGenerationOutput(relativePath: string): boolean {
 }
 
 /** Digest of the size and mtime of every file generation wrote. */
-export function generationOutputFingerprint(
-    outputDirectory: string,
-): string {
+export function generationOutputFingerprint(outputDirectory: string): string {
     return metadataFingerprint([outputDirectory], isGenerationOutput);
 }
 
-function readGenerationStamp(
-    path: string,
-): GenerationStamp | undefined {
+function readGenerationStamp(path: string): GenerationStamp | undefined {
     if (!existsSync(path)) return undefined;
     try {
-        const value = JSON.parse(readFileSync(path, "utf8")) as Partial<
-            GenerationStamp
-        >;
+        const value = JSON.parse(
+            readFileSync(path, "utf8"),
+        ) as Partial<GenerationStamp>;
         if (
             value.version === 2 &&
             Array.isArray(value.inputs) &&
@@ -253,12 +251,17 @@ function recordedGeneratedInputs(
  * executable's identity follows the native sources. Returns whether either
  * file moved.
  */
-export function refreshBuildStamp(outputDirectory: string, options: { generatedInputsChanged?: boolean } = {}): boolean {
+export function refreshBuildStamp(
+    outputDirectory: string,
+    options: { generatedInputsChanged?: boolean } = {},
+): boolean {
     const output = resolve(outputDirectory);
     const { stamp, inputs } = computeBuildStamp(
         output,
         process.cwd(),
-        options.generatedInputsChanged ? undefined : recordedGeneratedInputs(output),
+        options.generatedInputsChanged
+            ? undefined
+            : recordedGeneratedInputs(output),
     );
     const tree = new GeneratedTree(output);
     const wroteHeader = tree.write(
@@ -281,7 +284,7 @@ function manifestInputs(outputDirectory: string): string[] | undefined {
     };
     return Array.isArray(manifest.inputs) &&
         manifest.inputs.every((entry) => typeof entry === "string")
-        ? (manifest.inputs as string[])
+        ? manifest.inputs
         : undefined;
 }
 

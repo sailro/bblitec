@@ -67,28 +67,46 @@ interface PngImage {
 // Matches Babylon-Lite/tests/shared/compare-core.ts (Apache-2.0).
 function loadPng(path: string): PngImage {
     const png = PNG.sync.read(readFileSync(path));
-    return { width: png.width, height: png.height, data: new Uint8Array(png.data) };
+    return {
+        width: png.width,
+        height: png.height,
+        data: new Uint8Array(png.data),
+    };
 }
 
-export function imageDimensions(path: string): { width: number; height: number } {
+export function imageDimensions(path: string): {
+    width: number;
+    height: number;
+} {
     const image = loadPng(path);
     return { width: image.width, height: image.height };
 }
 
-function comparePixel(actual: PngImage, reference: PngImage, x: number, y: number): { max: number; average: number } {
+function comparePixel(
+    actual: PngImage,
+    reference: PngImage,
+    x: number,
+    y: number,
+): { max: number; average: number } {
     const actualIndex = (y * actual.width + x) * 4;
     const referenceIndex = (y * reference.width + x) * 4;
     let max = 0;
     let sum = 0;
     for (let channel = 0; channel < 3; channel += 1) {
-        const difference = Math.abs(actual.data[actualIndex + channel]! - reference.data[referenceIndex + channel]!);
+        const difference = Math.abs(
+            actual.data[actualIndex + channel]! -
+                reference.data[referenceIndex + channel]!,
+        );
         sum += difference;
         max = Math.max(max, difference);
     }
     return { max, average: sum / 3 };
 }
 
-function addPixel(result: CompareResult, difference: { max: number; average: number }): void {
+function addPixel(
+    result: CompareResult,
+    difference: { max: number; average: number },
+): void {
     result.mad += difference.average;
     result.maxDiff = Math.max(result.maxDiff, difference.max);
     if (difference.max === 0) result.exactMatch += 1;
@@ -109,7 +127,10 @@ function emptyResult(totalPixels: number): CompareResult {
     };
 }
 
-export function compareImages(actualPath: string, referencePath: string): CompareResult {
+export function compareImages(
+    actualPath: string,
+    referencePath: string,
+): CompareResult {
     const actual = loadPng(actualPath);
     const reference = loadPng(referencePath);
     const width = Math.min(actual.width, reference.width);
@@ -135,15 +156,22 @@ export function compareRegion(
     const reference = loadPng(referencePath);
     const width = Math.min(actual.width, reference.width);
     const height = Math.min(actual.height, reference.height);
-    const result: RegionResult = { ...emptyResult(width * height), regionPixels: 0 };
+    const result: RegionResult = {
+        ...emptyResult(width * height),
+        regionPixels: 0,
+    };
 
     for (let y = 0; y < height; y += 1) {
         for (let x = 0; x < width; x += 1) {
             const referenceIndex = (y * reference.width + x) * 4;
             const red = reference.data[referenceIndex]! - backgroundColor[0];
-            const green = reference.data[referenceIndex + 1]! - backgroundColor[1];
-            const blue = reference.data[referenceIndex + 2]! - backgroundColor[2];
-            if (Math.sqrt(red * red + green * green + blue * blue) <= threshold) {
+            const green =
+                reference.data[referenceIndex + 1]! - backgroundColor[1];
+            const blue =
+                reference.data[referenceIndex + 2]! - backgroundColor[2];
+            if (
+                Math.sqrt(red * red + green * green + blue * blue) <= threshold
+            ) {
                 continue;
             }
             result.regionPixels += 1;
@@ -154,7 +182,11 @@ export function compareRegion(
     return result;
 }
 
-export function generateDiffMap(actualPath: string, referencePath: string, outputPath: string): void {
+export function generateDiffMap(
+    actualPath: string,
+    referencePath: string,
+    outputPath: string,
+): void {
     const actual = loadPng(actualPath);
     const reference = loadPng(referencePath);
     const width = Math.min(actual.width, reference.width);
@@ -176,7 +208,11 @@ export function generateDiffMap(actualPath: string, referencePath: string, outpu
     writeFileSync(outputPath, PNG.sync.write(diff));
 }
 
-function regionSummary(pixels: number, sum: number, maxDiff: number): DiffRegionSummary {
+function regionSummary(
+    pixels: number,
+    sum: number,
+    maxDiff: number,
+): DiffRegionSummary {
     return {
         pixels,
         mad: pixels > 0 ? sum / pixels : 0,
@@ -210,12 +246,17 @@ export function analyzeDifference(
             const green = referencePixel(x, y, 1) - backgroundColor[1];
             const blue = referencePixel(x, y, 2) - backgroundColor[2];
             foreground[index] =
-                Math.sqrt(red * red + green * green + blue * blue) > backgroundThreshold ? 1 : 0;
+                Math.sqrt(red * red + green * green + blue * blue) >
+                backgroundThreshold
+                    ? 1
+                    : 0;
             if (foreground[index]) foregroundPixels += 1;
             const actualIndex = (y * actual.width + x) * 4;
             const referenceIndex = (y * reference.width + x) * 4;
             for (let channel = 0; channel < 3; channel += 1) {
-                const signed = actual.data[actualIndex + channel]! - reference.data[referenceIndex + channel]!;
+                const signed =
+                    actual.data[actualIndex + channel]! -
+                    reference.data[referenceIndex + channel]!;
                 channelSum[channel]! += Math.abs(signed);
                 if (foreground[index]) foregroundBias[channel]! += signed;
             }
@@ -245,7 +286,10 @@ export function analyzeDifference(
                     for (let channel = 0; channel < 3; channel += 1) {
                         colorDelta = Math.max(
                             colorDelta,
-                            Math.abs(referencePixel(x, y, channel) - referencePixel(nx, ny, channel)),
+                            Math.abs(
+                                referencePixel(x, y, channel) -
+                                    referencePixel(nx, ny, channel),
+                            ),
                         );
                     }
                     if (colorDelta > 24) {
@@ -278,8 +322,8 @@ export function analyzeDifference(
                     const key = !foreground[index]
                         ? "background"
                         : gradient[index]
-                            ? "foregroundEdge"
-                            : "foregroundInterior";
+                          ? "foregroundEdge"
+                          : "foregroundInterior";
                     sums[key].pixels += 1;
                     sums[key].sum += difference.average;
                     sums[key].max = Math.max(sums[key].max, difference.max);
@@ -305,7 +349,9 @@ export function analyzeDifference(
             }
         }
     }
-    tiles.sort((left, right) => right.mad - left.mad || right.maxDiff - left.maxDiff);
+    tiles.sort(
+        (left, right) => right.mad - left.mad || right.maxDiff - left.maxDiff,
+    );
 
     return {
         channelMad: {
@@ -314,12 +360,25 @@ export function analyzeDifference(
             blue: channelSum[2]! / (width * height),
         },
         foregroundBias: {
-            red: foregroundPixels > 0 ? foregroundBias[0]! / foregroundPixels : 0,
-            green: foregroundPixels > 0 ? foregroundBias[1]! / foregroundPixels : 0,
-            blue: foregroundPixels > 0 ? foregroundBias[2]! / foregroundPixels : 0,
+            red:
+                foregroundPixels > 0
+                    ? foregroundBias[0]! / foregroundPixels
+                    : 0,
+            green:
+                foregroundPixels > 0
+                    ? foregroundBias[1]! / foregroundPixels
+                    : 0,
+            blue:
+                foregroundPixels > 0
+                    ? foregroundBias[2]! / foregroundPixels
+                    : 0,
         },
         regions: {
-            background: regionSummary(sums.background.pixels, sums.background.sum, sums.background.max),
+            background: regionSummary(
+                sums.background.pixels,
+                sums.background.sum,
+                sums.background.max,
+            ),
             foregroundEdge: regionSummary(
                 sums.foregroundEdge.pixels,
                 sums.foregroundEdge.sum,
@@ -343,7 +402,11 @@ export function generateHotspotMap(
     const actual = loadPng(actualPath);
     const output = new PNG({ width: actual.width, height: actual.height });
     output.data.set(actual.data);
-    const setPixel = (x: number, y: number, color: [number, number, number]): void => {
+    const setPixel = (
+        x: number,
+        y: number,
+        color: [number, number, number],
+    ): void => {
         if (x < 0 || y < 0 || x >= output.width || y >= output.height) return;
         const index = (y * output.width + x) * 4;
         output.data[index] = color[0];
@@ -352,7 +415,8 @@ export function generateHotspotMap(
         output.data[index + 3] = 255;
     };
     hotspots.forEach((hotspot, rank) => {
-        const color: [number, number, number] = rank === 0 ? [255, 64, 64] : [255, 190, 0];
+        const color: [number, number, number] =
+            rank === 0 ? [255, 64, 64] : [255, 190, 0];
         for (let thickness = 0; thickness < 3; thickness += 1) {
             const left = hotspot.x + thickness;
             const top = hotspot.y + thickness;
@@ -385,11 +449,23 @@ export function analyzeIdBuffer(
     const height = Math.min(actual.height, reference.height, ids.height);
     const draws = new Map<
         number,
-        { pixels: number; sum: number; max: number; minX: number; minY: number; maxX: number; maxY: number }
+        {
+            pixels: number;
+            sum: number;
+            max: number;
+            minX: number;
+            minY: number;
+            maxX: number;
+            maxY: number;
+        }
     >();
     const idAt = (x: number, y: number): number => {
         const index = (y * ids.width + x) * 4;
-        return ids.data[index]! | (ids.data[index + 1]! << 8) | (ids.data[index + 2]! << 16);
+        return (
+            ids.data[index]! |
+            (ids.data[index + 1]! << 8) |
+            (ids.data[index + 2]! << 16)
+        );
     };
     for (let y = 0; y < height; y += 1) {
         for (let x = 0; x < width; x += 1) {
@@ -427,13 +503,25 @@ export function analyzeIdBuffer(
                     height: entry.maxY - entry.minY + 1,
                 },
             }))
-            .sort((left, right) => right.mad - left.mad || right.pixels - left.pixels),
+            .sort(
+                (left, right) =>
+                    right.mad - left.mad || right.pixels - left.pixels,
+            ),
         hotspots: hotspots.map((hotspot) => {
             const counts = new Map<number, number>();
-            for (let y = hotspot.y; y < hotspot.y + hotspot.height && y < height; y += 1) {
-                for (let x = hotspot.x; x < hotspot.x + hotspot.width && x < width; x += 1) {
+            for (
+                let y = hotspot.y;
+                y < hotspot.y + hotspot.height && y < height;
+                y += 1
+            ) {
+                for (
+                    let x = hotspot.x;
+                    x < hotspot.x + hotspot.width && x < width;
+                    x += 1
+                ) {
                     const drawId = idAt(x, y);
-                    if (drawId !== 0) counts.set(drawId, (counts.get(drawId) ?? 0) + 1);
+                    if (drawId !== 0)
+                        counts.set(drawId, (counts.get(drawId) ?? 0) + 1);
                 }
             }
             return {
@@ -449,7 +537,10 @@ export function analyzeIdBuffer(
     };
 }
 
-export function generateIdVisualization(idPath: string, outputPath: string): void {
+export function generateIdVisualization(
+    idPath: string,
+    outputPath: string,
+): void {
     const ids = loadPng(idPath);
     const output = new PNG({ width: ids.width, height: ids.height });
     for (let y = 0; y < ids.height; y += 1) {
@@ -466,9 +557,9 @@ export function generateIdVisualization(idPath: string, outputPath: string): voi
                 output.data[index + 3] = 255;
                 continue;
             }
-            output.data[index] = 55 + (drawId * 97) % 200;
-            output.data[index + 1] = 55 + (drawId * 57) % 200;
-            output.data[index + 2] = 55 + (drawId * 137) % 200;
+            output.data[index] = 55 + ((drawId * 97) % 200);
+            output.data[index + 1] = 55 + ((drawId * 57) % 200);
+            output.data[index + 2] = 55 + ((drawId * 137) % 200);
             output.data[index + 3] = 255;
         }
     }

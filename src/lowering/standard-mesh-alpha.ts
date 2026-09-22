@@ -1,6 +1,9 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericConstant } from "./pinned-numeric-constant.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
@@ -16,27 +19,52 @@ function alphaExpressions(context: LoweringContext): {
     initializer: ts.Expression;
     features: ts.Expression;
 } {
-    const { file, declaration } = context.functionDeclaration(MODULE, "buildStandardMeshRenderables");
-    const initializer = context.variableInitializer(declaration, "colorAlphaBlend");
+    const { file, declaration } = context.functionDeclaration(
+        MODULE,
+        "buildStandardMeshRenderables",
+    );
+    const initializer = context.variableInitializer(
+        declaration,
+        "colorAlphaBlend",
+    );
     const variable = initializer.parent;
     const statement = variable.parent.parent;
     const block = statement.parent;
-    if (!ts.isVariableDeclaration(variable) || !ts.isVariableStatement(statement) || !ts.isBlock(block)) {
-        refuseGeneration(MODULE, "Pinned Standard colour alpha initializer moved outside its renderable block.");
+    if (
+        !ts.isVariableDeclaration(variable) ||
+        !ts.isVariableStatement(statement) ||
+        !ts.isBlock(block)
+    ) {
+        refuseGeneration(
+            MODULE,
+            "Pinned Standard colour alpha initializer moved outside its renderable block.",
+        );
     }
-    const featureStore = block.statements[block.statements.indexOf(statement) + 1];
-    if (!featureStore || !ts.isExpressionStatement(featureStore) ||
+    const featureStore =
+        block.statements[block.statements.indexOf(statement) + 1];
+    if (
+        !featureStore ||
+        !ts.isExpressionStatement(featureStore) ||
         !ts.isBinaryExpression(featureStore.expression) ||
-        featureStore.expression.operatorToken.kind !== ts.SyntaxKind.BarEqualsToken ||
-        featureStore.expression.left.getText(file) !== "features") {
-        refuseGeneration(MODULE, "Pinned Standard colour alpha no longer contributes to the feature word.");
+        featureStore.expression.operatorToken.kind !==
+            ts.SyntaxKind.BarEqualsToken ||
+        featureStore.expression.left.getText(file) !== "features"
+    ) {
+        refuseGeneration(
+            MODULE,
+            "Pinned Standard colour alpha no longer contributes to the feature word.",
+        );
     }
     return { file, initializer, features: featureStore.expression.right };
 }
 
 function alphaFlags(context: LoweringContext): ReadonlyMap<string, number> {
-    return new Map(["VERTEX_ALPHA", "MATERIAL_ALPHA_BLEND"].map((name) =>
-        [name, pinnedNumericConstant(context, FLAG_MODULE, name)]));
+    return new Map(
+        ["VERTEX_ALPHA", "MATERIAL_ALPHA_BLEND"].map((name) => [
+            name,
+            pinnedNumericConstant(context, FLAG_MODULE, name),
+        ]),
+    );
 }
 
 export type StandardMeshAlphaDecision = (
@@ -62,13 +90,17 @@ export function decide(shadowOutput, hasVertexAlpha, hasVertexColor, instanceAlp
     return { colorAlphaBlend, features: ${features.getText(file)} };
 }
 `;
-    executedAlpha = import(javascriptModuleUrl(transpileForBrowser(source, MODULE)))
-        .then((module: { decide: StandardMeshAlphaDecision }) => module.decide);
+    executedAlpha = import(
+        javascriptModuleUrl(transpileForBrowser(source, MODULE))
+    ).then((module: { decide: StandardMeshAlphaDecision }) => module.decide);
     return executedAlpha;
 }
 
 /** The pin's shared decision for the draw bucket and the shader feature word. */
-export function lowerStandardMeshAlpha(context: LoweringContext, vertexColors = false): string {
+export function lowerStandardMeshAlpha(
+    context: LoweringContext,
+    vertexColors = false,
+): string {
     const { file, initializer, features } = alphaExpressions(context);
     const bindings = new Map<string, PinnedBinding>([
         ["shadowOutput", { cpp: "shadow_output", type: "bool" }],
@@ -81,7 +113,10 @@ export function lowerStandardMeshAlpha(context: LoweringContext, vertexColors = 
         bindings.set(name, { cpp: `${value}u`, type: "scalar" });
     }
     const lowerer = new PinnedNumericLowerer(file, {
-        bindings, calls: new Map(), booleanAnd: true, booleanOr: true,
+        bindings,
+        calls: new Map(),
+        booleanAnd: true,
+        booleanOr: true,
     });
     // Defined only when on: both PALs read it as defined(...), so a 0
     // branch would read as on. The inventory row carries the off state.

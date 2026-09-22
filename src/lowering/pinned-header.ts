@@ -5,6 +5,8 @@ export function pinnedHeader(
     options: { namespace?: string; compactPragma?: true } = {},
 ): string {
     const namespace = options.namespace ?? "bbl::upstream";
-    const directives = includes.map(include => include ? `#include ${include}` : "").join("\n");
+    const directives = includes
+        .map((include) => (include ? `#include ${include}` : ""))
+        .join("\n");
     return `#pragma once${options.compactPragma ? "\n" : "\n\n"}${directives}\n\nnamespace ${namespace} {\n${body}\n} // namespace ${namespace}\n`;
 }

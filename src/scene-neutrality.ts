@@ -129,7 +129,8 @@ function cells(value: unknown, prefix = ""): Map<string, number> {
     for (const [key, entry] of Object.entries(value as Json)) {
         const path = prefix ? `${prefix}.${key}` : key;
         if (typeof entry === "number") {
-            if (!Number.isFinite(entry)) throw new Error(`Non-finite measurement: ${path}`);
+            if (!Number.isFinite(entry))
+                throw new Error(`Non-finite measurement: ${path}`);
             flat.set(path, entry);
         } else if (typeof entry === "object" && entry !== null) {
             for (const [nested, number] of cells(entry, path)) {
@@ -148,14 +149,21 @@ function reportsIn(directory: string): Map<string, Map<string, number>> {
         if (!existsSync(path)) continue;
         try {
             const report: unknown = JSON.parse(readFileSync(path, "utf8"));
-            if (typeof report !== "object" || report === null || Array.isArray(report)) {
+            if (
+                typeof report !== "object" ||
+                report === null ||
+                Array.isArray(report)
+            ) {
                 throw new Error("Expected a report object");
             }
             const measurements = cells(report);
-            if (measurements.size === 0) throw new Error("Report has no numeric measurements");
+            if (measurements.size === 0)
+                throw new Error("Report has no numeric measurements");
             reports.set(scene, measurements);
         } catch (error) {
-            throw new Error(`Cannot compare ${path}: ${String(error)}`);
+            throw new Error(`Cannot compare ${path}: ${String(error)}`, {
+                cause: error,
+            });
         }
     }
     return reports;
@@ -203,7 +211,9 @@ export function runNeutralityReport(
             const previous = before.get(path);
             const value = after.get(path);
             if (previous === undefined || value === undefined) {
-                differences.push(`    ${path}: measurement ${previous === undefined ? "added" : "missing"}`);
+                differences.push(
+                    `    ${path}: measurement ${previous === undefined ? "added" : "missing"}`,
+                );
                 continue;
             }
             if (previous === value) continue;
@@ -211,17 +221,15 @@ export function runNeutralityReport(
                 expected++;
                 continue;
             }
-            differences.push(
-                `    ${path}: ${previous} -> ${value}`,
-            );
+            differences.push(`    ${path}: ${previous} -> ${value}`);
         }
         if (differences.length > 0) {
             moved.push(`  ${scene}\n${differences.join("\n")}`);
         } else if (expected > 0) {
             wobbled.push(
-                `  ${scene}: ${expected} cell(s) on ${
-                    [...(wobbleScenes.get(scene) ?? [])].join(", ")
-                }, known wobble`,
+                `  ${scene}: ${expected} cell(s) on ${[
+                    ...(wobbleScenes.get(scene) ?? []),
+                ].join(", ")}, known wobble`,
             );
         } else {
             unchanged++;

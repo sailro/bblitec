@@ -8,8 +8,8 @@ import { compileEntryCollection } from "./collection-methods.js";
 
 export type ObjectStaticContext = Pick<
     LoweringServices,
-        | "compileValue"
-        | "probeEmission"
+    | "compileValue"
+    | "probeEmission"
     | "dataLowerer"
     | "dataTypes"
     | "cppString"
@@ -28,11 +28,22 @@ export type ObjectStaticContext = Pick<
     | "fail"
 >;
 
-type OwnObjectContext = Pick<ObjectStaticContext, "dataTypes" | "dataLowerer" | "fail">;
+type OwnObjectContext = Pick<
+    ObjectStaticContext,
+    "dataTypes" | "dataLowerer" | "fail"
+>;
 
 /** A string-typed value's native text, static or data. */
-function stringCpp(context: ObjectStaticContext, value: Value, node: ts.Node): string {
-    return context.dataLowerer.compileKnownValueForSink(value, { kind: "string" }, node);
+function stringCpp(
+    context: ObjectStaticContext,
+    value: Value,
+    node: ts.Node,
+): string {
+    return context.dataLowerer.compileKnownValueForSink(
+        value,
+        { kind: "string" },
+        node,
+    );
 }
 
 /** Read current field storage, using proven own keys when optional fields exist. */
@@ -42,33 +53,72 @@ function structEntries(
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
 ): Array<[string, Value]> {
-    const access = context.dataTypes.isReferenceStruct(dataType.name) ? "->" : ".";
+    const access = context.dataTypes.isReferenceStruct(dataType.name)
+        ? "->"
+        : ".";
     const fields = context.dataTypes.structFields(dataType.name, node);
-    if (!owner.recordOwnKeys && fields.some(field => field.type.kind === "optional")) {
-        context.fail(node, "Object enumeration requires known own keys for a struct with optional fields.");
+    if (
+        !owner.recordOwnKeys &&
+        fields.some((field) => field.type.kind === "optional")
+    ) {
+        context.fail(
+            node,
+            "Object enumeration requires known own keys for a struct with optional fields.",
+        );
     }
-    const keys = owner.recordOwnKeys ?? fields.map(field => field.sourceName);
-    return keys.map(key => {
+    const keys = owner.recordOwnKeys ?? fields.map((field) => field.sourceName);
+    return keys.map((key) => {
         const field = context.dataTypes.structField(dataType.name, key, node);
-        const value = context.dataLowerer.leafValue(`${owner.cpp}${access}${field.name}`, field.type);
+        const value = context.dataLowerer.leafValue(
+            `${owner.cpp}${access}${field.name}`,
+            field.type,
+        );
         const original = owner.recordProperties?.[key];
-        const definitelyPresent = original && original.kind !== "json-null" &&
+        const definitelyPresent =
+            original &&
+            original.kind !== "json-null" &&
             original.dataType?.kind !== "optional";
-        return [key, definitelyPresent && field.type.kind === "optional"
-            ? context.dataLowerer.leafValue(`(*${value.cpp})`, field.type.inner) : value];
+        return [
+            key,
+            definitelyPresent && field.type.kind === "optional"
+                ? context.dataLowerer.leafValue(
+                      `(*${value.cpp})`,
+                      field.type.inner,
+                  )
+                : value,
+        ];
     });
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
-export function ownObjectEntries(context: OwnObjectContext, owner: Value, node: ts.Node): Array<[string, Value]> | undefined {
-    if (owner.kind === "record") return Object.entries(owner.recordProperties ?? {});
+export function ownObjectEntries(
+    context: OwnObjectContext,
+    owner: Value,
+    node: ts.Node,
+): Array<[string, Value]> | undefined {
+    if (owner.kind === "record")
+        return Object.entries(owner.recordProperties ?? {});
     if (owner.kind === "data" && owner.dataType?.kind === "struct")
         return structEntries(context, owner, owner.dataType, node);
-    if (owner.kind === "data" && owner.dataType?.kind === "enummap" && owner.recordOwnKeys) {
+    if (
+        owner.kind === "data" &&
+        owner.dataType?.kind === "enummap" &&
+        owner.recordOwnKeys
+    ) {
         const type = owner.dataType;
-        return owner.recordOwnKeys.map(key => {
-            const tag = context.dataTypes.enumMemberCpp({ kind: "enum", name: type.enumName }, key, node);
-            return [key, context.dataLowerer.leafValue(`bbl::js::enum_map_at(${owner.cpp}, ${tag})`, type.element)];
+        return owner.recordOwnKeys.map((key) => {
+            const tag = context.dataTypes.enumMemberCpp(
+                { kind: "enum", name: type.enumName },
+                key,
+                node,
+            );
+            return [
+                key,
+                context.dataLowerer.leafValue(
+                    `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
+                    type.element,
+                ),
+            ];
         });
     }
     return undefined;
@@ -78,12 +128,17 @@ export function ownObjectEntries(context: OwnObjectContext, owner: Value, node: 
  * `Object.is(a, b)`: SameValue over the scalar kinds, where it differs from
  * `===` only for NaN (equal) and signed zeros (different).
  */
-function compileObjectIs(context: ObjectStaticContext, call: ts.CallExpression): Value {
+function compileObjectIs(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
     context.expectArgumentCount(call, 2, 2);
     const left = context.compileValue(argumentAt(call, 0));
     const right = context.compileValue(argumentAt(call, 1));
     if (left.staticNumber !== undefined && right.staticNumber !== undefined) {
-        return booleanValue(Object.is(left.staticNumber, right.staticNumber) ? "true" : "false");
+        return booleanValue(
+            Object.is(left.staticNumber, right.staticNumber) ? "true" : "false",
+        );
     }
     const numeric = (value: Value): boolean =>
         value.kind === "number" || value.dataType?.kind === "number";
@@ -110,25 +165,53 @@ function compileObjectIs(context: ObjectStaticContext, call: ts.CallExpression):
 }
 
 /** `Object.hasOwn(object, key)`: the `in` membership without its struct arm. */
-function compileObjectHasOwn(context: ObjectStaticContext, call: ts.CallExpression): Value {
+function compileObjectHasOwn(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
     context.expectArgumentCount(call, 2, 2);
     const ownerNode = argumentAt(call, 0);
     const keyNode = argumentAt(call, 1);
     const owner = context.compileValue(ownerNode);
     const key = context.compileValue(keyNode);
-    return booleanValue(context.dataLowerer.membershipCpp(owner, ownerNode, key, keyNode, "Object.hasOwn"));
+    return booleanValue(
+        context.dataLowerer.membershipCpp(
+            owner,
+            ownerNode,
+            key,
+            keyNode,
+            "Object.hasOwn",
+        ),
+    );
 }
 
 /** The unbound own-property predicate uses the same owner/key contract as Object.hasOwn. */
-export function compileObjectPrototypeCall(context: ObjectStaticContext, call: ts.CallExpression): Value | undefined {
+export function compileObjectPrototypeCall(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value | undefined {
     const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call") return undefined;
+    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call")
+        return undefined;
     const method = context.unwrap(callee.expression);
-    if (!ts.isPropertyAccessExpression(method) || method.name.text !== "hasOwnProperty") return undefined;
+    if (
+        !ts.isPropertyAccessExpression(method) ||
+        method.name.text !== "hasOwnProperty"
+    )
+        return undefined;
     const prototype = context.unwrap(method.expression);
-    if (!ts.isPropertyAccessExpression(prototype) || prototype.name.text !== "prototype") return undefined;
+    if (
+        !ts.isPropertyAccessExpression(prototype) ||
+        prototype.name.text !== "prototype"
+    )
+        return undefined;
     const owner = context.unwrap(prototype.expression);
-    if (!ts.isIdentifier(owner) || owner.text !== "Object" || !context.isDefaultLibraryIdentifier(owner)) return undefined;
+    if (
+        !ts.isIdentifier(owner) ||
+        owner.text !== "Object" ||
+        !context.isDefaultLibraryIdentifier(owner)
+    )
+        return undefined;
     return compileObjectHasOwn(context, call);
 }
 
@@ -138,7 +221,10 @@ export function compileObjectPrototypeCall(context: ObjectStaticContext, call: t
  * methods and loops consume. A dictionary's entries are iterated in a
  * for...of, where the loop walks the map itself.
  */
-function compileObjectEntries(context: ObjectStaticContext, call: ts.CallExpression): Value {
+function compileObjectEntries(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
     context.expectArgumentCount(call, 1, 1);
     const owner = context.compileValue(argumentAt(call, 0));
     const pairs = ownObjectEntries(context, owner, call);
@@ -157,7 +243,8 @@ function compileObjectEntries(context: ObjectStaticContext, call: ts.CallExpress
             tupleElements: [
                 staticStringValue(key, (text) => context.cppString(text)),
                 value.cpp && value.kind !== "callback"
-                    ? context.pinValueToTemporary(value, "object_entry") : value,
+                    ? context.pinValueToTemporary(value, "object_entry")
+                    : value,
             ],
         })),
     };
@@ -168,29 +255,48 @@ function compileObjectEntries(context: ObjectStaticContext, call: ts.CallExpress
  * pairs; a compile-time tuple of `[key, value]` tuples becomes a
  * dictionary literal.
  */
-function compileObjectFromEntries(context: ObjectStaticContext, call: ts.CallExpression): Value {
+function compileObjectFromEntries(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
     context.expectArgumentCount(call, 1, 1);
     const record = context.probeEmission(() => {
         const entries = context.compileValue(argumentAt(call, 0));
         if (entries.kind !== "tuple") return undefined;
-        const properties: Record<string, Value> = Object.create(null);
+        const properties = Object.create(null) as Record<string, Value>;
         for (const entry of entries.tupleElements ?? []) {
-            if (entry.kind !== "tuple" || entry.tupleElements?.length !== 2) return undefined;
+            if (entry.kind !== "tuple" || entry.tupleElements?.length !== 2)
+                return undefined;
             const [key, value] = entry.tupleElements;
-            const name = key?.staticString ?? (key?.staticNumber !== undefined ? String(key.staticNumber) : undefined);
+            const name =
+                key?.staticString ??
+                (key?.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined);
             if (name === undefined) return undefined;
             if (properties[name]) context.emitDiscardedValue(properties[name]);
             properties[name] = value!;
         }
-        return { kind: "record" as const, cpp: "", recordProperties: properties };
+        return {
+            kind: "record" as const,
+            cpp: "",
+            recordProperties: properties,
+        };
     });
     if (record) return record;
     const resultType = context.dataLowerer.dataTypeAt(call);
     if (resultType?.kind !== "map") {
-        return context.fail(call, "Object.fromEntries requires a string-keyed dictionary result type.");
+        return context.fail(
+            call,
+            "Object.fromEntries requires a string-keyed dictionary result type.",
+        );
     }
     context.reachJsData();
-    return compileEntryCollection(context.dataLowerer, argumentAt(call, 0), resultType);
+    return compileEntryCollection(
+        context.dataLowerer,
+        argumentAt(call, 0),
+        resultType,
+    );
 }
 
 /**
@@ -199,36 +305,55 @@ function compileObjectFromEntries(context: ObjectStaticContext, call: ts.CallExp
  * struct target stores each source field in place. Sources are compile-time
  * records, object literals or structs of the target's own type.
  */
-function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpression): Value {
+function compileObjectAssign(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
     if (call.arguments.length < 1) {
         context.fail(call, "Object.assign takes a target and its sources.");
     }
     const targetExpression = context.unwrap(argumentAt(call, 0));
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
-    const target = context.resolveRecordValue(targetExpression) ?? context.compileValue(targetExpression);
+    const target =
+        context.resolveRecordValue(targetExpression) ??
+        context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
     const sourcePairs = (source: ts.Expression): Array<[string, Value]> => {
         const value = context.compileValue(source);
         if (value.kind === "record") {
-            if (Object.keys(value.recordMethods ?? {}).length > 0 ||
-                Object.keys(value.recordGetters ?? {}).length > 0) {
-                context.fail(source, "Object.assign copies plain properties; a source with methods or accessors is not represented.");
+            if (
+                Object.keys(value.recordMethods ?? {}).length > 0 ||
+                Object.keys(value.recordGetters ?? {}).length > 0
+            ) {
+                context.fail(
+                    source,
+                    "Object.assign copies plain properties; a source with methods or accessors is not represented.",
+                );
             }
             return Object.entries(value.recordProperties ?? {});
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             return structEntries(context, value, value.dataType, source);
         }
-        return context.fail(source, "Object.assign sources are compile-time records, object literals or structs.");
+        return context.fail(
+            source,
+            "Object.assign sources are compile-time records, object literals or structs.",
+        );
     };
     if (target.kind === "record") {
-        if (target.moduleNamespace) context.fail(call, "Module namespace properties are read-only.");
+        if (target.moduleNamespace)
+            context.fail(call, "Module namespace properties are read-only.");
         const fresh = ts.isObjectLiteralExpression(targetExpression);
         if (!fresh && context.isInRuntimeControlFlow()) {
-            context.fail(call, "A compile-time record cannot be populated from runtime control flow.");
+            context.fail(
+                call,
+                "A compile-time record cannot be populated from runtime control flow.",
+            );
         }
-        const properties = fresh ? { ...target.recordProperties } : (target.recordProperties ??= {});
+        const properties = fresh
+            ? { ...target.recordProperties }
+            : (target.recordProperties ??= {});
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
                 const existing = properties[key];
@@ -237,13 +362,23 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
                 if (
                     !fresh &&
                     existing !== undefined &&
-                    (existing.kind === "number" || existing.kind === "string" || existing.kind === "boolean") &&
+                    (existing.kind === "number" ||
+                        existing.kind === "string" ||
+                        existing.kind === "boolean") &&
                     cppIdentifierPattern.test(existing.cpp)
                 ) {
                     const scalarKind = existing.kind;
-                    const stored = context.dataLowerer.compileKnownValueForSink(value, { kind: scalarKind }, source);
+                    const stored = context.dataLowerer.compileKnownValueForSink(
+                        value,
+                        { kind: scalarKind },
+                        source,
+                    );
                     context.emit(`${existing.cpp} = ${stored};`);
-                    properties[key] = { kind: scalarKind, cpp: existing.cpp, dataType: { kind: scalarKind } };
+                    properties[key] = {
+                        kind: scalarKind,
+                        cpp: existing.cpp,
+                        dataType: { kind: scalarKind },
+                    };
                     continue;
                 }
                 properties[key] = value;
@@ -253,12 +388,24 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
     }
     if (target.kind === "data" && target.dataType?.kind === "struct") {
         const structType = target.dataType;
-        const access = context.dataTypes.isReferenceStruct(structType.name) ? "->" : ".";
+        const access = context.dataTypes.isReferenceStruct(structType.name)
+            ? "->"
+            : ".";
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
-                const field = context.dataTypes.structField(structType.name, key, source);
-                const stored = context.dataLowerer.compileKnownValueForSink(value, field.type, source);
-                context.emit(`${target.cpp}${access}${field.name} = ${stored};`);
+                const field = context.dataTypes.structField(
+                    structType.name,
+                    key,
+                    source,
+                );
+                const stored = context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    field.type,
+                    source,
+                );
+                context.emit(
+                    `${target.cpp}${access}${field.name} = ${stored};`,
+                );
             }
         }
         // The stores changed fields whose generation snapshot lives on the

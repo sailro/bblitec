@@ -81,8 +81,7 @@ struct EditGizmoRecord {
     bool use_local_coordinates = false;
     Vec3d local_axis{0.0, 0.0, 1.0};
     std::array<double, 4> baked_rotation{0.0, 0.0, 0.0, 1.0};
-    GizmoLocalOrientation orientation =
-        GizmoLocalOrientation::look_at_world_axis;
+    GizmoLocalOrientation orientation = GizmoLocalOrientation::look_at_world_axis;
     bool enabled = true;
     bool dragging = false;
     bool hovering = false;

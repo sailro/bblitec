@@ -21,10 +21,7 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import {
-    pinnedHypotCall,
-    pinnedNumericMathCalls,
-} from "./pinned-operators.js";
+import { pinnedHypotCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const DECOMPOSE_MODULE = "src/math/decompose-mat4.ts";
 const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
@@ -271,31 +268,82 @@ export function lowerQuatFromRotationBasis(
     inline = false,
     defaultOverload = true,
 ): string {
-    const names = ["m11", "m12", "m13", "m21", "m22", "m23", "m31", "m32", "m33"];
+    const names = [
+        "m11",
+        "m12",
+        "m13",
+        "m21",
+        "m22",
+        "m23",
+        "m31",
+        "m32",
+        "m33",
+    ];
     const fields = ["x", "y", "z", "w"];
-    const { file, declaration } = context.functionDeclaration(QUAT_BASIS_MODULE, "_quatFromRotationBasis");
+    const { file, declaration } = context.functionDeclaration(
+        QUAT_BASIS_MODULE,
+        "_quatFromRotationBasis",
+    );
     const initializer = declaration.parameters[9]?.initializer;
-    if (!initializer) context.contractError(declaration, "Expected a default quaternion output.");
-    const defaults = lowerObjectComponents(context, new PinnedNumericLowerer(file, { calls, bindings: new Map() }), initializer, fields);
+    if (!initializer)
+        context.contractError(
+            declaration,
+            "Expected a default quaternion output.",
+        );
+    const defaults = lowerObjectComponents(
+        context,
+        new PinnedNumericLowerer(file, { calls, bindings: new Map() }),
+        initializer,
+        fields,
+    );
     const body = lowerPinnedFunction(
         context,
         QUAT_BASIS_MODULE,
         "_quatFromRotationBasis",
-        [...names.map((pinned) => ({ pinned, kind: "number" as const, cpp: pinned })),
-            { pinned: "out", kind: "record", cpp: "out", cppType: resultType, annotation: "Quat", mutableRecord: true }],
+        [
+            ...names.map((pinned) => ({
+                pinned,
+                kind: "number" as const,
+                cpp: pinned,
+            })),
+            {
+                pinned: "out",
+                kind: "record",
+                cpp: "out",
+                cppType: resultType,
+                annotation: "Quat",
+                mutableRecord: true,
+            },
+        ],
         {
             cppName,
             returns: {
                 type: resultType,
                 value: (_lowerer, expression) => {
-                    if (!expression) context.contractError(declaration, "Expected quaternion output return.");
-                    context.assertExpressionShape(expression, "out", "quaternion output identity");
+                    if (!expression)
+                        context.contractError(
+                            declaration,
+                            "Expected quaternion output return.",
+                        );
+                    context.assertExpressionShape(
+                        expression,
+                        "out",
+                        "quaternion output identity",
+                    );
                     return "out";
                 },
             },
-            memberBindings: new Map(fields.map((field, index) => [`out.${field}`, {
-                cpp: resultType.startsWith("std::array<") ? `out[${index}]` : `out.${field}`, type: "scalar" as const,
-            }])),
+            memberBindings: new Map(
+                fields.map((field, index) => [
+                    `out.${field}`,
+                    {
+                        cpp: resultType.startsWith("std::array<")
+                            ? `out[${index}]`
+                            : `out.${field}`,
+                        type: "scalar" as const,
+                    },
+                ]),
+            ),
             calls,
             ...(inline ? { inline } : {}),
             // The trace method picks its branch with `&&` over numeric
@@ -304,7 +352,7 @@ export function lowerQuatFromRotationBasis(
         },
     );
     if (!defaultOverload) return body;
-    return `${body}\n\n${inline ? "inline " : ""}${resultType} ${cppName}(${names.map(name => `double ${name}`).join(", ")}) {
+    return `${body}\n\n${inline ? "inline " : ""}${resultType} ${cppName}(${names.map((name) => `double ${name}`).join(", ")}) {
     ${resultType} out{${defaults.join(", ")}};
     return ${cppName}(${names.join(", ")}, out);
 }`;

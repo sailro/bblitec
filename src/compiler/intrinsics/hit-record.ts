@@ -31,16 +31,12 @@ interface HitRecordField {
 }
 
 /** The commonest `HitRecordField.accepts`: a plain number lane. */
-export const numberField = (type: DataType): boolean =>
-    type.kind === "number";
+export const numberField = (type: DataType): boolean => type.kind === "number";
 
-export interface HitRecordContext
-    extends Pick<LoweringServices,
-        | "dataTypes"
-        | "checker"
-        | "dataLowerer"
-        | "fail"
-    > {}
+export interface HitRecordContext extends Pick<
+    LoweringServices,
+    "dataTypes" | "checker" | "dataLowerer" | "fail"
+> {}
 
 interface NullableHitRecord {
     /** The intrinsic's own name, for the refusals below. */
@@ -65,8 +61,7 @@ export function compileNullableHitRecord(
     // wrapping a value struct, or a reference struct (which carries null
     // itself, so the model never wraps one).
     const resultStruct =
-        resultType?.kind === "optional" &&
-        resultType.inner.kind === "struct"
+        resultType?.kind === "optional" && resultType.inner.kind === "struct"
             ? resultType.inner
             : resultType?.kind === "struct" &&
                 context.dataTypes.isReferenceStruct(resultType.name)
@@ -79,10 +74,7 @@ export function compileNullableHitRecord(
                 "record.",
         );
     }
-    const declared = context.dataTypes.structFields(
-        resultStruct.name,
-        call,
-    );
+    const declared = context.dataTypes.structFields(resultStruct.name, call);
     const names = Object.keys(record.fields);
     if (declared.length !== names.length) {
         context.fail(

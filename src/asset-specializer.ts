@@ -17,13 +17,13 @@ import {
     variantMaterialIndex,
     type JsonRecord,
 } from "./gltf-document.js";
-import {
-    sharedUpstreamStore,
-    UpstreamSourceStore,
-} from "./upstream-source.js";
+import { sharedUpstreamStore, UpstreamSourceStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
-import {packagedGltfTransmissionPlan, selectedGltfTransmission} from "./gltf-transmission-plan.js";
-import {packagedFlowGraphPrograms} from "./pinned-flow-graph.js";
+import {
+    packagedGltfTransmissionPlan,
+    selectedGltfTransmission,
+} from "./gltf-transmission-plan.js";
+import { packagedFlowGraphPrograms } from "./pinned-flow-graph.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -88,7 +88,9 @@ export interface RenderItemSpecialization {
 // Deliberately stricter than gltf-document's asNumber: every field read
 // through this is a glTF index, and an index is a non-negative integer.
 function asNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+    return typeof value === "number" && Number.isInteger(value) && value >= 0
+        ? value
+        : undefined;
 }
 
 function renderItemSpecializations(
@@ -111,7 +113,10 @@ function renderItemSpecializations(
                 primitive,
                 selectedVariant,
             );
-            const material = materialIndex === undefined ? undefined : materials[materialIndex];
+            const material =
+                materialIndex === undefined
+                    ? undefined
+                    : materials[materialIndex];
             const alphaModeValue = asString(material?.alphaMode);
             const alphaMode =
                 alphaModeValue === "BLEND" || alphaModeValue === "MASK"
@@ -125,10 +130,11 @@ function renderItemSpecializations(
             const elementCount =
                 elementAccessor === undefined
                     ? 0
-                    : asNumber(accessors[elementAccessor]?.count) ?? 0;
-            const triangleCount = (asNumber(primitive.mode) ?? 4) === 4
-                ? Math.floor(elementCount / 3)
-                : 0;
+                    : (asNumber(accessors[elementAccessor]?.count) ?? 0);
+            const triangleCount =
+                (asNumber(primitive.mode) ?? 4) === 4
+                    ? Math.floor(elementCount / 3)
+                    : 0;
             const trianglesPerCluster = 128;
             const clusterCount = Math.ceil(triangleCount / trianglesPerCluster);
             const clusterIdStart = clusterCount > 0 ? nextClusterId : 0;
@@ -136,16 +142,22 @@ function renderItemSpecializations(
             result.push({
                 drawId: result.length + 1,
                 nodeIndex,
-                ...(asString(node.name) ? { nodeName: asString(node.name)! } : {}),
+                ...(asString(node.name)
+                    ? { nodeName: asString(node.name)! }
+                    : {}),
                 meshIndex,
-                ...(asString(mesh.name) ? { meshName: asString(mesh.name)! } : {}),
+                ...(asString(mesh.name)
+                    ? { meshName: asString(mesh.name)! }
+                    : {}),
                 primitiveIndex,
                 triangleCount,
                 trianglesPerCluster,
                 clusterIdStart,
                 clusterCount,
                 ...(materialIndex !== undefined ? { materialIndex } : {}),
-                ...(asString(material?.name) ? { materialName: asString(material?.name)! } : {}),
+                ...(asString(material?.name)
+                    ? { materialName: asString(material?.name)! }
+                    : {}),
                 shaderVariant: "pbr",
                 alphaMode,
                 doubleSided: material?.doubleSided === true,
@@ -163,10 +175,16 @@ function hasExtras(document: JsonRecord): boolean {
         document.animations,
         document.meshes,
     ];
-    return collections
-        .flatMap((value) => (Array.isArray(value) ? value : [value]))
-        .some((value) => asObject(value)?.extras !== undefined) ||
-        primitiveRecords(document).some((primitive) => primitive.extras !== undefined);
+    return (
+        collections
+            .flatMap((value): unknown[] =>
+                Array.isArray(value) ? value : [value],
+            )
+            .some((value) => asObject(value)?.extras !== undefined) ||
+        primitiveRecords(document).some(
+            (primitive) => primitive.extras !== undefined,
+        )
+    );
 }
 
 /**
@@ -248,9 +266,7 @@ function textureImageIndex(
     if (index === undefined) return undefined;
     const texture = asRecords(document.textures)[index];
     if (!texture) return index;
-    const webp = asObject(
-        asObject(texture.extensions)?.["EXT_texture_webp"],
-    );
+    const webp = asObject(asObject(texture.extensions)?.["EXT_texture_webp"]);
     return asNumber(webp?.source) ?? asNumber(texture.source) ?? index;
 }
 
@@ -423,7 +439,7 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
                 node.arguments.length === 1 &&
                 ts.isStringLiteral(node.arguments[0]!)
             ) {
-                found = node.arguments[0]!.text;
+                found = node.arguments[0].text;
             }
             ts.forEachChild(node, walk);
         };
@@ -523,7 +539,10 @@ export function specializeGltf(
         extensionModules,
     );
     const animations = asRecords(document.animations).length > 0;
-    const morphTargets = primitives.some((primitive) => Array.isArray(primitive.targets) && primitive.targets.length > 0);
+    const morphTargets = primitives.some(
+        (primitive) =>
+            Array.isArray(primitive.targets) && primitive.targets.length > 0,
+    );
     const maxMorphTargets = primitives.reduce(
         (count, primitive) =>
             Array.isArray(primitive.targets)
@@ -562,8 +581,7 @@ export function specializeGltf(
     const eightInfluenceSkinning = primitives.some((primitive) =>
         Object.keys(asObject(primitive.attributes) ?? {}).some(
             (name) =>
-                /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) &&
-                !name.endsWith("_0"),
+                /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) && !name.endsWith("_0"),
         ),
     );
     // `gltf-feature-registry.ts`'s own trigger for the lazy primitive
@@ -577,9 +595,8 @@ export function specializeGltf(
         (primitive) =>
             typeof primitive.mode === "number" &&
             primitive.mode !== 4 &&
-            asObject(primitive.extensions)?.[
-                GAUSSIAN_SPLATTING_EXTENSION
-            ] === undefined,
+            asObject(primitive.extensions)?.[GAUSSIAN_SPLATTING_EXTENSION] ===
+                undefined,
     );
     const nonTrianglePrimitives = exoticPrimitives.length > 0;
     // A triangle strip is excluded because the loader expands one into the
@@ -603,28 +620,32 @@ export function specializeGltf(
             ),
     );
     const transmission = packagedGltfTransmissionPlan(document);
-    const transmissiveMaterial = transmission ? selectedGltfTransmission(transmission, selectedVariantName) : null;
+    const transmissiveMaterial = transmission
+        ? selectedGltfTransmission(transmission, selectedVariantName)
+        : null;
     // The specular half of the pinned `needsReflectance` — which also fires
     // on `ior !== 1.5` alone; that arm is folded exactly by the generated
     // loader's reflectance fold and `applyDielectric`, so this predicate
     // deliberately reads only the specular fields. A material declaring the
     // extension at factor 1 and colour (1,1,1) reaches nothing.
-    const specularReflectance = asRecords(document.materials).some((material) => {
-        const specular = asObject(
-            asObject(material.extensions)?.["KHR_materials_specular"],
-        );
-        if (!specular) return false;
-        const factor = specular.specularFactor as number | undefined;
-        const color = specular.specularColorFactor;
-        return (
-            specular.specularTexture !== undefined ||
-            specular.specularColorTexture !== undefined ||
-            (typeof factor === "number" && Math.abs(factor - 1) > 1e-6) ||
-            (Array.isArray(color) &&
-                color.length === 3 &&
-                (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
-        );
-    });
+    const specularReflectance = asRecords(document.materials).some(
+        (material) => {
+            const specular = asObject(
+                asObject(material.extensions)?.["KHR_materials_specular"],
+            );
+            if (!specular) return false;
+            const factor = specular.specularFactor as number | undefined;
+            const color = specular.specularColorFactor;
+            return (
+                specular.specularTexture !== undefined ||
+                specular.specularColorTexture !== undefined ||
+                (typeof factor === "number" && Math.abs(factor - 1) > 1e-6) ||
+                (Array.isArray(color) &&
+                    color.length === 3 &&
+                    (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
+            );
+        },
+    );
     const extras = hasExtras(document);
 
     if (animations) modules.add("./gltf-feature-animations.js");
@@ -658,7 +679,10 @@ export function specializeGltf(
             eightInfluenceSkinning,
             gaussianSplats: hasGaussianSplats(document),
             compressedImages: hasCompressedImages(document),
-            interactivity: GLTF_MESH_PLAN in document ? packagedFlowGraphPrograms(document).length > 0 : null,
+            interactivity:
+                GLTF_MESH_PLAN in document
+                    ? packagedFlowGraphPrograms(document).length > 0
+                    : null,
         },
     };
 }
@@ -775,13 +799,18 @@ export function emitAssetSpecializations(
             asset.selectedVariant,
         );
         if (specialization.features.transmissiveMaterial === null)
-            throw new Error(`Asset '${asset.output}' requires packaged source transmission selection before specialization emission.`);
+            throw new Error(
+                `Asset '${asset.output}' requires packaged source transmission selection before specialization emission.`,
+            );
         if (specialization.features.interactivity === null)
-            throw new Error(`Asset '${asset.output}' requires packaged source interactivity selection before specialization emission.`);
+            throw new Error(
+                `Asset '${asset.output}' requires packaged source interactivity selection before specialization emission.`,
+            );
         return {
             ...specialization,
             renderItems: specialization.renderItems.map((item) => {
-                const clusterIdStart = item.clusterCount > 0 ? nextClusterId : 0;
+                const clusterIdStart =
+                    item.clusterCount > 0 ? nextClusterId : 0;
                 nextClusterId += item.clusterCount;
                 return {
                     ...item,
@@ -802,18 +831,19 @@ export function emitAssetSpecializations(
         // Initial skin/morph state needs the same local-vertex transport as
         // animated nodes, even when no clip exists to update it afterward.
         gpuDeformation: specializations.some(
-            ({features}) => features.animations || features.skins || features.morphTargets,
+            ({ features }) =>
+                features.animations || features.skins || features.morphTargets,
         ),
         animatedWorldBounds: specializations.some(
-            ({features}) => features.animations || features.skins || features.morphTargets,
+            ({ features }) =>
+                features.animations || features.skins || features.morphTargets,
         ),
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
         // path -- and the composed morph variants read it, so any morph
         // target at all compiles it in. The two-slot vertex-attribute slice
         // remains for the Standard family's transcribed stage.
         morphStorage: specializations.some(
-            (specialization) =>
-                specialization.features.maxMorphTargets > 0,
+            (specialization) => specialization.features.maxMorphTargets > 0,
         ),
         maxSkinJoints: specializations.reduce(
             (largest, specialization) =>
@@ -828,12 +858,10 @@ export function emitAssetSpecializations(
         // module here. Off, the generated loader carries no topology handling
         // at all, which is where upstream keeps it.
         nonTrianglePrimitives: specializations.some(
-            (specialization) =>
-                specialization.features.nonTrianglePrimitives,
+            (specialization) => specialization.features.nonTrianglePrimitives,
         ),
         pointOrLinePrimitives: specializations.some(
-            (specialization) =>
-                specialization.features.pointOrLinePrimitives,
+            (specialization) => specialization.features.pointOrLinePrimitives,
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
         animationPointer: usesExtension("KHR_animation_pointer"),
@@ -852,8 +880,7 @@ export function emitAssetSpecializations(
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
         eightInfluenceSkinning: specializations.some(
-            (specialization) =>
-                specialization.features.eightInfluenceSkinning,
+            (specialization) => specialization.features.eightInfluenceSkinning,
         ),
         compressedImages: specializations.some(
             (specialization) => specialization.features.compressedImages,

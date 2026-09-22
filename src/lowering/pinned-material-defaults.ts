@@ -243,24 +243,20 @@ const PINNED_MATERIAL_DEFAULTS = {
         value: 1,
     },
     sprite2dOriginPx: {
-        pinned:
-            `${sprite2dBridgeModule}#createParticleSprite2DBridge#originPx`,
+        pinned: `${sprite2dBridgeModule}#createParticleSprite2DBridge#originPx`,
         value: [0, 0],
     },
     sprite2dInvertY: {
-        pinned:
-            `${sprite2dBridgeModule}#createParticleSprite2DBridge#invertY`,
+        pinned: `${sprite2dBridgeModule}#createParticleSprite2DBridge#invertY`,
         value: true,
     },
     sprite2dAutoStart: {
-        pinned:
-            `${sprite2dBridgeModule}#registerNodeParticleSet2D#autoStart`,
+        pinned: `${sprite2dBridgeModule}#registerNodeParticleSet2D#autoStart`,
         value: true,
     },
     /** The 3D registrar's own `options.autoStart ?? true`. */
     nodeParticleAutoStart: {
-        pinned:
-            `${particleSceneModule}#registerNodeParticleSet#autoStart`,
+        pinned: `${particleSceneModule}#registerNodeParticleSet#autoStart`,
         value: true,
     },
 } as const satisfies Record<string, PinnedMaterialDefault>;
@@ -293,27 +289,19 @@ function entry(name: PinnedMaterialDefaultName): PinnedMaterialDefault {
 }
 
 /** A scalar default, for the manifest values the intrinsics record. */
-export function pinnedDefaultNumber(
-    name: PinnedMaterialDefaultName,
-): number {
+export function pinnedDefaultNumber(name: PinnedMaterialDefaultName): number {
     const { value } = entry(name);
     if (typeof value !== "number") {
-        throw new Error(
-            `Pinned material default '${name}' is not a scalar.`,
-        );
+        throw new Error(`Pinned material default '${name}' is not a scalar.`);
     }
     return value;
 }
 
 /** A boolean default (the bridge's `invertY`/`autoStart`). */
-export function pinnedDefaultFlag(
-    name: PinnedMaterialDefaultName,
-): boolean {
+export function pinnedDefaultFlag(name: PinnedMaterialDefaultName): boolean {
     const { value } = entry(name);
     if (typeof value !== "boolean") {
-        throw new Error(
-            `Pinned material default '${name}' is not a flag.`,
-        );
+        throw new Error(`Pinned material default '${name}' is not a flag.`);
     }
     return value;
 }
@@ -323,7 +311,13 @@ function vectorValue(
     lanes: number,
 ): readonly number[] {
     const { value } = entry(name);
-    if (!Array.isArray(value) || value.length !== lanes) {
+    if (
+        !Array.isArray(value) ||
+        value.length !== lanes ||
+        !value.every(
+            (lane: unknown): lane is number => typeof lane === "number",
+        )
+    ) {
         throw new Error(
             `Pinned material default '${name}' is not a ${lanes}-lane ` +
                 "vector.",
@@ -347,9 +341,7 @@ export function pinnedDefaultVec2(
 }
 
 /** A scalar default as the shared C++ float literal. */
-export function pinnedDefaultFloatCpp(
-    name: PinnedMaterialDefaultName,
-): string {
+export function pinnedDefaultFloatCpp(name: PinnedMaterialDefaultName): string {
     return floatLiteral(pinnedDefaultNumber(name));
 }
 
@@ -357,16 +349,12 @@ export function pinnedDefaultFloatCpp(
 export function pinnedDefaultColor3Cpp(
     name: PinnedMaterialDefaultName,
 ): string {
-    return `bbl::Color3{${
-        pinnedDefaultColor3(name).map(floatLiteral).join(", ")
-    }}`;
+    return `bbl::Color3{${pinnedDefaultColor3(name)
+        .map(floatLiteral)
+        .join(", ")}}`;
 }
 
 /** A two-lane default as the `bbl::Vec2{...}` the intrinsics emit. */
-export function pinnedDefaultVec2Cpp(
-    name: PinnedMaterialDefaultName,
-): string {
-    return `bbl::Vec2{${
-        pinnedDefaultVec2(name).map(floatLiteral).join(", ")
-    }}`;
+export function pinnedDefaultVec2Cpp(name: PinnedMaterialDefaultName): string {
+    return `bbl::Vec2{${pinnedDefaultVec2(name).map(floatLiteral).join(", ")}}`;
 }

@@ -35,12 +35,16 @@ namespace bbl {
 std::string js::macos_time_zone() {
     const std::unique_ptr<std::remove_pointer_t<CFTimeZoneRef>, decltype(&CFRelease)> zone(
         CFTimeZoneCopyDefault(), CFRelease);
-    if (!zone) throw std::runtime_error("Cannot resolve the default time zone.");
+    if (!zone)
+        throw std::runtime_error("Cannot resolve the default time zone.");
     const auto name = CFTimeZoneGetName(zone.get());
-    const auto capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8);
-    if (capacity < 0) throw std::runtime_error("Cannot size the default time zone.");
+    const auto capacity =
+        CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8);
+    if (capacity < 0)
+        throw std::runtime_error("Cannot size the default time zone.");
     std::string text(static_cast<std::size_t>(capacity) + 1, '\0');
-    if (!CFStringGetCString(name, text.data(), static_cast<CFIndex>(text.size()), kCFStringEncodingUTF8)) {
+    if (!CFStringGetCString(name, text.data(), static_cast<CFIndex>(text.size()),
+                            kCFStringEncodingUTF8)) {
         throw std::runtime_error("Cannot encode the default time zone.");
     }
     text.resize(std::char_traits<char>::length(text.c_str()));
@@ -62,11 +66,14 @@ const void* native_performance_identity() {
 std::string preferred_language() {
     static std::mutex locale_mutex;
     const std::lock_guard lock(locale_mutex);
-    const std::unique_ptr<SDL_Locale*, decltype(&SDL_free)> locales(SDL_GetPreferredLocales(nullptr), SDL_free);
-    if (!locales || !locales.get()[0]) return {};
+    const std::unique_ptr<SDL_Locale*, decltype(&SDL_free)> locales(
+        SDL_GetPreferredLocales(nullptr), SDL_free);
+    if (!locales || !locales.get()[0])
+        return {};
     const auto& first = *locales.get()[0];
     std::string language = first.language;
-    if (first.country && *first.country) language += std::string("-") + first.country;
+    if (first.country && *first.country)
+        language += std::string("-") + first.country;
     return language;
 }
 
@@ -83,16 +90,12 @@ void defer_callback(Engine& engine, std::function<void()> callback) {
     engine.deferred_callbacks.push_back(std::move(callback));
 }
 
-void defer_start_continuation(
-    Engine& engine,
-    std::function<void()> callback) {
+void defer_start_continuation(Engine& engine, std::function<void()> callback) {
     ++engine.pending_start_continuations;
-    defer_callback(
-        engine,
-        [&engine, callback = std::move(callback)]() mutable {
-            callback();
-            --engine.pending_start_continuations;
-        });
+    defer_callback(engine, [&engine, callback = std::move(callback)]() mutable {
+        callback();
+        --engine.pending_start_continuations;
+    });
 }
 
 /**
@@ -102,49 +105,35 @@ void defer_start_continuation(
  * instead of a `std::function` that owns itself -- that shape either
  * leaks its own cycle or destroys the target it is executing.
  */
-static void poll_start_continuation(
-    Engine& engine,
-    std::function<bool()> resolved,
-    std::function<void()> callback);
+static void poll_start_continuation(Engine& engine, std::function<bool()> resolved,
+                                    std::function<void()> callback);
 
 /** The re-arm, spelled once: both the first wait and every later one. */
-static void queue_start_continuation_poll(
-    Engine& engine,
-    std::function<bool()> resolved,
-    std::function<void()> callback) {
-    defer_callback(
-        engine,
-        [&engine,
-         resolved = std::move(resolved),
-         callback = std::move(callback)]() mutable {
-            poll_start_continuation(
-                engine, std::move(resolved), std::move(callback));
-        });
+static void queue_start_continuation_poll(Engine& engine, std::function<bool()> resolved,
+                                          std::function<void()> callback) {
+    defer_callback(engine, [&engine, resolved = std::move(resolved),
+                            callback = std::move(callback)]() mutable {
+        poll_start_continuation(engine, std::move(resolved), std::move(callback));
+    });
 }
 
-static void poll_start_continuation(
-    Engine& engine,
-    std::function<bool()> resolved,
-    std::function<void()> callback) {
+static void poll_start_continuation(Engine& engine, std::function<bool()> resolved,
+                                    std::function<void()> callback) {
     if (!resolved()) {
-        queue_start_continuation_poll(
-            engine, std::move(resolved), std::move(callback));
+        queue_start_continuation_poll(engine, std::move(resolved), std::move(callback));
         return;
     }
     callback();
     --engine.pending_start_continuations;
 }
 
-void defer_start_continuation_until(
-    Engine& engine,
-    std::function<bool()> resolved,
-    std::function<void()> callback) {
+void defer_start_continuation_until(Engine& engine, std::function<bool()> resolved,
+                                    std::function<void()> callback) {
     // Counted for the whole wait, not per boundary: the capture gate asks
     // whether every start continuation has run, and this one has not until
     // the scene's callback resolves it.
     ++engine.pending_start_continuations;
-    queue_start_continuation_poll(
-        engine, std::move(resolved), std::move(callback));
+    queue_start_continuation_poll(engine, std::move(resolved), std::move(callback));
 }
 
 void run_deferred_callbacks(Engine& engine) {
@@ -161,10 +150,7 @@ void run_deferred_callbacks(Engine& engine) {
     }
 }
 
-double set_timeout(
-    Engine& engine,
-    std::function<void()> callback,
-    double delay_ms) {
+double set_timeout(Engine& engine, std::function<void()> callback, double delay_ms) {
     if (!std::isfinite(delay_ms) || delay_ms < 0.0) {
         throw std::runtime_error("setTimeout requires a finite non-negative delay.");
     }
@@ -182,32 +168,26 @@ void clear_timeout(Engine& engine, double id) {
         return;
     }
     const auto native_id = static_cast<std::uint64_t>(id);
-    std::erase_if(
-        engine.timeout_callbacks,
-        [native_id](const Engine::TimeoutCallback& timeout) {
-            return timeout.id == native_id;
-        });
+    std::erase_if(engine.timeout_callbacks, [native_id](const Engine::TimeoutCallback& timeout) {
+        return timeout.id == native_id;
+    });
 }
 
 void run_timeout_callbacks(Engine& engine) {
     const double now_ms = engine.animation_frame_timestamp_ms;
     std::vector<std::function<void()>> due;
-    std::erase_if(
-        engine.timeout_callbacks,
-        [&](Engine::TimeoutCallback& timeout) {
-            if (now_ms < timeout.due_ms) return false;
-            due.push_back(std::move(timeout.callback));
-            return true;
-        });
+    std::erase_if(engine.timeout_callbacks, [&](Engine::TimeoutCallback& timeout) {
+        if (now_ms < timeout.due_ms)
+            return false;
+        due.push_back(std::move(timeout.callback));
+        return true;
+    });
     for (const auto& callback : due) {
         callback();
     }
 }
 
-double set_interval(
-    Engine& engine,
-    std::function<void()> callback,
-    double period_ms) {
+double set_interval(Engine& engine, std::function<void()> callback, double period_ms) {
     if (!std::isfinite(period_ms) || period_ms < 0.0) {
         throw std::runtime_error("setInterval requires a finite non-negative delay.");
     }
@@ -237,32 +217,29 @@ void run_interval_callbacks(Engine& engine) {
     const double now_ms = engine.animation_frame_timestamp_ms;
     std::vector<std::uint64_t> due;
     for (Engine::IntervalCallback& interval : engine.interval_callbacks) {
-        if (!interval.active || now_ms < interval.next_due_ms) continue;
+        if (!interval.active || now_ms < interval.next_due_ms)
+            continue;
         do {
             interval.next_due_ms += interval.period_ms;
         } while (interval.next_due_ms <= now_ms);
         due.push_back(interval.id);
     }
     for (const std::uint64_t id : due) {
-        const auto found = std::find_if(
-            engine.interval_callbacks.begin(),
-            engine.interval_callbacks.end(),
-            [id](const Engine::IntervalCallback& interval) {
-                return interval.id == id && interval.active;
-            });
+        const auto found =
+            std::find_if(engine.interval_callbacks.begin(), engine.interval_callbacks.end(),
+                         [id](const Engine::IntervalCallback& interval) {
+                             return interval.id == id && interval.active;
+                         });
         if (found != engine.interval_callbacks.end()) {
             const std::function<void()> callback = found->callback;
             callback();
         }
     }
-    std::erase_if(
-        engine.interval_callbacks,
-        [](const Engine::IntervalCallback& interval) {
-            return !interval.active;
-        });
+    std::erase_if(engine.interval_callbacks,
+                  [](const Engine::IntervalCallback& interval) { return !interval.active; });
 }
 
-}  // namespace bbl
+} // namespace bbl
 
 namespace bbl::pal {
 
@@ -273,15 +250,13 @@ std::string environment_variable(const char* name);
 // BBLITE_BUILD_STAMP_OUT before a measured run and refuses the result
 // when the stamp no longer matches the generated tree on disk.
 static void report_build_stamp() {
-    const std::string path =
-        environment_variable("BBLITE_BUILD_STAMP_OUT");
+    const std::string path = environment_variable("BBLITE_BUILD_STAMP_OUT");
     if (path.empty()) {
         return;
     }
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        throw std::runtime_error(
-            "Unable to write the build stamp to '" + path + "'.");
+        throw std::runtime_error("Unable to write the build stamp to '" + path + "'.");
     }
     // Through the one stamp-owning TU (pal_build_stamp.cpp), so this
     // object too stays byte-identical across scenes.
@@ -296,23 +271,29 @@ Engine create_engine(EngineOptions options) {
     engine.canvas_client_height = engine.options.height;
 #if defined(SDL_PLATFORM_IOS) && !BBLITE_OFFSCREEN_SURFACES
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
-    if (extracting_constructor_inputs) return engine;
+    if (extracting_constructor_inputs)
+        return engine;
 #endif
-    if (!active_window_run) throw std::runtime_error("iOS engine creation requires the application window scope.");
+    if (!active_window_run)
+        throw std::runtime_error("iOS engine creation requires the application window scope.");
     if (!initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         throw std::runtime_error("iOS video initialization failed: " + std::string(SDL_GetError()));
     }
-    const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE |
+    const SDL_WindowFlags flags =
+        SDL_WINDOW_RESIZABLE |
         (environment_variable("BBLITE_TEST_PASS") == "1" ? SDL_WINDOW_NOT_FOCUSABLE : 0);
     SDL_Window* window = acquire_run_window(engine.options, flags);
-    if (!window) throw std::runtime_error("iOS window creation failed: " + std::string(SDL_GetError()));
+    if (!window)
+        throw std::runtime_error("iOS window creation failed: " + std::string(SDL_GetError()));
     int width = 0, height = 0;
     if (!SDL_GetWindowSizeInPixels(window, &width, &height) || width <= 0 || height <= 0) {
-        throw std::runtime_error("iOS initial canvas extent is unavailable: " + std::string(SDL_GetError()));
+        throw std::runtime_error("iOS initial canvas extent is unavailable: " +
+                                 std::string(SDL_GetError()));
     }
     const auto pixel_density = SDL_GetWindowPixelDensity(window);
     const auto display_scale = SDL_GetWindowDisplayScale(window);
-    if (!std::isfinite(pixel_density) || pixel_density <= 0 || !std::isfinite(display_scale) || display_scale <= 0) {
+    if (!std::isfinite(pixel_density) || pixel_density <= 0 || !std::isfinite(display_scale) ||
+        display_scale <= 0) {
         throw std::runtime_error("iOS initial canvas density is unavailable.");
     }
     update_engine_canvas_metrics(engine, width, height, display_scale, pixel_density);
@@ -325,9 +306,8 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     if (!stream) {
         throw std::runtime_error("Unable to open file '" + path + "'.");
     }
-    return std::vector<std::uint8_t>(
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>());
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(stream),
+                                     std::istreambuf_iterator<char>());
 }
 
 std::string join_path(const std::string& root, const std::string& relative_path) {
@@ -388,11 +368,9 @@ struct PerformanceClockState {
 PerformanceClockState& performance_clock_state() {
     static thread_local PerformanceClockState state;
     if (!state.initialized) {
-        const std::string fixed_delta =
-            environment_variable("BBLITE_FRAME_DELTA_MS");
-        state.fixed_delta_ms = fixed_delta.empty()
-            ? 0.0
-            : std::strtod(fixed_delta.c_str(), nullptr);
+        const std::string fixed_delta = environment_variable("BBLITE_FRAME_DELTA_MS");
+        state.fixed_delta_ms =
+            fixed_delta.empty() ? 0.0 : std::strtod(fixed_delta.c_str(), nullptr);
         state.fixed = state.fixed_delta_ms > 0.0;
         state.milliseconds = state.fixed ? 0.0 : monotonic_milliseconds();
         state.initialized = true;
@@ -416,8 +394,7 @@ void advance_performance_milliseconds(double delta_ms) {
         // rather than accumulated, so exact timer boundaries such as 700ms
         // are met.
         ++state.fixed_steps;
-        state.milliseconds =
-            static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;
+        state.milliseconds = static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;
     }
 }
 
@@ -432,8 +409,7 @@ std::size_t process_working_set_bytes() {
 #else
     // A number nothing measured would let `scene -- memory` pass a run it
     // never saw, so the query refuses by name until a platform owns it.
-    throw std::runtime_error(
-        "process_working_set_bytes is not implemented on this platform.");
+    throw std::runtime_error("process_working_set_bytes is not implemented on this platform.");
 #endif
 }
 

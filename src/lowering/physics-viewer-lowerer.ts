@@ -3,13 +3,33 @@ import type { LoweringContext } from "./context.js";
 export const physicsViewerModule = "src/physics/physics-viewer.ts";
 
 /** Body overlays retain the pin's membership and before-render lifecycle. */
-export function lowerPhysicsViewer(context: LoweringContext): { header: string; source: string } {
-    const factory = context.functionDeclaration(physicsViewerModule, "createPhysicsViewer").declaration;
+export function lowerPhysicsViewer(context: LoweringContext): {
+    header: string;
+    source: string;
+} {
+    const factory = context.functionDeclaration(
+        physicsViewerModule,
+        "createPhysicsViewer",
+    ).declaration;
     const options = factory.parameters[2]?.initializer;
-    if (!options) context.contractError(factory, "Physics viewer options default changed.");
-    context.assertExpressionShape(options, "{}", "Physics viewer options default");
-    const debug = context.functionDeclaration("src/physics/havok.ts", "getPhysicsBodyDebugGeometry").declaration;
-    context.assertStatementShapes(debug, debug.body!.statements, `
+    if (!options)
+        context.contractError(
+            factory,
+            "Physics viewer options default changed.",
+        );
+    context.assertExpressionShape(
+        options,
+        "{}",
+        "Physics viewer options default",
+    );
+    const debug = context.functionDeclaration(
+        "src/physics/havok.ts",
+        "getPhysicsBodyDebugGeometry",
+    ).declaration;
+    context.assertStatementShapes(
+        debug,
+        debug.body!.statements,
+        `
         const hknp = world._hknp;
         const shapeResult = hknp.HP_Body_GetShape(body._hkBody);
         const ok = hknp.Result?.RESULT_OK ?? 0;
@@ -21,10 +41,20 @@ export function lowerPhysicsViewer(context: LoweringContext): { header: string; 
         const indicesInPlugin = new Uint32Array(hknp.HEAPU8.buffer, geometryInfo[2], geometryInfo[3] * 3);
         const positions = positionsInPlugin.slice(0); const indices = indicesInPlugin.slice(0);
         hknp.HP_DebugGeometry_Release(geometryResult[1]); return { positions, indices };
-    `, "Physics debug geometry PAL ownership, shape identity and geometry spans");
+    `,
+        "Physics debug geometry PAL ownership, shape identity and geometry spans",
+    );
     for (const [name, body] of bodyContracts) {
-        const { declaration } = context.functionDeclaration(physicsViewerModule, name);
-        context.assertStatementShapes(declaration, declaration.body!.statements, body, `${name} body viewer lifecycle`);
+        const { declaration } = context.functionDeclaration(
+            physicsViewerModule,
+            name,
+        );
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            body,
+            `${name} body viewer lifecycle`,
+        );
     }
     const header = `
 struct PhysicsViewer {
@@ -135,11 +165,16 @@ void dispose_physics_viewer(const PhysicsViewerHandle& viewer) {
 }
 
 const bodyContracts: readonly (readonly [string, string])[] = [
-    ["createPhysicsViewer", `const viewer: PhysicsViewer = {
+    [
+        "createPhysicsViewer",
+        `const viewer: PhysicsViewer = {
         scene, world, _bodies: [], _meshes: [], _constraintMeshes: [], _constraintLines: [], _constraintDisks: [], _constraintArrowheads: [],
         _color: options.color ?? [1, 1, 1, 1], _registered: false, _update: () => { updatePhysicsViewer(viewer); },
-    }; return viewer;`],
-    ["showPhysicsBody", `
+    }; return viewer;`,
+    ],
+    [
+        "showPhysicsBody",
+        `
         for (let i = 0; i < viewer._bodies.length; i++) { if (viewer._bodies[i] === body) { return null; } }
         const geometry = getPhysicsBodyDebugGeometry(viewer.world, body);
         if (geometry.positions.length === 0 || geometry.indices.length === 0) { return null; }
@@ -151,33 +186,58 @@ const bodyContracts: readonly (readonly [string, string])[] = [
         copyBodyTransform(body, debugMesh);
         viewer._bodies.push(body); viewer._meshes.push(debugMesh);
         addToScene(viewer.scene, debugMesh); registerViewerUpdate(viewer); return debugMesh;
-    `],
-    ["hidePhysicsBody", `const index = viewer._bodies.indexOf(body);
+    `,
+    ],
+    [
+        "hidePhysicsBody",
+        `const index = viewer._bodies.indexOf(body);
         if (index < 0) { return false; } const mesh = viewer._meshes[index]!;
         viewer._bodies.splice(index, 1); viewer._meshes.splice(index, 1);
-        removeFromScene(viewer.scene, mesh); unregisterViewerUpdateIfEmpty(viewer); return true;`],
-    ["disposePhysicsViewer", `while (viewer._bodies.length > 0) { hidePhysicsBody(viewer, viewer._bodies[0]!); }
+        removeFromScene(viewer.scene, mesh); unregisterViewerUpdateIfEmpty(viewer); return true;`,
+    ],
+    [
+        "disposePhysicsViewer",
+        `while (viewer._bodies.length > 0) { hidePhysicsBody(viewer, viewer._bodies[0]!); }
         while (viewer._constraintMeshes.length > 0) { removeFromScene(viewer.scene, viewer._constraintMeshes.pop()!); }
         viewer._constraintLines.length = 0; viewer._constraintDisks.length = 0; viewer._constraintArrowheads.length = 0;
-        unregisterViewerUpdate(viewer);`],
-    ["registerViewerUpdate", `if (viewer._registered) { return; } viewer.scene._beforeRender.push(viewer._update); viewer._registered = true;`],
-    ["unregisterViewerUpdate", `if (!viewer._registered) { return; }
+        unregisterViewerUpdate(viewer);`,
+    ],
+    [
+        "registerViewerUpdate",
+        `if (viewer._registered) { return; } viewer.scene._beforeRender.push(viewer._update); viewer._registered = true;`,
+    ],
+    [
+        "unregisterViewerUpdate",
+        `if (!viewer._registered) { return; }
         const index = viewer.scene._beforeRender.indexOf(viewer._update);
-        if (index >= 0) { viewer.scene._beforeRender.splice(index, 1); } viewer._registered = false;`],
-    ["unregisterViewerUpdateIfEmpty", `if (viewer._bodies.length === 0 && viewer._constraintLines.length === 0 && viewer._constraintDisks.length === 0 && viewer._constraintArrowheads.length === 0) { unregisterViewerUpdate(viewer); }`],
-    ["updatePhysicsViewer", `
+        if (index >= 0) { viewer.scene._beforeRender.splice(index, 1); } viewer._registered = false;`,
+    ],
+    [
+        "unregisterViewerUpdateIfEmpty",
+        `if (viewer._bodies.length === 0 && viewer._constraintLines.length === 0 && viewer._constraintDisks.length === 0 && viewer._constraintArrowheads.length === 0) { unregisterViewerUpdate(viewer); }`,
+    ],
+    [
+        "updatePhysicsViewer",
+        `
         for (let i = 0; i < viewer._bodies.length; i++) { copyBodyTransform(viewer._bodies[i]!, viewer._meshes[i]!); }
         for (let i = 0; i < viewer._constraintLines.length; i++) { updateConstraintLine(viewer, viewer._constraintLines[i]!); }
         for (let i = 0; i < viewer._constraintDisks.length; i++) { updateConstraintDisk(viewer._constraintDisks[i]!); }
         for (let i = 0; i < viewer._constraintArrowheads.length; i++) { updateConstraintArrowhead(viewer._constraintArrowheads[i]!); }
-    `],
-    ["copyBodyTransform", `const node = body.node;
+    `,
+    ],
+    [
+        "copyBodyTransform",
+        `const node = body.node;
         mesh.position.set(node.position.x, node.position.y, node.position.z);
         mesh.rotationQuaternion.set(node.rotationQuaternion.x, node.rotationQuaternion.y, node.rotationQuaternion.z, node.rotationQuaternion.w);
-        mesh.scaling.set(1, 1, 1);`],
-    ["createLineListIndices", `const lines = new Uint32Array(triangleIndices.length * 2); let o = 0;
+        mesh.scaling.set(1, 1, 1);`,
+    ],
+    [
+        "createLineListIndices",
+        `const lines = new Uint32Array(triangleIndices.length * 2); let o = 0;
         for (let i = 0; i < triangleIndices.length; i += 3) {
             const a = triangleIndices[i]!; const b = triangleIndices[i + 1]!; const c = triangleIndices[i + 2]!;
             lines[o++] = a; lines[o++] = b; lines[o++] = b; lines[o++] = c; lines[o++] = c; lines[o++] = a;
-        } return lines;`],
+        } return lines;`,
+    ],
 ];

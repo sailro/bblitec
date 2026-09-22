@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
-test("CSS declaration methods share field storage and preserve custom property casing", t => {
+test("CSS declaration methods share field storage and preserve custom property casing", (t) => {
     const directory = resolve("artifacts/ui-style-methods");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const panel = document.createElement("div");
@@ -41,13 +42,29 @@ test("CSS declaration methods share field storage and preserve custom property c
         if (panel.style.getPropertyValue("--Tone") !== "blue" || other.style.getPropertyValue("--Tone") !== "")
             throw new Error("style receiver before value effects");
         globalThis.close();
-    `, {fileName:join(directory, "entry.ts")});
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-style-methods");
 });
 
 test("CSS method priority and unsupported property names refuse explicitly", () => {
     const prefix = `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const element = document.createElement("div");`;
-    assert.throws(() => compileSource(prefix + `element.style.setProperty("color", "red", "important");`), /priority/);
-    assert.throws(() => compileSource(prefix + `element.style.setProperty("imaginary-property", "red");`), /reviewed retained-UI surface/);
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    `element.style.setProperty("color", "red", "important");`,
+            ),
+        /priority/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                prefix +
+                    `element.style.setProperty("imaginary-property", "red");`,
+            ),
+        /reviewed retained-UI surface/,
+    );
 });

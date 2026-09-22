@@ -30,6 +30,8 @@ test("a generation-time value is joined in before packaging", () => {
     assert.equal(marker, "let fogMode=scene.vFogInfos.x;");
     // What the pin's own module carries after the same step.
     assert.ok(
-        sharedUpstreamStore().getSource("src/shader/wgsl-fog.ts").includes(marker),
+        sharedUpstreamStore()
+            .getSource("src/shader/wgsl-fog.ts")
+            .includes(marker),
     );
 });

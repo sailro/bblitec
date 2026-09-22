@@ -118,7 +118,7 @@ test("an audio parameter handle is a value, not a minted id", () => {
     const header = source("native/include/bblite/pal_audio_types.hpp");
     assert.match(
         header,
-        /struct AudioParamHandle \{\n    AudioNodeHandle node;\n    AudioParamName name/,
+        /struct AudioParamHandle \{\n {4}AudioNodeHandle node;\n {4}AudioParamName name/,
     );
     const pal = source("native/src/pal_audio_labsound.cpp");
     assert.doesNotMatch(pal, /next_param_id/);
@@ -152,9 +152,11 @@ test("the audio thread allocates nothing", () => {
     // buses and the scratch are built in the constructor, which SDL
     // guarantees runs before any callback (the device opens paused).
     const device = source("native/src/pal_audio_sdl_device.hpp");
-    const callback = device.slice(device.indexOf("SDLCALL AudioDeviceSdl3::feed") >= 0
-        ? device.indexOf("SDLCALL AudioDeviceSdl3::feed")
-        : device.indexOf("static void SDLCALL feed"));
+    const callback = device.slice(
+        device.indexOf("SDLCALL AudioDeviceSdl3::feed") >= 0
+            ? device.indexOf("SDLCALL AudioDeviceSdl3::feed")
+            : device.indexOf("static void SDLCALL feed"),
+    );
     assert.doesNotMatch(callback, /scratch_\.resize/);
     assert.doesNotMatch(callback, /new lab::AudioBus/);
     assert.match(device, /scratch_\.assign/);

@@ -21,9 +21,11 @@ struct DawnDevice {
     ~DawnDevice() { release(); }
 
     void release_surface() noexcept {
-        if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
+        if (auto value = std::exchange(surface, nullptr))
+            wgpuSurfaceRelease(value);
 #if defined(__ANDROID__)
-        if (auto* value = std::exchange(android_window, nullptr)) ANativeWindow_release(value);
+        if (auto* value = std::exchange(android_window, nullptr))
+            ANativeWindow_release(value);
 #endif
     }
 
@@ -31,20 +33,28 @@ struct DawnDevice {
         // Release the surface while its device can still retire swapchains,
         // including the recycled swapchain Dawn retains after unconfigure.
         release_surface();
-        if (device) wgpuDeviceDestroy(device);
+        if (device)
+            wgpuDeviceDestroy(device);
     }
 
     void release() noexcept {
         release_surface();
-        if (auto value = std::exchange(queue, nullptr)) wgpuQueueRelease(value);
-        if (auto value = std::exchange(device, nullptr)) wgpuDeviceRelease(value);
-        if (auto value = std::exchange(adapter, nullptr)) wgpuAdapterRelease(value);
-        if (auto value = std::exchange(instance, nullptr)) wgpuInstanceRelease(value);
+        if (auto value = std::exchange(queue, nullptr))
+            wgpuQueueRelease(value);
+        if (auto value = std::exchange(device, nullptr))
+            wgpuDeviceRelease(value);
+        if (auto value = std::exchange(adapter, nullptr))
+            wgpuAdapterRelease(value);
+        if (auto value = std::exchange(instance, nullptr))
+            wgpuInstanceRelease(value);
 #if defined(__APPLE__)
-        if (auto value = std::exchange(metal_view, nullptr)) SDL_Metal_DestroyView(value);
+        if (auto value = std::exchange(metal_view, nullptr))
+            SDL_Metal_DestroyView(value);
 #endif
-        if (auto* value = std::exchange(window, nullptr); value && owns_window) release_run_window(value);
-        if (std::exchange(sdl_initialized, false)) quit_run_sdl();
+        if (auto* value = std::exchange(window, nullptr); value && owns_window)
+            release_run_window(value);
+        if (std::exchange(sdl_initialized, false))
+            quit_run_sdl();
     }
 
     SDL_Window* window = nullptr;

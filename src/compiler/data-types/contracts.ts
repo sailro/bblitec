@@ -17,8 +17,16 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
     [P in K]: {
         cpp(type: DataType<P>, context: DataTypeCppContext): string;
         key(type: DataType<P>, key: DataTypeKey): string;
-        equal(left: DataType<P>, right: DataType<P>, equal: DataTypeEquality): boolean;
-        children(type: DataType<P>, fields: StructFieldTypes, signatures: boolean): readonly DataType[];
+        equal(
+            left: DataType<P>,
+            right: DataType<P>,
+            equal: DataTypeEquality,
+        ): boolean;
+        children(
+            type: DataType<P>,
+            fields: StructFieldTypes,
+            signatures: boolean,
+        ): readonly DataType[];
         readonly byReference: boolean;
         /** Opaque Ref<T> leaf: copies retain identity, assignment reseats it, and get() exposes it. */
         readonly opaqueReference?: true;

@@ -15,8 +15,7 @@ int main() {
     const std::weak_ptr<int> weak_payload = payload;
     int calls = 0;
     auto dispose = bbl::on_csm_receiver_update(
-        engine, generator,
-        [payload, &calls](const bbl::js::F32Array&) { calls += *payload; });
+        engine, generator, [payload, &calls](const bbl::js::F32Array&) { calls += *payload; });
     const auto registry = engine.shadow_generators[0].csm_receiver_callbacks;
     payload.reset();
     assert(!weak_payload.expired());
@@ -29,18 +28,16 @@ int main() {
     assert(weak_payload.expired());
 
     std::function<void()> dispose_self;
-    dispose_self = bbl::on_csm_receiver_update(
-        engine, generator, [&](const bbl::js::F32Array&) {
-            ++calls;
-            dispose_self();
-        });
+    dispose_self = bbl::on_csm_receiver_update(engine, generator, [&](const bbl::js::F32Array&) {
+        ++calls;
+        dispose_self();
+    });
     registry->dispatch(values);
     registry->dispatch(values);
     assert(calls == 8);
     assert(registry->empty());
 
-    auto detached = bbl::on_csm_receiver_update(
-        engine, generator, [](const bbl::js::F32Array&) {});
+    auto detached = bbl::on_csm_receiver_update(engine, generator, [](const bbl::js::F32Array&) {});
     engine.shadow_generators.clear();
     detached();
     assert(registry->empty());
@@ -49,8 +46,8 @@ int main() {
     {
         bbl::Engine temporary;
         temporary.shadow_generators.emplace_back();
-        after_destruction = bbl::on_csm_receiver_update(
-            temporary, generator, [](const bbl::js::F32Array&) {});
+        after_destruction =
+            bbl::on_csm_receiver_update(temporary, generator, [](const bbl::js::F32Array&) {});
     }
     after_destruction();
 

@@ -22,7 +22,8 @@ function halfToFloat(bits: number): number {
 
 // sha256 of the executed pinned LUT bytes, filled from the first real run
 // on the reference device; the assertion message prints the actual digest.
-const expectedSha256 = "b4fb89ffb67ab282ad0d1ba459796efc67af0d373dde90e39bd6caac42dcf2e8";
+const expectedSha256 =
+    "b4fb89ffb67ab282ad0d1ba459796efc67af0d373dde90e39bd6caac42dcf2e8";
 
 test("executes the pinned EXT_lights_image_based BRDF LUT", async () => {
     const bytes = await generateIblBrdfLutRgba16f();

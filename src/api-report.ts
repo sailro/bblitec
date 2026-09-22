@@ -4,9 +4,15 @@ import { assessApiCases } from "./api-evidence.js";
 import { type ApiBaseline } from "./api-baseline.js";
 import { type ApiBinding } from "./api-bindings.js";
 
-export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
-    cases: ReturnType<typeof assessApiCases>, filter = "", baseline?: ApiBaseline, bindings: readonly ApiBinding[] = [],
-    referencedOnly = false) {
+export function apiCoverageReport(
+    snapshot: ApiSnapshot,
+    usage: ApiUsage,
+    cases: ReturnType<typeof assessApiCases>,
+    filter = "",
+    baseline?: ApiBaseline,
+    bindings: readonly ApiBinding[] = [],
+    referencedOnly = false,
+) {
     const uses = new Map<string, ApiUsage["uses"]>();
     for (const use of usage.uses) {
         const sites = uses.get(use.id) ?? [];
@@ -16,83 +22,216 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
     const byTarget = new Map<string, typeof cases>();
     const generated = new Map<string, ApiBaseline["uses"]>();
     const byOwner = new Map<string, ApiBinding[]>();
-    for (const binding of bindings) byOwner.set(binding.owner, [...(byOwner.get(binding.owner) ?? []), binding]);
+    for (const binding of bindings)
+        byOwner.set(binding.owner, [
+            ...(byOwner.get(binding.owner) ?? []),
+            binding,
+        ]);
     const bodies = new Map<string, ApiBaseline["translations"]>();
-    for (const translation of baseline?.translations ?? []) for (const owner of translation.owners) {
-        bodies.set(owner, [...(bodies.get(owner) ?? []), translation]);
-    }
+    for (const translation of baseline?.translations ?? [])
+        for (const owner of translation.owners) {
+            bodies.set(owner, [...(bodies.get(owner) ?? []), translation]);
+        }
     for (const use of baseline?.uses ?? []) {
         if (use.operation === "reference") continue;
         const sites = generated.get(use.id) ?? [];
         sites.push(use);
         generated.set(use.id, sites);
     }
-    for (const entry of cases) for (const target of entry.targets) {
-        const entries = byTarget.get(target.id) ?? [];
-        entries.push(entry);
-        byTarget.set(target.id, entries);
-    }
-    const rows = snapshot.items.filter(item => (!filter || item.id.toLowerCase().includes(filter.toLowerCase())) &&
-        (!referencedOnly || uses.has(item.id))).map(item => {
-        const evidence = byTarget.get(item.id) ?? [];
-        const sites = uses.get(item.id) ?? [];
-        const generation = generated.get(item.id) ?? [];
-        const passing = evidence.filter(entry => entry.status === "passed");
-        const refusal = passing.some(entry => entry.level === "refusal");
-        const supported = generation.length > 0 || passing.some(entry => entry.level !== "refusal");
-        const status = refusal && supported ? "partial" : passing.some(entry => entry.level === "parity") ? "parity-tested" :
-            passing.some(entry => entry.level === "native") ? "native-tested" :
-            generation.length || passing.some(entry => entry.level === "generation") ? "generation-tested" :
-            refusal ? "known-refusal" : sites.length ? "observed" : "unassessed";
-        return { ...item, status, supported, sites, generation, bindings: item.kind === "function" ? byOwner.get(item.owner) ?? [] : [],
-            translations: item.kind === "function" ? bodies.get(item.owner) ?? [] : [], cases: evidence.map(entry => entry.id) };
-    });
-    const counts = Object.fromEntries(["parity-tested", "native-tested", "generation-tested", "partial", "known-refusal", "observed", "unassessed"]
-        .map(status => [status, rows.filter(row => row.status === status).length]));
-    const groups = { callables: ["function", "method", "constructor", "construct"],
-        fields: ["property", "get", "set", "index"], constants: ["variable", "enum-member"], callbacks: ["call"] };
-    const surfaceKinds = Object.values(groups).flat();
-    const metric = (kinds: readonly string[], weight: (row: (typeof rows)[number]) => number = () => 1) => {
-        const entries = rows.filter(row => kinds.includes(row.kind));
-        const sum = (selected: typeof entries): number => selected.reduce((count, row) => count + weight(row), 0);
-        const covered = sum(entries.filter(row => row.supported));
-        const total = sum(entries);
-        return { covered, total, percent: total ? 100 * covered / total : 0 };
+    for (const entry of cases)
+        for (const target of entry.targets) {
+            const entries = byTarget.get(target.id) ?? [];
+            entries.push(entry);
+            byTarget.set(target.id, entries);
+        }
+    const rows = snapshot.items
+        .filter(
+            (item) =>
+                (!filter ||
+                    item.id.toLowerCase().includes(filter.toLowerCase())) &&
+                (!referencedOnly || uses.has(item.id)),
+        )
+        .map((item) => {
+            const evidence = byTarget.get(item.id) ?? [];
+            const sites = uses.get(item.id) ?? [];
+            const generation = generated.get(item.id) ?? [];
+            const passing = evidence.filter(
+                (entry) => entry.status === "passed",
+            );
+            const refusal = passing.some((entry) => entry.level === "refusal");
+            const supported =
+                generation.length > 0 ||
+                passing.some((entry) => entry.level !== "refusal");
+            const status =
+                refusal && supported
+                    ? "partial"
+                    : passing.some((entry) => entry.level === "parity")
+                      ? "parity-tested"
+                      : passing.some((entry) => entry.level === "native")
+                        ? "native-tested"
+                        : generation.length ||
+                            passing.some(
+                                (entry) => entry.level === "generation",
+                            )
+                          ? "generation-tested"
+                          : refusal
+                            ? "known-refusal"
+                            : sites.length
+                              ? "observed"
+                              : "unassessed";
+            return {
+                ...item,
+                status,
+                supported,
+                sites,
+                generation,
+                bindings:
+                    item.kind === "function"
+                        ? (byOwner.get(item.owner) ?? [])
+                        : [],
+                translations:
+                    item.kind === "function"
+                        ? (bodies.get(item.owner) ?? [])
+                        : [],
+                cases: evidence.map((entry) => entry.id),
+            };
+        });
+    const counts = Object.fromEntries(
+        [
+            "parity-tested",
+            "native-tested",
+            "generation-tested",
+            "partial",
+            "known-refusal",
+            "observed",
+            "unassessed",
+        ].map((status) => [
+            status,
+            rows.filter((row) => row.status === status).length,
+        ]),
+    );
+    const groups = {
+        callables: ["function", "method", "constructor", "construct"],
+        fields: ["property", "get", "set", "index"],
+        constants: ["variable", "enum-member"],
+        callbacks: ["call"],
     };
-    const metrics = { surface: metric(surfaceKinds), sites: metric(surfaceKinds, row => row.sites.length),
-        ...Object.fromEntries(Object.entries(groups).map(([name, kinds]) => [name, metric(kinds)])) };
-    const exercisedOwners = new Set(rows.filter(row => row.kind === "function" && row.supported).map(row => row.owner));
+    const surfaceKinds = Object.values(groups).flat();
+    const metric = (
+        kinds: readonly string[],
+        weight: (row: (typeof rows)[number]) => number = () => 1,
+    ) => {
+        const entries = rows.filter((row) => kinds.includes(row.kind));
+        const sum = (selected: typeof entries): number =>
+            selected.reduce((count, row) => count + weight(row), 0);
+        const covered = sum(entries.filter((row) => row.supported));
+        const total = sum(entries);
+        return { covered, total, percent: total ? (100 * covered) / total : 0 };
+    };
+    const metrics = {
+        surface: metric(surfaceKinds),
+        sites: metric(surfaceKinds, (row) => row.sites.length),
+        ...Object.fromEntries(
+            Object.entries(groups).map(([name, kinds]) => [
+                name,
+                metric(kinds),
+            ]),
+        ),
+    };
+    const exercisedOwners = new Set(
+        rows
+            .filter((row) => row.kind === "function" && row.supported)
+            .map((row) => row.owner),
+    );
     // A filter or a project scopes the adapter census to the functions its rows own.
-    const selectedBindings = bindings.filter(binding => (!filter && !referencedOnly) || rows.some(row => row.owner === binding.owner));
-    const unclassified = selectedBindings.filter(binding => binding.status === "no-route-observed" && !exercisedOwners.has(binding.owner));
-    const present = selectedBindings.filter(binding => binding.status === "route-found" || exercisedOwners.has(binding.owner)).length;
-    const exercised = selectedBindings.filter(binding => exercisedOwners.has(binding.owner)).length;
-    const adapters = { scope: "Exported function entry adapters identified by live dispatch probes or passing source forms. A hook can refuse overloads. Probe fallthrough is unclassified because routing can depend on argument types.",
-        total: selectedBindings.length, routed: present, exercised,
+    const selectedBindings = bindings.filter(
+        (binding) =>
+            (!filter && !referencedOnly) ||
+            rows.some((row) => row.owner === binding.owner),
+    );
+    const unclassified = selectedBindings.filter(
+        (binding) =>
+            binding.status === "no-route-observed" &&
+            !exercisedOwners.has(binding.owner),
+    );
+    const present = selectedBindings.filter(
+        (binding) =>
+            binding.status === "route-found" ||
+            exercisedOwners.has(binding.owner),
+    ).length;
+    const exercised = selectedBindings.filter((binding) =>
+        exercisedOwners.has(binding.owner),
+    ).length;
+    const adapters = {
+        scope: "Exported function entry adapters identified by live dispatch probes or passing source forms. A hook can refuse overloads. Probe fallthrough is unclassified because routing can depend on argument types.",
+        total: selectedBindings.length,
+        routed: present,
+        exercised,
         unclassified: unclassified.length,
-        unresolved: selectedBindings.filter(binding => binding.status === "probe-error").length,
-        routedPercent: selectedBindings.length ? 100 * present / selectedBindings.length : 0,
-        exercisedPercent: selectedBindings.length ? 100 * exercised / selectedBindings.length : 0 };
-    const automatic = { scope: "Successful pinned AST translation. Includes internal helpers, configured adapter bindings and specializations. Requests identify call, method, expression and statement adapters actually dispatched by the numeric translator. Other translation paths remain unclassified.",
-        bodies: new Set((baseline?.translations ?? []).map(body => `${body.modulePath}#${body.symbolName}`)).size,
+        unresolved: selectedBindings.filter(
+            (binding) => binding.status === "probe-error",
+        ).length,
+        routedPercent: selectedBindings.length
+            ? (100 * present) / selectedBindings.length
+            : 0,
+        exercisedPercent: selectedBindings.length
+            ? (100 * exercised) / selectedBindings.length
+            : 0,
+    };
+    const automatic = {
+        scope: "Successful pinned AST translation. Includes internal helpers, configured adapter bindings and specializations. Requests identify call, method, expression and statement adapters actually dispatched by the numeric translator. Other translation paths remain unclassified.",
+        bodies: new Set(
+            (baseline?.translations ?? []).map(
+                (body) => `${body.modulePath}#${body.symbolName}`,
+            ),
+        ).size,
         publicFunctions: bodies.size,
-        completeFunctionTranslations: [...bodies.values()].filter(entries => entries.some(entry => entry.extent === "function")).length };
+        completeFunctionTranslations: [...bodies.values()].filter((entries) =>
+            entries.some((entry) => entry.extent === "function"),
+        ).length,
+    };
     // A project's readiness is its restricted metrics plus what no evidence can supply.
-    const readiness = referencedOnly ? {
-        scope: "The declarations one entry references, scanned against this repository's pin and credited by its collected receipts. Supported means compile or scoped native/parity evidence, not proof for the project's own forms; a use site inside a dead branch still counts.",
-        evidence: baseline ? "current" as const : "stale" as const,
-        unrouted: unclassified.map(binding => binding.name).sort(),
-        pinGap: usage.unresolved,
-    } : undefined;
-    return { schemaVersion: 2, pin: snapshot.pin,
+    const readiness = referencedOnly
+        ? {
+              scope: "The declarations one entry references, scanned against this repository's pin and credited by its collected receipts. Supported means compile or scoped native/parity evidence, not proof for the project's own forms; a use site inside a dead branch still counts.",
+              evidence: baseline ? ("current" as const) : ("stale" as const),
+              unrouted: unclassified.map((binding) => binding.name).sort(),
+              pinGap: usage.unresolved,
+          }
+        : undefined;
+    return {
+        schemaVersion: 2,
+        pin: snapshot.pin,
         scope: "Implementation and validation are separate. Pinned source translation supplies Babylon behavior; entry and member adapters connect supported forms to native/PAL storage and services. Exercise percentages are validation coverage, not the amount of PAL implementation completed.",
-        adapters, automatic, metrics, baseline: baseline ? { compilations: baseline.compilations, testsPassed: baseline.testsPassed, suites: baseline.suites } : undefined,
-        counts, total: rows.length, exports: snapshot.exports, cases, usage: { ...usage, uses: undefined }, rows, readiness };
+        adapters,
+        automatic,
+        metrics,
+        baseline: baseline
+            ? {
+                  compilations: baseline.compilations,
+                  testsPassed: baseline.testsPassed,
+                  suites: baseline.suites,
+              }
+            : undefined,
+        counts,
+        total: rows.length,
+        exports: snapshot.exports,
+        cases,
+        usage: { ...usage, uses: undefined },
+        rows,
+        readiness,
+    };
 }
 
-export function apiReportHtml(report: ReturnType<typeof apiCoverageReport>): string {
+export function apiReportHtml(
+    report: ReturnType<typeof apiCoverageReport>,
+): string {
     // The page reads rows, cases and summaries; the export table and file digests are provenance for report.json.
-    const data = JSON.stringify({ ...report, exports: undefined, usage: { ...report.usage, files: undefined } }).replaceAll("<", "\\u003c");
+    const data = JSON.stringify({
+        ...report,
+        exports: undefined,
+        usage: { ...report.usage, files: undefined },
+    }).replaceAll("<", "\\u003c");
     return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Babylon Lite API coverage</title>

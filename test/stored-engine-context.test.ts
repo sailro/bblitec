@@ -4,12 +4,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
-test("engine contexts retain identity across caches, arrays and helper parameters", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "engine contexts retain identity across caches, arrays and helper parameters",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         import type { EngineContext } from "@babylonjs/lite";
         const cache = new WeakMap<EngineContext, number>();
@@ -23,11 +29,14 @@ test("engine contexts retain identity across caches, arrays and helper parameter
         cache.delete(engines[1]!);
         if (cache.has(first)) throw new Error("aliased cache key");
     `);
-    const output = resolve("artifacts/stored-engine-context");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), result.cpp);
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, `
+        const output = resolve("artifacts/stored-engine-context");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, "program.hpp"), result.cpp);
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -39,8 +48,22 @@ test("engine contexts retain identity across caches, arrays and helper parameter
             }
         }
         int main() { return generated_main(); }
-    `);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
-});
+    `,
+        );
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    },
+);

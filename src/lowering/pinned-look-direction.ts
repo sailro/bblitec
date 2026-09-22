@@ -13,8 +13,7 @@ import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { pinnedHeader } from "./pinned-header.js";
 
-const LOOK_DIRECTION_MODULE =
-    "src/math/create-quat-from-look-direction-rh.ts";
+const LOOK_DIRECTION_MODULE = "src/math/create-quat-from-look-direction-rh.ts";
 
 /** The header carrying the pin's right-handed look-direction quaternion. */
 export function pinnedLookDirectionHeader(context: LoweringContext): string {
@@ -60,10 +59,9 @@ export function pinnedLookDirectionHeader(context: LoweringContext): string {
             memberBindings: new Map(
                 ["forward", "up"].flatMap((record) =>
                     ["x", "y", "z"].map(
-                        (component): [
-                            string,
-                            { cpp: string; type: "scalar" },
-                        ] => [
+                        (
+                            component,
+                        ): [string, { cpp: string; type: "scalar" }] => [
                             `${record}.${component}`,
                             {
                                 cpp: `${record}.${component}`,
@@ -89,9 +87,18 @@ export function pinnedLookDirectionHeader(context: LoweringContext): string {
         },
     );
 
-    return pinnedHeader(["<bblite/runtime.hpp>","<bblite/js_data.hpp>","","<array>","<cmath>"], `
+    return pinnedHeader(
+        [
+            "<bblite/runtime.hpp>",
+            "<bblite/js_data.hpp>",
+            "",
+            "<array>",
+            "<cmath>",
+        ],
+        `
 ${basis}
 
 ${lookDirection}
-`);
+`,
+    );
 }

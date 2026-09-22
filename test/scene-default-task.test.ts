@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 function sceneProgram(body: string): string {
     return `
@@ -81,24 +84,68 @@ const tools = optionalNativeFixtureTools();
 for (const { name, source } of cases) {
     test(`${name} scene choices preserve default render-task configuration`, () => {
         const result = compileSource(source);
-        assert.match(result.cpp, /configure_scene_render_defaults\(bbl::create_scene_context\([^)]+\), false, 4u\)/);
-        assert.match(result.cpp, /state->default_render_task && !\w+\.state->default_render_task_created/);
+        assert.match(
+            result.cpp,
+            /configure_scene_render_defaults\(bbl::create_scene_context\([^)]+\), false, 4u\)/,
+        );
+        assert.match(
+            result.cpp,
+            /state->default_render_task && !\w+\.state->default_render_task_created/,
+        );
         assert.match(result.cpp, /default-present/);
-        assert.equal(result.cpp.match(/RenderTaskOptions\{"default-render-task"/g)?.length, 1);
-        assert.equal(result.cpp.match(/bblscene::bbl_ensure_default_render_task\(/g)?.length, 4);
-        assert.ok(result.manifest.adaptations.some(adaptation => adaptation.id === "readable-default-render-task"));
+        assert.equal(
+            result.cpp.match(/RenderTaskOptions\{"default-render-task"/g)
+                ?.length,
+            1,
+        );
+        assert.equal(
+            result.cpp.match(/bblscene::bbl_ensure_default_render_task\(/g)
+                ?.length,
+            4,
+        );
+        assert.ok(
+            result.manifest.adaptations.some(
+                (adaptation) =>
+                    adaptation.id === "readable-default-render-task",
+            ),
+        );
     });
 
-    test(`${name} scene aliases create presentation once and respect disabled scenes`, { skip: !tools }, () => {
-        const output = resolve("artifacts", "scene-default-task-check", name);
-        mkdirSync(output, { recursive: true });
-        writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-        const executable = join(output, "check.exe");
-        runNativeFixtureCompiler(tools!, [
-            "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-            `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include",
-            "test\\fixtures\\scene-default-task-check.cpp",
-        ]);
-        assert.match(execFileSync(executable, { encoding: "utf8" }), /scene-default-task-check: ok/);
-    });
+    test(
+        `${name} scene aliases create presentation once and respect disabled scenes`,
+        { skip: !tools },
+        () => {
+            const output = resolve(
+                "artifacts",
+                "scene-default-task-check",
+                name,
+            );
+            mkdirSync(output, { recursive: true });
+            writeFileSync(
+                join(output, "program.hpp"),
+                compileSource(source).cpp,
+            );
+            const executable = join(output, "check.exe");
+            runNativeFixtureCompiler(tools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/MD",
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                output,
+                "/I",
+                "native\\include",
+                "test\\fixtures\\scene-default-task-check.cpp",
+            ]);
+            assert.match(
+                execFileSync(executable, { encoding: "utf8" }),
+                /scene-default-task-check: ok/,
+            );
+        },
+    );
 }

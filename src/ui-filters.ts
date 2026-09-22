@@ -1,4 +1,4 @@
-import {splitUiCssList, uiCssValueTokens} from "./ui-css-syntax.js";
+import { splitUiCssList, uiCssValueTokens } from "./ui-css-syntax.js";
 
 /** The ordinary CSS filters implemented by the retained layer compositor. */
 export function supportedUiFilter(value: string): boolean {
@@ -12,8 +12,11 @@ export function supportedUiFilter(value: string): boolean {
     const amount = new RegExp(`^${scalar}%?$`);
     const blur = new RegExp(`^(?:${scalar}px|0)$`);
     const angle = new RegExp(`^(?:[+-]?${scalar}(?:deg|rad)|0)$`);
-    const shadow = new RegExp(`^(?:${color}\\s+${length}\\s+${length}(?:\\s+(?:${scalar}px|0))?|${length}\\s+${length}(?:\\s+(?:${scalar}px|0))?\\s+${color})$`);
-    let cursor = 0, count = 0;
+    const shadow = new RegExp(
+        `^(?:${color}\\s+${length}\\s+${length}(?:\\s+(?:${scalar}px|0))?|${length}\\s+${length}(?:\\s+(?:${scalar}px|0))?\\s+${color})$`,
+    );
+    let cursor = 0,
+        count = 0;
     while (cursor < text.length) {
         const start = /^\s*([a-z-]+)\(/.exec(text.slice(cursor));
         if (!start) return false;
@@ -27,18 +30,33 @@ export function supportedUiFilter(value: string): boolean {
         }
         if (depth) return false;
         const argument = text.slice(body, cursor - 1).trim();
-        if ([...argument.matchAll(/(?:\d+(?:\.\d*)?|\.\d+)/g)].some(match => !Number.isFinite(Math.fround(Number(match[0]))))) return false;
+        if (
+            [...argument.matchAll(/(?:\d+(?:\.\d*)?|\.\d+)/g)].some(
+                (match) => !Number.isFinite(Math.fround(Number(match[0]))),
+            )
+        )
+            return false;
         switch (start[1]) {
-            case "brightness": case "contrast": case "grayscale": case "invert":
-            case "opacity": case "saturate": case "sepia":
+            case "brightness":
+            case "contrast":
+            case "grayscale":
+            case "invert":
+            case "opacity":
+            case "saturate":
+            case "sepia":
                 if (!amount.test(argument)) return false;
                 break;
-            case "hue-rotate": if (!angle.test(argument)) return false; break;
-            case "blur": if (!blur.test(argument)) return false; break;
+            case "hue-rotate":
+                if (!angle.test(argument)) return false;
+                break;
+            case "blur":
+                if (!blur.test(argument)) return false;
+                break;
             case "drop-shadow":
                 if (!shadow.test(argument)) return false;
                 break;
-            default: return false;
+            default:
+                return false;
         }
         count++;
         if (cursor < text.length && !/\s/.test(text[cursor]!)) return false;
@@ -54,15 +72,20 @@ export function supportedUiBoxShadow(value: string): boolean {
     const shadowColor = (token: string): boolean => {
         if (supportedUiFilter(`drop-shadow(0 0 ${token})`)) return true;
         if (!token.startsWith("var(") || !token.endsWith(")")) return false;
-        const parts = splitUiCssList(token.slice(4,-1));
-        return /^--[a-z0-9_-]+$/i.test(parts[0] ?? "") && parts.length <= 2 &&
-            (parts.length === 1 || shadowColor(parts[1]!));
+        const parts = splitUiCssList(token.slice(4, -1));
+        return (
+            /^--[a-z0-9_-]+$/i.test(parts[0] ?? "") &&
+            parts.length <= 2 &&
+            (parts.length === 1 || shadowColor(parts[1]!))
+        );
     };
-    return splitUiCssList(text).every(shadow => {
+    return splitUiCssList(text).every((shadow) => {
         const tokens = uiCssValueTokens(shadow);
         if (!tokens) return false;
         const lengths: number[] = [];
-        let inset = false, color = false, endedLengths = false;
+        let inset = false,
+            color = false,
+            endedLengths = false;
         for (const token of tokens) {
             if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)px$|^[+-]?0$/.test(token)) {
                 if (endedLengths) return false;
@@ -76,6 +99,11 @@ export function supportedUiBoxShadow(value: string): boolean {
                 else return false;
             }
         }
-        return color && lengths.length >= 2 && lengths.length <= 4 && (lengths[2] ?? 0) >= 0;
+        return (
+            color &&
+            lengths.length >= 2 &&
+            lengths.length <= 4 &&
+            (lengths[2] ?? 0) >= 0
+        );
     });
 }

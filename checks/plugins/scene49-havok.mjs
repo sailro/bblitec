@@ -13,16 +13,29 @@ import { maxError } from "./support.mjs";
 
 export async function check(context) {
     const require = createRequire(import.meta.url);
-    const hp = await HavokPhysics({ wasmBinary: new Uint8Array(readFileSync(require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"))).buffer });
+    const hp = await HavokPhysics({
+        wasmBinary: new Uint8Array(
+            readFileSync(
+                require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"),
+            ),
+        ).buffer,
+    });
     const world = hp.HP_World_Create()[1];
     const collector = hp.HP_QueryCollector_Create(1)[1];
     const cylinder = hp.HP_Shape_CreateCylinder([0, -1, 0], [0, 1, 0], 0.5)[1];
-    const capsule = hp.HP_Shape_CreateCapsule([0, -0.5, 0], [0, 0.5, 0], 0.5)[1];
+    const capsule = hp.HP_Shape_CreateCapsule(
+        [0, -0.5, 0],
+        [0, 0.5, 0],
+        0.5,
+    )[1];
     const bodies = [2.5, -2.5].map((y) => {
         const body = hp.HP_Body_Create()[1];
         hp.HP_Body_SetShape(body, capsule);
         hp.HP_Body_SetMotionType(body, hp.MotionType.STATIC);
-        hp.HP_Body_SetQTransform(body, [[1, y, 0], [0, 0, 0, 1]]);
+        hp.HP_Body_SetQTransform(body, [
+            [1, y, 0],
+            [0, 0, 0, 1],
+        ]);
         hp.HP_World_AddBody(world, body, false);
         return body;
     });
@@ -35,21 +48,64 @@ export async function check(context) {
             for (const phase of Object.values(context.results[backend])) {
                 const where = `${backend}/${phase.id}`;
                 const state = phase.capture;
-                hp.HP_World_ShapeProximityWithCollector(world, collector, [cylinder, state.meshes[0].position, state.meshes[0].rotationQuaternion, 10, false, [0n]]);
-                assert.equal(hp.HP_QueryCollector_GetNumHits(collector)[1], 1, `${where}: proximity hits`);
-                const proximity = hp.HP_QueryCollector_GetShapeProximityResult(collector, 0)[1];
-                hp.HP_World_ShapeCastWithCollector(world, collector, [cylinder, state.meshes[4].rotationQuaternion, [-1, -2.5, 0], [4, -2.5, 0], false, [0n]]);
-                assert.equal(hp.HP_QueryCollector_GetNumHits(collector)[1], 1, `${where}: cast hits`);
-                const cast = hp.HP_QueryCollector_GetShapeCastResult(collector, 0)[1];
-                const expected = [nudge(proximity[1][3], 0.08), nudge(proximity[2][3], 0.08), nudge(cast[2][3], 0.2)];
-                const markers = [2, 3, 7].map((index) => state.meshes[index].position);
-                const errors = markers.map((marker, index) => maxError(marker, expected[index]));
-                assert(Math.max(...errors) < 0.005, `${where}: marker error ${Math.max(...errors)}`);
+                hp.HP_World_ShapeProximityWithCollector(world, collector, [
+                    cylinder,
+                    state.meshes[0].position,
+                    state.meshes[0].rotationQuaternion,
+                    10,
+                    false,
+                    [0n],
+                ]);
+                assert.equal(
+                    hp.HP_QueryCollector_GetNumHits(collector)[1],
+                    1,
+                    `${where}: proximity hits`,
+                );
+                const proximity = hp.HP_QueryCollector_GetShapeProximityResult(
+                    collector,
+                    0,
+                )[1];
+                hp.HP_World_ShapeCastWithCollector(world, collector, [
+                    cylinder,
+                    state.meshes[4].rotationQuaternion,
+                    [-1, -2.5, 0],
+                    [4, -2.5, 0],
+                    false,
+                    [0n],
+                ]);
+                assert.equal(
+                    hp.HP_QueryCollector_GetNumHits(collector)[1],
+                    1,
+                    `${where}: cast hits`,
+                );
+                const cast = hp.HP_QueryCollector_GetShapeCastResult(
+                    collector,
+                    0,
+                )[1];
+                const expected = [
+                    nudge(proximity[1][3], 0.08),
+                    nudge(proximity[2][3], 0.08),
+                    nudge(cast[2][3], 0.2),
+                ];
+                const markers = [2, 3, 7].map(
+                    (index) => state.meshes[index].position,
+                );
+                const errors = markers.map((marker, index) =>
+                    maxError(marker, expected[index]),
+                );
+                assert(
+                    Math.max(...errors) < 0.005,
+                    `${where}: marker error ${Math.max(...errors)}`,
+                );
                 markersByPhase.set(phase.id, markers);
                 details[where] = { markerErrors: errors };
             }
             if (markersByPhase.has("idle") && markersByPhase.has("baseline")) {
-                assert.deepEqual(markersByPhase.get("idle"), markersByPhase.get("baseline"), `${backend}: idle moved the markers`);
+                assert.deepEqual(
+                    markersByPhase.get("idle"),
+                    markersByPhase.get("baseline"),
+                    `${backend}: idle moved the markers`,
+                );
             }
         }
     } finally {

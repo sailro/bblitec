@@ -53,9 +53,7 @@ export function float32Literal(value: number): string {
         }
     }
     const shortened = Number(value.toPrecision(low));
-    return floatLiteral(
-        Math.fround(shortened) === value ? shortened : value,
-    );
+    return floatLiteral(Math.fround(shortened) === value ? shortened : value);
 }
 
 export function doubleLiteral(value: number): string {
@@ -106,9 +104,10 @@ export function cppArrayDeclaration(
     registerTable?: CppArrayTableRegistrar,
     resultMode: "vector" | "span" = "vector",
 ): { readonly lines: readonly string[]; readonly expression: string } {
-    const resultType = resultMode === "span"
-        ? `std::span<const ${elementType}>`
-        : `std::vector<${elementType}>`;
+    const resultType =
+        resultMode === "span"
+            ? `std::span<const ${elementType}>`
+            : `std::vector<${elementType}>`;
     if (values.length === 0) {
         return { lines: [], expression: `${resultType}{}` };
     }
@@ -138,25 +137,25 @@ export function cppArrayDeclaration(
         const table = registerTable(symbol, elementType, spelled);
         return {
             lines: [],
-            expression: resultMode === "span"
-                ? `${resultType}(${table})`
-                : `${resultType}(${table}.begin(), ${table}.end())`,
+            expression:
+                resultMode === "span"
+                    ? `${resultType}(${table})`
+                    : `${resultType}(${table}.begin(), ${table}.end())`,
         };
     }
     const lines = [`static const ${elementType} ${symbol}[] = {`];
     for (let start = 0; start < spelled.length; start += VALUES_PER_LINE) {
         lines.push(
-            `    ${spelled
-                .slice(start, start + VALUES_PER_LINE)
-                .join(", ")},`,
+            `    ${spelled.slice(start, start + VALUES_PER_LINE).join(", ")},`,
         );
     }
     lines.push("};");
     return {
         lines,
-        expression: resultMode === "span"
-            ? `${resultType}(${symbol})`
-            : `${resultType}(${symbol}, ${symbol} + ${values.length})`,
+        expression:
+            resultMode === "span"
+                ? `${resultType}(${symbol})`
+                : `${resultType}(${symbol}, ${symbol} + ${values.length})`,
     };
 }
 
@@ -178,12 +177,20 @@ export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export function stringLiteral(value: string): string {
     return JSON.stringify(value)
-        .replace(/\\\\|\\u(d[89a-f][0-9a-f]{2})/gi, (escape: string, surrogate: string | undefined) => {
-            if (!surrogate) return escape;
-            const unit = Number.parseInt(surrogate, 16);
-            return [0xe0 | (unit >> 12), 0x80 | ((unit >> 6) & 0x3f), 0x80 | (unit & 0x3f)]
-                .map(byte => `\\${byte.toString(8).padStart(3, "0")}`).join("");
-        })
+        .replace(
+            /\\\\|\\u(d[89a-f][0-9a-f]{2})/gi,
+            (escape: string, surrogate: string | undefined) => {
+                if (!surrogate) return escape;
+                const unit = Number.parseInt(surrogate, 16);
+                return [
+                    0xe0 | (unit >> 12),
+                    0x80 | ((unit >> 6) & 0x3f),
+                    0x80 | (unit & 0x3f),
+                ]
+                    .map((byte) => `\\${byte.toString(8).padStart(3, "0")}`)
+                    .join("");
+            },
+        )
         .split("\u2028")
         .join("\\u2028")
         .split("\u2029")
@@ -220,20 +227,101 @@ export function cppIdentifier(name: string): string {
 }
 
 const cppKeywords: ReadonlySet<string> = new Set([
-    "alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel",
-    "atomic_commit", "atomic_noexcept", "auto", "bitand", "bitor",
-    "bool", "break", "case", "catch", "char", "char8_t", "char16_t",
-    "char32_t", "class", "compl", "concept", "const", "consteval",
-    "constexpr", "constinit", "const_cast", "continue", "co_await",
-    "co_return", "co_yield", "decltype", "default", "delete", "do",
-    "double", "dynamic_cast", "else", "enum", "explicit", "export",
-    "extern", "false", "float", "for", "friend", "goto", "if",
-    "inline", "int", "long", "mutable", "namespace", "new", "noexcept",
-    "not", "not_eq", "nullptr", "operator", "or", "or_eq", "private",
-    "protected", "public", "reflexpr", "register", "reinterpret_cast",
-    "requires", "return", "short", "signed", "sizeof", "static",
-    "static_assert", "static_cast", "struct", "switch", "synchronized",
-    "template", "this", "thread_local", "throw", "true", "try",
-    "typedef", "typeid", "typename", "union", "unsigned", "using",
-    "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq",
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "atomic_cancel",
+    "atomic_commit",
+    "atomic_noexcept",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "class",
+    "compl",
+    "concept",
+    "const",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "const_cast",
+    "continue",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "reflexpr",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "synchronized",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
 ]);

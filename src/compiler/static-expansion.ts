@@ -13,7 +13,8 @@ export class StaticExpansionBudget {
     private iterations = 0;
     private bytes = 0;
     private readonly sites: ts.IterationStatement[] = emissionArray([]);
-    private exceeded: { site: ts.IterationStatement; message: string } | undefined;
+    private exceeded:
+        { site: ts.IterationStatement; message: string } | undefined;
 
     public constructor(
         private readonly fail: (node: ts.Node, message: string) => never,
@@ -48,8 +49,12 @@ export class StaticExpansionBudget {
         meshes: number,
         materials: number,
     ): void {
-        if (!Number.isSafeInteger(meshes) || meshes > MAX_COMPOSITION_RECORDS ||
-            !Number.isSafeInteger(materials) || materials > MAX_COMPOSITION_RECORDS) {
+        if (
+            !Number.isSafeInteger(meshes) ||
+            meshes > MAX_COMPOSITION_RECORDS ||
+            !Number.isSafeInteger(materials) ||
+            materials > MAX_COMPOSITION_RECORDS
+        ) {
             this.reject(
                 site,
                 `Resource-loop composition exceeds ${MAX_COMPOSITION_RECORDS} mesh or material records. ` +

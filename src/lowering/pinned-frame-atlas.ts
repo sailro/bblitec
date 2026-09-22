@@ -12,8 +12,7 @@ function initializer(
         .findNodes(declaration.body!, ts.isVariableDeclaration)
         .find(
             (candidate) =>
-                ts.isIdentifier(candidate.name) &&
-                candidate.name.text === name,
+                ts.isIdentifier(candidate.name) && candidate.name.text === name,
         );
     if (!variable?.initializer) {
         context.contractError(
@@ -47,9 +46,15 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
         "shelfPack",
         "the native frame-atlas packer restates a body",
         [
-            "variable statement", "variable statement", "variable statement",
-            "variable statement", "variable statement", "variable statement",
-            "for statement", "variable statement", "return statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "for statement",
+            "variable statement",
+            "return statement",
         ],
     );
     const shelfExpressions: ReadonlyArray<readonly [string, string]> = [
@@ -90,12 +95,23 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
         "createSpriteAtlasFromFrames",
         "the native frame-atlas builder restates a body",
         [
-            "variable statement", "variable statement", "if statement",
-            "variable statement", "variable statement", "variable statement",
-            "variable statement", "if statement", "if statement",
-            "variable statement", "for statement", "variable statement",
-            "variable statement", "variable statement", "for statement",
-            "variable statement", "return statement",
+            "variable statement",
+            "variable statement",
+            "if statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "if statement",
+            "if statement",
+            "variable statement",
+            "for statement",
+            "variable statement",
+            "variable statement",
+            "variable statement",
+            "for statement",
+            "variable statement",
+            "return statement",
         ],
     );
     const createExpressions: ReadonlyArray<readonly [string, string]> = [
@@ -122,10 +138,7 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
         ["srcY", "s.srcY ?? 0"],
         ["srcStride", "s.srcStrideBytes ?? s.width * 4"],
         ["rowBytes", "s.width * 4"],
-        [
-            "srcOffset",
-            "(srcY + row) * srcStride + srcX * 4",
-        ],
+        ["srcOffset", "(srcY + row) * srcStride + srcX * 4"],
         [
             "dstOffset",
             "((placement.ys[i] + row) * atlasWidth + placement.xs[i]) * 4",
@@ -149,10 +162,8 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
         .findNodes(create.body!, ts.isBinaryExpression)
         .find(
             (candidate) =>
-                candidate.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                candidate.left.getText().replace(/\s+/g, " ") ===
-                    "frames[i]",
+                candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                candidate.left.getText().replace(/\s+/g, " ") === "frames[i]",
         );
     if (!frameAssignment) {
         context.contractError(

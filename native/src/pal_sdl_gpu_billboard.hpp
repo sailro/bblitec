@@ -71,7 +71,8 @@ struct BillboardResources {
 };
 
 inline void release_billboard_resources(SDL_GPUDevice*, BillboardResources&) noexcept;
-using BillboardPass = OwnedGpuRecord<BillboardResources, std::remove_pointer_t<SDL_GPUDevice*>, release_billboard_resources>;
+using BillboardPass = OwnedGpuRecord<BillboardResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                                     release_billboard_resources>;
 
 /** The vertex block the reconstructed billboard stage declares. */
 struct BillboardSceneUniforms {
@@ -79,83 +80,58 @@ struct BillboardSceneUniforms {
     std::array<float, 16> view{};
 };
 
-inline SDL_GPUVertexElementFormat billboard_attribute_format(
-    std::uint32_t float_count) {
+inline SDL_GPUVertexElementFormat billboard_attribute_format(std::uint32_t float_count) {
     switch (float_count) {
-        case 1u:
-            return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
-        case 2u:
-            return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        case 3u:
-            return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-        case 4u:
-            return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-        default:
-            throw std::runtime_error(
-                "Billboard instance attribute has an unsupported float "
-                "count.");
+    case 1u:
+        return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+    case 2u:
+        return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+    case 3u:
+        return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+    case 4u:
+        return SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+    default:
+        throw std::runtime_error("Billboard instance attribute has an unsupported float "
+                                 "count.");
     }
 }
 
-inline BillboardPass create_billboard_pass(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    BillboardSystemHandle system_handle,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count) {
-    const BillboardSystemRecord& system =
-        handle_at(engine.billboard_systems, system_handle);
-    const SpriteAtlasRecord& atlas =
-        handle_at(engine.sprite_atlases, system.atlas);
+inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine,
+                                           BillboardSystemHandle system_handle,
+                                           SDL_GPUTextureFormat target_format,
+                                           SDL_GPUTextureFormat depth_format,
+                                           SDL_GPUSampleCount sample_count) {
+    const BillboardSystemRecord& system = handle_at(engine.billboard_systems, system_handle);
+    const SpriteAtlasRecord& atlas = handle_at(engine.sprite_atlases, system.atlas);
     BillboardPass pass{device};
     pass.system = system_handle;
 
-    pass.index_buffer = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_INDEX,
-        upstream::billboard_index_data.data(),
-        upstream::billboard_index_data.size() *
-            sizeof(std::uint16_t));
+    pass.index_buffer =
+        upload_buffer(device, SDL_GPU_BUFFERUSAGE_INDEX, upstream::billboard_index_data.data(),
+                      upstream::billboard_index_data.size() * sizeof(std::uint16_t));
 
     // The program ladder and the pass rules, decided once for both
     // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
     // keeps only its API mechanics.
     const BillboardDrawPlan plan = billboard_draw_plan(system);
-    auto vertex_shader = load_shader(
-        device,
-        plan.vertex_stem,
-        SDL_GPU_SHADERSTAGE_VERTEX,
-        0,
-        // The axis-locked basis reads the system block for its lock axis.
-        plan.vertex_reads_system_block ? 2u : 1u,
-        "mainVertex");
-    const PinnedStageSlots slots =
-        read_pinned_stage_slots(plan.fragment_stem);
+    auto vertex_shader =
+        load_shader(device, plan.vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, 0,
+                    // The axis-locked basis reads the system block for its lock axis.
+                    plan.vertex_reads_system_block ? 2u : 1u, "mainVertex");
+    const PinnedStageSlots slots = read_pinned_stage_slots(plan.fragment_stem);
     pass.system_block_slot = stage_uniform_slot(slots, "billboards");
     pass.fx_block_slot = stage_uniform_slot(slots, "fx");
-    auto fragment_shader = load_shader(
-        device,
-        plan.fragment_stem,
-        SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<std::uint32_t>(slots.textures.size()),
-        static_cast<std::uint32_t>(slots.uniforms.size()),
-        "mainFragment");
+    auto fragment_shader =
+        load_shader(device, plan.fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    static_cast<std::uint32_t>(slots.textures.size()),
+                    static_cast<std::uint32_t>(slots.uniforms.size()), "mainFragment");
 
-    std::array<
-        SDL_GPUVertexAttribute,
-        upstream::billboard_instance_attributes.size()>
-        attributes{};
-    for (std::size_t index = 0;
-         index < upstream::billboard_instance_attributes.size();
-         ++index) {
+    std::array<SDL_GPUVertexAttribute, upstream::billboard_instance_attributes.size()> attributes{};
+    for (std::size_t index = 0; index < upstream::billboard_instance_attributes.size(); ++index) {
         const upstream::BillboardInstanceAttribute& row =
             upstream::billboard_instance_attributes[index];
         attributes[index] = SDL_GPUVertexAttribute{
-            row.shader_location,
-            0,
-            billboard_attribute_format(row.float_count),
-            row.byte_offset};
+            row.shader_location, 0, billboard_attribute_format(row.float_count), row.byte_offset};
     }
     SDL_GPUVertexBufferDescription instance_buffer{};
     instance_buffer.slot = 0;
@@ -171,55 +147,44 @@ inline BillboardPass create_billboard_pass(
     SDL_GPUColorTargetDescription target{};
     target.format = target_format;
     target.blend_state.enable_blend = blend.enabled;
-    target.blend_state.src_color_blendfactor =
-        sprite_blend_factor(blend.color.src);
-    target.blend_state.dst_color_blendfactor =
-        sprite_blend_factor(blend.color.dst);
+    target.blend_state.src_color_blendfactor = sprite_blend_factor(blend.color.src);
+    target.blend_state.dst_color_blendfactor = sprite_blend_factor(blend.color.dst);
     target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.src_alpha_blendfactor =
-        sprite_blend_factor(blend.alpha.src);
-    target.blend_state.dst_alpha_blendfactor =
-        sprite_blend_factor(blend.alpha.dst);
+    target.blend_state.src_alpha_blendfactor = sprite_blend_factor(blend.alpha.src);
+    target.blend_state.dst_alpha_blendfactor = sprite_blend_factor(blend.alpha.dst);
     target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.color_write_mask =
-        SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
-        SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+    target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+                                          SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader.get();
     info.fragment_shader = fragment_shader.get();
-    info.vertex_input_state.vertex_buffer_descriptions =
-        &instance_buffer;
+    info.vertex_input_state.vertex_buffer_descriptions = &instance_buffer;
     info.vertex_input_state.num_vertex_buffers = 1;
     info.vertex_input_state.vertex_attributes = attributes.data();
-    info.vertex_input_state.num_vertex_attributes =
-        static_cast<Uint32>(attributes.size());
+    info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attributes.size());
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     // The quad is expanded around a camera basis, so a billboard has no
     // consistent winding to cull against.
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     // The depth pairing comes with the plan: writes iff cutout.
-    info.depth_stencil_state.compare_op =
-        gpu_depth_compare(upstream::pinned_depth_compare);
+    info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write =
-        plan.cutout_writes_depth;
+    info.depth_stencil_state.enable_depth_write = plan.cutout_writes_depth;
     // The one a2c rule (pal_gpu_shared.hpp): at one sample the Dawn twin's
     // pipeline validation would reject it, and this API would quantize
     // coverage to a ~0.5 cutoff — different pixels per backend.
     info.multisample_state.enable_alpha_to_coverage =
-        alpha_to_coverage_enabled(
-            system.alpha_to_coverage,
-            gpu_sample_count_value(sample_count));
+        alpha_to_coverage_enabled(system.alpha_to_coverage, gpu_sample_count_value(sample_count));
     info.multisample_state.sample_count = sample_count;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{
-        create_sdl_graphics_pipeline(device, &info), {device}};
-    if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
+    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    if (!pass.pipeline)
+        gpu_error("SDL_CreateGPUGraphicsPipeline");
     vertex_shader.reset();
     fragment_shader.reset();
 
@@ -231,38 +196,24 @@ inline BillboardPass create_billboard_pass(
         const SpriteBlendDescriptor& add = system.add_pass_blend;
         SDL_GPUColorTargetDescription add_target = target;
         add_target.blend_state.enable_blend = add.enabled;
-        add_target.blend_state.src_color_blendfactor =
-            sprite_blend_factor(add.color.src);
-        add_target.blend_state.dst_color_blendfactor =
-            sprite_blend_factor(add.color.dst);
-        add_target.blend_state.src_alpha_blendfactor =
-            sprite_blend_factor(add.alpha.src);
-        add_target.blend_state.dst_alpha_blendfactor =
-            sprite_blend_factor(add.alpha.dst);
-        const PinnedStageSlots add_slots =
-            read_pinned_stage_slots("billboard.frag");
-        pass.add_system_block_slot =
-            stage_uniform_slot(add_slots, "billboards");
-        auto add_vertex = load_shader(
-            device,
-            "billboard.vert",
-            SDL_GPU_SHADERSTAGE_VERTEX,
-            0,
-            1u,
-            "mainVertex");
-        auto add_fragment = load_shader(
-            device,
-            "billboard.frag",
-            SDL_GPU_SHADERSTAGE_FRAGMENT,
-            static_cast<std::uint32_t>(add_slots.textures.size()),
-            static_cast<std::uint32_t>(add_slots.uniforms.size()),
-            "mainFragment");
+        add_target.blend_state.src_color_blendfactor = sprite_blend_factor(add.color.src);
+        add_target.blend_state.dst_color_blendfactor = sprite_blend_factor(add.color.dst);
+        add_target.blend_state.src_alpha_blendfactor = sprite_blend_factor(add.alpha.src);
+        add_target.blend_state.dst_alpha_blendfactor = sprite_blend_factor(add.alpha.dst);
+        const PinnedStageSlots add_slots = read_pinned_stage_slots("billboard.frag");
+        pass.add_system_block_slot = stage_uniform_slot(add_slots, "billboards");
+        auto add_vertex =
+            load_shader(device, "billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1u, "mainVertex");
+        auto add_fragment =
+            load_shader(device, "billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
+                        static_cast<std::uint32_t>(add_slots.textures.size()),
+                        static_cast<std::uint32_t>(add_slots.uniforms.size()), "mainFragment");
         SDL_GPUGraphicsPipelineCreateInfo add_info = info;
         add_info.vertex_shader = add_vertex.get();
         add_info.fragment_shader = add_fragment.get();
         add_info.target_info.color_target_descriptions = &add_target;
-        pass.add_pipeline = OwnedSdlPipeline{
-        create_sdl_graphics_pipeline(device, &add_info), {device}};
+        pass.add_pipeline =
+            OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &add_info), {device}};
         if (!pass.add_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline");
         }
@@ -270,35 +221,23 @@ inline BillboardPass create_billboard_pass(
 
     SDL_GPUBufferCreateInfo instances{};
     instances.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-    instances.size = static_cast<Uint32>(
-        static_cast<std::size_t>(system.capacity) *
-        upstream::billboard_instance_stride_bytes);
+    instances.size = static_cast<Uint32>(static_cast<std::size_t>(system.capacity) *
+                                         upstream::billboard_instance_stride_bytes);
     pass.instances = SDL_CreateGPUBuffer(device, &instances);
-    if (!pass.instances) gpu_error("SDL_CreateGPUBuffer");
+    if (!pass.instances)
+        gpu_error("SDL_CreateGPUBuffer");
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels
     // reach the blend stage as the bytes on disk.
     pass.textures.resize(1);
     pass.textures[0].texture = upload_2d_texture(
-            device,
-            atlas.rgba.data(),
-            atlas.rgba.size(),
-            atlas.width,
-            atlas.height,
-            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "billboard atlas",
-            atlas_mip_levels(atlas));
+        device, atlas.rgba.data(), atlas.rgba.size(), atlas.width, atlas.height,
+        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, "billboard atlas", atlas_mip_levels(atlas));
     pass.textures[0].sampler = create_texture_sampler(device, atlas.sampler);
-    append_sprite_fragment_textures(
-        device,
-        pass.textures,
-        system.custom_textures,
-        "billboard custom texture");
+    append_sprite_fragment_textures(device, pass.textures, system.custom_textures,
+                                    "billboard custom texture");
     pass.bound_textures = select_sprite_fragment_textures(
-        slots,
-        pass.textures,
-        system.custom_texture_names,
-        "billboard fragment shader");
+        slots, pass.textures, system.custom_texture_names, "billboard fragment shader");
     return pass;
 }
 
@@ -308,15 +247,10 @@ inline BillboardPass create_billboard_pass(
  * With depth writes off the draw ORDER is the composite, so this runs every
  * frame the camera moves rather than only when the system changes.
  */
-inline void upload_billboard_pass(
-    SDL_GPUDevice* device,
-    const Scene& scene,
-    Engine& engine,
-    BillboardPass& pass,
-    const std::array<float, 16>& view,
-    double delta_ms) {
-    const BillboardSystemRecord& system =
-        handle_at(engine.billboard_systems, pass.system);
+inline void upload_billboard_pass(SDL_GPUDevice* device, const Scene& scene, Engine& engine,
+                                  BillboardPass& pass, const std::array<float, 16>& view,
+                                  double delta_ms) {
+    const BillboardSystemRecord& system = handle_at(engine.billboard_systems, pass.system);
     // The pin advances the clock in `_update`, before and regardless of
     // whether the sorted instance data moved.
     if (system.custom_shader) {
@@ -327,39 +261,26 @@ inline void upload_billboard_pass(
     // buffer of its own, so re-uploading an identical buffer every frame
     // is the one real per-frame cost here -- every other upload in this
     // renderer is version-gated the same way.
-    const Vec3d fo_offset =
-        frame_floating_origin_offset(scene, engine);
-    if (
-        !billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
+    const Vec3d fo_offset = frame_floating_origin_offset(scene, engine);
+    if (!billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
-    upstream::billboard_upload_instances(
-        system,
-        view,
-        pass.sorted
+    upstream::billboard_upload_instances(system, view, pass.sorted
 #if BBLITE_FLOATING_ORIGIN
-        ,
-        fo_offset
+                                         ,
+                                         fo_offset
 #endif
     );
-    update_buffer(
-        device,
-        pass.instances,
-        pass.sorted.data(),
-        pass.sorted.size() * sizeof(float));
+    update_buffer(device, pass.instances, pass.sorted.data(), pass.sorted.size() * sizeof(float));
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 
 /** Records the billboard draw into a pass the scene renderer already began. */
-inline void record_billboard_pass(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    Engine& engine,
-    const BillboardPass& pass,
-    const std::array<float, 16>& view_projection,
-    const std::array<float, 16>& view) {
-    const BillboardSystemRecord& system =
-        handle_at(engine.billboard_systems, pass.system);
+inline void record_billboard_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                                  Engine& engine, const BillboardPass& pass,
+                                  const std::array<float, 16>& view_projection,
+                                  const std::array<float, 16>& view) {
+    const BillboardSystemRecord& system = handle_at(engine.billboard_systems, pass.system);
     if (!system.visible || system.count == 0) {
         return;
     }
@@ -368,43 +289,28 @@ inline void record_billboard_pass(
     BillboardSceneUniforms scene_uniforms{};
     scene_uniforms.view_projection = view_projection;
     scene_uniforms.view = view;
-    SDL_PushGPUVertexUniformData(
-        command,
-        0,
-        &scene_uniforms,
-        sizeof(scene_uniforms));
+    SDL_PushGPUVertexUniformData(command, 0, &scene_uniforms, sizeof(scene_uniforms));
 
     // Each block at the slot its own stage kept it in, which a custom body
     // decides by reading it or not. The axis-locked vertex stage reads the
     // system block too, so it is built whenever either stage wants it.
-    const bool axis_locked =
-        billboard_draw_plan(system).vertex_reads_system_block;
-    std::array<float, upstream::billboard_system_ubo_bytes / 4>
-        system_ubo{};
+    const bool axis_locked = billboard_draw_plan(system).vertex_reads_system_block;
+    std::array<float, upstream::billboard_system_ubo_bytes / 4> system_ubo{};
     if (pass.system_block_slot >= 0 || axis_locked) {
         upstream::build_billboard_system_ubo(system, system_ubo);
     }
-    push_stage_uniform(
-        command,
-        pass.system_block_slot,
-        system_ubo.data(),
-        system_ubo.size() * sizeof(float));
+    push_stage_uniform(command, pass.system_block_slot, system_ubo.data(),
+                       system_ubo.size() * sizeof(float));
     if (pass.fx_block_slot >= 0) {
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
-        upstream::build_sprite_fx_ubo(
-            static_cast<float>(pass.elapsed_ms / 1000.0),
-            system.shader_params,
-            fx);
-        push_stage_uniform(
-            command, pass.fx_block_slot, fx.data(), fx.size() * sizeof(float));
+        upstream::build_sprite_fx_ubo(static_cast<float>(pass.elapsed_ms / 1000.0),
+                                      system.shader_params, fx);
+        push_stage_uniform(command, pass.fx_block_slot, fx.data(), fx.size() * sizeof(float));
     }
     if (axis_locked) {
         // The same block, in the vertex stage that reads the lock axis.
-        SDL_PushGPUVertexUniformData(
-            command,
-            1,
-            system_ubo.data(),
-            static_cast<Uint32>(system_ubo.size() * sizeof(float)));
+        SDL_PushGPUVertexUniformData(command, 1, system_ubo.data(),
+                                     static_cast<Uint32>(system_ubo.size() * sizeof(float)));
     }
 
     SDL_GPUBufferBinding instance_binding{};
@@ -415,26 +321,16 @@ inline void record_billboard_pass(
     SDL_GPUBufferBinding index_binding{};
     index_binding.buffer = pass.index_buffer;
     index_binding.offset = 0;
-    SDL_BindGPUIndexBuffer(
-        render_pass,
-        &index_binding,
-        SDL_GPU_INDEXELEMENTSIZE_16BIT);
+    SDL_BindGPUIndexBuffer(render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     if (!pass.bound_textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            render_pass,
-            0,
-            pass.bound_textures.data(),
-            static_cast<Uint32>(pass.bound_textures.size()));
+        SDL_BindGPUFragmentSamplers(render_pass, 0, pass.bound_textures.data(),
+                                    static_cast<Uint32>(pass.bound_textures.size()));
     }
 
-    SDL_DrawGPUIndexedPrimitives(
-        render_pass,
-        static_cast<Uint32>(upstream::billboard_index_data.size()),
-        system.count,
-        0,
-        0,
-        0);
+    SDL_DrawGPUIndexedPrimitives(render_pass,
+                                 static_cast<Uint32>(upstream::billboard_index_data.size()),
+                                 system.count, 0, 0, 0);
 
     if (pass.add_pipeline) {
         // The pin's own mode-4 wrapper: the primary draw leaves the instance
@@ -443,33 +339,27 @@ inline void record_billboard_pass(
         // instances again. It restores the primary pipeline afterwards, so a
         // caller caching the bound pipeline stays correct.
         SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline.get());
-        SDL_BindGPUFragmentSamplers(
-            render_pass, 0, pass.textures.data(), 1);
+        SDL_BindGPUFragmentSamplers(render_pass, 0, pass.textures.data(), 1);
         // The stock fragment keeps the block at the same slot the Multiply
         // one did for every pairing that can occur, so the push is normally
         // redundant -- but the slot is read from each stage's own sidecar
         // rather than assumed, so a stage that moved it still gets one.
         if (pass.add_system_block_slot != pass.system_block_slot) {
-            push_stage_uniform(
-                command,
-                pass.add_system_block_slot,
-                system_ubo.data(),
-                system_ubo.size() * sizeof(float));
+            push_stage_uniform(command, pass.add_system_block_slot, system_ubo.data(),
+                               system_ubo.size() * sizeof(float));
         }
-        SDL_DrawGPUIndexedPrimitives(
-            render_pass,
-            static_cast<Uint32>(upstream::billboard_index_data.size()),
-            system.count,
-            0,
-            0,
-            0);
+        SDL_DrawGPUIndexedPrimitives(render_pass,
+                                     static_cast<Uint32>(upstream::billboard_index_data.size()),
+                                     system.count, 0, 0, 0);
         SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     }
 }
 
-inline void release_billboard_resources([[maybe_unused]] SDL_GPUDevice* device, BillboardResources& pass) noexcept {
+inline void release_billboard_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                        BillboardResources& pass) noexcept {
     release_sprite_fragment_textures(device, pass.textures);
-    if (pass.instances) SDL_ReleaseGPUBuffer(device, pass.instances);
+    if (pass.instances)
+        SDL_ReleaseGPUBuffer(device, pass.instances);
     if (pass.index_buffer) {
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
     }
@@ -478,4 +368,4 @@ inline void release_billboard_resources([[maybe_unused]] SDL_GPUDevice* device, 
 
 inline void release_billboard_pass(SDL_GPUDevice*, BillboardPass& pass) { pass.reset(); }
 
-}  // namespace bbl::pal
+} // namespace bbl::pal

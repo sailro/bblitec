@@ -1,9 +1,5 @@
 import { EmissionMap } from "./emission-transaction.js";
-import {
-    dirname,
-    resolve,
-    sep,
-} from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { isBabylonModule } from "./symbols.js";
@@ -14,9 +10,7 @@ import {
     sharedUpstreamStore,
 } from "../upstream-source.js";
 
-let sharedSourceFiles:
-    | Map<string, ts.SourceFile>
-    | undefined;
+let sharedSourceFiles: Map<string, ts.SourceFile> | undefined;
 
 function cachedSourceFile(
     path: string,
@@ -36,9 +30,7 @@ function cachedSourceFile(
 }
 
 function canCacheSourceFile(path: string): boolean {
-    return resolve(path).includes(
-        `${sep}node_modules${sep}`,
-    );
+    return resolve(path).includes(`${sep}node_modules${sep}`);
 }
 
 /**
@@ -128,7 +120,9 @@ function rawTextImportPath(
         return undefined;
     }
     const relativePath = moduleName.slice(0, -"?raw".length);
-    return resolve(dirname(containingFile), relativePath) + RAW_TEXT_MODULE_SUFFIX;
+    return (
+        resolve(dirname(containingFile), relativePath) + RAW_TEXT_MODULE_SUFFIX
+    );
 }
 
 /** The text file a synthesized raw-text module carries, or undefined for a real path. */
@@ -149,7 +143,9 @@ function rawTextModuleSource(
     }
     const text = host.readFile(textPath);
     if (text === undefined) {
-        throw new Error(`Raw text import reads '${textPath}', which does not exist.`);
+        throw new Error(
+            `Raw text import reads '${textPath}', which does not exist.`,
+        );
     }
     return `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`;
 }
@@ -209,9 +205,14 @@ export function createCompilerProgram(
         readFile: (path) =>
             resolve(path) === rootName
                 ? source
-                : rawTextModuleSource(path, defaultHost) ??
-                  defaultHost.readFile(path),
-        getSourceFile: (path, languageVersion, onError, shouldCreateNewSourceFile) => {
+                : (rawTextModuleSource(path, defaultHost) ??
+                  defaultHost.readFile(path)),
+        getSourceFile: (
+            path,
+            languageVersion,
+            onError,
+            shouldCreateNewSourceFile,
+        ) => {
             if (resolve(path) === rootName) {
                 return ts.createSourceFile(
                     rootName,
@@ -232,10 +233,10 @@ export function createCompilerProgram(
             }
             const load = () =>
                 resolve(path) === babylonTypes
-                    // The one place Babylon typings enter the program, and
-                    // therefore the one place the members `@internal`
-                    // stripped from them are restored.
-                    ? ts.createSourceFile(
+                    ? // The one place Babylon typings enter the program, and
+                      // therefore the one place the members `@internal`
+                      // stripped from them are restored.
+                      ts.createSourceFile(
                           babylonTypes,
                           [
                               defaultHost.readFile(babylonTypes) ?? "",
@@ -290,32 +291,62 @@ export function createCompilerProgram(
                     undefined,
                     redirectedReference,
                 );
-                const implementation = resolve(dirname(containingFile), moduleName);
-                const extension = moduleName.endsWith(".mjs") ? ts.Extension.Mjs :
-                    moduleName.endsWith(".cjs") ? ts.Extension.Cjs : moduleName.endsWith(".js") ? ts.Extension.Js : undefined;
-                if (extension && moduleName.startsWith(".") &&
-                    resolved.resolvedModule?.resolvedFileName.match(/\.d\.[cm]?ts$/) &&
-                    defaultHost.fileExists(implementation)) {
+                const implementation = resolve(
+                    dirname(containingFile),
+                    moduleName,
+                );
+                const extension = moduleName.endsWith(".mjs")
+                    ? ts.Extension.Mjs
+                    : moduleName.endsWith(".cjs")
+                      ? ts.Extension.Cjs
+                      : moduleName.endsWith(".js")
+                        ? ts.Extension.Js
+                        : undefined;
+                if (
+                    extension &&
+                    moduleName.startsWith(".") &&
+                    resolved.resolvedModule?.resolvedFileName.match(
+                        /\.d\.[cm]?ts$/,
+                    ) &&
+                    defaultHost.fileExists(implementation)
+                ) {
                     // A declaration describes a local JavaScript module but
                     // cannot supply its executable initializer or functions.
                     // Read the implementation through the same typed pipeline.
-                    return { resolvedModule: {resolvedFileName: implementation, extension, isExternalLibraryImport: false} };
+                    return {
+                        resolvedModule: {
+                            resolvedFileName: implementation,
+                            extension,
+                            isExternalLibraryImport: false,
+                        },
+                    };
                 }
                 return resolved;
             }),
     };
     // Include the pin's WebGPU peer typings explicitly, including for entries
     // outside this checkout. Keep unrelated ambient packages excluded above.
-    const webGpuTypes = resolve(repositoryRoot, "node_modules", "@webgpu", "types", "dist", "index.d.ts");
+    const webGpuTypes = resolve(
+        repositoryRoot,
+        "node_modules",
+        "@webgpu",
+        "types",
+        "dist",
+        "index.d.ts",
+    );
     const program = ts.createProgram([rootName, webGpuTypes], options, host);
     const sourceFile = program.getSourceFile(rootName);
     if (!sourceFile) {
-        throw new Error(`Unable to create TypeScript program for '${fileName}'.`);
+        throw new Error(
+            `Unable to create TypeScript program for '${fileName}'.`,
+        );
     }
     const nodeModules = `${sep}node_modules${sep}`;
     const localFiles = program
         .getSourceFiles()
-        .map((file) => resolve(rawTextSourcePath(file.fileName) ?? file.fileName))
+        .map((file) =>
+            resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
+        )
         .filter((path) => !path.includes(nodeModules))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();

@@ -3,8 +3,12 @@ export function gltfDeformationStateCpp(deformPicking: boolean): string {
     return `
 void publish_gltf_deformation(MeshRecord& mesh, ModelGeometry& geometry,
     const Matrix& mesh_world, const std::vector<Matrix>& joint_matrices,
-    bool skinned, const std::vector<float>& morph_weights) {${deformPicking ? `
-    mesh.deform_node_world = native_matrix(mesh_world);` : ""}
+    bool skinned, const std::vector<float>& morph_weights) {${
+        deformPicking
+            ? `
+    mesh.deform_node_world = native_matrix(mesh_world);`
+            : ""
+    }
     mesh.bone_matrices.clear();
     if (skinned) {
         for (const auto& matrix : joint_matrices) mesh.bone_matrices.push_back(native_matrix(matrix));

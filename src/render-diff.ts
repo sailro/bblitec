@@ -408,8 +408,9 @@ export function parseCppUniformStructs(
             // byte arrays; four bytes make one lane, and a width that is
             // not whole lanes would shift every later field, so it
             // abandons the struct instead.
-            const padding =
-                /^std::array<std::uint8_t,\s*(\d+)>\s+(\w+)/.exec(text);
+            const padding = /^std::array<std::uint8_t,\s*(\d+)>\s+(\w+)/.exec(
+                text,
+            );
             if (padding) {
                 const bytes = Number(padding[1]);
                 if (bytes % 4 !== 0) {
@@ -421,8 +422,9 @@ export function parseCppUniformStructs(
             }
             // Scalars: `float x = 0;`, `float x;`, and the pinned mirrors'
             // brace-initialized `float x{};` / `std::uint32_t x{};`.
-            const scalar =
-                /^(?:float|std::uint32_t)\s+(\w+)\s*[={;]/.exec(text);
+            const scalar = /^(?:float|std::uint32_t)\s+(\w+)\s*[={;]/.exec(
+                text,
+            );
             if (scalar) {
                 fields.push({ name: scalar[1]!, floats: 1 });
                 continue;
@@ -542,8 +544,12 @@ export function pinnedBlockFields(capture: NativeCapture): {
         // several lists repeats byte-identically; one row per distinct
         // payload, like every other field here.
         const signature = JSON.stringify([
-            block.meshIndex, block.world, block.lightCount,
-            block.boneCount, block.bone0, block.bone1,
+            block.meshIndex,
+            block.world,
+            block.lightCount,
+            block.boneCount,
+            block.bone0,
+            block.bone1,
         ]);
         if (seen.has(signature)) continue;
         seen.add(signature);
@@ -631,11 +637,7 @@ function admittedBuffers(captureDirectory: string): AdmittedBuffer[] {
  *  so the two spell their names and lanes identically. */
 function bufferVec4Rows(buffer: AdmittedBuffer): UniformField[] {
     const rows: UniformField[] = [];
-    for (
-        let offset = 0;
-        offset + 16 <= buffer.bytes.length;
-        offset += 16
-    ) {
+    for (let offset = 0; offset + 16 <= buffer.bytes.length; offset += 16) {
         rows.push({
             name: `buffer#${buffer.id}[${offset / 4}]`,
             values: [0, 1, 2, 3].map((lane) =>
@@ -649,18 +651,13 @@ function bufferVec4Rows(buffer: AdmittedBuffer): UniformField[] {
 /** The capture's composed shader modules by file name — read once, and
  *  served to the struct parse, the arm comparison and the sample-call
  *  listing alike. */
-function readBrowserShaderTexts(
-    captureDirectory: string,
-): Map<string, string> {
+function readBrowserShaderTexts(captureDirectory: string): Map<string, string> {
     const texts = new Map<string, string>();
     const shaderDirectory = captureShadersDirectory(captureDirectory);
     if (!existsSync(shaderDirectory)) return texts;
     for (const name of readdirSync(shaderDirectory)) {
         if (!name.endsWith(".wgsl")) continue;
-        texts.set(
-            name,
-            readFileSync(join(shaderDirectory, name), "utf8"),
-        );
+        texts.set(name, readFileSync(join(shaderDirectory, name), "utf8"));
     }
     return texts;
 }
@@ -701,9 +698,7 @@ export function browserUniformFields(
                     offset + lane * 4 + 4 <= buffer.bytes.length;
                     lane += 1
                 ) {
-                    values.push(
-                        buffer.bytes.readFloatLE(offset + lane * 4),
-                    );
+                    values.push(buffer.bytes.readFloatLE(offset + lane * 4));
                 }
                 const name = `buffer#${buffer.id} ${field.name}`;
                 const signature = `${name}|${values.join(",")}`;
@@ -758,9 +753,7 @@ export interface TextureUpload {
  * is what turns the "a sign-flipped lane is not a finding" counsel into
  * a mechanical match.
  */
-export function mirrorMatrixConvention(
-    values: readonly number[],
-): number[] {
+export function mirrorMatrixConvention(values: readonly number[]): number[] {
     const mirrored = [...values];
     for (const index of [1, 2, 3, 4, 8, 12]) {
         if (index < mirrored.length) mirrored[index] = -mirrored[index]!;
@@ -806,11 +799,7 @@ export function texturePaletteReport(
         if (Array.isArray(bytes)) {
             const buffer = Buffer.from(bytes);
             const floats: number[] = [];
-            for (
-                let offset = 0;
-                offset + 4 <= buffer.length;
-                offset += 4
-            ) {
+            for (let offset = 0; offset + 4 <= buffer.length; offset += 4) {
                 floats.push(buffer.readFloatLE(offset));
             }
             // Four rgba32float texels per matrix, matrices consecutive:
@@ -828,8 +817,7 @@ export function texturePaletteReport(
             format,
             matrices,
             byteLength:
-                upload.byteLength ??
-                (Array.isArray(bytes) ? bytes.length : 0),
+                upload.byteLength ?? (Array.isArray(bytes) ? bytes.length : 0),
             truncated: !Array.isArray(bytes),
         });
     });
@@ -900,8 +888,10 @@ export function texturePaletteReport(
  * and excluded from the divergence list when they do not.
  */
 function trivial(values: number[]): boolean {
-    return values.every((value) => value === 0) ||
-        values.every((value) => value === 1);
+    return (
+        values.every((value) => value === 0) ||
+        values.every((value) => value === 1)
+    );
 }
 
 function maxDelta(left: number[], right: number[]): number {
@@ -1198,7 +1188,9 @@ export function shaderArmReport(
     nativeArms: ReadonlyMap<string, string>,
 ): ShaderArmReport {
     const groups = new Map<string, { browser: string[]; native: string[] }>();
-    const groupFor = (text: string): { browser: string[]; native: string[] } => {
+    const groupFor = (
+        text: string,
+    ): { browser: string[]; native: string[] } => {
         const digest = createHash("sha256")
             .update(normalizeShaderText(text))
             .digest("hex");
@@ -1209,7 +1201,8 @@ export function shaderArmReport(
         }
         return group;
     };
-    for (const [name, text] of browserModules) groupFor(text).browser.push(name);
+    for (const [name, text] of browserModules)
+        groupFor(text).browser.push(name);
     for (const [name, text] of nativeArms) groupFor(text).native.push(name);
     const everyGroup = [...groups.values()];
     for (const group of everyGroup) {
@@ -1219,7 +1212,8 @@ export function shaderArmReport(
     const matched = everyGroup
         .filter((group) => group.browser.length > 0 && group.native.length > 0)
         .sort((left, right) =>
-            (left.browser[0] ?? "").localeCompare(right.browser[0] ?? ""));
+            (left.browser[0] ?? "").localeCompare(right.browser[0] ?? ""),
+        );
     const browserOnly = everyGroup
         .filter((group) => group.native.length === 0)
         .flatMap((group) => group.browser)
@@ -1230,14 +1224,13 @@ export function shaderArmReport(
         .sort();
 
     const pbrOrphans = browserOnly.filter((name) =>
-        looksLikePbrFragment(browserModules.get(name) ?? ""));
+        looksLikePbrFragment(browserModules.get(name) ?? ""),
+    );
     const nearMissCandidates = pbrOrphans.length > 0 ? pbrOrphans : browserOnly;
     let nearMiss: ShaderArmReport["nearMiss"];
     let agreed = 0;
     for (const browserName of nearMissCandidates) {
-        const mine = normalizeShaderText(
-            browserModules.get(browserName) ?? "",
-        );
+        const mine = normalizeShaderText(browserModules.get(browserName) ?? "");
         for (const nativeName of nativeOnly) {
             const { line, mineContext, theirsContext } = divergence(
                 mine,
@@ -1272,7 +1265,7 @@ export function sampleCalls(source: string): string[] {
     return [
         ...new Set(
             [...source.matchAll(/textureSample\w*\([^;)]*\)/g)].map((match) =>
-                match[0]!.replace(/\s+/g, ""),
+                match[0].replace(/\s+/g, ""),
             ),
         ),
     ].sort();
@@ -1415,8 +1408,7 @@ export function buildRenderDiff(
     }));
     const divergent = correspondences
         .filter(
-            (entry) =>
-                entry.match === "divergent" && !trivial(entry.values),
+            (entry) => entry.match === "divergent" && !trivial(entry.values),
         )
         .sort(
             (left, right) =>
@@ -1429,8 +1421,7 @@ export function buildRenderDiff(
     const nativeCandidates = browserCandidates(native);
     const browserOnly = browser.filter(
         (field) =>
-            !trivial(field.values) &&
-            !carriedNatively(field, nativeCandidates),
+            !trivial(field.values) && !carriedNatively(field, nativeCandidates),
     );
 
     const browserShapes = browserDrawShapes(captureDirectory);
@@ -1640,10 +1631,7 @@ export function buildRenderDiff(
     };
 }
 
-export function formatRenderDiff(
-    report: RenderDiffReport,
-    limit = 30,
-): string {
+export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
     const lines: string[] = [];
     lines.push(
         `Render diff: ${report.scene} (native backend ${report.backend})`,
@@ -1760,8 +1748,7 @@ export function formatRenderDiff(
     }
     const palettes = report.texturePalettes;
     const nativeHasBones =
-        report.pinned?.meshBlocks.some((block) => block.boneCount > 0) ??
-        false;
+        report.pinned?.meshBlocks.some((block) => block.boneCount > 0) ?? false;
     if (palettes) {
         lines.push("");
         lines.push(
@@ -1857,7 +1844,9 @@ export function formatRenderDiff(
 function format(values: number[]): string {
     return values
         .map((value) =>
-            Number.isFinite(value) ? Number(value.toPrecision(9)) : String(value),
+            Number.isFinite(value)
+                ? Number(value.toPrecision(9))
+                : String(value),
         )
         .join(", ");
 }

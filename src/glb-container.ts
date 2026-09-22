@@ -1,5 +1,13 @@
-import { GLB_BINARY_CHUNK as BINARY_CHUNK, GLB_JSON_CHUNK as JSON_CHUNK, GLB_MAGIC, type JsonRecord } from "./gltf-document.js";
-export interface GlbChunks { json: JsonRecord; binary: Buffer }
+import {
+    GLB_BINARY_CHUNK as BINARY_CHUNK,
+    GLB_JSON_CHUNK as JSON_CHUNK,
+    GLB_MAGIC,
+    type JsonRecord,
+} from "./gltf-document.js";
+export interface GlbChunks {
+    json: JsonRecord;
+    binary: Buffer;
+}
 /** Splits a GLB into its JSON and binary chunks, or undefined if not a GLB. */
 export function readGlb(bytes: Uint8Array): GlbChunks | undefined {
     const buffer = Buffer.from(

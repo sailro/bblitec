@@ -8,16 +8,25 @@ import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { lowerPointerDrag } from "../src/lowering/pointer-drag-lowerer.js";
 import { lowerRotationPointerDrag } from "../src/lowering/rotation-pointer-drag-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-test("rotation drags preserve the pinned quaternion update through a mirrored scaled parent", { skip: !tools }, async () => {
-    const output = resolve("artifacts/rotation-pointer-drag");
-    mkdirSync(output, { recursive: true });
-    const context = new LoweringContext();
-    const source = join(output, "rotation.cpp");
-    const parent = [0, 0, -2, 0, 0, 3, 0, 0, -4, 0, 0, 0, 7, 8, 9, 1];
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+test(
+    "rotation drags preserve the pinned quaternion update through a mirrored scaled parent",
+    { skip: !tools },
+    async () => {
+        const output = resolve("artifacts/rotation-pointer-drag");
+        mkdirSync(output, { recursive: true });
+        const context = new LoweringContext();
+        const source = join(output, "rotation.cpp");
+        const parent = [0, 0, -2, 0, 0, 3, 0, 0, -4, 0, 0, 0, 7, 8, 9, 1];
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <cmath>
 #include <iostream>
@@ -47,25 +56,67 @@ int main() {
         }
     }
 }
-`);
-    const executable = join(output, "rotation.exe");
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
-    const native = execFileSync(executable, { encoding: "utf8" }).trim().split(/\r?\n/).map(row => row.split(" ").map(Number));
-    type Quaternion = [number, number, number, number];
-    const pin = await importPinnedModule<{
-        quatFromAxisAngle: (...values: number[]) => Quaternion;
-        quatMul: (...values: number[]) => Quaternion;
-        quatNormalize: (value: Quaternion) => Quaternion;
-        worldRotationToLocal: (node: unknown, ...values: number[]) => Quaternion;
-    }>("gizmo/gizmo-math.js");
-    const initial: Quaternion = [Math.fround(Math.sin(.15)), 0, 0, Math.fround(Math.cos(.15))];
-    const reference = [false, true].flatMap(parented => [0, .2, -.6, 1.1].map(angle => {
-        if (angle === 0) return initial;
-        const delta = pin.quatFromAxisAngle(0, 0, 1, angle);
-        const local = pin.worldRotationToLocal({ parent: parented ? { worldMatrix: new Float32Array(parent) } : null }, ...delta);
-        return pin.quatNormalize(pin.quatMul(...local, ...initial)).map(Math.fround);
-    }));
-    const errors = native.map((row, pose) => row.map((value, lane) => Math.abs(value - reference[pose]![lane]!)));
-    writeFileSync(join(output, "comparison.json"), JSON.stringify({ native, reference, errors }, null, 2) + "\n");
-    assert(Math.max(...errors.flat()) < 1e-12);
-});
+`,
+        );
+        const executable = join(output, "rotation.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        const native = execFileSync(executable, { encoding: "utf8" })
+            .trim()
+            .split(/\r?\n/)
+            .map((row) => row.split(" ").map(Number));
+        type Quaternion = [number, number, number, number];
+        const pin = await importPinnedModule<{
+            quatFromAxisAngle: (...values: number[]) => Quaternion;
+            quatMul: (...values: number[]) => Quaternion;
+            quatNormalize: (value: Quaternion) => Quaternion;
+            worldRotationToLocal: (
+                node: unknown,
+                ...values: number[]
+            ) => Quaternion;
+        }>("gizmo/gizmo-math.js");
+        const initial: Quaternion = [
+            Math.fround(Math.sin(0.15)),
+            0,
+            0,
+            Math.fround(Math.cos(0.15)),
+        ];
+        const reference = [false, true].flatMap((parented) =>
+            [0, 0.2, -0.6, 1.1].map((angle) => {
+                if (angle === 0) return initial;
+                const delta = pin.quatFromAxisAngle(0, 0, 1, angle);
+                const local = pin.worldRotationToLocal(
+                    {
+                        parent: parented
+                            ? { worldMatrix: new Float32Array(parent) }
+                            : null,
+                    },
+                    ...delta,
+                );
+                return pin
+                    .quatNormalize(pin.quatMul(...local, ...initial))
+                    .map(Math.fround);
+            }),
+        );
+        const errors = native.map((row, pose) =>
+            row.map((value, lane) => Math.abs(value - reference[pose]![lane]!)),
+        );
+        writeFileSync(
+            join(output, "comparison.json"),
+            JSON.stringify({ native, reference, errors }, null, 2) + "\n",
+        );
+        assert(Math.max(...errors.flat()) < 1e-12);
+    },
+);

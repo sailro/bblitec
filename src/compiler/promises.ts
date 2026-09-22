@@ -4,19 +4,22 @@ import { caughtErrorValue } from "./error-values.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
-export interface PromiseLoweringContext
-    extends Pick<LoweringServices,
-        | "isDefaultLibraryIdentifier"
-        | "compileValue"
-        | "compileCallbackWithValues"
-        | "catchBindingIsErased"
-        | "emit"
-        | "increaseIndent"
-        | "decreaseIndent"
-        | "cppString"
-        | "allocateTemporaryCppName"
-        | "fail"
-    > {}
+export interface PromiseLoweringContext extends Pick<
+    LoweringServices,
+    | "isDefaultLibraryIdentifier"
+    | "compileValue"
+    | "compileCallbackWithValues"
+    | "catchBindingIsErased"
+    | "emit"
+    | "increaseIndent"
+    | "decreaseIndent"
+    | "cppString"
+    | "allocateTemporaryCppName"
+    | "nativeBindingCheckpoint"
+    | "registerNativeConstBinding"
+    | "takeNativeTemporary"
+    | "fail"
+> {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
 
@@ -32,11 +35,20 @@ function rejectionClause(
 ): { header: string; values: () => Value[] } {
     const parameter = callback.parameters[0];
     if (!parameter) return { header: "} catch (...) {", values: () => [] };
-    if (ts.isIdentifier(parameter.name) && context.catchBindingIsErased(parameter.name, callback.body)) {
-        return { header: "} catch (...) {", values: () => [{ kind: "browser", cpp: "" }] };
+    if (
+        ts.isIdentifier(parameter.name) &&
+        context.catchBindingIsErased(parameter.name, callback.body)
+    ) {
+        return {
+            header: "} catch (...) {",
+            values: () => [{ kind: "browser", cpp: "" }],
+        };
     }
     const caught = context.allocateTemporaryCppName("caught_error");
-    return { header: `} catch (const std::exception& ${caught}) {`, values: () => [caughtErrorValue(context, caught)] };
+    return {
+        header: `} catch (const std::exception& ${caught}) {`,
+        values: () => [caughtErrorValue(context, caught)],
+    };
 }
 
 export function compileImmediatePromise(
@@ -51,10 +63,7 @@ export function compileImmediatePromise(
         call.expression.name.text === "resolve"
     ) {
         if (call.arguments.length !== 1) {
-            context.fail(
-                call,
-                "Immediate Promise.resolve requires one value.",
-            );
+            context.fail(call, "Immediate Promise.resolve requires one value.");
         }
         return context.compileValue(argumentAt(call, 0));
     }
@@ -66,10 +75,7 @@ export function compileImmediatePromise(
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {
-            context.fail(
-                call,
-                "Promise.all requires one static iterable.",
-            );
+            context.fail(call, "Promise.all requires one static iterable.");
         }
         const argument = argumentAt(call, 0);
         if (!ts.isArrayLiteralExpression(argument)) {
@@ -104,15 +110,13 @@ export function compileImmediatePromise(
         // question is whether their values have to outlive the call.
         if (!isPromiseResultUsed(call)) {
             for (const element of argument.elements) {
-                emitValue(
-                    context,
-                    context.compileValue(element),
-                );
+                emitValue(context, context.compileValue(element));
             }
             return { kind: "void", cpp: "" };
         }
         const elements: Value[] = [];
         for (const element of argument.elements) {
+            const boundary = context.nativeBindingCheckpoint();
             const value = context.compileValue(element);
             if (value.cpp.length === 0 || value.kind === "engine") {
                 elements.push(value);
@@ -123,10 +127,19 @@ export function compileImmediatePromise(
                 elements.push(value);
                 continue;
             }
-            const temporary =
-                context.allocateTemporaryCppName("awaited");
-            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
-            elements.push({ ...value, cpp: temporary });
+            const temporary = context.allocateTemporaryCppName("awaited");
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: temporary,
+                initializer: context.takeNativeTemporary(value.cpp, boundary),
+            });
+            elements.push({
+                ...value,
+                cpp: temporary,
+                nativeCaptures: [context.registerNativeConstBinding(temporary)],
+                nativeBinding: true,
+            });
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
@@ -145,10 +158,7 @@ export function compileImmediatePromise(
         );
     }
     const callback = argumentAt(call, 0);
-    if (
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    ) {
+    if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
         context.fail(
             callback,
             "Immediate promise then requires an inline callback.",
@@ -179,10 +189,16 @@ export function compileImmediatePromise(
         ? context.allocateTemporaryCppName("promise_fulfilled")
         : undefined;
     if (fulfilled) {
-        context.emit({ kind: "declaration", type: "bool", name: fulfilled, initializer: "false" });
+        context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: fulfilled,
+            initializer: "false",
+        });
         context.emit("try {");
         context.increaseIndent();
     }
+    const settlementBoundary = context.nativeBindingCheckpoint();
     let value = context.compileValue(call.expression.expression);
     if (
         value.kind !== "engine" &&
@@ -190,27 +206,40 @@ export function compileImmediatePromise(
         value.cpp.length > 0
     ) {
         const settled = context.allocateTemporaryCppName("promise_value");
-        context.emit({ kind: "declaration", type: "auto", name: settled, initializer: value.cpp });
-        value = { ...value, cpp: settled };
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: settled,
+            initializer: context.takeNativeTemporary(
+                value.cpp,
+                settlementBoundary,
+            ),
+        });
+        value = {
+            ...value,
+            cpp: settled,
+            nativeCaptures: [context.registerNativeConstBinding(settled)],
+            nativeBinding: true,
+        };
     } else if (value.kind === "void") {
         emitValue(context, value);
     }
     if (fulfilled) {
         context.emit(`${fulfilled} = true;`);
     }
-    context.compileCallbackWithValues(
-        callback,
-        [value],
-        call,
-        true,
-    );
+    context.compileCallbackWithValues(callback, [value], call, true);
     if (rejection && fulfilled) {
-        const clause = rejectionClause(context, rejection as InlineCallback);
+        const clause = rejectionClause(context, rejection);
         context.decreaseIndent();
         context.emit(clause.header);
         context.increaseIndent();
         context.emit(`if (${fulfilled}) { throw; }`);
-        context.compileCallbackWithValues(rejection, clause.values(), call, true);
+        context.compileCallbackWithValues(
+            rejection,
+            clause.values(),
+            call,
+            true,
+        );
         context.decreaseIndent();
         context.emit("}");
     }
@@ -234,24 +263,23 @@ function compileImmediateCatch(
         context.fail(call, "Immediate promise catch requires one callback.");
     }
     const callback = argumentAt(call, 0);
-    if (
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    ) {
+    if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
         context.fail(
             callback,
             "Immediate promise catch requires an inline callback.",
         );
     }
-    const settled = context.allocateTemporaryCppName(
-        "promise_settled",
-    );
-    context.emit({ kind: "declaration", type: "bool", name: settled, initializer: "true", attributes: "[[maybe_unused]] " });
+    const settled = context.allocateTemporaryCppName("promise_settled");
+    context.emit({
+        kind: "declaration",
+        type: "bool",
+        name: settled,
+        initializer: "true",
+        attributes: "[[maybe_unused]] ",
+    });
     context.emit("try {");
     context.increaseIndent();
-    const value = context.compileValue(
-        callee.expression,
-    );
+    const value = context.compileValue(callee.expression);
     if (value.kind !== "void") {
         context.fail(
             callee.expression,
@@ -296,14 +324,8 @@ function isPromiseResultUsed(call: ts.CallExpression): boolean {
     );
 }
 
-function emitValue(
-    context: PromiseLoweringContext,
-    value: Value,
-): void {
-    if (
-        value.kind !== "engine" &&
-        value.cpp.length > 0
-    ) {
+function emitValue(context: PromiseLoweringContext, value: Value): void {
+    if (value.kind !== "engine" && value.cpp.length > 0) {
         context.emit(`${value.cpp};`);
     }
 }

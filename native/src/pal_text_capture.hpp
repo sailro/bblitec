@@ -38,12 +38,14 @@ public:
     using GpuUploadCapture::GpuUploadCapture;
     const auto& draws() const noexcept { return draws_; }
     void begin_frame(std::uint64_t frame) {
-        if (!enabled()) return;
+        if (!enabled())
+            return;
         GpuUploadCapture::begin_frame(frame);
         draws_.clear();
     }
     void draw(TextGpuDrawCapture receipt) {
-        if (enabled()) draws_.push_back(std::move(receipt));
+        if (enabled())
+            draws_.push_back(std::move(receipt));
     }
 
 private:

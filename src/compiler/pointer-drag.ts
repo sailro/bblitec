@@ -21,7 +21,10 @@ export function pointerDispatcherCpp(
         return dispatcher?.cpp ?? "nullptr";
     }
     if (canvas.kind !== "browser") {
-        context.fail(site, "Pointer drag requires a canvas or a structural canvas event proxy.");
+        context.fail(
+            site,
+            "Pointer drag requires a canvas or a structural canvas event proxy.",
+        );
     }
     return `${context.requireDefaultEngine(site)}.canvas_pointer_dispatcher.lock()`;
 }
@@ -47,44 +50,103 @@ export function compilePointerDragRegistration(
             context.useNativeValue(known);
             dispatcher = known.cpp;
         } else {
-            const add = canvas.recordMethods?.addEventListener ?? canvas.recordProperties.addEventListener?.callbackDeclaration;
-            const remove = canvas.recordMethods?.removeEventListener ?? canvas.recordProperties.removeEventListener?.callbackDeclaration;
+            const add =
+                canvas.recordMethods?.addEventListener ??
+                canvas.recordProperties.addEventListener?.callbackDeclaration;
+            const remove =
+                canvas.recordMethods?.removeEventListener ??
+                canvas.recordProperties.removeEventListener
+                    ?.callbackDeclaration;
             if (!add || !remove) {
-                context.fail(argumentAt(call, 1), "A pointer canvas proxy must expose source-defined add/removeEventListener methods.");
+                context.fail(
+                    argumentAt(call, 1),
+                    "A pointer canvas proxy must expose source-defined add/removeEventListener methods.",
+                );
             }
             dispatcher = context.allocateTemporaryCppName("pointer_dispatcher");
-            context.emit({ kind: "declaration", type: "auto", name: dispatcher, initializer: `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false)` });
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: dispatcher,
+                initializer: `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false)`,
+            });
             proxyDispatchers.set(canvas.recordProperties, {
-                kind: "data", cpp: dispatcher,
+                kind: "data",
+                cpp: dispatcher,
                 nativeCaptures: [context.registerNativeBinding(dispatcher)],
             });
-            const listeners = ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"].map((event, index) => {
-                const cpp = context.allocateTemporaryCppName("pointer_listener");
-                context.emit({ kind: "declaration", type: "auto", name: cpp, initializer: `bbl::pointer_drag_listener(${dispatcher}, ${index}u)` });
+            const listeners = [
+                "pointerdown",
+                "pointermove",
+                "pointerup",
+                "pointercancel",
+                "pointerleave",
+            ].map((event, index) => {
+                const cpp =
+                    context.allocateTemporaryCppName("pointer_listener");
+                context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: cpp,
+                    initializer: `bbl::pointer_drag_listener(${dispatcher}, ${index}u)`,
+                });
                 const arguments_: Value[] = [
-                    { kind: "string", cpp: JSON.stringify(event), staticString: event },
-                    { kind: "data", cpp, nativeCaptures: [context.registerNativeBinding(cpp)], dataType: {
-                        kind: "function", identity: true, parameters: [{ kind: "borrowed-platform-event", event: "event" }],
-                    } },
+                    {
+                        kind: "string",
+                        cpp: JSON.stringify(event),
+                        staticString: event,
+                    },
+                    {
+                        kind: "data",
+                        cpp,
+                        nativeCaptures: [context.registerNativeBinding(cpp)],
+                        dataType: {
+                            kind: "function",
+                            identity: true,
+                            parameters: [
+                                {
+                                    kind: "borrowed-platform-event",
+                                    event: "event",
+                                },
+                            ],
+                        },
+                    },
                 ];
                 const result = context.withRecordScopes(canvas, () =>
-                    context.compileCallbackWithValues(add, arguments_, call, true));
+                    context.compileCallbackWithValues(
+                        add,
+                        arguments_,
+                        call,
+                        true,
+                    ),
+                );
                 context.emitDiscardedValue(result);
                 return arguments_;
             });
             const cleanup = context.captureManagedClosureLines(() => {
                 for (const arguments_ of listeners) {
                     const result = context.withRecordScopes(canvas, () =>
-                        context.compileCallbackWithValues(remove, arguments_, call, true));
+                        context.compileCallbackWithValues(
+                            remove,
+                            arguments_,
+                            call,
+                            true,
+                        ),
+                    );
                     context.emitDiscardedValue(result);
                 }
             });
-            context.emit(`bbl::set_pointer_drag_cleanup(${dispatcher}, ${renderClosure(cleanup, "")});`);
+            context.emit(
+                `bbl::set_pointer_drag_cleanup(${dispatcher}, ${renderClosure(cleanup, "")});`,
+            );
         }
     } else if (canvas.kind === "browser") {
         dispatcher = `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, true)`;
     } else {
-        return context.fail(argumentAt(call, 1), "Pointer drag requires a canvas or a structural canvas event proxy.");
+        return context.fail(
+            argumentAt(call, 1),
+            "Pointer drag requires a canvas or a structural canvas event proxy.",
+        );
     }
     return {
         kind: "data",

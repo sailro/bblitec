@@ -172,8 +172,9 @@ export function pinnedImageProcessingSource(): PinnedImageProcessingSource {
 
 function pinnedImageProcessing(): PinnedImageProcessing {
     const { module, uniformStruct, ip } = pinnedImageProcessingSource();
-    const multisampled =
-        /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(module);
+    const multisampled = /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(
+        module,
+    );
     if (!multisampled) {
         utilityLiftError("image-processing multisampled fragment");
     }

@@ -28,7 +28,9 @@ const normals = chunk.view(f32([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]));
 // spec calls for and the substitution supplies every texel.
 const colorSparseIndices = chunk.view(u16([0, 1, 2, 3]));
 const colorSparseValues = chunk.view(
-    u8([220, 40, 40, 255, 40, 200, 60, 255, 50, 90, 230, 255, 230, 200, 40, 255]),
+    u8([
+        220, 40, 40, 255, 40, 200, 60, 255, 50, 90, 230, 255, 230, 200, 40, 255,
+    ]),
 );
 // Indices: a base run of zeros (three degenerate triangles) the substitution
 // rewrites into the quad's two.

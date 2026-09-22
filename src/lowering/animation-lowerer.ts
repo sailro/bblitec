@@ -6,9 +6,9 @@ import {
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerAnimationManagerClock } from "./animation-manager.js";
 import { lowerAnimationInterpolationCpp } from "./gltf/animation-interpolation.js";
-import {lowerAnimationGroupRegistration} from "./gltf/animation-group-registration.js";
-import {lowerPropertyAnimationPlayback} from "./animation-property-playback.js";
-import {lowerAnimationManagerDispatch} from "./animation-manager-dispatch.js";
+import { lowerAnimationGroupRegistration } from "./gltf/animation-group-registration.js";
+import { lowerPropertyAnimationPlayback } from "./animation-property-playback.js";
+import { lowerAnimationManagerDispatch } from "./animation-manager-dispatch.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -28,15 +28,14 @@ export class AnimationLowerer {
             if (lane.target !== record) continue;
             const target = `${record}.${lane.field}`;
             const components = laneComponents(lane);
-            const whole = components.length === 0
-                ? record === "camera" && cameraVersions
-                    ? `write_camera_scalar(camera, &CameraRecord::${lane.field}, value[0]);`
-                    : `${target} = value[0];`
-                : `${target} = ${lane.vector}{${
-                      components
+            const whole =
+                components.length === 0
+                    ? record === "camera" && cameraVersions
+                        ? `write_camera_scalar(camera, &CameraRecord::${lane.field}, value[0]);`
+                        : `${target} = value[0];`
+                    : `${target} = ${lane.vector}{${components
                           .map((_unused, index) => `value[${index}]`)
-                          .join(", ")
-                  }};`;
+                          .join(", ")}};`;
             lines.push(`case PropertyAnimationPath::${lane.native}:`);
             // A lane with no component paths takes the store directly: the
             // resolver can never name one, so a switch over them would be a
@@ -137,9 +136,7 @@ export class AnimationLowerer {
                     !ts.isBinaryExpression(statement.expression) ||
                     statement.expression.operatorToken.kind !==
                         ts.SyntaxKind.EqualsToken ||
-                    !ts.isPropertyAccessExpression(
-                        statement.expression.left,
-                    )
+                    !ts.isPropertyAccessExpression(statement.expression.left)
                 ) {
                     this.context.contractError(
                         statement,
@@ -205,9 +202,8 @@ export class AnimationLowerer {
                 node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        this.context.propertyName(
-                            property.name,
-                        ) === "loopAnimation",
+                        this.context.propertyName(property.name) ===
+                            "loopAnimation",
                 ),
         )[0];
         if (!groupLiteral) {
@@ -217,22 +213,16 @@ export class AnimationLowerer {
             );
         }
         const groupDefault = (name: string): string => {
-            const initializer =
-                this.context.propertyInitializer(
-                    groupLiteral,
-                    name,
-                );
-            if (
-                initializer.kind === ts.SyntaxKind.TrueKeyword
-            ) {
+            const initializer = this.context.propertyInitializer(
+                groupLiteral,
+                name,
+            );
+            if (initializer.kind === ts.SyntaxKind.TrueKeyword) {
                 return "true";
             }
             if (ts.isNumericLiteral(initializer)) {
                 return this.context.doubleLiteral(
-                    this.context.numericValue(
-                        initializer,
-                        groupFile,
-                    ),
+                    this.context.numericValue(initializer, groupFile),
                 );
             }
             return this.context.contractError(
@@ -258,24 +248,21 @@ export class AnimationLowerer {
                 );
             }
         }
-        const { declaration: goToFrame } =
-            this.context.functionDeclaration(
-                groupModule,
-                "goToFrame",
-            );
+        const { declaration: goToFrame } = this.context.functionDeclaration(
+            groupModule,
+            "goToFrame",
+        );
         const seekAssignments = this.context
             .findNodes(
                 goToFrame,
                 (node): node is ts.BinaryExpression =>
                     ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken,
+                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
             )
             .filter(
                 (expression) =>
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "group.currentTime" &&
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        "group.currentTime" &&
                     this.context.expressionMatchesShape(
                         expression.right,
                         "frame / (group.frameRate || DEFAULT_FRAME_RATE)",
@@ -294,8 +281,7 @@ export class AnimationLowerer {
         );
         const seekGuards = this.context.findNodes(
             goToFrame,
-            (node): node is ts.IfStatement =>
-                ts.isIfStatement(node),
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
         );
         if (seekGuards.length !== 2) {
             this.context.contractError(
@@ -308,14 +294,13 @@ export class AnimationLowerer {
             "engine || !group._stopped || !group._gltfMixer",
             "glTF stopped-group seek guard",
         );
-        const defaultFrameRateDeclaration =
-            this.context.findNodes(
-                groupFile,
-                (node): node is ts.VariableDeclaration =>
-                    ts.isVariableDeclaration(node) &&
-                    ts.isIdentifier(node.name) &&
-                    node.name.text === "DEFAULT_FRAME_RATE",
-            )[0];
+        const defaultFrameRateDeclaration = this.context.findNodes(
+            groupFile,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "DEFAULT_FRAME_RATE",
+        )[0];
         if (!defaultFrameRateDeclaration?.initializer) {
             this.context.contractError(
                 goToFrame,
@@ -326,8 +311,7 @@ export class AnimationLowerer {
             defaultFrameRateDeclaration.initializer,
             groupFile,
         );
-        const loopWriter =
-            `void set_animation_loop(
+        const loopWriter = `void set_animation_loop(
     Engine& engine,
     AnimationGroupHandle group,
     bool loop) {
@@ -338,8 +322,7 @@ export class AnimationLowerer {
         asset.set_clip_loop(record.clip, loop);
     }
 }`;
-        const seekWriter =
-            `void go_to_frame(
+        const seekWriter = `void go_to_frame(
     Engine& engine,
     AnimationGroupHandle group,
     float frame,
@@ -363,8 +346,7 @@ export class AnimationLowerer {
         // direct write is the whole operation — the same writer route the
         // operations above and `loopAnimation` take. Whoever drives the
         // group applies the pose on its next tick, exactly as upstream.
-        const timeWriter =
-            `void set_animation_current_time(
+        const timeWriter = `void set_animation_current_time(
     Engine& engine,
     AnimationGroupHandle group,
     float time) {
@@ -382,18 +364,16 @@ export class AnimationLowerer {
         // so what has to hold is that the pin still routes the field that
         // way -- asserted, because there is no arithmetic here to lower.
         if (groupSpeed) {
-            const { declaration: sync } =
-                this.context.functionDeclaration(
-                    groupModule,
-                    "syncControllerFromGroup",
-                );
+            const { declaration: sync } = this.context.functionDeclaration(
+                groupModule,
+                "syncControllerFromGroup",
+            );
             const speedAssignments = this.context
                 .findNodes(
                     sync,
                     (node): node is ts.BinaryExpression =>
                         ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken,
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
                 )
                 .filter(
                     (expression) =>
@@ -413,8 +393,7 @@ export class AnimationLowerer {
                 "glTF group speed ratio",
             );
         }
-        const speedWriter =
-            `void set_animation_speed_ratio(
+        const speedWriter = `void set_animation_speed_ratio(
     Engine& engine,
     AnimationGroupHandle group,
     float speed_ratio) {
@@ -435,11 +414,7 @@ export class AnimationLowerer {
             ...(groupSpeed ? [speedWriter] : []),
             ...(groupMask ? [this.lowerSetAnimationMask()] : []),
             ...(additive
-                ? [
-                      this.lowerSetAnimationAdditive(
-                          defaultFrameRate,
-                      ),
-                  ]
+                ? [this.lowerSetAnimationAdditive(defaultFrameRate)]
                 : []),
         ].join("\n\n");
         return {
@@ -508,11 +483,8 @@ ${operations}
      * the pin composes them: the manager `addAnimationGroups` attached,
      * when there is one, gains the glTF mixer as its category handler.
      */
-    private lowerSetAnimationAdditive(
-        defaultFrameRate: number,
-    ): string {
-        const mixerModule =
-            "src/animation/weighted-gltf-mixer.ts";
+    private lowerSetAnimationAdditive(defaultFrameRate: number): string {
+        const mixerModule = "src/animation/weighted-gltf-mixer.ts";
         const { file, declaration: setAdditive } =
             this.context.functionDeclaration(
                 mixerModule,
@@ -527,10 +499,7 @@ ${operations}
             "additive option exclusion",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                setAdditive,
-                "referenceTime",
-            ),
+            this.context.variableInitializer(setAdditive, "referenceTime"),
             "options?.referenceTime ?? (options?.referenceFrame ?? 0) / (group.frameRate || 60)",
             "Additive reference-time resolution",
         );
@@ -540,17 +509,14 @@ ${operations}
             "additive reference guard",
         );
         // The store the writer mirrors: `group._additive = { referenceTime }`.
-        const stores = this.context
-            .findNodes(
-                setAdditive,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    this.context
-                        .propertyPath(node.left)
-                        ?.join(".") === "group._additive",
-            );
+        const stores = this.context.findNodes(
+            setAdditive,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.propertyPath(node.left)?.join(".") ===
+                    "group._additive",
+        );
         if (stores.length !== 1) {
             this.context.contractError(
                 setAdditive,
@@ -571,19 +537,15 @@ ${operations}
         // The setter's own fallback rate, which must agree with the
         // group factory's DEFAULT_FRAME_RATE for the emitted divisor to
         // stand for both.
-        const divisions = this.context
-            .findNodes(
-                setAdditive,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.SlashToken &&
-                    ts.isBinaryExpression(
-                        this.context.unwrapExpression(
-                            node.right,
-                        ),
-                    ),
-            );
+        const divisions = this.context.findNodes(
+            setAdditive,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+                ts.isBinaryExpression(
+                    this.context.unwrapExpression(node.right),
+                ),
+        );
         if (divisions.length !== 1) {
             this.context.contractError(
                 setAdditive,
@@ -593,10 +555,7 @@ ${operations}
         const fallback = this.context.unwrapExpression(
             divisions[0]!.right,
         ) as ts.BinaryExpression;
-        const setterRate = this.context.numericValue(
-            fallback.right,
-            file,
-        );
+        const setterRate = this.context.numericValue(fallback.right, file);
         if (setterRate !== defaultFrameRate) {
             this.context.contractError(
                 fallback.right,
@@ -612,19 +571,13 @@ ${operations}
             animationFile,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
+                ts.isPropertyAccessExpression(node.expression) &&
                 node.expression.name.text === "push" &&
-                ts.isIdentifier(
-                    node.expression.expression,
-                ) &&
+                ts.isIdentifier(node.expression.expression) &&
                 node.expression.expression.text === "clips" &&
                 node.arguments.length === 1 &&
                 ts.isObjectLiteralExpression(
-                    this.context.unwrapExpression(
-                        node.arguments[0]!,
-                    ),
+                    this.context.unwrapExpression(node.arguments[0]!),
                 ),
         );
         if (clipPushes.length !== 1) {
@@ -639,11 +592,8 @@ ${operations}
         const carriesFrameRate = clipLiteral.properties.some(
             (property) =>
                 (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(
-                        property,
-                    )) &&
-                this.context.propertyName(property.name) ===
-                    "frameRate",
+                    ts.isShorthandPropertyAssignment(property)) &&
+                this.context.propertyName(property.name) === "frameRate",
         );
         if (carriesFrameRate) {
             this.context.contractError(
@@ -651,12 +601,8 @@ ${operations}
                 "glTF clips now carry their own frameRate; the additive frame conversion must read it instead of the default.",
             );
         }
-        return (
-            `/**
- * ${this.context.provenance(
-     mixerModule,
-     "setAnimationAdditive",
- )}
+        return `/**
+ * ${this.context.provenance(mixerModule, "setAnimationAdditive")}
  */
 void set_animation_additive(
     Engine& engine,
@@ -698,8 +644,7 @@ void set_animation_additive_from_frame(
         engine,
         group,
         reference_frame / ${this.context.floatLiteral(defaultFrameRate)});
-}`
-        );
+}`;
     }
 
     /**
@@ -718,15 +663,13 @@ void set_animation_additive_from_frame(
      */
     private lowerSetAnimationMask(): string {
         const maskModule = "src/animation/animation-group-mask.ts";
-        const { file, declaration: retains } =
-            this.context.functionDeclaration(
-                maskModule,
-                "animationGroupMaskRetainsTarget",
-            );
+        const { file, declaration: retains } = this.context.functionDeclaration(
+            maskModule,
+            "animationGroupMaskRetainsTarget",
+        );
         const returns = this.context.findNodes(
             retains,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node),
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
         );
         if (returns.length !== 2 || !returns[1]?.expression) {
             this.context.contractError(
@@ -736,16 +679,14 @@ void set_animation_additive_from_frame(
         }
         // A disabled mask retains every name, which is what makes folding
         // `disabled` to false safe: the folded-away arm is a no-op.
-        if (
-            returns[0]?.expression?.kind !== ts.SyntaxKind.TrueKeyword
-        ) {
+        if (returns[0]?.expression?.kind !== ts.SyntaxKind.TrueKeyword) {
             this.context.contractError(
                 returns[0] ?? retains,
                 "Expected a disabled mask to retain every target.",
             );
         }
         this.context.assertExpressionShape(
-            returns[1]!.expression!,
+            returns[1].expression,
             "(mask.names.indexOf(name) !== -1) === " +
                 "(mask.mode === AnimationGroupMaskMode.Include)",
             "animation group mask membership",
@@ -803,22 +744,14 @@ void set_animation_additive_from_frame(
         label: string,
     ): void {
         const matches = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
+            .findNodes(declaration, (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
             )
             .filter((expression) =>
-                this.context.expressionMatchesShape(
-                    expression,
-                    expected,
-                ),
+                this.context.expressionMatchesShape(expression, expected),
             );
         if (matches.length !== 1) {
-            this.context.contractError(
-                declaration,
-                `Expected one ${label}.`,
-            );
+            this.context.contractError(declaration, `Expected one ${label}.`);
         }
     }
 
@@ -840,21 +773,18 @@ void set_animation_additive_from_frame(
      * branch, so it is asserted separately rather than assumed identical.
      */
     private lowerWeightedPointerMixer(msPerSecond: number): string {
-        const mixerModule =
-            "src/animation/weighted-pointer-mixer.ts";
+        const mixerModule = "src/animation/weighted-pointer-mixer.ts";
         const weightModule = "src/animation/animation-weight.ts";
-        const { declaration: setWeight } =
-            this.context.functionDeclaration(
-                weightModule,
-                "setAnimationWeight",
-            );
+        const { declaration: setWeight } = this.context.functionDeclaration(
+            weightModule,
+            "setAnimationWeight",
+        );
         this.context.assertExpressionShape(
             this.context.findNodes(
                 setWeight,
                 (node): node is ts.BinaryExpression =>
                     ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.BarBarToken &&
+                    node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
                     ts.isBinaryExpression(node.right),
             )[0] ??
                 this.context.contractError(
@@ -869,14 +799,12 @@ void set_animation_additive_from_frame(
                 setWeight,
                 (node): node is ts.BinaryExpression =>
                     ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken,
+                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
             )
             .filter(
                 (expression) =>
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "group.weight",
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                    "group.weight",
             );
         if (weightWrites.length !== 1) {
             this.context.contractError(
@@ -900,11 +828,10 @@ void set_animation_additive_from_frame(
             "setAnimationTaskCategoryHandler(manager, ANIMATION_GROUP_TASK_CATEGORY, updateWeightedPointerAnimations)",
             "Property animation blending opt-in",
         );
-        const { declaration: mixer } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "updateWeightedPointerAnimations",
-            );
+        const { declaration: mixer } = this.context.functionDeclaration(
+            mixerModule,
+            "updateWeightedPointerAnimations",
+        );
         // A group at full weight never marks a bucket contested, so a
         // scene that enables blending without weighting anything keeps
         // the ordinary per-group writes.
@@ -924,24 +851,20 @@ void set_animation_additive_from_frame(
             "bucket.quaternion && bucket.arity === 4",
             "blended quaternion normalize guard",
         );
-        const { declaration: accumulate } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "accumulateWeightedTrack",
-            );
+        const { declaration: accumulate } = this.context.functionDeclaration(
+            mixerModule,
+            "accumulateWeightedTrack",
+        );
         this.context.assertExpressionShape(
             this.context
                 .findNodes(
                     accumulate,
                     (node): node is ts.BinaryExpression =>
                         ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken,
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
                 )
                 .filter((expression) =>
-                    ts.isElementAccessExpression(
-                        expression.left,
-                    ),
+                    ts.isElementAccessExpression(expression.left),
                 )[0] ??
                 this.context.contractError(
                     accumulate,
@@ -951,24 +874,19 @@ void set_animation_additive_from_frame(
             "Weighted animation accumulation",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                accumulate,
-                "sign",
-            ),
+            this.context.variableInitializer(accumulate, "sign"),
             "1",
             "Weighted animation default sign",
         );
         this.context.assertExpressionShape(
-            this.context
-                .findNodes(
-                    accumulate,
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken &&
-                        ts.isIdentifier(node.left) &&
-                        node.left.text === "sign",
-                )[0] ??
+            this.context.findNodes(
+                accumulate,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                    ts.isIdentifier(node.left) &&
+                    node.left.text === "sign",
+            )[0] ??
                 this.context.contractError(
                     accumulate,
                     "Expected the quaternion hemisphere sign rule.",
@@ -976,16 +894,12 @@ void set_animation_additive_from_frame(
             "sign = dot < 0 ? -1 : 1",
             "Weighted animation hemisphere sign",
         );
-        const { declaration: normalize } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "normalizeQuaternion",
-            );
+        const { declaration: normalize } = this.context.functionDeclaration(
+            mixerModule,
+            "normalizeQuaternion",
+        );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                normalize,
-                "lenSq",
-            ),
+            this.context.variableInitializer(normalize, "lenSq"),
             "x * x + y * y + z * z + w * w",
             "Blended quaternion length",
         );
@@ -998,29 +912,22 @@ void set_animation_additive_from_frame(
         // the loop branch — that one wraps only while playing, this one
         // wraps whenever the group loops — so both are pinned rather than
         // one being derived from the other.
-        const { declaration: advance } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "advancePropertyGroupTime",
-            );
+        const { declaration: advance } = this.context.functionDeclaration(
+            mixerModule,
+            "advancePropertyGroupTime",
+        );
         this.context.assertExpressionShape(
-            this.context
-                .findNodes(
-                    advance,
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.PlusEqualsToken &&
-                        this.context
-                            .propertyPath(node.left)
-                            ?.join(".") ===
-                            "group.currentTime" &&
-                        ts.isBinaryExpression(
-                            this.context.unwrapExpression(
-                                node.right,
-                            ),
-                        ),
-                )[0]?.right ??
+            this.context.findNodes(
+                advance,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+                    this.context.propertyPath(node.left)?.join(".") ===
+                        "group.currentTime" &&
+                    ts.isBinaryExpression(
+                        this.context.unwrapExpression(node.right),
+                    ),
+            )[0]?.right ??
                 this.context.contractError(
                     advance,
                     "Expected the mixer playback advance.",
@@ -1029,10 +936,7 @@ void set_animation_additive_from_frame(
             "Mixer playback advance",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                advance,
-                "fromTime",
-            ),
+            this.context.variableInitializer(advance, "fromTime"),
             "Math.max(0, Math.min(mixer[MIX_FROM], mixer[MIX_DURATION]))",
             "Mixer play-range start",
         );
@@ -1042,10 +946,7 @@ void set_animation_additive_from_frame(
             "Mixer play-range end",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                advance,
-                "duration",
-            ),
+            this.context.variableInitializer(advance, "duration"),
             "Math.max(0, toTime - fromTime)",
             "Mixer play-range duration",
         );
@@ -1066,10 +967,7 @@ void set_animation_additive_from_frame(
         );
         return `
 /**
- * ${this.context.provenance(
-     mixerModule,
-     "updateWeightedPointerAnimations",
- )}
+ * ${this.context.provenance(mixerModule, "updateWeightedPointerAnimations")}
  *
  * The bucket key is the pin's (target object, property name) pair: a
  * lowered track resolves that pair from its target, its lane and the
@@ -1283,26 +1181,22 @@ bool update_weighted_property_animations(
      * The source mixer runs once over that registry before task fallback.
      */
     private lowerManagedGroups(): string {
-        const taskModule =
-            "src/animation/animation-group-task.ts";
-        const managerModule =
-            "src/animation/animation-manager.ts";
-        const { declaration: addGroups } =
-            this.context.functionDeclaration(
-                taskModule,
-                "addAnimationGroups",
-            );
+        const taskModule = "src/animation/animation-group-task.ts";
+        const managerModule = "src/animation/animation-manager.ts";
+        const { declaration: addGroups } = this.context.functionDeclaration(
+            taskModule,
+            "addAnimationGroups",
+        );
         if (!this.context.hasCall(addGroups, "addAnimationGroup")) {
             this.context.contractError(
                 addGroups,
                 "Expected addAnimationGroups to attach each group.",
             );
         }
-        const { declaration: addGroup } =
-            this.context.functionDeclaration(
-                taskModule,
-                "addAnimationGroup",
-            );
+        const { declaration: addGroup } = this.context.functionDeclaration(
+            taskModule,
+            "addAnimationGroup",
+        );
         // Attaching twice is the pin's own no-op, and attaching to a
         // second manager is its own error; both travel into the emitted
         // attach so a scene reaching either behaves the way it would
@@ -1312,11 +1206,10 @@ bool update_weighted_property_animations(
             "owner === manager",
             "animation group attach check",
         );
-        const { declaration: update } =
-            this.context.functionDeclaration(
-                managerModule,
-                "updateAnimationManager",
-            );
+        const { declaration: update } = this.context.functionDeclaration(
+            managerModule,
+            "updateAnimationManager",
+        );
         // The step guard: a non-finite or negative delta advances nothing.
         this.expectOneShape(
             update,
@@ -1414,11 +1307,10 @@ void enable_animation_blending(
             "startAnimationManager",
         );
         if (weightFades) {
-            const { declaration: crossFade } =
-                this.context.functionDeclaration(
-                    fadeModule,
-                    "crossFadeAnimationGroups",
-                );
+            const { declaration: crossFade } = this.context.functionDeclaration(
+                fadeModule,
+                "crossFadeAnimationGroups",
+            );
             this.context.expectShapeCount(
                 crossFade,
                 "validateWeight(options.toWeight ?? 1)",
@@ -1450,12 +1342,7 @@ void enable_animation_blending(
                 "fades[i].group === group",
                 "same-group fade replacement",
             );
-            if (
-                !this.context.hasCall(
-                    scheduleFade,
-                    "installWeightFadeHook",
-                )
-            ) {
+            if (!this.context.hasCall(scheduleFade, "installWeightFadeHook")) {
                 this.context.contractError(
                     scheduleFade,
                     "Expected a scheduled fade to install the stable pre-update hook.",
@@ -1483,11 +1370,10 @@ void enable_animation_blending(
                 "stable weight-fade hook installation",
             );
 
-            const { declaration: runFades } =
-                this.context.functionDeclaration(
-                    fadeModule,
-                    "runManagerWeightFades",
-                );
+            const { declaration: runFades } = this.context.functionDeclaration(
+                fadeModule,
+                "runManagerWeightFades",
+            );
             const priorHookRuns = this.context.findNodes(
                 runFades,
                 (node): node is ts.Expression =>
@@ -1509,8 +1395,7 @@ void enable_animation_blending(
             if (
                 priorHookRuns.length !== 1 ||
                 fadeUpdates.length !== 1 ||
-                priorHookRuns[0]!.getStart() >=
-                    fadeUpdates[0]!.getStart()
+                priorHookRuns[0]!.getStart() >= fadeUpdates[0]!.getStart()
             ) {
                 this.context.contractError(
                     runFades,
@@ -1519,10 +1404,7 @@ void enable_animation_blending(
             }
 
             const { declaration: updateFades } =
-                this.context.functionDeclaration(
-                    fadeModule,
-                    "updateFades",
-                );
+                this.context.functionDeclaration(fadeModule, "updateFades");
             this.expectOneShape(
                 updateFades,
                 "fade.elapsedMs = Math.min(fade.durationMs, fade.elapsedMs + Math.max(0, deltaMs))",
@@ -1540,16 +1422,11 @@ void enable_animation_blending(
             );
         }
         const { declaration: evaluateSampler } =
-            this.context.functionDeclaration(
-                evaluateModule,
-                "evaluateSampler",
-            );
+            this.context.functionDeclaration(evaluateModule, "evaluateSampler");
         if (
             !this.context.hasNode(
                 evaluateSampler,
-                (node) =>
-                    ts.isIdentifier(node) &&
-                    node.text === "INTERP_STEP",
+                (node) => ts.isIdentifier(node) && node.text === "INTERP_STEP",
             )
         ) {
             this.context.contractError(
@@ -1557,12 +1434,7 @@ void enable_animation_blending(
                 "Expected STEP interpolation handling.",
             );
         }
-        if (
-            !this.context.hasCall(
-                evaluateSampler,
-                "quatSlerp",
-            )
-        ) {
+        if (!this.context.hasCall(evaluateSampler, "quatSlerp")) {
             this.context.contractError(
                 evaluateSampler,
                 "Expected quaternion slerp interpolation.",
@@ -1586,9 +1458,7 @@ void enable_animation_blending(
                     candidate.name.text === "srcOff" &&
                     candidate.initializer !== undefined &&
                     ts.isBinaryExpression(
-                        this.context.unwrapExpression(
-                            candidate.initializer,
-                        ),
+                        this.context.unwrapExpression(candidate.initializer),
                     ),
             );
         if (stepSources.length !== 1) {
@@ -1624,8 +1494,7 @@ void enable_animation_blending(
             );
         const tickExpressions = this.context.findNodes(
             pointerGroup,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
         );
         const timeAssignment = (
             operator: ts.SyntaxKind,
@@ -1634,16 +1503,10 @@ void enable_animation_blending(
         ): ts.BinaryExpression => {
             const matches = tickExpressions.filter(
                 (expression) =>
-                    expression.operatorToken.kind ===
-                        operator &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "ctrl.time" &&
-                    select(
-                        this.context.unwrapExpression(
-                            expression.right,
-                        ),
-                    ),
+                    expression.operatorToken.kind === operator &&
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        "ctrl.time" &&
+                    select(this.context.unwrapExpression(expression.right)),
             );
             if (matches.length !== 1) {
                 this.context.contractError(
@@ -1661,29 +1524,22 @@ void enable_animation_blending(
             (right) => ts.isBinaryExpression(right),
             "playback advance",
         );
-        const advanceProduct = this.context.unwrapExpression(
-            advance.right,
-        );
+        const advanceProduct = this.context.unwrapExpression(advance.right);
         if (
             !ts.isBinaryExpression(advanceProduct) ||
-            advanceProduct.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            this.context
-                .propertyPath(advanceProduct.right)
-                ?.join(".") !== "ctrl.speedRatio"
+            advanceProduct.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+            this.context.propertyPath(advanceProduct.right)?.join(".") !==
+                "ctrl.speedRatio"
         ) {
             this.context.contractError(
                 advance,
                 "Expected the playback advance to scale by the speed ratio.",
             );
         }
-        const advanceRate = this.context.unwrapExpression(
-            advanceProduct.left,
-        );
+        const advanceRate = this.context.unwrapExpression(advanceProduct.left);
         if (
             !ts.isBinaryExpression(advanceRate) ||
-            advanceRate.operatorToken.kind !==
-                ts.SyntaxKind.SlashToken ||
+            advanceRate.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
             !ts.isIdentifier(advanceRate.left) ||
             advanceRate.left.text !== "deltaMs"
         ) {
@@ -1722,11 +1578,9 @@ void enable_animation_blending(
         );
         const wrapGuards = tickExpressions.filter(
             (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.LessThanToken &&
-                this.context
-                    .propertyPath(expression.left)
-                    ?.join(".") === "ctrl.time",
+                expression.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
+                this.context.propertyPath(expression.left)?.join(".") ===
+                    "ctrl.time",
         );
         if (wrapGuards.length !== 1) {
             this.context.contractError(
@@ -1758,10 +1612,7 @@ void enable_animation_blending(
         // never changes the guarded comparison's outcome, so the
         // emission carries the bare difference.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                pointerGroup,
-                "duration",
-            ),
+            this.context.variableInitializer(pointerGroup, "duration"),
             "Math.max(0, toTime - fromTime)",
             "Animation tick duration",
         );
@@ -1788,38 +1639,29 @@ void enable_animation_blending(
         // `|| DEFAULT_FRAME_RATE` fallback is dead in the generated
         // runtime: `create_property_animation_clip` throws on
         // non-positive frame rates, so the clip's rate is always usable.
-        const { declaration: goToFrame } =
-            this.context.functionDeclaration(
-                groupModule,
-                "goToFrame",
-            );
+        const { declaration: goToFrame } = this.context.functionDeclaration(
+            groupModule,
+            "goToFrame",
+        );
         const { declaration: pauseAnimation } =
-            this.context.functionDeclaration(
-                groupModule,
-                "pauseAnimation",
-            );
+            this.context.functionDeclaration(groupModule, "pauseAnimation");
         this.expectOneShape(
             pauseAnimation,
             "group.isPlaying = false",
             "property animation pause write",
         );
         const seekAssignments = this.context
-            .findNodes(
-                goToFrame,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
+            .findNodes(goToFrame, (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
             )
             .filter(
                 (expression) =>
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "group.currentTime" &&
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        "group.currentTime" &&
                     ts.isBinaryExpression(
-                        this.context.unwrapExpression(
-                            expression.right,
-                        ),
+                        this.context.unwrapExpression(expression.right),
                     ),
             );
         if (seekAssignments.length !== 1) {
@@ -2099,21 +1941,20 @@ ${lowerAnimationGroupRegistration(this.context)}
 ${lowerPropertyAnimationPlayback(this.context)}
 ${lowerAnimationManagerDispatch(this.context)}
 `;
-        const managedGroupTick = managedGroups && gltfLoaderAvailable
-            ? `
+        const managedGroupTick =
+            managedGroups && gltfLoaderAvailable
+                ? `
     if (manager.category_handler == AnimationCategoryHandler::gltf_mixer &&
         update_weighted_gltf_animation_groups(engine, manager, delta_ms)) {
         return true;
     }`
-            : "";
+                : "";
 
         return {
             modulePath: propertyModule,
             symbolName:
                 "createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,startAnimationManager,goToFrame" +
-                (weightFades
-                    ? ",crossFadeAnimationGroups"
-                    : ""),
+                (weightFades ? ",crossFadeAnimationGroups" : ""),
             header: "",
             source: `// ${this.context.provenance(
                 propertyModule,

@@ -6,9 +6,8 @@
 namespace bbl::pal {
 
 /** Reuse a GPU image only when no mailbox, presenter, or GPU fence leases it. */
-template <typename Image>
-class OffscreenImagePool {
-  public:
+template <typename Image> class OffscreenImagePool {
+public:
     template <typename Create>
     Image* acquire(std::uint32_t width, std::uint32_t height, OffscreenRun& run, Create&& create) {
         if (width_ != width || height_ != height) {
@@ -19,7 +18,7 @@ class OffscreenImagePool {
         current_.reset();
         const auto find_available = [&] {
             return std::find_if(images_.begin(), images_.end(),
-                [](const auto& image) { return image.use_count() == 1; });
+                                [](const auto& image) { return image.use_count() == 1; });
         };
         auto available = find_available();
         if (available == images_.end() && images_.size() == 3) {
@@ -43,7 +42,7 @@ class OffscreenImagePool {
         current_.reset();
     }
 
-  private:
+private:
     std::vector<std::shared_ptr<Image>> images_;
     std::shared_ptr<Image> current_;
     std::uint32_t width_ = 0;

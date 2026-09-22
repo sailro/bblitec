@@ -123,11 +123,7 @@ const linesPrimitive = {
 const stripPoints = [];
 const stripIndices = [];
 for (let step = 0; step < 17; step++) {
-    stripPoints.push([
-        -0.5 + step * 0.0625,
-        step % 2 === 0 ? -0.45 : 0.45,
-        0,
-    ]);
+    stripPoints.push([-0.5 + step * 0.0625, step % 2 === 0 ? -0.45 : 0.45, 0]);
     stripIndices.push(step);
 }
 const lineStripPrimitive = {

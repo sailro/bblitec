@@ -7,6 +7,8 @@ import type { canonicalDevelopmentCompiler } from "./build-options.js";
 
 type DevelopmentCompiler = ReturnType<typeof canonicalDevelopmentCompiler>;
 
+export const clangToolsMajor = 22;
+
 export interface ToolDiscoveryOptions {
     cwd?: string;
     environment?: NodeJS.ProcessEnv;
@@ -52,10 +54,7 @@ function environmentValue(
     return key === undefined ? undefined : environment[key];
 }
 
-function executableNames(
-    command: string,
-    platform: NodeJS.Platform,
-): string[] {
+function executableNames(command: string, platform: NodeJS.Platform): string[] {
     if (platform !== "win32" || /\.[A-Za-z0-9]+$/.test(command)) {
         return [command];
     }
@@ -75,14 +74,21 @@ function findExecutable(
         isAbsolute(command) || command.includes("/") || command.includes("\\");
     if (hasDirectory) {
         const candidate = isAbsolute(command) ? command : resolve(cwd, command);
-        return statSync(candidate, { throwIfNoEntry: false })?.isFile() ? candidate : undefined;
+        return statSync(candidate, { throwIfNoEntry: false })?.isFile()
+            ? candidate
+            : undefined;
     }
     const path = environmentValue(environment, "PATH") ?? "";
     const pathDelimiter = platform === "win32" ? ";" : ":";
     for (const directory of path.split(pathDelimiter).filter(Boolean)) {
         for (const name of executableNames(command, platform)) {
-            const candidate = resolve(cwd, directory.replace(/^"|"$/g, ""), name);
-            if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+            const candidate = resolve(
+                cwd,
+                directory.replace(/^"|"$/g, ""),
+                name,
+            );
+            if (statSync(candidate, { throwIfNoEntry: false })?.isFile())
+                return candidate;
         }
     }
     return undefined;
@@ -94,7 +100,8 @@ function latestDirectory(root: string): string | undefined {
         .filter((entry) => entry.isDirectory())
         .map((entry) => join(root, entry.name))
         .sort((left, right) =>
-            right.localeCompare(left, undefined, { numeric: true }))[0];
+            right.localeCompare(left, undefined, { numeric: true }),
+        )[0];
 }
 
 function discoverVisualStudioRoot(
@@ -165,8 +172,8 @@ export function discoverWindowsBuildTools(
     const ninja =
         environment.NINJA_PATH !== undefined
             ? findExecutable(environment.NINJA_PATH, options)
-            : findExecutable("ninja", options) ??
-              (existsSync(bundledNinja) ? bundledNinja : undefined);
+            : (findExecutable("ninja", options) ??
+              (existsSync(bundledNinja) ? bundledNinja : undefined));
     if (!msvc || !sdk || !ninja) {
         throw new Error(
             "Unable to locate MSVC, the Windows SDK, or Ninja. Repair the Visual Studio C++ workload or override BBLITE_CMAKE_GENERATOR.",
@@ -186,10 +193,10 @@ export function discoverWindowsBuildTools(
         requestedCompiler === "msvc"
             ? msvcCompiler
             : requestedCompiler === "clangcl"
+              ? clangCompiler
+              : existsSync(clangCompiler)
                 ? clangCompiler
-                : existsSync(clangCompiler)
-                    ? clangCompiler
-                    : msvcCompiler;
+                : msvcCompiler;
     if (!existsSync(compiler)) {
         throw new Error(
             `The requested development compiler is not installed: ${compiler}.`,
@@ -234,6 +241,36 @@ function explicitOrDiscovered(
 ): string | undefined {
     if (explicit !== undefined) return findExecutable(explicit, options);
     return findExecutable(command, options) ?? fallback;
+}
+
+export function discoverClangTool(
+    command: "clang-format" | "clang-tidy",
+    options: ToolDiscoveryOptions = {},
+): string | undefined {
+    const environment = options.environment ?? process.env;
+    const platform = options.platform ?? process.platform;
+    const override =
+        environment[command === "clang-format" ? "CLANG_FORMAT" : "CLANG_TIDY"];
+    if (override !== undefined) return findExecutable(override, options);
+    const installed =
+        findExecutable(`${command}-${clangToolsMajor}`, options) ??
+        findExecutable(command, options);
+    if (installed || platform !== "win32") return installed;
+    const visualStudioRoot = discoverVisualStudioRoot(options);
+    return visualStudioRoot
+        ? findExecutable(
+              join(
+                  visualStudioRoot,
+                  "VC",
+                  "Tools",
+                  "Llvm",
+                  "x64",
+                  "bin",
+                  `${command}.exe`,
+              ),
+              options,
+          )
+        : undefined;
 }
 
 /** Locate every reusable tool/artifact in the full development profile. */
@@ -281,10 +318,7 @@ export function discoverDevelopmentTools(
     );
     const vcpkg = vcpkgRoot
         ? findExecutable(
-              join(
-                  vcpkgRoot,
-                  platform === "win32" ? "vcpkg.exe" : "vcpkg",
-              ),
+              join(vcpkgRoot, platform === "win32" ? "vcpkg.exe" : "vcpkg"),
               options,
           )
         : undefined;
@@ -327,8 +361,11 @@ export function discoverDevelopmentTools(
                   join(dawnDirectory, "bin", "dxcompiler.dll"),
                   join(dawnDirectory, "bin", "dxil.dll"),
               ]
-            : platform === "linux" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.so")]
-            : platform === "darwin" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.dylib")] : []),
+            : platform === "linux"
+              ? [join(dawnDirectory, "lib", "libwebgpu_dawn.so")]
+              : platform === "darwin"
+                ? [join(dawnDirectory, "lib", "libwebgpu_dawn.dylib")]
+                : []),
     ];
     const rmlUiConfig = join(
         rmlUiDirectory,
@@ -339,20 +376,30 @@ export function discoverDevelopmentTools(
     );
     const rmlUiHasSvg =
         existsSync(rmlUiConfig) &&
-        /\bset\(RMLUI_SVG_PLUGIN ON\)/.test(
-            readFileSync(rmlUiConfig, "utf8"),
-        );
+        /\bset\(RMLUI_SVG_PLUGIN ON\)/.test(readFileSync(rmlUiConfig, "utf8"));
 
     return {
-        ccache: environment.CCACHE_PATH !== undefined
-            ? findExecutable(environment.CCACHE_PATH, options)
-            : findExecutable(resolve(cwd, "artifacts/tools/ccache",
-                platform === "win32" ? "ccache.exe" : "ccache"), options)
-                ?? findExecutable("ccache", options),
+        ccache:
+            environment.CCACHE_PATH !== undefined
+                ? findExecutable(environment.CCACHE_PATH, options)
+                : (findExecutable(
+                      resolve(
+                          cwd,
+                          "artifacts/tools/ccache",
+                          platform === "win32" ? "ccache.exe" : "ccache",
+                      ),
+                      options,
+                  ) ?? findExecutable("ccache", options)),
         visualStudioRoot,
         cmake,
-        cc: platform === "win32" ? undefined : findExecutable(environment.CC ?? "clang", options),
-        cxx: platform === "win32" ? undefined : findExecutable(environment.CXX ?? "clang++", options),
+        cc:
+            platform === "win32"
+                ? undefined
+                : findExecutable(environment.CC ?? "clang", options),
+        cxx:
+            platform === "win32"
+                ? undefined
+                : findExecutable(environment.CXX ?? "clang++", options),
         ninja: findExecutable(environment.NINJA_PATH ?? "ninja", options),
         powershell: findExecutable(
             platform === "win32" ? "pwsh.exe" : "pwsh",
@@ -370,19 +417,33 @@ export function discoverDevelopmentTools(
             environment.TINT_PATH !== undefined
                 ? findExecutable(environment.TINT_PATH, options)
                 : existsSync(localTint)
-                    ? localTint
-                    : findExecutable("tint", options),
+                  ? localTint
+                  : findExecutable("tint", options),
         dxc:
             environment.DXC_PATH !== undefined
                 ? findExecutable(environment.DXC_PATH, options)
                 : existsSync(localDxc)
-                    ? localDxc
-                    : findExecutable("dxc", options),
+                  ? localDxc
+                  : findExecutable("dxc", options),
         labSoundDirectory,
         labSoundInstalled:
-            existsSync(join(labSoundDirectory, "lib", platform === "win32" ? "LabSound.lib" : "libLabSound.a")) &&
-            existsSync(join(labSoundDirectory, "lib", platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a")) &&
-            existsSync(join(labSoundDirectory, "include", "libnyquist", "Decoders.h")),
+            existsSync(
+                join(
+                    labSoundDirectory,
+                    "lib",
+                    platform === "win32" ? "LabSound.lib" : "libLabSound.a",
+                ),
+            ) &&
+            existsSync(
+                join(
+                    labSoundDirectory,
+                    "lib",
+                    platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a",
+                ),
+            ) &&
+            existsSync(
+                join(labSoundDirectory, "include", "libnyquist", "Decoders.h"),
+            ),
         rmlUiDirectory,
         rmlUiInstalled:
             // The package must carry the SVG-enabled option set now consumed

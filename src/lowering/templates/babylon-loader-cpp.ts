@@ -335,9 +335,13 @@ std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode
     mesh.geometry = geometry;
     mesh.material = material;
     mesh.receives_shadows = receives_shadows;
-${meshClones ? `    mesh.imported_clone_trs = ImportedMeshTrs{
+${
+    meshClones
+        ? `    mesh.imported_clone_trs = ImportedMeshTrs{
         Vec3{static_cast<float>(transform.position.x), static_cast<float>(transform.position.y), static_cast<float>(transform.position.z)},
-        transform.rotation, transform.scaling};` : ""}
+        transform.rotation, transform.scaling};`
+        : ""
+}
     const auto mesh_index = static_cast<std::uint32_t>(engine.meshes.size());
     engine.meshes.push_back(std::move(mesh));
     BabylonHierarchyNode node;
@@ -359,7 +363,9 @@ std::size_t create_babylon_container(std::vector<BabylonHierarchyNode>& nodes, c
 
 ${lowered.meshConstruction}
 
-${lightMeshLists ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(const Json& ids,
+${
+    lightMeshLists
+        ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(const Json& ids,
     const std::unordered_map<std::string, std::vector<std::size_t>>& meshes_by_id,
     const std::vector<BabylonHierarchyNode>& nodes) {
     std::unordered_set<std::string> seen;
@@ -374,7 +380,9 @@ ${lightMeshLists ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(cons
     }
     return result;
 }
-` : ""}
+`
+        : ""
+}
 ${lowered.sceneData}
 
 std::vector<std::string> babylon_material_ids(const Json& values) {

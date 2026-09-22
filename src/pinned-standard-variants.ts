@@ -73,7 +73,10 @@ import {
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./lowering/pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./lowering/pinned-numeric-lowerer.js";
 import { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import { pinnedStandardMeshAlpha } from "./lowering/standard-mesh-alpha.js";
 export { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
@@ -191,10 +194,7 @@ export interface PinnedStandardComposeOptions {
 interface StdExtDescriptor {
     _id: string;
     _feature: number;
-    _meshFeatures?: (
-        meshFeatures: number,
-        material?: unknown,
-    ) => number;
+    _meshFeatures?: (meshFeatures: number, material?: unknown) => number;
     _frag: (features: number, meshFeatures: number) => unknown;
 }
 
@@ -271,15 +271,14 @@ async function registerStandardExtensions(): Promise<void> {
         const flags = await importPinnedModule<{
             _registerStdExt: (ext: StdExtDescriptor) => void;
         }>("material/standard/standard-flags.js");
-        for (
-            const [path, exportName] of [
-                ...standardExtensionModules,
-                ...standardMeshFeatureExtensionModules,
-            ]
-        ) {
-            const module = await importPinnedModule<
-                Record<string, StdExtDescriptor>
-            >(path);
+        for (const [path, exportName] of [
+            ...standardExtensionModules,
+            ...standardMeshFeatureExtensionModules,
+        ]) {
+            const module =
+                await importPinnedModule<Record<string, StdExtDescriptor>>(
+                    path,
+                );
             const ext = module[exportName];
             if (!ext) {
                 refuseGeneration(
@@ -295,17 +294,21 @@ async function registerStandardExtensions(): Promise<void> {
 }
 
 /** Optional mesh factories remain local to this scene's composition. */
-async function standardExtensions(skeleton = false): Promise<readonly StdExtDescriptor[]> {
+async function standardExtensions(
+    skeleton = false,
+): Promise<readonly StdExtDescriptor[]> {
     await registerStandardExtensions();
     const flags = await importPinnedModule<{
         _getStdExtsSorted: () => readonly StdExtDescriptor[];
     }>("material/standard/standard-flags.js");
     const extensions = flags._getStdExtsSorted();
     if (!skeleton) return extensions;
-    const module = await importPinnedModule<{ stdSkeletonExt: StdExtDescriptor }>(
-        "material/standard/fragments/std-skeleton-fragment.js",
+    const module = await importPinnedModule<{
+        stdSkeletonExt: StdExtDescriptor;
+    }>("material/standard/fragments/std-skeleton-fragment.js");
+    return [...extensions, module.stdSkeletonExt].sort((a, b) =>
+        a._id.localeCompare(b._id),
     );
-    return [...extensions, module.stdSkeletonExt].sort((a, b) => a._id.localeCompare(b._id));
 }
 
 /** The std extension ids the pin has registered, in its own sorted order. */
@@ -345,11 +348,13 @@ export async function pinnedStandardMaterialFeatures(
     // writes `_computeStandardMaterialFeatures(mat) | (idx << SHIFT)` into
     // the material's cached `_renderFeatures` and `rebuildSingle` reads that
     // word back. This is the same OR over the same two halves.
-    return materialModule._computeStandardMaterialFeatures({
-        ...pinnedOptInSlots(material),
-        backFaceCulling: material.backFaceCulling ?? true,
-        alpha: material.alpha ?? 1,
-    }) | await standardPluginFeatureBits(material.pluginIndex);
+    return (
+        materialModule._computeStandardMaterialFeatures({
+            ...pinnedOptInSlots(material),
+            backFaceCulling: material.backFaceCulling ?? true,
+            alpha: material.alpha ?? 1,
+        }) | (await standardPluginFeatureBits(material.pluginIndex))
+    );
 }
 
 /**
@@ -479,10 +484,20 @@ export async function composePinnedStandardVariant(
         ]);
     const meshFeatures = options.meshFeatures ?? 0;
     if (meshFeatures & meshBits.MSH_VAT) {
-        refuseGeneration("mesh:vat", "Pinned Standard vertex animation textures are not supported.");
+        refuseGeneration(
+            "mesh:vat",
+            "Pinned Standard vertex animation textures are not supported.",
+        );
     }
-    if ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton) {
-        refuseGeneration("material:standard-skeleton", "Pinned Standard skeleton composition requires enableStandardSkeleton().");
+    if (
+        meshFeatures &
+            (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8) &&
+        !options.skeleton
+    ) {
+        refuseGeneration(
+            "material:standard-skeleton",
+            "Pinned Standard skeleton composition requires enableStandardSkeleton().",
+        );
     }
     const shadowLights = options.shadowLights ?? [];
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
@@ -531,7 +546,10 @@ export async function composePinnedStandardVariant(
     }
     // `rebuildSingle` adds the vertex-alpha bits before the extension loop,
     // so `_frag(features, ...)` sees them exactly as it does upstream.
-    const shadowOutput = ((features | passFeatures) & (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !== 0;
+    const shadowOutput =
+        ((features | passFeatures) &
+            (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !==
+        0;
     const colorAlpha = (await pinnedStandardMeshAlpha())(
         shadowOutput,
         options.vertexAlpha ?? options.vertexColors?.vertexAlpha ?? false,
@@ -586,25 +604,24 @@ export async function composePinnedStandardVariant(
     if (meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES) {
         const hasInstanceColor =
             (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0;
-        const fragment = thinInstance.createThinInstanceFragment(
-            hasInstanceColor,
-        );
+        const fragment =
+            thinInstance.createThinInstanceFragment(hasInstanceColor);
         fragments.push(
             hasInstanceColor
                 ? {
-                    ...(fragment as Record<string, unknown>),
-                    _fragmentSlots: {
-                        BC: standardInstanceColorSlot(),
-                    },
-                }
+                      ...(fragment as Record<string, unknown>),
+                      _fragmentSlots: {
+                          BC: standardInstanceColorSlot(),
+                      },
+                  }
                 : fragment,
         );
     }
     const sceneShader = options.fog
         ? {
-            _features: flags.STD_SCENE_FOG,
-            _fragments: [fog.createStandardFogFragment()],
-        }
+              _features: flags.STD_SCENE_FOG,
+              _fragments: [fog.createStandardFogFragment()],
+          }
         : null;
     if (options.geometry) {
         // The pin's own MRT arm. `createStandardGeometryMaterialView` keys
@@ -630,7 +647,8 @@ export async function composePinnedStandardVariant(
             options.geometry.attachments,
         );
         const viewFeatures =
-            (features & ~flags.MATERIAL_ALPHA_BLEND) | flags.GEOMETRY_OUTPUT |
+            (features & ~flags.MATERIAL_ALPHA_BLEND) |
+            flags.GEOMETRY_OUTPUT |
             passFeatures;
         const composed = geometry.composeStandardGeometryShader(
             viewFeatures,
@@ -699,7 +717,9 @@ export function pinnedStandardVariantFileStem(
         slug || "base",
         `f${variant.features}`,
         variant.meshFeatures ? `msh${variant.meshFeatures}` : "",
-    ].filter((part) => part !== "").join("-");
+    ]
+        .filter((part) => part !== "")
+        .join("-");
 }
 
 /** Builds the manifest entry for one composed variant. */
@@ -768,10 +788,7 @@ function standardInstanceColorSlot(): string {
         modulePath,
         "buildStandardMeshRenderables",
     );
-    const rebuild = context.variableInitializer(
-        declaration,
-        "rebuildSingle",
-    );
+    const rebuild = context.variableInitializer(declaration, "rebuildSingle");
     // The rewrite's own SHAPE, not only its text. The pin drops the shared
     // fragment's slots and puts back exactly one, so this port's
     // `{ ...fragment, _fragmentSlots: { BC } }` is licensed by the three
@@ -807,10 +824,10 @@ function standardInstanceColorSlot(): string {
     const restIdentifier = rest
         ? (rest.name as ts.Identifier).text
         : context.contractError(
-            dropped[0]!,
-            "Expected the thin-instance rewrite to keep the rest of the " +
-                "fragment through a named rest element.",
-        );
+              dropped[0]!,
+              "Expected the thin-instance rewrite to keep the rest of the " +
+                  "fragment through a named rest element.",
+          );
     // The literal the pin pushes: a spread of that rest, then the one slot.
     const rewrites = context.findNodes(
         rebuild,
@@ -818,11 +835,10 @@ function standardInstanceColorSlot(): string {
             ts.isObjectLiteralExpression(node) &&
             node.properties.length === 2 &&
             ts.isSpreadAssignment(node.properties[0]!) &&
-            ts.isIdentifier(node.properties[0]!.expression) &&
-            node.properties[0]!.expression.text === restIdentifier &&
+            ts.isIdentifier(node.properties[0].expression) &&
+            node.properties[0].expression.text === restIdentifier &&
             ts.isPropertyAssignment(node.properties[1]!) &&
-            context.propertyName(node.properties[1]!.name) ===
-                "_fragmentSlots",
+            context.propertyName(node.properties[1].name) === "_fragmentSlots",
     );
     if (rewrites.length !== 1) {
         context.contractError(
@@ -831,23 +847,20 @@ function standardInstanceColorSlot(): string {
                 `the thin-instance fragment; found ${rewrites.length}.`,
         );
     }
-    const slots = context.propertyInitializer(
-        rewrites[0]!,
-        "_fragmentSlots",
-    );
+    const slots = context.propertyInitializer(rewrites[0]!, "_fragmentSlots");
     const only =
         ts.isObjectLiteralExpression(slots) &&
-            slots.properties.length === 1 &&
-            ts.isPropertyAssignment(slots.properties[0]!) &&
-            context.propertyName(slots.properties[0]!.name) === "BC"
+        slots.properties.length === 1 &&
+        ts.isPropertyAssignment(slots.properties[0]!) &&
+        context.propertyName(slots.properties[0].name) === "BC"
             ? slots.properties[0]
             : context.contractError(
-                slots,
-                "Expected the Standard rewrite to replace the fragment's " +
-                    "slots with exactly one `BC` slot — Standard applies " +
-                    "the instance colour to the final colour where PBR " +
-                    "applies it to the base.",
-            );
+                  slots,
+                  "Expected the Standard rewrite to replace the fragment's " +
+                      "slots with exactly one `BC` slot — Standard applies " +
+                      "the instance colour to the final colour where PBR " +
+                      "applies it to the base.",
+              );
     instanceColorSlot = context.stringValue(only.initializer, file);
     return instanceColorSlot;
 }
@@ -868,9 +881,7 @@ const emissiveRenderTextureSource = "material.has_emissive_render_texture";
  * it so, and the generation-side composition input builder must mirror the
  * same absences so the two derivations stay bit-identical.
  */
-const standardFeatureRecordSources: Readonly<
-    Record<string, string | null>
-> = {
+const standardFeatureRecordSources: Readonly<Record<string, string | null>> = {
     // babylon-loader-cpp.ts fills base_color_texture from diffuseTexture,
     // and a scene-code `material.diffuseTexture = <render target>` write
     // fills the render-texture pair instead: an image and an attachment
@@ -989,10 +1000,7 @@ function lowerStandardFeatureDerivation(
     let scope = newScope("m");
     const propertyName = (expression: ts.Expression): string | undefined => {
         const unwrapped = context.unwrapExpression(expression);
-        if (
-            ts.isIdentifier(unwrapped) &&
-            scope.aliases.has(unwrapped.text)
-        ) {
+        if (ts.isIdentifier(unwrapped) && scope.aliases.has(unwrapped.text)) {
             return scope.aliases.get(unwrapped.text);
         }
         if (
@@ -1005,9 +1013,7 @@ function lowerStandardFeatureDerivation(
         return undefined;
     };
     /** A condition as C++, or undefined for a branch that folds to false. */
-    const lowerCondition = (
-        expression: ts.Expression,
-    ): string | undefined => {
+    const lowerCondition = (expression: ts.Expression): string | undefined => {
         const unwrapped = context.unwrapExpression(expression);
         const direct = propertyName(unwrapped);
         if (direct !== undefined) {
@@ -1048,9 +1054,17 @@ function lowerStandardFeatureDerivation(
             ) {
                 return emissiveRenderTextureSource;
             }
-            if (operator === ts.SyntaxKind.EqualsEqualsEqualsToken && ts.isPropertyAccessExpression(left) &&
-                left.name.text === "uAng" && propertyName(left.expression) === "_lightmapTexture") {
-                context.assertExpressionShape(right, "Math.PI", "Standard lightmap V-flip comparison");
+            if (
+                operator === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                ts.isPropertyAccessExpression(left) &&
+                left.name.text === "uAng" &&
+                propertyName(left.expression) === "_lightmapTexture"
+            ) {
+                context.assertExpressionShape(
+                    right,
+                    "Math.PI",
+                    "Standard lightmap V-flip comparison",
+                );
                 return `material.lightmap_texture.uv_transform.u_ang == ${Math.PI}`;
             }
             // `m.lightmapTexture.uAng === Math.PI` and any other read off an
@@ -1058,9 +1072,8 @@ function lowerStandardFeatureDerivation(
             if (
                 ts.isPropertyAccessExpression(left) &&
                 propertyName(left.expression) !== undefined &&
-                standardFeatureRecordSources[
-                    propertyName(left.expression)!
-                ] === null
+                standardFeatureRecordSources[propertyName(left.expression)!] ===
+                    null
             ) {
                 return undefined;
             }
@@ -1120,13 +1133,8 @@ function lowerStandardFeatureDerivation(
             return;
         }
         if (ts.isConditionalExpression(unwrapped)) {
-            const otherwise = context.unwrapExpression(
-                unwrapped.whenFalse,
-            );
-            if (
-                !ts.isNumericLiteral(otherwise) ||
-                otherwise.text !== "0"
-            ) {
+            const otherwise = context.unwrapExpression(unwrapped.whenFalse);
+            if (!ts.isNumericLiteral(otherwise) || otherwise.text !== "0") {
                 fail(unwrapped, "a conditional whose else arm is not 0");
             }
             const condition = lowerCondition(unwrapped.condition);
@@ -1214,7 +1222,8 @@ function lowerStandardFeatureDerivation(
         // need the mesh word here too, so it fails rather than folding.
         const meshParameter = hook.parameters[0];
         if (
-            meshParameter && ts.isIdentifier(meshParameter.name) &&
+            meshParameter &&
+            ts.isIdentifier(meshParameter.name) &&
             !meshParameter.name.text.startsWith("_")
         ) {
             refuseGeneration(
@@ -1318,10 +1327,10 @@ function lowerStandardFeatureDerivation(
                 // scene that reached the pin's own enabler emits the line,
                 // which is where upstream registers the extension at all.
                 if (uvTransform) {
-                    for (
-                        const [module, name] of
-                            standardMeshFeatureExtensionModules
-                    ) {
+                    for (const [
+                        module,
+                        name,
+                    ] of standardMeshFeatureExtensionModules) {
                         lowerMeshFeatures(module, name, indent);
                     }
                 }
@@ -1375,7 +1384,7 @@ function lowerStandardFeatureDerivation(
                 if (condition === undefined) continue;
                 lines.push(`${indent}if (${condition}) {`);
                 lowerStatements(
-                    (statement.thenStatement as ts.Block).statements,
+                    statement.thenStatement.statements,
                     `${indent}    `,
                 );
                 lines.push(`${indent}}`);
@@ -1449,10 +1458,8 @@ export interface StandardSceneCompositionInput {
      * variant and the generated derivation ORs the same bits back out of
      * the record.
      */
-    standardMaterialPlugins:
-        readonly (readonly MaterialPluginManifest[])[];
-    standardMaterialPluginInputs?:
-        readonly (readonly PinnedStandardMaterialInput[])[];
+    standardMaterialPlugins: readonly (readonly MaterialPluginManifest[])[];
+    standardMaterialPluginInputs?: readonly (readonly PinnedStandardMaterialInput[])[];
     /** Mesh feature values observed with each 1-based plugin signature. */
     standardMaterialPluginMeshFeatureValues?: readonly (readonly number[])[];
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
@@ -1495,23 +1502,19 @@ export interface StandardSceneComposition {
  * closure over those setters, a language-surface fact rather than a scene
  * heuristic.
  */
-function sceneCodeMaterialInputs(
-    options: {
-        emissiveRenderTexture: boolean;
-        emissiveFileTexture: boolean;
-        lightmapFileTexture?: boolean;
-        diffuseRenderTexture: boolean;
-        diffusePixelsTexture: boolean;
-        diffuseSolidTexture: boolean;
-        diffuseFileTexture: boolean;
-        uvTransform: boolean;
-        standardMaterialPlugins:
-            readonly (readonly MaterialPluginManifest[])[];
-        /** Exact feature-bearing states observed for each plugin signature. */
-        standardMaterialPluginInputs?:
-            readonly (readonly PinnedStandardMaterialInput[])[];
-    },
-): PinnedStandardMaterialInput[] {
+function sceneCodeMaterialInputs(options: {
+    emissiveRenderTexture: boolean;
+    emissiveFileTexture: boolean;
+    lightmapFileTexture?: boolean;
+    diffuseRenderTexture: boolean;
+    diffusePixelsTexture: boolean;
+    diffuseSolidTexture: boolean;
+    diffuseFileTexture: boolean;
+    uvTransform: boolean;
+    standardMaterialPlugins: readonly (readonly MaterialPluginManifest[])[];
+    /** Exact feature-bearing states observed for each plugin signature. */
+    standardMaterialPluginInputs?: readonly (readonly PinnedStandardMaterialInput[])[];
+}): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
     // An axis a scene does not reach contributes one arm, not two, so a
     // scene writing neither emissive texture sweeps the same eight inputs
@@ -1546,9 +1549,7 @@ function sceneCodeMaterialInputs(
         undefined,
         ...(options.standardMaterialPluginInputs
             ? []
-            : options.standardMaterialPlugins.map(
-                  (_, index) => index + 1,
-              )),
+            : options.standardMaterialPlugins.map((_, index) => index + 1)),
     ];
     for (const disableLighting of [false, true]) {
         for (const doubleSided of [false, true]) {
@@ -1565,11 +1566,11 @@ function sceneCodeMaterialInputs(
                                 ...(emissive === "none"
                                     ? {}
                                     : {
-                                        emissiveTexture:
-                                            emissive === "depth"
-                                                ? { _sampleType: "depth" }
-                                                : {},
-                                    }),
+                                          emissiveTexture:
+                                              emissive === "depth"
+                                                  ? { _sampleType: "depth" }
+                                                  : {},
+                                      }),
                                 ...(diffuse ? { diffuseTexture: {} } : {}),
                                 ...(uvTransform ? { _hasUvTx: true } : {}),
                             };
@@ -1594,9 +1595,17 @@ function sceneCodeMaterialInputs(
     }
     if (!options.lightmapFileTexture) return inputs;
     const lightmaps: PinnedStandardMaterialInput[] = [{}];
-    for (const lightmapCoordIndex of [0, 1]) for (const useLightmapAsShadowmap of [false, true]) for (const uAng of [0, Math.PI])
-        lightmaps.push({ lightmapTexture: { uAng }, lightmapCoordIndex, useLightmapAsShadowmap });
-    return inputs.flatMap(input => lightmaps.map(lightmap => ({ ...input, ...lightmap })));
+    for (const lightmapCoordIndex of [0, 1])
+        for (const useLightmapAsShadowmap of [false, true])
+            for (const uAng of [0, Math.PI])
+                lightmaps.push({
+                    lightmapTexture: { uAng },
+                    lightmapCoordIndex,
+                    useLightmapAsShadowmap,
+                });
+    return inputs.flatMap((input) =>
+        lightmaps.map((lightmap) => ({ ...input, ...lightmap })),
+    );
 }
 
 /**
@@ -1648,8 +1657,15 @@ export async function composeSceneStandardVariants(
         const document = JSON.parse(readAsset(asset)) as {
             materials?: unknown[];
         };
-        for (const loadTextures of input.babylonTextureModes?.get(asset) ?? [true])
-            materialInputs.push(...await pinnedBabylonMaterials(document.materials ?? [], loadTextures));
+        for (const loadTextures of input.babylonTextureModes?.get(asset) ?? [
+            true,
+        ])
+            materialInputs.push(
+                ...(await pinnedBabylonMaterials(
+                    document.materials ?? [],
+                    loadTextures,
+                )),
+            );
         // A mesh with no resolvable material receives the factory defaults.
         materialInputs.push({});
     }
@@ -1675,9 +1691,7 @@ export async function composeSceneStandardVariants(
     // The mesh half: `.babylon` renderables carry no composition-relevant
     // bits (zero rows), scene meshes their own recorded sets, plus the
     // runtime-attachable pool and deformation arms.
-    const expandMeshValues = (
-        initial: readonly number[],
-    ): number[] => {
+    const expandMeshValues = (initial: readonly number[]): number[] => {
         const values: number[] = [];
         const add = (bits: number): void => {
             if (!values.includes(bits)) values.push(bits);
@@ -1710,11 +1724,10 @@ export async function composeSceneStandardVariants(
         ...input.sceneMeshFeatureValues,
     ]);
     if (meshValues.length === 0) meshValues.push(0);
-    const pluginMeshValues =
-        (
-            input.standardMaterialPluginMeshFeatureValues ??
-            input.standardMaterialPlugins.map(() => [])
-        ).map((values) => [...new Set(values)]);
+    const pluginMeshValues = (
+        input.standardMaterialPluginMeshFeatureValues ??
+        input.standardMaterialPlugins.map(() => [])
+    ).map((values) => [...new Set(values)]);
     // Compose, deduplicating by composed text.
     const variants: PinnedStandardVariantManifestEntry[] = [];
     const byText = new Map<string, number>();
@@ -1772,9 +1785,7 @@ export async function composeSceneStandardVariants(
         const reachableMeshValues =
             material.pluginIndex === undefined
                 ? meshValues
-                : (pluginMeshValues[
-                      material.pluginIndex - 1
-                  ] ?? []);
+                : (pluginMeshValues[material.pluginIndex - 1] ?? []);
         for (const meshFeatures of reachableMeshValues) {
             // The word the runtime derives, mesh-phase extensions included:
             // the selector is keyed by what `standard_variant_key` computes,
@@ -1784,10 +1795,11 @@ export async function composeSceneStandardVariants(
                 meshFeatures,
                 input.skeleton,
             );
-            const vertexColors = input.vertexColors &&
-                    (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
-                ? { vertexColors: { vertexAlpha: false } }
-                : {};
+            const vertexColors =
+                input.vertexColors &&
+                (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
+                    ? { vertexColors: { vertexAlpha: false } }
+                    : {};
             const baseOptions = {
                 fog: input.fog,
                 skeleton: input.skeleton ?? false,
@@ -1795,7 +1807,9 @@ export async function composeSceneStandardVariants(
             };
             await add(material, meshFeatures, features, baseOptions);
             const alpha = decideAlpha(
-                (features & (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !== 0,
+                (features &
+                    (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !==
+                    0,
                 input.vertexAlpha ?? false,
                 vertexColors.vertexColors !== undefined,
                 (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0,
@@ -1803,11 +1817,10 @@ export async function composeSceneStandardVariants(
             const alphaFeatures = features | alpha.features;
             const alphaReachable = alpha.colorAlphaBlend;
             if (alphaReachable) {
-                await add(material, meshFeatures,
-                    alphaFeatures, {
-                        ...baseOptions,
-                        vertexAlpha: true,
-                    });
+                await add(material, meshFeatures, alphaFeatures, {
+                    ...baseOptions,
+                    vertexAlpha: true,
+                });
             }
             // Every caster view a shadow generator draws through, from
             // the one contract `rebuildSingle` states: it derives
@@ -1845,7 +1858,10 @@ export async function composeSceneStandardVariants(
             for (const task of input.geometryTasks) {
                 const geometryOptions = {
                     ...baseOptions,
-                    geometry: { attachments: task.attachments, emitColor: task.emitColor },
+                    geometry: {
+                        attachments: task.attachments,
+                        emitColor: task.emitColor,
+                    },
                 };
                 await add(
                     material,
@@ -1855,10 +1871,16 @@ export async function composeSceneStandardVariants(
                     task.index,
                 );
                 if (alphaReachable) {
-                    await add(material, meshFeatures, alphaFeatures, {
-                        ...geometryOptions,
-                        vertexAlpha: true,
-                    }, task.index);
+                    await add(
+                        material,
+                        meshFeatures,
+                        alphaFeatures,
+                        {
+                            ...geometryOptions,
+                            vertexAlpha: true,
+                        },
+                        task.index,
+                    );
                 }
             }
         }
@@ -1898,7 +1920,9 @@ export function babylonRenderableCount(documentText: string): number {
         ) {
             continue;
         }
-        const submeshes = mesh.subMeshes ?? [{ indexStart: 0, indexCount: mesh.indices.length }];
+        const submeshes = mesh.subMeshes ?? [
+            { indexStart: 0, indexCount: mesh.indices.length },
+        ];
         for (const submesh of submeshes) {
             const length = submesh.indexCount ?? 0;
             if (length === 0) {
@@ -1979,7 +2003,10 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
         origin: ["normal-map-fragment.ts."],
     },
     {
-        texture: "lT", sampler: "lS", source: "lightmap", reflectionCube: false,
+        texture: "lT",
+        sampler: "lS",
+        source: "lightmap",
+        reflectionCube: false,
         origin: ["std-lightmap-fragment.ts."],
     },
     {
@@ -2004,55 +2031,96 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
 
 /** Every WGSL name the composed Standard variants declare for themselves. */
 export function standardBuiltinBindingNames(): ReadonlySet<string> {
-    const bindings = [...standardBuiltinBindings,
-        standardSkeletonBinding(new LoweringContext(sharedUpstreamStore()))];
+    const bindings = [
+        ...standardBuiltinBindings,
+        standardSkeletonBinding(new LoweringContext(sharedUpstreamStore())),
+    ];
     return new Set(
-        bindings.flatMap(
-            (binding) => [binding.texture, binding.sampler],
-        ).filter((name) => name.length > 0),
+        bindings
+            .flatMap((binding) => [binding.texture, binding.sampler])
+            .filter((name) => name.length > 0),
     );
 }
 
 /** The shared skeleton fragment declares a vertex-stage textureLoad palette. */
-function standardSkeletonBinding(context: LoweringContext): StandardBuiltinBinding {
+function standardSkeletonBinding(
+    context: LoweringContext,
+): StandardBuiltinBinding {
     const fragment = context.functionDeclaration(
-        "src/shader/fragments/skeleton-fragment.ts", "createSkeletonFragment",
+        "src/shader/fragments/skeleton-fragment.ts",
+        "createSkeletonFragment",
     ).declaration;
-    const declarations = context.findNodes(fragment, (node): node is ts.PropertyAssignment =>
-        ts.isPropertyAssignment(node) && context.propertyName(node.name) === "_vertexBindings");
+    const declarations = context.findNodes(
+        fragment,
+        (node): node is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(node) &&
+            context.propertyName(node.name) === "_vertexBindings",
+    );
     const bindings = declarations[0]?.initializer;
-    if (declarations.length !== 1 || !bindings || !ts.isArrayLiteralExpression(bindings)) {
-        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one vertex binding array.");
+    if (
+        declarations.length !== 1 ||
+        !bindings ||
+        !ts.isArrayLiteralExpression(bindings)
+    ) {
+        refuseGeneration(
+            SKELETON_FRAGMENT_MODULE,
+            "Pinned skeleton fragment must declare one vertex binding array.",
+        );
     }
     const entry = bindings.elements[0];
-    if (bindings.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) {
-        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one palette binding.");
+    if (
+        bindings.elements.length !== 1 ||
+        !entry ||
+        !ts.isObjectLiteralExpression(entry)
+    ) {
+        refuseGeneration(
+            SKELETON_FRAGMENT_MODULE,
+            "Pinned skeleton fragment must declare one palette binding.",
+        );
     }
-    const name = entry.properties.find((property): property is ts.PropertyAssignment =>
-        ts.isPropertyAssignment(property) && context.propertyName(property.name) === "_name");
+    const name = entry.properties.find(
+        (property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property) &&
+            context.propertyName(property.name) === "_name",
+    );
     if (!name || !ts.isStringLiteral(name.initializer)) {
-        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton palette binding must have a literal name.");
+        refuseGeneration(
+            SKELETON_FRAGMENT_MODULE,
+            "Pinned skeleton palette binding must have a literal name.",
+        );
     }
-    return { texture: name.initializer.text, sampler: "", source: "bone_palette",
-        reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] };
+    return {
+        texture: name.initializer.text,
+        sampler: "",
+        source: "bone_palette",
+        reflectionCube: false,
+        origin: ["skeleton-fragment.ts; textureLoad reads the live palette."],
+    };
 }
 
 /** `standard_binding_resources`' rows, rendered from the list above. */
-function standardBindingResourceRows(bindings = standardBuiltinBindings): string {
-    return bindings.map((binding) => {
-        const comment = binding.origin
-            .map((line) => `    // ${line}`)
-            .join("\n");
-        const names = `    {"${binding.texture}", "${binding.sampler}", `;
-        const rest = `MaterialTextureSource::${binding.source}, ` +
-            `${binding.reflectionCube ? "true" : "false"}},`;
-        // Wrapped exactly where the row outgrows the column the rest of the
-        // emitted header keeps to, which is what leaves the generated text
-        // byte-identical to the table this list replaced.
-        const row = names + rest;
-        return `${comment}\n` +
-            (row.length <= 76 ? row : `${names.trimEnd()}\n     ${rest}`);
-    }).join("\n");
+function standardBindingResourceRows(
+    bindings = standardBuiltinBindings,
+): string {
+    return bindings
+        .map((binding) => {
+            const comment = binding.origin
+                .map((line) => `    // ${line}`)
+                .join("\n");
+            const names = `    {"${binding.texture}", "${binding.sampler}", `;
+            const rest =
+                `MaterialTextureSource::${binding.source}, ` +
+                `${binding.reflectionCube ? "true" : "false"}},`;
+            // Wrapped exactly where the row outgrows the column the rest of the
+            // emitted header keeps to, which is what leaves the generated text
+            // byte-identical to the table this list replaced.
+            const row = names + rest;
+            return (
+                `${comment}\n` +
+                (row.length <= 76 ? row : `${names.trimEnd()}\n     ${rest}`)
+            );
+        })
+        .join("\n");
 }
 
 /** Inputs for the native-support block appended to standard_variants.hpp. */
@@ -2106,25 +2174,48 @@ export function pinnedStandardSupportBlock(
             name,
         );
     const mesh = (name: string): number =>
-        pinnedNumericConstant(
-            context,
-            "src/material/mesh-features.ts",
-            name,
-        );
-    const skeletonModule = "src/material/standard/fragments/std-skeleton-fragment.ts";
+        pinnedNumericConstant(context, "src/material/mesh-features.ts", name);
+    const skeletonModule =
+        "src/material/standard/fragments/std-skeleton-fragment.ts";
     let skeletonBlock = "";
     const builtinBindings = [...standardBuiltinBindings];
     if (options.skeleton) {
-        const { file, declaration } = context.methodDeclaration(skeletonModule, "stdSkeletonExt._meshFeatures");
-        if (!declaration.body || !ts.isBlock(declaration.body)) refuseGeneration(skeletonModule, "Pinned Standard skeleton feature hook has no block body.");
+        const { file, declaration } = context.methodDeclaration(
+            skeletonModule,
+            "stdSkeletonExt._meshFeatures",
+        );
+        if (!declaration.body || !ts.isBlock(declaration.body))
+            refuseGeneration(
+                skeletonModule,
+                "Pinned Standard skeleton feature hook has no block body.",
+            );
         const bindings = new Map<string, PinnedBinding>([
             ["meshFeatures", { cpp: "mesh_features", type: "scalar" }],
-            ...["MSH_HAS_SKELETON", "MSH_HAS_SKELETON_8", "MSH_HAS_THIN_INSTANCES"].map((name): [string, PinnedBinding] => [name, { cpp: `${mesh(name)}u`, type: "scalar" }]),
-            ...["HAS_SKELETON", "HAS_SKELETON_8"].map((name): [string, PinnedBinding] => [name, { cpp: `${flag(name)}u`, type: "scalar" }]),
+            ...[
+                "MSH_HAS_SKELETON",
+                "MSH_HAS_SKELETON_8",
+                "MSH_HAS_THIN_INSTANCES",
+            ].map((name): [string, PinnedBinding] => [
+                name,
+                { cpp: `${mesh(name)}u`, type: "scalar" },
+            ]),
+            ...["HAS_SKELETON", "HAS_SKELETON_8"].map(
+                (name): [string, PinnedBinding] => [
+                    name,
+                    { cpp: `${flag(name)}u`, type: "scalar" },
+                ],
+            ),
         ]);
-        const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(), booleanOr: true,
+        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: new Map(),
+            booleanOr: true,
             returnValue: (expression) => {
-                if (!expression) refuseGeneration(skeletonModule, "Pinned skeleton feature hook returned no value.");
+                if (!expression)
+                    refuseGeneration(
+                        skeletonModule,
+                        "Pinned skeleton feature hook returned no value.",
+                    );
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });
@@ -2159,21 +2250,22 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
     // the slot carries a texture.
     const uvTransform = options.uvTransform
         ? lowerStandardUvTransformWriter(context, {
-            presence: standardFeatureRecordSources,
-            coordIndex: standardFeatureRecordSources,
-        })
+              presence: standardFeatureRecordSources,
+              coordIndex: standardFeatureRecordSources,
+          })
         : undefined;
     // Spliced onto the end of the preceding comment line rather than onto a
     // line of its own: an empty branch on its own line still emits the line,
     // which put a blank one into every Standard scene's header and broke the
     // generated-tree byte diff for scenes that reach nothing here.
     const uvTransformBlock = uvTransform ? uvTransform.source : "";
-    const selectorRows = options.selectors.map((selector) =>
-        `    {${selector.features}u, ${selector.meshFeatures}u, ` +
-        `${
-            selector.geometryTask ??
+    const selectorRows = options.selectors.map(
+        (selector) =>
+            `    {${selector.features}u, ${selector.meshFeatures}u, ` +
+            `${
+                selector.geometryTask ??
                 "std::numeric_limits<std::size_t>::max()"
-        }, ${selector.variant}},`
+            }, ${selector.variant}},`,
     );
     const meshRows = options.renderableMeshFeatures.map(
         (bits) => `    ${bits},`,
@@ -2183,12 +2275,16 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
     // declares none both compile the header they compiled before.
     const pluginBindingRows = (options.pluginBindings ?? []).flatMap(
         (bindings, list) =>
-            bindings.map((binding, ordinal) =>
-                `    {"${binding.texture}", "${binding.sampler}", ` +
-                `${list + 1}, ${ordinal}},`
+            bindings.map(
+                (binding, ordinal) =>
+                    `    {"${binding.texture}", "${binding.sampler}", ` +
+                    `${list + 1}, ${ordinal}},`,
             ),
     );
-    const pluginBindingBlock = pluginBindingRows.length === 0 ? "" : `
+    const pluginBindingBlock =
+        pluginBindingRows.length === 0
+            ? ""
+            : `
 // The plugin bindings each composed Standard variant declares past the rows
 // above: the \`_bindings\` \`buildPluginFragment\` emitted, paired with the
 // signature index the material record carries and the position in its
@@ -2386,10 +2482,11 @@ ${cpp.table("StandardVariantSelector", "standard_variant_selectors", selectorRow
 ${cpp.table("std::size_t", "standard_renderable_mesh_features", meshRows.length, `${meshRows.join("\n")}`)}
 
 /** The bits for meshes created past the static table, npos to refuse. */
-${cpp.constant("std::size_t", "standard_runtime_mesh_features",
-        options.runtimeMeshFeatures ??
-            "std::numeric_limits<std::size_t>::max()"
-    )}
+${cpp.constant(
+    "std::size_t",
+    "standard_runtime_mesh_features",
+    options.runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()",
+)}
 
 /** The variant a Standard draw composes, or npos when none was emitted. */
 inline std::size_t standard_variant_for(

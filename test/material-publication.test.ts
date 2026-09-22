@@ -5,33 +5,64 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
-import { transpileCommonJs } from "../src/typescript-transpile.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { lowerPbrMaterialGroups } from "../src/lowering/pbr-material-groups.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 
-test("material output publication and captured draw identity follow source frame boundaries", async t => {
+test("material output publication and captured draw identity follow source frame boundaries", async (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable"); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable");
+        return;
+    }
     const context = new LoweringContext();
     const directory = resolve("artifacts/test-material-publication");
-    mkdirSync(directory, {recursive: true});
-    const declaration = (module: string, name: string): string => context.functionDeclaration(module, name).declaration.getText().replace(/^export /, "");
+    mkdirSync(directory, { recursive: true });
+    const declaration = (module: string, name: string): string =>
+        context
+            .functionDeclaration(module, name)
+            .declaration.getText()
+            .replace(/^export /, "");
     const swap = "src/scene/scene-material-swap.ts";
     const renderTask = "src/frame-graph/render-task.ts";
-    const pbr = context.functionDeclaration("src/material/pbr/pbr-renderable.ts", "buildPbrRenderables").declaration;
+    const pbr = context.functionDeclaration(
+        "src/material/pbr/pbr-renderable.ts",
+        "buildPbrRenderables",
+    ).declaration;
     const draw = context.variableInitializer(pbr, "drawWith");
     assert.ok(ts.isArrowFunction(draw) && ts.isBlock(draw.body));
     const guard = draw.body.statements[0]!.getText();
-    const moduleSource = (module: string, omitOrder = false): string => context.sourceFile(module).statements
-        .filter(node => !ts.isImportDeclaration(node) && !(omitOrder && ts.isVariableStatement(node) && node.declarationList.declarations[0]?.name.getText() === "byOrder"))
-        .map(node => node.getText().replace(/^export /, "")).join("\n");
+    const moduleSource = (module: string, omitOrder = false): string =>
+        context
+            .sourceFile(module)
+            .statements.filter(
+                (node) =>
+                    !ts.isImportDeclaration(node) &&
+                    !(
+                        omitOrder &&
+                        ts.isVariableStatement(node) &&
+                        node.declarationList.declarations[0]?.name.getText() ===
+                            "byOrder"
+                    ),
+            )
+            .map((node) => node.getText().replace(/^export /, ""))
+            .join("\n");
 
     // Complete source renderFrame and task bundle body establish the actual synchronous
     // submit boundary and distinguish cached opaque replay from a direct draw callback.
-    const runSource = new Function(transpileCommonJs(`
+    const runSource = createJavaScriptFunction(
+        transpileCommonJs(
+            `
         const require = () => ({A, B, C, X, rebuildScenePbrPipelines});
         const _lateCleanup = undefined;
         const _vis = 0, _refreshScRT = () => {}, flushGpuResourceRetirements = () => {};
@@ -102,14 +133,37 @@ test("material output publication and captured draw identity follow source frame
             try { renderFrame(engine, 16); } catch { failed = true; }
             return {before, outputsBefore, after: draws.slice(), outputsAfter: scene._renderables.map(output => output.mat.id), failed};
         };
-    `, "material-publication-source.ts"))() as (kind: string, opaque: boolean, direct: boolean) => Promise<unknown>;
+    `,
+            "material-publication-source.ts",
+        ),
+    )() as (kind: string, opaque: boolean, direct: boolean) => Promise<unknown>;
 
-    const scenarios = ["first", "gamma", "thin", "single", "gamma-cancel", "thin-cancel", "first-changed", "first-removed", "first-disposed", "failure"]
-        .flatMap(kind => [false, true].map(opaque => ({kind, opaque, direct: false})));
-    scenarios.push({kind: "thin", opaque: false, direct: true}, {kind: "gamma", opaque: false, direct: true});
+    const scenarios = [
+        "first",
+        "gamma",
+        "thin",
+        "single",
+        "gamma-cancel",
+        "thin-cancel",
+        "first-changed",
+        "first-removed",
+        "first-disposed",
+        "failure",
+    ].flatMap((kind) =>
+        [false, true].map((opaque) => ({ kind, opaque, direct: false })),
+    );
+    scenarios.push(
+        { kind: "thin", opaque: false, direct: true },
+        { kind: "gamma", opaque: false, direct: true },
+    );
     const expected = [];
-    for (const scenario of scenarios) expected.push(await runSource(scenario.kind, scenario.opaque, scenario.direct));
-    const runSharedSource = new Function(transpileCommonJs(`
+    for (const scenario of scenarios)
+        expected.push(
+            await runSource(scenario.kind, scenario.opaque, scenario.direct),
+        );
+    const runSharedSource = createJavaScriptFunction(
+        transpileCommonJs(
+            `
         const require = () => ({A, B, C, X, rebuildScenePbrPipelines});
         const _lateCleanup = undefined;
         const retireGpuResources = (_engine, callback) => callback();
@@ -134,19 +188,42 @@ test("material output publication and captured draw identity follow source frame
             await Promise.all(pending);
             return scenes.map(scene => scene._renderables.map(output => output.mat.id));
         };
-    `, "material-publication-shared-source.ts"))() as () => Promise<number[][]>;
+    `,
+            "material-publication-shared-source.ts",
+        ),
+    )() as () => Promise<number[][]>;
     const sharedExpected = await runSharedSource();
-    writeFileSync(resolve(directory, "source.json"), JSON.stringify(expected, null, 2));
+    writeFileSync(
+        resolve(directory, "source.json"),
+        JSON.stringify(expected, null, 2),
+    );
 
-    const cases = expected as {before: number[]; after: number[]; outputsBefore: number[]; outputsAfter: number[]; failed: boolean}[];
-    const vector = (values: readonly number[]) => `std::vector<unsigned>{${values.join(",")}}`;
+    const cases = expected as {
+        before: number[];
+        after: number[];
+        outputsBefore: number[];
+        outputsAfter: number[];
+        failed: boolean;
+    }[];
+    const vector = (values: readonly number[]) =>
+        `std::vector<unsigned>{${values.join(",")}}`;
     const renderer = new RendererLowerer(context).lowerRenderPlan();
     writeFileSync(resolve(directory, "renderer-plan.hpp"), renderer.header);
-    const headers = resolve(directory, "include/bblite/upstream"); mkdirSync(headers, {recursive: true});
-    writeFileSync(resolve(headers, "pinned_surface.hpp"), pinnedSurfaceHeader(context, 4));
-    writeFileSync(resolve(headers, "camera_math.hpp"), new CameraLowerer(context).lowerArcRotateFactory().header);
-    const integrated = resolve(directory, "integrated.cpp"), integratedExecutable = resolve(directory, "integrated.exe");
-    writeFileSync(integrated, `#include "renderer-plan.hpp"
+    const headers = resolve(directory, "include/bblite/upstream");
+    mkdirSync(headers, { recursive: true });
+    writeFileSync(
+        resolve(headers, "pinned_surface.hpp"),
+        pinnedSurfaceHeader(context, 4),
+    );
+    writeFileSync(
+        resolve(headers, "camera_math.hpp"),
+        new CameraLowerer(context).lowerArcRotateFactory().header,
+    );
+    const integrated = resolve(directory, "integrated.cpp"),
+        integratedExecutable = resolve(directory, "integrated.exe");
+    writeFileSync(
+        integrated,
+        `#include "renderer-plan.hpp"
     #include <bblite/js_data.hpp>
     #include <cassert>
     #include <iostream>
@@ -158,7 +235,7 @@ test("material output publication and captured draw identity follow source frame
     }
     RenderPipelineKind render_pipeline_kind(const RenderItem&) { return RenderPipelineKind::pbr_opaque_back; }
     double default_render_order(const RenderItem&) { return 0; }
-    ${["bool mesh_draws(", "bool render_item_material_draws(", "bool render_item_draws_now(", "void append_draw(", "void order_draw_lists(", "RenderDrawLists build_render_draw_lists(", "RenderPlan build_render_plan("].map(name => cppFunction(renderer.source, name)).join("\n")}
+    ${["bool mesh_draws(", "bool render_item_material_draws(", "bool render_item_draws_now(", "void append_draw(", "void order_draw_lists(", "RenderDrawLists build_render_draw_lists(", "RenderPlan build_render_plan("].map((name) => cppFunction(renderer.source, name)).join("\n")}
     }
     namespace bbl {
     bool reject_material_build = false;
@@ -252,9 +329,24 @@ test("material output publication and captured draw identity follow source frame
         bbl::shared_scene_cancellation();
         std::cout << "${scenarios.length + 1} source/native publication phases passed\\n";
     }
-    `);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${integratedExecutable}`, "/I", resolve(directory, "include"), "/I", "native/include", integrated]);
-    console.log(execFileSync(integratedExecutable, {encoding: "utf8"}));
-
+    `,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${integratedExecutable}`,
+        "/I",
+        resolve(directory, "include"),
+        "/I",
+        "native/include",
+        integrated,
+    ]);
+    console.log(execFileSync(integratedExecutable, { encoding: "utf8" }));
 });

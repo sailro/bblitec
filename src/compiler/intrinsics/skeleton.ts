@@ -7,20 +7,22 @@ import { handleFoundCpp } from "../properties.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface SkeletonIntrinsicContext
-    extends IntrinsicCallContext,
-    Pick<LoweringServices,
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "cppString"
-        | "compileStringLiteral"
-        | "compileCondition"
-        | "compileNumber"
-        | "compileForDataSink"
-        | "requireEngine"
-        | "expectSameEngine"
-        | "gltfAlreadyLoaded"
-        | "fail"
-    > {}
+    extends
+        IntrinsicCallContext,
+        Pick<
+            LoweringServices,
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "cppString"
+            | "compileStringLiteral"
+            | "compileCondition"
+            | "compileNumber"
+            | "compileForDataSink"
+            | "requireEngine"
+            | "expectSameEngine"
+            | "gltfAlreadyLoaded"
+            | "fail"
+        > {}
 
 /**
  * The bone palette, read WITHOUT marking the caller's array escaped.
@@ -48,10 +50,7 @@ function bonePaletteArgument(
     label: string,
 ): string {
     const value = context.compileValue(expression);
-    if (
-        value.kind !== "data" ||
-        value.dataType?.kind !== "f32array"
-    ) {
+    if (value.kind !== "data" || value.dataType?.kind !== "f32array") {
         context.fail(
             expression,
             `${label} takes the Float32Array of bone matrices ` +
@@ -95,14 +94,12 @@ export function compileSkeletonIntrinsic(
             context.expectArgumentCount(call, 5, 5);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            const joints = context.compileForDataSink(
-                argumentAt(call, 1),
-                { kind: "u16array" },
-            );
-            const weights = context.compileForDataSink(
-                argumentAt(call, 2),
-                { kind: "f32array" },
-            );
+            const joints = context.compileForDataSink(argumentAt(call, 1), {
+                kind: "u16array",
+            });
+            const weights = context.compileForDataSink(argumentAt(call, 2), {
+                kind: "f32array",
+            });
             const boneCount = context.compileNumber(
                 argumentAt(call, 3),
                 "double",
@@ -113,8 +110,7 @@ export function compileSkeletonIntrinsic(
                 "createSkeleton",
             );
             const engineCpp = engine.engineCpp ?? engine.cpp;
-            const skeleton =
-                context.allocateTemporaryCppName("skeleton");
+            const skeleton = context.allocateTemporaryCppName("skeleton");
             context.emit(
                 `const ${handleCppType("scene-skeleton")} ${skeleton} = ` +
                     `bbl::create_scene_skeleton(${engineCpp}, ` +
@@ -137,15 +133,8 @@ export function compileSkeletonIntrinsic(
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
             const skeleton = context.compileValue(argumentAt(call, 1));
-            context.expectKind(
-                skeleton,
-                "scene-skeleton",
-                argumentAt(call, 1),
-            );
-            if (
-                skeleton.engineCpp !==
-                (engine.engineCpp ?? engine.cpp)
-            ) {
+            context.expectKind(skeleton, "scene-skeleton", argumentAt(call, 1));
+            if (skeleton.engineCpp !== (engine.engineCpp ?? engine.cpp)) {
                 context.fail(
                     call,
                     "A skeleton and the engine updating it must be the " +
@@ -194,20 +183,11 @@ export function compileSkeletonIntrinsic(
             // in this port already takes — so the guards the scene writes
             // (`if`, `??`, a null comparison) answer through it.
             context.expectArgumentCount(call, 2, 2);
-            const skeleton = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                skeleton,
-                "skeleton",
-                argumentAt(call, 0),
-            );
-            const name = context.compileStringLiteral(
-                argumentAt(call, 1),
-            );
+            const skeleton = context.compileValue(argumentAt(call, 0));
+            context.expectKind(skeleton, "skeleton", argumentAt(call, 0));
+            const name = context.compileStringLiteral(argumentAt(call, 1));
             const engine = context.requireEngine(skeleton, call);
-            const bone =
-                context.allocateTemporaryCppName("bone");
+            const bone = context.allocateTemporaryCppName("bone");
             context.emit(
                 `const ${handleCppType("bone")} ${bone} = ` +
                     `bbl::get_bone_by_name(` +
@@ -227,22 +207,12 @@ export function compileSkeletonIntrinsic(
             // re-bakes, showing clears it, drops an override the clear
             // emptied, and re-bakes only when there was one to clear.
             context.expectArgumentCount(call, 3, 3);
-            const skeleton = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                skeleton,
-                "skeleton",
-                argumentAt(call, 0),
-            );
-            const bone = context.compileValue(
-                argumentAt(call, 1),
-            );
+            const skeleton = context.compileValue(argumentAt(call, 0));
+            context.expectKind(skeleton, "skeleton", argumentAt(call, 0));
+            const bone = context.compileValue(argumentAt(call, 1));
             context.expectKind(bone, "bone", argumentAt(call, 1));
             context.expectSameEngine(skeleton, bone, call);
-            const visible = context.compileCondition(
-                argumentAt(call, 2),
-            );
+            const visible = context.compileCondition(argumentAt(call, 2));
             return {
                 kind: "void",
                 cpp:
@@ -262,7 +232,7 @@ export function compileSkeletonIntrinsic(
         case "setBoneWorldPoseDeferred":
         case "bakeSkeleton":
         case "clearBoneOverride": {
-            context.fail(
+            return context.fail(
                 call,
                 `${importedName} is part of the bone-control chunk this ` +
                     "port has not lowered: the reached slice is " +

@@ -35,7 +35,12 @@ function inputs(
 
 test("a refusal names its unit and the site that reached it", () => {
     assert.throws(
-        () => refuseGeneration("loader:splat", "Clouds are not lowered here.", sites),
+        () =>
+            refuseGeneration(
+                "loader:splat",
+                "Clouds are not lowered here.",
+                sites,
+            ),
         (error: unknown) =>
             error instanceof GenerationRefusal &&
             error.unit === "loader:splat" &&
@@ -66,7 +71,10 @@ test("the combination table refuses each pair by the unit to drop", () => {
     assert.throws(
         () =>
             refuseUnsupportedCombinations(
-                inputs({ features: esm, shadows: { ...inputs().shadows, features: esm } }),
+                inputs({
+                    features: esm,
+                    shadows: { ...inputs().shadows, features: esm },
+                }),
                 sites,
             ),
         /ESM shadow generator composes no material family.*\(reached from scene\.ts:12\)/,
@@ -76,10 +84,14 @@ test("the combination table refuses each pair by the unit to drop", () => {
         refuseUnsupportedCombinations(
             inputs({
                 features: esm,
-                shadows: { ...inputs().shadows, features: esm, standardVariants: 1 },
+                shadows: {
+                    ...inputs().shadows,
+                    features: esm,
+                    standardVariants: 1,
+                },
             }),
             sites,
-        )
+        ),
     );
 
     // A floating-origin scene reaching a subsystem still drawn in absolute
@@ -88,7 +100,11 @@ test("the combination table refuses each pair by the unit to drop", () => {
         () =>
             refuseUnsupportedCombinations(
                 inputs({
-                    features: ["core", "renderer:floating-origin", "loader:splat"],
+                    features: [
+                        "core",
+                        "renderer:floating-origin",
+                        "loader:splat",
+                    ],
                 }),
                 sites,
             ),
@@ -98,7 +114,7 @@ test("the combination table refuses each pair by the unit to drop", () => {
         refuseUnsupportedCombinations(
             inputs({ features: ["core", "loader:splat"] }),
             sites,
-        )
+        ),
     );
 
     // Node geometry views over the Babylon loader.
@@ -115,9 +131,12 @@ test("the combination table refuses each pair by the unit to drop", () => {
     );
     assert.doesNotThrow(() =>
         refuseUnsupportedCombinations(
-            inputs({ features: ["core", "loader:babylon"], nodeGeometryViews: 0 }),
+            inputs({
+                features: ["core", "loader:babylon"],
+                nodeGeometryViews: 0,
+            }),
             sites,
-        )
+        ),
     );
 
     // Every row names a unit a scene can drop.

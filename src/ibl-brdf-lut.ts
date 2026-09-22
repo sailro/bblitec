@@ -7,20 +7,14 @@
 // entry point, bind group, workgroup counts).
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import {
-    dirname,
-    resolve,
-} from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
-import {
-    findRepositoryRoot,
-    readUpstreamPin,
-} from "./upstream-source.js";
+import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 
 // generateBrdfLut's `const size = 256` and the shader's own 256u bounds.
 const lutSize = 256;
@@ -74,9 +68,7 @@ export function loadPinnedBrdfLutShader(): string {
         /const brdfLutWGSL = ("(?:[^"\\]|\\.)*");/,
     );
     if (!shaderMatch?.[1]) {
-        throw new Error(
-            "Pinned Babylon Lite BRDF LUT shader was not found.",
-        );
+        throw new Error("Pinned Babylon Lite BRDF LUT shader was not found.");
     }
     const shader: unknown = JSON.parse(shaderMatch[1]);
     if (
@@ -140,25 +132,25 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>IBL BRDF LUT</title>");
     });
-    return withBrowserPage(server, {
-        serverName: "BRDF LUT server",
-        browserRequirement:
-            "Exact IBL BRDF LUT generation requires Chrome or Edge.",
-        browserArgs: webgpuComputeBrowserArgs,
-    }, async (page, origin) => {
-        await page.goto(origin);
-        await page.evaluate(
-            (value) => {
+    return withBrowserPage(
+        server,
+        {
+            serverName: "BRDF LUT server",
+            browserRequirement:
+                "Exact IBL BRDF LUT generation requires Chrome or Edge.",
+            browserArgs: webgpuComputeBrowserArgs,
+        },
+        async (page, origin) => {
+            await page.goto(origin);
+            await page.evaluate((value) => {
                 (
                     globalThis as typeof globalThis & {
                         brdfLutShader: string;
                     }
                 ).brdfLutShader = value;
-            },
-            shader,
-        );
+            }, shader);
 
-        const result: unknown = await page.evaluate(`(async () => {
+            const result: unknown = await page.evaluate(`(async () => {
             const adapter = await navigator.gpu?.requestAdapter();
             if (!adapter) throw new Error("No WebGPU adapter is available for the BRDF LUT.");
             const device = await adapter.requestDevice();
@@ -222,15 +214,18 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
             device.destroy();
             return encoded;
         })()`);
-        if (typeof result !== "string") {
-            throw new Error("The BRDF LUT compute returned an invalid result.");
-        }
-        const bytes = new Uint8Array(Buffer.from(result, "base64"));
-        if (bytes.byteLength !== lutBytes) {
-            throw new Error(
-                `The BRDF LUT readback held ${bytes.byteLength} bytes; expected ${lutBytes}.`,
-            );
-        }
-        return bytes;
-    });
+            if (typeof result !== "string") {
+                throw new Error(
+                    "The BRDF LUT compute returned an invalid result.",
+                );
+            }
+            const bytes = new Uint8Array(Buffer.from(result, "base64"));
+            if (bytes.byteLength !== lutBytes) {
+                throw new Error(
+                    `The BRDF LUT readback held ${bytes.byteLength} bytes; expected ${lutBytes}.`,
+                );
+            }
+            return bytes;
+        },
+    );
 }

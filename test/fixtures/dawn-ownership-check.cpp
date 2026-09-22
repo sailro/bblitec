@@ -10,11 +10,26 @@ static int texture_refs = 0;
 static int view_refs = 0;
 template <typename T> T fake() { return reinterpret_cast<T>(std::uintptr_t{1}); }
 
-void wgpuTextureRelease(WGPUTexture texture) { assert(texture); released.push_back(1); }
-void wgpuTextureViewRelease(WGPUTextureView view) { assert(view); released.push_back(2); }
-void wgpuSamplerRelease(WGPUSampler sampler) { assert(sampler); released.push_back(3); }
-void wgpuTextureAddRef(WGPUTexture texture) { assert(texture); ++texture_refs; }
-void wgpuTextureViewAddRef(WGPUTextureView view) { assert(view); ++view_refs; }
+void wgpuTextureRelease(WGPUTexture texture) {
+    assert(texture);
+    released.push_back(1);
+}
+void wgpuTextureViewRelease(WGPUTextureView view) {
+    assert(view);
+    released.push_back(2);
+}
+void wgpuSamplerRelease(WGPUSampler sampler) {
+    assert(sampler);
+    released.push_back(3);
+}
+void wgpuTextureAddRef(WGPUTexture texture) {
+    assert(texture);
+    ++texture_refs;
+}
+void wgpuTextureViewAddRef(WGPUTextureView view) {
+    assert(view);
+    ++view_refs;
+}
 WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, const WGPUTextureViewDescriptor*) {
     assert(texture);
     ++view_calls;
@@ -32,22 +47,26 @@ int main() {
             texture.texture = fake<WGPUTexture>();
             fail_view = stage == 1;
             texture.view = create_dawn_texture_view(texture.texture, nullptr);
-            if (stage == 2) throw bbl::GpuTransportError("sampler creation failed");
+            if (stage == 2)
+                throw bbl::GpuTransportError("sampler creation failed");
             texture.sampler = fake<WGPUSampler>();
             std::vector<DawnSampledTexture> textures;
             textures.push_back(std::move(texture));
             assert(!texture.texture && !texture.view && !texture.sampler);
             throw bbl::GpuTransportError("upload failed");
-        } catch (const bbl::GpuTransportError&) {}
-        const std::vector<int> expected = stage == 1 ? std::vector<int>{1} :
-            stage == 2 ? std::vector<int>{2, 1} : std::vector<int>{3, 2, 1};
+        } catch (const bbl::GpuTransportError&) {
+        }
+        const std::vector<int> expected = stage == 1   ? std::vector<int>{1}
+                                          : stage == 2 ? std::vector<int>{2, 1}
+                                                       : std::vector<int>{3, 2, 1};
         assert(released == expected);
     }
     const int previous_calls = view_calls;
     try {
         (void)create_dawn_texture_view(nullptr, nullptr);
         assert(false);
-    } catch (const bbl::GpuTransportError&) {}
+    } catch (const bbl::GpuTransportError&) {
+    }
     assert(view_calls == previous_calls);
     released.clear();
     {

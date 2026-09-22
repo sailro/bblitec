@@ -88,14 +88,12 @@ export async function composeEsmShadow(
         COMPOSITION_LIGHT,
         config,
     );
-    const textures = recorder.textures.map(
-        (texture): EsmTextureDescriptor => ({
-            width: texture.width,
-            height: texture.height,
-            format: texture.format,
-            usage: texture.usage,
-        }),
-    );
+    const textures = recorder.textures.map((texture): EsmTextureDescriptor => ({
+        width: texture.width,
+        height: texture.height,
+        format: texture.format,
+        usage: texture.usage,
+    }));
     if (textures.length !== 4) {
         throw new Error(
             "Expected the pinned ESM factory to build four textures " +

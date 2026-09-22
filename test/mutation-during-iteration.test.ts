@@ -18,10 +18,7 @@ import { compileSource } from "../src/compiler.js";
 import { findRepositoryRoot } from "../src/upstream-source.js";
 
 function nativeSource(...parts: string[]): string {
-    return readFileSync(
-        join(findRepositoryRoot(), ...parts),
-        "utf8",
-    );
+    return readFileSync(join(findRepositoryRoot(), ...parts), "utf8");
 }
 
 test("keeps a Map delete on the container being iterated", () => {
@@ -50,7 +47,9 @@ test("keeps a Map delete on the container being iterated", () => {
     const item = /for \(auto&& (v_bblite_item_\d+) : v_jobs\) \{/.exec(
         result.cpp,
     )![1];
-    const key = new RegExp(`auto (\\w+) = ${item}\\.first;`).exec(result.cpp)?.[1];
+    const key = new RegExp(`auto (\\w+) = ${item}\\.first;`).exec(
+        result.cpp,
+    )?.[1];
     assert.ok(key, "The destructured key snapshots the current entry.");
     assert.match(result.cpp, new RegExp(`v_jobs\\.erase\\(${key}\\)`));
     assert.match(result.cpp, /v_jobs\.size\(\)/);
@@ -74,10 +73,7 @@ test("keeps a Set delete on the container being iterated", () => {
     const item = /for \(auto&& (v_bblite_item_\d+) : v_seen\) \{/.exec(
         result.cpp,
     )![1];
-    assert.match(
-        result.cpp,
-        new RegExp(`v_seen\\.erase\\(${item}\\)`),
-    );
+    assert.match(result.cpp, new RegExp(`v_seen\\.erase\\(${item}\\)`));
 });
 
 test("forks inferred objects on the aliased-mutation walk", () => {
@@ -121,12 +117,7 @@ test("treats a call argument as an array mutation escape", () => {
 });
 
 test("erasing during native iteration soft-deletes until release", () => {
-    const data = nativeSource(
-        "native",
-        "include",
-        "bblite",
-        "js_data.hpp",
-    );
+    const data = nativeSource("native", "include", "bblite", "js_data.hpp");
 
     // The mechanics the compiler's delete-in-loop emission relies on:
     // a live iterator turns erase into an active-bit clear, the walk
@@ -142,7 +133,7 @@ test("erasing during native iteration soft-deletes until release", () => {
     );
     assert.match(
         data,
-        /while \(current_ != end_ && !current_->active\) \+\+current_;/,
+        /while \(current_ != end_ && !current_->active\)\s+\+\+current_;/,
     );
     // The soft-deleting erase lives once, in the shell both containers
     // derive from, so the two cannot age apart on these mechanics.
@@ -155,10 +146,7 @@ test("erasing during native iteration soft-deletes until release", () => {
         data,
         /class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> \{/,
     );
-    assert.match(
-        data,
-        /class Set : public IndexedInsertionOrdered<T, T> \{/,
-    );
+    assert.match(data, /class Set : public IndexedInsertionOrdered<T, T> \{/);
     assert.match(data, /InsertionOrderedIterator/);
     assert.match(data, /InsertionOrderedStorage/);
 });

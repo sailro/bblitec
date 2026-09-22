@@ -20,10 +20,7 @@ inline void premultiply_image_alpha(DecodedImage& image) {
         const std::uint32_t alpha = image.rgba[index + 3];
         for (std::size_t channel = 0; channel < 3; ++channel) {
             image.rgba[index + channel] = static_cast<std::uint8_t>(
-                (static_cast<std::uint32_t>(image.rgba[index + channel]) *
-                     alpha +
-                 127u) /
-                255u);
+                (static_cast<std::uint32_t>(image.rgba[index + channel]) * alpha + 127u) / 255u);
         }
     }
 }

@@ -4,10 +4,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("unreached voxel file helpers do not activate the native file boundary", () => {
-    const module = resolve("corpus/babylon-lite/lab/lite/src/demos/minecraft/save-load.ts").replaceAll("\\", "/");
+    const module = resolve(
+        "corpus/babylon-lite/lab/lite/src/demos/minecraft/save-load.ts",
+    ).replaceAll("\\", "/");
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         import { loadFromFile } from ${JSON.stringify(module)};
@@ -18,19 +23,30 @@ test("unreached voxel file helpers do not activate the native file boundary", ()
     assert.ok(!result.manifest.runtimeSources.includes("src/pal_file.cpp"));
 });
 
-test("compiled voxel save/load uses selected files, cancellation and JavaScript number spelling", t => {
+test("compiled voxel save/load uses selected files, cancellation and JavaScript number spelling", (t) => {
     const directory = resolve("artifacts/voxel-file-check");
     mkdirSync(directory, { recursive: true });
-    const module = resolve("corpus/babylon-lite/lab/lite/src/demos/minecraft/save-load.ts").replaceAll("\\", "/");
-    const data = { v: 1, seed: 9007199254740991, time: 1e-7,
-        player: { x: -0, y: 1e21, z: -2.5, yaw: .25, pitch: -.5 }, edits: [1, 2, 3, 4, -1e-7, 1e21] };
-    const result = compileSource(`
+    const module = resolve(
+        "corpus/babylon-lite/lab/lite/src/demos/minecraft/save-load.ts",
+    ).replaceAll("\\", "/");
+    const data = {
+        v: 1,
+        seed: 9007199254740991,
+        time: 1e-7,
+        player: { x: -0, y: 1e21, z: -2.5, yaw: 0.25, pitch: -0.5 },
+        edits: [1, 2, 3, 4, -1e-7, 1e21],
+    };
+    const result = compileSource(
+        `
         import { createEngine } from "@babylonjs/lite";
         import { saveToFile, saveToFile as saveWorld, loadFromFile, loadFromFile as loadWorld, type SaveData } from ${JSON.stringify(module)};
         async function main() {
             const engine = await createEngine({});
             const data: SaveData = ${JSON.stringify(data).replace('"x":0', '"x":-0')};
-            if (await saveWorld(data)) throw new Error("cancelled save");
+            function snapshot(): SaveData {
+                return {v: 1, seed: data.seed, time: data.time, player: data.player, edits: data.edits};
+            }
+            if (await saveWorld(snapshot())) throw new Error("cancelled save");
             if (!await saveToFile(data)) throw new Error("selected save");
             if (await loadWorld()) throw new Error("cancelled load");
             const loaded = await loadFromFile();
@@ -50,16 +66,39 @@ test("compiled voxel save/load uses selected files, cancellation and JavaScript 
             try { await saveToFile(data); } catch { caught = true; }
             if (!caught) throw new Error("write failure must propagate");
         }
-    `, { fileName: join(directory, "source.ts") });
+    `,
+        { fileName: join(directory, "source.ts") },
+    );
     assert.ok(result.manifest.features.includes("browser:file"));
     assert.ok(result.manifest.runtimeSources.includes("src/pal_file.cpp"));
+    assert.match(result.cpp, /save_voxel_world\([^;]+std::move\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    writeFileSync(join(directory, "expected.hpp"), `const std::string expected_json = ${JSON.stringify(JSON.stringify(data))};\n`);
+    writeFileSync(
+        join(directory, "expected.hpp"),
+        `const std::string expected_json = ${JSON.stringify(JSON.stringify(data))};\n`,
+    );
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const executable = join(directory, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        "/DBBLITE_HAS_BROWSER_FILE=1", "/I", "native/include", "/I", directory,
-        `/Fo:${directory}/`, `/Fe:${executable}`, "test/fixtures/js-file/voxel-file-check.cpp"]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_HAS_BROWSER_FILE=1",
+        "/I",
+        "native/include",
+        "/I",
+        directory,
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "test/fixtures/js-file/voxel-file-check.cpp",
+    ]);
     execFileSync(executable, { stdio: "pipe" });
 });

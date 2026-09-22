@@ -34,41 +34,36 @@ import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
-interface JsonBridgeContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "unwrap"
-        | "fail"
-        | "expectArgumentCount"
-        | "isDefaultLibraryIdentifier"
-        | "lookupOptional"
-        | "compileValue"
-        | "compileNumber"
-        | "compileCondition"
-        | "castNumber"
-        | "pinValueToTemporary"
-        | "cppString"
-        | "reachFeature"
-        | "reachJsData"
-        | "reachJson"
-        | "dataLowerer"
-        | "dataTypes"
-    > {}
+interface JsonBridgeContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "unwrap"
+    | "fail"
+    | "expectArgumentCount"
+    | "isDefaultLibraryIdentifier"
+    | "lookupOptional"
+    | "compileValue"
+    | "compileNumber"
+    | "compileCondition"
+    | "castNumber"
+    | "pinValueToTemporary"
+    | "cppString"
+    | "reachFeature"
+    | "reachJsData"
+    | "reachJson"
+    | "dataLowerer"
+    | "dataTypes"
+> {}
 
-interface JsonStrictComparisonContext
-    extends Pick<LoweringServices,
-        | "compileValue"
-        | "compileNumber"
-        | "compileCondition"
-        | "fail"
-    > {}
+interface JsonStrictComparisonContext extends Pick<
+    LoweringServices,
+    "compileValue" | "compileNumber" | "compileCondition" | "fail"
+> {}
 
 const jsonType: DataType = { kind: "json" };
 
 /** A value carrying a parsed document. */
-export function isJsonValue(
-    value: Value | undefined,
-): value is Value & {
+export function isJsonValue(value: Value | undefined): value is Value & {
     kind: "data";
     dataType: Extract<DataType, { kind: "json" }>;
 } {
@@ -84,38 +79,79 @@ function containsJsonValue(value: Value, seen = new Set<Value>()): boolean {
     if (isJsonValue(value)) return true;
     if (seen.has(value)) return false;
     seen.add(value);
-    const children = value.kind === "record" ? Object.values(value.recordProperties ?? {})
-        : value.kind === "tuple" ? value.tupleElements ?? [] : [];
-    return children.some(child => containsJsonValue(child, seen));
+    const children =
+        value.kind === "record"
+            ? Object.values(value.recordProperties ?? {})
+            : value.kind === "tuple"
+              ? (value.tupleElements ?? [])
+              : [];
+    return children.some((child) => containsJsonValue(child, seen));
 }
 
 /** Property keys use JavaScript string conversion, including numeric object keys. */
 export function compileJsonPropertyKey(
-    context: Pick<LoweringServices, "castNumber" | "dataTypes" | "cppString" | "fail">,
-    value: Value, node: ts.Node,
+    context: Pick<
+        LoweringServices,
+        "castNumber" | "dataTypes" | "cppString" | "fail"
+    >,
+    value: Value,
+    node: ts.Node,
 ): string {
-    if (value.dataType?.kind === "enum") return context.dataTypes.enumToStringCpp(value.dataType, value.cpp, node);
-    if (value.kind === "string" || value.dataType?.kind === "string") return value.cpp;
+    if (value.dataType?.kind === "enum")
+        return context.dataTypes.enumToStringCpp(
+            value.dataType,
+            value.cpp,
+            node,
+        );
+    if (value.kind === "string" || value.dataType?.kind === "string")
+        return value.cpp;
     if (value.kind === "number" || value.dataType?.kind === "number")
         return `bbl::js::number_to_string(${context.castNumber(value, "double")})`;
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean") return `(${value.cpp} ? "true" : "false")`;
-    if (value.kind === "json-null") return context.cppString(value.cpp === "std::nullopt" ? "undefined" : "null");
+    if (value.kind === "boolean" || value.dataType?.kind === "boolean")
+        return `(${value.cpp} ? "true" : "false")`;
+    if (value.kind === "json-null")
+        return context.cppString(
+            value.cpp === "std::nullopt" ? "undefined" : "null",
+        );
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
     if (value.dataType) {
-        const cpp = context.dataTypes.jsonValueCpp(value.dataType, value.cpp, node);
+        const cpp = context.dataTypes.jsonValueCpp(
+            value.dataType,
+            value.cpp,
+            node,
+        );
         if (cpp) return `${cpp}.to_string()`;
     }
-    return context.fail(node, "Dynamic property keys require a represented string conversion.");
+    return context.fail(
+        node,
+        "Dynamic property keys require a represented string conversion.",
+    );
 }
 
 export function compileJsonElementRead(
-    context: Pick<LoweringServices, "castNumber" | "dataTypes" | "cppString" | "fail" | "pinValueToTemporary" | "compileValue">,
-    owner: Value, index: ts.Expression,
+    context: Pick<
+        LoweringServices,
+        | "castNumber"
+        | "dataTypes"
+        | "cppString"
+        | "fail"
+        | "pinValueToTemporary"
+        | "compileValue"
+    >,
+    owner: Value,
+    index: ts.Expression,
 ): Value {
     const receiver = context.pinValueToTemporary(owner, "json_receiver");
     const key = context.compileValue(index);
-    return {...jsonValue(`${receiver.cpp}.get(${compileJsonPropertyKey(context, key, index)})`),
-        nativeCaptures:[...(receiver.nativeCaptures ?? []), ...(key.nativeCaptures ?? [])]};
+    return {
+        ...jsonValue(
+            `${receiver.cpp}.get(${compileJsonPropertyKey(context, key, index)})`,
+        ),
+        nativeCaptures: [
+            ...(receiver.nativeCaptures ?? []),
+            ...(key.nativeCaptures ?? []),
+        ],
+    };
 }
 
 /**
@@ -180,8 +216,9 @@ function compileStringify(
     }
     const argument = argumentAt(call, 0);
     const represented = context.compileValue(argument);
-    const dataType = containsJsonValue(represented) ? jsonType
-        : represented.dataType ?? context.dataLowerer.dataTypeAt(argument);
+    const dataType = containsJsonValue(represented)
+        ? jsonType
+        : (represented.dataType ?? context.dataLowerer.dataTypeAt(argument));
     if (!dataType) {
         context.fail(
             argument,
@@ -192,7 +229,11 @@ function compileStringify(
     context.reachJson();
     context.reachJsData();
     context.dataTypes.markJsonSerialized(dataType, argument);
-    const value = context.dataLowerer.compileKnownValueForSink(represented, dataType, argument);
+    const value = context.dataLowerer.compileKnownValueForSink(
+        represented,
+        dataType,
+        argument,
+    );
     return {
         kind: "data",
         cpp:
@@ -268,7 +309,9 @@ export function isJsonRootedExpression(
         ts.isElementAccessExpression(unwrapped)
     ) {
         const owner = context.unwrap(unwrapped.expression);
-        const type = ts.isIdentifier(owner) ? context.lookupOptional(owner)?.dataType : undefined;
+        const type = ts.isIdentifier(owner)
+            ? context.lookupOptional(owner)?.dataType
+            : undefined;
         if (type?.kind === "map" && type.value.kind === "json") return true;
         return isJsonRootedExpression(context, unwrapped.expression);
     }
@@ -278,14 +321,22 @@ export function isJsonRootedExpression(
 /** Fresh spread storage follows the represented source, even when an assertion
  * or generic signature gives the containing expression a static record type. */
 export function hasDynamicObjectSpread(
-    context: Pick<JsonBridgeContext, "unwrap" | "lookupOptional" | "checker" | "dataTypes">,
+    context: Pick<
+        JsonBridgeContext,
+        "unwrap" | "lookupOptional" | "checker" | "dataTypes"
+    >,
     literal: ts.ObjectLiteralExpression,
 ): boolean {
-    return literal.properties.some(property => {
+    return literal.properties.some((property) => {
         if (!ts.isSpreadAssignment(property)) return false;
         if (isJsonRootedExpression(context, property.expression)) return true;
-        const type = context.checker.getTypeAtLocation(context.unwrap(property.expression));
-        return (type.flags & ts.TypeFlags.Any) !== 0 || context.dataTypes.dynamicJsonType(type) !== undefined;
+        const type = context.checker.getTypeAtLocation(
+            context.unwrap(property.expression),
+        );
+        return (
+            (type.flags & ts.TypeFlags.Any) !== 0 ||
+            context.dataTypes.dynamicJsonType(type) !== undefined
+        );
     });
 }
 
@@ -315,12 +366,12 @@ export function compileJsonRead(
         if (unwrapped.name.text === "length") {
             return {
                 kind: "number",
-                cpp: `${owner!.cpp}.length()`,
+                cpp: `${owner.cpp}.length()`,
                 dataType: { kind: "number" },
             };
         }
         return jsonValue(
-            `${owner!.cpp}.get(${context.cppString(unwrapped.name.text)})`,
+            `${owner.cpp}.get(${context.cppString(unwrapped.name.text)})`,
         );
     }
     if (ts.isElementAccessExpression(unwrapped)) {
@@ -328,7 +379,11 @@ export function compileJsonRead(
         if (!isJsonValue(owner)) {
             return undefined;
         }
-        return compileJsonElementRead(context, owner!, unwrapped.argumentExpression);
+        return compileJsonElementRead(
+            context,
+            owner,
+            unwrapped.argumentExpression,
+        );
     }
     if (ts.isCallExpression(unwrapped)) {
         const parsed = compileJsonCall(context, unwrapped);
@@ -368,7 +423,11 @@ export function compileJsonStrictComparison(
     if (isJsonValue(value)) {
         return `${documentCpp}.strict_equals(${value.cpp})`;
     }
-    if (value.kind === "record" || value.kind === "tuple" || value.kind === "data") {
+    if (
+        value.kind === "record" ||
+        value.kind === "tuple" ||
+        value.kind === "data"
+    ) {
         const retained = retainValue(value, other);
         return `${documentCpp}.strict_equals(${retained})`;
     }

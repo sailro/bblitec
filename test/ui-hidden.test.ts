@@ -15,12 +15,24 @@ test("DOM hidden reads and writes retain boolean attribute presence", () => {
         if (element.hidden) throw new Error("hidden attribute retained");
     `);
     assert.match(result.cpp, /ui_set_boolean_attribute\([^;]+"hidden", true\)/);
-    assert.match(result.cpp, /ui_set_boolean_attribute\([^;]+"hidden", false\)/);
+    assert.match(
+        result.cpp,
+        /ui_set_boolean_attribute\([^;]+"hidden", false\)/,
+    );
     assert.equal((result.cpp.match(/ui_has_attribute\(/g) ?? []).length, 2);
-    assert.throws(() => compileSource(`${prefix} element.setAttribute("hidden", "UNTIL-FOUND");`), /requires find-in-page/);
-    assert.throws(() => compileSource(`${prefix} element.hidden = "until-found";`), /boolean/);
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix} element.setAttribute("hidden", "UNTIL-FOUND");`,
+            ),
+        /requires find-in-page/,
+    );
+    assert.throws(
+        () => compileSource(`${prefix} element.hidden = "until-found";`),
+        /boolean/,
+    );
 });
 
-test("hidden toggles native layout without replacing author display rules", t => {
+test("hidden toggles native layout without replacing author display rules", (t) => {
     runRmlUiFixture(t, "ui-hidden");
 });

@@ -11,9 +11,7 @@ import { readFileSync } from "node:fs";
 
 const mapPath = process.argv[2];
 if (!mapPath) {
-    console.error(
-        "Usage: node tools/map-size-report.mjs <bblite_native.map>",
-    );
+    console.error("Usage: node tools/map-size-report.mjs <bblite_native.map>");
     process.exit(2);
 }
 
@@ -62,7 +60,11 @@ function libraryOf(origin) {
     if (library.endsWith(".obj")) {
         return "[engine objects]";
     }
-    if (/^(kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|uuid|winmm|imm32|version|setupapi|onecore)/.test(library)) {
+    if (
+        /^(kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|uuid|winmm|imm32|version|setupapi|onecore)/.test(
+            library,
+        )
+    ) {
         return "[system import libs]";
     }
     return library;

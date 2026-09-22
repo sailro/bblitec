@@ -2,10 +2,12 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -15,7 +17,8 @@ int main() {
     {
         Engine engine;
         const auto button = ui_create_element(engine, "button");
-        ui_set_attribute(engine, button, "style", "position:absolute;left:20px;top:20px;width:100px;height:40px;");
+        ui_set_attribute(engine, button, "style",
+                         "position:absolute;left:20px;top:20px;width:100px;height:40px;");
         int calls = 0;
         ui_on_click(engine, button, [&] { ++calls; });
         ui_set_boolean_attribute(engine, button, "disabled", true);
@@ -38,7 +41,8 @@ int main() {
         assert(calls == 0);
         ui_set_boolean_attribute(engine, button, "disabled", false);
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(!control->IsDisabled() && runtime.projected_elements.at(button.value).element == raw);
+        assert(!control->IsDisabled() &&
+               runtime.projected_elements.at(button.value).element == raw);
         assert(!control->IsPseudoClassSet("disabled"));
         ui_focus(engine, button);
         assert(ui_active_element(engine).value == button.value);
@@ -55,7 +59,8 @@ int main() {
             ui_append_to_root(engine, field);
             ui_set_boolean_attribute(engine, field, "disabled", true);
             pal::update_ui_rml_runtime(runtime, 640, 480);
-            auto* field_control = rmlui_dynamic_cast<Rml::ElementFormControl*>(runtime.projected_elements.at(field.value).element);
+            auto* field_control = rmlui_dynamic_cast<Rml::ElementFormControl*>(
+                runtime.projected_elements.at(field.value).element);
             assert(field_control && field_control->IsDisabled());
             ui_set_boolean_attribute(engine, field, "disabled", false);
             pal::update_ui_rml_runtime(runtime, 640, 480);

@@ -93,7 +93,11 @@ function collectEnvResources(
                     `('${found.textureName}' and '${textureName}').`,
             );
         }
-        into.set(role.source, { textureName, samplerName, source: role.source });
+        into.set(role.source, {
+            textureName,
+            samplerName,
+            source: role.source,
+        });
     }
 }
 
@@ -120,9 +124,7 @@ function nodeShadowRows(composed: ComposedNodeMaterial): string[] {
     for (const light of composed.shadowBindings) {
         for (const binding of [light.texture, light.sampler, light.ubo]) {
             const entry = reflected.get(binding);
-            const slot = entry
-                ? shadowBindingSlotOrNull(entry.name)
-                : null;
+            const slot = entry ? shadowBindingSlotOrNull(entry.name) : null;
             if (!entry || !slot) {
                 throw new Error(
                     "A node graph declares no shadow binding at " +
@@ -192,19 +194,14 @@ export interface NodeVariantManifestEntry {
 export function nodeVariantsUseMorphStorage(
     variants: readonly NodeVariantManifestEntry[],
 ): boolean {
-    return variants.some(
-        (variant) => variant.composed.morphBindings !== null,
-    );
+    return variants.some((variant) => variant.composed.morphBindings !== null);
 }
 
 /** The caster row for one variant, or the absent one. */
 function casterRow(variant: NodeVariantManifestEntry): string {
     const caster = variant.composed.caster;
     if (!caster) return '{false, false, "", "", 0}';
-    const stems = nodeCasterStageStems(
-        variant.index,
-        caster.kind,
-    );
+    const stems = nodeCasterStageStems(variant.index, caster.kind);
     return (
         `{true, ${caster.kind === "esm"}, ` +
         `${stringLiteral(stems.vertexStem)}, ` +
@@ -214,10 +211,14 @@ function casterRow(variant: NodeVariantManifestEntry): string {
 }
 
 /** The deployed stems for one graph, both from the same module. */
-export function nodeVariantStageStems(
-    index: number,
-): { vertexStem: string; fragmentStem: string } {
-    return { vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag` };
+export function nodeVariantStageStems(index: number): {
+    vertexStem: string;
+    fragmentStem: string;
+} {
+    return {
+        vertexStem: `node-${index}.vert`,
+        fragmentStem: `node-${index}.frag`,
+    };
 }
 
 /**
@@ -300,7 +301,8 @@ export function nodeGeometryVariants(
             variantIndex: variant.index,
             ...nodeGeometryStageStems(variant.index, composed.taskIndex),
             composed,
-        })));
+        })),
+    );
 }
 
 /**
@@ -467,8 +469,12 @@ export function pinnedNodeVariantsHeader(
     }
     const attributeRows: string[] = [];
     const textureRows: string[] = [];
-    const inputRows: string[] = variants.flatMap((variant) => variant.composed.inputs.map((input) =>
-        `    {${variant.index}, ${stringLiteral(input.name)}, ${stringLiteral(input.type)}},`));
+    const inputRows: string[] = variants.flatMap((variant) =>
+        variant.composed.inputs.map(
+            (input) =>
+                `    {${variant.index}, ${stringLiteral(input.name)}, ${stringLiteral(input.type)}},`,
+        ),
+    );
     const shadowRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
@@ -481,7 +487,11 @@ export function pinnedNodeVariantsHeader(
         attributes: readonly ComposedNodeAttribute[];
         textures: readonly ComposedNodeTextureBinding[];
         uboFloats: readonly number[];
-    }): { firstAttribute: number; firstTexture: number; firstFloat: number } => {
+    }): {
+        firstAttribute: number;
+        firstTexture: number;
+        firstFloat: number;
+    } => {
         const firstAttribute = attributeRows.length;
         for (const attribute of composed.attributes) {
             attributeRows.push(
@@ -500,15 +510,16 @@ export function pinnedNodeVariantsHeader(
         return { firstAttribute, firstTexture, firstFloat };
     };
     for (const variant of variants) {
-        const { firstAttribute, firstTexture, firstFloat } =
-            pushViewRows(variant.composed);
+        const { firstAttribute, firstTexture, firstFloat } = pushViewRows(
+            variant.composed,
+        );
         const firstShadow = shadowRows.length;
         const variantShadowRows = nodeShadowRows(variant.composed);
         shadowRows.push(...variantShadowRows);
         const env = variant.composed.envBindings;
         const envRow = env
             ? `{true, ${env.iblTexture}, ${env.iblSampler}, ` +
-                `${env.brdfLut}, ${env.brdfSampler}}`
+              `${env.brdfLut}, ${env.brdfSampler}}`
             : "{false, 0, 0, 0, 0}";
         const morphRow = nodeMorphRow(variant.composed);
         entries.push(
@@ -553,8 +564,9 @@ export function pinnedNodeVariantsHeader(
                     `${variant.variantIndex}, which the scene did not reach.`,
             );
         }
-        const { firstAttribute, firstTexture, firstFloat } =
-            pushViewRows(variant.composed);
+        const { firstAttribute, firstTexture, firstFloat } = pushViewRows(
+            variant.composed,
+        );
         entries.push(
             `    {${stringLiteral(variant.vertexStem)}, ` +
                 `${stringLiteral(variant.fragmentStem)}, ` +
@@ -763,26 +775,22 @@ inline MaterialTextureSource node_binding_source(
 inline constexpr bool has_node_ubo(const NodeVariantEntry& entry) {
     return entry.ubo_binding != node_no_ubo && entry.ubo_bytes > 0;
 }
-${
-        geometryTable(
-            cpp,
-            geometryEntries,
-            geometryTaskCount(geometryVariants),
-            graphCount,
-        )
-    }
+${geometryTable(
+    cpp,
+    geometryEntries,
+    geometryTaskCount(geometryVariants),
+    graphCount,
+)}
 /** Every graph's node UBO, as the floats the pin's own writer places.
  *  The graph's named inputs decide these and no reached scene changes one,
  *  so the block is a constant rather than a per-frame write. */
 ${cpp.table("float", "node_variant_uniform_floats", uniformFloats.length, `${uniformFloats.map((value) => `    ${floatLiteral(value)},`).join("\n")}`)}
 
-${
-        mirroredStructFromWgsl(
-            "NodeMeshUniforms",
-            meshBodies[0]!.body,
-            "src/material/node/node-pipeline.ts buildMeshStruct",
-        )
-    }
+${mirroredStructFromWgsl(
+    "NodeMeshUniforms",
+    meshBodies[0]!.body,
+    "src/material/node/node-pipeline.ts buildMeshStruct",
+)}
 
 } // namespace bbl::upstream
 `);

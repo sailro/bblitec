@@ -9,14 +9,13 @@ import type { LoweringServices } from "../lowering-services.js";
 // than what any one family needs. They are declared here and extended,
 // so a family's own interface says only what makes it different.
 
-
-export interface IntrinsicCallContext
-    extends Pick<LoweringServices,
-        | "expectArgumentCount"
-        | "compileValue"
-        | "expectKind"
-        | "reachFeature"
-        | "recordSceneMaterialSlot"
-        | "isRuntimeResourceConstruction"
-        | "recordSceneMesh"
-    > {}
+export interface IntrinsicCallContext extends Pick<
+    LoweringServices,
+    | "expectArgumentCount"
+    | "compileValue"
+    | "expectKind"
+    | "reachFeature"
+    | "recordSceneMaterialSlot"
+    | "isRuntimeResourceConstruction"
+    | "recordSceneMesh"
+> {}

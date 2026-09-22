@@ -5,12 +5,12 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface LightIntrinsicContext
-    extends IntrinsicCallContext,
-    Pick<LoweringServices,
-        | "compileVec3"
-        | "compileNumber"
-        | "requireDefaultEngine"
-    > {}
+    extends
+        IntrinsicCallContext,
+        Pick<
+            LoweringServices,
+            "compileVec3" | "compileNumber" | "requireDefaultEngine"
+        > {}
 
 export function compileLightIntrinsic(
     context: LightIntrinsicContext,
@@ -42,8 +42,7 @@ export function compileLightIntrinsic(
         case "createDirectionalLight": {
             context.expectArgumentCount(call, 1, 2);
             const engine = context.requireDefaultEngine(call);
-            const direction =
-                context.compileVec3(argumentAt(call, 0));
+            const direction = context.compileVec3(argumentAt(call, 0));
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1])
                 : "1.0f";
@@ -62,8 +61,7 @@ export function compileLightIntrinsic(
         case "createPointLight": {
             context.expectArgumentCount(call, 1, 2);
             const engine = context.requireDefaultEngine(call);
-            const position =
-                context.compileVec3(argumentAt(call, 0));
+            const position = context.compileVec3(argumentAt(call, 0));
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1])
                 : "1.0f";
@@ -82,21 +80,15 @@ export function compileLightIntrinsic(
         case "createSpotLight": {
             context.expectArgumentCount(call, 4, 5);
             const engine = context.requireDefaultEngine(call);
-            const position =
-                context.compileVec3(argumentAt(call, 0));
-            const direction =
-                context.compileVec3(argumentAt(call, 1));
+            const position = context.compileVec3(argumentAt(call, 0));
+            const direction = context.compileVec3(argumentAt(call, 1));
             // The pinned factory evaluates Math.cos(angle * 0.5) while angle
             // is still a JavaScript number, then rounds once at its
             // Float32Array UBO store. Preserve that double through the native
             // factory boundary; rounding it here can move the hard cone test
             // by one ULP.
-            const angle = context.compileNumber(
-                argumentAt(call, 2),
-                "double",
-            );
-            const exponent =
-                context.compileNumber(argumentAt(call, 3));
+            const angle = context.compileNumber(argumentAt(call, 2), "double");
+            const exponent = context.compileNumber(argumentAt(call, 3));
             const intensity = call.arguments[4]
                 ? context.compileNumber(call.arguments[4])
                 : "1.0f";

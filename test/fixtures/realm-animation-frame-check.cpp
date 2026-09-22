@@ -15,7 +15,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     EventLoop loop(std::make_shared<EventLoop::Inbox>(), origin);
     WorkerRealm realm(loop, "", host);
     std::exception_ptr failure;
-    loop.on_error([&](std::exception_ptr error) { failure = error; loop.close(); });
+    loop.on_error([&](std::exception_ptr error) {
+        failure = error;
+        loop.close();
+    });
     loop.post([&] { initialize(realm); });
     assert(loop.poll());
     assert(!loop.poll());
@@ -25,11 +28,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     host->frames->tick(origin + std::chrono::milliseconds(20));
     assert(loop.poll());
     assert(!loop.inbox()->post(std::make_unique<ExternalEvent>()));
-    if (failure) std::rethrow_exception(failure);
+    if (failure)
+        std::rethrow_exception(failure);
     return 0;
 }
-}
+} // namespace bbl::pal
 
-int main() {
-    assert(generated_main() == 0);
-}
+int main() { assert(generated_main() == 0); }

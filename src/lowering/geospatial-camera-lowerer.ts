@@ -87,11 +87,8 @@ export class GeospatialCameraLowerer {
      * than by the expression hook above; both are supplied so a literal in
      * either position lands on the same storage.
      */
-    private readonly vec3Literal = (
-        x: string,
-        y: string,
-        z: string,
-    ): string => `Vec3d{${x}, ${y}, ${z}}`;
+    private readonly vec3Literal = (x: string, y: string, z: string): string =>
+        `Vec3d{${x}, ${y}, ${z}}`;
 
     private vector(cpp: string): PinnedBinding {
         return { cpp, type: "vec3" };
@@ -297,15 +294,12 @@ export class GeospatialCameraLowerer {
         for (const name of names) {
             bindings.set(name, this.vector(name));
         }
-        const lowerer = new PinnedNumericLowerer(
-            declaration.getSourceFile(),
-            {
-                bindings: new Map(),
-                calls: new Map(),
-                recordLiteral: this.recordLiteral,
-                vec3Literal: this.vec3Literal,
-            },
-        );
+        const lowerer = new PinnedNumericLowerer(declaration.getSourceFile(), {
+            bindings: new Map(),
+            calls: new Map(),
+            recordLiteral: this.recordLiteral,
+            vec3Literal: this.vec3Literal,
+        });
         return names
             .map((name) => {
                 const initializer = this.context.variableInitializer(
@@ -390,12 +384,10 @@ export class GeospatialCameraLowerer {
      * reads them through, for a caller that named the record `limits`.
      */
     private limitBindings(cpp: string): Array<[string, PinnedBinding]> {
-        return LIMIT_FIELDS.map(
-            ([pinned, member]): [string, PinnedBinding] => [
-                `limits.${pinned}`,
-                this.scalar(`${cpp}.${member}`),
-            ],
-        );
+        return LIMIT_FIELDS.map(([pinned, member]): [string, PinnedBinding] => [
+            `limits.${pinned}`,
+            this.scalar(`${cpp}.${member}`),
+        ]);
     }
 
     /**
@@ -493,9 +485,7 @@ export class GeospatialCameraLowerer {
             scaleInitializer.kind === ts.SyntaxKind.NullKeyword
                 ? "std::nullopt"
                 : lowerer.expression(scaleInitializer);
-        assignments.push(
-            `    limits.pitch_disabled_radius_scale = ${scale};`,
-        );
+        assignments.push(`    limits.pitch_disabled_radius_scale = ${scale};`);
         return (
             `// ${this.context.provenance(
                 LIMITS,
@@ -648,10 +638,7 @@ export class GeospatialCameraLowerer {
         );
         const target = this.lookAtTarget();
         const calls = this.helperCalls();
-        calls.set(
-            "wm.markLocalDirty",
-            () => `camera.target = ${target}`,
-        );
+        calls.set("wm.markLocalDirty", () => `camera.target = ${target}`);
 
         const body = lowerPinnedBody(file, apply.body.statements, {
             bindings,
@@ -803,10 +790,12 @@ CameraHandle create_geospatial_camera(
                             ? this.vector(argument)
                             : this.scalar(argument),
                     ],
-                    [`camera.${field}`,
+                    [
+                        `camera.${field}`,
                         field === "center"
                             ? this.vector(live)
-                            : this.scalar(live)],
+                            : this.scalar(live),
+                    ],
                 ]),
                 calls: new Map(),
                 recordLiteral: this.recordLiteral,

@@ -10,9 +10,15 @@
 #include <deque>
 
 struct SDL_GPUTexture {};
-struct SDL_GPUCommandBuffer { bool consumed = false; };
-struct WGPUTextureImpl { unsigned references = 0; };
-struct WGPUTextureViewImpl { unsigned references = 0; };
+struct SDL_GPUCommandBuffer {
+    bool consumed = false;
+};
+struct WGPUTextureImpl {
+    unsigned references = 0;
+};
+struct WGPUTextureViewImpl {
+    unsigned references = 0;
+};
 struct WGPUBufferImpl {};
 struct WGPUSurfaceImpl {};
 
@@ -29,57 +35,73 @@ bool submission_success = true, view_available = true;
 WGPUSurfaceGetCurrentTextureStatus dawn_status = WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal;
 unsigned submissions = 0, cancellations = 0, advances = 0;
 std::function<void()> on_advance;
-}
+} // namespace
 
 extern "C" SDL_GPUCommandBuffer* SDLCALL SDL_AcquireGPUCommandBuffer(SDL_GPUDevice*) {
-    if (!command_available) return nullptr;
+    if (!command_available)
+        return nullptr;
     assert(sdl_command.consumed);
     sdl_command.consumed = false;
     return &sdl_command;
 }
-extern "C" bool SDLCALL SDL_WaitAndAcquireGPUSwapchainTexture(
-    SDL_GPUCommandBuffer*, SDL_Window*, SDL_GPUTexture** texture, Uint32* width, Uint32* height) {
+extern "C" bool SDLCALL SDL_WaitAndAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer*, SDL_Window*,
+                                                              SDL_GPUTexture** texture,
+                                                              Uint32* width, Uint32* height) {
     events.push_back("acquire");
     *texture = acquire_success && texture_available ? &sdl_texture : nullptr;
-    *width = 320; *height = 180;
+    *width = 320;
+    *height = 180;
     return acquire_success;
 }
 extern "C" bool SDLCALL SDL_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer* command) {
     assert(command && !command->consumed);
-    command->consumed = true; ++submissions;
+    command->consumed = true;
+    ++submissions;
     return submission_success;
 }
 extern "C" bool SDLCALL SDL_CancelGPUCommandBuffer(SDL_GPUCommandBuffer* command) {
     assert(command && !command->consumed);
-    command->consumed = true; ++cancellations; return true;
+    command->consumed = true;
+    ++cancellations;
+    return true;
 }
 extern "C" void wgpuSurfaceGetCurrentTexture(WGPUSurface, WGPUSurfaceTexture* surface) {
     events.push_back("acquire");
-    surface->texture = &dawn_texture; ++dawn_texture.references;
+    surface->texture = &dawn_texture;
+    ++dawn_texture.references;
     surface->status = dawn_status;
 }
 extern "C" void wgpuTextureAddRef(WGPUTexture texture) { ++texture->references; }
 extern "C" void wgpuTextureRelease(WGPUTexture texture) {
-    assert(texture->references > 0); --texture->references;
+    assert(texture->references > 0);
+    --texture->references;
 }
 extern "C" void wgpuTextureViewRelease(WGPUTextureView view) {
-    assert(view->references > 0); --view->references;
+    assert(view->references > 0);
+    --view->references;
 }
 extern "C" WGPUTextureView wgpuTextureCreateView(WGPUTexture, const WGPUTextureViewDescriptor*) {
-    if (!view_available) return nullptr;
-    ++dawn_view.references; return &dawn_view;
+    if (!view_available)
+        return nullptr;
+    ++dawn_view.references;
+    return &dawn_view;
 }
 
 namespace bbl::upstream {
-struct RenderDrawLists { std::vector<unsigned> items; };
-struct RenderPlan { std::vector<unsigned> items; };
+struct RenderDrawLists {
+    std::vector<unsigned> items;
+};
+struct RenderPlan {
+    std::vector<unsigned> items;
+};
 // The fixture isolates native task routing from generated draw-list selection.
-RenderDrawLists build_render_task_draw_lists(
-    const std::vector<unsigned>& items, const Engine&, const FrameTaskRecord& task) {
+RenderDrawLists build_render_task_draw_lists(const std::vector<unsigned>& items, const Engine&,
+                                             const FrameTaskRecord& task) {
     return task.kind == FrameTaskKind::render || task.kind == FrameTaskKind::geometry
-        ? RenderDrawLists{items} : RenderDrawLists{};
+               ? RenderDrawLists{items}
+               : RenderDrawLists{};
 }
-}
+} // namespace bbl::upstream
 
 namespace bbl::pal {
 [[noreturn]] void gpu_error(const char* operation) { throw std::runtime_error(operation); }
@@ -87,8 +109,10 @@ namespace bbl::pal {
 double monotonic_milliseconds() { return 123.0; }
 struct TestClock {};
 double advance_frame(Engine&, Scene&, TestClock&, double delta) {
-    events.push_back("advance"); ++advances;
-    if (on_advance) on_advance();
+    events.push_back("advance");
+    ++advances;
+    if (on_advance)
+        on_advance();
     return delta;
 }
 #include "scene-restart.hpp"
@@ -105,9 +129,12 @@ struct DawnState {
 #include "dawn-acquire.hpp"
 WGPUBuffer create_buffer(DawnState&, WGPUBufferUsage usage, const void* data, std::size_t bytes) {
     assert(usage == WGPUBufferUsage_Uniform && data == nullptr && bytes == 64);
-    buffers.emplace_back(); return &buffers.back();
+    buffers.emplace_back();
+    return &buffers.back();
 }
-struct Options { double frame_delta_ms = 16.5; };
+struct Options {
+    double frame_delta_ms = 16.5;
+};
 struct CommonData {
     Engine& engine;
     std::vector<std::shared_ptr<Scene>> active_registered_scenes;
@@ -122,7 +149,12 @@ struct CommonData {
           scene(*target.registered_scenes.front()) {}
 };
 struct SdlData : CommonData {
-    struct Resources { struct State { SDL_GPUDevice* device = nullptr; SDL_Window* window = nullptr; } state; } resources;
+    struct Resources {
+        struct State {
+            SDL_GPUDevice* device = nullptr;
+            SDL_Window* window = nullptr;
+        } state;
+    } resources;
     std::vector<upstream::RenderDrawLists> task_draw_lists;
     bool offscreen = false;
     using CommonData::CommonData;
@@ -132,7 +164,9 @@ struct DawnData : CommonData {
     unsigned width = 320, height = 180;
     using CommonData::CommonData;
 };
-struct OffscreenImage { WGPUTexture texture = nullptr; };
+struct OffscreenImage {
+    WGPUTexture texture = nullptr;
+};
 struct Frame {
     SdlGpuCommand command{nullptr};
     SDL_GPUTexture* swapchain = nullptr;
@@ -144,8 +178,7 @@ struct Frame {
     DawnTextureView surface_view;
     OffscreenImage* offscreen_image = nullptr;
 };
-template <typename Data>
-struct Context {
+template <typename Data> struct Context {
     Data data_;
     std::optional<Frame> frame_;
     explicit Context(Engine& engine) : data_(engine) { frame_.emplace(); }
@@ -166,23 +199,29 @@ struct DawnScene : Context<DawnData> {
     using Context::Context;
 #include "DawnScene.hpp"
 };
-}
+} // namespace bbl::pal
 
 namespace {
 using namespace bbl;
 using namespace bbl::pal;
 void reset() {
     assert(dawn_texture.references == 0 && dawn_view.references == 0);
-    events.clear(); buffers.clear(); sdl_command.consumed = true;
+    events.clear();
+    buffers.clear();
+    sdl_command.consumed = true;
     submissions = cancellations = advances = 0;
-    acquire_success = texture_available = command_available = submission_success = view_available = true;
+    acquire_success = texture_available = command_available = submission_success = view_available =
+        true;
     dawn_status = WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal;
     on_advance = {};
 }
-template <typename Operation>
-void expect_failure(Operation operation) {
+template <typename Operation> void expect_failure(Operation operation) {
     bool failed = false;
-    try { operation(); } catch (const std::runtime_error&) { failed = true; }
+    try {
+        operation();
+    } catch (const std::runtime_error&) {
+        failed = true;
+    }
     assert(failed);
 }
 
@@ -193,7 +232,8 @@ void surface_boundaries() {
     {
         SdlScene renderer(engine);
         assert(conduct_frame(renderer) == FrameOutcome::rendered);
-        assert((events == std::vector<std::string>{"acquire", "advance", "upload", "encode", "present", "complete"}));
+        assert((events == std::vector<std::string>{"acquire", "advance", "upload", "encode",
+                                                   "present", "complete"}));
         assert(renderer.frame_->width == 320 && renderer.frame_->height == 180);
         assert(renderer.frame_->delta_ms == 16.5 && renderer.frame_->acquired == 123);
     }
@@ -214,14 +254,16 @@ void surface_boundaries() {
             SdlScene renderer(engine);
             expect_failure([&] { conduct_frame(renderer); });
         }
-        assert(advances == 0 && submissions == 0 && cancellations == (failure_before_command ? 0u : 1u));
+        assert(advances == 0 && submissions == 0 &&
+               cancellations == (failure_before_command ? 0u : 1u));
     }
     reset();
     {
         SdlScene renderer(engine);
         renderer.data_.offscreen = true;
         renderer.frame_->offscreen_texture = &sdl_texture;
-        engine.options.width = 640; engine.options.height = 360;
+        engine.options.width = 640;
+        engine.options.height = 360;
         assert(renderer.acquire());
         assert(events.empty() && renderer.frame_->swapchain == &sdl_texture);
         assert(renderer.frame_->width == 640 && renderer.frame_->height == 360);
@@ -231,13 +273,17 @@ void surface_boundaries() {
     {
         DawnScene renderer(engine);
         assert(conduct_frame(renderer) == FrameOutcome::rendered);
-        assert((events == std::vector<std::string>{"advance", "upload", "acquire", "encode", "present", "complete"}));
-        assert(renderer.frame_->delta_ms == 16.5 && dawn_texture.references == 1 && dawn_view.references == 1);
+        assert((events == std::vector<std::string>{"advance", "upload", "acquire", "encode",
+                                                   "present", "complete"}));
+        assert(renderer.frame_->delta_ms == 16.5 && dawn_texture.references == 1 &&
+               dawn_view.references == 1);
     }
     for (bool fail_status : {false, true}) {
         reset();
-        if (fail_status) dawn_status = WGPUSurfaceGetCurrentTextureStatus_Error;
-        else view_available = false;
+        if (fail_status)
+            dawn_status = WGPUSurfaceGetCurrentTextureStatus_Error;
+        else
+            view_available = false;
         {
             DawnScene renderer(engine);
             expect_failure([&] { conduct_frame(renderer); });
@@ -245,7 +291,8 @@ void surface_boundaries() {
         }
         assert(dawn_texture.references == 0 && dawn_view.references == 0);
     }
-    for (const auto status : {WGPUSurfaceGetCurrentTextureStatus_Timeout, WGPUSurfaceGetCurrentTextureStatus_Outdated}) {
+    for (const auto status : {WGPUSurfaceGetCurrentTextureStatus_Timeout,
+                              WGPUSurfaceGetCurrentTextureStatus_Outdated}) {
         reset();
         dawn_status = status;
         {
@@ -271,21 +318,23 @@ void surface_boundaries() {
     }
 }
 
-template <typename Renderer>
-void scene_replacement(bool sdl) {
+template <typename Renderer> void scene_replacement(bool sdl) {
     for (bool remove : {false, true}) {
         reset();
         Engine engine;
         engine.registered_scenes.push_back(std::make_shared<Scene>());
         on_advance = [&] {
-            if (remove) engine.registered_scenes.clear();
-            else engine.registered_scenes = {std::make_shared<Scene>()};
+            if (remove)
+                engine.registered_scenes.clear();
+            else
+                engine.registered_scenes = {std::make_shared<Scene>()};
         };
         {
             Renderer renderer(engine);
             assert(conduct_frame(renderer) == FrameOutcome::restart);
             assert(engine.renderer_restart_requested == !remove);
-            assert((events == (sdl ? std::vector<std::string>{"acquire", "advance"} : std::vector<std::string>{"advance"})));
+            assert((events == (sdl ? std::vector<std::string>{"acquire", "advance"}
+                                   : std::vector<std::string>{"advance"})));
             assert(submissions == (sdl ? 1u : 0u));
         }
         assert(cancellations == 0);
@@ -293,7 +342,9 @@ void scene_replacement(bool sdl) {
     reset();
     Engine engine;
     engine.registered_scenes.push_back(std::make_shared<Scene>());
-    on_advance = [&] { engine.registered_scenes = {std::make_shared<Scene>(*engine.registered_scenes.front())}; };
+    on_advance = [&] {
+        engine.registered_scenes = {std::make_shared<Scene>(*engine.registered_scenes.front())};
+    };
     {
         Renderer renderer(engine);
         assert(conduct_frame(renderer) == FrameOutcome::rendered);
@@ -309,7 +360,8 @@ void task_growth() {
     engine.registered_scenes[0]->tasks = {TaskHandle{0}};
     SdlScene sdl(engine);
     DawnScene dawn(engine);
-    sdl.rebuild_task_draw_lists(); dawn.rebuild_task_draw_lists();
+    sdl.rebuild_task_draw_lists();
+    dawn.rebuild_task_draw_lists();
     assert(sdl.data_.task_draw_lists.size() == 1 && dawn.data_.state.render_tasks.size() == 1);
     assert(sdl.data_.task_draw_lists[0].items == std::vector<unsigned>{10});
     assert(dawn.data_.state.render_tasks[0].draw_lists.items == std::vector<unsigned>{10});
@@ -319,13 +371,16 @@ void task_growth() {
     engine.frame_tasks[1].kind = FrameTaskKind::copy;
     engine.frame_tasks[2].kind = FrameTaskKind::geometry;
     engine.registered_scenes[1]->tasks = {TaskHandle{1}, TaskHandle{2}};
-    sdl.rebuild_task_draw_lists(); dawn.rebuild_task_draw_lists();
+    sdl.rebuild_task_draw_lists();
+    dawn.rebuild_task_draw_lists();
     assert(sdl.data_.task_draw_lists.size() == 3 && dawn.data_.state.render_tasks.size() == 3);
     assert(sdl.data_.task_draw_lists[2].items == std::vector<unsigned>{20});
     assert(dawn.data_.state.render_tasks[2].draw_lists.items == std::vector<unsigned>{20});
     assert(dawn.data_.state.render_tasks[1].view_projection == nullptr && buffers.size() == 2);
-    sdl.data_.overlay_plans[0].items = {30}; dawn.data_.overlay_plans[0].items = {30};
-    sdl.rebuild_task_draw_lists(); dawn.rebuild_task_draw_lists();
+    sdl.data_.overlay_plans[0].items = {30};
+    dawn.data_.overlay_plans[0].items = {30};
+    sdl.rebuild_task_draw_lists();
+    dawn.rebuild_task_draw_lists();
     assert(sdl.data_.task_draw_lists[2].items == std::vector<unsigned>{30});
     assert(dawn.data_.state.render_tasks[2].draw_lists.items == std::vector<unsigned>{30});
     assert(dawn.data_.state.render_tasks[0].view_projection == first && buffers.size() == 2);
@@ -337,7 +392,7 @@ void task_growth() {
     expect_failure([&] { dawn.rebuild_task_draw_lists(); });
     assert(buffers.size() == 2);
 }
-}
+} // namespace
 
 int main() {
     surface_boundaries();

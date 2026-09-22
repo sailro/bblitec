@@ -9,9 +9,12 @@ export interface NativeDeclaration {
     readonly dependencies?: readonly string[];
 }
 
-export function renderNativeDeclaration(declaration: NativeDeclaration): string {
+export function renderNativeDeclaration(
+    declaration: NativeDeclaration,
+): string {
     const prefix = `${declaration.attributes ?? ""}${declaration.type} ${declaration.name}`;
     if (declaration.initialization === "default") return `${prefix};`;
-    if (declaration.initialization === "direct") return `${prefix}{${declaration.initializer}};`;
+    if (declaration.initialization === "direct")
+        return `${prefix}{${declaration.initializer}};`;
     return `${prefix} = ${declaration.initializer};`;
 }

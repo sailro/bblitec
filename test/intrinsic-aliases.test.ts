@@ -20,5 +20,8 @@ test("namespace members and immutable function aliases use pinned intrinsic lowe
     `);
     assert.match(result.cpp, /bbl::create_engine/);
     assert.match(result.cpp, /bbl::create_transform_node/);
-    assert.equal((result.cpp.match(/bbl::create_transform_node\(/g) ?? []).length, 2);
+    assert.equal(
+        (result.cpp.match(/bbl::create_transform_node\(/g) ?? []).length,
+        2,
+    );
 });

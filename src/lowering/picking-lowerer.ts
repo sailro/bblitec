@@ -68,10 +68,7 @@ const PICK_INFO_NORMAL_MEMBERS: ReadonlySet<string> = new Set([
 
 /** One three-lane tuple's members, keyed by the text the pin reads them
  *  through -- `normal[0]`, `ray.direction[1]`. */
-function tupleMembers(
-    name: string,
-    cpp: string,
-): [string, PinnedBinding][] {
+function tupleMembers(name: string, cpp: string): [string, PinnedBinding][] {
     return [0, 1, 2].map((lane): [string, PinnedBinding] => [
         `${name}[${lane}]`,
         { cpp: `${cpp}[${lane}]`, type: "scalar" },
@@ -125,9 +122,7 @@ const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == Picked
  * runtime already has.
  */
 export class PickingLowerer {
-    public constructor(
-        private readonly context: LoweringContext,
-    ) {}
+    public constructor(private readonly context: LoweringContext) {}
 
     /** The two pin-owned projection writers used by GPU picking. */
     public mathHeader(cloudPicking: boolean): string {
@@ -138,7 +133,9 @@ export class PickingLowerer {
             { pinned: "h", kind: "number" as const, cpp: "height" },
         ];
         const output = {
-            pinned: "out", kind: "mat4" as const, cpp: "out",
+            pinned: "out",
+            kind: "mat4" as const,
+            cpp: "out",
             annotation: "Float32Array",
         };
         const projection = lowerPinnedFunction(
@@ -146,17 +143,31 @@ export class PickingLowerer {
             "src/picking/gpu-picker.ts",
             "computePickVP",
             [output, { pinned: "vp", kind: "matrix", cpp: "vp" }, ...scalars],
-            { cppName: "compute_pick_view_projection", returns: "void", inline: true },
+            {
+                cppName: "compute_pick_view_projection",
+                returns: "void",
+                inline: true,
+            },
         );
-        const cloud = cloudPicking ? lowerPinnedFunction(
-            this.context,
-            "src/picking/gs-picking-pipeline.ts",
-            "computeGsPickMatrix",
-            [output, ...scalars],
-            { cppName: "compute_cloud_pick_matrix", returns: "void", inline: true },
-        ) : "";
-        return pinnedHeader(["<array>","<cstdint>"], `${projection}
-${cloud}`, { compactPragma: true });
+        const cloud = cloudPicking
+            ? lowerPinnedFunction(
+                  this.context,
+                  "src/picking/gs-picking-pipeline.ts",
+                  "computeGsPickMatrix",
+                  [output, ...scalars],
+                  {
+                      cppName: "compute_cloud_pick_matrix",
+                      returns: "void",
+                      inline: true,
+                  },
+              )
+            : "";
+        return pinnedHeader(
+            ["<array>", "<cstdint>"],
+            `${projection}
+${cloud}`,
+            { compactPragma: true },
+        );
     }
 
     /**
@@ -174,18 +185,17 @@ ${cloud}`, { compactPragma: true });
         const modulePath = "src/picking/gpu-picker.ts";
         // Anchored rather than assumed: if the pin stops exporting these,
         // the port is describing a surface that no longer exists.
-        for (const name of [
-            "createGpuPicker",
-            "pickAsync",
-            "disposePicker",
-        ]) {
+        for (const name of ["createGpuPicker", "pickAsync", "disposePicker"]) {
             this.context.functionDeclaration(modulePath, name);
         }
         // The `filter` option's two arms, restated by the shared candidate
         // collector and both backends' pick passes: a mesh the predicate
         // refuses neither answers nor occludes, and a filtered pick takes
         // no registered pick source.
-        const impl = this.context.functionDeclaration(modulePath, "pickAsyncImpl").declaration;
+        const impl = this.context.functionDeclaration(
+            modulePath,
+            "pickAsyncImpl",
+        ).declaration;
         this.context.expectShapeCount(
             impl,
             "mesh.pickable !== false && (!pickFilter || pickFilter(mesh))",
@@ -739,7 +749,10 @@ std::array<double, 3> detail_rest_point(
                     ["mi._cpuNormals", emptyIsAbsent("mesh_normals", "f32")],
                     ["mi._cpuIndices", emptyIsAbsent("mesh_indices", "u32")],
                     ["mi.worldMatrix", { cpp: "mesh_world", type: "f32" }],
-                    ...tupleMembers("info.ray.direction", "info.ray->direction"),
+                    ...tupleMembers(
+                        "info.ray.direction",
+                        "info.ray->direction",
+                    ),
                     PICK_INFO_RAY,
                 ]),
                 returns: {
@@ -882,7 +895,11 @@ js::Nullable<js::Tuple<3>> picked_normal(
             [
                 { pinned: "x", kind: "number", cpp: "x" },
                 { pinned: "y", kind: "number", cpp: "y" },
-                { pinned: "vpMatrix", kind: "mat4Const", cpp: "view_projection" },
+                {
+                    pinned: "vpMatrix",
+                    kind: "mat4Const",
+                    cpp: "view_projection",
+                },
                 { pinned: "width", kind: "number", cpp: "width" },
                 { pinned: "height", kind: "number", cpp: "height" },
             ],
@@ -900,7 +917,10 @@ js::Nullable<js::Tuple<3>> picked_normal(
                         if (returned?.kind === ts.SyntaxKind.NullKeyword) {
                             return "std::nullopt";
                         }
-                        if (!returned || !ts.isObjectLiteralExpression(returned)) {
+                        if (
+                            !returned ||
+                            !ts.isObjectLiteralExpression(returned)
+                        ) {
                             return this.context.contractError(
                                 returned ??
                                     this.context.functionDeclaration(
@@ -919,9 +939,11 @@ js::Nullable<js::Tuple<3>> picked_normal(
                             member("direction"),
                             { arity: 3, at: returned },
                         );
-                        return `PickRay{${lowerer.expression(member("origin"))}, ` +
+                        return (
+                            `PickRay{${lowerer.expression(member("origin"))}, ` +
                             `{${direction.join(", ")}}, ` +
-                            `${lowerer.expression(member("length"))}}`;
+                            `${lowerer.expression(member("length"))}}`
+                        );
                     },
                 },
             },
@@ -1020,7 +1042,10 @@ void populate_pick_ray(
 
         const body = lowerPinnedBody(file, statements, {
             bindings: new Map<string, PinnedBinding>([
-                ["detailed", { cpp: "false", type: "bool", staticBoolean: false }],
+                [
+                    "detailed",
+                    { cpp: "false", type: "bool", staticBoolean: false },
+                ],
                 [
                     "pickRay",
                     {
@@ -1029,7 +1054,10 @@ void populate_pick_ray(
                         absentCpp: "!info.ray.has_value()",
                     },
                 ],
-                ["pickRay.origin", { cpp: "info.ray->origin", type: "f64-buffer" }],
+                [
+                    "pickRay.origin",
+                    { cpp: "info.ray->origin", type: "f64-buffer" },
+                ],
                 ["camera", { cpp: "camera", type: "opaque" }],
                 ["info.pickedPoint", { cpp: "point", type: "f64-buffer" }],
                 ...vec3MemberBindings("origin"),
@@ -1087,10 +1115,7 @@ ${body}
      */
     private lowerBillboardWrapper(): string {
         const wrapperModule = "src/sprite/picking/pick-billboard.ts";
-        this.context.functionDeclaration(
-            wrapperModule,
-            "pickBillboardSprite",
-        );
+        this.context.functionDeclaration(wrapperModule, "pickBillboardSprite");
         return `
 // ${this.context.provenance(wrapperModule, "pickBillboardSprite")}
 // The pin's \`picker ?? createGpuPicker(scene)\` with no caller-owned

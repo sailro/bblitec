@@ -53,11 +53,7 @@ export function pngDimensions(
     ) {
         return undefined;
     }
-    const view = new DataView(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength,
-    );
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     return {
         width: view.getUint32(16, false),
         height: view.getUint32(20, false),
@@ -71,9 +67,7 @@ export function readPngDimensionsSync(
     return pngDimensions(readAssetBytesSync(source, entryFileName));
 }
 
-function readUncached(
-    source: string,
-): Uint8Array {
+function readUncached(source: string): Uint8Array {
     const inline = parseDataUrl(source);
     if (inline) return inline.bytes;
     if (source.startsWith("generated:")) {
@@ -91,10 +85,8 @@ function readUncached(
  * scratch `tsc` build alike.
  */
 function downloadCachedSyncBridge(url: string): Uint8Array {
-    const cacheModule = new URL(
-        "../asset-download-cache.js",
-        import.meta.url,
-    ).href;
+    const cacheModule = new URL("../asset-download-cache.js", import.meta.url)
+        .href;
     const script =
         `const url = process.env.BBLITE_SYNC_ASSET_URL;\n` +
         `import(process.env.BBLITE_SYNC_ASSET_MODULE)\n` +

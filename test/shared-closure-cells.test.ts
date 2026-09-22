@@ -12,7 +12,9 @@ import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 
 const sharedCell = (name: string, type: string, initial: string): RegExp =>
-    new RegExp(`auto v_${name} = bbl::js::make_gc_shared<${type}>\\(${initial}\\);`);
+    new RegExp(
+        `auto v_${name} = bbl::js::make_gc_shared<${type}>\\(${initial}\\);`,
+    );
 
 /** The entry shape shared by the countdown tests: a flag the frame callback
  * reads, flipped by a helper's callback argument. */
@@ -44,7 +46,10 @@ const assertFlipped = (cpp: string): void => {
 };
 
 test("a let flipped from a timer-retained recursive callback shares one cell", () => {
-    const result = compileSource(countdownEntry("", `
+    const result = compileSource(
+        countdownEntry(
+            "",
+            `
         function startCountdown(onGo: () => void): void {
             let count = 0;
             const tick = (): void => {
@@ -58,10 +63,15 @@ test("a let flipped from a timer-retained recursive callback shares one cell", (
             };
             tick();
         }
-    `));
+    `,
+        ),
+    );
     assertFlipped(result.cpp);
     // The helper's own counter is written by the stored closure too.
-    assert.match(result.cpp, /auto v_\w*count = bbl::js::make_gc_shared<double>\(0\.0\);/);
+    assert.match(
+        result.cpp,
+        /auto v_\w*count = bbl::js::make_gc_shared<double>\(0\.0\);/,
+    );
 });
 
 test("a helper in another module retaining its parameter through a timer shares the caller's cell", () => {
@@ -129,9 +139,18 @@ test("a named local function handed to a listener-installing helper shares the c
         }
         main();
     `);
-    assert.match(result.cpp, /auto v_destination = bbl::js::make_gc_shared<bbl::js::Nullable<double>>\(std::nullopt\);/);
-    assert.match(result.cpp, /bbl::on_dom_pointer\(v_engine, bbl::DomEventTarget::canvas\(\), "pointerup", \d+u, bbl::js::make_closure\(std::tuple\{v_destination\}/);
-    assert.match(result.cpp, /\(\*v_destination\) = bbl::js::Nullable<double>\{v_\w+_x\};/);
+    assert.match(
+        result.cpp,
+        /auto v_destination = bbl::js::make_gc_shared<bbl::js::Nullable<double>>\(std::nullopt\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::on_dom_pointer\(v_engine, bbl::DomEventTarget::canvas\(\), "pointerup", \d+u, bbl::js::make_closure\(std::tuple\{v_destination\}/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\*v_destination\) = bbl::js::Nullable<double>\{v_\w+_x\};/,
+    );
 });
 
 test("a closure pushed into a container shares the let it writes", () => {
@@ -339,8 +358,5 @@ test("a module-scope let only incremented still gets storage before the entry ru
         compileSource(moduleStateEntry("spawned = spawned + 1;")).cpp,
         /double v_spawned = 0\.0;/,
     );
-    assert.doesNotMatch(
-        compileSource(moduleStateEntry("")).cpp,
-        /v_spawned/,
-    );
+    assert.doesNotMatch(compileSource(moduleStateEntry("")).cpp, /v_spawned/);
 });

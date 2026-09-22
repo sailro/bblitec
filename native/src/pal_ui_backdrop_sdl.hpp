@@ -16,18 +16,21 @@ struct UiSdlReadableSurface {
     std::uint32_t width = 0, height = 0;
 
     void release(SDL_GPUDevice* device) {
-        if (texture) SDL_ReleaseGPUTexture(device, texture);
+        if (texture)
+            SDL_ReleaseGPUTexture(device, texture);
         *this = {};
     }
 
     SDL_GPUTexture* target(SDL_GPUDevice* device, SDL_GPUTexture* swapchain,
-                          SDL_GPUTextureFormat format, std::uint32_t w,
-                          std::uint32_t h, bool readable) {
-        if (!readable) return swapchain;
+                           SDL_GPUTextureFormat format, std::uint32_t w, std::uint32_t h,
+                           bool readable) {
+        if (!readable)
+            return swapchain;
         if (!texture || width != w || height != h) {
             release(device);
-            texture = create_frame_texture(device, format, SDL_GPU_SAMPLECOUNT_1,
-                w, h, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+            texture = create_frame_texture(device, format, SDL_GPU_SAMPLECOUNT_1, w, h,
+                                           SDL_GPU_TEXTUREUSAGE_SAMPLER |
+                                               SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
             width = w;
             height = h;
         }
@@ -36,7 +39,8 @@ struct UiSdlReadableSurface {
 
     static void present(SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
                         SDL_GPUTexture* swapchain, std::uint32_t w, std::uint32_t h) {
-        if (target == swapchain) return;
+        if (target == swapchain)
+            return;
         SDL_GPUBlitInfo blit{};
         blit.source = {target, 0, 0, 0, 0, w, h};
         blit.destination = {swapchain, 0, 0, 0, 0, w, h};
@@ -59,66 +63,75 @@ struct UiBackdropSdlResources {
 
     void release(SDL_GPUDevice* device) {
         for (auto& pair : pairs) {
-            if (pair.snapshot) SDL_ReleaseGPUTexture(device, pair.snapshot);
-            if (pair.first) SDL_ReleaseGPUTexture(device, pair.first);
-            if (pair.second) SDL_ReleaseGPUTexture(device, pair.second);
+            if (pair.snapshot)
+                SDL_ReleaseGPUTexture(device, pair.snapshot);
+            if (pair.first)
+                SDL_ReleaseGPUTexture(device, pair.first);
+            if (pair.second)
+                SDL_ReleaseGPUTexture(device, pair.second);
         }
-        if (pipeline) SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+        if (pipeline)
+            SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
         *this = {};
     }
 };
 
-inline void render_ui_backdrop_sdl(
-    SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-    SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
-    SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices, SDL_GPUSampler* sampler,
-    SDL_GPUGraphicsPipeline* composite_pipeline, UiBackdropSdlResources& resources,
-    const UiRenderFrame& frame, std::size_t backdrop_index) {
+inline void render_ui_backdrop_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                   SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
+                                   SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
+                                   SDL_GPUSampler* sampler,
+                                   SDL_GPUGraphicsPipeline* composite_pipeline,
+                                   UiBackdropSdlResources& resources, const UiRenderFrame& frame,
+                                   std::size_t backdrop_index) {
     const auto& backdrop = frame.backdrops[backdrop_index];
-    if (resources.pairs.size() <= backdrop_index) resources.pairs.resize(backdrop_index + 1);
+    if (resources.pairs.size() <= backdrop_index)
+        resources.pairs.resize(backdrop_index + 1);
     auto& pair = resources.pairs[backdrop_index];
-    sync_ui_backdrop_targets(pair, backdrop, pair.snapshot != nullptr, pair.first != nullptr,
+    sync_ui_backdrop_targets(
+        pair, backdrop, pair.snapshot != nullptr, pair.first != nullptr,
         [&](std::uint32_t width, std::uint32_t height) {
-            if (pair.snapshot) SDL_ReleaseGPUTexture(device, pair.snapshot);
-            pair.snapshot = create_frame_texture(device, target_format, SDL_GPU_SAMPLECOUNT_1, width, height,
+            if (pair.snapshot)
+                SDL_ReleaseGPUTexture(device, pair.snapshot);
+            pair.snapshot = create_frame_texture(
+                device, target_format, SDL_GPU_SAMPLECOUNT_1, width, height,
                 SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
         },
         [&](std::uint32_t width, std::uint32_t height) {
-            if (pair.first) SDL_ReleaseGPUTexture(device, pair.first);
-            if (pair.second) SDL_ReleaseGPUTexture(device, pair.second);
-            pair.first = create_frame_texture(device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1,
-                width, height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
-            pair.second = create_frame_texture(device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1,
-                width, height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+            if (pair.first)
+                SDL_ReleaseGPUTexture(device, pair.first);
+            if (pair.second)
+                SDL_ReleaseGPUTexture(device, pair.second);
+            pair.first = create_frame_texture(
+                device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1, width,
+                height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+            pair.second = create_frame_texture(
+                device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1, width,
+                height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
         });
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     const SDL_GPUTextureLocation source{
-        target, 0, 0,
-        static_cast<Uint32>(backdrop.left),
-        static_cast<Uint32>(backdrop.top),
-        0};
+        target, 0, 0, static_cast<Uint32>(backdrop.left), static_cast<Uint32>(backdrop.top), 0};
     const SDL_GPUTextureLocation destination{pair.snapshot, 0, 0, 0, 0, 0};
-    SDL_CopyGPUTextureToTexture(
-        copy, &source, &destination,
-        backdrop.width, backdrop.height, 1, false);
+    SDL_CopyGPUTextureToTexture(copy, &source, &destination, backdrop.width, backdrop.height, 1,
+                                false);
     copy.end();
 
     const std::array<float, 16> projection{
-        2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0,
-        0, 0, 0.0001f, 0, -1, 1, 0, 1};
+        2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, 0.0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
     SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
     SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
     const SDL_GPUBufferBinding vertex_binding{vertices, 0}, index_binding{indices, 0};
-    const auto draw = [&](SDL_GPUTexture* output, SDL_GPUTexture* input,
-                          std::uint32_t first, std::uint32_t count, bool composite) {
+    const auto draw = [&](SDL_GPUTexture* output, SDL_GPUTexture* input, std::uint32_t first,
+                          std::uint32_t count, bool composite) {
         SDL_GPUColorTargetInfo attachment{};
         attachment.texture = output;
         attachment.load_op = composite ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
         attachment.store_op = SDL_GPU_STOREOP_STORE;
         attachment.clear_color = {0, 0, 0, 0};
         SdlRenderPass pass{SDL_BeginGPURenderPass(command, &attachment, 1, nullptr)};
-        if (!pass) throw std::runtime_error(SDL_GetError());
+        if (!pass)
+            throw std::runtime_error(SDL_GetError());
         SDL_BindGPUGraphicsPipeline(pass, composite ? composite_pipeline : resources.pipeline);
         SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
         SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -129,8 +142,9 @@ inline void render_ui_backdrop_sdl(
     };
     const std::array<SDL_GPUTexture*, 4> textures{target, pair.snapshot, pair.first, pair.second};
     for (const auto& pass : ui_backdrop_draw_plan(backdrop)) {
-        draw(textures[static_cast<std::size_t>(pass.output)], textures[static_cast<std::size_t>(pass.input)],
-            pass.first, pass.count, pass.output == UiBackdropSurface::target);
+        draw(textures[static_cast<std::size_t>(pass.output)],
+             textures[static_cast<std::size_t>(pass.input)], pass.first, pass.count,
+             pass.output == UiBackdropSurface::target);
     }
 }
 

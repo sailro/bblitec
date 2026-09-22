@@ -8,8 +8,7 @@
 bool pinned_math_link_peer();
 
 int main() {
-    if (!pinned_math_link_peer() ||
-        bbl::upstream::length_vec3({3.0, 4.0, 12.0}) != 13.0) {
+    if (!pinned_math_link_peer() || bbl::upstream::length_vec3({3.0, 4.0, 12.0}) != 13.0) {
         return 1;
     }
     struct TestCase {
@@ -26,13 +25,8 @@ int main() {
     std::cout << std::setprecision(17);
     for (const auto& values : cases) {
         const auto quaternion =
-            bbl::upstream::quat_from_look_direction_rh(
-                values.forward,
-                values.up);
-        std::cout
-            << quaternion[0] << ','
-            << quaternion[1] << ','
-            << quaternion[2] << ','
-            << quaternion[3] << '\n';
+            bbl::upstream::quat_from_look_direction_rh(values.forward, values.up);
+        std::cout << quaternion[0] << ',' << quaternion[1] << ',' << quaternion[2] << ','
+                  << quaternion[3] << '\n';
     }
 }

@@ -1,10 +1,21 @@
 /** Complete body contracts for the DefaultTextData single-run specialization.
  * Slot, layout and palette arithmetic are separately translated from pinned AST. */
-export const defaultTextDataContracts: readonly (readonly [string,string,string])[] = [
-    ["src/text/text-data.ts", "runGroupKey", `{
+export const defaultTextDataContracts: readonly (readonly [
+    string,
+    string,
+    string,
+])[] = [
+    [
+        "src/text/text-data.ts",
+        "runGroupKey",
+        `{
     return _textStyleSeam?._key(run) ?? run.curveSet;
-}`],
-    ["src/text/text-data.ts", "countRunStyles", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "countRunStyles",
+        `{
     const glyphs = run.glyphs;
     let n = 1;
     for (let i = 0; i < glyphs.length; i++) {
@@ -13,8 +24,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         }
     }
     return n;
-}`],
-    ["src/text/text-data.ts", "allocateStyles", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "allocateStyles",
+        `{
     if (previous?.length === count) {
         return previous;
     }
@@ -33,13 +48,21 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         data._styleVersion++;
     }
     return slots;
-}`],
-    ["src/text/text-data.ts", "releaseStyles", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "releaseStyles",
+        `{
     for (let i = 0; i < slots.length; i++) {
         data._freeStyleSlots.push(slots[i]!);
     }
-}`],
-    ["src/text/text-data.ts", "ensureStyleCapacity", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "ensureStyleCapacity",
+        `{
     if (requiredEntries > MAX_STYLE_ENTRIES) {
         throw new Error(\`TextData style palette cannot exceed \${MAX_STYLE_ENTRIES} entries.\`);
     }
@@ -55,8 +78,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     const grown = new Float32Array(newLen);
     grown.set(data._styles);
     data._styles = grown;
-}`],
-    ["src/text/text-data.ts", "makeDrawGroup", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "makeDrawGroup",
+        `{
     return {
         _curveSetId: curveSetId,
         _curveSet: curveSet,
@@ -68,8 +95,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         _bindGroupVersion: -1,
         _groupKey: groupKey,
     };
-}`],
-    ["src/text/text-data.ts", "ensureGroup", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "ensureGroup",
+        `{
     const existing = findGroup(data, groupKey);
     if (existing) {
         return existing;
@@ -78,15 +109,23 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     const group = makeDrawGroup(curveSetId, curveSet, data._instanceCount, groupKey);
     data._groups.push(group);
     return group;
-}`],
-    ["src/text/text-data.ts", "lookupCurveSet", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "lookupCurveSet",
+        `{
     const cs = storage._curveSets.get(curveSetId);
     if (!cs) {
         throw new Error(\`updateTextData \${op}: storage does not contain curveSet "\${curveSetId}" — add it via updateGlyphStorage first.\`);
     }
     return cs;
-}`],
-    ["src/text/text-data.ts", "applyReset", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "applyReset",
+        `{
     let totalGlyphs = 0;
     let totalStyles = 0;
     for (const run of runs) {
@@ -167,8 +206,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     data._dirtyEnd = writeSlot;
     data._version++;
     data._layoutVersion++;
-}`],
-    ["src/text/text-data.ts", "applyAddRun", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "applyAddRun",
+        `{
     if (data._runRecords.has(run)) {
         throw new Error("updateTextData addRun: GlyphRun reference is already in this TextData.");
     }
@@ -182,8 +225,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     group._liveCount += live.length;
     data._runRecords.set(run, { _run: run, _groupIdx: groupIdx, _slots: live, _styleSlots: styleSlots });
     data._runs.splice(at, 0, run);
-}`],
-    ["src/text/text-data.ts", "applyRemoveRun", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "applyRemoveRun",
+        `{
     const run = resolveRun(data, ref);
     const rec = data._runRecords.get(run);
     if (!rec) {
@@ -201,8 +248,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     if (group._liveCount === 0) {
         dropEmptyGroup(data, group);
     }
-}`],
-    ["src/text/text-data.ts", "dropEmptyGroup", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "dropEmptyGroup",
+        `{
     const idx = data._groups.indexOf(group);
     if (idx < 0) {
         return;
@@ -226,8 +277,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         data._instanceCount -= removedCount;
         markDirty(data, removedStart, data._instanceCount);
     }
-}`],
-    ["src/text/text-data.ts", "applyReplaceRun", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "applyReplaceRun",
+        `{
     const prev = resolveRun(data, prevRef);
     const rec = data._runRecords.get(prev);
     if (!rec) {
@@ -268,8 +323,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     }
     applyRemoveRun(data, insertPos >= 0 ? insertPos : prev);
     applyAddRun(data, newRun, insertPos >= 0 ? insertPos : undefined);
-}`],
-    ["src/text/text-data.ts", "createTextData", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "createTextData",
+        `{
     const runsArray: GlyphRun[] = [];
     const instances = new Float32Array(TEXT_INSTANCE_FLOATS);
     const data = {
@@ -294,8 +353,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         applyReset(data, runs, storage);
     }
     return data;
-}`],
-    ["src/text/text-data.ts", "shiftSlotsAtOrAfter", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "shiftSlotsAtOrAfter",
+        `{
     for (const g of data._groups) {
         if (g !== exclude && g._slotStart >= threshold) {
             g._slotStart += delta;
@@ -313,11 +376,19 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         }
     }
     data._layoutVersion++;
-}`],
-    ["src/text/text-data.ts", "popFreeSlot", `{
+}`,
+    ],
+    [
+        "src/text/text-data.ts",
+        "popFreeSlot",
+        `{
     return group._freeSlots.length > 0 ? group._freeSlots.pop()! : -1;
-}`],
-    ["src/text/default-text-data.ts", "createDefaultTextData", `{
+}`,
+    ],
+    [
+        "src/text/default-text-data.ts",
+        "createDefaultTextData",
+        `{
     const laid = layoutText(font, text, fontSizePx, options);
     const innerCurves = new Map<number, GlyphCurves>();
     const seenGlyphs = new Uint8Array(font._font.numGlyphs);
@@ -343,8 +414,12 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
         _storage: storage,
         _seenGlyphs: seenGlyphs,
     }) as DefaultTextData;
-}`],
-    ["src/text/default-text-data.ts", "updateDefaultTextData", `{
+}`,
+    ],
+    [
+        "src/text/default-text-data.ts",
+        "updateDefaultTextData",
+        `{
     const laid = layoutText(data._font, text, data._fontSizePx, data._options);
     const ids = collectNewGlyphs(data._seenGlyphs, laid._glyphs);
     if (ids) {
@@ -361,5 +436,6 @@ export const defaultTextDataContracts: readonly (readonly [string,string,string]
     };
     updateTextData(data, { update: "replaceRun", previous: previousRun, run: newRun });
     Object.assign(data, { width: laid._width, height: laid._height });
-}`]
+}`,
+    ],
 ];

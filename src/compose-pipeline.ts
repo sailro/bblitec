@@ -76,9 +76,7 @@ import {
     pinnedShadowFilter,
     type ShadowLightSlot,
 } from "./pinned-shadow-slots.js";
-import {
-    babylonLights,
-} from "./babylon-asset-features.js";
+import { babylonLights } from "./babylon-asset-features.js";
 import { refuseGeneration } from "./generation-refusal.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
@@ -98,10 +96,7 @@ export interface ComposePipelineContext {
  * slot is valid only while its statically composed filter contract agrees.
  */
 export function receiverShadowLightSlots(
-    generators: readonly Pick<
-        ShadowGeneratorManifest,
-        "kind" | "lightIndex"
-    >[],
+    generators: readonly Pick<ShadowGeneratorManifest, "kind" | "lightIndex">[],
 ): ShadowLightSlot[] {
     const byIndex = new Map<number, ShadowLightSlot["shadowType"]>();
     for (const generator of generators) {
@@ -118,9 +113,10 @@ export function receiverShadowLightSlots(
         }
         byIndex.set(generator.lightIndex, shadowType);
     }
-    return [...byIndex].map(
-        ([lightIndex, shadowType]) => ({ lightIndex, shadowType }),
-    );
+    return [...byIndex].map(([lightIndex, shadowType]) => ({
+        lightIndex,
+        shadowType,
+    }));
 }
 
 function standardPluginMeshFeatureValues(
@@ -143,9 +139,7 @@ function standardPluginMeshFeatureValues(
             const thin = base | thinInstancesBit;
             if (mesh.thinInstances === "always") {
                 values.add(
-                    mesh.thinInstanceColors
-                        ? thin | instanceColorBit
-                        : thin,
+                    mesh.thinInstanceColors ? thin | instanceColorBit : thin,
                 );
                 continue;
             }
@@ -193,8 +187,7 @@ export interface ComposedScenePipeline {
      * header a plugin-free scene's byte-identical.
      */
     standardPluginBindings:
-        | readonly (readonly MaterialPluginSamplerManifest[])[]
-        | undefined;
+        readonly (readonly MaterialPluginSamplerManifest[])[] | undefined;
     nodeVariants: readonly NodeVariantManifestEntry[];
     /**
      * The arms the composed PBR set carries: the union over every composed
@@ -224,8 +217,7 @@ export function staticSceneLightArms(
     noLight: boolean;
 } {
     return {
-        lightKinds:
-            lightKinds.length === 1 ? [lightKinds[0]!] : [],
+        lightKinds: lightKinds.length === 1 ? [lightKinds[0]!] : [],
         multiLight:
             lightKinds.length > 1 ||
             (lightKinds.length === 1 && hasShadowReceiver),
@@ -271,10 +263,10 @@ export function runtimePbrAssetFeatureSets(
     meshBits: readonly number[],
     receiverBits: readonly number[],
 ): number[] {
-    return expandRuntimeMeshFeatureSets(
-        featureSets,
-        [...meshBits, ...receiverBits],
-    );
+    return expandRuntimeMeshFeatureSets(featureSets, [
+        ...meshBits,
+        ...receiverBits,
+    ]);
 }
 
 /**
@@ -322,8 +314,7 @@ export async function composeScenePipeline({
     // reached the call. A scene attaching plugins without it composes
     // plugin-free, which is upstream's behaviour rather than a refusal.
     let standardPluginBindings:
-        | readonly (readonly MaterialPluginSamplerManifest[])[]
-        | undefined;
+        readonly (readonly MaterialPluginSamplerManifest[])[] | undefined;
     if (result.manifest.features.includes("material:plugins")) {
         await enablePinnedMaterialPlugins(
             result.manifest.standardMaterialPlugins,
@@ -336,11 +327,9 @@ export async function composeScenePipeline({
             ? table
             : undefined;
     }
-    const hasEnvironment = result.manifest.features.includes(
-        "environment:ibl",
-    );
+    const hasEnvironment = result.manifest.features.includes("environment:ibl");
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
-        result.manifest.features.includes(`light:${kind}`)
+        result.manifest.features.includes(`light:${kind}`),
     );
     // Whether any light in this scene names the meshes it applies to, which
     // is what lets `light_affects_mesh` answer false and therefore what
@@ -356,13 +345,9 @@ export async function composeScenePipeline({
     const uniqueGltfAssets = result.manifest.assets.filter(
         (asset) => asset.kind === "gltf",
     );
-    const gltfAssets = uniqueGltfAssets
-        .flatMap((asset) =>
-            Array.from(
-                { length: asset.containerCount ?? 1 },
-                () => asset,
-            ),
-        );
+    const gltfAssets = uniqueGltfAssets.flatMap((asset) =>
+        Array.from({ length: asset.containerCount ?? 1 }, () => asset),
+    );
     const gltfRenderableFeaturesByAsset = new Map<
         CompileAsset,
         ReturnType<typeof gltfRenderableFeatures>
@@ -380,9 +365,7 @@ export async function composeScenePipeline({
     const loaderEnablesToneMapping =
         result.manifest.features.includes("environment:env") ||
         uniqueGltfAssets.some((asset) =>
-            gltfHasImageBasedLight(
-                resolve(outputPath, "assets", asset.output),
-            )
+            gltfHasImageBasedLight(resolve(outputPath, "assets", asset.output)),
         );
     const loaderLeavesToneMappingOff =
         !hasEnvironment ||
@@ -390,11 +373,11 @@ export async function composeScenePipeline({
         result.manifest.features.includes("environment:dds");
     const toneMappingStates = [
         ...(loaderLeavesToneMappingOff ||
-                result.manifest.mutableToneMappingEnabled
+        result.manifest.mutableToneMappingEnabled
             ? [false]
             : []),
         ...(loaderEnablesToneMapping ||
-                result.manifest.mutableToneMappingEnabled
+        result.manifest.mutableToneMappingEnabled
             ? [true]
             : []),
     ];
@@ -405,9 +388,8 @@ export async function composeScenePipeline({
     const assetLightsReached =
         uniqueGltfAssets.some(
             (asset) =>
-                gltfNodeLights(
-                    resolve(outputPath, "assets", asset.output),
-                ).count > 0,
+                gltfNodeLights(resolve(outputPath, "assets", asset.output))
+                    .count > 0,
         ) || babylonLights(outputPath, result.manifest.assets).length > 0;
     const staticLightKinds =
         !result.manifest.dynamicSceneLights && !assetLightsReached
@@ -472,9 +454,7 @@ export async function composeScenePipeline({
     // set here.
     const renderableMeshFeatures: number[] = [];
     const gltfRenderableFeatureSets: (readonly number[])[] = [];
-    const sceneMeshRows = new Array<number>(
-        result.manifest.sceneMeshes.length,
-    );
+    const sceneMeshRows = new Array<number>(result.manifest.sceneMeshes.length);
     const sceneMeshesByLoadCount = new Map<number, number[]>();
     result.manifest.sceneMeshes.forEach((mesh, index) => {
         if (
@@ -487,8 +467,7 @@ export async function composeScenePipeline({
                 result.manifest.featureSites,
             );
         }
-        const bucket =
-            sceneMeshesByLoadCount.get(mesh.gltfAssetsBefore) ?? [];
+        const bucket = sceneMeshesByLoadCount.get(mesh.gltfAssetsBefore) ?? [];
         bucket.push(index);
         sceneMeshesByLoadCount.set(mesh.gltfAssetsBefore, bucket);
     });
@@ -503,16 +482,12 @@ export async function composeScenePipeline({
         }
         const asset = gltfAssets[loadCount];
         if (asset) {
-            let pendingFeatures =
-                gltfRenderableFeaturesByAsset.get(asset);
+            let pendingFeatures = gltfRenderableFeaturesByAsset.get(asset);
             if (!pendingFeatures) {
                 pendingFeatures = gltfRenderableFeatures(
                     resolve(outputPath, "assets", asset.output),
                 );
-                gltfRenderableFeaturesByAsset.set(
-                    asset,
-                    pendingFeatures,
-                );
+                gltfRenderableFeaturesByAsset.set(asset, pendingFeatures);
             }
             const features = await pendingFeatures;
             gltfRenderableFeatureSets.push(features);
@@ -530,9 +505,8 @@ export async function composeScenePipeline({
     // `rebuildSingle` computes `receiveShadows` as `mesh.receiveShadows &&
     // hasSomeShadows`, so a scene with no generator composes no receiver
     // even where a mesh asked for one.
-    const receiveShadowsBit = shadowLights.length > 0
-        ? await pinnedReceiveShadowsBit()
-        : 0;
+    const receiveShadowsBit =
+        shadowLights.length > 0 ? await pinnedReceiveShadowsBit() : 0;
     const dynamicReceiverBits =
         result.manifest.dynamicShadowReceivers && receiveShadowsBit !== 0
             ? [receiveShadowsBit]
@@ -553,8 +527,8 @@ export async function composeScenePipeline({
         result.manifest.sceneMeshes.length === 0
             ? await proceduralRenderableFeatures()
             : sceneMeshAttributeValues.size === 1
-                ? [...sceneMeshAttributeValues][0]!
-                : undefined;
+              ? [...sceneMeshAttributeValues][0]!
+              : undefined;
     // Each receiver's bit onto its own row, in place: from here on this walk
     // is the pin's own composition key -- the primitive's attributes plus
     // `MSH_RECEIVE_SHADOWS` -- and both family tables read it. An asset
@@ -605,11 +579,11 @@ export async function composeScenePipeline({
     ): Promise<readonly number[]> =>
         hasVat
             ? [
-                ...new Set([
-                    ...features,
-                    ...(await pinnedVatMeshFeatures(features)),
-                ]),
-            ].sort((left, right) => left - right)
+                  ...new Set([
+                      ...features,
+                      ...(await pinnedVatMeshFeatures(features)),
+                  ]),
+              ].sort((left, right) => left - right)
             : features;
     const assetMaterialMeshFeatures = runtimePbrAssetFeatureSets(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
@@ -640,28 +614,27 @@ export async function composeScenePipeline({
         sceneMeshAttributeValues.size > 0
             ? [...sceneMeshAttributeValues]
             : [await proceduralRenderableFeatures()];
-    const gltfMaterialCounts = await Promise.all(gltfAssets.map(async (asset) => {
-        const cached = gltfMaterialCountsByAsset.get(asset);
-        if (cached !== undefined) return cached;
-        const count = await gltfMaterialCount(
-            resolve(outputPath, "assets", asset.output),
-        );
-        gltfMaterialCountsByAsset.set(asset, count);
-        return count;
-    }));
+    const gltfMaterialCounts = await Promise.all(
+        gltfAssets.map(async (asset) => {
+            const cached = gltfMaterialCountsByAsset.get(asset);
+            if (cached !== undefined) return cached;
+            const count = await gltfMaterialCount(
+                resolve(outputPath, "assets", asset.output),
+            );
+            gltfMaterialCountsByAsset.set(asset, count);
+            return count;
+        }),
+    );
     const gltfMaterialPrefix = [0];
     for (const count of gltfMaterialCounts) {
         gltfMaterialPrefix.push(gltfMaterialPrefix.at(-1)! + count);
     }
     const sceneMaterialLoadCounts =
         result.manifest.sceneMaterialGltfAssetsBefore ??
-        new Array(result.manifest.sceneMaterialCount).fill(
+        new Array<number>(result.manifest.sceneMaterialCount).fill(
             gltfAssets.length,
         );
-    if (
-        sceneMaterialLoadCounts.length !==
-        result.manifest.sceneMaterialCount
-    ) {
+    if (sceneMaterialLoadCounts.length !== result.manifest.sceneMaterialCount) {
         refuseGeneration(
             "material:pbr",
             "Scene material creation-order metadata does not match its count.",
@@ -678,17 +651,16 @@ export async function composeScenePipeline({
         }
     }
     const absoluteSceneMaterialIndex = (sceneIndex: number): number =>
-        sceneIndex +
-        gltfMaterialPrefix[sceneMaterialLoadCounts[sceneIndex]!]!;
-    const assetMaterialBases = gltfAssets.map((_, assetIndex) =>
-        gltfMaterialPrefix[assetIndex]! +
-        sceneMaterialLoadCounts.filter(
-            (count) => count <= assetIndex,
-        ).length,
+        sceneIndex + gltfMaterialPrefix[sceneMaterialLoadCounts[sceneIndex]!]!;
+    const assetMaterialBases = gltfAssets.map(
+        (_, assetIndex) =>
+            gltfMaterialPrefix[assetIndex]! +
+            sceneMaterialLoadCounts.filter((count) => count <= assetIndex)
+                .length,
     );
     const totalAssetMaterials = gltfMaterialPrefix.at(-1)!;
-    const absoluteScenePbrMaterials =
-        result.manifest.scenePbrMaterials.map((material) => ({
+    const absoluteScenePbrMaterials = result.manifest.scenePbrMaterials.map(
+        (material) => ({
             ...material,
             materialsBefore: absoluteSceneMaterialIndex(
                 material.materialsBefore,
@@ -700,7 +672,8 @@ export async function composeScenePipeline({
                           material.sourceMaterialsBefore,
                       ),
                   }),
-        }));
+        }),
+    );
     let assetMetallicReflectanceRegistered = false;
     for (const [assetIndex, asset] of gltfAssets.entries()) {
         const materialIndexBase = assetMaterialBases[assetIndex]!;
@@ -710,9 +683,7 @@ export async function composeScenePipeline({
         // the container's, not the scene's, so it travels with the asset.
         const assetComposeOptions = {
             ...sceneComposeOptions,
-            ...(asset.sceneUnlit
-                ? { sceneUnlit: asset.sceneUnlit }
-                : {}),
+            ...(asset.sceneUnlit ? { sceneUnlit: asset.sceneUnlit } : {}),
             // The lightmap walk's own filter, folded here against the
             // document: which renderables it reaches is the document's
             // answer, not the scene's, and PBR composition is settled per
@@ -720,15 +691,15 @@ export async function composeScenePipeline({
             // what composition sees is the material set it selects.
             ...(asset.sceneLightmap
                 ? {
-                    sceneLightmap: {
-                        materials: await gltfLightmapMaterials(
-                            glbDocument(path) ?? {},
-                            asset.sceneLightmap.meshNamePredicate,
-                            asset.selectedVariant,
-                        ),
-                        options: asset.sceneLightmap.options,
-                    },
-                }
+                      sceneLightmap: {
+                          materials: await gltfLightmapMaterials(
+                              glbDocument(path) ?? {},
+                              asset.sceneLightmap.meshNamePredicate,
+                              asset.selectedVariant,
+                          ),
+                          options: asset.sceneLightmap.options,
+                      },
+                  }
                 : {}),
         };
         // The variant composer additionally takes the asset's selected
@@ -740,17 +711,13 @@ export async function composeScenePipeline({
                 ? { selectedVariant: asset.selectedVariant }
                 : {}),
         };
-        let pendingComposition =
-            gltfMaterialCompositionsByAsset.get(asset);
+        let pendingComposition = gltfMaterialCompositionsByAsset.get(asset);
         if (!pendingComposition) {
             pendingComposition = composeGltfMaterials(
                 path,
                 assetComposeOptions,
             );
-            gltfMaterialCompositionsByAsset.set(
-                asset,
-                pendingComposition,
-            );
+            gltfMaterialCompositionsByAsset.set(asset, pendingComposition);
         }
         const composed = await pendingComposition;
         assetMetallicReflectanceRegistered ||= composed.some(
@@ -773,9 +740,9 @@ export async function composeScenePipeline({
                 meshFeatureSets: runtimePbrAssetFeatureSets(
                     hasVat
                         ? await vatFeatureSets(
-                            gltfRenderableFeatureSets[assetIndex] ?? [],
-                        )
-                        : gltfRenderableFeatureSets[assetIndex] ?? [],
+                              gltfRenderableFeatureSets[assetIndex] ?? [],
+                          )
+                        : (gltfRenderableFeatureSets[assetIndex] ?? []),
                     // The runtime product beside the rewrite: a baked mesh
                     // that is also thin-instanced takes the per-instance VAT
                     // arm, while receiving shadows remains an independent
@@ -856,8 +823,7 @@ export async function composeScenePipeline({
                 casterViewCount;
             casterViewCount += 1;
             if (caster.pbrMaterial === null) continue;
-            const source =
-                absoluteScenePbrMaterials[caster.pbrMaterial];
+            const source = absoluteScenePbrMaterials[caster.pbrMaterial];
             if (!source) {
                 refuseGeneration(
                     `shadow:${pinnedShadowFilter(generator.kind)}`,
@@ -876,9 +842,10 @@ export async function composeScenePipeline({
             // Which view the caster takes is the generator's own filter,
             // exactly as it is for the Standard family: an ESM pass draws
             // the exponential-depth view, a PCF pass the depth-only one.
-            const view = pinnedShadowFilter(generator.kind) === "esm"
-                ? pbrEsmShadowView(source, materialsBefore)
-                : pbrNoColorView(source, materialsBefore);
+            const view =
+                pinnedShadowFilter(generator.kind) === "esm"
+                    ? pbrEsmShadowView(source, materialsBefore)
+                    : pbrNoColorView(source, materialsBefore);
             casterViews.push({
                 ...view,
                 meshFeatureSets: expandRuntimeMeshFeatureSets(
@@ -911,39 +878,32 @@ export async function composeScenePipeline({
             );
         }
     }
-    const exactScenePbrMaterials = absoluteScenePbrMaterials.map(
-        (material) => {
-            if (material.unknownSceneMesh || !material.sceneMeshIndices) {
-                return material;
+    const exactScenePbrMaterials = absoluteScenePbrMaterials.map((material) => {
+        if (material.unknownSceneMesh || !material.sceneMeshIndices) {
+            return material;
+        }
+        const featureSets = new Set<number>();
+        for (const meshIndex of material.sceneMeshIndices) {
+            const row = result.manifest.sceneMeshes[meshIndex];
+            const base = renderableMeshFeatures[sceneMeshRows[meshIndex]!] ?? 0;
+            for (const features of scenePbrMeshFeatureSets(
+                base,
+                row?.thinInstances,
+                row?.thinInstanceColors === true,
+                thinInstancesBit,
+                instanceColorBit,
+            )) {
+                featureSets.add(features);
             }
-            const featureSets = new Set<number>();
-            for (const meshIndex of material.sceneMeshIndices) {
-                const row = result.manifest.sceneMeshes[meshIndex];
-                const base = renderableMeshFeatures[
-                    sceneMeshRows[meshIndex]!
-                ] ?? 0;
-                for (const features of scenePbrMeshFeatureSets(
-                    base,
-                    row?.thinInstances,
-                    row?.thinInstanceColors === true,
-                    thinInstancesBit,
-                    instanceColorBit,
-                )) {
-                    featureSets.add(features);
-                }
-            }
-            return {
-                ...material,
-                meshFeatureSets: [...featureSets].sort(
-                    (left, right) => left - right,
-                ),
-            };
-        },
-    );
-    const scenePbrMaterials = [
-        ...exactScenePbrMaterials,
-        ...casterViews,
-    ];
+        }
+        return {
+            ...material,
+            meshFeatureSets: [...featureSets].sort(
+                (left, right) => left - right,
+            ),
+        };
+    });
+    const scenePbrMaterials = [...exactScenePbrMaterials, ...casterViews];
     if (result.manifest.scenePbrMaterials.length > 0) {
         composedVariants.push(
             ...(await composeScenePbrVariants(
@@ -964,9 +924,9 @@ export async function composeScenePipeline({
                         assetMetallicReflectanceRegistered,
                     ...(shadowLights.length > 0
                         ? {
-                            shadowLights,
-                            perMeshLightLists,
-                        }
+                              shadowLights,
+                              perMeshLightLists,
+                          }
                         : {}),
                 },
             )),
@@ -993,8 +953,8 @@ export async function composeScenePipeline({
         (row) => renderableMeshFeatures[row] ?? 0,
     );
     if (result.manifest.features.includes("material:standard")) {
-        const runtimeStandardFeatureValues = result.manifest.sceneMeshes
-            .flatMap((mesh, index) =>
+        const runtimeStandardFeatureValues =
+            result.manifest.sceneMeshes.flatMap((mesh, index) =>
                 mesh.standardMaterial
                     ? [standardSceneMeshFeatures[index] ?? 0]
                     : [],
@@ -1002,34 +962,44 @@ export async function composeScenePipeline({
         standardRuntimeMeshFeatures =
             result.manifest.sceneMeshes.length === 0
                 ? await proceduralRenderableFeatures()
-                // Like the PBR fallback above, only attributes must agree.
-                // receiveShadows is already resolved from each live mesh;
-                // mixing receivers and nonreceivers must not refuse every
-                // mesh allocated after the static table (e.g. a later mode).
-                : uniformRuntimeMeshAttributes(runtimeStandardFeatureValues, receiveShadowsBit);
+                : // Like the PBR fallback above, only attributes must agree.
+                  // receiveShadows is already resolved from each live mesh;
+                  // mixing receivers and nonreceivers must not refuse every
+                  // mesh allocated after the static table (e.g. a later mode).
+                  uniformRuntimeMeshAttributes(
+                      runtimeStandardFeatureValues,
+                      receiveShadowsBit,
+                  );
         const babylonAssets = result.manifest.assets
             .filter((asset) => asset.kind === "babylon")
             .map((asset) => resolve(outputPath, "assets", asset.output));
         const sceneStandardMaterials =
             result.manifest.sceneMaterialCount >
-                result.manifest.scenePbrMaterials.length;
+            result.manifest.scenePbrMaterials.length;
         standardComposition = await composeSceneStandardVariants(
             {
                 babylonAssets,
-                babylonTextureModes: new Map(result.manifest.assets.filter(asset => asset.kind === "babylon")
-                    .map(asset => [resolve(outputPath, "assets", asset.output), asset.babylonTextureModes ?? [true]])),
+                babylonTextureModes: new Map(
+                    result.manifest.assets
+                        .filter((asset) => asset.kind === "babylon")
+                        .map((asset) => [
+                            resolve(outputPath, "assets", asset.output),
+                            asset.babylonTextureModes ?? [true],
+                        ]),
+                ),
                 fog: result.manifest.features.includes("renderer:fog"),
                 vertexColors: result.manifest.features.includes(
                     "material:standard-vertex-colors",
                 ),
-                skeleton: result.manifest.features.includes("material:standard-skeleton"),
-                vertexAlpha: result.manifest.features.includes("mesh:vertex-alpha"),
+                skeleton: result.manifest.features.includes(
+                    "material:standard-skeleton",
+                ),
+                vertexAlpha:
+                    result.manifest.features.includes("mesh:vertex-alpha"),
                 noColorViews: result.manifest.features.includes(
                     "material:no-color-view",
                 ),
-                esmShadowViews: result.manifest.features.includes(
-                    "shadow:esm",
-                ),
+                esmShadowViews: result.manifest.features.includes("shadow:esm"),
                 emissiveRenderTexture: result.manifest.features.includes(
                     "material:standard-emissive-render-texture",
                 ),
@@ -1048,7 +1018,9 @@ export async function composeScenePipeline({
                 emissiveFileTexture: result.manifest.features.includes(
                     "material:standard-emissive-file-texture",
                 ),
-                lightmapFileTexture: result.manifest.features.includes("material:standard-lightmap"),
+                lightmapFileTexture: result.manifest.features.includes(
+                    "material:standard-lightmap",
+                ),
                 uvTransform: result.manifest.features.includes(
                     "material:standard-uv-transform",
                 ),
@@ -1066,9 +1038,8 @@ export async function composeScenePipeline({
                     ),
                 thinInstances: hasRuntimeThinInstances,
                 thinInstanceColors: hasRuntimeThinInstanceColors,
-                morphTargets: result.manifest.features.includes(
-                    "mesh:morph-targets",
-                ),
+                morphTargets:
+                    result.manifest.features.includes("mesh:morph-targets"),
                 sceneMaterials: sceneStandardMaterials,
                 sceneMeshFeatureValues: [
                     ...new Set(
@@ -1132,27 +1103,39 @@ export async function composeScenePipeline({
     const nodeVariants: NodeVariantManifestEntry[] = [];
     if (result.manifest.nodeMaterials.length > 0 && geometryTasks.length > 0) {
         for (const asset of uniqueGltfAssets) {
-            const document = glbDocument(resolve(outputPath, "assets", asset.output));
-            const reason = document ? await nodeGeometryAssetRefusal(document) : "an unreadable glTF document";
+            const document = glbDocument(
+                resolve(outputPath, "assets", asset.output),
+            );
+            const reason = document
+                ? await nodeGeometryAssetRefusal(document)
+                : "an unreadable glTF document";
             // The per-document half of the node-geometry rule in the
             // unsupported-combination table (`generation-refusal.ts`):
             // evaluated here because only this walk has the documents.
-            if (reason) refuseGeneration("renderer:geometry-output", `Node geometry views do not represent ${reason} in '${asset.output}'.`, result.manifest.featureSites);
+            if (reason)
+                refuseGeneration(
+                    "renderer:geometry-output",
+                    `Node geometry views do not represent ${reason} in '${asset.output}'.`,
+                    result.manifest.featureSites,
+                );
         }
     }
-    const repositoryRoot = result.manifest.nodeMaterials.length > 0
-        ? findRepositoryRoot(dirname(resolve(result.manifest.source)))
-        : "";
+    const repositoryRoot =
+        result.manifest.nodeMaterials.length > 0
+            ? findRepositoryRoot(dirname(resolve(result.manifest.source)))
+            : "";
     for (const [index, material] of result.manifest.nodeMaterials.entries()) {
-        const graph = material.kind === "literal"
-            ? material.graph
-            : await executeModuleGraph({
-                modulePath: resolve(repositoryRoot, material.module),
-                exportName: material.exportName,
-            });
-        const label = material.kind === "literal"
-            ? `${index}`
-            : `${material.module}#${material.exportName}`;
+        const graph =
+            material.kind === "literal"
+                ? material.graph
+                : await executeModuleGraph({
+                      modulePath: resolve(repositoryRoot, material.module),
+                      exportName: material.exportName,
+                  });
+        const label =
+            material.kind === "literal"
+                ? `${index}`
+                : `${material.module}#${material.exportName}`;
         // Which lights this graph receives from, and whether the scene
         // casts a shadow from it: the receiver's bindings and the caster's
         // second module are both the pin's own answers, and both need the
@@ -1180,28 +1163,31 @@ export async function composeScenePipeline({
                     (caster) => caster.nodeMaterial === index,
                 ),
         );
-        const composed = await composeNodeMaterial(
-            graph,
-            label,
-            {
-                shadowLights: graphShadowLights,
-                castsEsmShadow,
-                blockEmitters: material.blockEmitters,
-                pinnedBlockLoader: material.pinnedBlockLoader,
-                castsPcfShadow,
-                // A geometry-output task draws every mesh the scene admits,
-                // so a graph in a scene carrying one is drawn by it and
-                // composes a view per task -- the same reason the PBR family
-                // composes an MRT variant per task from the same list.
-                geometryTasks,
-            },
-        );
+        const composed = await composeNodeMaterial(graph, label, {
+            shadowLights: graphShadowLights,
+            castsEsmShadow,
+            blockEmitters: material.blockEmitters,
+            pinnedBlockLoader: material.pinnedBlockLoader,
+            castsPcfShadow,
+            // A geometry-output task draws every mesh the scene admits,
+            // so a graph in a scene carrying one is drawn by it and
+            // composes a view per task -- the same reason the PBR family
+            // composes an MRT variant per task from the same list.
+            geometryTasks,
+        });
         // Slot initialization may follow construction. The native builder
         // observes missing textures at the pin's binding point, in source
         // deferred-builder order, rather than while composing its shader.
         if (result.manifest.features.includes("material:node-inputs")) {
-            const unsupported = composed.inputs.find((input) => input.type !== "texture2d");
-            if (unsupported) refuseGeneration("material:node-inputs", `Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.`, result.manifest.featureSites);
+            const unsupported = composed.inputs.find(
+                (input) => input.type !== "texture2d",
+            );
+            if (unsupported)
+                refuseGeneration(
+                    "material:node-inputs",
+                    `Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.`,
+                    result.manifest.featureSites,
+                );
         }
         // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
         // the COMPILED texture bindings and looks each one up in
@@ -1217,7 +1203,8 @@ export async function composeScenePipeline({
     }
     const runtimeProfileRows = new Set(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
-            mesh.runtimeInstances ? [sceneMeshRows[index]!] : []),
+            mesh.runtimeInstances ? [sceneMeshRows[index]!] : [],
+        ),
     );
     return {
         lightKinds,
@@ -1227,14 +1214,16 @@ export async function composeScenePipeline({
         materialIndexBase: totalAssetMaterials,
         casterViewCount,
         renderableMeshFeatures,
-        meshProfiles: runtimeProfileRows.size > 0
-            ? {
-                sceneRows: sceneMeshRows,
-                staticRows: renderableMeshFeatures.map((_, row) => row).filter((row) =>
-                    !runtimeProfileRows.has(row)),
-                rowCount: renderableMeshFeatures.length,
-            }
-            : undefined,
+        meshProfiles:
+            runtimeProfileRows.size > 0
+                ? {
+                      sceneRows: sceneMeshRows,
+                      staticRows: renderableMeshFeatures
+                          .map((_, row) => row)
+                          .filter((row) => !runtimeProfileRows.has(row)),
+                      rowCount: renderableMeshFeatures.length,
+                  }
+                : undefined,
         pinnedVariants,
         runtimeMeshFeatures,
         standardComposition,

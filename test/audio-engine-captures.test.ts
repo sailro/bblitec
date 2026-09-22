@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
@@ -33,8 +36,11 @@ function checkMainBusStorage(declarations: string): void {
     const output = resolve("artifacts/audio-engine-captures-check");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "program.hpp"), result.cpp);
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -59,14 +65,32 @@ function checkMainBusStorage(declarations: string): void {
                 {1, 101}, {2, 1}, {4, 2}, {3, 4}, {5, 102}, {6, 5}, {8, 6}, {7, 8}};
             assert(contexts == 2 && nodes == 8 && edges == expected);
         }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", file]);
+    `,
+    );
+    runNativeFixtureCompiler(tools!, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        output,
+        "/I",
+        "native\\include",
+        file,
+    ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }).trim(), "");
 }
 
-test("keeps an assigned audio engine's main bus in its factory closure storage", { skip: !tools }, () => {
-    checkMainBusStorage(`
+test(
+    "keeps an assigned audio engine's main bus in its factory closure storage",
+    { skip: !tools },
+    () => {
+        checkMainBusStorage(`
         function createControls() {
             let audio: AudioEngine | null = null;
             async function start(): Promise<void> {
@@ -81,10 +105,14 @@ test("keeps an assigned audio engine's main bus in its factory closure storage",
             return { start, connect, reset };
         }
     `);
-});
+    },
+);
 
-test("keeps an assigned audio engine's main bus in its class field storage", { skip: !tools }, () => {
-    checkMainBusStorage(`
+test(
+    "keeps an assigned audio engine's main bus in its class field storage",
+    { skip: !tools },
+    () => {
+        checkMainBusStorage(`
         class Controls {
             private audio: AudioEngine | null = null;
             async start(): Promise<void> {
@@ -99,4 +127,5 @@ test("keeps an assigned audio engine's main bus in its class field storage", { s
         }
         function createControls() { return new Controls(); }
     `);
-});
+    },
+);

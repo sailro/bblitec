@@ -109,19 +109,16 @@ struct SplatPassResources {
     std::array<float, 16> world{};
 };
 inline void release_splat_pass_resources(SDL_GPUDevice*, SplatPassResources&) noexcept;
-using SplatPass = OwnedGpuRecord<SplatPassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_splat_pass_resources>;
+using SplatPass = OwnedGpuRecord<SplatPassResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                                 release_splat_pass_resources>;
 
-
-inline SplatPass create_splat_pass(
-    SDL_GPUDevice* device,
-    // Mutable because pass creation CONSUMES the cloud's staging bytes:
-    // it uploads the SH payloads and then releases them, which is the
-    // same reach boundary the neighbouring `splats_data` field draws.
-    Engine& engine,
-    SplatMeshHandle handle,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count) {
+inline SplatPass
+create_splat_pass(SDL_GPUDevice* device,
+                  // Mutable because pass creation CONSUMES the cloud's staging bytes:
+                  // it uploads the SH payloads and then releases them, which is the
+                  // same reach boundary the neighbouring `splats_data` field draws.
+                  Engine& engine, SplatMeshHandle handle, SDL_GPUTextureFormat target_format,
+                  SDL_GPUTextureFormat depth_format, SDL_GPUSampleCount sample_count) {
     SplatMeshRecord& record = handle_at(engine.splat_meshes, handle);
     SplatPass pass{device};
     pass.mesh = handle;
@@ -136,42 +133,29 @@ inline SplatPass create_splat_pass(
     if (pass.uniform_slot < 0) {
         gpu_error("splat.vert kept no uniform block for the splat UBO");
     }
-    auto vertex_shader = load_shader(
-        device,
-        "splat.vert",
-        SDL_GPU_SHADERSTAGE_VERTEX,
-        static_cast<std::uint32_t>(slots.textures.size()),
-        static_cast<std::uint32_t>(slots.uniforms.size()),
-        "vs",
-        0,
-        static_cast<std::uint32_t>(slots.storage_textures.size()));
+    auto vertex_shader = load_shader(device, "splat.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                     static_cast<std::uint32_t>(slots.textures.size()),
+                                     static_cast<std::uint32_t>(slots.uniforms.size()), "vs", 0,
+                                     static_cast<std::uint32_t>(slots.storage_textures.size()));
     // The fragment stage samples nothing: every data texture is read
     // in the vertex stage. Whether it declares the uniform block depends on
     // the scene -- the stock density is `exp(-dot(vq, vq)) * vc.a` over the
     // varyings alone, while a depth plugin reads the projection out of the
     // block -- so the sidecar decides, exactly as it does for a custom
     // sprite fragment.
-    const PinnedStageSlots fragment_slots =
-        read_pinned_stage_slots("splat.frag");
+    const PinnedStageSlots fragment_slots = read_pinned_stage_slots("splat.frag");
     pass.fragment_uniform_slot = stage_uniform_slot(fragment_slots, "u");
     if (!fragment_slots.textures.empty() || !fragment_slots.storage_textures.empty()) {
-        gpu_error(
-            "splat.frag kept a texture binding; the splat fragment stage "
-            "binds none");
+        gpu_error("splat.frag kept a texture binding; the splat fragment stage "
+                  "binds none");
     }
-    auto fragment_shader = load_shader(
-        device,
-        "splat.frag",
-        SDL_GPU_SHADERSTAGE_FRAGMENT,
-        0,
-        static_cast<std::uint32_t>(fragment_slots.uniforms.size()),
-        "fs");
+    auto fragment_shader =
+        load_shader(device, "splat.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
+                    static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
 
     SDL_GPUVertexAttribute attributes[2]{};
-    attributes[0] = SDL_GPUVertexAttribute{
-        0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
-    attributes[1] = SDL_GPUVertexAttribute{
-        1, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 0};
+    attributes[0] = SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
+    attributes[1] = SDL_GPUVertexAttribute{1, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, 0};
     SDL_GPUVertexBufferDescription buffers[2]{};
     buffers[0].slot = 0;
     buffers[0].pitch = 8;
@@ -199,8 +183,7 @@ inline SplatPass create_splat_pass(
     // A splat's quad is expanded around the projected covariance axes, so it
     // has no consistent winding to cull against.
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    info.depth_stencil_state.compare_op =
-        gpu_depth_compare(upstream::pinned_depth_compare);
+    info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
     // Depth writes off: the sorted draw order is the composite.
     info.depth_stencil_state.enable_depth_write = false;
@@ -209,9 +192,9 @@ inline SplatPass create_splat_pass(
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{
-        create_sdl_graphics_pipeline(device, &info), {device}};
-    if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline splat");
+    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    if (!pass.pipeline)
+        gpu_error("SDL_CreateGPUGraphicsPipeline splat");
     vertex_shader.reset();
     fragment_shader.reset();
 
@@ -219,40 +202,31 @@ inline SplatPass create_splat_pass(
     // gaussian-splatting-mesh.ts: the [-2, 2] half-extent is the domain
     // of the fragment's `exp(-dot(k, k))` kernel, so it travels from the
     // pin rather than being re-typed here.
-    pass.quad = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_VERTEX,
-        upstream::splat_quad_vertices.data(),
-        upstream::splat_quad_vertices.size() * sizeof(float));
-    pass.indices = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_INDEX,
-        upstream::splat_quad_indices.data(),
-        upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
+    pass.quad =
+        upload_buffer(device, SDL_GPU_BUFFERUSAGE_VERTEX, upstream::splat_quad_vertices.data(),
+                      upstream::splat_quad_vertices.size() * sizeof(float));
+    pass.indices =
+        upload_buffer(device, SDL_GPU_BUFFERUSAGE_INDEX, upstream::splat_quad_indices.data(),
+                      upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
 
     SDL_GPUBufferCreateInfo order_info{};
     order_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-    order_info.size =
-        static_cast<Uint32>(record.vertex_count * sizeof(float));
+    order_info.size = static_cast<Uint32>(record.vertex_count * sizeof(float));
     pass.order = SDL_CreateGPUBuffer(device, &order_info);
-    if (!pass.order) gpu_error("SDL_CreateGPUBuffer splat order");
+    if (!pass.order)
+        gpu_error("SDL_CreateGPUBuffer splat order");
 
     // The pin's nearest/clamp data sampler, emitted as data beside the
     // quad: a point fetch at level 0, so nothing here filters.
-    pass.sampler =
-        create_texture_sampler(device, upstream::splat_data_sampler);
+    pass.sampler = create_texture_sampler(device, upstream::splat_data_sampler);
 
     // The payload order {centers, cov_a, cov_b, colors} is the pin's,
     // published by the generated splat unit both backends consume.
     const auto payloads = upstream::splat_texture_payloads(record);
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
         pass.textures[slot].texture = upload_2d_texture(
-            device,
-            payloads[slot]->data(),
-            payloads[slot]->size() * sizeof(float),
-            record.texture_width,
-            record.texture_height,
-            SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+            device, payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
+            record.texture_width, record.texture_height, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
             "splat data");
         pass.textures[slot].sampler = pass.sampler;
     }
@@ -264,15 +238,9 @@ inline SplatPass create_splat_pass(
     }
     for (std::size_t slot = 0; slot < record.sh_textures.size(); ++slot) {
         pass.storage_textures[slot] = upload_2d_texture(
-            device,
-            record.sh_textures[slot].data(),
-            record.sh_textures[slot].size(),
-            record.texture_width,
-            record.texture_height,
-            SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
-            "splat harmonics",
-            1,
-            SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ);
+            device, record.sh_textures[slot].data(), record.sh_textures[slot].size(),
+            record.texture_width, record.texture_height, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+            "splat harmonics", 1, SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ);
     }
     // Released once the GPU owns the bytes. The neighbouring `splats_data` field
     // is reach-gated for the same reason and states it: these three
@@ -286,8 +254,7 @@ inline SplatPass create_splat_pass(
     }
 #endif
 
-    pass.scratch = upstream::create_splat_sort_scratch(
-        static_cast<double>(record.vertex_count));
+    pass.scratch = upstream::create_splat_sort_scratch(static_cast<double>(record.vertex_count));
     pass.cpu_order.assign(record.vertex_count, 0u);
     pass.order_floats.assign(record.vertex_count, 0.0f);
     pass.data_version = record.data_version;
@@ -297,16 +264,14 @@ inline SplatPass create_splat_pass(
 /** Reuse the pin's existing textures when updateData commits equal-size rows.
  * Picking calls this without sorting: the pin publishes texture writes at
  * updateData, but its next frame owns the new depth order. */
-inline void sync_splat_data(
-    SDL_GPUDevice* device,
-    const SplatMeshRecord& record,
-    SplatPass& pass) {
-    if (pass.data_version == record.data_version) return;
+inline void sync_splat_data(SDL_GPUDevice* device, const SplatMeshRecord& record, SplatPass& pass) {
+    if (pass.data_version == record.data_version)
+        return;
     const auto payloads = upstream::splat_texture_payloads(record);
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
-        upload_2d_texture_into(device, pass.textures[slot].texture,
-            payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
-            record.texture_width, record.texture_height, "splat data update");
+        upload_2d_texture_into(device, pass.textures[slot].texture, payloads[slot]->data(),
+                               payloads[slot]->size() * sizeof(float), record.texture_width,
+                               record.texture_height, "splat data update");
     }
     // updateData resets this snapshot; let the unchanged pinned epsilon
     // decide whether the next frame's camera/world kernel requires a sort.
@@ -319,56 +284,40 @@ inline void sync_splat_data(
  * epsilon, then upload the order. The UBO is pushed at record time on this
  * backend, so only the order lands here.
  */
-inline void upload_splat_pass(
-    SDL_GPUDevice* device,
-    const Engine& engine,
-    SplatPass& pass,
-    const std::array<float, 16>& view) {
+inline void upload_splat_pass(SDL_GPUDevice* device, const Engine& engine, SplatPass& pass,
+                              const std::array<float, 16>& view) {
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_splat_data(device, record, pass);
 
     // Composed once here for both the sort gate and the draw's uniforms,
     // exactly as the Dawn upload composes it once for both.
     pass.world = upstream::build_splat_world(record);
-    if (!upstream::splat_sort_dirty(
-            pass.world,
-            view,
-            pass.depth_transform)) {
+    if (!upstream::splat_sort_dirty(pass.world, view, pass.depth_transform)) {
         return;
     }
-    upstream::sort_splats_back_to_front(
-        record.positions,
-        static_cast<double>(record.vertex_count),
-        pass.depth_transform,
-        pass.cpu_order,
-        pass.scratch);
+    upstream::sort_splats_back_to_front(record.positions, static_cast<double>(record.vertex_count),
+                                        pass.depth_transform, pass.cpu_order, pass.scratch);
     // The stage reads the index as a float attribute, which is what the
     // pin's own `Float32Array` order buffer gives it.
     for (std::size_t i = 0; i < pass.cpu_order.size(); ++i) {
         pass.order_floats[i] = static_cast<float>(pass.cpu_order[i]);
     }
-    update_buffer(
-        device,
-        pass.order,
-        pass.order_floats.data(),
-        pass.order_floats.size() * sizeof(float));
+    update_buffer(device, pass.order, pass.order_floats.data(),
+                  pass.order_floats.size() * sizeof(float));
 }
 
 /** Records the splat draw into a pass the scene renderer already began. */
-inline void record_splat_pass(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    const Engine& engine,
-    const SplatPass& pass,
-    const std::array<float, 16>& view,
-    const std::array<float, 16>& projection,
-    // `getCameraPosition` is the camera world matrix's own translation, in
-    // absolute space -- which is what the shared helper returns, because a
-    // floating-origin scene reaching a splat refuses at generation.
-    [[maybe_unused]] const std::array<float, 4>& camera_position,
-    double width,
-    double height) {
-    if (pass.vertex_count == 0) return;
+inline void
+record_splat_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                  const Engine& engine, const SplatPass& pass, const std::array<float, 16>& view,
+                  const std::array<float, 16>& projection,
+                  // `getCameraPosition` is the camera world matrix's own translation, in
+                  // absolute space -- which is what the shared helper returns, because a
+                  // floating-origin scene reaching a splat refuses at generation.
+                  [[maybe_unused]] const std::array<float, 4>& camera_position, double width,
+                  double height) {
+    if (pass.vertex_count == 0)
+        return;
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
 
@@ -376,25 +325,15 @@ inline void record_splat_pass(
     upstream::write_splat_uniforms(
         uniforms,
         // This frame's composition, stashed by `upload_splat_pass` above.
-        pass.world,
-        view,
-        projection,
-        width,
-        height,
-        record.texture_width,
-        record.texture_height
+        pass.world, view, projection, width, height, record.texture_width, record.texture_height
 #if BBLITE_SPLAT_SH
         ,
         camera_position
 #endif
     );
-    SDL_PushGPUVertexUniformData(
-        command,
-        static_cast<Uint32>(pass.uniform_slot),
-        &uniforms,
-        sizeof(uniforms));
-    push_stage_uniform(
-        command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
+    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pass.uniform_slot), &uniforms,
+                                 sizeof(uniforms));
+    push_stage_uniform(command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};
     vertex_bindings[0].buffer = pass.quad;
@@ -403,44 +342,42 @@ inline void record_splat_pass(
 
     SDL_GPUBufferBinding index_binding{};
     index_binding.buffer = pass.indices;
-    SDL_BindGPUIndexBuffer(
-        render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+    SDL_BindGPUIndexBuffer(render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     // Bound to the VERTEX stage: the pin samples every data texture
     // there and the fragment stage reads none of them.
-    SDL_BindGPUVertexSamplers(
-        render_pass,
-        0,
-        pass.textures.data(),
-        static_cast<Uint32>(pass.textures.size()));
+    SDL_BindGPUVertexSamplers(render_pass, 0, pass.textures.data(),
+                              static_cast<Uint32>(pass.textures.size()));
     if (!pass.storage_textures.empty()) {
-        SDL_BindGPUVertexStorageTextures(
-            render_pass, 0, pass.storage_textures.data(),
-            static_cast<Uint32>(pass.storage_textures.size()));
+        SDL_BindGPUVertexStorageTextures(render_pass, 0, pass.storage_textures.data(),
+                                         static_cast<Uint32>(pass.storage_textures.size()));
     }
 
-    SDL_DrawGPUIndexedPrimitives(
-        render_pass,
-        static_cast<Uint32>(upstream::splat_quad_indices.size()),
-        pass.vertex_count,
-        0,
-        0,
-        0);
+    SDL_DrawGPUIndexedPrimitives(render_pass,
+                                 static_cast<Uint32>(upstream::splat_quad_indices.size()),
+                                 pass.vertex_count, 0, 0, 0);
 }
 
-inline void release_splat_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SplatPassResources& pass) noexcept {
+inline void release_splat_pass_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                         SplatPassResources& pass) noexcept {
     for (SDL_GPUTexture* texture : pass.storage_textures) {
-        if (texture) SDL_ReleaseGPUTexture(device, texture);
+        if (texture)
+            SDL_ReleaseGPUTexture(device, texture);
     }
     for (SDL_GPUTextureSamplerBinding& binding : pass.textures) {
-        if (binding.texture) SDL_ReleaseGPUTexture(device, binding.texture);
+        if (binding.texture)
+            SDL_ReleaseGPUTexture(device, binding.texture);
         binding.texture = nullptr;
         binding.sampler = nullptr;
     }
-    if (pass.sampler) SDL_ReleaseGPUSampler(device, pass.sampler);
-    if (pass.order) SDL_ReleaseGPUBuffer(device, pass.order);
-    if (pass.indices) SDL_ReleaseGPUBuffer(device, pass.indices);
-    if (pass.quad) SDL_ReleaseGPUBuffer(device, pass.quad);
+    if (pass.sampler)
+        SDL_ReleaseGPUSampler(device, pass.sampler);
+    if (pass.order)
+        SDL_ReleaseGPUBuffer(device, pass.order);
+    if (pass.indices)
+        SDL_ReleaseGPUBuffer(device, pass.indices);
+    if (pass.quad)
+        SDL_ReleaseGPUBuffer(device, pass.quad);
     pass.pipeline.reset();
     pass.sampler = nullptr;
     pass.order = nullptr;

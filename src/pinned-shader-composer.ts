@@ -125,9 +125,7 @@ export function extractPackagedStringLiteral(
     const marker = `const ${name} = "`;
     const start = source.indexOf(marker);
     if (start < 0) {
-        throw new Error(
-            `Pinned packaged literal '${name}' was not found.`,
-        );
+        throw new Error(`Pinned packaged literal '${name}' was not found.`);
     }
     let index = start + marker.length;
     let escaped = "";
@@ -141,9 +139,7 @@ export function extractPackagedStringLiteral(
         index += 1;
     }
     if (index >= source.length) {
-        throw new Error(
-            `Pinned packaged literal '${name}' is unterminated.`,
-        );
+        throw new Error(`Pinned packaged literal '${name}' is unterminated.`);
     }
     return JSON.parse(`"${escaped}"`) as string;
 }
@@ -229,9 +225,7 @@ const pinnedModules = new Map<string, Promise<unknown>>();
  * of pinned modules once per material it derives. `pinnedLibraryRoot()` is
  * already process-cached, so a path's URL cannot change under the memo.
  */
-export async function importPinnedModule<T>(
-    relativePath: string,
-): Promise<T> {
+export async function importPinnedModule<T>(relativePath: string): Promise<T> {
     const cached = pinnedModules.get(relativePath);
     if (cached) return (await cached) as T;
     const pending = import(
@@ -304,7 +298,12 @@ export function pinnedModuleUrl(
     extraExports: readonly string[] = [],
     redirects: ReadonlyMap<string, string> = new Map(),
 ): string {
-    return pinnedModuleTextUrl(relativePath, readPinnedLibraryModule(relativePath), extraExports, redirects);
+    return pinnedModuleTextUrl(
+        relativePath,
+        readPinnedLibraryModule(relativePath),
+        extraExports,
+        redirects,
+    );
 }
 
 /** Anchor a transformed pinned module against its original import directory. */
@@ -314,9 +313,17 @@ export function pinnedModuleTextUrl(
     extraExports: readonly string[] = [],
     redirects: ReadonlyMap<string, string> = new Map(),
 ): string {
-    const anchored = anchorSpecifiersInText(source, join(pinnedLibraryRoot(), relativePath), redirects);
-    return javascriptModuleUrl(anchored +
-        (extraExports.length ? `\nexport { ${extraExports.join(", ")} };\n` : ""));
+    const anchored = anchorSpecifiersInText(
+        source,
+        join(pinnedLibraryRoot(), relativePath),
+        redirects,
+    );
+    return javascriptModuleUrl(
+        anchored +
+            (extraExports.length
+                ? `\nexport { ${extraExports.join(", ")} };\n`
+                : ""),
+    );
 }
 
 /**
@@ -536,9 +543,7 @@ function stripKeywordsOutsideLiterals(
     return text.replace(
         new RegExp(`\\b(?:${keywords.join("|")})\\s+`, "g"),
         (match: string, offset: number) =>
-            literals.some(
-                ([start, end]) => offset >= start && offset < end,
-            )
+            literals.some(([start, end]) => offset >= start && offset < end)
                 ? match
                 : "",
     );
@@ -574,7 +579,7 @@ export async function importPinnedModuleUnasynced(
     const modulePath = join(pinnedLibraryRoot(), relativePath);
     const anchor = (specifier: string): string =>
         redirects.get(specifier) ??
-            pathToFileURL(resolve(dirname(modulePath), specifier)).href;
+        pathToFileURL(resolve(dirname(modulePath), specifier)).href;
     const hoisted: string[] = [];
     let dynamicIndex = 0;
     // The dynamic imports are hoisted BEFORE the specifiers are anchored,
@@ -586,9 +591,9 @@ export async function importPinnedModuleUnasynced(
             (_match, _quote: string, specifier: string) => {
                 const name = `__pinnedDynamicImport${dynamicIndex++}`;
                 hoisted.push(
-                    `import * as ${name} from ${
-                        JSON.stringify(anchor(specifier))
-                    };`,
+                    `import * as ${name} from ${JSON.stringify(
+                        anchor(specifier),
+                    )};`,
                 );
                 return name;
             },
@@ -632,15 +637,10 @@ export function assertPinnedSync<T>(value: T, what: string): T {
  * composed fragment, so a changed formula arrives here instead of drifting.
  * Braces nest only through the body, so a depth scan is enough.
  */
-export function extractWgslFunction(
-    source: string,
-    name: string,
-): string {
+export function extractWgslFunction(source: string, name: string): string {
     const start = source.indexOf(`fn ${name}(`);
     if (start < 0) {
-        throw new Error(
-            `Pinned composed WGSL declares no function '${name}'.`,
-        );
+        throw new Error(`Pinned composed WGSL declares no function '${name}'.`);
     }
     let depth = 0;
     let seenBody = false;
@@ -656,7 +656,5 @@ export function extractWgslFunction(
             }
         }
     }
-    throw new Error(
-        `Pinned composed WGSL function '${name}' is unterminated.`,
-    );
+    throw new Error(`Pinned composed WGSL function '${name}' is unterminated.`);
 }

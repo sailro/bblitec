@@ -84,31 +84,43 @@ interface Attempt {
 export function refusalClass(message: string): string {
     return message
         .replace(/'[^']*'/g, "'…'")
-        .replace(/"[^"]*"/g, "\"…\"")
+        .replace(/"[^"]*"/g, '"…"')
         .replace(/\([^()]*\)/g, "(…)")
         .replace(/\b\d+(?:\.\d+)?\b/g, "N");
 }
 
 function enclosingFunctionName(statement: ts.Statement): string {
-    const owner = ts.findAncestor(statement.parent, node => ts.isFunctionLike(node) || ts.isSourceFile(node));
+    const owner = ts.findAncestor(
+        statement.parent,
+        (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
+    );
     if (!owner || ts.isSourceFile(owner)) return "<module>";
     const name = ts.getNameOfDeclaration(owner);
     if (name) return name.getText();
     if (ts.isConstructorDeclaration(owner)) return "constructor";
-    return ts.isVariableDeclaration(owner.parent) && ts.isIdentifier(owner.parent.name)
-        ? owner.parent.name.text : "<anonymous>";
+    return ts.isVariableDeclaration(owner.parent) &&
+        ts.isIdentifier(owner.parent.name)
+        ? owner.parent.name.text
+        : "<anonymous>";
 }
 
 function declaredNames(statement: ts.Statement): ts.Identifier[] {
     const names: ts.Identifier[] = [];
     const collect = (name: ts.BindingName): void => {
         if (ts.isIdentifier(name)) names.push(name);
-        else for (const element of name.elements) if (ts.isBindingElement(element)) collect(element.name);
+        else
+            for (const element of name.elements)
+                if (ts.isBindingElement(element)) collect(element.name);
     };
     if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations) collect(declaration.name);
-    } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) ||
-        ts.isEnumDeclaration(statement)) && statement.name) {
+        for (const declaration of statement.declarationList.declarations)
+            collect(declaration.name);
+    } else if (
+        (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement) ||
+            ts.isEnumDeclaration(statement)) &&
+        statement.name
+    ) {
         names.push(statement.name);
     }
     return names;
@@ -121,7 +133,11 @@ export class SurveyCollector {
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
         const previous = this.current;
-        const attempt: Attempt = { attempted: 0, refusals: new Map(), declarations: new Map() };
+        const attempt: Attempt = {
+            attempted: 0,
+            refusals: new Map(),
+            declarations: new Map(),
+        };
         this.realms.set(realm, attempt);
         this.current = attempt;
         try {
@@ -132,7 +148,11 @@ export class SurveyCollector {
     }
 
     /** Lowers one statement under a transaction; a refusal rolls it back and is recorded. */
-    public attemptStatement(context: StatementContext, statement: ts.Statement, lower: () => void): void {
+    public attemptStatement(
+        context: StatementContext,
+        statement: ts.Statement,
+        lower: () => void,
+    ): void {
         const attempt = this.current;
         if (!attempt) {
             lower();
@@ -147,12 +167,21 @@ export class SurveyCollector {
         }
     }
 
-    private record(attempt: Attempt, checker: ts.TypeChecker, statement: ts.Statement, error: CompileError): void {
+    private record(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        statement: ts.Statement,
+        error: CompileError,
+    ): void {
         let census = attempt.refusals.get(error.message);
         if (!census) {
             const location = sourceLocation(statement);
             census = {
-                site: { file: error.fileName, line: error.line, column: error.column },
+                site: {
+                    file: error.fileName,
+                    line: error.line,
+                    column: error.column,
+                },
                 message: error.detail,
                 class: refusalClass(error.detail),
                 statement: {
@@ -176,14 +205,24 @@ export class SurveyCollector {
         // whichever caller reached the site first.
         for (const name of declaredNames(statement)) {
             const symbol = checker.getSymbolAtLocation(name);
-            if (symbol && !attempt.declarations.has(symbol)) attempt.declarations.set(symbol, census.site);
+            if (symbol && !attempt.declarations.has(symbol))
+                attempt.declarations.set(symbol, census.site);
         }
     }
 
     /** A refusal raised at a name that a refused statement would have declared. */
-    private cascadeOf(attempt: Attempt, checker: ts.TypeChecker, error: CompileError): SurveySite | undefined {
+    private cascadeOf(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        error: CompileError,
+    ): SurveySite | undefined {
         const subject = error.subject;
-        if (!subject || !ts.isIdentifier(subject) || attempt.declarations.size === 0) return undefined;
+        if (
+            !subject ||
+            !ts.isIdentifier(subject) ||
+            attempt.declarations.size === 0
+        )
+            return undefined;
         const symbol = checker.getSymbolAtLocation(subject);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
@@ -196,20 +235,37 @@ export class SurveyCollector {
             for (const [key, census] of attempt.refusals) {
                 const existing = merged.get(key);
                 if (!existing) {
-                    merged.set(key, { ...census, rolledBack: new Set(census.rolledBack) });
+                    merged.set(key, {
+                        ...census,
+                        rolledBack: new Set(census.rolledBack),
+                    });
                 } else {
                     existing.occurrences += census.occurrences;
-                    for (const statement of census.rolledBack) existing.rolledBack.add(statement);
+                    for (const statement of census.rolledBack)
+                        existing.rolledBack.add(statement);
                 }
             }
         }
         const refusals = [...merged.values()]
-            .map(({ rolledBack, ...refusal }): SurveyRefusal => ({ ...refusal, statements: rolledBack.size }))
-            .sort((a, b) => a.site.file.localeCompare(b.site.file) || a.site.line - b.site.line || a.site.column - b.site.column);
+            .map(({ rolledBack, ...refusal }): SurveyRefusal => ({
+                ...refusal,
+                statements: rolledBack.size,
+            }))
+            .sort(
+                (a, b) =>
+                    a.site.file.localeCompare(b.site.file) ||
+                    a.site.line - b.site.line ||
+                    a.site.column - b.site.column,
+            );
         const classes = new Map<string, SurveyClass>();
         for (const refusal of refusals) {
-            const entry = classes.get(refusal.class) ??
-                { class: refusal.class, sites: 0, cascades: 0, occurrences: 0, example: refusal.message };
+            const entry = classes.get(refusal.class) ?? {
+                class: refusal.class,
+                sites: 0,
+                cascades: 0,
+                occurrences: 0,
+                example: refusal.message,
+            };
             entry.sites++;
             if (refusal.cascade) entry.cascades++;
             entry.occurrences += refusal.occurrences;
@@ -219,10 +275,20 @@ export class SurveyCollector {
             schemaVersion: 1,
             complete: terminal === undefined,
             ...(terminal === undefined ? {} : { terminal }),
-            statements: { attempted, refused: refusals.reduce((count, refusal) => count + refusal.occurrences, 0) },
+            statements: {
+                attempted,
+                refused: refusals.reduce(
+                    (count, refusal) => count + refusal.occurrences,
+                    0,
+                ),
+            },
             refusals,
-            classes: [...classes.values()].sort((a, b) =>
-                b.sites - a.sites || b.occurrences - a.occurrences || a.class.localeCompare(b.class)),
+            classes: [...classes.values()].sort(
+                (a, b) =>
+                    b.sites - a.sites ||
+                    b.occurrences - a.occurrences ||
+                    a.class.localeCompare(b.class),
+            ),
         };
     }
 }

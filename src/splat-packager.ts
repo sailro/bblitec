@@ -37,9 +37,9 @@ import {
     screenshotCaptureBrowserArgs,
 } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
-import {LoweringContext} from "./lowering/context.js";
-import {transpileForBrowser} from "./typescript-transpile.js";
-import {ensurePinnedLoaderExecution} from "./pinned-material-input.js";
+import { LoweringContext } from "./lowering/context.js";
+import { transpileForBrowser } from "./typescript-transpile.js";
+import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import {
     cachedBake,
     cachedBakeSync,
@@ -185,8 +185,7 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
     // already owns its whole buffer and slicing it would copy the asset a
     // second time -- multiple megabytes for a splat.
     const data =
-        bytes.byteOffset === 0 &&
-        bytes.byteLength === bytes.buffer.byteLength
+        bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
             ? (bytes.buffer as ArrayBuffer)
             : (bytes.buffer.slice(
                   bytes.byteOffset,
@@ -215,8 +214,9 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
             },
             () => {
                 const parsed = compressed
-                    ? pinnedCompressedPlyParser
-                          .convertCompressedPlyToParsedSplat(data)
+                    ? pinnedCompressedPlyParser.convertCompressedPlyToParsedSplat(
+                          data,
+                      )
                     : pinnedPlyParser.convertPlyToSplat(data);
                 if (parsed.data.byteLength === 0) {
                     throw new Error(
@@ -320,10 +320,7 @@ function observedRotation(
                 "pipeline composes them from that call alone.",
         );
     }
-    if (
-        observed.written.length !== 1 ||
-        observed.written[0] !== "rotation"
-    ) {
+    if (observed.written.length !== 1 || observed.written[0] !== "rotation") {
         throw new Error(
             `${what} wrote ${observed.written.join(", ")} on the attached ` +
                 "cloud; this pass carries its rotation alone.",
@@ -428,7 +425,10 @@ function frameSpzRun(run: SpzRun): Uint8Array {
 }
 
 function isStringList(value: unknown): value is string[] {
-    return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+    return (
+        Array.isArray(value) &&
+        value.every((entry) => typeof entry === "string")
+    );
 }
 
 function isNumberTriple(value: unknown): value is [number, number, number] {
@@ -441,17 +441,33 @@ function isNumberTriple(value: unknown): value is [number, number, number] {
 
 function unframeSpzRun(framed: Uint8Array): SpzRun {
     const malformed = (): Error =>
-        new Error("Cached loadSPZ capture is not the shape this packager stores.");
+        new Error(
+            "Cached loadSPZ capture is not the shape this packager stores.",
+        );
     if (framed.byteLength < 4) throw malformed();
-    const headerBytes = new DataView(framed.buffer, framed.byteOffset, 4).getUint32(0, true);
+    const headerBytes = new DataView(
+        framed.buffer,
+        framed.byteOffset,
+        4,
+    ).getUint32(0, true);
     if (4 + headerBytes > framed.byteLength) throw malformed();
     const parsed: unknown = JSON.parse(
-        Buffer.from(framed.buffer, framed.byteOffset + 4, headerBytes).toString("utf8"),
+        Buffer.from(framed.buffer, framed.byteOffset + 4, headerBytes).toString(
+            "utf8",
+        ),
     );
     const header = asObject(parsed);
     if (!header) throw malformed();
     const {
-        attached, returnedAttached, name, fragments, written, rotation, shDegree, rowBytes, shBytes,
+        attached,
+        returnedAttached,
+        name,
+        fragments,
+        written,
+        rotation,
+        shDegree,
+        rowBytes,
+        shBytes,
     } = header;
     if (
         typeof attached !== "number" ||
@@ -469,9 +485,20 @@ function unframeSpzRun(framed: Uint8Array): SpzRun {
     }
     const rowsStart = 4 + headerBytes;
     return {
-        captured: { attached, returnedAttached, name, fragments, written, rotation, shDegree },
+        captured: {
+            attached,
+            returnedAttached,
+            name,
+            fragments,
+            written,
+            rotation,
+            shDegree,
+        },
         rows: framed.subarray(rowsStart, rowsStart + rowBytes),
-        sh: framed.subarray(rowsStart + rowBytes, rowsStart + rowBytes + shBytes),
+        sh: framed.subarray(
+            rowsStart + rowBytes,
+            rowsStart + rowBytes + shBytes,
+        ),
     };
 }
 
@@ -552,9 +579,7 @@ async function runPinnedSpz(bytes: Uint8Array, url: string): Promise<SpzRun> {
         recorded.push(entry);
     });
     let mesh: unknown;
-    let fetching:
-        | { module: PinnedSpzModule; release: () => void }
-        | undefined;
+    let fetching: { module: PinnedSpzModule; release: () => void } | undefined;
     try {
         fetching = await importPinnedModuleFetching<PinnedSpzModule>(
             SPZ_MODULE,
@@ -567,13 +592,13 @@ async function runPinnedSpz(bytes: Uint8Array, url: string): Promise<SpzRun> {
                 }
                 return bytes;
             },
-            new Map([[SPZ_ATTACH_SPECIFIER, attachParsedSplatRecorder(attach.hook)]]),
+            new Map([
+                [SPZ_ATTACH_SPECIFIER, attachParsedSplatRecorder(attach.hook)],
+            ]),
         );
         const module = fetching.module;
         if (typeof module.loadSPZ !== "function") {
-            throw new Error(
-                `Pinned ${SPZ_MODULE} no longer exports loadSPZ.`,
-            );
+            throw new Error(`Pinned ${SPZ_MODULE} no longer exports loadSPZ.`);
         }
         mesh = await module.loadSPZ(undefined, url);
     } finally {
@@ -822,18 +847,39 @@ export async function extractGltfGaussianSplats(
     const recorder = attachParsedSplatRecorder(hook);
     try {
         await ensurePinnedLoaderExecution();
-        const sourceUrl = (path: string, redirects: ReadonlyMap<string, string> = new Map()) => pinnedModuleTextUrl(
-            path.replace(/^src\//, "").replace(/\.ts$/, ".js"), transpileForBrowser(context.sourceFile(path).text, path), [], redirects);
-        const featureUrl = sourceUrl("src/loader-gltf/gltf-feature-gaussian-splatting.ts",
-            new Map([["../loader-splat/load-splat.js", recorder]]));
-        const registry = await import(sourceUrl("src/loader-gltf/gltf-feature-registry.ts",
-            new Map([["./gltf-feature-gaussian-splatting.js", featureUrl]]))) as {
-                loadGltfFeatures(json: JsonRecord): Promise<Array<{id: string}>>;
-            };
-        const {default: feature} = await import(featureUrl) as {default: PinnedGaussianSplattingFeature};
-        const selected = (await registry.loadGltfFeatures(json)).filter(candidate => candidate === feature);
+        const sourceUrl = (
+            path: string,
+            redirects: ReadonlyMap<string, string> = new Map(),
+        ) =>
+            pinnedModuleTextUrl(
+                path.replace(/^src\//, "").replace(/\.ts$/, ".js"),
+                transpileForBrowser(context.sourceFile(path).text, path),
+                [],
+                redirects,
+            );
+        const featureUrl = sourceUrl(
+            "src/loader-gltf/gltf-feature-gaussian-splatting.ts",
+            new Map([["../loader-splat/load-splat.js", recorder]]),
+        );
+        const registry = (await import(
+            sourceUrl(
+                "src/loader-gltf/gltf-feature-registry.ts",
+                new Map([["./gltf-feature-gaussian-splatting.js", featureUrl]]),
+            )
+        )) as {
+            loadGltfFeatures(json: JsonRecord): Promise<Array<{ id: string }>>;
+        };
+        const { default: feature } = (await import(featureUrl)) as {
+            default: PinnedGaussianSplattingFeature;
+        };
+        const selected = (await registry.loadGltfFeatures(json)).filter(
+            (candidate) => candidate === feature,
+        );
         if (!selected.length) return undefined;
-        if (selected.length !== 1) throw new Error("Unrepresented repeated Gaussian-splat feature activation.");
+        if (selected.length !== 1)
+            throw new Error(
+                "Unrepresented repeated Gaussian-splat feature activation.",
+            );
         if (
             feature?.id !== GAUSSIAN_SPLATTING_EXTENSION ||
             typeof feature.preParse !== "function" ||
@@ -855,8 +901,11 @@ export async function extractGltfGaussianSplats(
         if (Object.keys(applied).length === 0) return [];
         if (
             typeof applied._sceneSetup !== "function" ||
-            !Array.isArray(applied._gaussianSplats) || applied._gaussianSplats.length !== 0 ||
-            Object.keys(applied).some(key => key !== "_sceneSetup" && key !== "_gaussianSplats")
+            !Array.isArray(applied._gaussianSplats) ||
+            applied._gaussianSplats.length !== 0 ||
+            Object.keys(applied).some(
+                (key) => key !== "_sceneSetup" && key !== "_gaussianSplats",
+            )
         ) {
             throw new Error(
                 `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} feature no longer hands ` +
@@ -869,8 +918,12 @@ export async function extractGltfGaussianSplats(
         // which the recorder replaces, so nothing reads a member of it; a
         // pin that starts to throws here naming the property.
         applied._sceneSetup(undefined);
-        if (applied._gaussianSplats.length !== recorded.length ||
-            applied._gaussianSplats.some((mesh, index) => mesh !== recorded[index]!.mesh)) {
+        if (
+            applied._gaussianSplats.length !== recorded.length ||
+            applied._gaussianSplats.some(
+                (mesh, index) => mesh !== recorded[index]!.mesh,
+            )
+        ) {
             throw new Error(
                 `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} feature published ` +
                     `${applied._gaussianSplats.length} splat promise(s) from ` +

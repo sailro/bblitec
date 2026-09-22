@@ -4,18 +4,18 @@ import ts from "typescript";
 import { doubleLiteral } from "./data-types.js";
 import type { Value } from "./types.js";
 
-interface SpriteAtlasRecordContext
-    extends Pick<LoweringServices,
-        | "dataTypes"
-        | "dataValue"
-        | "requireDefaultEngine"
-        | "allocateTemporaryCppName"
-        | "registerNativeFunction"
-        | "reachJsData"
-        | "reachImageDecode"
-        | "reachFeature"
-        | "fail"
-    > {}
+interface SpriteAtlasRecordContext extends Pick<
+    LoweringServices,
+    | "dataTypes"
+    | "dataValue"
+    | "requireDefaultEngine"
+    | "allocateTemporaryCppName"
+    | "registerNativeFunction"
+    | "reachJsData"
+    | "reachImageDecode"
+    | "reachFeature"
+    | "fail"
+> {}
 
 /**
  * Atlas-builder helpers already registered for one compilation, keyed on
@@ -42,10 +42,7 @@ export function compileSpriteAtlasRecord(
     const property = (name: string): Value => {
         const found = value.recordProperties?.[name];
         if (!found) {
-            context.fail(
-                node,
-                `SpriteAtlas record is missing '${name}'.`,
-            );
+            context.fail(node, `SpriteAtlas record is missing '${name}'.`);
         }
         return found;
     };
@@ -63,10 +60,7 @@ export function compileSpriteAtlasRecord(
     const size = property("textureSizePx");
     const frames = property("frames");
     const premultiplied = property("premultipliedAlpha");
-    if (
-        texture.kind !== "texture" ||
-        texture.textureStorage === "solid"
-    ) {
+    if (texture.kind !== "texture" || texture.textureStorage === "solid") {
         context.fail(
             node,
             "A data SpriteAtlas requires a file or pixels texture; " +
@@ -87,16 +81,10 @@ export function compileSpriteAtlasRecord(
                 ? doubleLiteral(lane.staticNumber)
                 : lane.cpp;
         }
-        if (
-            tuple.kind === "data" &&
-            tuple.dataType?.kind === "tuple"
-        ) {
+        if (tuple.kind === "data" && tuple.dataType?.kind === "tuple") {
             return `${tuple.cpp}[${index}]`;
         }
-        context.fail(
-            node,
-            "SpriteAtlas textureSizePx requires a 2-tuple.",
-        );
+        context.fail(node, "SpriteAtlas textureSizePx requires a 2-tuple.");
     };
     const storedFrameType =
         frames.dataType?.kind === "vector" &&
@@ -107,9 +95,7 @@ export function compileSpriteAtlasRecord(
         frames.kind === "data" && storedFrameType !== undefined;
     const literalFrames =
         frames.kind === "tuple" &&
-        frames.tupleElements?.every(
-            (frame) => frame.kind === "record",
-        );
+        frames.tupleElements?.every((frame) => frame.kind === "record");
     if (!storedFrames && !literalFrames) {
         context.fail(
             node,
@@ -117,10 +103,7 @@ export function compileSpriteAtlasRecord(
         );
     }
     if (premultiplied.kind !== "boolean") {
-        context.fail(
-            node,
-            "SpriteAtlas premultipliedAlpha must be boolean.",
-        );
+        context.fail(node, "SpriteAtlas premultipliedAlpha must be boolean.");
     }
     const engine = context.requireDefaultEngine(node);
     const fileTextureSetup = (
@@ -196,10 +179,8 @@ export function compileSpriteAtlasRecord(
         // paths the inline form already re-read (the file arm reads the
         // texture three times), so moving them from sequenced IIFE
         // statements into a call changes no observable evaluation.
-        const frameType = storedFrameType!;
-        const arrow = context.dataTypes.isReferenceStruct(
-            frameType.name,
-        );
+        const frameType = storedFrameType;
+        const arrow = context.dataTypes.isReferenceStruct(frameType.name);
         const access = (base: string, name: string): string => {
             const field = context.dataTypes.structField(
                 frameType.name,
@@ -228,12 +209,7 @@ export function compileSpriteAtlasRecord(
         // `premultiplied_alpha` or /W4 reads the block local as hiding it.
         const bodyLines = [
             `bbl::SpriteAtlasRecord atlas;`,
-            textureSetup(
-                "texture",
-                "atlas",
-                "decoded",
-                "stored",
-            ).trimEnd(),
+            textureSetup("texture", "atlas", "decoded", "stored").trimEnd(),
             `atlas.width = bbl::js::to_uint32(width_px);`,
             `atlas.height = bbl::js::to_uint32(height_px);`,
             `atlas.premultiplied_alpha = premultiplied_alpha;`,
@@ -258,9 +234,7 @@ export function compileSpriteAtlasRecord(
         }
         let helper = helpers.get(key);
         if (helper === undefined) {
-            helper = context.allocateTemporaryCppName(
-                "sprite_atlas_record",
-            );
+            helper = context.allocateTemporaryCppName("sprite_atlas_record");
             context.registerNativeFunction(
                 `template <typename Texture> bbl::SpriteAtlasHandle ${helper}${parameters};`,
                 [
@@ -278,19 +252,12 @@ export function compileSpriteAtlasRecord(
             `${premultiplied.cpp}, ${frames.cpp})`
         );
     }
-    const atlas = context.allocateTemporaryCppName(
-        "sprite_atlas",
-    );
-    const decoded = context.allocateTemporaryCppName(
-        "sprite_atlas_image",
-    );
+    const atlas = context.allocateTemporaryCppName("sprite_atlas");
+    const decoded = context.allocateTemporaryCppName("sprite_atlas_image");
     const frameProperty = (frame: Value, name: string): Value => {
         const property = frame.recordProperties?.[name];
         if (!property) {
-            context.fail(
-                node,
-                `SpriteAtlas frame is missing '${name}'.`,
-            );
+            context.fail(node, `SpriteAtlas frame is missing '${name}'.`);
         }
         return property;
     };
@@ -298,10 +265,7 @@ export function compileSpriteAtlasRecord(
         .map((frame) => {
             const uvMin = frameProperty(frame, "uvMin");
             const uvMax = frameProperty(frame, "uvMax");
-            const sourceSize = frameProperty(
-                frame,
-                "sourceSizePx",
-            );
+            const sourceSize = frameProperty(frame, "sourceSizePx");
             const pivot = frameProperty(frame, "pivot");
             return (
                 `${atlas}.frames.push_back(bbl::SpriteFrame{` +

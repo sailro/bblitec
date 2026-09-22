@@ -210,10 +210,7 @@ test("stability at a seeked pose suppresses the golden columns and says why", ()
     const text = formatStabilityReport("Scene 152", "dawn", false, runs, 0.75);
     assert.match(text, /seeked to 0\.75s/);
     assert.match(text, /run 2: vs run 1 MAD=0\.000 max=0/);
-    assert.match(
-        text,
-        /Seeked pose \(0\.75s\): golden columns suppressed/,
-    );
+    assert.match(text, /Seeked pose \(0\.75s\): golden columns suppressed/);
     assert.doesNotMatch(text, /vs golden/);
     assert.match(text, /Bit-stable/);
 });

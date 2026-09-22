@@ -12,62 +12,176 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { pinnedBabylonMaterials } from "../src/pinned-babylon-materials.js";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("Babylon scene data preserves material map replacement, light guards and loader options", async t => {
+test("Babylon scene data preserves material map replacement, light guards and loader options", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const mesh = (id: string, materialId: string, subMeshes?: object[]) => ({ id, name: id, materialId, subMeshes,
-        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], indices: [0, 1, 2] });
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const mesh = (id: string, materialId: string, subMeshes?: object[]) => ({
+        id,
+        name: id,
+        materialId,
+        subMeshes,
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+        indices: [0, 1, 2],
+    });
     const document = {
-        clearColor: [.1, .2, .3], ambientColor: [.4, .5, .6], activeCameraID: "",
-        cameras: [{ id: "first", position: [1, 2, 3] }, { id: "", position: [4, 5, 6] }],
-        materials: [{ id: "shared", alpha: .25 }, { id: "shared", alpha: .5, ambient: [.2, .3, .4], diffuseTexture: { name: "unreachable.png" } },
-            { id: "", alpha: .75 }, { id: "base", alpha: .8 }, { id: "other", alpha: .9 }],
-        multiMaterials: [{ id: "multi", materials: ["base"] }, { id: "multi", materials: ["shared", "missing"] }],
-        meshes: [mesh("a", "shared"), mesh("split", "multi", [0, 1].map(materialIndex => ({ materialIndex, indexStart: 0, indexCount: 3 }))),
-            mesh("c", "missing"), mesh("d", "")],
+        clearColor: [0.1, 0.2, 0.3],
+        ambientColor: [0.4, 0.5, 0.6],
+        activeCameraID: "",
+        cameras: [
+            { id: "first", position: [1, 2, 3] },
+            { id: "", position: [4, 5, 6] },
+        ],
+        materials: [
+            { id: "shared", alpha: 0.25 },
+            {
+                id: "shared",
+                alpha: 0.5,
+                ambient: [0.2, 0.3, 0.4],
+                diffuseTexture: { name: "unreachable.png" },
+            },
+            { id: "", alpha: 0.75 },
+            { id: "base", alpha: 0.8 },
+            { id: "other", alpha: 0.9 },
+        ],
+        multiMaterials: [
+            { id: "multi", materials: ["base"] },
+            { id: "multi", materials: ["shared", "missing"] },
+        ],
+        meshes: [
+            mesh("a", "shared"),
+            mesh(
+                "split",
+                "multi",
+                [0, 1].map((materialIndex) => ({
+                    materialIndex,
+                    indexStart: 0,
+                    indexCount: 3,
+                })),
+            ),
+            mesh("c", "missing"),
+            mesh("d", ""),
+        ],
         lights: [
-            { type: 0, position: [1, 2, 3], intensity: .5, range: 8, diffuse: [.2, .3, .4], specular: [.5, .6, .7], includedOnlyMeshesIds: ["split", "split", "missing"] },
-            { type: 0, position: [0, -1, 0], intensity: null, range: null, excludedMeshesIds: ["a"] },
-            { type: 0 }, { type: 1, position: [0, 0, 0] },
+            {
+                type: 0,
+                position: [1, 2, 3],
+                intensity: 0.5,
+                range: 8,
+                diffuse: [0.2, 0.3, 0.4],
+                specular: [0.5, 0.6, 0.7],
+                includedOnlyMeshesIds: ["split", "split", "missing"],
+            },
+            {
+                type: 0,
+                position: [0, -1, 0],
+                intensity: null,
+                range: null,
+                excludedMeshesIds: ["a"],
+            },
+            { type: 0 },
+            { type: 1, position: [0, 0, 0] },
         ],
     };
     interface PinNode {
-        _gpu?: object; material: { alpha: number; ambientColor: number[] };
-        lightType?: string; position: { x: number; y: number; z: number }; intensity: number; range: number; diffuse: number[]; specular: number[];
+        _gpu?: object;
+        material: { alpha: number; ambientColor: number[] };
+        lightType?: string;
+        position: { x: number; y: number; z: number };
+        intensity: number;
+        range: number;
+        diffuse: number[];
+        specular: number[];
     }
     const imported = await importPinnedModuleFetching<{
-        loadBabylon(engine: object, url: string, options: object): Promise<{ entities: PinNode[]; clearColor: object; camera?: { position: { x: number; y: number; z: number } } }>;
-    }>("loader-babylon/load-babylon.js", () => Buffer.from(JSON.stringify(document)));
+        loadBabylon(
+            engine: object,
+            url: string,
+            options: object,
+        ): Promise<{
+            entities: PinNode[];
+            clearColor: object;
+            camera?: { position: { x: number; y: number; z: number } };
+        }>;
+    }>("loader-babylon/load-babylon.js", () =>
+        Buffer.from(JSON.stringify(document)),
+    );
     let expected: object;
     try {
-        const loaded = await imported.module.loadBabylon({ _device: { createBuffer({ size }: { size: number }) {
-            const bytes = new ArrayBuffer(size); return { getMappedRange: () => bytes, unmap() {} };
-        } } }, "https://fixture/scene.babylon", { loadTextures: false });
-        const meshes = loaded.entities.filter(node => node._gpu);
-        const lights = loaded.entities.filter(node => node.lightType !== undefined);
+        const loaded = await imported.module.loadBabylon(
+            {
+                _device: {
+                    createBuffer({ size }: { size: number }) {
+                        const bytes = new ArrayBuffer(size);
+                        return { getMappedRange: () => bytes, unmap() {} };
+                    },
+                },
+            },
+            "https://fixture/scene.babylon",
+            { loadTextures: false },
+        );
+        const meshes = loaded.entities.filter((node) => node._gpu);
+        const lights = loaded.entities.filter(
+            (node) => node.lightType !== undefined,
+        );
         assert.equal(meshes.length, 5);
         assert.equal(lights.length, 2);
-        assert.deepEqual(loaded.camera && [loaded.camera.position.x, loaded.camera.position.y, loaded.camera.position.z], [1, 2, 3]);
+        assert.deepEqual(
+            loaded.camera && [
+                loaded.camera.position.x,
+                loaded.camera.position.y,
+                loaded.camera.position.z,
+            ],
+            [1, 2, 3],
+        );
         expected = {
-            alpha: meshes.map(mesh => mesh.material.alpha), ambient: meshes.map(mesh => mesh.material.ambientColor),
-            shared: meshes.map(left => meshes.map(right => left.material === right.material)), clearColor: loaded.clearColor,
-            lights: lights.map(light => [light.position.x, light.position.y, light.position.z, light.intensity,
-                Math.min(light.range, 3.4028234663852886e38), ...light.diffuse, ...light.specular]),
+            alpha: meshes.map((mesh) => mesh.material.alpha),
+            ambient: meshes.map((mesh) => mesh.material.ambientColor),
+            shared: meshes.map((left) =>
+                meshes.map((right) => left.material === right.material),
+            ),
+            clearColor: loaded.clearColor,
+            lights: lights.map((light) => [
+                light.position.x,
+                light.position.y,
+                light.position.z,
+                light.intensity,
+                Math.min(light.range, 3.4028234663852886e38),
+                ...light.diffuse,
+                ...light.specular,
+            ]),
         };
-    } finally { imported.release(); }
+    } finally {
+        imported.release();
+    }
     const untextured = await pinnedBabylonMaterials(document.materials, false);
     assert.equal(untextured.length, document.materials.length);
-    assert.ok(untextured.every(material => !material.diffuseTexture));
+    assert.ok(untextured.every((material) => !material.diffuseTexture));
     const context = new LoweringContext();
-    const directory = resolve("artifacts/test-babylon-scene-data"), include = join(directory, "include");
+    const directory = resolve("artifacts/test-babylon-scene-data"),
+        include = join(directory, "include");
     mkdirSync(join(include, "bblite/upstream"), { recursive: true });
-    writeFileSync(join(include, "bblite/upstream/pinned_world_transform.hpp"), pinnedWorldTransformHeader(context));
+    writeFileSync(
+        join(include, "bblite/upstream/pinned_world_transform.hpp"),
+        pinnedWorldTransformHeader(context),
+    );
     writeFileSync(join(directory, "source.json"), JSON.stringify(document));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/pal_image.hpp>
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        source,
+        `#include <bblite/pal_image.hpp>
 #include <fstream>
 #include <cassert>
 ${new LightLowerer(context).lowerPointFactory().source}
@@ -131,24 +245,45 @@ int main() {
     document["cameras"]=Json::array();
     assert(!select_babylon_camera(engine,document,true));
     assert(!babylon_clear_color(Json::object()));
-}`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
-        "/I", include, "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
+}`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        include,
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        source,
+    ]);
     execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });
 
 test("Babylon compiler calls retain camera and texture options", () => {
-    const output = compileSource(`import { createEngine, loadBabylon } from "@babylonjs/lite";
+    const output =
+        compileSource(`import { createEngine, loadBabylon } from "@babylonjs/lite";
         async function main() { const engine = await createEngine({});
             await loadBabylon(engine, "data:application/json;base64,e30=", { loadCamera: false, loadTextures: false }); }
         void main();`);
     assert.match(output.cpp, /bbl::load_babylon\([^;]*, false, false\)/);
     assert.deepEqual(output.manifest.assets[0]?.babylonTextureModes, [false]);
-    const mixed = compileSource(`import { createEngine, loadBabylon } from "@babylonjs/lite";
+    const mixed =
+        compileSource(`import { createEngine, loadBabylon } from "@babylonjs/lite";
         async function main() { const engine = await createEngine({});
             await loadBabylon(engine, "data:application/json;base64,e30=", { loadTextures: false });
             await loadBabylon(engine, "data:application/json;base64,e30="); }
         void main();`);
     assert.equal(mixed.manifest.assets.length, 1);
-    assert.deepEqual(mixed.manifest.assets[0]?.babylonTextureModes, [false, true]);
+    assert.deepEqual(mixed.manifest.assets[0]?.babylonTextureModes, [
+        false,
+        true,
+    ]);
 });

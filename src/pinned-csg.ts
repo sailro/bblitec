@@ -115,13 +115,23 @@ type PinnedCsgSolid = { readonly __csgSolid?: never };
 
 const pinnedCsg = await importPinnedModule<{
     createCsgFromMesh(
+        this: void,
         mesh: PinnedCsgMesh,
         materialSlot?: number,
     ): PinnedCsgSolid;
-    csgUnion(a: PinnedCsgSolid, b: PinnedCsgSolid): PinnedCsgSolid;
-    csgSubtract(a: PinnedCsgSolid, b: PinnedCsgSolid): PinnedCsgSolid;
-    csgIntersect(a: PinnedCsgSolid, b: PinnedCsgSolid): PinnedCsgSolid;
+    csgUnion(this: void, a: PinnedCsgSolid, b: PinnedCsgSolid): PinnedCsgSolid;
+    csgSubtract(
+        this: void,
+        a: PinnedCsgSolid,
+        b: PinnedCsgSolid,
+    ): PinnedCsgSolid;
+    csgIntersect(
+        this: void,
+        a: PinnedCsgSolid,
+        b: PinnedCsgSolid,
+    ): PinnedCsgSolid;
     createMeshFromCsg(
+        this: void,
         engine: unknown,
         solid: PinnedCsgSolid,
         name?: string,
@@ -156,23 +166,25 @@ export function recordingCsgEngine(): unknown {
     };
 }
 
-const identityMatrix = [
-    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
-];
+const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 /** One replay per distinct plan; a scene builds each solid once. */
 const bakedMeshes = new Map<string, BakedCsgMesh>();
 /** Four little-endian u32 counts, then f32 positions, normals, UVs and u32 indices. */
 export function packBakedCsgMesh(mesh: BakedCsgMesh): Uint8Array {
     const streams = [mesh.positions, mesh.normals, mesh.uvs, mesh.indices];
-    const bytes = new Uint8Array(16 + streams.reduce((size, stream) => size + stream.byteLength, 0));
+    const bytes = new Uint8Array(
+        16 + streams.reduce((size, stream) => size + stream.byteLength, 0),
+    );
     const view = new DataView(bytes.buffer);
     let offset = 16;
     streams.forEach((stream, index) => {
-        if (stream.length > 0xffffffff) throw new Error("Baked mesh stream exceeds its u32 count.");
+        if (stream.length > 0xffffffff)
+            throw new Error("Baked mesh stream exceeds its u32 count.");
         view.setUint32(index * 4, stream.length, true);
         for (const value of stream) {
-            if (stream instanceof Uint32Array) view.setUint32(offset, value, true);
+            if (stream instanceof Uint32Array)
+                view.setUint32(offset, value, true);
             else view.setFloat32(offset, value, true);
             offset += 4;
         }
@@ -181,20 +193,30 @@ export function packBakedCsgMesh(mesh: BakedCsgMesh): Uint8Array {
 }
 /** Decode the private cache/package transport without depending on host byte order. */
 export function unpackBakedCsgMesh(payload: Uint8Array): BakedCsgMesh {
-    if (payload.byteLength < 16) throw new Error("Truncated baked mesh header.");
-    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    if (payload.byteLength < 16)
+        throw new Error("Truncated baked mesh header.");
+    const view = new DataView(
+        payload.buffer,
+        payload.byteOffset,
+        payload.byteLength,
+    );
     const count = (index: number): number => view.getUint32(index * 4, true);
     const expected = 16 + 4 * (count(0) + count(1) + count(2) + count(3));
-    if (expected !== payload.byteLength) throw new Error("Invalid baked mesh stream lengths.");
+    if (expected !== payload.byteLength)
+        throw new Error("Invalid baked mesh stream lengths.");
     let offset = 16;
     const floats = (length: number): Float32Array => {
         const result = new Float32Array(length);
-        for (let i = 0; i < length; ++i, offset += 4) result[i] = view.getFloat32(offset, true);
+        for (let i = 0; i < length; ++i, offset += 4)
+            result[i] = view.getFloat32(offset, true);
         return result;
     };
-    const positions = floats(count(0)), normals = floats(count(1)), uvs = floats(count(2));
+    const positions = floats(count(0)),
+        normals = floats(count(1)),
+        uvs = floats(count(2));
     const indices = new Uint32Array(count(3));
-    for (let i = 0; i < indices.length; ++i, offset += 4) indices[i] = view.getUint32(offset, true);
+    for (let i = 0; i < indices.length; ++i, offset += 4)
+        indices[i] = view.getUint32(offset, true);
     return { positions, normals, uvs, indices };
 }
 
@@ -208,10 +230,7 @@ export function unpackBakedCsgMesh(payload: Uint8Array): BakedCsgMesh {
  * before `createMeshFromData` ever sees it). Two identically-shaped
  * solids under different names therefore replay once.
  */
-export function bakeCsgMesh(
-    plan: CsgSolidPlan,
-    name: string,
-): BakedCsgMesh {
+export function bakeCsgMesh(plan: CsgSolidPlan, name: string): BakedCsgMesh {
     const key = JSON.stringify(plan);
     const cached = bakedMeshes.get(key);
     if (cached) return cached;
@@ -274,10 +293,7 @@ function buildSolid(engine: unknown, plan: CsgSolidPlan): PinnedCsgSolid {
     );
 }
 
-function sourceMesh(
-    engine: unknown,
-    source: CsgSourceMesh,
-): PinnedCsgMesh {
+function sourceMesh(engine: unknown, source: CsgSourceMesh): PinnedCsgMesh {
     const factory = pinnedMeshFactories[source.factory];
     if (typeof factory !== "function") {
         throw new Error(

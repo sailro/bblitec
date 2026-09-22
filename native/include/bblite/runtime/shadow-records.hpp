@@ -121,9 +121,7 @@ struct ShadowGeneratorRecord {
     std::optional<double> csm_shadow_max_z{};
     std::vector<ShadowCascade> csm_cascades;
     /** Subscribers to the exact packed CSM receiver block for this frame. */
-    std::shared_ptr<
-        PlatformEventListeners<void(const js::F32Array&)>>
-        csm_receiver_callbacks;
+    std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;
 #endif
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the

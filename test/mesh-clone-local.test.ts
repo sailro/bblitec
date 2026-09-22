@@ -8,39 +8,59 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
 test("mesh clone demand retains local glTF geometry", () => {
-    const result = compileSource(`import {createEngine, loadGltf, getContainerMeshes, cloneTransformNode} from "@babylonjs/lite";
+    const result =
+        compileSource(`import {createEngine, loadGltf, getContainerMeshes, cloneTransformNode} from "@babylonjs/lite";
         const engine = await createEngine({});
         const asset = await loadGltf(engine, "asset.glb");
         cloneTransformNode(getContainerMeshes(asset)[0]!);`);
     assert(result.manifest.features.includes("mesh:clone"));
 });
 
-test("detached mesh clones preserve pinned parent, local geometry and shared ownership", {skip: !tools}, async () => {
-    interface Node { parent: Node | null; children: Node[] }
-    interface Mesh extends Node { _gpu: object }
-    const transform = await importPinnedModule<{
-        createTransformNode(name: string): Node;
-        cloneTransformNode(mesh: Mesh): Mesh;
-    }>("scene/transform-node.js");
-    const {initMeshTransform} = await importPinnedModule<{
-        initMeshTransform(mesh: {_gpu: object; name: string}): Mesh;
-    }>("mesh/mesh.js");
-    const source = initMeshTransform({_gpu: {}, name: "source"});
-    source.parent = transform.createTransformNode("parent");
-    const clone = transform.cloneTransformNode(source);
-    assert.equal(clone.parent, null);
-    assert.equal(clone._gpu, source._gpu);
+test(
+    "detached mesh clones preserve pinned parent, local geometry and shared ownership",
+    { skip: !tools },
+    async () => {
+        interface Node {
+            parent: Node | null;
+            children: Node[];
+        }
+        interface Mesh extends Node {
+            _gpu: object;
+        }
+        const transform = await importPinnedModule<{
+            createTransformNode(this: void, name: string): Node;
+            cloneTransformNode(this: void, mesh: Mesh): Mesh;
+        }>("scene/transform-node.js");
+        const { initMeshTransform } = await importPinnedModule<{
+            initMeshTransform(
+                this: void,
+                mesh: { _gpu: object; name: string },
+            ): Mesh;
+        }>("mesh/mesh.js");
+        const source = initMeshTransform({ _gpu: {}, name: "source" });
+        source.parent = transform.createTransformNode("parent");
+        const clone = transform.cloneTransformNode(source);
+        assert.equal(clone.parent, null);
+        assert.equal(clone._gpu, source._gpu);
 
-    const output = resolve("artifacts/mesh-clone-local-check");
-    mkdirSync(output, {recursive: true});
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    const lowerer = new SceneLowerer(new LoweringContext()).lowerCore().source;
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+        const output = resolve("artifacts/mesh-clone-local-check");
+        mkdirSync(output, { recursive: true });
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        const lowerer = new SceneLowerer(new LoweringContext()).lowerCore()
+            .source;
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl { ${cppFunction(lowerer, "MeshHandle clone_mesh_node(")} }
 int main() {
@@ -94,23 +114,51 @@ int main() {
     assert(refused);
     std::puts("mesh-clone-local: ok");
 }
-`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file]);
-    assert.match(execFileSync(executable, {encoding: "utf8"}), /mesh-clone-local: ok/);
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /mesh-clone-local: ok/,
+        );
+    },
+);
 
-test("removing shared meshes retires each owner once and releases the final geometry allocation", {skip: !tools}, () => {
-    const output = resolve("artifacts/mesh-retirement-check");
-    mkdirSync(output, {recursive: true});
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    const lowerer = new SceneLowerer(new LoweringContext()).lowerCore().source;
-    const functions = [
-        "void require_scene_engine(", "std::uint32_t material_family_bit(", "MeshHandle clone_mesh_node(",
-        "void add_to_scene(Scene& scene, MeshHandle", "void reclaim_unshared_geometry(",
-        "void remove_from_scene(Scene& scene, MeshHandle",
-    ].map(signature => cppFunction(lowerer, signature)).join("\n");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+test(
+    "removing shared meshes retires each owner once and releases the final geometry allocation",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/mesh-retirement-check");
+        mkdirSync(output, { recursive: true });
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        const lowerer = new SceneLowerer(new LoweringContext()).lowerCore()
+            .source;
+        const functions = [
+            "void require_scene_engine(",
+            "std::uint32_t material_family_bit(",
+            "MeshHandle clone_mesh_node(",
+            "void add_to_scene(Scene& scene, MeshHandle",
+            "void reclaim_unshared_geometry(",
+            "void remove_from_scene(Scene& scene, MeshHandle",
+        ]
+            .map((signature) => cppFunction(lowerer, signature))
+            .join("\n");
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <tuple>
 namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} ${functions} }
@@ -161,8 +209,21 @@ int main() {
     bbl::remove_from_scene(scene, empty);
     assert(scene.meshes.empty());
 }
-`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file]);
-    assert.equal(execFileSync(executable, {encoding: "utf8"}), "");
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    },
+);

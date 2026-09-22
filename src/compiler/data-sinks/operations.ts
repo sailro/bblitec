@@ -9,12 +9,29 @@ import { containersSinks } from "./containers.js";
 import { resourcesSinks } from "./resources.js";
 import { unionsSinks } from "./unions.js";
 
-const sinks: DataSinkOperations = { ...scalarsSinks, ...functionsSinks, ...structuresSinks, ...containersSinks, ...resourcesSinks, ...unionsSinks };
+const sinks: DataSinkOperations = {
+    ...scalarsSinks,
+    ...functionsSinks,
+    ...structuresSinks,
+    ...containersSinks,
+    ...resourcesSinks,
+    ...unionsSinks,
+};
 
-export function compileDataExpressionSink<K extends DataKind>(type: DataType<K>, lowerer: DataSinkHost, expression: ts.Expression, unwrapped: ts.Expression): string {
+export function compileDataExpressionSink<K extends DataKind>(
+    type: DataType<K>,
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
     return sinks[type.kind].expression(type, lowerer, expression, unwrapped);
 }
 
-export function compileDataValueSink<K extends DataKind>(type: DataType<K>, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+export function compileDataValueSink<K extends DataKind>(
+    type: DataType<K>,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
     return sinks[type.kind].value(type, lowerer, value, node);
 }

@@ -23,9 +23,10 @@ export function adHocCaptureEnvironment(): Record<string, string> {
     // first fixed-rate frame strictly beyond that boundary. Besides matching
     // browser scheduling, this avoids a float32 delta sum landing one ulp
     // below an integral timer boundary.
-    const elapsedFrameCount = Math.floor(
-        (captureSettleMilliseconds * adHocCaptureFramesPerSecond) / 1000,
-    ) + 1;
+    const elapsedFrameCount =
+        Math.floor(
+            (captureSettleMilliseconds * adHocCaptureFramesPerSecond) / 1000,
+        ) + 1;
     return {
         ...fixedCaptureEnvironment(),
         // Frame zero intentionally reports no elapsed time. The screenshot

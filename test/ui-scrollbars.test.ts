@@ -29,23 +29,72 @@ test("retained scrollbar styling preserves standard properties and typed pseudo-
         .history::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
         .history::-webkit-scrollbar-corner { background: transparent; }
     `);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*scrollbar-width: thin; scrollbar-color: #345678 transparent/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*scrollbar-width: thin; scrollbar-color: #345678 transparent/,
+    );
     for (const part of ["Scrollbar", "Thumb", "Track", "Button", "Corner"]) {
-        assert.match(result.cpp, new RegExp(`ui_add_style_rule[^\\n]*UiScrollbarPart::${part}`));
+        assert.match(
+            result.cpp,
+            new RegExp(`ui_add_style_rule[^\\n]*UiScrollbarPart::${part}`),
+        );
     }
-    assert.match(result.cpp, /"history", "", "", true, -1[^\n]*UiScrollbarPart::Thumb/);
-    assert.match(result.cpp, /ui_add_style_rule[^\n]*background-clip: padding-box/);
-    assert.equal(uiStyleSelector({ kind: "class", primary: "history", scrollbar: "thumb", hover: true }),
-        ".history::-webkit-scrollbar-thumb:hover");
+    assert.match(
+        result.cpp,
+        /"history", "", "", true, -1[^\n]*UiScrollbarPart::Thumb/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_style_rule[^\n]*background-clip: padding-box/,
+    );
+    assert.equal(
+        uiStyleSelector({
+            kind: "class",
+            primary: "history",
+            scrollbar: "thumb",
+            hover: true,
+        }),
+        ".history::-webkit-scrollbar-thumb:hover",
+    );
 });
 
 test("unrepresented scrollbar states and values refuse explicitly", () => {
-    assert.throws(() => compileStyle(".history { scrollbar-width: 4px; }"), /only auto, thin and none/);
-    assert.throws(() => compileStyle(".history { scrollbar-color: red; }"), /two literal/);
-    assert.throws(() => compileStyle(".history::-webkit-scrollbar-thumb:horizontal { background: red; }"), /selector.*not lowered/);
-    assert.throws(() => compileStyle(".history::-webkit-scrollbar-track-piece { background: red; }"), /selector.*not lowered/);
-    assert.throws(() => compileStyle(".history { background: linear-gradient(red, blue); background-clip: padding-box; }"), /box clipping currently applies to solid backgrounds/);
-    assert.throws(() => compileStyle(".history { background: url(panel.png); background-clip: padding-box; }"), /box clipping currently applies to solid backgrounds/);
+    assert.throws(
+        () => compileStyle(".history { scrollbar-width: 4px; }"),
+        /only auto, thin and none/,
+    );
+    assert.throws(
+        () => compileStyle(".history { scrollbar-color: red; }"),
+        /two literal/,
+    );
+    assert.throws(
+        () =>
+            compileStyle(
+                ".history::-webkit-scrollbar-thumb:horizontal { background: red; }",
+            ),
+        /selector.*not lowered/,
+    );
+    assert.throws(
+        () =>
+            compileStyle(
+                ".history::-webkit-scrollbar-track-piece { background: red; }",
+            ),
+        /selector.*not lowered/,
+    );
+    assert.throws(
+        () =>
+            compileStyle(
+                ".history { background: linear-gradient(red, blue); background-clip: padding-box; }",
+            ),
+        /box clipping currently applies to solid backgrounds/,
+    );
+    assert.throws(
+        () =>
+            compileStyle(
+                ".history { background: url(panel.png); background-clip: padding-box; }",
+            ),
+        /box clipping currently applies to solid backgrounds/,
+    );
 });
 
 test("assigning the background shorthand resets a previous solid clipping box", () => {
@@ -60,5 +109,8 @@ test("assigning the background shorthand resets a previous solid clipping box", 
         }
         void main();
     `);
-    assert.match(result.cpp, /ui_set_style_property\([^\n]+"background-color", "blue"\);\s*bbl::ui_set_style_property\([^\n]+"background-clip", "border-box"\);/);
+    assert.match(
+        result.cpp,
+        /ui_set_style_property\([^\n]+"background-color", "blue"\);\s*bbl::ui_set_style_property\([^\n]+"background-clip", "border-box"\);/,
+    );
 });

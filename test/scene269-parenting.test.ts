@@ -7,9 +7,17 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 
 test("compiles setParent for imported roots and transform-node parents", () => {
-    const asset = "data:model/gltf+json;base64," + Buffer.from(JSON.stringify({
-        asset: {version: "2.0"}, scene: 0, scenes: [{nodes: [0]}], nodes: [{mesh: 0}], meshes: [{primitives: [{attributes: {}}]}],
-    })).toString("base64");
+    const asset =
+        "data:model/gltf+json;base64," +
+        Buffer.from(
+            JSON.stringify({
+                asset: { version: "2.0" },
+                scene: 0,
+                scenes: [{ nodes: [0] }],
+                nodes: [{ mesh: 0 }],
+                meshes: [{ primitives: [{ attributes: {} }] }],
+            }),
+        ).toString("base64");
     const result = compileSource(`
         import {
             createEngine,
@@ -39,9 +47,9 @@ test("compiles setParent for imported roots and transform-node parents", () => {
 });
 
 test("preserves the pinned setParent world and hierarchy contract", () => {
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore({ parenting: true }).source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore({
+        parenting: true,
+    }).source;
 
     assert.match(
         source,
@@ -78,12 +86,11 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
 });
 
 test("keeps imported authored winding separate from live parent reflection", () => {
-    const loader = new GltfLowerer(
-        new LoweringContext(),
-    ).lowerLoaderAdapter().source;
-    const renderer = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ mirroredMeshes: true }).source;
+    const loader = new GltfLowerer(new LoweringContext()).lowerLoaderAdapter()
+        .source;
+    const renderer = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
+        { mirroredMeshes: true },
+    ).source;
 
     assert.match(
         loader,
@@ -97,8 +104,5 @@ test("keeps imported authored winding separate from live parent reflection", () 
         renderer,
         /const bool transform_mirrored =\s*pinned_mat4_determinant3\(mesh_world_matrix\(engine, mesh\)\) < 0\.0;\s*const bool clockwise_front_face =\s*mesh\.authored_clockwise_front_face != transform_mirrored;/,
     );
-    assert.doesNotMatch(
-        renderer,
-        /mesh\.authored_clockwise_front_face\s*=/,
-    );
+    assert.doesNotMatch(renderer, /mesh\.authored_clockwise_front_face\s*=/);
 });

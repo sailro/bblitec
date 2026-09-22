@@ -6,7 +6,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { NavigationLowerer } from "../src/lowering/navigation-lowerer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     import { createEngine, createBox, createNavigationPluginAsync, raycast, getClosestPoint } from "@babylonjs/lite";
@@ -53,14 +56,82 @@ const source = `
 `;
 
 const tools = optionalNativeFixtureTools(false);
-test("shared record arguments retain expression and navigation query owners", { skip: !tools }, () => {
-    const output = resolve("artifacts/shared-record-captures-check");
-    const includes = join(output, "bblite/upstream");
-    mkdirSync(includes, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-    writeFileSync(join(includes, "navigation.hpp"), new NavigationLowerer(new LoweringContext()).lowerNavigation(false).header);
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `
+test(
+    "returned callbacks own borrowed parameters after their factory environment is released",
+    { skip: !tools },
+    () => {
+        const result = compileSource(`
+        interface Track { samples: number[]; }
+        function createTicker(track: Track): () => number {
+            return () => track.samples[0]!;
+        }
+        function createTrack(value: number): Track {
+            return {samples: [value]};
+        }
+        function createFactory(value: number): () => () => number {
+            const tracks: Track[] = [createTrack(value)];
+            const track = tracks[0]!;
+            return () => createTicker(track);
+        }
+        const factories: (() => () => number)[] = [
+            createFactory(7),
+            createFactory(11),
+        ];
+        const first = factories[0]!();
+        const second = factories[1]!();
+        factories.length = 0;
+        if (first() !== 7 || second() !== 11)
+            throw new Error("escaped parameter lost its owning capture");
+    `);
+        assert.doesNotMatch(result.cpp, /std::ref\(v_\w+_track\)/);
+        const output = resolve("artifacts", "borrowed-parameter-captures");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native\\include",
+            source,
+        ]);
+        assert.equal(
+            execFileSync(executable, {
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 10000,
+            }),
+            "",
+        );
+    },
+);
+
+test(
+    "shared record arguments retain expression and navigation query owners",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/shared-record-captures-check");
+        const includes = join(output, "bblite/upstream");
+        mkdirSync(includes, { recursive: true });
+        writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
+        writeFileSync(
+            join(includes, "navigation.hpp"),
+            new NavigationLowerer(new LoweringContext()).lowerNavigation(false)
+                .header,
+        );
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -92,8 +163,24 @@ test("shared record arguments retain expression and navigation query owners", { 
             assert(generated_main() == 0);
             assert(constructions == 5 && plugins == 1 && rays == 2 && closest_queries == 1);
         }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native/include", file]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    },
+);

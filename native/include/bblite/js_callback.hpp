@@ -15,13 +15,11 @@
 
 namespace bbl::js {
 
-template <typename Sig>
-class Callback;
+template <typename Sig> class Callback;
 
 /** A compiler-described closure. The invoker receives the live environment,
  * so tracing observes replaced captures and shared mutable cells as they are. */
-template <typename Environment, typename Invoke>
-struct Closure {
+template <typename Environment, typename Invoke> struct Closure {
     Environment environment;
     Invoke invoke;
     template <typename... Args>
@@ -31,8 +29,7 @@ struct Closure {
     void gc_trace(const TraceVisitor& visitor) const { visitor(environment); }
 };
 
-template <typename Invoke, typename Signature>
-struct ClosureInvoker;
+template <typename Invoke, typename Signature> struct ClosureInvoker;
 
 template <typename Invoke, typename R, bool Noexcept, typename... Args>
 struct ClosureInvoker<Invoke, R (*)(Args...) noexcept(Noexcept)> {
@@ -46,11 +43,11 @@ template <typename Environment, typename Invoke>
 [[nodiscard]] auto make_closure(Environment environment, Invoke invoke) {
     static_assert(std::is_empty_v<Invoke>, "Closure invokers must not hide captures.");
     if constexpr (requires {
-        requires std::is_trivially_default_constructible_v<Invoke>;
-        requires std::is_trivially_destructible_v<Invoke>;
-        requires std::is_pointer_v<decltype(+invoke)>;
-        requires std::is_function_v<std::remove_pointer_t<decltype(+invoke)>>;
-    }) {
+                      requires std::is_trivially_default_constructible_v<Invoke>;
+                      requires std::is_trivially_destructible_v<Invoke>;
+                      requires std::is_pointer_v<decltype(+invoke)>;
+                      requires std::is_function_v<std::remove_pointer_t<decltype(+invoke)>>;
+                  }) {
         // Keep nested lambda scope names out of callback and GC ownership RTTI.
         // Ordinary dispatch avoids the compiler's large lambda conversion thunks.
         return Closure<Environment, decltype(+invoke)>{
@@ -61,18 +58,17 @@ template <typename Environment, typename Invoke>
 }
 
 /** Direct recursive calls share automatic callable storage. */
-template <typename... Functions>
-struct RecursiveGroup {
+template <typename... Functions> struct RecursiveGroup {
     std::tuple<Functions...> functions;
     template <std::size_t Index, typename... Args>
-    std::invoke_result_t<std::tuple_element_t<Index, std::tuple<Functions...>>&, RecursiveGroup&, Args...>
+    std::invoke_result_t<std::tuple_element_t<Index, std::tuple<Functions...>>&, RecursiveGroup&,
+                         Args...>
     call(Args&&... args) {
         return std::get<Index>(functions)(*this, std::forward<Args>(args)...);
     }
 };
 
-template <typename... Functions>
-[[nodiscard]] auto make_recursive_group(Functions... functions) {
+template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functions... functions) {
     return RecursiveGroup<Functions...>{std::tuple<Functions...>{std::move(functions)...}};
 }
 
@@ -86,8 +82,7 @@ inline std::size_t next_callback_identity() {
 }
 
 /** A JavaScript function object: copies share identity and mutable captures. */
-template <typename R, typename... Args>
-class Callback<R(Args...)> {
+template <typename R, typename... Args> class Callback<R(Args...)> {
     struct Body {
         virtual ~Body() = default;
         virtual R call(Args... args) = 0;
@@ -96,47 +91,72 @@ class Callback<R(Args...)> {
     template <typename F> struct Callable final : Body {
         explicit Callable(F body) : function(std::move(body)) {}
         F function;
-        R call(Args... args) override { return function(std::forward<Args>(args)...); }
+        R call(Args... args) override {
+            if constexpr (std::is_pointer_v<F>) {
+                if (!function)
+                    throw std::bad_function_call();
+            }
+            return function(std::forward<Args>(args)...);
+        }
         bool present() const override {
-            if constexpr (requires { function.operator bool(); }) return function.operator bool();
-            else if constexpr (std::is_pointer_v<F>) return function != nullptr;
-            else return true;
+            if constexpr (requires { function.operator bool(); })
+                return function.operator bool();
+            else if constexpr (std::is_pointer_v<F>)
+                return function != nullptr;
+            else
+                return true;
         }
         void gc_trace(const TraceVisitor& visitor) const { visitor(function); }
     };
-  public:
+
+public:
+    class Invocation {
+    public:
+        explicit Invocation(const Callback& callback)
+            : body_(callback.body_), recursive_owner_(callback.recursive_owner_) {}
+        R operator()(Args... args) const {
+            if (!body_)
+                throw std::bad_function_call();
+            return body_->call(std::forward<Args>(args)...);
+        }
+        explicit operator bool() const { return body_ && body_->present(); }
+        void gc_trace(const TraceVisitor& visitor) const {
+            visitor(body_);
+            visitor(recursive_owner_);
+        }
+
+    private:
+        std::shared_ptr<Body> body_;
+        std::shared_ptr<Callback> recursive_owner_;
+    };
+
     Callback() = default;
     Callback(std::nullptr_t) noexcept {}
     template <typename F>
-        requires (!std::is_same_v<std::remove_cvref_t<F>, Callback>)
-    Callback(F&& body)
-        : Callback(next_callback_identity(), std::forward<F>(body)) {}
+        requires(!std::is_same_v<std::remove_cvref_t<F>, Callback>)
+    Callback(F&& body) : Callback(next_callback_identity(), std::forward<F>(body)) {}
     template <typename F>
     Callback(std::size_t identity, F&& body)
         : identity_(identity),
-          body_(make_gc_shared<Callable<std::decay_t<F>>>(
-              std::forward<F>(body))) {}
+          body_(make_gc_shared<Callable<std::decay_t<F>>>(std::forward<F>(body))) {}
 
-    R operator()(Args... args) const {
-        const auto body = body_;
-        if (!body) throw std::bad_function_call();
-        if (recursive_owner_) {
-            // Recursive reads need their cell even if the call replaces itself.
-            const auto owner = recursive_owner_;
-            return body->call(std::forward<Args>(args)...);
-        }
-        return body->call(std::forward<Args>(args)...);
-    }
+    R operator()(Args... args) const { return snapshot()(std::forward<Args>(args)...); }
+    /** Retain once before argument evaluation, including recursive cells replaced by the call. */
+    [[nodiscard]] Invocation snapshot() const { return Invocation(*this); }
     explicit operator bool() const { return body_ && body_->present(); }
     [[nodiscard]] std::size_t identity() const { return identity_; }
-    void gc_trace(const TraceVisitor& visitor) const { visitor(body_); visitor(recursive_owner_); }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(body_);
+        visitor(recursive_owner_);
+    }
     // Erasing identity still shares mutable captures and retains any recursive
     // owner. Copying the pointed-to function would lose the aliasing owner.
     [[nodiscard]] std::function<R(Args...)> body() const {
         return *this ? std::function<R(Args...)>(*this) : std::function<R(Args...)>{};
     }
     [[nodiscard]] static Callback retain(std::shared_ptr<Callback> owner) {
-        if (!owner) throw std::bad_function_call();
+        if (!owner)
+            throw std::bad_function_call();
         Callback retained;
         retained.identity_ = owner->identity_;
         // The cell can be reassigned during invocation. Pin its current body
@@ -149,17 +169,53 @@ class Callback<R(Args...)> {
         return left.identity_ == right.identity_;
     }
 
-  private:
+private:
     std::size_t identity_ = 0;
     // A dispatch snapshot retains the closure without resetting its local state.
     std::shared_ptr<Body> body_;
     std::shared_ptr<Callback> recursive_owner_;
 };
 
+template <typename R, typename... Args>
+[[nodiscard]] auto snapshot_callback(const Callback<R(Args...)>& callback) {
+    return callback.snapshot();
+}
+
+template <typename Function> class NativeInvocation {
+public:
+    explicit NativeInvocation(Function function) : function_(function) {}
+    template <typename... Args>
+    std::invoke_result_t<Function, Args...> operator()(Args&&... args) const {
+        if (!function_)
+            throw std::bad_function_call();
+        return function_(std::forward<Args>(args)...);
+    }
+    explicit operator bool() const { return function_ != nullptr; }
+
+private:
+    Function function_;
+};
+
+template <typename R, bool Noexcept, typename... Args>
+[[nodiscard]] auto snapshot_callback(R (*function)(Args...) noexcept(Noexcept)) {
+    return NativeInvocation<decltype(function)>{function};
+}
+
+template <typename Function>
+    requires(std::is_empty_v<Function> &&
+             requires(const Function& function) {
+                 requires std::is_pointer_v<decltype(+function)>;
+                 requires std::is_function_v<std::remove_pointer_t<decltype(+function)>>;
+             })
+[[nodiscard]] auto snapshot_callback(const Function& function) {
+    return snapshot_callback(+function);
+}
+
 // A signature adapter keeps the function's identity and traced environment.
 template <typename Target, typename Source, typename Invoke>
 [[nodiscard]] Target adapt_callback(Source source, Invoke invoke) {
-    if (!source) return {};
+    if (!source)
+        return {};
     const auto identity = source.identity();
     return Target{identity, make_closure(std::move(source), std::move(invoke))};
 }
@@ -168,8 +224,7 @@ template <typename Target, typename Source, typename Invoke>
 // outward function value retains that storage, including a self reference
 // passed to another callback, so the final outward release reclaims it.
 template <typename R, typename... Args>
-[[nodiscard]] Callback<R(Args...)> retain_callback(
-    std::shared_ptr<Callback<R(Args...)>> owner) {
+[[nodiscard]] Callback<R(Args...)> retain_callback(std::shared_ptr<Callback<R(Args...)>> owner) {
     return Callback<R(Args...)>::retain(std::move(owner));
 }
 

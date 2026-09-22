@@ -9,8 +9,7 @@ import {
 import { pinnedHeader } from "./pinned-header.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
-const DDS_BACKGROUND_MODULE =
-    "src/material/pbr/background-dds-environment.ts";
+const DDS_BACKGROUND_MODULE = "src/material/pbr/background-dds-environment.ts";
 
 interface EnvironmentConstants {
     magic: number[];
@@ -24,18 +23,14 @@ export class EnvironmentLowerer {
     public lowerImageSkyboxAdapter(): LoweredSource {
         const modulePath = "src/loader-skybox/load-skybox.ts";
         const symbolName = "loadSkybox";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const sizeParameter = declaration.parameters[3];
         if (
             !sizeParameter?.initializer ||
-            this.context.numericValue(
-                sizeParameter.initializer,
-                file,
-            ) !== 100
+            this.context.numericValue(sizeParameter.initializer, file) !== 100
         ) {
             this.context.contractError(
                 sizeParameter ?? declaration,
@@ -56,30 +51,18 @@ export class EnvironmentLowerer {
         }
         const cubeModulePath = "src/texture/cube-texture.ts";
         const { declaration: loadCubeTexture } =
-            this.context.functionDeclaration(
-                cubeModulePath,
-                "loadCubeTexture",
-            );
-        const faceSuffixes = [
-            "_px",
-            "_nx",
-            "_py",
-            "_ny",
-            "_pz",
-            "_nz",
-        ];
+            this.context.functionDeclaration(cubeModulePath, "loadCubeTexture");
+        const faceSuffixes = ["_px", "_nx", "_py", "_ny", "_pz", "_nz"];
         if (
             !this.context.hasNode(
                 loadCubeTexture,
                 (node) =>
                     ts.isArrayLiteralExpression(node) &&
-                    node.elements.length ===
-                        faceSuffixes.length &&
+                    node.elements.length === faceSuffixes.length &&
                     node.elements.every(
                         (element, index) =>
                             ts.isStringLiteral(element) &&
-                            element.text ===
-                                faceSuffixes[index],
+                            element.text === faceSuffixes[index],
                     ),
             )
         ) {
@@ -104,12 +87,7 @@ export class EnvironmentLowerer {
                 "Expected the pinned rgba8unorm cube format.",
             );
         }
-        if (
-            !this.context.hasCall(
-                loadCubeTexture,
-                "mipLevelCount",
-            )
-        ) {
+        if (!this.context.hasCall(loadCubeTexture, "mipLevelCount")) {
             this.context.contractError(
                 loadCubeTexture,
                 "Expected the pinned full cube mip chain.",
@@ -148,12 +126,16 @@ void load_image_skybox(
         const symbolName = "parseEnvFile";
         const constants = this.extractConstants();
         if (constants.imageType !== "image/png") {
-            throw new Error(`Unsupported pinned environment image type: ${constants.imageType}.`);
+            throw new Error(
+                `Unsupported pinned environment image type: ${constants.imageType}.`,
+            );
         }
         const magic = constants.magic
             .map((value) => `0x${value.toString(16).padStart(2, "0")}`)
             .join(", ");
-        const keys = constants.coefficientNames.map((value) => `"${value}"`).join(", ");
+        const keys = constants.coefficientNames
+            .map((value) => `"${value}"`)
+            .join(", ");
         // The same emission the glTF loader carries, from the same pair of
         // pinned copies with the same divergence cross-check — one
         // pre_scale_harmonics for both loaders instead of a transcription
@@ -165,7 +147,15 @@ void load_image_skybox(
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
+            header: pinnedHeader(
+                [
+                    "<bblite/runtime.hpp>",
+                    "",
+                    "<array>",
+                    "<cstdint>",
+                    "<vector>",
+                ],
+                `
 struct ParsedEnvironment {
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t width = 0;
@@ -174,7 +164,8 @@ struct ParsedEnvironment {
 };
 
 ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(
                 modulePath,
                 symbolName,
@@ -213,7 +204,7 @@ double parse_number(std::string_view text, std::size_t& position) {
 }
 
 std::size_t find_value(std::string_view text, std::string_view key, std::size_t start = 0) {
-    const std::string quoted = "\\\"" + std::string(key) + "\\\"";
+    const std::string quoted = "\\"" + std::string(key) + "\\"";
     const std::size_t key_position = text.find(quoted, start);
     if (key_position == std::string_view::npos) {
         throw std::runtime_error("Environment manifest is missing '" + std::string(key) + "'.");
@@ -248,7 +239,7 @@ ${COLOR_CHANNEL_HELPERS_CPP}
 ${prescale}
 
 std::vector<MipmapEntry> parse_mipmaps(std::string_view manifest) {
-    const std::size_t start = manifest.find("\\\"mipmaps\\\"");
+    const std::size_t start = manifest.find("\\"mipmaps\\"");
     const std::size_t array_start = manifest.find('[', start);
     const std::size_t array_end = manifest.find(']', array_start);
     if (start == std::string_view::npos || array_start == std::string_view::npos || array_end == std::string_view::npos) {
@@ -257,9 +248,9 @@ std::vector<MipmapEntry> parse_mipmaps(std::string_view manifest) {
     std::vector<MipmapEntry> result;
     std::size_t cursor = array_start;
     while (true) {
-        const std::size_t length_key = manifest.find("\\\"length\\\"", cursor);
+        const std::size_t length_key = manifest.find("\\"length\\"", cursor);
         if (length_key == std::string_view::npos || length_key >= array_end) break;
-        const std::size_t position_key = manifest.find("\\\"position\\\"", length_key);
+        const std::size_t position_key = manifest.find("\\"position\\"", length_key);
         if (position_key == std::string_view::npos || position_key >= array_end) {
             throw std::runtime_error("Invalid environment mipmap entry.");
         }
@@ -295,7 +286,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
     const std::string_view manifest(
         reinterpret_cast<const char*>(bytes.data() + 8),
         json_end - 8);
-    const std::size_t irradiance_start = manifest.find("\\\"irradiance\\\"");
+    const std::size_t irradiance_start = manifest.find("\\"irradiance\\"");
     if (irradiance_start == std::string_view::npos) throw std::runtime_error("Missing irradiance.");
     const std::array<std::string_view, 9> coefficient_names{${keys}};
     std::array<Color3, 9> polynomial{};
@@ -349,12 +340,15 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
     }): LoweredSource {
         const modulePath = "src/loader-env/load-env.ts";
         const symbolName = "loadEnvironment";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        assertEnvironmentTextureIdentity(
+            this.context,
+            declaration,
+            "src/loader-env/env-helpers.ts",
+        );
         assertAsyncSceneBuilder(this.context, declaration);
         const exposure = this.numericAssignment(
             declaration,
@@ -627,7 +621,9 @@ void add_dds_environment_background(
 }
 `
         : ""
-}${options.loadEnvironment ? `
+}${
+                options.loadEnvironment
+                    ? `
 std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
         upstream::parse_env_file(pal::read_binary_file(options.environment_url));
@@ -682,7 +678,9 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     scene.environment.tone_mapping_enabled = true;
     return std::make_shared<const EnvironmentState>(scene.environment);
 }
-` : ""}
+`
+                    : ""
+            }
 } // namespace bbl
 `,
         };
@@ -698,11 +696,10 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
      * each is checked here rather than assumed.
      */
     private readDdsBackgroundContract(): { sceneSizeCall: string } {
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                DDS_BACKGROUND_MODULE,
-                "addDdsEnvironmentBackground",
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            DDS_BACKGROUND_MODULE,
+            "addDdsEnvironmentBackground",
+        );
         assertAsyncSceneBuilder(this.context, declaration);
         for (const called of [
             "computeSceneSize",
@@ -759,12 +756,15 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     public lowerDdsLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-env/load-dds-env.ts";
         const symbolName = "loadDdsEnvironment";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        assertEnvironmentTextureIdentity(
+            this.context,
+            declaration,
+            "src/loader-env/env-helpers.ts",
+        );
         const assemble = this.context.callExpression(
             declaration,
             "assembleEnvironmentTextures",
@@ -786,12 +786,14 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
         // changes the native record has to follow, so assert it rather than
         // assume it.
         if (
-            this.context.hasNode(declaration, (node) =>
-                ts.isPropertyAccessExpression(node) &&
-                this.context
-                    .propertyPath(node)
-                    ?.join(".")
-                    .startsWith("scene.imageProcessing") === true,
+            this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    this.context
+                        .propertyPath(node)
+                        ?.join(".")
+                        .startsWith("scene.imageProcessing") === true,
             )
         ) {
             this.context.contractError(
@@ -840,12 +842,15 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     public lowerHdrLoaderAdapter(): LoweredSource {
         const modulePath = "src/loader-hdr/load-hdr.ts";
         const symbolName = "loadHdrEnvironment";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        assertEnvironmentTextureIdentity(
+            this.context,
+            declaration,
+            "src/loader-env/env-helpers.ts",
+        );
         const exposure = this.numericAssignment(
             declaration,
             "scene.imageProcessing.exposure",
@@ -867,11 +872,10 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
                 "Expected HDR LOD generation scale.",
             );
         }
-        const lodGenerationScale =
-            this.context.numericValue(
-                lodExpression,
-                file,
-            );
+        const lodGenerationScale = this.context.numericValue(
+            lodExpression,
+            file,
+        );
         for (const call of [
             "parseRGBE(buffer)",
             "computeSHFromEquirect",
@@ -892,10 +896,7 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
             declaration,
             "scene.imageProcessing.toneMappingEnabled",
         );
-        if (
-            toneMapping.right.kind !==
-            ts.SyntaxKind.FalseKeyword
-        ) {
+        if (toneMapping.right.kind !== ts.SyntaxKind.FalseKeyword) {
             this.context.contractError(
                 toneMapping.right,
                 "Expected HDR tone mapping to be disabled.",
@@ -1092,15 +1093,11 @@ ${spec.tail}}
     } {
         const sizeModule = "src/material/pbr/scene-size.ts";
         const boundsModule = "src/mesh/mesh-world-bounds.ts";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                sizeModule,
-                "computeSceneSize",
-            );
-        for (const call of [
-            "emptyWorldAabb",
-            "expandWorldAabbForMesh",
-        ]) {
+        const { file, declaration } = this.context.functionDeclaration(
+            sizeModule,
+            "computeSceneSize",
+        );
+        for (const call of ["emptyWorldAabb", "expandWorldAabbForMesh"]) {
             if (!this.context.hasCall(declaration, call)) {
                 this.context.contractError(
                     declaration,
@@ -1113,18 +1110,14 @@ ${spec.tail}}
         // the defaults once, before the finite check, and returns.
         const emptyReturn = this.context.returnObject(declaration);
         const emptyGround = this.context.numericValue(
-            this.context.propertyInitializer(
-                emptyReturn,
-                "groundSize",
-            ),
+            this.context.propertyInitializer(emptyReturn, "groundSize"),
             file,
         );
         const skyboxFallback = (
             expression: ts.Expression,
             label: string,
         ): number => {
-            const unwrapped =
-                this.context.unwrapExpression(expression);
+            const unwrapped = this.context.unwrapExpression(expression);
             if (
                 !ts.isBinaryExpression(unwrapped) ||
                 unwrapped.operatorToken.kind !==
@@ -1137,23 +1130,14 @@ ${spec.tail}}
                     `Expected ${label} to default the user skybox size.`,
                 );
             }
-            return this.context.numericValue(
-                unwrapped.right,
-                file,
-            );
+            return this.context.numericValue(unwrapped.right, file);
         };
         const emptySkybox = skyboxFallback(
-            this.context.propertyInitializer(
-                emptyReturn,
-                "skyboxSize",
-            ),
+            this.context.propertyInitializer(emptyReturn, "skyboxSize"),
             "the empty-scene skybox size",
         );
         const emptyRoot = this.context.numericTuple(
-            this.context.propertyInitializer(
-                emptyReturn,
-                "rootPosition",
-            ),
+            this.context.propertyInitializer(emptyReturn, "rootPosition"),
             file,
         );
         if (emptyRoot.some((component) => component !== 0)) {
@@ -1163,23 +1147,14 @@ ${spec.tail}}
             );
         }
         const groundDefault = this.context.numericValue(
-            this.context.variableInitializer(
-                declaration,
-                "groundSize",
-            ),
+            this.context.variableInitializer(declaration, "groundSize"),
             file,
         );
         const skyboxDefault = skyboxFallback(
-            this.context.variableInitializer(
-                declaration,
-                "skyboxSize",
-            ),
+            this.context.variableInitializer(declaration, "skyboxSize"),
             "the skybox seed",
         );
-        if (
-            groundDefault !== emptyGround ||
-            skyboxDefault !== emptySkybox
-        ) {
+        if (groundDefault !== emptyGround || skyboxDefault !== emptySkybox) {
             this.context.contractError(
                 declaration,
                 "Scene-size defaults no longer agree between the empty and sized paths.",
@@ -1194,30 +1169,20 @@ ${spec.tail}}
             ["dx", "maxX - minX"],
             ["dy", "maxY - minY"],
             ["dz", "maxZ - minZ"],
-            [
-                "sceneDiagonalLength",
-                "Math.sqrt(dx * dx + dy * dy + dz * dz)",
-            ],
+            ["sceneDiagonalLength", "Math.sqrt(dx * dx + dy * dy + dz * dz)"],
         ] as const) {
             this.context.assertExpressionShape(
-                this.context.variableInitializer(
-                    declaration,
-                    name,
-                ),
+                this.context.variableInitializer(declaration, name),
                 expected,
                 `Scene-size '${name}'`,
             );
         }
         const assignments = this.context.findNodes(
             declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
         );
         const cam = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                declaration,
-                "cam",
-            ),
+            this.context.variableInitializer(declaration, "cam"),
         );
         if (
             !ts.isPropertyAccessExpression(cam) ||
@@ -1232,8 +1197,7 @@ ${spec.tail}}
         }
         const cameraGuards = assignments.filter(
             (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.InKeyword &&
+                expression.operatorToken.kind === ts.SyntaxKind.InKeyword &&
                 ts.isStringLiteral(expression.left) &&
                 expression.left.text === "upperRadiusLimit" &&
                 ts.isIdentifier(expression.right) &&
@@ -1245,46 +1209,36 @@ ${spec.tail}}
                 "Expected one arc-rotate upperRadiusLimit guard.",
             );
         }
-        const cameraOverrides = assignments.filter(
-            (expression) => {
-                if (
-                    expression.operatorToken.kind !==
-                        ts.SyntaxKind.EqualsToken ||
-                    !ts.isIdentifier(expression.left) ||
-                    expression.left.text !== "groundSize"
-                ) {
-                    return false;
-                }
-                const product = this.context.unwrapExpression(
-                    expression.right,
-                );
-                if (
-                    !ts.isBinaryExpression(product) ||
-                    product.operatorToken.kind !==
-                        ts.SyntaxKind.AsteriskToken ||
-                    !ts.isNumericLiteral(product.right)
-                ) {
-                    return false;
-                }
-                const limit = this.context.unwrapExpression(
-                    product.left,
-                );
-                return (
-                    ts.isPropertyAccessExpression(limit) &&
-                    limit.name.text === "upperRadiusLimit" &&
-                    ts.isIdentifier(
-                        this.context.unwrapExpression(
-                            limit.expression,
-                        ),
-                    ) &&
-                    (
-                        this.context.unwrapExpression(
-                            limit.expression,
-                        ) as ts.Identifier
-                    ).text === "cam"
-                );
-            },
-        );
+        const cameraOverrides = assignments.filter((expression) => {
+            if (
+                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                !ts.isIdentifier(expression.left) ||
+                expression.left.text !== "groundSize"
+            ) {
+                return false;
+            }
+            const product = this.context.unwrapExpression(expression.right);
+            if (
+                !ts.isBinaryExpression(product) ||
+                product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+                !ts.isNumericLiteral(product.right)
+            ) {
+                return false;
+            }
+            const limit = this.context.unwrapExpression(product.left);
+            return (
+                ts.isPropertyAccessExpression(limit) &&
+                limit.name.text === "upperRadiusLimit" &&
+                ts.isIdentifier(
+                    this.context.unwrapExpression(limit.expression),
+                ) &&
+                (
+                    this.context.unwrapExpression(
+                        limit.expression,
+                    ) as ts.Identifier
+                ).text === "cam"
+            );
+        });
         if (cameraOverrides.length !== 1) {
             this.context.contractError(
                 declaration,
@@ -1304,8 +1258,7 @@ ${spec.tail}}
                 expression.operatorToken.kind ===
                     ts.SyntaxKind.GreaterThanToken &&
                 ts.isIdentifier(expression.left) &&
-                expression.left.text ===
-                    "sceneDiagonalLength" &&
+                expression.left.text === "sceneDiagonalLength" &&
                 ts.isIdentifier(expression.right) &&
                 expression.right.text === "groundSize",
         );
@@ -1315,30 +1268,23 @@ ${spec.tail}}
                 "Expected one diagonal-versus-ground guard.",
             );
         }
-        const diagonalOverrides = assignments.filter(
-            (expression) => {
-                if (
-                    expression.operatorToken.kind !==
-                        ts.SyntaxKind.EqualsToken ||
-                    !ts.isIdentifier(expression.left) ||
-                    expression.left.text !== "groundSize"
-                ) {
-                    return false;
-                }
-                const product = this.context.unwrapExpression(
-                    expression.right,
-                );
-                return (
-                    ts.isBinaryExpression(product) &&
-                    product.operatorToken.kind ===
-                        ts.SyntaxKind.AsteriskToken &&
-                    ts.isIdentifier(product.left) &&
-                    product.left.text ===
-                        "sceneDiagonalLength" &&
-                    ts.isNumericLiteral(product.right)
-                );
-            },
-        );
+        const diagonalOverrides = assignments.filter((expression) => {
+            if (
+                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                !ts.isIdentifier(expression.left) ||
+                expression.left.text !== "groundSize"
+            ) {
+                return false;
+            }
+            const product = this.context.unwrapExpression(expression.right);
+            return (
+                ts.isBinaryExpression(product) &&
+                product.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
+                ts.isIdentifier(product.left) &&
+                product.left.text === "sceneDiagonalLength" &&
+                ts.isNumericLiteral(product.right)
+            );
+        });
         if (diagonalOverrides.length !== 1) {
             this.context.contractError(
                 declaration,
@@ -1355,14 +1301,11 @@ ${spec.tail}}
         );
         const skyboxFollows = assignments.filter(
             (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isIdentifier(expression.left) &&
                 expression.left.text === "skyboxSize" &&
                 ts.isIdentifier(
-                    this.context.unwrapExpression(
-                        expression.right,
-                    ),
+                    this.context.unwrapExpression(expression.right),
                 ),
         );
         if (
@@ -1395,10 +1338,7 @@ ${spec.tail}}
                     `Expected one final '${name}' scale.`,
                 );
             }
-            return this.context.numericValue(
-                scaled[0]!.right,
-                file,
-            );
+            return this.context.numericValue(scaled[0]!.right, file);
         };
         const groundScale = scaleOf("groundSize");
         const skyboxScale = scaleOf("skyboxSize");
@@ -1406,15 +1346,9 @@ ${spec.tail}}
         // box floor minus a drop on y, each read from its own slot of the
         // pinned rootPosition tuple.
         const root = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                declaration,
-                "rootPosition",
-            ),
+            this.context.variableInitializer(declaration, "rootPosition"),
         );
-        if (
-            !ts.isArrayLiteralExpression(root) ||
-            root.elements.length !== 3
-        ) {
+        if (!ts.isArrayLiteralExpression(root) || root.elements.length !== 3) {
             this.context.contractError(
                 root,
                 "Expected a three-component root position.",
@@ -1425,12 +1359,10 @@ ${spec.tail}}
             minName: string,
             deltaName: string,
         ): number => {
-            const unwrapped =
-                this.context.unwrapExpression(element);
+            const unwrapped = this.context.unwrapExpression(element);
             if (
                 !ts.isBinaryExpression(unwrapped) ||
-                unwrapped.operatorToken.kind !==
-                    ts.SyntaxKind.PlusToken ||
+                unwrapped.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
                 !ts.isIdentifier(unwrapped.left) ||
                 unwrapped.left.text !== minName
             ) {
@@ -1439,13 +1371,10 @@ ${spec.tail}}
                     `Expected the root to centre from ${minName}.`,
                 );
             }
-            const product = this.context.unwrapExpression(
-                unwrapped.right,
-            );
+            const product = this.context.unwrapExpression(unwrapped.right);
             if (
                 !ts.isBinaryExpression(product) ||
-                product.operatorToken.kind !==
-                    ts.SyntaxKind.AsteriskToken ||
+                product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
                 !ts.isIdentifier(product.left) ||
                 product.left.text !== deltaName
             ) {
@@ -1454,10 +1383,7 @@ ${spec.tail}}
                     `Expected the root to scale ${deltaName}.`,
                 );
             }
-            return this.context.numericValue(
-                product.right,
-                file,
-            );
+            return this.context.numericValue(product.right, file);
         };
         const halfX = centreHalf(root.elements[0]!, "minX", "dx");
         const halfZ = centreHalf(root.elements[2]!, "minZ", "dz");
@@ -1467,13 +1393,10 @@ ${spec.tail}}
                 "Expected one shared root centre factor.",
             );
         }
-        const floor = this.context.unwrapExpression(
-            root.elements[1]!,
-        );
+        const floor = this.context.unwrapExpression(root.elements[1]!);
         if (
             !ts.isBinaryExpression(floor) ||
-            floor.operatorToken.kind !==
-                ts.SyntaxKind.MinusToken ||
+            floor.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
             !ts.isIdentifier(floor.left) ||
             floor.left.text !== "minY"
         ) {
@@ -1482,15 +1405,11 @@ ${spec.tail}}
                 "Expected the root floor to drop below minY.",
             );
         }
-        const rootDrop = this.context.numericValue(
-            floor.right,
-            file,
+        const rootDrop = this.context.numericValue(floor.right, file);
+        const { declaration: expand } = this.context.functionDeclaration(
+            boundsModule,
+            "expandWorldAabbForMesh",
         );
-        const { declaration: expand } =
-            this.context.functionDeclaration(
-                boundsModule,
-                "expandWorldAabbForMesh",
-            );
         for (const marker of [
             "transformedCenter += coefficient * center[column]!",
             "transformedRadius += Math.abs(coefficient) * extent[column]!",
@@ -1517,61 +1436,42 @@ ${spec.tail}}
     private extractConstants(): EnvironmentConstants {
         const parserModule = "src/loader-env/env-parse.ts";
         const parser = this.context.sourceFile(parserModule);
-        const magicExpression =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    parser,
-                    "ENV_MAGIC",
-                ),
-            );
+        const magicExpression = this.context.unwrapExpression(
+            this.context.variableInitializer(parser, "ENV_MAGIC"),
+        );
         if (
             !ts.isNewExpression(magicExpression) ||
             !ts.isIdentifier(magicExpression.expression) ||
             magicExpression.expression.text !== "U8" ||
             magicExpression.arguments?.length !== 1 ||
-            !ts.isArrayLiteralExpression(
-                magicExpression.arguments[0]!,
-            )
+            !ts.isArrayLiteralExpression(magicExpression.arguments[0]!)
         ) {
             this.context.contractError(
                 magicExpression,
                 "Expected ENV_MAGIC byte array.",
             );
         }
-        const magic =
-            magicExpression.arguments[0].elements.map(
-                (element) =>
-                    this.context.numericValue(
-                        element,
-                        parser,
-                    ),
-            );
-        const keysExpression =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    parser,
-                    "shKeys",
-                ),
-            );
+        const magic = magicExpression.arguments[0].elements.map((element) =>
+            this.context.numericValue(element, parser),
+        );
+        const keysExpression = this.context.unwrapExpression(
+            this.context.variableInitializer(parser, "shKeys"),
+        );
         if (!ts.isArrayLiteralExpression(keysExpression)) {
             this.context.contractError(
                 keysExpression,
                 "Expected spherical-harmonic key array.",
             );
         }
-        const coefficientNames =
-            keysExpression.elements.map((element) =>
-                this.context.stringValue(element, parser),
-            );
+        const coefficientNames = keysExpression.elements.map((element) =>
+            this.context.stringValue(element, parser),
+        );
         const imageType = this.context.findNodes(
             parser,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.BarBarToken &&
-                this.context
-                    .propertyPath(node.left)
-                    ?.join(".") ===
+                node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+                this.context.propertyPath(node.left)?.join(".") ===
                     "manifest.imageType" &&
                 ts.isStringLiteral(node.right),
         )[0];
@@ -1596,11 +1496,8 @@ ${spec.tail}}
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                this.context
-                    .propertyPath(node.left)
-                    ?.join(".") === path,
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.propertyPath(node.left)?.join(".") === path,
         )[0];
         if (!expression) {
             this.context.contractError(

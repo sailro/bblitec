@@ -96,16 +96,22 @@ struct PhysicsConstraintAxisLimit {
 };
 using PhysicsConstraintAxes = std::array<PhysicsConstraintAxisLimit, 7>;
 #if BBLITE_HAS_PHYSICS_CONSTRAINTS
-void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
-    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
-void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
-    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
-    const PhysicsConstraintAxes& axes, bool collisions);
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent,
+                                PhysicsBodyHandle child,
+                                const PhysicsConstraintAnchor& parent_anchor,
+                                const PhysicsConstraintAnchor& child_anchor, bool collisions);
+void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent,
+                                     PhysicsBodyHandle child,
+                                     const PhysicsConstraintAnchor& parent_anchor,
+                                     const PhysicsConstraintAnchor& child_anchor,
+                                     const PhysicsConstraintAxes& axes, bool collisions);
 #endif
 
 #if BBLITE_HAS_PHYSICS_HEIGHTFIELD
-PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
-    std::array<double, 3> scale, const std::vector<float>& heights);
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x,
+                                                    std::uint32_t samples_z,
+                                                    std::array<double, 3> scale,
+                                                    const std::vector<float>& heights);
 #endif
 
 /**
@@ -162,10 +168,8 @@ struct PhysicsShapeMaterial {
     double static_friction = 0.0;
     double dynamic_friction = 0.0;
     double restitution = 0.0;
-    PhysicsMaterialCombine friction_combine =
-        PhysicsMaterialCombine::minimum;
-    PhysicsMaterialCombine restitution_combine =
-        PhysicsMaterialCombine::maximum;
+    PhysicsMaterialCombine friction_combine = PhysicsMaterialCombine::minimum;
+    PhysicsMaterialCombine restitution_combine = PhysicsMaterialCombine::maximum;
 };
 
 /**
@@ -244,28 +248,29 @@ struct PhysicsShapeQueryResult {
  * Collector queries retain the closest `capacity` hits, including multiple
  * mesh features. The character controller's kernels are their only reader.
  */
-[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
-    PhysicsWorldHandle world, PhysicsShapeHandle shape,
-    const PhysicsTransform& transform, double max_distance,
-    bool should_hit_triggers, PhysicsBodyHandle ignored_body, std::size_t capacity);
-[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
-    PhysicsWorldHandle world, PhysicsShapeHandle shape,
-    std::array<double, 4> rotation, std::array<double, 3> from,
-    std::array<double, 3> to, bool should_hit_triggers,
-    PhysicsBodyHandle ignored_body, std::size_t capacity);
+[[nodiscard]] std::vector<PhysicsShapeQueryResult>
+physics_world_collect_shape_proximity(PhysicsWorldHandle world, PhysicsShapeHandle shape,
+                                      const PhysicsTransform& transform, double max_distance,
+                                      bool should_hit_triggers, PhysicsBodyHandle ignored_body,
+                                      std::size_t capacity);
+[[nodiscard]] std::vector<PhysicsShapeQueryResult>
+physics_world_collect_shape_cast(PhysicsWorldHandle world, PhysicsShapeHandle shape,
+                                 std::array<double, 4> rotation, std::array<double, 3> from,
+                                 std::array<double, 3> to, bool should_hit_triggers,
+                                 PhysicsBodyHandle ignored_body, std::size_t capacity);
 #endif
 
 #if BBLITE_HAS_PHYSICS_QUERIES
 /** `HP_World_ShapeProximity` / `HP_World_ShapeCast`: the closest hit alone. */
-[[nodiscard]] PhysicsShapeQueryResult physics_world_shape_proximity(
-    PhysicsWorldHandle world, PhysicsShapeHandle shape,
-    const PhysicsTransform& transform, double max_distance,
-    bool should_hit_triggers);
-[[nodiscard]] PhysicsShapeQueryResult physics_world_shape_cast(
-    PhysicsWorldHandle world, PhysicsShapeHandle shape,
-    std::array<double, 4> rotation, std::array<double, 3> from,
-    std::array<double, 3> to, bool should_hit_triggers,
-    PhysicsBodyHandle ignored_body);
+[[nodiscard]] PhysicsShapeQueryResult
+physics_world_shape_proximity(PhysicsWorldHandle world, PhysicsShapeHandle shape,
+                              const PhysicsTransform& transform, double max_distance,
+                              bool should_hit_triggers);
+[[nodiscard]] PhysicsShapeQueryResult
+physics_world_shape_cast(PhysicsWorldHandle world, PhysicsShapeHandle shape,
+                         std::array<double, 4> rotation, std::array<double, 3> from,
+                         std::array<double, 3> to, bool should_hit_triggers,
+                         PhysicsBodyHandle ignored_body);
 #endif
 
 // --- World -----------------------------------------------------------
@@ -273,35 +278,24 @@ struct PhysicsShapeQueryResult {
 /** `HP_World_Create`. */
 [[nodiscard]] PhysicsWorldHandle physics_world_create();
 /** `HP_World_SetGravity`. */
-void physics_world_set_gravity(
-    PhysicsWorldHandle world,
-    std::array<double, 3> gravity);
+void physics_world_set_gravity(PhysicsWorldHandle world, std::array<double, 3> gravity);
 #if BBLITE_HAS_PHYSICS_FLOATING_ORIGIN
 /**
  * `HP_World_GetSpeedLimit`, as the pair the pin reads `[1]` and `[2]` of.
  * The floating-origin module's `_getOrCreateRegion` is the one reader.
  */
-[[nodiscard]] PhysicsSpeedLimit physics_world_get_speed_limit(
-    PhysicsWorldHandle world);
+[[nodiscard]] PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world);
 /** `HP_World_SetSpeedLimit`, seeding a new region from the base world. */
-void physics_world_set_speed_limit(
-    PhysicsWorldHandle world,
-    double max_linear,
-    double max_angular);
+void physics_world_set_speed_limit(PhysicsWorldHandle world, double max_linear, double max_angular);
 #endif
 /** `HP_World_AddBody`. */
-void physics_world_add_body(
-    PhysicsWorldHandle world,
-    PhysicsBodyHandle body,
-    bool start_asleep);
+void physics_world_add_body(PhysicsWorldHandle world, PhysicsBodyHandle body, bool start_asleep);
 /**
  * `HP_World_RemoveBody`. Reached by `removePhysicsBody` and by a
  * floating-origin migration: a body crossing a region boundary leaves one
  * world and joins another within one step.
  */
-void physics_world_remove_body(
-    PhysicsWorldHandle world,
-    PhysicsBodyHandle body);
+void physics_world_remove_body(PhysicsWorldHandle world, PhysicsBodyHandle body);
 /**
  * `HP_World_Release`. The floating-origin module reclaims a region the
  * step after its last body migrated out.
@@ -325,13 +319,10 @@ physics_world_trigger_events(const PhysicsWorldHandle& world);
  * and travels whether or not trigger shapes are compiled in: without them
  * no object is ever excluded.
  */
-[[nodiscard]] PhysicsRaycastResult physics_world_raycast(
-    PhysicsWorldHandle world,
-    std::array<double, 3> from,
-    std::array<double, 3> to,
-    std::uint32_t membership,
-    std::uint32_t collide_with,
-    bool should_hit_triggers);
+[[nodiscard]] PhysicsRaycastResult
+physics_world_raycast(PhysicsWorldHandle world, std::array<double, 3> from,
+                      std::array<double, 3> to, std::uint32_t membership,
+                      std::uint32_t collide_with, bool should_hit_triggers);
 
 // --- Shapes ----------------------------------------------------------
 //
@@ -343,27 +334,23 @@ physics_world_trigger_events(const PhysicsWorldHandle& world);
 // points, and the triangle soup itself.
 
 /** `HP_Shape_CreateSphere`. */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_sphere(
-    std::array<double, 3> center,
-    double radius);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_sphere(std::array<double, 3> center,
+                                                             double radius);
 /** `HP_Shape_CreateBox`. `extents` is the full size, as the pin passes it. */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_box(
-    std::array<double, 3> center,
-    std::array<double, 4> rotation,
-    std::array<double, 3> extents);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_box(std::array<double, 3> center,
+                                                          std::array<double, 4> rotation,
+                                                          std::array<double, 3> extents);
 /** `HP_Shape_CreateCapsule`. */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_capsule(
-    std::array<double, 3> point_a,
-    std::array<double, 3> point_b,
-    double radius);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_capsule(std::array<double, 3> point_a,
+                                                              std::array<double, 3> point_b,
+                                                              double radius);
 /** `HP_Shape_CreateCylinder`. */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_cylinder(
-    std::array<double, 3> point_a,
-    std::array<double, 3> point_b,
-    double radius);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_cylinder(std::array<double, 3> point_a,
+                                                               std::array<double, 3> point_b,
+                                                               double radius);
 /** `HP_Shape_CreateConvexHull`, with the pin's packed vec3 input expanded. */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_convex_hull(
-    const std::vector<std::array<double, 3>>& positions);
+[[nodiscard]] PhysicsShapeHandle
+physics_shape_create_convex_hull(const std::vector<std::array<double, 3>>& positions);
 /**
  * `HP_Shape_CreateMesh`: the triangle soup itself rather than its hull,
  * with the pin's two packed heap buffers expanded into the vertex list and
@@ -373,34 +360,24 @@ physics_world_trigger_events(const PhysicsWorldHandle& world);
  * the same triangles and its inertia approximation; both views outlive the
  * bodies that reference them.
  */
-[[nodiscard]] PhysicsShapeHandle physics_shape_create_mesh(
-    const std::vector<std::array<double, 3>>& positions,
-    const std::vector<std::uint32_t>& indices);
+[[nodiscard]] PhysicsShapeHandle
+physics_shape_create_mesh(const std::vector<std::array<double, 3>>& positions,
+                          const std::vector<std::uint32_t>& indices);
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_container();
-void physics_shape_add_child(
-    PhysicsShapeHandle container,
-    PhysicsShapeHandle child,
-    const PhysicsTransform& transform,
-    std::array<double, 3> scale);
+void physics_shape_add_child(PhysicsShapeHandle container, PhysicsShapeHandle child,
+                             const PhysicsTransform& transform, std::array<double, 3> scale);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
-void physics_shape_set_material(
-    PhysicsShapeHandle shape,
-    const PhysicsShapeMaterial& material);
-void physics_shape_set_filter_membership_mask(
-    PhysicsShapeHandle shape,
-    std::uint32_t membership_mask);
-void physics_shape_set_filter_collide_mask(
-    PhysicsShapeHandle shape,
-    std::uint32_t collide_mask);
+void physics_shape_set_material(PhysicsShapeHandle shape, const PhysicsShapeMaterial& material);
+void physics_shape_set_filter_membership_mask(PhysicsShapeHandle shape,
+                                              std::uint32_t membership_mask);
+void physics_shape_set_filter_collide_mask(PhysicsShapeHandle shape, std::uint32_t collide_mask);
 #if BBLITE_HAS_PHYSICS_TRIGGER
 /**
  * `HP_Shape_SetTrigger`. A trigger shape overlaps without producing a
  * contact response, and the overlaps it does produce are what
  * `physics_world_trigger_events` reports.
  */
-void physics_shape_set_trigger(
-    PhysicsShapeHandle shape,
-    bool is_trigger);
+void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger);
 #endif
 
 // --- Bodies ----------------------------------------------------------
@@ -410,63 +387,42 @@ void physics_shape_set_trigger(
 /** `HP_Body_Release` after removal; outstanding handle copies become invalid. */
 void physics_body_release(PhysicsBodyHandle body);
 /** `HP_Body_SetMotionType`, taking the back end's own motion type. */
-void physics_body_set_motion_type(
-    PhysicsBodyHandle body,
-    PhysicsMotionType motion_type);
+void physics_body_set_motion_type(PhysicsBodyHandle body, PhysicsMotionType motion_type);
 /** `HP_Body_SetShape`. */
-void physics_body_set_shape(
-    PhysicsBodyHandle body,
-    PhysicsShapeHandle shape);
+void physics_body_set_shape(PhysicsBodyHandle body, PhysicsShapeHandle shape);
 /** `HP_Body_GetQTransform`. */
-[[nodiscard]] PhysicsTransform physics_body_get_transform(
-    PhysicsBodyHandle body);
+[[nodiscard]] PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body);
 /** `HP_Body_SetQTransform`. */
-void physics_body_set_transform(
-    PhysicsBodyHandle body,
-    const PhysicsTransform& transform);
+void physics_body_set_transform(PhysicsBodyHandle body, const PhysicsTransform& transform);
 /** `HP_Body_SetTargetQTransform` (the ACTION prestep). */
-void physics_body_set_target_transform(
-    PhysicsBodyHandle body,
-    const PhysicsTransform& transform);
+void physics_body_set_target_transform(PhysicsBodyHandle body, const PhysicsTransform& transform);
 /**
  * `HP_Shape_BuildMassProperties`, adapted to Bullet's absolute inertia at
  * the requested mass. The shape's centre and principal axes are retained.
  */
-[[nodiscard]] PhysicsMassProperties physics_shape_build_mass_properties(
-    PhysicsShapeHandle shape,
-    double mass);
+[[nodiscard]] PhysicsMassProperties physics_shape_build_mass_properties(PhysicsShapeHandle shape,
+                                                                        double mass);
 /** Solver default density applied to a represented primitive's authored volume. */
 [[nodiscard]] double physics_shape_default_mass(PhysicsShapeHandle shape);
 
 /** `HP_Body_SetMassProperties`. */
-void physics_body_set_mass_properties(
-    PhysicsBodyHandle body,
-    const PhysicsMassProperties& properties);
+void physics_body_set_mass_properties(PhysicsBodyHandle body,
+                                      const PhysicsMassProperties& properties);
 /** `HP_Body_GetMassProperties`: live node-local centre and principal mass frame. */
 [[nodiscard]] PhysicsMassProperties physics_body_get_mass_properties(PhysicsBodyHandle body);
 /** `HP_Body_ApplyImpulse`: world-space location followed by impulse. */
-void physics_body_apply_impulse(
-    PhysicsBodyHandle body,
-    std::array<double, 3> location,
-    std::array<double, 3> impulse);
-[[nodiscard]] std::array<double, 3> physics_body_get_linear_velocity(
-    PhysicsBodyHandle body);
+void physics_body_apply_impulse(PhysicsBodyHandle body, std::array<double, 3> location,
+                                std::array<double, 3> impulse);
+[[nodiscard]] std::array<double, 3> physics_body_get_linear_velocity(PhysicsBodyHandle body);
 /** `HP_Body_GetAngularVelocity`. */
-[[nodiscard]] std::array<double, 3> physics_body_get_angular_velocity(
-    PhysicsBodyHandle body);
+[[nodiscard]] std::array<double, 3> physics_body_get_angular_velocity(PhysicsBodyHandle body);
 /**
  * `HP_Body_SetLinearVelocity` / `HP_Body_SetAngularVelocity`. A migrating
  * body is re-added to its new region with the velocity it left the old one
  * with, and `HP_World_AddBody` does not carry it.
  */
-void physics_body_set_linear_velocity(
-    PhysicsBodyHandle body,
-    std::array<double, 3> velocity);
-void physics_body_set_angular_velocity(
-    PhysicsBodyHandle body,
-    std::array<double, 3> velocity);
-void physics_body_set_collision_events_enabled(
-    PhysicsBodyHandle body,
-    bool enabled);
+void physics_body_set_linear_velocity(PhysicsBodyHandle body, std::array<double, 3> velocity);
+void physics_body_set_angular_velocity(PhysicsBodyHandle body, std::array<double, 3> velocity);
+void physics_body_set_collision_events_enabled(PhysicsBodyHandle body, bool enabled);
 
-}  // namespace bbl::pal
+} // namespace bbl::pal

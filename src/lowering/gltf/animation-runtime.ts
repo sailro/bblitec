@@ -1,7 +1,9 @@
-import type {GltfLoaderOptions} from "./loader.js";
+import type { GltfLoaderOptions } from "./loader.js";
 
 /** Native record and Float32 buffer transport around the source animation bodies. */
-export function gltfAnimationRuntimeTypesCpp(options: GltfLoaderOptions): string {
+export function gltfAnimationRuntimeTypesCpp(
+    options: GltfLoaderOptions,
+): string {
     return `
 struct GltfAnimationMask {
     std::vector<std::string> names;
@@ -79,7 +81,10 @@ Matrix gltf_animation_matrix(const GltfAnimationFloats& values,std::size_t index
 `;
 }
 
-export function gltfAnimationPoseTransportCpp(options: GltfLoaderOptions, cameraRefresh: string): string {
+export function gltfAnimationPoseTransportCpp(
+    options: GltfLoaderOptions,
+    cameraRefresh: string,
+): string {
     return `
         const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer ? ",&engine" : ""}]() {
             for(auto& node:animation_runtime->nodes){node.computed=false;node.computing=false;}
@@ -94,12 +99,16 @@ export function gltfAnimationPoseTransportCpp(options: GltfLoaderOptions, camera
                 return node.world;
             };
             for(std::size_t index=0;index<animation_runtime->nodes.size();++index)compute_animated_world(index);
-${options.animationPointer ? `            for(const auto& binding:animation_runtime->light_nodes) {
+${
+    options.animationPointer
+        ? `            for(const auto& binding:animation_runtime->light_nodes) {
                 auto& light=engine.lights.at(binding.light.value);
                 const auto& world=compute_animated_world(binding.node);
                 light.position={-world[12],world[13],world[14]};
                 light.direction=normalize({world[8],-world[9],-world[10]});
-            }` : ""}
+            }`
+        : ""
+}
 ${cameraRefresh}
         };
         const auto publish_mesh=[animation_runtime=animation_runtime.get(),&engine](std::size_t index) {
@@ -170,8 +179,13 @@ ${options.vat ? `            if(mesh.has_vat)return;` : ""}
 }
 
 /** Hydrate source-created identities once, then expose native ABI entry points. */
-export function gltfAnimationLoadingCpp(options: GltfLoaderOptions, rootFlip: string): string {
-    const syncMask=options.animationMask ? "gltf_sync_animation_mask(clip,animation_runtime->node_names);" : "";
+export function gltfAnimationLoadingCpp(
+    options: GltfLoaderOptions,
+    rootFlip: string,
+): string {
+    const syncMask = options.animationMask
+        ? "gltf_sync_animation_mask(clip,animation_runtime->node_names);"
+        : "";
     return `
         animation_runtime->asset_index=engine.assets.size();
         asset.source_animation=std::make_shared<GltfAnimationRuntimeState>(GltfAnimationRuntimeState{animation_runtime});
@@ -241,7 +255,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
                 frame_rate?frame_rate->as_number():std::numeric_limits<double>::quiet_NaN(),static_cast<double>(index));
             clip.pose=read_gltf_animation_pose(source,animation_runtime->source_nodes,animation_runtime->source_skeletons,
                 animation_runtime->source_morphs,read_animation_floats,
-                ${options.animationPointer ? "[&](const ts::JsonValue& writer){return gltf_bind_animation_pointer(animation_runtime->pointers,writer);}" : "[](const ts::JsonValue&)->js::Callback<void(const GltfAnimationFloats&,double)>{throw std::runtime_error(\"Animation pointer feature is absent.\");}"},${rootFlip});
+                ${options.animationPointer ? "[&](const ts::JsonValue& writer){return gltf_bind_animation_pointer(animation_runtime->pointers,writer);}" : '[](const ts::JsonValue&)->js::Callback<void(const GltfAnimationFloats&,double)>{throw std::runtime_error("Animation pointer feature is absent.");}'},${rootFlip});
             clip.pose->mask_resolver=${options.animationMask === true};
             for(const auto& targeted:required(source,"targetedAnimations").as_array()) {
                 const auto* name=optional(targeted.as_object(),"targetName");
@@ -289,7 +303,9 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
                     [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
             }
         };
-${options.vat ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
+${
+    options.vat
+        ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
         const auto skeleton_binding=[animation_runtime,&engine](MeshHandle mesh)->std::pair<GltfAnimationPoseSkeleton*,AnimatedMeshBinding*> {
             if(mesh.value>=engine.meshes.size()||engine.meshes[mesh.value].has_vat)return {};
             for(const auto& skeleton:animation_runtime->source_skeletons.entries)
@@ -315,13 +331,23 @@ ${options.vat ? `        asset.clip_duration=[animation_runtime](std::size_t ind
                 gltf_tick_animation_controller(clip,clip.controller,delta,false,clip.pose->requires_engine,false,
                     [&](double time,bool){animation_runtime->evaluate_pose(index,time,false);});
             });
-        };` : ""}
-${options.animationMask ? `        asset.set_clip_mask=[animation_runtime](std::size_t index,const std::vector<std::string>& names,bool include) {
+        };`
+        : ""
+}
+${
+    options.animationMask
+        ? `        asset.set_clip_mask=[animation_runtime](std::size_t index,const std::vector<std::string>& names,bool include) {
             animation_runtime->clips.at(index).mask=gltf_make_animation_mask<GltfAnimationMask>(names,include);
-        };` : ""}
-${options.animationAdditive ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,float reference_time) {
+        };`
+        : ""
+}
+${
+    options.animationAdditive
+        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,float reference_time) {
             auto& clip=animation_runtime->clips.at(index);clip.additive=true;clip.additive_reference_time=reference_time;
-        };` : ""}
+        };`
+        : ""
+}
         asset.clone_mesh_animation=[animation_runtime,&engine](MeshHandle source,MeshHandle clone) {
             const auto found=std::find_if(animation_runtime->meshes.begin(),animation_runtime->meshes.end(),
                 [&](const auto& binding){return binding.mesh==source.value;});

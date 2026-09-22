@@ -17,7 +17,7 @@ std::string environment_variable(const char* name) {
     std::free(value);
     return result;
 }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl::pal;
@@ -29,10 +29,11 @@ int main() {
         const auto source = audio_create_oscillator(context);
         abandoned = source.ownership;
         const auto parameter = audio_node_param(source, AudioParamName::Frequency);
-        audio_add_ended_listener(source, 1, bbl::js::make_closure(std::tuple{source, parameter}, [](auto& captures) {
-            audio_disconnect(std::get<0>(captures));
-            static_cast<void>(audio_param_value(std::get<1>(captures)));
-        }));
+        audio_add_ended_listener(
+            source, 1, bbl::js::make_closure(std::tuple{source, parameter}, [](auto& captures) {
+                audio_disconnect(std::get<0>(captures));
+                static_cast<void>(audio_param_value(std::get<1>(captures)));
+            }));
     }
     bbl::js::collect_cycles();
     assert(abandoned.expired());

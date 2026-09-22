@@ -29,9 +29,7 @@ import {
 } from "./clustered-light-lowerer.js";
 
 /** The clustered light field's generated header and translation unit. */
-export function lowerClusteredLights(
-    context: LoweringContext,
-): LoweredSource {
+export function lowerClusteredLights(context: LoweringContext): LoweredSource {
     const header = `#pragma once
 
 #include <algorithm>

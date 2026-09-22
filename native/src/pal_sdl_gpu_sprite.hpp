@@ -75,7 +75,8 @@ struct SpriteLayerResources {
 };
 
 inline void release_sprite_layer_resources(SDL_GPUDevice*, SpriteLayerResources&) noexcept;
-using SpriteLayerGpu = OwnedGpuRecord<SpriteLayerResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_layer_resources>;
+using SpriteLayerGpu = OwnedGpuRecord<SpriteLayerResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                                      release_sprite_layer_resources>;
 
 /** One pass-owned atlas texture/sampler pair, borrowed by every layer. */
 struct SpriteAtlasGpuResources {
@@ -87,8 +88,9 @@ struct SpriteAtlasGpuResources {
     bool owns_texture = false;
 };
 inline void release_sprite_atlas_gpu_resources(SDL_GPUDevice*, SpriteAtlasGpuResources&) noexcept;
-using SpriteAtlasGpu = OwnedGpuRecord<SpriteAtlasGpuResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_atlas_gpu_resources>;
-
+using SpriteAtlasGpu =
+    OwnedGpuRecord<SpriteAtlasGpuResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                   release_sprite_atlas_gpu_resources>;
 
 /** One registered `SpriteRenderer`, as GPU resources. */
 struct SpritePassResources {
@@ -105,8 +107,8 @@ struct SpritePassResources {
     SDL_GPUTextureFormat target_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 };
 inline void release_sprite_pass_resources(SDL_GPUDevice*, SpritePassResources&) noexcept;
-using SpritePass = OwnedGpuRecord<SpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_pass_resources>;
-
+using SpritePass = OwnedGpuRecord<SpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                                  release_sprite_pass_resources>;
 
 /** Sprite layers attached to the scene's depth-hosted renderable lane. */
 struct SceneSpritePassResources {
@@ -119,23 +121,24 @@ struct SceneSpritePassResources {
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
 };
 inline void release_scene_sprite_pass_resources(SDL_GPUDevice*, SceneSpritePassResources&) noexcept;
-using SceneSpritePass = OwnedGpuRecord<SceneSpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_scene_sprite_pass_resources>;
-
+using SceneSpritePass =
+    OwnedGpuRecord<SceneSpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                   release_scene_sprite_pass_resources>;
 
 inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
     switch (factor) {
-        case SpriteBlendFactor::zero:
-            return SDL_GPU_BLENDFACTOR_ZERO;
-        case SpriteBlendFactor::one:
-            return SDL_GPU_BLENDFACTOR_ONE;
-        case SpriteBlendFactor::src_alpha:
-            return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        case SpriteBlendFactor::one_minus_src_alpha:
-            return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        case SpriteBlendFactor::dst:
-            return SDL_GPU_BLENDFACTOR_DST_COLOR;
-        case SpriteBlendFactor::dst_alpha:
-            return SDL_GPU_BLENDFACTOR_DST_ALPHA;
+    case SpriteBlendFactor::zero:
+        return SDL_GPU_BLENDFACTOR_ZERO;
+    case SpriteBlendFactor::one:
+        return SDL_GPU_BLENDFACTOR_ONE;
+    case SpriteBlendFactor::src_alpha:
+        return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    case SpriteBlendFactor::one_minus_src_alpha:
+        return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    case SpriteBlendFactor::dst:
+        return SDL_GPU_BLENDFACTOR_DST_COLOR;
+    case SpriteBlendFactor::dst_alpha:
+        return SDL_GPU_BLENDFACTOR_DST_ALPHA;
     }
     return SDL_GPU_BLENDFACTOR_ONE;
 }
@@ -150,90 +153,64 @@ inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
  * ownership only to that first layer, mirroring the pin's shared cache for
  * the multi-layer case.
  */
-inline OwnedSdlPipeline create_sprite_layer_pipeline(
-    SDL_GPUDevice* device,
-    const SpriteBlendDescriptor& blend,
-    bool scroll,
-    bool has_depth,
-    bool depth_write,
-    bool alpha_to_coverage,
-    std::uint32_t custom_shader,
-    const PinnedStageSlots& slots,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count,
-    std::uint32_t instance_stride_bytes) {
-    auto vertex_shader = load_shader(
-        device,
-        has_depth
-            ? (scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
-            : (scroll ? "sprite_uvscroll.vert" : "sprite.vert"),
-        SDL_GPU_SHADERSTAGE_VERTEX,
-        0,
-        1,
-        "mainVertex");
+inline OwnedSdlPipeline
+create_sprite_layer_pipeline(SDL_GPUDevice* device, const SpriteBlendDescriptor& blend, bool scroll,
+                             bool has_depth, bool depth_write, bool alpha_to_coverage,
+                             std::uint32_t custom_shader, const PinnedStageSlots& slots,
+                             SDL_GPUTextureFormat target_format, SDL_GPUTextureFormat depth_format,
+                             SDL_GPUSampleCount sample_count, std::uint32_t instance_stride_bytes) {
+    auto vertex_shader =
+        load_shader(device,
+                    has_depth ? (scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
+                              : (scroll ? "sprite_uvscroll.vert" : "sprite.vert"),
+                    SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, "mainVertex");
     // The custom program replaces the fragment stage alone -- the pin
     // composes it from the same prologue -- so it pairs with whichever
     // vertex stage the layout chose, and adds the fx block as a second
     // fragment uniform.
-    const std::string fragment_name =
-        sprite_fragment_shader_name(custom_shader);
-    auto fragment_shader = load_shader(
-        device,
-        fragment_name.c_str(),
-        SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<std::uint32_t>(slots.textures.size()),
-        static_cast<std::uint32_t>(slots.uniforms.size()),
-        "mainFragment");
+    const std::string fragment_name = sprite_fragment_shader_name(custom_shader);
+    auto fragment_shader =
+        load_shader(device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    static_cast<std::uint32_t>(slots.textures.size()),
+                    static_cast<std::uint32_t>(slots.uniforms.size()), "mainFragment");
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): instance-stepped attributes at the pinned byte
     // offsets, triangle list, no culling, single sample. Only the float
     // count is translated to this API's element formats.
-    std::array<
-        SDL_GPUVertexAttribute,
-        upstream::sprite_instance_attributes.size() + 2u>
+    std::array<SDL_GPUVertexAttribute, upstream::sprite_instance_attributes.size() + 2u>
         attributes{};
     const std::size_t attribute_count =
-        upstream::sprite_instance_attributes.size() +
-        (has_depth ? 1u : 0u) + (scroll ? 1u : 0u);
+        upstream::sprite_instance_attributes.size() + (has_depth ? 1u : 0u) + (scroll ? 1u : 0u);
     for (std::size_t index = 0; index < attribute_count; ++index) {
         upstream::SpriteInstanceAttribute row{};
         if (index < upstream::sprite_instance_attributes.size()) {
             row = upstream::sprite_instance_attributes[index];
-        } else if (
-            has_depth &&
-            index == upstream::sprite_instance_attributes.size()) {
+        } else if (has_depth && index == upstream::sprite_instance_attributes.size()) {
             row = upstream::sprite_depth_attribute;
         } else {
             row = upstream::sprite_uvscroll_attribute;
             row.byte_offset = instance_stride_bytes - 2u * sizeof(float);
         }
-        SDL_GPUVertexElementFormat format =
-            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+        SDL_GPUVertexElementFormat format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
         switch (row.float_count) {
-            case 1u:
-                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
-                break;
-            case 2u:
-                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-                break;
-            case 3u:
-                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-                break;
-            case 4u:
-                format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-                break;
-            default:
-                throw std::runtime_error(
-                    "Sprite instance attribute has an unsupported float "
-                    "count.");
+        case 1u:
+            format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+            break;
+        case 2u:
+            format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+            break;
+        case 3u:
+            format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+            break;
+        case 4u:
+            format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+            break;
+        default:
+            throw std::runtime_error("Sprite instance attribute has an unsupported float "
+                                     "count.");
         }
-        attributes[index] = SDL_GPUVertexAttribute{
-            row.shader_location,
-            0,
-            format,
-            row.byte_offset};
+        attributes[index] = SDL_GPUVertexAttribute{row.shader_location, 0, format, row.byte_offset};
     }
     SDL_GPUVertexBufferDescription instance_buffer{};
     instance_buffer.slot = 0;
@@ -244,19 +221,14 @@ inline OwnedSdlPipeline create_sprite_layer_pipeline(
     SDL_GPUColorTargetDescription target{};
     target.format = target_format;
     target.blend_state.enable_blend = blend.enabled;
-    target.blend_state.src_color_blendfactor =
-        sprite_blend_factor(blend.color.src);
-    target.blend_state.dst_color_blendfactor =
-        sprite_blend_factor(blend.color.dst);
+    target.blend_state.src_color_blendfactor = sprite_blend_factor(blend.color.src);
+    target.blend_state.dst_color_blendfactor = sprite_blend_factor(blend.color.dst);
     target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.src_alpha_blendfactor =
-        sprite_blend_factor(blend.alpha.src);
-    target.blend_state.dst_alpha_blendfactor =
-        sprite_blend_factor(blend.alpha.dst);
+    target.blend_state.src_alpha_blendfactor = sprite_blend_factor(blend.alpha.src);
+    target.blend_state.dst_alpha_blendfactor = sprite_blend_factor(blend.alpha.dst);
     target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.color_write_mask =
-        SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
-        SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+    target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+                                          SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
     SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
     pipeline_info.vertex_shader = vertex_shader.get();
@@ -266,14 +238,11 @@ inline OwnedSdlPipeline create_sprite_layer_pipeline(
     pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     pipeline_info.multisample_state.sample_count = sample_count;
     pipeline_info.multisample_state.enable_alpha_to_coverage =
-        has_depth && depth_write && alpha_to_coverage &&
-        sample_count != SDL_GPU_SAMPLECOUNT_1;
-    pipeline_info.vertex_input_state.vertex_buffer_descriptions =
-        &instance_buffer;
+        has_depth && depth_write && alpha_to_coverage && sample_count != SDL_GPU_SAMPLECOUNT_1;
+    pipeline_info.vertex_input_state.vertex_buffer_descriptions = &instance_buffer;
     pipeline_info.vertex_input_state.num_vertex_buffers = 1;
     pipeline_info.vertex_input_state.vertex_attributes = attributes.data();
-    pipeline_info.vertex_input_state.num_vertex_attributes =
-        static_cast<Uint32>(attribute_count);
+    pipeline_info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attribute_count);
     pipeline_info.target_info.color_target_descriptions = &target;
     pipeline_info.target_info.num_color_targets = 1;
     if (has_depth) {
@@ -284,51 +253,34 @@ inline OwnedSdlPipeline create_sprite_layer_pipeline(
         pipeline_info.target_info.depth_stencil_format = depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
     }
-    OwnedSdlPipeline pipeline{
-        create_sdl_graphics_pipeline(device, &pipeline_info), {device}};
+    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(device, &pipeline_info), {device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline sprite");
     }
     return pipeline;
 }
 
-inline OwnedSdlPipeline create_sprite_layer_pipeline(
-    SDL_GPUDevice* device,
-    const Sprite2DLayerRecord& layer,
-    const PinnedStageSlots& slots,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count) {
-    const SpriteLayerPipelinePlan plan =
-        sprite_layer_pipeline_plan(layer);
-    return create_sprite_layer_pipeline(
-        device,
-        layer.blend,
-        plan.scroll,
-        plan.has_depth,
-        plan.depth_write,
-        plan.alpha_to_coverage,
-        layer.custom_shader,
-        slots,
-        target_format,
-        depth_format,
-        sample_count,
-        plan.instance_stride_bytes);
+inline OwnedSdlPipeline
+create_sprite_layer_pipeline(SDL_GPUDevice* device, const Sprite2DLayerRecord& layer,
+                             const PinnedStageSlots& slots, SDL_GPUTextureFormat target_format,
+                             SDL_GPUTextureFormat depth_format, SDL_GPUSampleCount sample_count) {
+    const SpriteLayerPipelinePlan plan = sprite_layer_pipeline_plan(layer);
+    return create_sprite_layer_pipeline(device, layer.blend, plan.scroll, plan.has_depth,
+                                        plan.depth_write, plan.alpha_to_coverage,
+                                        layer.custom_shader, slots, target_format, depth_format,
+                                        sample_count, plan.instance_stride_bytes);
 }
 
-inline SpriteAtlasGpu& sprite_atlas_gpu(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpriteAtlasHandle handle,
-    const std::vector<SDL_GPUTexture*>& render_textures,
-    std::vector<SpriteAtlasGpu>& cache) {
-    const auto found = std::find_if(
-        cache.begin(),
-        cache.end(),
-        [&](const SpriteAtlasGpu& candidate) {
+inline SpriteAtlasGpu& sprite_atlas_gpu(SDL_GPUDevice* device, Engine& engine,
+                                        SpriteAtlasHandle handle,
+                                        const std::vector<SDL_GPUTexture*>& render_textures,
+                                        std::vector<SpriteAtlasGpu>& cache) {
+    const auto found =
+        std::find_if(cache.begin(), cache.end(), [&](const SpriteAtlasGpu& candidate) {
             return candidate.atlas.value == handle.value;
         });
-    if (found != cache.end()) return *found;
+    if (found != cache.end())
+        return *found;
 
     const SpriteAtlasRecord& atlas = handle_at(engine.sprite_atlases, handle);
     SpriteAtlasGpu gpu{device};
@@ -339,34 +291,28 @@ inline SpriteAtlasGpu& sprite_atlas_gpu(
     // minified sprite samples the same level the browser samples.
     gpu.owns_texture = !atlas.has_render_texture;
     gpu.texture = atlas.has_render_texture
-        ? handle_at(render_textures, atlas.render_texture)
-        : upload_2d_texture(
-            device,
-            atlas.rgba.data(),
-            atlas.rgba.size(),
-            atlas.width,
-            atlas.height,
-            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "sprite atlas",
-            atlas_mip_levels(atlas));
+                      ? handle_at(render_textures, atlas.render_texture)
+                      : upload_2d_texture(device, atlas.rgba.data(), atlas.rgba.size(), atlas.width,
+                                          atlas.height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                          "sprite atlas", atlas_mip_levels(atlas));
     gpu.sampler = create_texture_sampler(device, atlas.sampler);
     cache.push_back(std::move(gpu));
     return cache.back();
 }
 
-inline void release_sprite_atlas_gpu_resources([[maybe_unused]] SDL_GPUDevice* device, SpriteAtlasGpuResources& atlas) noexcept {
+inline void release_sprite_atlas_gpu_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                               SpriteAtlasGpuResources& atlas) noexcept {
     if (atlas.owns_texture && atlas.texture) {
         SDL_ReleaseGPUTexture(device, atlas.texture);
     }
-    if (atlas.sampler) SDL_ReleaseGPUSampler(device, atlas.sampler);
+    if (atlas.sampler)
+        SDL_ReleaseGPUSampler(device, atlas.sampler);
     atlas = SpriteAtlasGpuResources{};
 }
 
 inline void release_sprite_atlas_gpu(SDL_GPUDevice*, SpriteAtlasGpu& atlas) { atlas.reset(); }
 
-inline void release_sprite_atlas_cache(
-    SDL_GPUDevice* device,
-    std::vector<SpriteAtlasGpu>& cache) {
+inline void release_sprite_atlas_cache(SDL_GPUDevice* device, std::vector<SpriteAtlasGpu>& cache) {
     for (SpriteAtlasGpu& atlas : cache) {
         release_sprite_atlas_gpu(device, atlas);
     }
@@ -378,42 +324,30 @@ inline void release_sprite_atlas_cache(
  * Standalone renderers stay single-sampled; a depth-hosted scene layer
  * receives that scene's depth format and multisample count.
  */
-inline SpriteLayerGpu build_sprite_layer_gpu(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    Sprite2DLayerHandle handle,
-    const std::vector<SDL_GPUTexture*>& render_textures,
-    std::vector<SpriteAtlasGpu>& atlas_cache,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID,
-    SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1,
-    SDL_GPUGraphicsPipeline* shared_pipeline = nullptr) {
-    Sprite2DLayerRecord& layer =
-        handle_at(engine.sprite_layers, handle);
+inline SpriteLayerGpu
+build_sprite_layer_gpu(SDL_GPUDevice* device, Engine& engine, Sprite2DLayerHandle handle,
+                       const std::vector<SDL_GPUTexture*>& render_textures,
+                       std::vector<SpriteAtlasGpu>& atlas_cache, SDL_GPUTextureFormat target_format,
+                       SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID,
+                       SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1,
+                       SDL_GPUGraphicsPipeline* shared_pipeline = nullptr) {
+    Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
     SpriteLayerGpu gpu{device};
     gpu.layer = handle;
-    const std::string fragment_name =
-        sprite_fragment_shader_name(layer.custom_shader);
-    const PinnedStageSlots slots = read_pinned_stage_slots(
-        fragment_name);
+    const std::string fragment_name = sprite_fragment_shader_name(layer.custom_shader);
+    const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
     gpu.layer_block_slot = stage_uniform_slot(slots, "L");
     gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
     gpu.pipeline = shared_pipeline;
     gpu.pipeline_version = layer.pipeline_version;
     if (!gpu.pipeline) {
-        gpu.owned_pipeline = create_sprite_layer_pipeline(
-            device,
-            layer,
-            slots,
-            target_format,
-            depth_format,
-            sample_count);
+        gpu.owned_pipeline = create_sprite_layer_pipeline(device, layer, slots, target_format,
+                                                          depth_format, sample_count);
         gpu.pipeline = gpu.owned_pipeline.get();
     }
     SDL_GPUBufferCreateInfo buffer_info{};
     buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-    buffer_info.size = static_cast<Uint32>(
-        layer.instance_data.size() * sizeof(float));
+    buffer_info.size = static_cast<Uint32>(layer.instance_data.size() * sizeof(float));
     gpu.instances = SDL_CreateGPUBuffer(device, &buffer_info);
     if (!gpu.instances) {
         gpu_error("SDL_CreateGPUBuffer sprite instances");
@@ -423,25 +357,14 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
     layer.dirty_sprite_end = layer.count;
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas
     // texels reach the blend stage as the bytes on disk.
-    SpriteAtlasGpu& atlas_gpu = sprite_atlas_gpu(
-        device,
-        engine,
-        layer.atlas,
-        render_textures,
-        atlas_cache);
+    SpriteAtlasGpu& atlas_gpu =
+        sprite_atlas_gpu(device, engine, layer.atlas, render_textures, atlas_cache);
     gpu.textures.push_back({atlas_gpu.texture, atlas_gpu.sampler});
-    append_sprite_fragment_textures(
-        device,
-        gpu.textures,
-        layer.custom_textures,
-        "sprite custom texture");
+    append_sprite_fragment_textures(device, gpu.textures, layer.custom_textures,
+                                    "sprite custom texture");
     gpu.bound_textures = select_sprite_fragment_textures(
-        slots,
-        gpu.textures,
-        layer.custom_texture_names,
-        "sprite fragment shader");
-    gpu.extra_uploaded_versions.reserve(
-        layer.custom_textures.size());
+        slots, gpu.textures, layer.custom_texture_names, "sprite fragment shader");
+    gpu.extra_uploaded_versions.reserve(layer.custom_textures.size());
     for (const PixelsTexture& extra : layer.custom_textures) {
         gpu.extra_uploaded_versions.push_back(extra.version);
     }
@@ -449,9 +372,11 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
 }
 
 /** Release one layer's GPU objects. */
-inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* device, SpriteLayerResources& layer) noexcept {
+inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                           SpriteLayerResources& layer) noexcept {
     layer.owned_pipeline.reset();
-    if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
+    if (layer.instances)
+        SDL_ReleaseGPUBuffer(device, layer.instances);
     // The pass-level atlas cache owns both entries in slot zero. Extras
     // remain layer-owned and are released by the generic helper.
     if (!layer.textures.empty()) {
@@ -465,9 +390,7 @@ inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* devic
 inline void release_sprite_layer_gpu(SDL_GPUDevice*, SpriteLayerGpu& layer) { layer.reset(); }
 
 /** Release only the per-layer GPU objects, keeping the shared index buffer. */
-inline void release_sprite_pass_layers(
-    SDL_GPUDevice* device,
-    SpritePass& pass) {
+inline void release_sprite_pass_layers(SDL_GPUDevice* device, SpritePass& pass) {
     for (SpriteLayerGpu& layer : pass.layers) {
         release_sprite_layer_gpu(device, layer);
     }
@@ -489,12 +412,13 @@ inline void release_sprite_pass_layers(
  * frame still reads outlives this call. (That is the same contract the
  * driver's own resize path relies on when it releases the colour target.)
  */
-inline void rebuild_sprite_pass_layers(
-    SDL_GPUDevice* device, Engine& engine, SpritePass& pass,
-    const std::vector<SDL_GPUTexture*>& render_textures) {
-    reconcile_sprite_membership(engine, pass,
+inline void rebuild_sprite_pass_layers(SDL_GPUDevice* device, Engine& engine, SpritePass& pass,
+                                       const std::vector<SDL_GPUTexture*>& render_textures) {
+    reconcile_sprite_membership(
+        engine, pass,
         [&](Sprite2DLayerHandle handle) {
-            return build_sprite_layer_gpu(device, engine, handle, render_textures, pass.atlases, pass.target_format);
+            return build_sprite_layer_gpu(device, engine, handle, render_textures, pass.atlases,
+                                          pass.target_format);
         },
         [&](SpriteLayerGpu& layer) { release_sprite_layer_gpu(device, layer); },
         [](const SpriteAtlasGpu& atlas) { return atlas.atlas; },
@@ -506,65 +430,42 @@ inline void rebuild_sprite_pass_layers(
  * directly: a fresh pass and an untouched renderer are both at version zero,
  * so a guarded call there would build nothing at all.
  */
-inline void sync_sprite_pass_layers(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpritePass& pass,
-    const std::vector<SDL_GPUTexture*>& render_textures) {
-    const SpriteRendererRecord& renderer =
-        handle_at(engine.sprite_renderers, pass.renderer);
-    if (renderer.layers_version == pass.layers_version) return;
+inline void sync_sprite_pass_layers(SDL_GPUDevice* device, Engine& engine, SpritePass& pass,
+                                    const std::vector<SDL_GPUTexture*>& render_textures) {
+    const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, pass.renderer);
+    if (renderer.layers_version == pass.layers_version)
+        return;
     rebuild_sprite_pass_layers(device, engine, pass, render_textures);
 }
 
-inline void rebuild_sprite_layer_pipeline(
-    SDL_GPUDevice* device,
-    const Sprite2DLayerRecord& layer,
-    SpriteLayerGpu& gpu,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count) {
-    const std::string fragment_name =
-        sprite_fragment_shader_name(layer.custom_shader);
+inline void rebuild_sprite_layer_pipeline(SDL_GPUDevice* device, const Sprite2DLayerRecord& layer,
+                                          SpriteLayerGpu& gpu, SDL_GPUTextureFormat target_format,
+                                          SDL_GPUTextureFormat depth_format,
+                                          SDL_GPUSampleCount sample_count) {
+    const std::string fragment_name = sprite_fragment_shader_name(layer.custom_shader);
     const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
-    gpu.owned_pipeline = create_sprite_layer_pipeline(
-        device,
-        layer,
-        slots,
-        target_format,
-        depth_format,
-        sample_count);
+    gpu.owned_pipeline = create_sprite_layer_pipeline(device, layer, slots, target_format,
+                                                      depth_format, sample_count);
     gpu.pipeline = gpu.owned_pipeline.get();
     gpu.pipeline_version = layer.pipeline_version;
 }
 
 /** Refresh runtime-widened standalone layouts before their next upload. */
-inline void sync_sprite_pass_pipelines(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpritePass& pass) {
+inline void sync_sprite_pass_pipelines(SDL_GPUDevice* device, Engine& engine, SpritePass& pass) {
     for (SpriteLayerGpu& gpu : pass.layers) {
-        const Sprite2DLayerRecord& layer =
-            handle_at(engine.sprite_layers, gpu.layer);
-        if (gpu.pipeline_version == layer.pipeline_version) continue;
-        rebuild_sprite_layer_pipeline(
-            device,
-            layer,
-            gpu,
-            pass.target_format,
-            SDL_GPU_TEXTUREFORMAT_INVALID,
-            SDL_GPU_SAMPLECOUNT_1);
+        const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, gpu.layer);
+        if (gpu.pipeline_version == layer.pipeline_version)
+            continue;
+        rebuild_sprite_layer_pipeline(device, layer, gpu, pass.target_format,
+                                      SDL_GPU_TEXTUREFORMAT_INVALID, SDL_GPU_SAMPLECOUNT_1);
     }
 }
 
-inline SpritePass create_sprite_pass(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpriteRendererHandle renderer_handle,
-    const std::vector<SDL_GPUTexture*>& render_textures,
-    SDL_GPUTextureFormat target_format) {
-    const SpriteRendererRecord& renderer =
-        handle_at(engine.sprite_renderers, renderer_handle);
+inline SpritePass create_sprite_pass(SDL_GPUDevice* device, Engine& engine,
+                                     SpriteRendererHandle renderer_handle,
+                                     const std::vector<SDL_GPUTexture*>& render_textures,
+                                     SDL_GPUTextureFormat target_format) {
+    const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
     if (renderer.layers.empty()) {
         throw std::runtime_error("SpriteRenderer has no layers.");
     }
@@ -572,13 +473,9 @@ inline SpritePass create_sprite_pass(
     pass.renderer = renderer_handle;
 
     // The shared two-triangle quad every sprite instance draws.
-    const std::array<std::uint16_t, 6> quad_indices{
-        0u, 1u, 2u, 0u, 2u, 3u};
-    pass.index_buffer = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_INDEX,
-        quad_indices.data(),
-        quad_indices.size() * sizeof(std::uint16_t));
+    const std::array<std::uint16_t, 6> quad_indices{0u, 1u, 2u, 0u, 2u, 3u};
+    pass.index_buffer = upload_buffer(device, SDL_GPU_BUFFERUSAGE_INDEX, quad_indices.data(),
+                                      quad_indices.size() * sizeof(std::uint16_t));
 
     pass.target_format = target_format;
     rebuild_sprite_pass_layers(device, engine, pass, render_textures);
@@ -590,25 +487,20 @@ inline SpritePass create_sprite_pass(
  * into the caller's run-lifetime batch, whose submit runs on a command
  * buffer of its own -- so callers submit it before acquiring the frame's.
  */
-inline void upload_sprite_layer_gpu(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    Sprite2DLayerHandle handle,
-    SpriteLayerGpu& gpu,
-    double delta_ms,
-    GpuBufferUploadBatch& buffer_uploads) {
+inline void upload_sprite_layer_gpu(SDL_GPUDevice* device, Engine& engine,
+                                    Sprite2DLayerHandle handle, SpriteLayerGpu& gpu,
+                                    double delta_ms, GpuBufferUploadBatch& buffer_uploads) {
     Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
     // sprite-renderable.ts uploadLayer returns here before FX, texture,
     // instance or UBO work. A hidden custom layer pauses its clock.
-    if (!layer.visible || layer.count == 0) return;
-    const std::size_t needed_bytes =
-        layer.instance_data.size() * sizeof(float);
+    if (!layer.visible || layer.count == 0)
+        return;
+    const std::size_t needed_bytes = layer.instance_data.size() * sizeof(float);
     if (gpu.instance_buffer_bytes < needed_bytes) {
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         buffer_info.size = static_cast<Uint32>(needed_bytes);
-        SDL_GPUBuffer* replacement =
-            SDL_CreateGPUBuffer(device, &buffer_info);
+        SDL_GPUBuffer* replacement = SDL_CreateGPUBuffer(device, &buffer_info);
         if (!replacement) {
             gpu_error("SDL_CreateGPUBuffer grown sprite instances");
         }
@@ -617,22 +509,14 @@ inline void upload_sprite_layer_gpu(
         gpu.instance_buffer_bytes = needed_bytes;
         gpu.uploaded = false;
     }
-    for (
-        std::size_t extra_index = 0;
-        extra_index < layer.custom_textures.size();
-        ++extra_index) {
+    for (std::size_t extra_index = 0; extra_index < layer.custom_textures.size(); ++extra_index) {
         const PixelsTexture& extra = layer.custom_textures[extra_index];
         if (gpu.extra_uploaded_versions[extra_index] == extra.version) {
             continue;
         }
-        upload_2d_texture_into(
-            device,
-            gpu.textures[extra_index + 1u].texture,
-            extra.rgba.data(),
-            extra.rgba.size(),
-            extra.width,
-            extra.height,
-            "sprite custom texture update");
+        upload_2d_texture_into(device, gpu.textures[extra_index + 1u].texture, extra.rgba.data(),
+                               extra.rgba.size(), extra.width, extra.height,
+                               "sprite custom texture update");
         gpu.extra_uploaded_versions[extra_index] = extra.version;
     }
     // The pin advances the clock in `_update`, before and regardless of
@@ -644,30 +528,20 @@ inline void upload_sprite_layer_gpu(
         // The shared derivation (`resolve_sprite_dirty_range`) answers
         // which rows this copy uploads; only the write call is SDL's.
         const auto [dirty_begin, dirty_end] =
-            resolve_sprite_dirty_range(
-                layer, gpu.uploaded, gpu.uploaded_version);
+            resolve_sprite_dirty_range(layer, gpu.uploaded, gpu.uploaded_version);
         // A Y-sorted layer stages its packed GPU-order rows here and hands
         // back the draw slots this copy transfers; every other layer gets
         // its own canonical rows back unchanged.
         const SpriteInstanceUpload transfer =
-            resolve_sprite_instance_upload(
-                engine, layer, dirty_begin, dirty_end);
+            resolve_sprite_instance_upload(engine, layer, dirty_begin, dirty_end);
         if (transfer.begin < transfer.end) {
-            const std::size_t stride_bytes =
-                layer.instance_floats_per_sprite * sizeof(float);
-            const std::size_t offset =
-                static_cast<std::size_t>(transfer.begin) * stride_bytes;
+            const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
+            const std::size_t offset = static_cast<std::size_t>(transfer.begin) * stride_bytes;
             const std::size_t bytes =
-                static_cast<std::size_t>(transfer.end - transfer.begin) *
-                stride_bytes;
-            const float* data = transfer.data +
-                static_cast<std::ptrdiff_t>(transfer.begin) *
-                    layer.instance_floats_per_sprite;
-            buffer_uploads.update(
-                gpu.instances,
-                offset,
-                data,
-                bytes);
+                static_cast<std::size_t>(transfer.end - transfer.begin) * stride_bytes;
+            const float* data = transfer.data + static_cast<std::ptrdiff_t>(transfer.begin) *
+                                                    layer.instance_floats_per_sprite;
+            buffer_uploads.update(gpu.instances, offset, data, bytes);
             mark_sprite_dirty_range_consumed(layer);
         }
         gpu.uploaded = true;
@@ -675,58 +549,34 @@ inline void upload_sprite_layer_gpu(
     }
 }
 
-inline void upload_sprite_pass(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpritePass& pass,
-    double delta_ms,
-    GpuBufferUploadBatch& buffer_uploads) {
+inline void upload_sprite_pass(SDL_GPUDevice* device, Engine& engine, SpritePass& pass,
+                               double delta_ms, GpuBufferUploadBatch& buffer_uploads) {
     sync_sprite_pass_pipelines(device, engine, pass);
-    const SpriteRendererRecord& renderer =
-        handle_at(engine.sprite_renderers, pass.renderer);
+    const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, pass.renderer);
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
-        upload_sprite_layer_gpu(
-            device,
-            engine,
-            renderer.layers[index],
-            pass.layers[index],
-            delta_ms,
-            buffer_uploads);
+        upload_sprite_layer_gpu(device, engine, renderer.layers[index], pass.layers[index],
+                                delta_ms, buffer_uploads);
     }
 }
 
-inline void record_sprite_layer_gpu(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    const Sprite2DLayerRecord& layer,
-    const SpriteLayerGpu& gpu,
-    std::uint32_t width,
-    std::uint32_t height) {
+inline void record_sprite_layer_gpu(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                                    const Sprite2DLayerRecord& layer, const SpriteLayerGpu& gpu,
+                                    std::uint32_t width, std::uint32_t height) {
     SDL_BindGPUGraphicsPipeline(render_pass, gpu.pipeline);
     std::array<float, 16> ubo{};
-    upstream::build_sprite_layer_ubo(
-        layer,
-        static_cast<float>(width),
-        static_cast<float>(height),
-        ubo);
+    upstream::build_sprite_layer_ubo(layer, static_cast<float>(width), static_cast<float>(height),
+                                     ubo);
     SDL_PushGPUVertexUniformData(command, 0, ubo.data(), sizeof(ubo));
-    push_stage_uniform(
-        command, gpu.layer_block_slot, ubo.data(), sizeof(ubo));
+    push_stage_uniform(command, gpu.layer_block_slot, ubo.data(), sizeof(ubo));
     if (gpu.fx_block_slot >= 0) {
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
-        upstream::build_sprite_fx_ubo(
-            static_cast<float>(gpu.elapsed_ms / 1000.0),
-            layer.shader_params,
-            fx);
-        push_stage_uniform(
-            command, gpu.fx_block_slot, fx.data(), sizeof(fx));
+        upstream::build_sprite_fx_ubo(static_cast<float>(gpu.elapsed_ms / 1000.0),
+                                      layer.shader_params, fx);
+        push_stage_uniform(command, gpu.fx_block_slot, fx.data(), sizeof(fx));
     }
     if (!gpu.bound_textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            render_pass,
-            0,
-            gpu.bound_textures.data(),
-            static_cast<Uint32>(gpu.bound_textures.size()));
+        SDL_BindGPUFragmentSamplers(render_pass, 0, gpu.bound_textures.data(),
+                                    static_cast<Uint32>(gpu.bound_textures.size()));
     }
     const SDL_GPUBufferBinding instance_binding{gpu.instances, 0};
     SDL_BindGPUVertexBuffers(render_pass, 0, &instance_binding, 1);
@@ -739,93 +589,65 @@ inline void record_sprite_layer_gpu(
  * renderer append a HUD to its own frame and a sprite-only driver clear and
  * draw into a frame of its own.
  */
-inline void record_sprite_pass(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    Engine& engine,
-    const SpritePass& pass,
-    std::uint32_t width,
-    std::uint32_t height) {
-    const SpriteRendererRecord& renderer =
-        handle_at(engine.sprite_renderers, pass.renderer);
+inline void record_sprite_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                               Engine& engine, const SpritePass& pass, std::uint32_t width,
+                               std::uint32_t height) {
+    const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, pass.renderer);
 
     const SDL_GPUBufferBinding index_binding{pass.index_buffer, 0};
-    SDL_BindGPUIndexBuffer(
-        render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+    SDL_BindGPUIndexBuffer(render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     // The per-frame layer order (pal_gpu_shared.hpp): the pinned
     // by-`order` stable sort both backends draw with.
-    if (renderer.layers.empty()) return;
-    const std::vector<std::size_t> draw_order =
-        sprite_layer_draw_order(engine, renderer);
+    if (renderer.layers.empty())
+        return;
+    const std::vector<std::size_t> draw_order = sprite_layer_draw_order(engine, renderer);
     for (const std::size_t index : draw_order) {
-        const Sprite2DLayerRecord& layer =
-            engine.sprite_layers[renderer.layers[index].value];
+        const Sprite2DLayerRecord& layer = engine.sprite_layers[renderer.layers[index].value];
         if (!layer.visible || layer.count == 0) {
             continue;
         }
         const SpriteLayerGpu& gpu = pass.layers[index];
-        record_sprite_layer_gpu(
-            command, render_pass, layer, gpu, width, height);
+        record_sprite_layer_gpu(command, render_pass, layer, gpu, width, height);
     }
 }
 
-inline SceneSpritePass create_scene_sprite_pass(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    const std::vector<Sprite2DLayerHandle>& handles,
-    const std::vector<SDL_GPUTexture*>& render_textures,
-    SDL_GPUTextureFormat target_format,
-    SDL_GPUTextureFormat depth_format,
-    SDL_GPUSampleCount sample_count) {
+inline SceneSpritePass create_scene_sprite_pass(SDL_GPUDevice* device, Engine& engine,
+                                                const std::vector<Sprite2DLayerHandle>& handles,
+                                                const std::vector<SDL_GPUTexture*>& render_textures,
+                                                SDL_GPUTextureFormat target_format,
+                                                SDL_GPUTextureFormat depth_format,
+                                                SDL_GPUSampleCount sample_count) {
     SceneSpritePass pass{device};
     pass.handles = handles;
     pass.target_format = target_format;
     pass.depth_format = depth_format;
     pass.sample_count = sample_count;
-    const std::array<std::uint16_t, 6> quad_indices{
-        0u, 1u, 2u, 0u, 2u, 3u};
-    pass.index_buffer = upload_buffer(
-        device,
-        SDL_GPU_BUFFERUSAGE_INDEX,
-        quad_indices.data(),
-        quad_indices.size() * sizeof(std::uint16_t));
+    const std::array<std::uint16_t, 6> quad_indices{0u, 1u, 2u, 0u, 2u, 3u};
+    pass.index_buffer = upload_buffer(device, SDL_GPU_BUFFERUSAGE_INDEX, quad_indices.data(),
+                                      quad_indices.size() * sizeof(std::uint16_t));
     pass.layers.reserve(handles.size());
     for (const Sprite2DLayerHandle handle : handles) {
-        if (handle_at(engine.sprite_layers, handle).depth_mode ==
-            Sprite2DDepthMode::none) {
-            throw std::runtime_error(
-                "A scene-attached Sprite2D layer must have depth enabled.");
+        if (handle_at(engine.sprite_layers, handle).depth_mode == Sprite2DDepthMode::none) {
+            throw std::runtime_error("A scene-attached Sprite2D layer must have depth enabled.");
         }
         SDL_GPUGraphicsPipeline* shared_pipeline = nullptr;
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
-            if (sprite_scene_pipeline_compatible(
-                    engine.sprite_layers[pass.handles[previous].value],
-                    handle_at(engine.sprite_layers, handle))) {
+            if (sprite_scene_pipeline_compatible(engine.sprite_layers[pass.handles[previous].value],
+                                                 handle_at(engine.sprite_layers, handle))) {
                 shared_pipeline = pass.layers[previous].pipeline;
                 break;
             }
         }
-        pass.layers.push_back(build_sprite_layer_gpu(
-            device,
-            engine,
-            handle,
-            render_textures,
-            pass.atlases,
-            target_format,
-            depth_format,
-            sample_count,
-            shared_pipeline));
+        pass.layers.push_back(build_sprite_layer_gpu(device, engine, handle, render_textures,
+                                                     pass.atlases, target_format, depth_format,
+                                                     sample_count, shared_pipeline));
     }
     return pass;
 }
 
-inline void upload_scene_sprite_pass(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SceneSpritePass& pass,
-    double delta_ms,
-    GpuBufferUploadBatch& buffer_uploads) {
+inline void upload_scene_sprite_pass(SDL_GPUDevice* device, Engine& engine, SceneSpritePass& pass,
+                                     double delta_ms, GpuBufferUploadBatch& buffer_uploads) {
     bool rebuild_pipelines = false;
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {
         if (pass.layers[index].pipeline_version !=
@@ -843,13 +665,11 @@ inline void upload_scene_sprite_pass(
             gpu.pipeline = nullptr;
         }
         for (std::size_t index = 0; index < pass.handles.size(); ++index) {
-            const Sprite2DLayerRecord& layer =
-                engine.sprite_layers[pass.handles[index].value];
+            const Sprite2DLayerRecord& layer = engine.sprite_layers[pass.handles[index].value];
             SDL_GPUGraphicsPipeline* shared_pipeline = nullptr;
             for (std::size_t previous = 0; previous < index; ++previous) {
                 if (sprite_scene_pipeline_compatible(
-                        engine.sprite_layers[pass.handles[previous].value],
-                        layer)) {
+                        engine.sprite_layers[pass.handles[previous].value], layer)) {
                     shared_pipeline = pass.layers[previous].pipeline;
                     break;
                 }
@@ -860,59 +680,36 @@ inline void upload_scene_sprite_pass(
                 gpu.pipeline_version = layer.pipeline_version;
                 continue;
             }
-            rebuild_sprite_layer_pipeline(
-                device,
-                layer,
-                gpu,
-                pass.target_format,
-                pass.depth_format,
-                pass.sample_count);
+            rebuild_sprite_layer_pipeline(device, layer, gpu, pass.target_format, pass.depth_format,
+                                          pass.sample_count);
         }
     }
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {
-        upload_sprite_layer_gpu(
-            device,
-            engine,
-            pass.handles[index],
-            pass.layers[index],
-            delta_ms,
-            buffer_uploads);
+        upload_sprite_layer_gpu(device, engine, pass.handles[index], pass.layers[index], delta_ms,
+                                buffer_uploads);
     }
 }
 
-inline void record_scene_sprite_pass(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    Engine& engine,
-    const SceneSpritePass& pass,
-    Sprite2DDepthMode depth_mode,
-    std::uint32_t width,
-    std::uint32_t height) {
+inline void record_scene_sprite_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                                     Engine& engine, const SceneSpritePass& pass,
+                                     Sprite2DDepthMode depth_mode, std::uint32_t width,
+                                     std::uint32_t height) {
     const SDL_GPUBufferBinding index_binding{pass.index_buffer, 0};
-    SDL_BindGPUIndexBuffer(
-        render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+    SDL_BindGPUIndexBuffer(render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
     // Scene renderables carry fixed order 100/200 from their depth bucket;
     // layer.order belongs only to a standalone SpriteRenderer. Preserve the
     // scene's stable insertion order inside the selected bucket.
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {
-        const Sprite2DLayerRecord& layer =
-            engine.sprite_layers[pass.handles[index].value];
-        if (
-            layer.depth_mode != depth_mode || !layer.visible ||
-            layer.count == 0) {
+        const Sprite2DLayerRecord& layer = engine.sprite_layers[pass.handles[index].value];
+        if (layer.depth_mode != depth_mode || !layer.visible || layer.count == 0) {
             continue;
         }
-        record_sprite_layer_gpu(
-            command,
-            render_pass,
-            layer,
-            pass.layers[index],
-            width,
-            height);
+        record_sprite_layer_gpu(command, render_pass, layer, pass.layers[index], width, height);
     }
 }
 
-inline void release_scene_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SceneSpritePassResources& pass) noexcept {
+inline void release_scene_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                                SceneSpritePassResources& pass) noexcept {
     for (SpriteLayerGpu& layer : pass.layers) {
         release_sprite_layer_gpu(device, layer);
     }
@@ -927,8 +724,10 @@ inline void release_scene_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* 
 
 inline void release_scene_sprite_pass(SDL_GPUDevice*, SceneSpritePass& pass) { pass.reset(); }
 
-inline void release_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SpritePassResources& pass) noexcept {
-    for (SpriteLayerGpu& layer : pass.layers) layer.reset();
+inline void release_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                          SpritePassResources& pass) noexcept {
+    for (SpriteLayerGpu& layer : pass.layers)
+        layer.reset();
     pass.layers.clear();
     release_sprite_atlas_cache(device, pass.atlases);
     if (pass.index_buffer) {

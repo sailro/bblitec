@@ -4,10 +4,7 @@ import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
-import {
-    PinnedShaderText,
-    ShaderTextBinding,
-} from "./pinned-shader-text.js";
+import { PinnedShaderText, ShaderTextBinding } from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -22,8 +19,7 @@ const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const customShaderModule = "src/sprite/billboard-custom-shader.ts";
 // The particle family owns its own Multiply module, deliberately outside
 // the two sprite composers: it declares no SpriteFx block at all.
-const particleMultiplyModule =
-    "src/particle/particle-billboard-renderable.ts";
+const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
 
 /**
  * Which basis the vertex stage builds. The pin's composer emits one of two
@@ -189,10 +185,7 @@ export class BillboardLowerer {
                 floatCount: 4,
             },
         ];
-        const covered = rows.reduce(
-            (total, row) => total + row.floatCount,
-            0,
-        );
+        const covered = rows.reduce((total, row) => total + row.floatCount, 0);
         if (covered !== instanceFloats) {
             this.context.contractError(
                 this.context.sourceFile(pipelineModule),
@@ -225,9 +218,7 @@ export class BillboardLowerer {
         const writes = this.elementAssignments(declaration, "data");
         for (const [slot, source] of expected) {
             const write = writes.find(
-                (node) =>
-                    elementIndexText(node.left) ===
-                    `base + ${slot}`,
+                (node) => elementIndexText(node.left) === `base + ${slot}`,
             );
             if (!write) {
                 this.context.contractError(
@@ -245,9 +236,7 @@ export class BillboardLowerer {
         // checked by count, the way the 2D layer's is.
         for (const slot of [12, 13, 14, 15]) {
             const found = writes.filter(
-                (node) =>
-                    elementIndexText(node.left) ===
-                    `base + ${slot}`,
+                (node) => elementIndexText(node.left) === `base + ${slot}`,
             );
             if (found.length !== 2) {
                 this.context.contractError(
@@ -264,18 +253,12 @@ export class BillboardLowerer {
         // The flip resolution is what makes flipX an absolute orientation
         // rather than a toggle.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "currentFlipX",
-            ),
+            this.context.variableInitializer(declaration, "currentFlipX"),
             "uvMinX > uvMaxX",
             "billboard writeInstance currentFlipX",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "wantsFlipX",
-            ),
+            this.context.variableInitializer(declaration, "wantsFlipX"),
             "props.flipX !== undefined ? props.flipX === true : prevFlipX",
             "billboard writeInstance wantsFlipX",
         );
@@ -297,10 +280,7 @@ export class BillboardLowerer {
         );
         for (const [name, shape] of [
             ["blendMode", "opts.blendMode ?? billboardBlendAlpha"],
-            [
-                "capacity",
-                "Math.max(1, opts.capacity ?? DEFAULT_CAPACITY)",
-            ],
+            ["capacity", "Math.max(1, opts.capacity ?? DEFAULT_CAPACITY)"],
             ["depthMode", "blendMode._depthMode"],
         ] as const) {
             this.context.assertExpressionShape(
@@ -376,10 +356,8 @@ export class BillboardLowerer {
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(
-                this.context.functionDeclaration(
-                    systemModule,
-                    "resolveOpacity",
-                ).declaration,
+                this.context.functionDeclaration(systemModule, "resolveOpacity")
+                    .declaration,
                 "opacity",
             ),
             "opts.opacity ?? 1",
@@ -419,8 +397,7 @@ export class BillboardLowerer {
         // the straight arm is the one this path reaches.
         for (const slot of [0, 1, 2, 3]) {
             const found = writes.filter(
-                (node) =>
-                    elementIndexText(node.left) === `${slot}`,
+                (node) => elementIndexText(node.left) === `${slot}`,
             );
             if (found.length !== 2) {
                 this.context.contractError(
@@ -436,8 +413,7 @@ export class BillboardLowerer {
             [7, "system.alphaCutoff"],
         ] as const) {
             const write = writes.find(
-                (node) =>
-                    elementIndexText(node.left) === `${slot}`,
+                (node) => elementIndexText(node.left) === `${slot}`,
             );
             if (!write) {
                 this.context.contractError(
@@ -496,10 +472,7 @@ export class BillboardLowerer {
             "addFacingBillboardSystem",
         );
         this.context.assertExpressionShape(
-            this.context.callExpression(
-                declaration,
-                "addBillboardSystem",
-            ),
+            this.context.callExpression(declaration, "addBillboardSystem"),
             "addBillboardSystem(scene, system)",
             "addFacingBillboardSystem",
         );
@@ -552,10 +525,7 @@ export class BillboardLowerer {
                       // a parameter a later pin could add under either name.
                       new Map<string, ShaderTextBinding>([
                           ["orientation", orientation],
-                          [
-                              "extraTextures",
-                              extraTextureRecords(extraTextures),
-                          ],
+                          ["extraTextures", extraTextureRecords(extraTextures)],
                           ["fragment", customFragment],
                       ]),
                   );
@@ -569,9 +539,7 @@ export class BillboardLowerer {
         const basis = this.shaderText.evaluate(
             pipelineModule,
             "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([
-                ["orientation", orientation],
-            ]),
+            new Map<string, string | boolean>([["orientation", orientation]]),
         );
         return {
             ...this.bracedShaderSections(full, basis, "billboard"),
@@ -600,10 +568,7 @@ export class BillboardLowerer {
         full: string,
         basis: string,
         labelPrefix: string,
-    ): Omit<
-        BillboardShaderSource,
-        "fxStructFields" | "extraTextureBindings"
-    > {
+    ): Omit<BillboardShaderSource, "fxStructFields" | "extraTextureBindings"> {
         return {
             vertexReadsSystemBlock: basis.includes("billboards."),
             systemStructFields: this.shaderText.braced(
@@ -652,16 +617,12 @@ export class BillboardLowerer {
         const full = this.shaderText.evaluate(
             particleMultiplyModule,
             "makeMultiplyWgsl",
-            new Map<string, ShaderTextBinding>([
-                ["orientation", orientation],
-            ]),
+            new Map<string, ShaderTextBinding>([["orientation", orientation]]),
         );
         const basis = this.shaderText.evaluate(
             pipelineModule,
             "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([
-                ["orientation", orientation],
-            ]),
+            new Map<string, string | boolean>([["orientation", orientation]]),
         );
         return {
             ...this.bracedShaderSections(full, basis, "particle multiply"),
@@ -678,8 +639,7 @@ export class BillboardLowerer {
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isElementAccessExpression(node.left) &&
                 ts.isIdentifier(node.left.expression) &&
                 node.left.expression.text === arrayName,

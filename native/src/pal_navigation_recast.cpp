@@ -69,13 +69,13 @@ namespace {
  */
 class TileCacheLinearAllocator final : public dtTileCacheAlloc {
 public:
-    explicit TileCacheLinearAllocator(std::size_t capacity)
-        : buffer_(capacity) {}
+    explicit TileCacheLinearAllocator(std::size_t capacity) : buffer_(capacity) {}
 
     void reset() override { top_ = 0; }
 
     void* alloc(const std::size_t size) override {
-        if (top_ + size > buffer_.size()) return nullptr;
+        if (top_ + size > buffer_.size())
+            return nullptr;
         void* memory = buffer_.data() + top_;
         top_ += size;
         return memory;
@@ -104,25 +104,15 @@ public:
         return static_cast<int>(static_cast<float>(bufferSize) * 1.05f);
     }
 
-    dtStatus compress(
-        const unsigned char* buffer,
-        const int bufferSize,
-        unsigned char* compressed,
-        const int /*maxCompressedSize*/,
-        int* compressedSize) override {
-        *compressedSize =
-            fastlz_compress(buffer, bufferSize, compressed);
+    dtStatus compress(const unsigned char* buffer, const int bufferSize, unsigned char* compressed,
+                      const int /*maxCompressedSize*/, int* compressedSize) override {
+        *compressedSize = fastlz_compress(buffer, bufferSize, compressed);
         return DT_SUCCESS;
     }
 
-    dtStatus decompress(
-        const unsigned char* compressed,
-        const int compressedSize,
-        unsigned char* buffer,
-        const int maxBufferSize,
-        int* bufferSize) override {
-        *bufferSize = fastlz_decompress(compressed, compressedSize,
-                                        buffer, maxBufferSize);
+    dtStatus decompress(const unsigned char* compressed, const int compressedSize,
+                        unsigned char* buffer, const int maxBufferSize, int* bufferSize) override {
+        *bufferSize = fastlz_decompress(compressed, compressedSize, buffer, maxBufferSize);
         return *bufferSize < 0 ? DT_FAILURE : DT_SUCCESS;
     }
 };
@@ -139,10 +129,8 @@ public:
  */
 class TileCacheDefaultMeshProcess final : public dtTileCacheMeshProcess {
 public:
-    void process(
-        struct dtNavMeshCreateParams* params,
-        unsigned char* polyAreas,
-        unsigned short* polyFlags) override {
+    void process(struct dtNavMeshCreateParams* params, unsigned char* polyAreas,
+                 unsigned short* polyFlags) override {
         for (int poly = 0; poly < params->polyCount; ++poly) {
             polyAreas[poly] = 0;
             polyFlags[poly] = 1;
@@ -167,8 +155,7 @@ struct TileCacheLayer {
  * tile from leaking the ones before it. The spelling is the one this file's
  * navmesh, query and crowd already use.
  */
-template <typename T>
-using RecastOwner = std::unique_ptr<T, void (*)(T*)>;
+template <typename T> using RecastOwner = std::unique_ptr<T, void (*)(T*)>;
 
 using HeightfieldOwner = RecastOwner<rcHeightfield>;
 using CompactHeightfieldOwner = RecastOwner<rcCompactHeightfield>;
@@ -183,8 +170,7 @@ struct NavigationMeshState {
     std::unique_ptr<dtNavMesh, void (*)(dtNavMesh*)> nav_mesh{
         nullptr, [](dtNavMesh* mesh) { dtFreeNavMesh(mesh); }};
     std::unique_ptr<dtNavMeshQuery, void (*)(dtNavMeshQuery*)> query{
-        nullptr,
-        [](dtNavMeshQuery* value) { dtFreeNavMeshQuery(value); }};
+        nullptr, [](dtNavMeshQuery* value) { dtFreeNavMeshQuery(value); }};
     dtQueryFilter filter;
 #if BBLITE_HAS_NAV_TILE_CACHE
     // The cache borrows these three objects; reverse destruction releases it first.
@@ -222,9 +208,8 @@ NavigationMeshState& plugin_state(const NavigationHandle& handle) {
 NavigationMeshState& tile_cache_state(NavigationHandle handle) {
     NavigationMeshState& state = plugin_state(handle);
     if (!state.tile_cache) {
-        throw std::runtime_error(
-            "Navmesh has no tile cache. Build with `maxObstacles > 0` to "
-            "enable obstacles.");
+        throw std::runtime_error("Navmesh has no tile cache. Build with `maxObstacles > 0` to "
+                                 "enable obstacles.");
     }
     return state;
 }
@@ -260,7 +245,7 @@ struct ResolvedBuildConfig {
     float walkable_slope_angle = 60.0f;
     int walkable_height = 2;
     int walkable_climb = 2;
-    int walkable_radius = 0;  // default 0.5 floors to 0 via rcConfig int
+    int walkable_radius = 0; // default 0.5 floors to 0 via rcConfig int
     int max_edge_len = 12;
     float max_simplification_error = 1.3f;
     int min_region_area = 8;
@@ -272,14 +257,10 @@ struct ResolvedBuildConfig {
 
 /** `getBoundingBox`: the bounds of the INDEXED positions, which is not
  *  the vertex array's own where a vertex went unreferenced. */
-void indexed_bounds(
-    const NavMeshGeometry& geometry,
-    float (&bounds_min)[3],
-    float (&bounds_max)[3]) {
-    bounds_min[0] = bounds_min[1] = bounds_min[2] =
-        std::numeric_limits<float>::infinity();
-    bounds_max[0] = bounds_max[1] = bounds_max[2] =
-        -std::numeric_limits<float>::infinity();
+void indexed_bounds(const NavMeshGeometry& geometry, float (&bounds_min)[3],
+                    float (&bounds_max)[3]) {
+    bounds_min[0] = bounds_min[1] = bounds_min[2] = std::numeric_limits<float>::infinity();
+    bounds_max[0] = bounds_max[1] = bounds_max[2] = -std::numeric_limits<float>::infinity();
     for (const std::uint32_t index : geometry.indices) {
         for (int axis = 0; axis < 3; ++axis) {
             const float value = geometry.positions[index * 3 + axis];
@@ -311,30 +292,20 @@ rcConfig resolved_rc_config(const NavMeshBuildParams& params) {
     std::memset(&config, 0, sizeof(config));
     config.cs = pick_float(params.cs, defaults.cs);
     config.ch = pick_float(params.ch, defaults.ch);
-    config.walkableSlopeAngle = pick_float(
-        params.walkable_slope_angle, defaults.walkable_slope_angle);
-    config.walkableHeight =
-        pick_int(params.walkable_height, defaults.walkable_height);
-    config.walkableClimb =
-        pick_int(params.walkable_climb, defaults.walkable_climb);
-    config.walkableRadius =
-        pick_int(params.walkable_radius, defaults.walkable_radius);
-    config.maxEdgeLen =
-        pick_int(params.max_edge_len, defaults.max_edge_len);
-    config.maxSimplificationError = pick_float(
-        params.max_simplification_error,
-        defaults.max_simplification_error);
-    config.minRegionArea =
-        pick_int(params.min_region_area, defaults.min_region_area);
-    config.mergeRegionArea =
-        pick_int(params.merge_region_area, defaults.merge_region_area);
-    config.maxVertsPerPoly =
-        pick_int(params.max_verts_per_poly, defaults.max_verts_per_poly);
-    config.detailSampleDist = pick_float(
-        params.detail_sample_dist, defaults.detail_sample_dist);
-    config.detailSampleMaxError = pick_float(
-        params.detail_sample_max_error,
-        defaults.detail_sample_max_error);
+    config.walkableSlopeAngle =
+        pick_float(params.walkable_slope_angle, defaults.walkable_slope_angle);
+    config.walkableHeight = pick_int(params.walkable_height, defaults.walkable_height);
+    config.walkableClimb = pick_int(params.walkable_climb, defaults.walkable_climb);
+    config.walkableRadius = pick_int(params.walkable_radius, defaults.walkable_radius);
+    config.maxEdgeLen = pick_int(params.max_edge_len, defaults.max_edge_len);
+    config.maxSimplificationError =
+        pick_float(params.max_simplification_error, defaults.max_simplification_error);
+    config.minRegionArea = pick_int(params.min_region_area, defaults.min_region_area);
+    config.mergeRegionArea = pick_int(params.merge_region_area, defaults.merge_region_area);
+    config.maxVertsPerPoly = pick_int(params.max_verts_per_poly, defaults.max_verts_per_poly);
+    config.detailSampleDist = pick_float(params.detail_sample_dist, defaults.detail_sample_dist);
+    config.detailSampleMaxError =
+        pick_float(params.detail_sample_max_error, defaults.detail_sample_max_error);
     config.borderSize = 0;
     config.tileSize = 0;
     return config;
@@ -357,13 +328,12 @@ struct RecastInputMesh {
 };
 
 RecastInputMesh prepare_input(const NavMeshGeometry& geometry) {
-    RecastInputMesh input{
-        geometry.positions.data(),
-        static_cast<int>(geometry.positions.size() / 3),
-        static_cast<int>(geometry.indices.size()) / 3,
-        std::vector<int>(geometry.indices.begin(), geometry.indices.end()),
-        {},
-        {}};
+    RecastInputMesh input{geometry.positions.data(),
+                          static_cast<int>(geometry.positions.size() / 3),
+                          static_cast<int>(geometry.indices.size()) / 3,
+                          std::vector<int>(geometry.indices.begin(), geometry.indices.end()),
+                          {},
+                          {}};
     indexed_bounds(geometry, input.bounds_min, input.bounds_max);
     return input;
 }
@@ -373,14 +343,11 @@ RecastInputMesh prepare_input(const NavMeshGeometry& geometry) {
  * every arm ends with because the wrapper's constructor is what every arm
  * calls. The prefix is the arm's own failure spelling.
  */
-void install_query(
-    NavigationMeshState& state,
-    dtNavMesh* nav_mesh,
-    const std::string& failure_prefix) {
+void install_query(NavigationMeshState& state, dtNavMesh* nav_mesh,
+                   const std::string& failure_prefix) {
     RecastOwner<dtNavMeshQuery> query{dtAllocNavMeshQuery(), dtFreeNavMeshQuery};
     if (!query || dtStatusFailed(query->init(nav_mesh, 2048))) {
-        throw std::runtime_error(
-            failure_prefix + "Failed to initialize navmesh query");
+        throw std::runtime_error(failure_prefix + "Failed to initialize navmesh query");
     }
     state.query = std::move(query);
     state.filter = include_all_filter();
@@ -390,11 +357,9 @@ void install_query(
  *  apply once the grid size is known. */
 void apply_generator_config_transforms(rcConfig& config) {
     config.minRegionArea = config.minRegionArea * config.minRegionArea;
-    config.mergeRegionArea =
-        config.mergeRegionArea * config.mergeRegionArea;
-    config.detailSampleDist = config.detailSampleDist < 0.9f
-        ? 0.0f
-        : config.cs * config.detailSampleDist;
+    config.mergeRegionArea = config.mergeRegionArea * config.mergeRegionArea;
+    config.detailSampleDist =
+        config.detailSampleDist < 0.9f ? 0.0f : config.cs * config.detailSampleDist;
     config.detailSampleMaxError = config.ch * config.detailSampleMaxError;
 }
 
@@ -405,10 +370,8 @@ NavigationHandle navigation_create_plugin() {
     return NavigationHandle{state->identity, std::move(state)};
 }
 
-void navigation_create_solo_nav_mesh(
-    NavigationHandle plugin,
-    const NavMeshGeometry& geometry,
-    const NavMeshBuildParams& params) {
+void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
+                                     const NavMeshBuildParams& params) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -423,8 +386,7 @@ void navigation_create_solo_nav_mesh(
     apply_generator_config_transforms(config);
     rcVcopy(config.bmin, input.bounds_min);
     rcVcopy(config.bmax, input.bounds_max);
-    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width,
-                   &config.height);
+    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
 
     rcContext context(false);
     const auto fail = [](const std::string& message) -> void {
@@ -432,75 +394,58 @@ void navigation_create_solo_nav_mesh(
     };
 
     RecastOwner<rcHeightfield> heightfield{rcAllocHeightfield(), rcFreeHeightField};
-    if (!heightfield ||
-        !rcCreateHeightfield(&context, *heightfield, config.width,
-                             config.height, config.bmin, config.bmax,
-                             config.cs, config.ch)) {
+    if (!heightfield || !rcCreateHeightfield(&context, *heightfield, config.width, config.height,
+                                             config.bmin, config.bmax, config.cs, config.ch)) {
         fail("Could not create heightfield");
     }
 
-    std::vector<unsigned char> triangle_areas(
-        static_cast<std::size_t>(triangle_count), 0);
-    rcMarkWalkableTriangles(&context, config.walkableSlopeAngle,
-                            vertices, vertex_count, triangles.data(),
-                            triangle_count, triangle_areas.data());
-    if (!rcRasterizeTriangles(&context, vertices, vertex_count,
-                              triangles.data(), triangle_areas.data(),
-                              triangle_count, *heightfield,
+    std::vector<unsigned char> triangle_areas(static_cast<std::size_t>(triangle_count), 0);
+    rcMarkWalkableTriangles(&context, config.walkableSlopeAngle, vertices, vertex_count,
+                            triangles.data(), triangle_count, triangle_areas.data());
+    if (!rcRasterizeTriangles(&context, vertices, vertex_count, triangles.data(),
+                              triangle_areas.data(), triangle_count, *heightfield,
                               config.walkableClimb)) {
         fail("Could not rasterize triangles");
     }
 
-    rcFilterLowHangingWalkableObstacles(&context, config.walkableClimb,
-                                        *heightfield);
-    rcFilterLedgeSpans(&context, config.walkableHeight,
-                       config.walkableClimb, *heightfield);
-    rcFilterWalkableLowHeightSpans(&context, config.walkableHeight,
-                                   *heightfield);
+    rcFilterLowHangingWalkableObstacles(&context, config.walkableClimb, *heightfield);
+    rcFilterLedgeSpans(&context, config.walkableHeight, config.walkableClimb, *heightfield);
+    rcFilterWalkableLowHeightSpans(&context, config.walkableHeight, *heightfield);
 
-    RecastOwner<rcCompactHeightfield> compact{rcAllocCompactHeightfield(), rcFreeCompactHeightfield};
-    if (!compact ||
-        !rcBuildCompactHeightfield(&context, config.walkableHeight,
-                                   config.walkableClimb, *heightfield,
-                                   *compact)) {
+    RecastOwner<rcCompactHeightfield> compact{rcAllocCompactHeightfield(),
+                                              rcFreeCompactHeightfield};
+    if (!compact || !rcBuildCompactHeightfield(&context, config.walkableHeight,
+                                               config.walkableClimb, *heightfield, *compact)) {
         fail("Failed to build compact data");
     }
     heightfield.reset();
 
-    if (!rcErodeWalkableArea(&context, config.walkableRadius,
-                             *compact)) {
+    if (!rcErodeWalkableArea(&context, config.walkableRadius, *compact)) {
         fail("Failed to erode walkable area");
     }
     if (!rcBuildDistanceField(&context, *compact)) {
         fail("Failed to build distance field");
     }
-    if (!rcBuildRegions(&context, *compact, config.borderSize,
-                        config.minRegionArea, config.mergeRegionArea)) {
+    if (!rcBuildRegions(&context, *compact, config.borderSize, config.minRegionArea,
+                        config.mergeRegionArea)) {
         fail("Failed to build regions");
     }
 
     RecastOwner<rcContourSet> contours{rcAllocContourSet(), rcFreeContourSet};
-    if (!contours ||
-        !rcBuildContours(&context, *compact,
-                         config.maxSimplificationError,
-                         config.maxEdgeLen, *contours,
-                         RC_CONTOUR_TESS_WALL_EDGES)) {
+    if (!contours || !rcBuildContours(&context, *compact, config.maxSimplificationError,
+                                      config.maxEdgeLen, *contours, RC_CONTOUR_TESS_WALL_EDGES)) {
         fail("Failed to create contours");
     }
 
     RecastOwner<rcPolyMesh> poly_mesh{rcAllocPolyMesh(), rcFreePolyMesh};
-    if (!poly_mesh ||
-        !rcBuildPolyMesh(&context, *contours, config.maxVertsPerPoly,
-                         *poly_mesh)) {
+    if (!poly_mesh || !rcBuildPolyMesh(&context, *contours, config.maxVertsPerPoly, *poly_mesh)) {
         fail("Failed to triangulate contours");
     }
 
     RecastOwner<rcPolyMeshDetail> detail_mesh{rcAllocPolyMeshDetail(), rcFreePolyMeshDetail};
     if (!detail_mesh ||
-        !rcBuildPolyMeshDetail(&context, *poly_mesh, *compact,
-                               config.detailSampleDist,
-                               config.detailSampleMaxError,
-                               *detail_mesh)) {
+        !rcBuildPolyMeshDetail(&context, *poly_mesh, *compact, config.detailSampleDist,
+                               config.detailSampleMaxError, *detail_mesh)) {
         fail("Failed to build detail mesh");
     }
     compact.reset();
@@ -530,12 +475,9 @@ void navigation_create_solo_nav_mesh(
     create_params.detailVertsCount = detail_mesh->nverts;
     create_params.detailTris = detail_mesh->tris;
     create_params.detailTriCount = detail_mesh->ntris;
-    create_params.walkableHeight =
-        static_cast<float>(config.walkableHeight) * config.ch;
-    create_params.walkableRadius =
-        static_cast<float>(config.walkableRadius) * config.cs;
-    create_params.walkableClimb =
-        static_cast<float>(config.walkableClimb) * config.ch;
+    create_params.walkableHeight = static_cast<float>(config.walkableHeight) * config.ch;
+    create_params.walkableRadius = static_cast<float>(config.walkableRadius) * config.cs;
+    create_params.walkableClimb = static_cast<float>(config.walkableClimb) * config.ch;
     rcVcopy(create_params.bmin, poly_mesh->bmin);
     rcVcopy(create_params.bmax, poly_mesh->bmax);
     create_params.cs = config.cs;
@@ -564,8 +506,7 @@ void navigation_create_solo_nav_mesh(
         off_mesh_flags.reserve(count);
         off_mesh_user_ids.reserve(count);
         for (std::size_t index = 0; index < count; ++index) {
-            const NavOffMeshConnection& connection =
-                params.off_mesh_connections[index];
+            const NavOffMeshConnection& connection = params.off_mesh_connections[index];
             off_mesh_verts.push_back(connection.start.x);
             off_mesh_verts.push_back(connection.start.y);
             off_mesh_verts.push_back(connection.start.z);
@@ -573,15 +514,11 @@ void navigation_create_solo_nav_mesh(
             off_mesh_verts.push_back(connection.end.y);
             off_mesh_verts.push_back(connection.end.z);
             off_mesh_radii.push_back(connection.radius);
-            off_mesh_dir.push_back(
-                connection.bidirectional ? 1u : 0u);
-            off_mesh_areas.push_back(static_cast<unsigned char>(
-                connection.area.value_or(0.0)));
-            off_mesh_flags.push_back(static_cast<unsigned short>(
-                connection.flags.value_or(1.0)));
+            off_mesh_dir.push_back(connection.bidirectional ? 1u : 0u);
+            off_mesh_areas.push_back(static_cast<unsigned char>(connection.area.value_or(0.0)));
+            off_mesh_flags.push_back(static_cast<unsigned short>(connection.flags.value_or(1.0)));
             off_mesh_user_ids.push_back(static_cast<unsigned int>(
-                connection.user_id.value_or(
-                    1000.0 + static_cast<double>(index))));
+                connection.user_id.value_or(1000.0 + static_cast<double>(index))));
         }
         create_params.offMeshConVerts = off_mesh_verts.data();
         create_params.offMeshConRad = off_mesh_radii.data();
@@ -594,8 +531,7 @@ void navigation_create_solo_nav_mesh(
 
     unsigned char* nav_data = nullptr;
     int nav_data_size = 0;
-    if (!dtCreateNavMeshData(&create_params, &nav_data,
-                             &nav_data_size)) {
+    if (!dtCreateNavMeshData(&create_params, &nav_data, &nav_data_size)) {
         fail("Failed to create Detour navmesh data");
     }
     poly_mesh.reset();
@@ -603,12 +539,9 @@ void navigation_create_solo_nav_mesh(
 
     state.nav_mesh.reset(dtAllocNavMesh());
     dtNavMesh* nav_mesh = state.nav_mesh.get();
-    if (!nav_mesh ||
-        dtStatusFailed(nav_mesh->init(nav_data, nav_data_size,
-                                      DT_TILE_FREE_DATA))) {
+    if (!nav_mesh || dtStatusFailed(nav_mesh->init(nav_data, nav_data_size, DT_TILE_FREE_DATA))) {
         dtFree(nav_data);
-        throw std::runtime_error(
-            "createNavMesh failed: Failed to initialize solo NavMesh");
+        throw std::runtime_error("createNavMesh failed: Failed to initialize solo NavMesh");
     }
     install_query(state, nav_mesh, "createNavMesh failed: ");
     plugin.ownership->mesh = std::move(built);
@@ -624,29 +557,19 @@ void navigation_create_solo_nav_mesh(
  * Every early return here is a tile the wrapper also gives up on, and the
  * build carries on with the tiles that did work.
  */
-std::vector<TileCacheLayer> rasterize_tile_layers(
-    rcContext* context,
-    const rcConfig& config,
-    const float* bounds_min,
-    const float* bounds_max,
-    const float* vertices,
-    int vertex_count,
-    const rcChunkyTriMesh& chunky,
-    dtTileCacheCompressor* compressor,
-    int tile_x,
-    int tile_y) {
-const float tcs = static_cast<float>(config.tileSize) * config.cs;
+std::vector<TileCacheLayer> rasterize_tile_layers(rcContext* context, const rcConfig& config,
+                                                  const float* bounds_min, const float* bounds_max,
+                                                  const float* vertices, int vertex_count,
+                                                  const rcChunkyTriMesh& chunky,
+                                                  dtTileCacheCompressor* compressor, int tile_x,
+                                                  int tile_y) {
+    const float tcs = static_cast<float>(config.tileSize) * config.cs;
     rcConfig tile_config = config;
-    float tile_min[3] = {
-        bounds_min[0] + static_cast<float>(tile_x) * tcs,
-        bounds_min[1],
-        bounds_min[2] + static_cast<float>(tile_y) * tcs};
-    float tile_max[3] = {
-        bounds_min[0] + static_cast<float>(tile_x + 1) * tcs,
-        bounds_max[1],
-        bounds_min[2] + static_cast<float>(tile_y + 1) * tcs};
-    const float border =
-        static_cast<float>(tile_config.borderSize) * tile_config.cs;
+    float tile_min[3] = {bounds_min[0] + static_cast<float>(tile_x) * tcs, bounds_min[1],
+                         bounds_min[2] + static_cast<float>(tile_y) * tcs};
+    float tile_max[3] = {bounds_min[0] + static_cast<float>(tile_x + 1) * tcs, bounds_max[1],
+                         bounds_min[2] + static_cast<float>(tile_y + 1) * tcs};
+    const float border = static_cast<float>(tile_config.borderSize) * tile_config.cs;
     tile_min[0] -= border;
     tile_min[2] -= border;
     tile_max[0] += border;
@@ -654,14 +577,11 @@ const float tcs = static_cast<float>(config.tileSize) * config.cs;
     rcVcopy(tile_config.bmin, tile_min);
     rcVcopy(tile_config.bmax, tile_max);
 
-    HeightfieldOwner heightfield{
-        rcAllocHeightfield(),
-        [](rcHeightfield* v) { rcFreeHeightField(v); }};
+    HeightfieldOwner heightfield{rcAllocHeightfield(),
+                                 [](rcHeightfield* v) { rcFreeHeightField(v); }};
     if (!heightfield ||
-        !rcCreateHeightfield(context, *heightfield,
-                             tile_config.width, tile_config.height,
-                             tile_min, tile_max, tile_config.cs,
-                             tile_config.ch)) {
+        !rcCreateHeightfield(context, *heightfield, tile_config.width, tile_config.height, tile_min,
+                             tile_max, tile_config.cs, tile_config.ch)) {
         return {};
     }
 
@@ -673,57 +593,41 @@ const float tcs = static_cast<float>(config.tileSize) * config.cs;
     float rect_max[2] = {tile_max[0], tile_max[2]};
     constexpr int max_chunk_ids = 512;
     std::array<int, max_chunk_ids> chunk_ids{};
-    const int overlapping = rcGetChunksOverlappingRect(
-        &chunky, rect_min, rect_max, chunk_ids.data(),
-        max_chunk_ids);
-    if (overlapping == 0) return {};
+    const int overlapping =
+        rcGetChunksOverlappingRect(&chunky, rect_min, rect_max, chunk_ids.data(), max_chunk_ids);
+    if (overlapping == 0)
+        return {};
     for (int chunk = 0; chunk < overlapping; ++chunk) {
-        const rcChunkyTriMeshNode& node =
-            chunky.nodes[chunk_ids[static_cast<std::size_t>(
-                chunk)]];
+        const rcChunkyTriMeshNode& node = chunky.nodes[chunk_ids[static_cast<std::size_t>(chunk)]];
         const int* node_triangles = &chunky.tris[node.i * 3];
-        std::vector<unsigned char> areas(
-            static_cast<std::size_t>(node.n), 0);
-        rcMarkWalkableTriangles(
-            context, tile_config.walkableSlopeAngle, vertices,
-            vertex_count, node_triangles, node.n, areas.data());
-        if (!rcRasterizeTriangles(
-                context, vertices, vertex_count, node_triangles,
-                areas.data(), node.n, *heightfield,
-                tile_config.walkableClimb)) {
+        std::vector<unsigned char> areas(static_cast<std::size_t>(node.n), 0);
+        rcMarkWalkableTriangles(context, tile_config.walkableSlopeAngle, vertices, vertex_count,
+                                node_triangles, node.n, areas.data());
+        if (!rcRasterizeTriangles(context, vertices, vertex_count, node_triangles, areas.data(),
+                                  node.n, *heightfield, tile_config.walkableClimb)) {
             return {};
         }
     }
 
-    rcFilterLowHangingWalkableObstacles(context, config.walkableClimb,
-                                        *heightfield);
-    rcFilterLedgeSpans(context, config.walkableHeight,
-                       config.walkableClimb, *heightfield);
-    rcFilterWalkableLowHeightSpans(context, config.walkableHeight,
-                                   *heightfield);
+    rcFilterLowHangingWalkableObstacles(context, config.walkableClimb, *heightfield);
+    rcFilterLedgeSpans(context, config.walkableHeight, config.walkableClimb, *heightfield);
+    rcFilterWalkableLowHeightSpans(context, config.walkableHeight, *heightfield);
 
-    CompactHeightfieldOwner compact{
-        rcAllocCompactHeightfield(),
-        [](rcCompactHeightfield* v) { rcFreeCompactHeightfield(v); }};
-    if (!compact ||
-        !rcBuildCompactHeightfield(context, config.walkableHeight,
-                                   config.walkableClimb, *heightfield,
-                                   *compact)) {
+    CompactHeightfieldOwner compact{rcAllocCompactHeightfield(),
+                                    [](rcCompactHeightfield* v) { rcFreeCompactHeightfield(v); }};
+    if (!compact || !rcBuildCompactHeightfield(context, config.walkableHeight, config.walkableClimb,
+                                               *heightfield, *compact)) {
         return {};
     }
     heightfield.reset();
-    if (!rcErodeWalkableArea(context, config.walkableRadius,
-                             *compact)) {
+    if (!rcErodeWalkableArea(context, config.walkableRadius, *compact)) {
         return {};
     }
 
-    HeightfieldLayerSetOwner layers{
-        rcAllocHeightfieldLayerSet(),
-        [](rcHeightfieldLayerSet* v) { rcFreeHeightfieldLayerSet(v); }};
-    if (!layers ||
-        !rcBuildHeightfieldLayers(context, *compact,
-                                  config.borderSize,
-                                  config.walkableHeight, *layers)) {
+    HeightfieldLayerSetOwner layers{rcAllocHeightfieldLayerSet(),
+                                    [](rcHeightfieldLayerSet* v) { rcFreeHeightfieldLayerSet(v); }};
+    if (!layers || !rcBuildHeightfieldLayers(context, *compact, config.borderSize,
+                                             config.walkableHeight, *layers)) {
         return {};
     }
 
@@ -751,9 +655,10 @@ const float tcs = static_cast<float>(config.tileSize) * config.cs;
         TileCacheLayer built;
         unsigned char* data = nullptr;
         const dtStatus status = dtBuildTileCacheLayer(compressor, &header, layer.heights,
-            layer.areas, layer.cons, &data, &built.size);
+                                                      layer.areas, layer.cons, &data, &built.size);
         built.data.reset(data);
-        if (dtStatusFailed(status)) return {};
+        if (dtStatusFailed(status))
+            return {};
         tiles.push_back(std::move(built));
     }
     return tiles;
@@ -769,10 +674,8 @@ const float tcs = static_cast<float>(config.tileSize) * config.cs;
  * later re-meshes only the tiles it touches, out of layers the cache still
  * holds.
  */
-void navigation_create_tile_cache_nav_mesh(
-    NavigationHandle plugin,
-    const NavMeshGeometry& geometry,
-    const NavMeshBuildParams& params) {
+void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
+                                           const NavMeshBuildParams& params) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -794,19 +697,16 @@ void navigation_create_tile_cache_nav_mesh(
     // a question already asked. `expectedLayersPerTile` is the one a
     // reached scene may leave out, so it is the one that carries a default.
     if (!params.max_obstacles || !params.tile_size) {
-        throw std::runtime_error(
-            "createNavMesh (tile cache) failed: a tile-cache build takes "
-            "both maxObstacles and tileSize.");
+        throw std::runtime_error("createNavMesh (tile cache) failed: a tile-cache build takes "
+                                 "both maxObstacles and tileSize.");
     }
     config.tileSize = static_cast<int>(*params.tile_size);
     const int max_obstacles = static_cast<int>(*params.max_obstacles);
-    const int expected_layers_per_tile =
-        pick_int(params.expected_layers_per_tile, 4);
+    const int expected_layers_per_tile = pick_int(params.expected_layers_per_tile, 4);
 
     rcVcopy(config.bmin, bounds_min);
     rcVcopy(config.bmax, bounds_max);
-    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width,
-                   &config.height);
+    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
     apply_generator_config_transforms(config);
 
     // The tile grid is measured against the FULL grid size, and only then
@@ -820,8 +720,7 @@ void navigation_create_tile_cache_nav_mesh(
     config.height = config.tileSize + config.borderSize * 2;
 
     const auto fail = [](const std::string& message) -> void {
-        throw std::runtime_error(
-            "createNavMesh (tile cache) failed: " + message);
+        throw std::runtime_error("createNavMesh (tile cache) failed: " + message);
     };
 
     dtTileCacheParams cache_params;
@@ -831,15 +730,11 @@ void navigation_create_tile_cache_nav_mesh(
     cache_params.ch = config.ch;
     cache_params.width = config.tileSize;
     cache_params.height = config.tileSize;
-    cache_params.walkableHeight =
-        static_cast<float>(config.walkableHeight) * config.ch;
-    cache_params.walkableRadius =
-        static_cast<float>(config.walkableRadius) * config.cs;
-    cache_params.walkableClimb =
-        static_cast<float>(config.walkableClimb) * config.ch;
+    cache_params.walkableHeight = static_cast<float>(config.walkableHeight) * config.ch;
+    cache_params.walkableRadius = static_cast<float>(config.walkableRadius) * config.cs;
+    cache_params.walkableClimb = static_cast<float>(config.walkableClimb) * config.ch;
     cache_params.maxSimplificationError = config.maxSimplificationError;
-    cache_params.maxTiles =
-        tile_width * tile_height * expected_layers_per_tile;
+    cache_params.maxTiles = tile_width * tile_height * expected_layers_per_tile;
     cache_params.maxObstacles = max_obstacles;
 
     // The three the cache borrows for the life of the plugin: a bump
@@ -851,21 +746,18 @@ void navigation_create_tile_cache_nav_mesh(
     state.compressor = std::make_unique<TileCacheFastLzCompressor>();
     state.mesh_process = std::make_unique<TileCacheDefaultMeshProcess>();
 
-    TileCacheOwner tile_cache{
-        dtAllocTileCache(), [](dtTileCache* v) { dtFreeTileCache(v); }};
+    TileCacheOwner tile_cache{dtAllocTileCache(), [](dtTileCache* v) { dtFreeTileCache(v); }};
     if (!tile_cache ||
-        dtStatusFailed(tile_cache->init(
-            &cache_params, state.allocator.get(), state.compressor.get(),
-            state.mesh_process.get()))) {
+        dtStatusFailed(tile_cache->init(&cache_params, state.allocator.get(),
+                                        state.compressor.get(), state.mesh_process.get()))) {
         fail("Failed to initialize tile cache");
     }
 
     // 22 bits identify a tile and a polygon between them, so the tile
     // count decides how many are left for polygons.
-    const int tile_bits = std::min(
-        static_cast<int>(dtIlog2(dtNextPow2(static_cast<unsigned int>(
-            tile_width * tile_height * expected_layers_per_tile)))),
-        14);
+    const int tile_bits = std::min(static_cast<int>(dtIlog2(dtNextPow2(static_cast<unsigned int>(
+                                       tile_width * tile_height * expected_layers_per_tile)))),
+                                   14);
     const int poly_bits = 22 - tile_bits;
 
     dtNavMeshParams nav_params;
@@ -883,13 +775,12 @@ void navigation_create_tile_cache_nav_mesh(
     }
 
     rcChunkyTriMesh chunky_mesh;
-    if (!rcCreateChunkyTriMesh(vertices, input.triangles.data(),
-                               input.triangle_count, 256, &chunky_mesh)) {
+    if (!rcCreateChunkyTriMesh(vertices, input.triangles.data(), input.triangle_count, 256,
+                               &chunky_mesh)) {
         fail("Failed to build chunky triangle mesh");
     }
 
     rcContext context(false);
-
 
     // Two passes, the wrapper's own: every tile's layers into the cache
     // first, then every tile's initial mesh out of it. They cannot merge,
@@ -897,17 +788,15 @@ void navigation_create_tile_cache_nav_mesh(
     // not have added yet.
     for (int y = 0; y < tile_height; ++y) {
         for (int x = 0; x < tile_width; ++x) {
-            for (TileCacheLayer& layer : rasterize_tile_layers(
-                     &context, config, bounds_min, bounds_max, vertices,
-                     vertex_count, chunky_mesh, state.compressor.get(),
-                     x, y)) {
+            for (TileCacheLayer& layer :
+                 rasterize_tile_layers(&context, config, bounds_min, bounds_max, vertices,
+                                       vertex_count, chunky_mesh, state.compressor.get(), x, y)) {
                 // A refused add is a warning upstream, not a failure: the
                 // cache is full and the tiles it already holds still make
                 // a navmesh. The data is the cache's on success and ours
                 // on failure, which is what the reference frees.
-                if (dtStatusSucceed(tile_cache->addTile(
-                        layer.data.get(), layer.size,
-                        DT_COMPRESSEDTILE_FREE_DATA, nullptr))) {
+                if (dtStatusSucceed(tile_cache->addTile(layer.data.get(), layer.size,
+                                                        DT_COMPRESSEDTILE_FREE_DATA, nullptr))) {
                     (void)layer.data.release();
                 }
             }
@@ -915,10 +804,9 @@ void navigation_create_tile_cache_nav_mesh(
     }
     for (int y = 0; y < tile_height; ++y) {
         for (int x = 0; x < tile_width; ++x) {
-            if (dtStatusFailed(tile_cache->buildNavMeshTilesAt(
-                    x, y, nav_mesh))) {
-                fail("Failed to build nav mesh tiles at " +
-                     std::to_string(x) + ", " + std::to_string(y));
+            if (dtStatusFailed(tile_cache->buildNavMeshTilesAt(x, y, nav_mesh))) {
+                fail("Failed to build nav mesh tiles at " + std::to_string(x) + ", " +
+                     std::to_string(y));
             }
         }
     }
@@ -935,46 +823,34 @@ void drain_obstacle_requests(NavigationMeshState& state) {
     }
 }
 
-NavObstacleHandle navigation_add_box_obstacle(
-    NavigationHandle plugin,
-    NavVec3 position,
-    NavVec3 half_extents,
-    float angle) {
+NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
+                                              NavVec3 half_extents, float angle) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     const float half[3] = {half_extents.x, half_extents.y, half_extents.z};
     dtObstacleRef reference = 0;
-    if (dtStatusFailed(state.tile_cache->addBoxObstacle(
-            centre, half, angle, &reference))) {
-        throw std::runtime_error(
-            "addBoxObstacle failed: the tile cache holds no room for "
-            "another obstacle.");
+    if (dtStatusFailed(state.tile_cache->addBoxObstacle(centre, half, angle, &reference))) {
+        throw std::runtime_error("addBoxObstacle failed: the tile cache holds no room for "
+                                 "another obstacle.");
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
-NavObstacleHandle navigation_add_cylinder_obstacle(
-    NavigationHandle plugin,
-    NavVec3 position,
-    float radius,
-    float height) {
+NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
+                                                   float radius, float height) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     dtObstacleRef reference = 0;
-    if (dtStatusFailed(state.tile_cache->addObstacle(
-            centre, radius, height, &reference))) {
-        throw std::runtime_error(
-            "addCylinderObstacle failed: the tile cache holds no room for "
-            "another obstacle.");
+    if (dtStatusFailed(state.tile_cache->addObstacle(centre, radius, height, &reference))) {
+        throw std::runtime_error("addCylinderObstacle failed: the tile cache holds no room for "
+                                 "another obstacle.");
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
-void navigation_remove_obstacle(
-    NavigationHandle plugin,
-    NavObstacleHandle obstacle) {
+void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obstacle) {
     NavigationMeshState& state = tile_cache_state(plugin);
     if (obstacle.value && obstacle.owner.lock().get() != &state) {
         throw std::runtime_error("Navigation obstacle belongs to a different or replaced navmesh.");
@@ -987,8 +863,7 @@ void navigation_update_obstacles(NavigationHandle plugin) {
     NavigationMeshState& state = tile_cache_state(plugin);
     bool up_to_date = false;
     while (!up_to_date) {
-        state.tile_cache->update(0.0f, state.nav_mesh.get(),
-                                       &up_to_date);
+        state.tile_cache->update(0.0f, state.nav_mesh.get(), &up_to_date);
     }
 }
 
@@ -997,8 +872,7 @@ void navigation_update_obstacles(NavigationHandle plugin) {
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh) {
-        throw std::runtime_error(
-            "No navmesh generated. Call createNavMesh first.");
+        throw std::runtime_error("No navmesh generated. Call createNavMesh first.");
     }
     const dtNavMesh& mesh = *state.nav_mesh;
 
@@ -1007,33 +881,26 @@ NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
     std::vector<float> raw_positions;
     std::vector<std::uint32_t> raw_indices;
     std::uint32_t triangle_vertex = 0;
-    for (int tile_index = 0; tile_index < mesh.getMaxTiles();
-         ++tile_index) {
+    for (int tile_index = 0; tile_index < mesh.getMaxTiles(); ++tile_index) {
         const dtMeshTile* tile = mesh.getTile(tile_index);
-        if (!tile || !tile->header) continue;
-        for (int poly_index = 0; poly_index < tile->header->polyCount;
-             ++poly_index) {
+        if (!tile || !tile->header)
+            continue;
+        for (int poly_index = 0; poly_index < tile->header->polyCount; ++poly_index) {
             const dtPoly& poly = tile->polys[poly_index];
             if (poly.getType() == DT_POLYTYPE_OFFMESH_CONNECTION) {
                 continue;
             }
-            const dtPolyDetail& detail =
-                tile->detailMeshes[poly_index];
+            const dtPolyDetail& detail = tile->detailMeshes[poly_index];
             for (unsigned int tri = 0; tri < detail.triCount; ++tri) {
-                const unsigned char* detail_tri =
-                    &tile->detailTris[(detail.triBase + tri) * 4];
+                const unsigned char* detail_tri = &tile->detailTris[(detail.triBase + tri) * 4];
                 for (int corner = 0; corner < 3; ++corner) {
                     const float* position;
                     if (detail_tri[corner] < poly.vertCount) {
-                        position =
-                            &tile->verts[poly.verts[detail_tri[corner]] *
-                                         3];
+                        position = &tile->verts[poly.verts[detail_tri[corner]] * 3];
                     } else {
-                        position = &tile->detailVerts
-                                        [(detail.vertBase +
-                                          detail_tri[corner] -
-                                          poly.vertCount) *
-                                         3];
+                        position = &tile->detailVerts[(detail.vertBase + detail_tri[corner] -
+                                                       poly.vertCount) *
+                                                      3];
                     }
                     raw_positions.push_back(position[0]);
                     raw_positions.push_back(position[1]);
@@ -1053,8 +920,7 @@ NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
     result.positions.resize(triangle_count * 9);
     result.normals.resize(triangle_count * 9);
     result.indices.resize(triangle_count * 3);
-    for (std::size_t triangle = 0; triangle < triangle_count;
-         ++triangle) {
+    for (std::size_t triangle = 0; triangle < triangle_count; ++triangle) {
         const std::uint32_t i0 = raw_indices[triangle * 3] * 3;
         const std::uint32_t i1 = raw_indices[triangle * 3 + 1] * 3;
         const std::uint32_t i2 = raw_indices[triangle * 3 + 2] * 3;
@@ -1095,22 +961,17 @@ NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
         }
         const std::size_t index = triangle * 3;
         result.indices[index] = static_cast<std::uint32_t>(index);
-        result.indices[index + 1] =
-            static_cast<std::uint32_t>(index + 1);
-        result.indices[index + 2] =
-            static_cast<std::uint32_t>(index + 2);
+        result.indices[index + 1] = static_cast<std::uint32_t>(index + 1);
+        result.indices[index + 2] = static_cast<std::uint32_t>(index + 2);
     }
     return result;
 }
 
-NavRaycastHit navigation_raycast(
-    NavigationHandle plugin,
-    float start_x, float start_y, float start_z,
-    float end_x, float end_y, float end_z) {
+NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float start_y,
+                                 float start_z, float end_x, float end_y, float end_z) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
-        throw std::runtime_error(
-            "No navmesh generated. Call createNavMesh first.");
+        throw std::runtime_error("No navmesh generated. Call createNavMesh first.");
     }
     const float start[3] = {start_x, start_y, start_z};
     const float end[3] = {end_x, end_y, end_z};
@@ -1118,8 +979,7 @@ NavRaycastHit navigation_raycast(
     dtPolyRef nearest_ref = 0;
     float nearest_point[3] = {0.0f, 0.0f, 0.0f};
     const dtStatus nearest_status = state.query->findNearestPoly(
-        start, default_query_half_extents, &state.filter, &nearest_ref,
-        nearest_point);
+        start, default_query_half_extents, &state.filter, &nearest_ref, nearest_point);
     if (dtStatusFailed(nearest_status) || nearest_ref == 0) {
         return NavRaycastHit{};
     }
@@ -1128,8 +988,7 @@ NavRaycastHit navigation_raycast(
     // for the t and normal only, the way the wrapper's raycast does.
     dtRaycastHit ray_hit;
     std::memset(&ray_hit, 0, sizeof(ray_hit));
-    state.query->raycast(nearest_ref, start, end, &state.filter, 0,
-                         &ray_hit, 0);
+    state.query->raycast(nearest_ref, start, end, &state.filter, 0, &ray_hit, 0);
     const float t = ray_hit.t;
     if (!(t > 0.0f && t < 1.0f)) {
         return NavRaycastHit{};
@@ -1142,26 +1001,21 @@ NavRaycastHit navigation_raycast(
 // from closestPointOnPoly. The two-call shape is the contract — the
 // point findNearestPoly would have written is a different value on a
 // query whose position sits off the polygon.
-NavVec3 navigation_closest_point(
-    NavigationHandle plugin,
-    float x, float y, float z) {
+NavVec3 navigation_closest_point(NavigationHandle plugin, float x, float y, float z) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
-        throw std::runtime_error(
-            "No navmesh generated. Call createNavMesh first.");
+        throw std::runtime_error("No navmesh generated. Call createNavMesh first.");
     }
     const float position[3] = {x, y, z};
     dtPolyRef poly_ref = 0;
     const dtStatus nearest_status = state.query->findNearestPoly(
-        position, default_query_half_extents, &state.filter, &poly_ref,
-        nullptr);
+        position, default_query_half_extents, &state.filter, &poly_ref, nullptr);
     if (dtStatusFailed(nearest_status)) {
         return NavVec3{};
     }
     NavVec3 point{};
     bool over_poly = false;
-    state.query->closestPointOnPoly(
-        poly_ref, position, &point.x, &over_poly);
+    state.query->closestPointOnPoly(poly_ref, position, &point.x, &over_poly);
     return point;
 }
 
@@ -1174,26 +1028,20 @@ NavVec3 navigation_closest_point(
 // where they differ the straight path must be run to the closest point ON
 // that last polygon, not to the caller's end. Straightening to an
 // unreachable goal instead walks the path off the mesh.
-std::vector<NavVec3> navigation_compute_path(
-    NavigationHandle plugin,
-    NavVec3 start,
-    NavVec3 end) {
+std::vector<NavVec3> navigation_compute_path(NavigationHandle plugin, NavVec3 start, NavVec3 end) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
-        throw std::runtime_error(
-            "No navmesh generated. Call createNavMesh first.");
+        throw std::runtime_error("No navmesh generated. Call createNavMesh first.");
     }
     const float start_position[3] = {start.x, start.y, start.z};
     const float end_position[3] = {end.x, end.y, end.z};
 
     dtPolyRef start_ref = 0;
     dtPolyRef end_ref = 0;
-    if (dtStatusFailed(state.query->findNearestPoly(
-            start_position, default_query_half_extents, &state.filter,
-            &start_ref, nullptr)) ||
-        dtStatusFailed(state.query->findNearestPoly(
-            end_position, default_query_half_extents, &state.filter,
-            &end_ref, nullptr))) {
+    if (dtStatusFailed(state.query->findNearestPoly(start_position, default_query_half_extents,
+                                                    &state.filter, &start_ref, nullptr)) ||
+        dtStatusFailed(state.query->findNearestPoly(end_position, default_query_half_extents,
+                                                    &state.filter, &end_ref, nullptr))) {
         return {};
     }
 
@@ -1201,38 +1049,33 @@ std::vector<NavVec3> navigation_compute_path(
     // the wrapper, and nothing reached overrides either.
     constexpr int max_path_polys = 256;
     constexpr int max_straight_path_points = 256;
-    std::vector<dtPolyRef> polys(
-        static_cast<std::size_t>(max_path_polys));
+    std::vector<dtPolyRef> polys(static_cast<std::size_t>(max_path_polys));
     int poly_count = 0;
-    if (dtStatusFailed(state.query->findPath(
-            start_ref, end_ref, start_position, end_position,
-            &state.filter, polys.data(), &poly_count,
-            max_path_polys)) ||
+    if (dtStatusFailed(state.query->findPath(start_ref, end_ref, start_position, end_position,
+                                             &state.filter, polys.data(), &poly_count,
+                                             max_path_polys)) ||
         poly_count <= 0) {
         return {};
     }
 
     float straight_end[3] = {end.x, end.y, end.z};
-    const dtPolyRef last_poly =
-        polys[static_cast<std::size_t>(poly_count - 1)];
+    const dtPolyRef last_poly = polys[static_cast<std::size_t>(poly_count - 1)];
     if (last_poly != end_ref) {
         bool over_poly = false;
-        if (dtStatusFailed(state.query->closestPointOnPoly(
-                last_poly, end_position, straight_end, &over_poly))) {
+        if (dtStatusFailed(state.query->closestPointOnPoly(last_poly, end_position, straight_end,
+                                                           &over_poly))) {
             return {};
         }
     }
 
-    std::vector<float> straight(
-        static_cast<std::size_t>(max_straight_path_points) * 3);
+    std::vector<float> straight(static_cast<std::size_t>(max_straight_path_points) * 3);
     int straight_count = 0;
     // The flag and polygon-reference outputs are `[opt]` in Detour's own
     // header and nothing here reads them; the wrapper allocates both only
     // because its binding hands back buffers it then destroys.
-    if (dtStatusFailed(state.query->findStraightPath(
-            start_position, straight_end, polys.data(), poly_count,
-            straight.data(), nullptr, nullptr, &straight_count,
-            max_straight_path_points))) {
+    if (dtStatusFailed(state.query->findStraightPath(start_position, straight_end, polys.data(),
+                                                     poly_count, straight.data(), nullptr, nullptr,
+                                                     &straight_count, max_straight_path_points))) {
         return {};
     }
 
@@ -1240,8 +1083,7 @@ std::vector<NavVec3> navigation_compute_path(
     path.reserve(static_cast<std::size_t>(straight_count));
     for (int index = 0; index < straight_count; ++index) {
         const std::size_t base = static_cast<std::size_t>(index) * 3;
-        path.push_back(NavVec3{straight[base], straight[base + 1],
-                               straight[base + 2]});
+        path.push_back(NavVec3{straight[base], straight[base + 1], straight[base + 2]});
     }
     return path;
 }
@@ -1250,14 +1092,11 @@ std::vector<NavVec3> navigation_compute_path(
 // init over the plugin's navmesh. dtCrowd builds its own query and
 // filters; the wrapper changes neither.
 #if BBLITE_HAS_NAV_CROWD
-NavCrowdHandle navigation_create_crowd(
-    NavigationHandle plugin,
-    int max_agents,
-    float max_agent_radius) {
+NavCrowdHandle navigation_create_crowd(NavigationHandle plugin, int max_agents,
+                                       float max_agent_radius) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh) {
-        throw std::runtime_error(
-            "No navmesh generated. Call createNavMesh first.");
+        throw std::runtime_error("No navmesh generated. Call createNavMesh first.");
     }
     auto owned = std::make_shared<NavCrowdState>();
     owned->mesh = plugin.ownership->mesh;
@@ -1271,10 +1110,8 @@ NavCrowdHandle navigation_create_crowd(
 // Crowd.addAgent: the wrapper fills every dtCrowdAgentParams field it
 // declares from the spread of its defaults over the caller's object,
 // leaving the rest of the struct at its own zero-initialization.
-int navigation_add_agent(
-    NavCrowdHandle crowd,
-    float x, float y, float z,
-    const NavAgentParams& params) {
+int navigation_add_agent(NavCrowdHandle crowd, float x, float y, float z,
+                         const NavAgentParams& params) {
     NavCrowdState& state = crowd_state(crowd);
     dtCrowdAgentParams agent_params{};
     agent_params.radius = params.radius;
@@ -1296,11 +1133,8 @@ int navigation_add_agent(
 // for every slot in the pool and `addAgent` sets it — so an index the
 // scene never added reads as absent here exactly as `getAgent` reports
 // null upstream. `dtCrowd::getAgent` bounds-checks the index itself.
-std::optional<NavVec3> navigation_agent_position(
-    NavCrowdHandle crowd,
-    int index) {
-    const dtCrowdAgent* agent =
-        crowd_state(crowd).crowd->getAgent(index);
+std::optional<NavVec3> navigation_agent_position(NavCrowdHandle crowd, int index) {
+    const dtCrowdAgent* agent = crowd_state(crowd).crowd->getAgent(index);
     if (!agent || !agent->active) {
         return std::nullopt;
     }
@@ -1318,10 +1152,7 @@ std::optional<NavVec3> navigation_agent_position(
 //
 // Absence is REPORTED, not decided: the pin's `?.` is Babylon behaviour
 // and belongs beside `get_agent_position`'s, in generated code.
-bool navigation_agent_goto(
-    NavCrowdHandle crowd,
-    int index,
-    NavVec3 destination) {
+bool navigation_agent_goto(NavCrowdHandle crowd, int index, NavVec3 destination) {
     NavCrowdState& state = crowd_state(crowd);
     const dtCrowdAgent* agent = state.crowd->getAgent(index);
     if (!agent || !agent->active) {
@@ -1329,13 +1160,11 @@ bool navigation_agent_goto(
     }
     const dtNavMeshQuery* query = state.crowd->getNavMeshQuery();
     const dtQueryFilter filter = include_all_filter();
-    const float position[3] = {
-        destination.x, destination.y, destination.z};
+    const float position[3] = {destination.x, destination.y, destination.z};
     dtPolyRef nearest_ref = 0;
     float nearest_point[3] = {0.0f, 0.0f, 0.0f};
-    if (dtStatusFailed(query->findNearestPoly(
-            position, default_query_half_extents, &filter,
-            &nearest_ref, nearest_point)) ||
+    if (dtStatusFailed(query->findNearestPoly(position, default_query_half_extents, &filter,
+                                              &nearest_ref, nearest_point)) ||
         nearest_ref == 0) {
         return true;
     }

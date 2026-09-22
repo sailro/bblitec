@@ -9,7 +9,8 @@ namespace bbl::pal {
 inline thread_local bool extracting_constructor_inputs = false;
 inline void require_runtime_execution(const char* operation) {
     if (extracting_constructor_inputs) {
-        throw std::runtime_error(std::string("Static constructor extraction refuses ") + operation + ".");
+        throw std::runtime_error(std::string("Static constructor extraction refuses ") + operation +
+                                 ".");
     }
 }
 #else

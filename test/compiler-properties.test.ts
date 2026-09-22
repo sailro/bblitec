@@ -10,7 +10,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
-import { type DataType, passesByReferenceKind } from "../src/compiler/data-types.js";
+import {
+    type DataType,
+    passesByReferenceKind,
+} from "../src/compiler/data-types.js";
 import { propertyRules } from "../src/compiler/properties.js";
 
 test("computed material reads retain source provenance without turning writes into reads", () => {
@@ -21,9 +24,14 @@ async function main() {
     const field="diffuseTexture";
     material.diffuseTexture=createSolidTexture2D(engine,1,1,1,1);`;
     const write = compileSource(`${prefix}\n}`);
-    assert.ok(!write.manifest.features.includes("material:source-texture-read"));
+    assert.ok(
+        !write.manifest.features.includes("material:source-texture-read"),
+    );
     const read = compileSource(`${prefix}\n    const held=material[field];\n}`);
-    assert.equal(read.manifest.featureSites["material:source-texture-read"], "input.ts:7");
+    assert.equal(
+        read.manifest.featureSites["material:source-texture-read"],
+        "input.ts:7",
+    );
 });
 
 /** A scene with an ArcRotateCamera, which most reads hang off. */
@@ -105,10 +113,7 @@ test("reads a scene field off its own expression", () => {
 
     assert.match(result.cpp, /v_scene\.clear_color/);
     // `engine.scRT` in the same literal is the helper form.
-    assert.match(
-        result.cpp,
-        /bbl::swapchain_render_target\(v_engine\)/,
-    );
+    assert.match(result.cpp, /bbl::swapchain_render_target\(v_engine\)/);
 });
 
 test("reads a path written as a path, at any depth", () => {
@@ -172,7 +177,7 @@ test("re-tags a handle and then reads through it", () => {
 
     // The re-tagged binding is the camera handle, and the bounds read
     // indexes the camera record through it.
-    assert.match(result.cpp, /auto v_ortho = v_camera;/);
+    assert.match(result.cpp, /auto& v_ortho = v_camera;/);
     assert.match(
         result.cpp,
         /v_engine\.cameras\[v_ortho\.value\]\.ortho_half_height/,
@@ -184,7 +189,8 @@ test("names the same camera fields for reads and both write paths", () => {
     // and `angularSensitivity` could be written but not read: three
     // copies of one map, each missing something the others had.
     const result = compileSource(
-        sceneWithCamera(`
+        sceneWithCamera(
+            `
             camera.speed = 2;
             scene.camera.speed = 3;
             camera.angularSensitivity = 500;
@@ -202,10 +208,7 @@ test("names the same camera fields for reads and both write paths", () => {
     );
     assert.match(result.cpp, /\.angular_sensibility = 500\.0;/);
     assert.match(result.cpp, cameraRecord);
-    assert.match(
-        result.cpp,
-        /bbl::create_box\([^)]*angular_sensibility/,
-    );
+    assert.match(result.cpp, /bbl::create_box\([^)]*angular_sensibility/);
 });
 
 test("keeps the raw GPU device closed outside the matrix upload helper", () => {
@@ -248,10 +251,7 @@ test("rejects an undeclared property on a known owner", () => {
     // The table returning nothing has to fall through to the general
     // failure rather than resolving to something adjacent.
     assert.throws(
-        () =>
-            compileSource(
-                sceneWithCamera("const gamma = camera.delta;"),
-            ),
+        () => compileSource(sceneWithCamera("const gamma = camera.delta;")),
         /Unsupported property value 'camera\.delta'/,
     );
 });

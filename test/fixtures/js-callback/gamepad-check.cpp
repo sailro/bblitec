@@ -1,6 +1,8 @@
 #define BBLITE_HAS_GAMEPAD 1
 #include "pal_sdl.cpp"
-namespace bbl::pal { void apply_canvas_cursor(Engine&); }
+namespace bbl::pal {
+void apply_canvas_cursor(Engine&);
+}
 #include "pal_platform_events.hpp"
 #include <cassert>
 #include <iostream>
@@ -9,7 +11,7 @@ namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
 int canvas_cursor_updates = 0;
 void apply_canvas_cursor(Engine&) { ++canvas_cursor_updates; }
-}
+} // namespace bbl::pal
 
 int main() {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -26,7 +28,8 @@ int main() {
     const auto find_pad = [](const auto& pads, SDL_JoystickID instance_id) {
         bbl::GamepadHandle found;
         for (const auto& pad : pads) {
-            if (pad && pad->instance_id == instance_id) found = *pad;
+            if (pad && pad->instance_id == instance_id)
+                found = *pad;
         }
         return found;
     };
@@ -39,9 +42,9 @@ int main() {
     assert(handle.instance_id == id);
     const auto buttons = bbl::gamepad_buttons(engine, handle);
     assert(bbl::gamepad_buttons(engine, handle) == buttons);
-    for (const auto mapping : {std::pair{SDL_GAMEPAD_BUTTON_SOUTH, 0u},
-                              std::pair{SDL_GAMEPAD_BUTTON_DPAD_DOWN, 13u},
-                              std::pair{SDL_GAMEPAD_BUTTON_START, 9u}}) {
+    for (const auto mapping :
+         {std::pair{SDL_GAMEPAD_BUTTON_SOUTH, 0u}, std::pair{SDL_GAMEPAD_BUTTON_DPAD_DOWN, 13u},
+          std::pair{SDL_GAMEPAD_BUTTON_START, 9u}}) {
         assert(SDL_SetJoystickVirtualButton(joystick, mapping.first, true));
         SDL_UpdateJoysticks();
         assert(bbl::gamepad_button_pressed(engine, buttons[mapping.second]));
@@ -104,8 +107,13 @@ int main() {
     event.type = SDL_EVENT_KEY_UP;
     assert(SDL_PushEvent(&event));
     bool running = true;
-    bbl::pal::poll_platform_events(engine, running, false,
-        [&](const SDL_Event& value) { if (value.type == SDL_EVENT_KEY_DOWN || value.type == SDL_EVENT_KEY_UP) ++ui; return false; },
+    bbl::pal::poll_platform_events(
+        engine, running, false,
+        [&](const SDL_Event& value) {
+            if (value.type == SDL_EVENT_KEY_DOWN || value.type == SDL_EVENT_KEY_UP)
+                ++ui;
+            return false;
+        },
         [&](const SDL_Event&) { ++camera; });
     assert(downs == 1 && ups == 1 && ui == 1 && camera == 0);
     assert(bbl::pal::canvas_cursor_updates == 0);

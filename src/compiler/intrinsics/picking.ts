@@ -13,21 +13,22 @@ import {
 
 /** Readback and picker retirement change native state only; repeated calls do
  * not allocate a generation-owned composition row. */
-export const runtimeOnlyPickingIntrinsics: ReadonlySet<string> = new EmissionSet([
-    "pickAsync", "disposePicker", "getPickedNormal",
-]);
+export const runtimeOnlyPickingIntrinsics: ReadonlySet<string> =
+    new EmissionSet(["pickAsync", "disposePicker", "getPickedNormal"]);
 
 export interface PickingIntrinsicContext
-    extends IntrinsicCallContext,
-    HitRecordContext,
-    Pick<LoweringServices,
-        | "dataTypes"
-        | "checker"
-        | "compileNumber"
-        | "requireEngine"
-        | "compileCondition"
-        | "fail"
-    > {}
+    extends
+        IntrinsicCallContext,
+        HitRecordContext,
+        Pick<
+            LoweringServices,
+            | "dataTypes"
+            | "checker"
+            | "compileNumber"
+            | "requireEngine"
+            | "compileCondition"
+            | "fail"
+        > {}
 
 /**
  * GPU picking, at the slice scene 129 reaches.
@@ -63,14 +64,8 @@ export function compilePickingIntrinsic(
     switch (importedName) {
         case "createGpuPicker": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                scene,
-                "scene",
-                argumentAt(call, 0),
-            );
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             context.reachFeature("picking:gpu", call);
             return {
                 kind: "gpu-picker",
@@ -95,14 +90,8 @@ export function compilePickingIntrinsic(
                         "reached slice passes none.",
                 );
             }
-            const picker = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                picker,
-                "gpu-picker",
-                argumentAt(call, 0),
-            );
+            const picker = context.compileValue(argumentAt(call, 0));
+            context.expectKind(picker, "gpu-picker", argumentAt(call, 0));
             return {
                 kind: "picking-info",
                 dataType: { kind: "handle", handle: "picking-info" },
@@ -114,20 +103,17 @@ export function compilePickingIntrinsic(
                     `${context.compileNumber(argumentAt(call, 2), "double")})`,
                 ...(picker.engineCpp === undefined
                     ? {}
-                    : { engineCpp: picker.engineCpp, pickingEngineKnown: true as const }),
+                    : {
+                          engineCpp: picker.engineCpp,
+                          pickingEngineKnown: true as const,
+                      }),
             };
         }
 
         case "disposePicker": {
             context.expectArgumentCount(call, 1, 1);
-            const picker = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                picker,
-                "gpu-picker",
-                argumentAt(call, 0),
-            );
+            const picker = context.compileValue(argumentAt(call, 0));
+            context.expectKind(picker, "gpu-picker", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp:
@@ -166,12 +152,10 @@ export function compilePickingIntrinsic(
             return {
                 ...compileNullableHitRecord(context, call, {
                     intrinsic: "pickBillboardSprite",
-                    resultType:
-                        context.dataTypes.fromTsType(
-                            context.checker.getAwaitedType(promised) ??
-                                promised,
-                            call,
-                        ),
+                    resultType: context.dataTypes.fromTsType(
+                        context.checker.getAwaitedType(promised) ?? promised,
+                        call,
+                    ),
                     // The pin's own four members. `pickedPoint` and
                     // `distance` are the shared readback's -- the picker
                     // reconstructs both before it hands the info to a

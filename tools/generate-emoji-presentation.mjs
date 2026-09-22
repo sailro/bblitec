@@ -9,7 +9,9 @@ import { writeFileSync } from "node:fs";
 const ranges = [];
 let start = -1;
 for (let point = 0; point <= 0x110000; point++) {
-    const emoji = point < 0x110000 && /\p{Emoji_Presentation}/u.test(String.fromCodePoint(point));
+    const emoji =
+        point < 0x110000 &&
+        /\p{Emoji_Presentation}/u.test(String.fromCodePoint(point));
     if (emoji && start < 0) start = point;
     if (!emoji && start >= 0) {
         ranges.push([start, point - 1]);
@@ -40,4 +42,7 @@ inline bool ui_default_emoji_presentation(char32_t point) {
 
 } // namespace bbl::pal
 `;
-writeFileSync(new URL("../native/src/pal_ui_emoji.hpp", import.meta.url), header);
+writeFileSync(
+    new URL("../native/src/pal_ui_emoji.hpp", import.meta.url),
+    header,
+);

@@ -58,9 +58,7 @@ test("a scene-authored skeleton reaches the native resource and its mesh", () =>
     );
     assert.match(result.cpp, /bbl::attach_scene_skeleton\(/);
     assert.ok(
-        result.manifest.generatedSources.includes(
-            "upstream/src/skeleton.cpp",
-        ),
+        result.manifest.generatedSources.includes("upstream/src/skeleton.cpp"),
     );
     // The generation half: the pin reads `mesh.skeleton` for
     // MSH_HAS_SKELETON, so the assignment has to move the mesh's own
@@ -123,10 +121,7 @@ test("updateSkeletonBoneMatrices stays a live per-frame call", () => {
         });
         await registerScene(scene);
     `);
-    assert.match(
-        result.cpp,
-        /bbl::update_scene_skeleton_bone_matrices\(/,
-    );
+    assert.match(result.cpp, /bbl::update_scene_skeleton_bone_matrices\(/);
     // The pose is read where the scene writes it. A fold at creation would
     // put the call outside the callback, which is what this pins.
     const callback = result.cpp.slice(
@@ -211,8 +206,5 @@ test("the emitted skeleton unit keeps the palette on the mesh record", () => {
     assert.match(lowered.source, /mesh_record\.scene_skeleton = true;/);
     assert.match(lowered.source, /mesh_record\.pinned_bone_palette = true;/);
     assert.match(lowered.source, /mesh_record\.gpu_deformation = true;/);
-    assert.match(
-        lowered.source,
-        /void update_scene_skeleton_bone_matrices\(/,
-    );
+    assert.match(lowered.source, /void update_scene_skeleton_bone_matrices\(/);
 });

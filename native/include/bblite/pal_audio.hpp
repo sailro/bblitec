@@ -74,7 +74,8 @@ namespace bbl::pal {
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 /** Scheduled-source callbacks run through their owning realm's event queue. */
 void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
-    js::Callback<void()> callback, bool capture = false, bool once = false);
+                              js::Callback<void()> callback, bool capture = false,
+                              bool once = false);
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
 #endif
 
@@ -86,6 +87,7 @@ public:
     AudioSession& operator=(const AudioSession&) = delete;
     ~AudioSession();
     void finish() noexcept;
+
 private:
     std::vector<AudioContextHandle> contexts_;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
@@ -155,27 +157,21 @@ AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
 
 /** `ctx.createBuffer(channels, frames, sampleRate)`. */
-AudioBufferHandle audio_create_buffer(
-    AudioContextHandle context,
-    std::uint32_t channels,
-    std::uint32_t frames,
-    double sample_rate);
+AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,
+                                      std::uint32_t frames, double sample_rate);
 
 /** Decode encoded bytes at the context's sample rate. */
-AudioBufferHandle audio_decode_buffer(
-    AudioContextHandle context,
-    const bbl::js::ArrayBuffer& encoded);
+AudioBufferHandle audio_decode_buffer(AudioContextHandle context,
+                                      const bbl::js::ArrayBuffer& encoded);
 
 /** `buffer.getChannelData(channel)`: a mutable view into retained PCM. */
-bbl::js::F32Array audio_buffer_channel(
-    AudioBufferHandle buffer,
-    std::uint32_t channel);
+bbl::js::F32Array audio_buffer_channel(AudioBufferHandle buffer, std::uint32_t channel);
 
 enum class AudioBufferProperty { Duration, Length, SampleRate, NumberOfChannels };
 double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property);
 enum class AudioBufferCopy { FromChannel, ToChannel };
-void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
-    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction);
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples, std::uint32_t channel,
+                       std::uint32_t offset, AudioBufferCopy direction);
 bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source);
 
 /** `ctx.createBufferSource()`. */
@@ -210,11 +206,7 @@ void audio_node_start(AudioNodeHandle node, double when);
 void audio_node_start(AudioNodeHandle node, double when, double offset);
 
 /** `source.start(when, offset, duration)`, all values in seconds. */
-void audio_node_start(
-    AudioNodeHandle node,
-    double when,
-    double offset,
-    double duration);
+void audio_node_start(AudioNodeHandle node, double when, double offset, double duration);
 
 /** `source.stop(when)`, in context time. */
 void audio_node_stop(AudioNodeHandle node, double when);

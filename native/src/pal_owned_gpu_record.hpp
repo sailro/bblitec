@@ -12,7 +12,8 @@ void release_owned_gpu_record(Owner* owner, Resources& resources) noexcept {
     owner->release_gpu_resources(resources);
 }
 
-template <typename Resources, typename Owner, auto Release = &release_owned_gpu_record<Resources, Owner>>
+template <typename Resources, typename Owner,
+          auto Release = &release_owned_gpu_record<Resources, Owner>>
 class OwnedGpuRecord : public Resources {
     static_assert(std::is_nothrow_move_assignable_v<Resources>);
     Owner* owner_ = nullptr;
@@ -26,17 +27,17 @@ public:
 
     // Default construction may allocate container sentinels. Finish that
     // before transferring any raw handles from the still-owned source.
-    OwnedGpuRecord(OwnedGpuRecord&& other)
-        noexcept(std::is_nothrow_default_constructible_v<Resources>)
+    OwnedGpuRecord(OwnedGpuRecord&& other) noexcept(
+        std::is_nothrow_default_constructible_v<Resources>)
         : OwnedGpuRecord() {
-        Resources::operator=(std::move(other));
+        Resources::operator=(std::move(static_cast<Resources&>(other)));
         owner_ = std::exchange(other.owner_, nullptr);
     }
 
     OwnedGpuRecord& operator=(OwnedGpuRecord&& other) noexcept {
         if (this != &other) {
             reset();
-            Resources::operator=(std::move(other));
+            Resources::operator=(std::move(static_cast<Resources&>(other)));
             owner_ = std::exchange(other.owner_, nullptr);
         }
         return *this;

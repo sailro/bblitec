@@ -8,10 +8,15 @@
 
 namespace bbl::pal {
 int measured_rectangles = 0;
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-Engine& window_document_engine() { static Engine document; return document; }
+Engine& window_document_engine() {
+    static Engine document;
+    return document;
+}
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
@@ -19,10 +24,15 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     loop.run([&] { initialize(realm); });
     return 0;
 }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
+    for (const auto relation : {UiSelectorRelation::Child, UiSelectorRelation::Descendant,
+                                UiSelectorRelation::Next, UiSelectorRelation::Following}) {
+        const std::vector<UiSelectorStep> absent{{UiSelectorRelation::Self, {}}, {relation, {}}};
+        assert(!pal::ui_selector_sequence_matches(nullptr, absent));
+    }
     assert(SDL_Init(SDL_INIT_VIDEO));
     SDL_Window* window = SDL_CreateWindow("Selector fixture", 640, 480, SDL_WINDOW_HIDDEN);
     assert(window);
@@ -30,14 +40,17 @@ int main() {
         auto& engine = pal::window_document_engine();
         engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
             ++pal::measured_rectangles;
-            return UiClientRect{0, 0, ui_get_attribute(owner, element, "data-mode") == "a,b" ? 90.0 : 120.0, 40};
+            return UiClientRect{
+                0, 0, ui_get_attribute(owner, element, "data-mode") == "a,b" ? 90.0 : 120.0, 40};
         };
         assert(generated_main() == 0);
         assert(pal::measured_rectangles == 2);
         engine.ui_measure_element = nullptr;
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
-        const auto entry = ui_get_element_by_id(engine, "entry"), panel = ui_get_element_by_id(engine, "panel");
-        const auto lead = ui_get_element_by_id(engine, "lead"), label = ui_get_element_by_id(engine, "label");
+        const auto entry = ui_get_element_by_id(engine, "entry"),
+                   panel = ui_get_element_by_id(engine, "panel");
+        const auto lead = ui_get_element_by_id(engine, "lead"),
+                   label = ui_get_element_by_id(engine, "label");
         const auto update = [&] { pal::update_ui_rml_runtime(runtime, 640, 480); };
         const auto matches = [&](UiElementHandle handle, std::string_view selector) {
             bool found = false;
@@ -47,7 +60,9 @@ int main() {
             return found;
         };
         const auto background = [&](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
-            const auto actual = runtime.projected_elements.at(entry.value).element->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>();
+            const auto actual = runtime.projected_elements.at(entry.value)
+                                    .element->GetProperty(Rml::PropertyId::BackgroundColor)
+                                    ->Get<Rml::Colourb>();
             assert(actual.red == r && actual.green == g && actual.blue == b);
         };
         update();
@@ -70,9 +85,16 @@ int main() {
         assert(matches(lead, ".lead:has(+ .entry)"));
         assert(matches(panel, ".panel:has(> .entry > span)"));
         assert(matches(panel, ".panel:not(:has(> .entry:not([disabled])))"));
-        assert(runtime.projected_elements.at(entry.value).element->GetProperty(Rml::PropertyId::MinHeight)->Get<float>() == 41);
-        const auto lead_background = [&] { return runtime.projected_elements.at(lead.value).element->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>(); };
-        assert(lead_background().red == 0x12 && lead_background().green == 0x34 && lead_background().blue == 0x56);
+        assert(runtime.projected_elements.at(entry.value)
+                   .element->GetProperty(Rml::PropertyId::MinHeight)
+                   ->Get<float>() == 41);
+        const auto lead_background = [&] {
+            return runtime.projected_elements.at(lead.value)
+                .element->GetProperty(Rml::PropertyId::BackgroundColor)
+                ->Get<Rml::Colourb>();
+        };
+        assert(lead_background().red == 0x12 && lead_background().green == 0x34 &&
+               lead_background().blue == 0x56);
         background(0x44, 0x55, 0x66);
         // Reordering invalidates both sibling relationships in the same update.
         ui_append_child(engine, panel, lead);
@@ -88,7 +110,8 @@ int main() {
         assert(matches(entry, ".entry:not(:disabled)"));
         assert(!matches(lead, ".panel:has(> .entry[disabled]) .lead"));
         assert(!matches(panel, ".panel:not(:has(> .entry:not([disabled])))"));
-        assert(lead_background().red == 0x11 && lead_background().green == 0x22 && lead_background().blue == 0x33);
+        assert(lead_background().red == 0x11 && lead_background().green == 0x22 &&
+               lead_background().blue == 0x33);
         background(0x11, 0x22, 0x33);
         runtime.context->ProcessMouseMove(30, 30, 0);
         update();
@@ -101,9 +124,13 @@ int main() {
         update();
         assert(matches(label, ".entry:focus-visible span"));
         assert(matches(lead, ".panel:focus-within .lead"));
-        const auto lead_color = runtime.projected_elements.at(lead.value).element->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
+        const auto lead_color = runtime.projected_elements.at(lead.value)
+                                    .element->GetProperty(Rml::PropertyId::Color)
+                                    ->Get<Rml::Colourb>();
         assert(lead_color.red == 0xab && lead_color.green == 0xcd && lead_color.blue == 0xef);
-        const auto color = runtime.projected_elements.at(label.value).element->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
+        const auto color = runtime.projected_elements.at(label.value)
+                               .element->GetProperty(Rml::PropertyId::Color)
+                               ->Get<Rml::Colourb>();
         assert(color.red == 0xaa && color.green == 0xbb && color.blue == 0xcc);
         background(0x11, 0x22, 0x33);
         const auto outside = ui_create_element(engine, "button");

@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
-import {spawnSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {runInNewContext} from "node:vm";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("promise cleanup preserves settlement, owns callbacks and follows JavaScript microtask order", async t => {
-    const directory=resolve("artifacts/promise-cleanup");mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const body=`(async()=>{
+test("promise cleanup preserves settlement, owns callbacks and follows JavaScript microtask order", async (t) => {
+    const directory = resolve("artifacts/promise-cleanup");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const body = `(async()=>{
         const order:string[]=[];const source=Promise.resolve(7);
         const done=source.finally(()=>{order.push("cleanup");}).then(()=>{order.push("result");});
         const turns=source.then(()=>{order.push("one");}).then(()=>{order.push("two");})
@@ -51,33 +55,73 @@ test("promise cleanup preserves settlement, owns callbacks and follows JavaScrip
         if(await captured!==7||await original.finally(maybe)!==7||calls!==7)throw new Error("optional cleanup snapshot");
         globalThis.close();
     })();`;
-    let closed=false;
-    await runInNewContext(ts.transpile(body,{target:ts.ScriptTarget.ES2022}),{close:()=>{closed=true;}});
-    assert.equal(closed,true,"JavaScript oracle completed");
-    const prefix='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
-    const result=compileSource(prefix+body,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,`#define main generated_main\n${result.cpp}\n#undef main\n`+
-        `int main() { const auto baseline=bbl::js::managed_node_count(); `+
-        `{ bbl::js::RealmScope realm; bbl::pal::EventLoop loop; loop.run([&] { `+
-        `{ bbl::js::Promise<double> source; source.finally(bbl::js::make_closure(std::tuple{source}, [](auto&) {})); } `+
-        `bbl::js::collect_cycles(); if(bbl::js::managed_node_count()!=baseline) throw std::runtime_error("pending cleanup cycle"); loop.close(); }); } `+
-        `const int result=generated_main(); `+
-        `bbl::js::collect_cycles(); if(bbl::js::managed_node_count()!=baseline) throw std::runtime_error("cleanup ownership leak"); return result; }\n`);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    const execution=spawnSync(exe,{encoding:"utf8",timeout:10000});
-    assert.ifError(execution.error);assert.equal(execution.status,0,execution.stderr);
-    assert.equal(execution.stdout,"");assert.equal(execution.stderr,"");
+    let closed = false;
+    await runInNewContext(
+        ts.transpile(body, { target: ts.ScriptTarget.ES2022 }),
+        {
+            close: () => {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true, "JavaScript oracle completed");
+    const prefix =
+        'const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
+    const result = compileSource(prefix + body, {
+        fileName: join(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#define main generated_main\n${result.cpp}\n#undef main\n` +
+            `int main() { const auto baseline=bbl::js::managed_node_count(); ` +
+            `{ bbl::js::RealmScope realm; bbl::pal::EventLoop loop; loop.run([&] { ` +
+            `{ bbl::js::Promise<double> source; source.finally(bbl::js::make_closure(std::tuple{source}, [](auto&) {})); } ` +
+            `bbl::js::collect_cycles(); if(bbl::js::managed_node_count()!=baseline) throw std::runtime_error("pending cleanup cycle"); loop.close(); }); } ` +
+            `const int result=generated_main(); ` +
+            `bbl::js::collect_cycles(); if(bbl::js::managed_node_count()!=baseline) throw std::runtime_error("cleanup ownership leak"); return result; }\n`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    const execution = spawnSync(exe, { encoding: "utf8", timeout: 10000 });
+    assert.ifError(execution.error);
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
 });
 
 test("promise cleanup refuses unrepresented custom thenable assimilation", () => {
-    const directory=resolve("artifacts/promise-cleanup");mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const prefix='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
-    const thenable='{then(resolve:(value:number)=>void){resolve(7);}}';
-    const fileName=resolve("artifacts/promise-cleanup/entry.ts");
-    for(const expression of [`Promise.resolve(${thenable})`, `Promise.resolve(7).finally(()=>(${thenable}))`])
-        assert.throws(()=>compileSource(prefix+expression,{fileName}),/thenable assimilation/);
+    const directory = resolve("artifacts/promise-cleanup");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const prefix =
+        'const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
+    const thenable = "{then(resolve:(value:number)=>void){resolve(7);}}";
+    const fileName = resolve("artifacts/promise-cleanup/entry.ts");
+    for (const expression of [
+        `Promise.resolve(${thenable})`,
+        `Promise.resolve(7).finally(()=>(${thenable}))`,
+    ])
+        assert.throws(
+            () => compileSource(prefix + expression, { fileName }),
+            /thenable assimilation/,
+        );
 });

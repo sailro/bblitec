@@ -39,16 +39,13 @@ export class Env<B> {
 
 /** How a statement list ended. */
 export type Completion<V> =
-    | { kind: "normal" }
-    | { kind: "return"; value: V }
-    | { kind: "break" };
+    { kind: "normal" } | { kind: "return"; value: V } | { kind: "break" };
 
 export const NORMAL: Completion<never> = { kind: "normal" };
 
 /** JavaScript truthiness: decided at generation, or a C++ `bool`. */
 export type Truth =
-    | { k: "static"; value: boolean }
-    | { k: "residual"; cpp: string };
+    { k: "static"; value: boolean } | { k: "residual"; cpp: string };
 
 /**
  * What the evaluator needs to know about a value to apply JavaScript's own
@@ -179,7 +176,11 @@ export interface ValueModel<V, B> {
     /** A call of a value that is neither a closure nor a pinned function. */
     invoke?(target: V, args: V[], site: ts.Node, name: string): V | undefined;
     /** A pinned function the family answers for instead of evaluating its body. */
-    intercept?(fn: FunctionCallable<V>, args: V[], site: ts.Node): V | undefined;
+    intercept?(
+        fn: FunctionCallable<V>,
+        args: V[],
+        site: ts.Node,
+    ): V | undefined;
     /** An assignment to something other than a name. */
     assignTarget?(
         target: ts.Expression,
@@ -198,7 +199,12 @@ export interface ValueModel<V, B> {
     /** Equality where a side is residual. */
     equality?(left: V, right: V, equal: boolean, node: ts.BinaryExpression): V;
     /** A binary operator over operands that are not both known numbers. */
-    binary?(kind: ts.SyntaxKind, left: V, right: V, node: ts.BinaryExpression): V;
+    binary?(
+        kind: ts.SyntaxKind,
+        left: V,
+        right: V,
+        node: ts.BinaryExpression,
+    ): V;
     /** The run-time arms: what a residual condition selects or emits. */
     residual?: {
         not(cpp: string, at: ts.Node): V;
@@ -368,7 +374,11 @@ export class PartialEvaluator<V, B> {
                     "run-time branch inside an inlined pinned body",
                 );
             }
-            return this.model.residual.ifStatement(known.cpp, statement, branch);
+            return this.model.residual.ifStatement(
+                known.cpp,
+                statement,
+                branch,
+            );
         }
         if (ts.isBlock(statement)) {
             return this.statements(statement.statements, {
@@ -396,7 +406,10 @@ export class PartialEvaluator<V, B> {
                 this.fail(statement, "for-of initializer");
             }
             for (const element of elements) {
-                const scope: Frame<V, B> = { ...frame, env: new Env(frame.env) };
+                const scope: Frame<V, B> = {
+                    ...frame,
+                    env: new Env(frame.env),
+                };
                 this.bindPattern(
                     initializer.declarations[0]!.name,
                     element,
@@ -480,7 +493,10 @@ export class PartialEvaluator<V, B> {
                 : element.name.text;
             frame.env.declare(
                 element.name.text,
-                bind(element.name.text, this.model.member(value, property, element)),
+                bind(
+                    element.name.text,
+                    this.model.member(value, property, element),
+                ),
             );
         }
     }
@@ -492,21 +508,30 @@ export class PartialEvaluator<V, B> {
         const adapted = this.model.expression?.(node, frame, this);
         if (adapted !== undefined) return adapted;
         if (ts.isNumericLiteral(node)) return this.model.raw(Number(node.text));
-        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node)
+        ) {
             return this.model.raw(node.text);
         }
         if (ts.isTemplateExpression(node)) {
             let text = node.head.text;
             for (const span of node.templateSpans) {
-                const value = this.model.classify(this.expression(span.expression, frame));
-                if (value.k !== "value") this.fail(span, "template over a run-time value");
+                const value = this.model.classify(
+                    this.expression(span.expression, frame),
+                );
+                if (value.k !== "value")
+                    this.fail(span, "template over a run-time value");
                 text += `${String(value.raw)}${span.literal.text}`;
             }
             return this.model.raw(text);
         }
-        if (node.kind === ts.SyntaxKind.TrueKeyword) return this.model.raw(true);
-        if (node.kind === ts.SyntaxKind.FalseKeyword) return this.model.raw(false);
-        if (node.kind === ts.SyntaxKind.NullKeyword) return this.model.raw(null);
+        if (node.kind === ts.SyntaxKind.TrueKeyword)
+            return this.model.raw(true);
+        if (node.kind === ts.SyntaxKind.FalseKeyword)
+            return this.model.raw(false);
+        if (node.kind === ts.SyntaxKind.NullKeyword)
+            return this.model.raw(null);
         if (node.kind === ts.SyntaxKind.ThisKeyword) {
             return frame.thisValue ?? this.fail(node, "this outside a method");
         }
@@ -531,7 +556,9 @@ export class PartialEvaluator<V, B> {
             return this.model.element(owner, index, node);
         }
         if (ts.isTypeOfExpression(node)) {
-            return this.model.raw(this.typeofName(this.expression(node.expression, frame)));
+            return this.model.raw(
+                this.typeofName(this.expression(node.expression, frame)),
+            );
         }
         if (ts.isPrefixUnaryExpression(node)) {
             const operand = this.expression(node.operand, frame);
@@ -544,10 +571,16 @@ export class PartialEvaluator<V, B> {
             }
             if (node.operator === ts.SyntaxKind.MinusToken) {
                 const classified = this.model.classify(operand);
-                if (classified.k === "value" && typeof classified.raw === "number") {
+                if (
+                    classified.k === "value" &&
+                    typeof classified.raw === "number"
+                ) {
                     return this.model.raw(-classified.raw);
                 }
-                return this.model.negate?.(operand, node) ?? this.fail(node, "prefix operator");
+                return (
+                    this.model.negate?.(operand, node) ??
+                    this.fail(node, "prefix operator")
+                );
             }
             return this.fail(node, "prefix operator");
         }
@@ -557,9 +590,13 @@ export class PartialEvaluator<V, B> {
                 node.condition,
             );
             if (condition.k === "static") {
-                return this.expression(condition.value ? node.whenTrue : node.whenFalse, frame);
+                return this.expression(
+                    condition.value ? node.whenTrue : node.whenFalse,
+                    frame,
+                );
             }
-            if (!this.model.residual) this.fail(node, "conditional over a run-time value");
+            if (!this.model.residual)
+                this.fail(node, "conditional over a run-time value");
             return this.model.residual.select(
                 condition.cpp,
                 this.expression(node.whenTrue, frame),
@@ -582,7 +619,10 @@ export class PartialEvaluator<V, B> {
                     });
                     continue;
                 }
-                if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
+                if (
+                    !ts.isPropertyAssignment(property) ||
+                    !ts.isIdentifier(property.name)
+                ) {
                     this.fail(property, "object literal member");
                 }
                 entries.push({
@@ -594,17 +634,25 @@ export class PartialEvaluator<V, B> {
             return this.model.record(entries, node);
         }
         if (ts.isArrayLiteralExpression(node)) {
-            const elements = node.elements.map((element) => this.expression(element, frame));
-            const known = elements.map((element) => this.model.classify(element));
+            const elements = node.elements.map((element) =>
+                this.expression(element, frame),
+            );
+            const known = elements.map((element) =>
+                this.model.classify(element),
+            );
             if (known.every((element) => element.k === "value")) {
                 return this.model.raw(
                     known.map((element) => (element as { raw: unknown }).raw),
                 );
             }
-            return this.model.array?.(elements, node) ?? this.fail(node, "array literal over a run-time value");
+            return (
+                this.model.array?.(elements, node) ??
+                this.fail(node, "array literal over a run-time value")
+            );
         }
         if (ts.isCallExpression(node)) return this.call(node, frame);
-        if (ts.isNewExpression(node)) return this.fail(node, "constructor call");
+        if (ts.isNewExpression(node))
+            return this.fail(node, "constructor call");
         return this.fail(node, "expression");
     }
 
@@ -623,12 +671,15 @@ export class PartialEvaluator<V, B> {
                 return this.expression(node.right, frame);
             }
             const right = this.expression(node.right, frame);
-            if (!this.model.residual) this.fail(node, "boolean join over a run-time value");
+            if (!this.model.residual)
+                this.fail(node, "boolean join over a run-time value");
             return this.model.residual.join(or, known.cpp, left, right, node);
         }
         if (kind === ts.SyntaxKind.QuestionQuestionToken) {
             const left = this.expression(node.left, frame);
-            return this.isNullish(left) ? this.expression(node.right, frame) : left;
+            return this.isNullish(left)
+                ? this.expression(node.right, frame)
+                : left;
         }
         if (kind === ts.SyntaxKind.InKeyword) {
             const key = this.model.classify(this.expression(node.left, frame));
@@ -639,7 +690,9 @@ export class PartialEvaluator<V, B> {
             const held = this.model.classify(owner);
             if (held.k === "value") {
                 return this.model.raw(
-                    typeof held.raw === "object" && held.raw !== null && key.raw in held.raw,
+                    typeof held.raw === "object" &&
+                        held.raw !== null &&
+                        key.raw in held.raw,
                 );
             }
             const answer = this.model.hasMember?.(owner, key.raw, node);
@@ -691,17 +744,28 @@ export class PartialEvaluator<V, B> {
                 this.fail(node, "operator over non-numbers");
             }
             switch (kind) {
-                case ts.SyntaxKind.PlusToken: return this.model.raw(a + b);
-                case ts.SyntaxKind.MinusToken: return this.model.raw(a - b);
-                case ts.SyntaxKind.AsteriskToken: return this.model.raw(a * b);
-                case ts.SyntaxKind.SlashToken: return this.model.raw(a / b);
-                case ts.SyntaxKind.PercentToken: return this.model.raw(a % b);
-                case ts.SyntaxKind.LessThanToken: return this.model.raw(a < b);
-                case ts.SyntaxKind.LessThanEqualsToken: return this.model.raw(a <= b);
-                case ts.SyntaxKind.GreaterThanToken: return this.model.raw(a > b);
-                case ts.SyntaxKind.GreaterThanEqualsToken: return this.model.raw(a >= b);
-                case ts.SyntaxKind.BarToken: return this.model.raw(a | b);
-                default: return this.fail(node, "operator");
+                case ts.SyntaxKind.PlusToken:
+                    return this.model.raw(a + b);
+                case ts.SyntaxKind.MinusToken:
+                    return this.model.raw(a - b);
+                case ts.SyntaxKind.AsteriskToken:
+                    return this.model.raw(a * b);
+                case ts.SyntaxKind.SlashToken:
+                    return this.model.raw(a / b);
+                case ts.SyntaxKind.PercentToken:
+                    return this.model.raw(a % b);
+                case ts.SyntaxKind.LessThanToken:
+                    return this.model.raw(a < b);
+                case ts.SyntaxKind.LessThanEqualsToken:
+                    return this.model.raw(a <= b);
+                case ts.SyntaxKind.GreaterThanToken:
+                    return this.model.raw(a > b);
+                case ts.SyntaxKind.GreaterThanEqualsToken:
+                    return this.model.raw(a >= b);
+                case ts.SyntaxKind.BarToken:
+                    return this.model.raw(a | b);
+                default:
+                    return this.fail(node, "operator");
             }
         }
         return (
@@ -733,7 +797,12 @@ export class PartialEvaluator<V, B> {
             const bound = frame.env.lookup(callee.text);
             const target = bound
                 ? this.model.valueOf(bound)
-                : this.resolveFree(callee.text, frame.file, frame.module, callee);
+                : this.resolveFree(
+                      callee.text,
+                      frame.file,
+                      frame.module,
+                      callee,
+                  );
             return this.invoke(target, args(), node, frame, callee.text);
         }
         if (ts.isPropertyAccessExpression(callee)) {
@@ -745,7 +814,13 @@ export class PartialEvaluator<V, B> {
                 return this.model.raw(undefined);
             }
             const method = callee.name.text;
-            const answered = this.model.methodCall?.(owner, method, args, node, frame);
+            const answered = this.model.methodCall?.(
+                owner,
+                method,
+                args,
+                node,
+                frame,
+            );
             if (answered !== undefined) return answered;
             return this.invoke(
                 this.model.member(owner, method, callee),
@@ -797,7 +872,8 @@ export class PartialEvaluator<V, B> {
                 ? completion.value
                 : this.model.raw(undefined);
         }
-        if (callable?.k === "function") return this.callFunction(callable, args, site);
+        if (callable?.k === "function")
+            return this.callFunction(callable, args, site);
         return (
             this.model.invoke?.(target, args, site, name) ??
             this.fail(site, `call of ${name}`)
@@ -824,9 +900,15 @@ export class PartialEvaluator<V, B> {
                 (_name, value) => this.model.parameter(value),
             );
         });
-        const completion = this.statements(fn.declaration.body!.statements, inner);
+        const completion = this.statements(
+            fn.declaration.body!.statements,
+            inner,
+        );
         if (completion.kind === "break") {
-            this.context.contractError(site, "A function broke out of nothing.");
+            this.context.contractError(
+                site,
+                "A function broke out of nothing.",
+            );
         }
         return completion.kind === "return"
             ? completion.value
@@ -838,7 +920,10 @@ export class PartialEvaluator<V, B> {
         const key = `${module}#${name}`;
         let fn = this.pinnedFunctions.get(key);
         if (!fn) {
-            const { file, declaration } = this.context.functionDeclaration(module, name);
+            const { file, declaration } = this.context.functionDeclaration(
+                module,
+                name,
+            );
             fn = { k: "function", declaration, file, module };
             this.pinnedFunctions.set(key, fn);
         }
@@ -875,14 +960,23 @@ export class PartialEvaluator<V, B> {
                 statement.body !== undefined,
         );
         if (declaration) {
-            const value = this.model.functionValue({ declaration, file, module });
+            const value = this.model.functionValue({
+                declaration,
+                file,
+                module,
+            });
             env.declare(name, this.model.declared(name, value, false));
             return value;
         }
         const imported = this.context.moduleOfImport(module, name);
         if (imported) {
-            const value = this.findFree(name, this.context.sourceFile(imported), imported);
-            if (value !== undefined) env.declare(name, this.model.declared(name, value, false));
+            const value = this.findFree(
+                name,
+                this.context.sourceFile(imported),
+                imported,
+            );
+            if (value !== undefined)
+                env.declare(name, this.model.declared(name, value, false));
             return value;
         }
         return undefined;
@@ -896,7 +990,10 @@ export class PartialEvaluator<V, B> {
     ): V {
         return (
             this.findFree(name, file, module) ??
-            this.context.contractError(site, `The pinned body reads '${name}', which resolves to nothing.`)
+            this.context.contractError(
+                site,
+                `The pinned body reads '${name}', which resolves to nothing.`,
+            )
         );
     }
 }

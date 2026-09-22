@@ -60,7 +60,9 @@ export interface ScreenSpaceKindFacts {
     stableTexture: string;
 }
 
-export const SCREEN_SPACE_KINDS: Readonly<Record<string, ScreenSpaceKindFacts>> = {
+export const SCREEN_SPACE_KINDS: Readonly<
+    Record<string, ScreenSpaceKindFacts>
+> = {
     createScreenSpaceContactShadowsPostProcessTask: {
         kind: "scalar",
         module: "src/post-process/screen-space-contact-shadows.ts",
@@ -184,11 +186,7 @@ export interface ScreenSpaceCompositionRequest {
 
 /** Which texture a stage's binding reads, by what the pin bound there. */
 export type ScreenSpaceTextureRole =
-    | "depth"
-    | "source-color"
-    | "raw"
-    | "history"
-    | "stable";
+    "depth" | "source-color" | "raw" | "history" | "stable";
 
 export interface ScreenSpaceStageBinding {
     /** The WGSL `@binding` index, which is the pin's own group-0 slot. */
@@ -278,7 +276,10 @@ interface ScreenSpaceShapes {
     };
     renderPipeline: {
         layout: ScreenSpaceShapes["pipelineLayout"];
-        vertex: { module: ScreenSpaceShapes["shaderModule"]; entryPoint: string };
+        vertex: {
+            module: ScreenSpaceShapes["shaderModule"];
+            entryPoint: string;
+        };
         fragment: {
             entryPoint: string;
             targets: readonly { format: string; blend?: unknown }[];
@@ -300,29 +301,30 @@ function recordingEngine(canvas: { width: number; height: number }): {
     engine: unknown;
     recorder: ScreenSpaceRecorder;
 } {
-    const { device, encoder, recorder } = createRecordingDevice<ScreenSpaceShapes>({
-        producer: "screen-space",
-        device: [
-            "createShaderModule",
-            "createTexture",
-            "createBuffer",
-            "createSampler",
-            "createBindGroupLayout",
-            "createPipelineLayout",
-            "createRenderPipeline",
-            "createBindGroup",
-        ],
-        queue: ["writeBuffer"],
-        encoder: ["beginRenderPass"],
-        renderPass: [
-            "setPipeline",
-            "setBindGroup",
-            "draw",
-            "setViewport",
-            "setScissorRect",
-            "end",
-        ],
-    });
+    const { device, encoder, recorder } =
+        createRecordingDevice<ScreenSpaceShapes>({
+            producer: "screen-space",
+            device: [
+                "createShaderModule",
+                "createTexture",
+                "createBuffer",
+                "createSampler",
+                "createBindGroupLayout",
+                "createPipelineLayout",
+                "createRenderPipeline",
+                "createBindGroup",
+            ],
+            queue: ["writeBuffer"],
+            encoder: ["beginRenderPass"],
+            renderPass: [
+                "setPipeline",
+                "setBindGroup",
+                "draw",
+                "setViewport",
+                "setScissorRect",
+                "end",
+            ],
+        });
     return {
         recorder,
         engine: {
@@ -338,7 +340,9 @@ function recordingEngine(canvas: { width: number; height: number }): {
     };
 }
 
-function layoutKind(entry: RecordedLayoutEntry): ScreenSpaceStageBinding["kind"] {
+function layoutKind(
+    entry: RecordedLayoutEntry,
+): ScreenSpaceStageBinding["kind"] {
     if (entry.texture) {
         return entry.texture.sampleType === "depth"
             ? "depth-texture"
@@ -390,7 +394,10 @@ function passAttachment(pass: RecordedPass): RecordedTextureView {
 function passBinding(
     pass: RecordedPass,
     suffix: string,
-): { pipeline: ScreenSpaceShapes["renderPipeline"]; group: ScreenSpaceShapes["bindGroup"] } {
+): {
+    pipeline: ScreenSpaceShapes["renderPipeline"];
+    group: ScreenSpaceShapes["bindGroup"];
+} {
     const pipeline = pass.pipeline;
     const bound = pass.bindGroups.at(-1);
     if (!pipeline || !bound || pass.draws.length !== 1) {
@@ -581,7 +588,11 @@ function postProcessPassFrom(
     }
     const extraTextures: ScreenSpaceTextureRole[] = [];
     for (const entry of group.entries) {
-        if (entry.binding < 2 || !(entry.resource instanceof RecordedTextureView)) continue;
+        if (
+            entry.binding < 2 ||
+            !(entry.resource instanceof RecordedTextureView)
+        )
+            continue;
         extraTextures[entry.binding - 2] = textureRole(entry.resource, name);
     }
     return {
@@ -639,7 +650,10 @@ export async function composeScreenSpaceTask(
     const facts = screenSpaceFacts(request.intrinsic);
     const { kind, module } = facts;
     const factoryModule = await importPinnedModule<
-        Record<string, (config: unknown, engine: unknown, scene: unknown) => unknown>
+        Record<
+            string,
+            (config: unknown, engine: unknown, scene: unknown) => unknown
+        >
     >(pinnedEffectModule({ module }));
     const factory = factoryModule[request.intrinsic];
     if (typeof factory !== "function") {
@@ -655,10 +669,7 @@ export async function composeScreenSpaceTask(
     );
     const canvas = { width: 1280, height: 720 };
     const { engine, recorder } = recordingEngine(canvas);
-    const built = (
-        label: string,
-        depth: boolean,
-    ): unknown => {
+    const built = (label: string, depth: boolean): unknown => {
         const target = renderTargets.createRenderTarget({
             lbl: label,
             format: "bgra8unorm",
@@ -678,7 +689,11 @@ export async function composeScreenSpaceTask(
             ? { depthTexture: built(DEPTH_LABEL, true) }
             : {}),
         targetTexture: request.hasTarget ? built(TARGET_LABEL, false) : null,
-        camera: cameras.createArcRotateCamera(0.4, 1.1, 8, { x: 0, y: 1, z: 0 }),
+        camera: cameras.createArcRotateCamera(0.4, 1.1, 8, {
+            x: 0,
+            y: 1,
+            z: 0,
+        }),
         ...(kind === "scalar"
             ? { lightDirection: { x: 0.3, y: -1, z: 0.18 } }
             : {}),
@@ -703,7 +718,7 @@ export async function composeScreenSpaceTask(
             value.every((lane) => typeof lane === "number") &&
             SCREEN_SPACE_VECTOR_SETTINGS.includes(key)
         ) {
-            settings[key] = [...(value as number[])];
+            settings[key] = [...value];
         } else {
             throw new Error(
                 `Pinned ${request.intrinsic} publishes '${key}', which the ` +
@@ -713,7 +728,9 @@ export async function composeScreenSpaceTask(
     }
     const clamp = (factoryModule as Record<string, unknown>)[facts.clamp];
     if (typeof clamp !== "function") {
-        throw new Error(`Pinned module ${module} no longer exports ${facts.clamp}.`);
+        throw new Error(
+            `Pinned module ${module} no longer exports ${facts.clamp}.`,
+        );
     }
     const clamped = (clamp as (config: unknown) => Record<string, unknown>)(
         config,
@@ -777,7 +794,10 @@ export async function composeScreenSpaceTask(
     const composite = compositePass
         ? postProcessPassFrom(compositePass, name, recorder, "composite")
         : null;
-    if (historyCopy.uniformByteLength !== 0 || historyCopy.extraTextures.length !== 0) {
+    if (
+        historyCopy.uniformByteLength !== 0 ||
+        historyCopy.extraTextures.length !== 0
+    ) {
         throw new Error(
             `Pinned ${request.intrinsic} builds a history copy with uniforms ` +
                 "or extra textures, which this port does not carry.",
@@ -791,7 +811,10 @@ export async function composeScreenSpaceTask(
     }
     const stable = passAttachment(resolvePass).texture;
     const history = passAttachment(historyPass).texture;
-    if (stable.label !== `${name}-stable` || history.label !== `${name}-history`) {
+    if (
+        stable.label !== `${name}-stable` ||
+        history.label !== `${name}-history`
+    ) {
         throw new Error(
             `Pinned ${request.intrinsic} resolves into '${stable.label}' and ` +
                 `copies into '${history.label}'.`,

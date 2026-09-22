@@ -5,7 +5,13 @@ import type { TypedArrayKind } from "./model.js";
 import { typedArrayCppType, typedArrayStem } from "./typed-arrays.js";
 
 function leaf(cpp: string, key: string, byReference = false) {
-    return { cpp: () => cpp, key: () => key, equal: () => true, children: () => [], byReference };
+    return {
+        cpp: () => cpp,
+        key: () => key,
+        equal: () => true,
+        children: () => [],
+        byReference,
+    };
 }
 
 function typedArray(kind: TypedArrayKind) {
@@ -13,15 +19,42 @@ function typedArray(kind: TypedArrayKind) {
 }
 
 export const scalarKinds: DataKindOperations<
-    "search-params" | "http-response" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "arraybuffer" | "dataview" | "bufferview" | "numberindex" | "json" |
-    "event-target" | "borrowed-platform-event" | "handle" | TypedArrayKind
+    | "search-params"
+    | "http-response"
+    | "storage"
+    | "date"
+    | "date-time-format"
+    | "number"
+    | "boolean"
+    | "string"
+    | "arraybuffer"
+    | "dataview"
+    | "bufferview"
+    | "numberindex"
+    | "json"
+    | "event-target"
+    | "borrowed-platform-event"
+    | "handle"
+    | TypedArrayKind
 > = {
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
-    "http-response": {...leaf("bbl::pal::HttpResponse", "http-response", true), opaqueReference:true},
-    "search-params": {...leaf("bbl::js::SearchParams", "search-params", true), opaqueReference:true},
-    storage: {...leaf("bbl::js::Storage", "storage", true), opaqueReference:true},
+    "http-response": {
+        ...leaf("bbl::pal::HttpResponse", "http-response", true),
+        opaqueReference: true,
+    },
+    "search-params": {
+        ...leaf("bbl::js::SearchParams", "search-params", true),
+        opaqueReference: true,
+    },
+    storage: {
+        ...leaf("bbl::js::Storage", "storage", true),
+        opaqueReference: true,
+    },
     date: { ...leaf("bbl::js::Date", "date", true), opaqueReference: true },
-    "date-time-format": { ...leaf("bbl::js::DateTimeFormat", "dateformat", true), opaqueReference: true },
+    "date-time-format": {
+        ...leaf("bbl::js::DateTimeFormat", "dateformat", true),
+        opaqueReference: true,
+    },
     number: leaf(CPP_SCALAR.number, "n"),
     boolean: leaf(CPP_SCALAR.boolean, "b"),
     string: leaf(CPP_SCALAR.string, "str"),
@@ -31,18 +64,23 @@ export const scalarKinds: DataKindOperations<
     numberindex: leaf("bbl::js::NumericArrayView", "ni", false),
     json: leaf("bbl::js::JsonValue", "json"),
     "borrowed-platform-event": {
-        cpp: type => type.event === "event" ? "bbl::js::BorrowedEvent" :
-            type.event === "error" || type.event === "rejection" ? "bbl::js::Borrowed<bbl::pal::ApplicationErrorEvent>" :
-            `bbl::js::Borrowed<const bbl::Platform${type.event === "mouse" ? "Mouse" : "Keyboard"}Event>`,
-        key: type => `borrowed(${type.event})`,
+        cpp: (type) =>
+            type.event === "event"
+                ? "bbl::js::BorrowedEvent"
+                : type.event === "error" || type.event === "rejection"
+                  ? "bbl::js::Borrowed<bbl::pal::ApplicationErrorEvent>"
+                  : `bbl::js::Borrowed<const bbl::Platform${type.event === "mouse" ? "Mouse" : "Keyboard"}Event>`,
+        key: (type) => `borrowed(${type.event})`,
         equal: (left, right) => left.event === right.event,
-        children: () => [], byReference: false,
+        children: () => [],
+        byReference: false,
     },
     handle: {
-        cpp: type => handleCppType(type.handle),
-        key: type => `h(${type.handle})`,
+        cpp: (type) => handleCppType(type.handle),
+        key: (type) => `h(${type.handle})`,
         equal: (left, right) => left.handle === right.handle,
-        children: () => [], byReference: false,
+        children: () => [],
+        byReference: false,
     },
     u8array: typedArray("u8array"),
     i8array: typedArray("i8array"),

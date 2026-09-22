@@ -21,7 +21,7 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
-import {nativeFunctionValue} from "./native-function-values.js";
+import { nativeFunctionValue } from "./native-function-values.js";
 import {
     pinnedHypotCall,
     pinnedMathSpelling,
@@ -80,18 +80,24 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["log2", { arity: 1, cpp: compilerOnly("log2") }],
     ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
     ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
-    ["fround", {
-        arity: 1,
-        cpp: (args) => `bbl::js::math_fround(${args.join(", ")})`,
-        fold: Math.fround,
-        reach: "js-data",
-    }],
-    ["clz32", {
-        arity: 1,
-        cpp: (args) => `bbl::js::math_clz32(${args.join(", ")})`,
-        fold: Math.clz32,
-        reach: "js-data",
-    }],
+    [
+        "fround",
+        {
+            arity: 1,
+            cpp: (args) => `bbl::js::math_fround(${args.join(", ")})`,
+            fold: Math.fround,
+            reach: "js-data",
+        },
+    ],
+    [
+        "clz32",
+        {
+            arity: 1,
+            cpp: (args) => `bbl::js::math_clz32(${args.join(", ")})`,
+            fold: Math.clz32,
+            reach: "js-data",
+        },
+    ],
     ["exp", { arity: 1, cpp: compilerOnly("exp") }],
     ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
     ["pow", { arity: 2, cpp: shared("pow") }],
@@ -126,8 +132,16 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     // `pinnedNumericMathCallsWithHypot`, and the one spelling `fidelity.md`
     // records as `splat-hypot-approximation` -- so scene code and pinned
     // code agree on it rather than this one call site being the exception.
-    ["hypot", { arity: 0, variadic: true, cpp: pinnedHypotCall,
-        rangeCpp: range => `bbl::js::hypot_js(${range})`, reach: "js-data" }],
+    [
+        "hypot",
+        {
+            arity: 0,
+            variadic: true,
+            cpp: pinnedHypotCall,
+            rangeCpp: (range) => `bbl::js::hypot_js(${range})`,
+            reach: "js-data",
+        },
+    ],
     [
         "random",
         {
@@ -175,15 +189,13 @@ export interface MathConstant {
 }
 
 /** The `Math` constants a numeric reader folds, and how a float sink spells them. */
-export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> = new EmissionMap<
-    string,
-    MathConstant
->([
-    ["PI", { value: Math.PI, floatCpp: "bbl::pi" }],
-    ["E", { value: Math.E }],
-    ["SQRT2", { value: Math.SQRT2, floatCpp: "std::sqrt(2.0f)" }],
-    ["SQRT1_2", { value: Math.SQRT1_2, floatCpp: "std::sqrt(0.5f)" }],
-]);
+export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> =
+    new EmissionMap<string, MathConstant>([
+        ["PI", { value: Math.PI, floatCpp: "bbl::pi" }],
+        ["E", { value: Math.E }],
+        ["SQRT2", { value: Math.SQRT2, floatCpp: "std::sqrt(2.0f)" }],
+        ["SQRT1_2", { value: Math.SQRT1_2, floatCpp: "std::sqrt(0.5f)" }],
+    ]);
 
 /**
  * The transcendental members a reader evaluates only when JavaScript
@@ -232,22 +244,42 @@ export function mathMemberCall(
 
 /** Math callbacks use the native numeric helpers and owned rest-array convention. */
 export function mathFunctionValue(
-    context: Pick<LoweringServices, "checker" | "isDefaultLibraryIdentifier" | "dataLowerer" | "dataTypes" | "callbackIdentity" | "reachJsData" | "reachJsRandom" | "fail">,
+    context: Pick<
+        LoweringServices,
+        | "checker"
+        | "isDefaultLibraryIdentifier"
+        | "dataLowerer"
+        | "dataTypes"
+        | "callbackIdentity"
+        | "reachJsData"
+        | "reachJsRandom"
+        | "fail"
+    >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, identifier => context.isDefaultLibraryIdentifier(identifier));
+    const access = mathMemberAccess(expression, (identifier) =>
+        context.isDefaultLibraryIdentifier(identifier),
+    );
     if (!access) return undefined;
     const member = MATH_MEMBERS.get(access.name.text);
     const extreme = access.name.text === "max" || access.name.text === "min";
     if (!member && !extreme) return undefined;
     const variadic = extreme || member?.variadic;
-    const type: DataType<"function"> = {kind:"function",
-        parameters:variadic ? [{kind:"vector", element:{kind:"number"}}] : Array.from({length:member!.arity}, () => ({kind:"number"})),
-        ...(variadic ? {restParameter:0} : {}),
-        result:{kind:"number"}, identity:true};
+    const type: DataType<"function"> = {
+        kind: "function",
+        parameters: variadic
+            ? [{ kind: "vector", element: { kind: "number" } }]
+            : Array.from({ length: member!.arity }, () => ({ kind: "number" })),
+        ...(variadic ? { restParameter: 0 } : {}),
+        result: { kind: "number" },
+        identity: true,
+    };
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
     if (member?.reach === "js-random") context.reachJsRandom();
-    const body = extreme ? mathExtremeCpp(access.name.text, "argument_0")
-        : variadic ? member!.rangeCpp!("argument_0") : member!.cpp(parameters);
+    const body = extreme
+        ? mathExtremeCpp(access.name.text, "argument_0")
+        : variadic
+          ? member!.rangeCpp!("argument_0")
+          : member!.cpp(parameters);
     return nativeFunctionValue(context, access, type, `return ${body};`);
 }

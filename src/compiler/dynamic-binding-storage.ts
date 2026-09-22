@@ -7,10 +7,18 @@ export class DynamicBindingStorageRequired extends Error {
     }
 }
 
-export function requireDynamicBindingStorage(checker: ts.TypeChecker, target: ts.Identifier): void {
+export function requireDynamicBindingStorage(
+    checker: ts.TypeChecker,
+    target: ts.Identifier,
+): void {
     let symbol = checker.getSymbolAtLocation(target);
-    if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+    if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = checker.getAliasedSymbol(symbol);
     const declaration = symbol?.valueDeclaration;
-    if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer)
+    if (
+        declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer
+    )
         throw new DynamicBindingStorageRequired(declaration);
 }

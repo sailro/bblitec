@@ -1,7 +1,10 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 
@@ -9,7 +12,9 @@ const modulePath = "src/physics/havok.ts";
 
 const contracts = new Map([
     ["constructor", "this._collectIndices = collectIndices;"],
-    ["addNodeMeshes", `
+    [
+        "addNodeMeshes",
+        `
         const invRoot = invertMat4(root.worldMatrix as Mat4);
         if (!invRoot) { throw new Error("Cannot create physics mesh shape from a singular root transform."); }
         const rootScale = createScalingMat4(root.scaling.x, root.scaling.y, root.scaling.z);
@@ -18,15 +23,27 @@ const contracts = new Map([
         if (includeChildren) { for (const child of root.children) { this._addDescendantMeshes(child, rootToBody); } }
         if (this._vertices.length === 0) { throw new Error("Cannot create physics mesh shape without vertex positions."); }
         if (this._collectIndices && this._indices.length === 0) { throw new Error("Cannot create physics mesh shape without triangle indices."); }
-    `],
-    ["getVertices", `const numObjects = this._vertices.length; const offset = hknp._malloc(numObjects * 4);
-        new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices); return { offset, numObjects };`],
-    ["getTriangles", `const numObjects = this._indices.length; const offset = hknp._malloc(numObjects * 4);
-        new Int32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices); return { offset, numObjects };`],
+    `,
+    ],
+    [
+        "getVertices",
+        `const numObjects = this._vertices.length; const offset = hknp._malloc(numObjects * 4);
+        new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices); return { offset, numObjects };`,
+    ],
+    [
+        "getTriangles",
+        `const numObjects = this._indices.length; const offset = hknp._malloc(numObjects * 4);
+        new Int32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices); return { offset, numObjects };`,
+    ],
     ["freeBuffer", "hknp._free(buffer.offset);"],
-    ["_addDescendantMeshes", `this._addNodeMesh(node, rootToBody);
-        for (const child of node.children) { this._addDescendantMeshes(child, rootToBody); }`],
-    ["_addNodeMesh", `
+    [
+        "_addDescendantMeshes",
+        `this._addNodeMesh(node, rootToBody);
+        for (const child of node.children) { this._addDescendantMeshes(child, rootToBody); }`,
+    ],
+    [
+        "_addNodeMesh",
+        `
         if (!isMesh(node)) { return; }
         const positions = node._cpuPositions;
         if (!positions || positions.length === 0) { return; }
@@ -44,63 +61,170 @@ const contracts = new Map([
             const c = indices[i + 2]! + indexOffset;
             this._indices.push(c, b, a);
         }
-    `],
+    `,
+    ],
 ]);
 
 /** Scene-node and PAL storage projection of the pinned MeshAccumulator. */
-export function lowerPhysicsMesh(context: LoweringContext): { helpers: string; source: string } {
+export function lowerPhysicsMesh(context: LoweringContext): {
+    helpers: string;
+    source: string;
+} {
     const file = context.sourceFile(modulePath);
-    const owner = file.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "MeshAccumulator");
-    if (!owner) context.contractError(file, "Physics MeshAccumulator class changed.");
-    const fields = new Map([["_vertices", "[]"], ["_indices", "[]"], ["_collectIndices", undefined]]);
-    if (owner.members.length !== fields.size + contracts.size) context.contractError(owner, "Physics MeshAccumulator member inventory changed.");
+    const owner = file.statements.find(
+        (node): node is ts.ClassDeclaration =>
+            ts.isClassDeclaration(node) &&
+            node.name?.text === "MeshAccumulator",
+    );
+    if (!owner)
+        context.contractError(file, "Physics MeshAccumulator class changed.");
+    const fields = new Map([
+        ["_vertices", "[]"],
+        ["_indices", "[]"],
+        ["_collectIndices", undefined],
+    ]);
+    if (owner.members.length !== fields.size + contracts.size)
+        context.contractError(
+            owner,
+            "Physics MeshAccumulator member inventory changed.",
+        );
     const seen = new Set<string>();
     const parameters = new Map([
-        ["constructor", "collectIndices"], ["addNodeMeshes", "root,includeChildren"],
-        ["getVertices", "hknp"], ["getTriangles", "hknp"], ["freeBuffer", "hknp,buffer"],
-        ["_addDescendantMeshes", "node,rootToBody"], ["_addNodeMesh", "node,rootToBody"],
+        ["constructor", "collectIndices"],
+        ["addNodeMeshes", "root,includeChildren"],
+        ["getVertices", "hknp"],
+        ["getTriangles", "hknp"],
+        ["freeBuffer", "hknp,buffer"],
+        ["_addDescendantMeshes", "node,rootToBody"],
+        ["_addNodeMesh", "node,rootToBody"],
     ]);
     for (const member of owner.members) {
-        const name = ts.isConstructorDeclaration(member) ? "constructor" : member.name?.getText(file);
-        if (!name || seen.has(name)) context.contractError(member, "Physics accumulator member identity changed.");
+        const name = ts.isConstructorDeclaration(member)
+            ? "constructor"
+            : member.name?.getText(file);
+        if (!name || seen.has(name))
+            context.contractError(
+                member,
+                "Physics accumulator member identity changed.",
+            );
         seen.add(name);
-        if (ts.isPropertyDeclaration(member) && fields.has(name!)) {
-            const expected = fields.get(name!);
-            if (expected && member.initializer) context.assertExpressionShape(member.initializer, expected, `Physics accumulator ${name} initialization`);
-            else if (expected || member.initializer) context.contractError(member, `Physics accumulator ${name} initialization changed.`);
-        } else if ((ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member)) && member.body && contracts.has(name!)) {
-            if (member.parameters.map(p => p.name.getText(file)).join(",") !== parameters.get(name) || member.parameters.some(p => p.initializer || p.questionToken || p.dotDotDotToken)) {
-                context.contractError(member, `Physics accumulator ${name} parameters changed.`);
+        if (ts.isPropertyDeclaration(member) && fields.has(name)) {
+            const expected = fields.get(name);
+            if (expected && member.initializer)
+                context.assertExpressionShape(
+                    member.initializer,
+                    expected,
+                    `Physics accumulator ${name} initialization`,
+                );
+            else if (expected || member.initializer)
+                context.contractError(
+                    member,
+                    `Physics accumulator ${name} initialization changed.`,
+                );
+        } else if (
+            (ts.isMethodDeclaration(member) ||
+                ts.isConstructorDeclaration(member)) &&
+            member.body &&
+            contracts.has(name)
+        ) {
+            if (
+                member.parameters.map((p) => p.name.getText(file)).join(",") !==
+                    parameters.get(name) ||
+                member.parameters.some(
+                    (p) => p.initializer || p.questionToken || p.dotDotDotToken,
+                )
+            ) {
+                context.contractError(
+                    member,
+                    `Physics accumulator ${name} parameters changed.`,
+                );
             }
-            context.assertStatementShapes(member, member.body.statements, contracts.get(name!)!, `Physics accumulator ${name} traversal and PAL transport`);
-        } else context.contractError(member, "Physics MeshAccumulator gained an unrepresented member.");
+            context.assertStatementShapes(
+                member,
+                member.body.statements,
+                contracts.get(name)!,
+                `Physics accumulator ${name} traversal and PAL transport`,
+            );
+        } else
+            context.contractError(
+                member,
+                "Physics MeshAccumulator gained an unrepresented member.",
+            );
     }
-    const meshTest = context.functionDeclaration(modulePath, "isMesh").declaration;
-    context.assertStatementShapes(meshTest, meshTest.body!.statements, 'return "_gpu" in node && "_cpuPositions" in node;', "Physics mesh node representation");
-    const transform = context.functionDeclaration(modulePath, "transformPositionInto").declaration;
-    context.assertStatementShapes(transform, transform.body!.statements, `dst.push(
+    const meshTest = context.functionDeclaration(
+        modulePath,
+        "isMesh",
+    ).declaration;
+    context.assertStatementShapes(
+        meshTest,
+        meshTest.body!.statements,
+        'return "_gpu" in node && "_cpuPositions" in node;',
+        "Physics mesh node representation",
+    );
+    const transform = context.functionDeclaration(
+        modulePath,
+        "transformPositionInto",
+    ).declaration;
+    context.assertStatementShapes(
+        transform,
+        transform.body!.statements,
+        `dst.push(
         m[0]! * x + m[4]! * y + m[8]! * z + m[12]!,
         m[1]! * x + m[5]! * y + m[9]! * z + m[13]!,
-        m[2]! * x + m[6]! * y + m[10]! * z + m[14]!);`, "Physics position projection");
+        m[2]! * x + m[6]! * y + m[10]! * z + m[14]!);`,
+        "Physics position projection",
+    );
     const bindings = new Map<string, PinnedBinding>([
         ["m", { cpp: "mesh_to_body", type: "f32" }],
-        ...["x", "y", "z"].map(name => [name, { cpp: name, type: "scalar" as const }] as const),
+        ...["x", "y", "z"].map(
+            (name) => [name, { cpp: name, type: "scalar" as const }] as const,
+        ),
     ]);
-    const numeric = new PinnedNumericLowerer(file, { bindings, calls: new Map() });
-    const statement = transform.body!.statements[0]! as ts.ExpressionStatement;
-    const lanes = (statement.expression as ts.CallExpression).arguments.map(node => `static_cast<float>(${numeric.expression(node)})`);
-    const scale = context.functionDeclaration("src/math/create-scaling-mat4.ts", "createScalingMat4");
-    context.assertExpressionShape(context.variableInitializer(scale.declaration, "out"), "allocateMat4() as unknown as Mat4Storage", "Physics root scale allocation");
-
-    const scaleBody = lowerPinnedBody(scale.file, scale.declaration.body!.statements, {
-        bindings: new Map([...bindings].filter(([key]) => key !== "m").concat([["out", { cpp: "out", type: "f32", mutable: true }]])),
+    const numeric = new PinnedNumericLowerer(file, {
+        bindings,
         calls: new Map(),
-        returnValue: (expression) => {
-            if (!expression) context.contractError(scale.declaration, "Physics scale return changed.");
-            context.assertExpressionShape(expression, "out as unknown as Mat4", "Physics scale result");
-            return "out";
-        },
     });
+    const statement = transform.body!.statements[0]! as ts.ExpressionStatement;
+    const lanes = (statement.expression as ts.CallExpression).arguments.map(
+        (node) => `static_cast<float>(${numeric.expression(node)})`,
+    );
+    const scale = context.functionDeclaration(
+        "src/math/create-scaling-mat4.ts",
+        "createScalingMat4",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(scale.declaration, "out"),
+        "allocateMat4() as unknown as Mat4Storage",
+        "Physics root scale allocation",
+    );
+
+    const scaleBody = lowerPinnedBody(
+        scale.file,
+        scale.declaration.body!.statements,
+        {
+            bindings: new Map(
+                [...bindings]
+                    .filter(([key]) => key !== "m")
+                    .concat([
+                        ["out", { cpp: "out", type: "f32", mutable: true }],
+                    ]),
+            ),
+            calls: new Map(),
+            returnValue: (expression) => {
+                if (!expression)
+                    context.contractError(
+                        scale.declaration,
+                        "Physics scale return changed.",
+                    );
+                context.assertExpressionShape(
+                    expression,
+                    "out as unknown as Mat4",
+                    "Physics scale result",
+                );
+                return "out";
+            },
+        },
+    );
     return {
         helpers: `
 ${lowerMat4InvertCpp(context)}

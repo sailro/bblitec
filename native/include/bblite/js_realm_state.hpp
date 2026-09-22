@@ -20,9 +20,10 @@ struct RealmState {
 inline thread_local RealmState realm_state;
 
 class RealmScope {
-  public:
+public:
     RealmScope() {
-        if (realm_state.active) throw std::logic_error("Two JavaScript realms cannot share one active thread.");
+        if (realm_state.active)
+            throw std::logic_error("Two JavaScript realms cannot share one active thread.");
         realm_state.active = true;
         realm_state.random = 1;
         realm_state.callback_identity = std::numeric_limits<std::size_t>::max() / 2;
@@ -30,17 +31,20 @@ class RealmScope {
     RealmScope(const RealmScope&) = delete;
     RealmScope& operator=(const RealmScope&) = delete;
     ~RealmScope() {
-        for (auto clear : realm_state.clear_scratch) clear();
+        for (auto clear : realm_state.clear_scratch)
+            clear();
         realm_state.clear_scratch.clear();
         realm_state.active = false;
     }
-  private:
+
+private:
     CollectOnExit collect_;
 };
 
 template <typename T> T& realm_scratch() {
     static thread_local std::optional<T> value;
-    if (!realm_state.active) throw std::logic_error("JavaScript scratch storage requires an active realm.");
+    if (!realm_state.active)
+        throw std::logic_error("JavaScript scratch storage requires an active realm.");
     if (!value) {
         value.emplace();
         realm_state.clear_scratch.push_back([] { value.reset(); });

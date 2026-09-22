@@ -3,12 +3,23 @@ import type { LoweringContext } from "./context.js";
 /** Full AST contracts for the pinned lifecycle represented by native resource ownership. */
 export function assertDeviceRecoveryContracts(context: LoweringContext): void {
     const check = (module: string, name: string, source: string): void => {
-        const { file, declaration } = context.functionDeclaration(`src/engine/${module}.ts`, name);
-        context.assertStatementShapes(file, [declaration], source, `${module}.${name} native recovery contract`);
+        const { file, declaration } = context.functionDeclaration(
+            `src/engine/${module}.ts`,
+            name,
+        );
+        context.assertStatementShapes(
+            file,
+            [declaration],
+            source,
+            `${module}.${name} native recovery contract`,
+        );
     };
 
     // Registration defaults, disabled ownership, loss snapshot and callback/re-arm order map to DeviceRecoveryState and the renderer restart dispatcher.
-    check("device-lost-recovery", "getState", `
+    check(
+        "device-lost-recovery",
+        "getState",
+        `
 function getState(engine: EngineContext): DeviceLostRecoveryState {
     return (engine._deviceLostRecovery ??= {
         _forceNextLoss: false,
@@ -22,8 +33,12 @@ function getState(engine: EngineContext): DeviceLostRecoveryState {
         _texturesPruneAt: 64,
     });
 }
-`);
-    check("device-lost-recovery", "_enableDeviceLostRecovery", `
+`,
+    );
+    check(
+        "device-lost-recovery",
+        "_enableDeviceLostRecovery",
+        `
 export function _enableDeviceLostRecovery(engine: EngineContext, registration: DeviceLostRecoveryRegistration): DeviceLostRecoveryHandle {
     const state = getState(engine);
     const registrations = state._registrations;
@@ -52,14 +67,22 @@ export function _enableDeviceLostRecovery(engine: EngineContext, registration: D
         },
     };
 }
-`);
-    check("device-lost-recovery", "markNextDeviceLossForRecovery", `
+`,
+    );
+    check(
+        "device-lost-recovery",
+        "markNextDeviceLossForRecovery",
+        `
 export function markNextDeviceLossForRecovery(engine: EngineContext): boolean {
     const state = engine._deviceLostRecovery;
     return !!state?._registrations.length && (state._forceNextLoss = true);
 }
-`);
-    check("device-lost-recovery", "arm", `
+`,
+    );
+    check(
+        "device-lost-recovery",
+        "arm",
+        `
 function arm(engine: EngineContext, state: DeviceLostRecoveryState): void {
     const device = engine._device;
     if (state._armedDevice === device || state._recovering) {
@@ -95,20 +118,28 @@ function arm(engine: EngineContext, state: DeviceLostRecoveryState): void {
         });
     });
 }
-`);
+`,
+    );
 
     // The PAL destroys the old native device when the active frame returns.
-    check("device-lost-recovery-testing", "forceWebGpuDeviceLossForTesting", `
+    check(
+        "device-lost-recovery-testing",
+        "forceWebGpuDeviceLossForTesting",
+        `
 export function forceWebGpuDeviceLossForTesting(engine: EngineContext): void {
     if (!markNextDeviceLossForRecovery(engine)) {
         throw new Error("forceWebGpuDeviceLossForTesting requires a device-lost recovery handler to be enabled first");
     }
     engine._device.destroy();
 }
-`);
+`,
+    );
 
     // One scene strategy uses the existing retained CPU owners; the compiler refuses other context kinds.
-    check("device-lost-scene-recovery", "enableDeviceLostSceneRecovery", `
+    check(
+        "device-lost-scene-recovery",
+        "enableDeviceLostSceneRecovery",
+        `
 export function enableDeviceLostSceneRecovery(engine: EngineContext, options: DeviceLostRecoveryCallbacks = {}): DeviceLostRecoveryHandle {
     return _enableDeviceLostRecovery(engine, {
         _kind: "scene",
@@ -128,10 +159,14 @@ export function enableDeviceLostSceneRecovery(engine: EngineContext, options: De
         _onRecoveryFailed: options.onRecoveryFailed,
     });
 }
-`);
+`,
+    );
 
     // Adapter/device acquisition, surface configuration and texture ownership settlement use synchronous backend teardown/reconstruction over retained owners.
-    check("device-lost-recovery-run", "runDeviceLostRecovery", `
+    check(
+        "device-lost-recovery-run",
+        "runDeviceLostRecovery",
+        `
 export async function runDeviceLostRecovery(engine: EngineContext, state: DeviceLostRecoveryState, registrations: readonly DeviceLostRecoveryRegistration[]): Promise<void> {
     const handlers = new Map<string, DeviceLostRecoveryRegistration>();
     for (const registration of registrations) {
@@ -182,8 +217,12 @@ export async function runDeviceLostRecovery(engine: EngineContext, state: Device
         await runRecoveryStep("restarting rendering", () => startEngine(engine));
     }
 }
-`);
-    check("device-lost-recovery-run", "rebuildRecoverableTextures", `
+`,
+    );
+    check(
+        "device-lost-recovery-run",
+        "rebuildRecoverableTextures",
+        `
 async function rebuildRecoverableTextures(engine: EngineContext, state: DeviceLostRecoveryState): Promise<(() => void) | undefined> {
     const tracked = state._textures;
     const textures: Texture2D[] = [];
@@ -215,8 +254,12 @@ async function rebuildRecoverableTextures(engine: EngineContext, state: DeviceLo
     }
     return () => settleRebuiltTextureOwnership(state);
 }
-`);
-    check("device-lost-recovery-run", "assertEveryActiveContextKindIsRecoverable", `
+`,
+    );
+    check(
+        "device-lost-recovery-run",
+        "assertEveryActiveContextKindIsRecoverable",
+        `
 function assertEveryActiveContextKindIsRecoverable(engine: EngineContext, handlers: ReadonlyMap<string, DeviceLostRecoveryRegistration>): void {
     const unrecoverable = new Set<string>();
     for (const surface of engine.surfaces) {
@@ -232,8 +275,12 @@ function assertEveryActiveContextKindIsRecoverable(engine: EngineContext, handle
             \`Enable that kind's device-lost recovery before the device is lost, or unregister the context.\`);
     }
 }
-`);
-    check("device-lost-recovery-run", "runRecoveryStep", `
+`,
+    );
+    check(
+        "device-lost-recovery-run",
+        "runRecoveryStep",
+        `
 async function runRecoveryStep<T>(description: string, action: () => T | Promise<T>): Promise<T> {
     try {
         return await action();
@@ -243,10 +290,14 @@ async function runRecoveryStep<T>(description: string, action: () => T | Promise
         throw new Error(\`Device-lost recovery failed while \${description}: \${message}\`, { cause: error });
     }
 }
-`);
+`,
+    );
 
     // The backend replays generated mesh/material/environment/shadow/frame-graph uploads and publishes replacement identities only after a completed frame.
-    check("recovery-rebuild", "rebuildRegisteredScenes", `
+    check(
+        "recovery-rebuild",
+        "rebuildRegisteredScenes",
+        `
 export async function rebuildRegisteredScenes(engine: EngineContext): Promise<void> {
     clearSceneBGLCache();
     engine._pbrFallbackTex = undefined;
@@ -263,8 +314,12 @@ export async function rebuildRegisteredScenes(engine: EngineContext): Promise<vo
         }
     }
 }
-`);
-    check("recovery-rebuild", "rebuildSceneGpu", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "rebuildSceneGpu",
+        `
 async function rebuildSceneGpu(engine: EngineContext, scene: SceneContext): Promise<void> {
     if (scene._envTextures) {
         const { rebuildSceneEnvironment } = await import("../loader-env/environment-recovery.js");
@@ -309,8 +364,12 @@ async function rebuildSceneGpu(engine: EngineContext, scene: SceneContext): Prom
     resetFrameGraphTasks(engine, scene);
     scene._frameGraph.build();
 }
-`);
-    check("recovery-rebuild", "rebuildRenderables", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "rebuildRenderables",
+        `
 export async function rebuildRenderables(rebuilds: readonly NonNullable<Renderable["_rebuild"]>[]): Promise<Renderable[]> {
     const rebuilt: Renderable[] = [];
     for (const rebuild of rebuilds) {
@@ -318,8 +377,12 @@ export async function rebuildRenderables(rebuilds: readonly NonNullable<Renderab
     }
     return rebuilt;
 }
-`);
-    check("recovery-rebuild", "runRecoveryStep", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "runRecoveryStep",
+        `
 async function runRecoveryStep<T>(description: string, action: () => Promise<T>): Promise<T> {
     try {
         return await action();
@@ -329,8 +392,12 @@ async function runRecoveryStep<T>(description: string, action: () => Promise<T>)
         throw new Error(\`Device-lost Scene recovery failed while \${description}: \${message}\`, { cause: error });
     }
 }
-`);
-    check("recovery-rebuild", "resetFrameGraphTasks", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "resetFrameGraphTasks",
+        `
 function resetFrameGraphTasks(engine: EngineContext, scene: SceneContext): void {
     for (const task of scene._frameGraph._tasks) {
         if (!("_sceneUBO" in task && "_sceneBG" in task && "_opaqueBindings" in task)) {
@@ -354,8 +421,12 @@ function resetFrameGraphTasks(engine: EngineContext, scene: SceneContext): void 
         rt._sceneUboCacheKey.length = 0;
     }
 }
-`);
-    check("recovery-rebuild", "_rebuildMeshes", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "_rebuildMeshes",
+        `
 export async function _rebuildMeshes(engine: EngineContext, scene: SceneContext): Promise<void> {
     let skeletonFactory: typeof createSkeleton | null = null;
     let morphFactory: typeof createMorphTargets | null = null;
@@ -378,8 +449,12 @@ export async function _rebuildMeshes(engine: EngineContext, scene: SceneContext)
         }
     }
 }
-`);
-    check("recovery-rebuild", "uploadRetainedMesh", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "uploadRetainedMesh",
+        `
 function uploadRetainedMesh(engine: EngineContext, mesh: Mesh): MeshGPU {
     const positions = mesh._cpuPositions!;
     const normals = mesh._cpuNormals!;
@@ -410,8 +485,12 @@ function uploadRetainedMesh(engine: EngineContext, mesh: Mesh): MeshGPU {
         indexFormat: mesh._cpuIndexFormat ?? mesh._gpu.indexFormat,
     };
 }
-`);
-    check("recovery-rebuild", "rebuildSceneTextures", `
+`,
+    );
+    check(
+        "recovery-rebuild",
+        "rebuildSceneTextures",
+        `
 async function rebuildSceneTextures(engine: EngineContext, scene: SceneContext): Promise<void> {
     const seen = new Set<Texture2D>();
     const visited = new WeakSet<object>();
@@ -446,13 +525,27 @@ async function rebuildSceneTextures(engine: EngineContext, scene: SceneContext):
     const { rebuildTexture2D } = await import("../texture/texture-recovery.js");
     await Promise.all(textures.map((texture) => rebuildTexture2D(engine, texture)));
 }
-`);
+`,
+    );
 
     // Native scene and texture owners retain upload inputs directly; enabling/disabling recovery changes registrations without introducing a second capture cache.
-    const capture = context.sourceFile("src/engine/device-lost-recovery-capture.ts");
-    context.assertExpressionShape(context.variableInitializer(capture, "TEXTURE_PRUNE_FLOOR"), "64", "capture pruning floor");
-    context.assertExpressionShape(context.variableInitializer(capture, "_sourceOwners"), "null", "capture source ownership default");
-    check("device-lost-recovery-capture", "stampTexture", `
+    const capture = context.sourceFile(
+        "src/engine/device-lost-recovery-capture.ts",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(capture, "TEXTURE_PRUNE_FLOOR"),
+        "64",
+        "capture pruning floor",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(capture, "_sourceOwners"),
+        "null",
+        "capture source ownership default",
+    );
+    check(
+        "device-lost-recovery-capture",
+        "stampTexture",
+        `
 function stampTexture(state: DeviceLostRecoveryState, tex: Texture2D, source: Texture2DRecoverySource): void {
     tex._recoverySource = source;
     const textures = state._textures;
@@ -466,8 +559,12 @@ function stampTexture(state: DeviceLostRecoveryState, tex: Texture2D, source: Te
     }
     textures.add(new WeakRef(tex));
 }
-`);
-    check("device-lost-recovery-capture", "trackDerivedTexture", `
+`,
+    );
+    check(
+        "device-lost-recovery-capture",
+        "trackDerivedTexture",
+        `
 function trackDerivedTexture(base: Texture2D, derived: Texture2D): void {
     const source = base._recoverySource;
     if (!source) {
@@ -478,9 +575,13 @@ function trackDerivedTexture(base: Texture2D, derived: Texture2D): void {
         stampTexture(state, derived, source);
     }
 }
-`);
+`,
+    );
     // External-image capture stays unreachable while its factory has no compiler route.
-    check("device-lost-recovery-capture", "attachRecoveryCapture", `
+    check(
+        "device-lost-recovery-capture",
+        "attachRecoveryCapture",
+        `
 function attachRecoveryCapture(engine: EngineContext): void {
     const state = engine._deviceLostRecovery!;
     const owner = new WeakRef(state);
@@ -579,8 +680,12 @@ function attachRecoveryCapture(engine: EngineContext): void {
         },
     };
 }
-`);
-    check("device-lost-recovery-capture", "_retainDeviceLostRecoveryCapture", `
+`,
+    );
+    check(
+        "device-lost-recovery-capture",
+        "_retainDeviceLostRecoveryCapture",
+        `
 export function _retainDeviceLostRecoveryCapture(engine: EngineContext, includeMeshes = false): void {
     const state = engine._deviceLostRecovery;
     if (!state) {
@@ -594,8 +699,12 @@ export function _retainDeviceLostRecoveryCapture(engine: EngineContext, includeM
         attachRecoveryCapture(engine);
     }
 }
-`);
-    check("device-lost-recovery-capture", "_releaseDeviceLostRecoveryCapture", `
+`,
+    );
+    check(
+        "device-lost-recovery-capture",
+        "_releaseDeviceLostRecoveryCapture",
+        `
 export function _releaseDeviceLostRecoveryCapture(engine: EngineContext, includeMeshes = false): void {
     const state = engine._deviceLostRecovery;
     if (!state || state._captureRefs === 0) {
@@ -609,10 +718,14 @@ export function _releaseDeviceLostRecoveryCapture(engine: EngineContext, include
         engine._dlr = undefined;
     }
 }
-`);
+`,
+    );
 
     // Backend resource owners drain queued work and release outgoing GPU leases before rebuilding replacements.
-    check("gpu-resource-retirement", "runBatch", `
+    check(
+        "gpu-resource-retirement",
+        "runBatch",
+        `
 function runBatch(batch: GpuResourceRetirement[]): void {
     for (const retire of batch.splice(0)) {
         try {
@@ -622,8 +735,12 @@ function runBatch(batch: GpuResourceRetirement[]): void {
         }
     }
 }
-`);
-    check("gpu-resource-retirement", "disposeGpuResourceRetirements", `
+`,
+    );
+    check(
+        "gpu-resource-retirement",
+        "disposeGpuResourceRetirements",
+        `
 export function disposeGpuResourceRetirements(engine: EngineContext): void {
     const batch = engine._retirements;
     const inFlight = engine._retiring;
@@ -634,5 +751,6 @@ export function disposeGpuResourceRetirements(engine: EngineContext): void {
     }
     inFlight?.forEach(runBatch);
 }
-`);
+`,
+    );
 }

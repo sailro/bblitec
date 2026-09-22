@@ -8,9 +8,19 @@ import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { lowerAccessorNormalizationCpp } from "../src/lowering/gltf/accessor-normalization.js";
 import { lowerGltfAccessorShape } from "../src/lowering/gltf/accessor-shape.js";
 import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
-import { transpileCommonJs } from "../src/typescript-transpile.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
-import { cppFunction, cppRecord, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    cppSection,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const quantizationModule = "src/loader-gltf/gltf-ext-quantization.ts";
@@ -19,19 +29,60 @@ const context = new LoweringContext();
 /** Execute the pinned declaration with its module constants and typed-array imports. */
 function pinned<T>(ctx: LoweringContext, module: string, symbol: string): T {
     const { file, declaration } = ctx.functionDeclaration(module, symbol);
-    const constants = ["FLOAT", "UNSIGNED_SHORT", "UNSIGNED_INT", "UNSIGNED_BYTE", "BYTE", "SHORT", "TYPE_SIZES"]
-        .flatMap(name => {
-            const value = ctx.moduleScopeConstant(file, name);
-            return value ? [`const ${name} = ${value.getText(file)};`] : [];
-        });
-    const code = transpileCommonJs([...constants, declaration.getText(file)].join("\n"), module);
-    return new Function("exports", "F32", "U32", "U16", "U8", "I16", "I8", `${code}\nreturn ${symbol};`)(
-        {}, Float32Array, Uint32Array, Uint16Array, Uint8Array, Int16Array, Int8Array) as T;
+    const constants = [
+        "FLOAT",
+        "UNSIGNED_SHORT",
+        "UNSIGNED_INT",
+        "UNSIGNED_BYTE",
+        "BYTE",
+        "SHORT",
+        "TYPE_SIZES",
+    ].flatMap((name) => {
+        const value = ctx.moduleScopeConstant(file, name);
+        return value ? [`const ${name} = ${value.getText(file)};`] : [];
+    });
+    const code = transpileCommonJs(
+        [...constants, declaration.getText(file)].join("\n"),
+        module,
+    );
+    return createJavaScriptFunction(
+        "exports",
+        "F32",
+        "U32",
+        "U16",
+        "U8",
+        "I16",
+        "I8",
+        `${code}\nreturn ${symbol};`,
+    )(
+        {},
+        Float32Array,
+        Uint32Array,
+        Uint16Array,
+        Uint8Array,
+        Int16Array,
+        Int8Array,
+    ) as T;
 }
 
-type NumericArray = Float32Array | Uint32Array | Uint16Array | Uint8Array | Int16Array | Int8Array;
-type AccessorResolver = (json: object, bin: DataView, index: number) => { _data: NumericArray; _count: number; _componentCount: number };
-type ComponentReader = (view: DataView, offset: number, componentType: number, normalized: boolean) => number;
+type NumericArray =
+    | Float32Array
+    | Uint32Array
+    | Uint16Array
+    | Uint8Array
+    | Int16Array
+    | Int8Array;
+type AccessorResolver = (
+    json: object,
+    bin: DataView,
+    index: number,
+) => { _data: NumericArray; _count: number; _componentCount: number };
+type ComponentReader = (
+    view: DataView,
+    offset: number,
+    componentType: number,
+    normalized: boolean,
+) => number;
 
 const arrayTypes = [
     [5120, Int8Array, [-128, -127, -1, 0, 1, 127]],
@@ -39,56 +90,166 @@ const arrayTypes = [
     [5122, Int16Array, [-32768, -32767, -1, 0, 1, 32767]],
     [5123, Uint16Array, [0, 1, 32767, 32768, 65534, 65535]],
     [5125, Uint32Array, [0, 1, 16777217, 2147483649, 4294967294, 4294967295]],
-    [5126, Float32Array, [-123.75, -.01, 0, .1, .7, 123.75]],
+    [5126, Float32Array, [-123.75, -0.01, 0, 0.1, 0.7, 123.75]],
 ] as const;
 
 test("accessor constructors cannot diverge from native binary reads", () => {
-    assert.throws(() => lowerGltfAccessorShape(doctoredContext(parserModule, "Ctor = U32;", "Ctor = U16;")), /constructor does not match its native binary read/);
+    assert.throws(
+        () =>
+            lowerGltfAccessorShape(
+                doctoredContext(parserModule, "Ctor = U32;", "Ctor = U16;"),
+            ),
+        /constructor does not match its native binary read/,
+    );
 });
 
-test("glTF accessors preserve pinned widths, normalization and zero-filled storage", t => {
+test("glTF accessors preserve pinned widths, normalization and zero-filled storage", (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const resolveAccessor = pinned<AccessorResolver>(context, parserModule, "resolveAccessor");
-    const readComponent = pinned<ComponentReader>(context, quantizationModule, "readComponent");
-    const readerContexts = [context,
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const resolveAccessor = pinned<AccessorResolver>(
+        context,
+        parserModule,
+        "resolveAccessor",
+    );
+    const readComponent = pinned<ComponentReader>(
+        context,
+        quantizationModule,
+        "readComponent",
+    );
+    const readerContexts = [
+        context,
         doctoredContext(quantizationModule, "c / 65535 : c", "c / 65534 : c"),
-        doctoredContext(quantizationModule, "Math.max(c / 127, -1)", "Math.max(c / 127, 0)"),
-        doctoredContext(quantizationModule, "Math.max(c / 127, -1)", "Math.min(c / 127, -1)"),
+        doctoredContext(
+            quantizationModule,
+            "Math.max(c / 127, -1)",
+            "Math.max(c / 127, 0)",
+        ),
+        doctoredContext(
+            quantizationModule,
+            "Math.max(c / 127, -1)",
+            "Math.min(c / 127, -1)",
+        ),
     ];
-    const readers = readerContexts.map(ctx => pinned<ComponentReader>(ctx, quantizationModule, "readComponent"));
-    const rows = arrayTypes.flatMap(([type, Ctor, values]) => [false, true].map(normalized => {
-        const bytes = new Uint8Array(28 + values.length * Ctor.BYTES_PER_ELEMENT);
-        new Ctor(bytes.buffer, 28, values.length).set(values);
-        const accessor = { bufferView: 0, byteOffset: 4, componentType: type, type: "SCALAR", count: values.length, normalized };
-        const resolved = resolveAccessor({ accessors: [accessor], bufferViews: [{ byteOffset: 8 }] }, new DataView(bytes.buffer, 16), 0);
-        assert.equal(resolved._componentCount, 1);
-        return { type, normalized, bytes: [...bytes], count: values.length, raw: [...resolved._data],
-            expected: [...resolved._data].map((raw, index) => type === 5125 ? raw : readComponent(new DataView(bytes.buffer), 28 + index * Ctor.BYTES_PER_ELEMENT, type, normalized)),
-            readers: type === 5125 ? [] : readers.map(reader => [...resolved._data].map((_raw, index) => reader(new DataView(bytes.buffer), 28 + index * Ctor.BYTES_PER_ELEMENT, type, normalized))),
+    const readers = readerContexts.map((ctx) =>
+        pinned<ComponentReader>(ctx, quantizationModule, "readComponent"),
+    );
+    const rows = arrayTypes.flatMap(([type, Ctor, values]) =>
+        [false, true].map((normalized) => {
+            const bytes = new Uint8Array(
+                28 + values.length * Ctor.BYTES_PER_ELEMENT,
+            );
+            new Ctor(bytes.buffer, 28, values.length).set(values);
+            const accessor = {
+                bufferView: 0,
+                byteOffset: 4,
+                componentType: type,
+                type: "SCALAR",
+                count: values.length,
+                normalized,
+            };
+            const resolved = resolveAccessor(
+                { accessors: [accessor], bufferViews: [{ byteOffset: 8 }] },
+                new DataView(bytes.buffer, 16),
+                0,
+            );
+            assert.equal(resolved._componentCount, 1);
+            return {
+                type,
+                normalized,
+                bytes: [...bytes],
+                count: values.length,
+                raw: [...resolved._data],
+                expected: [...resolved._data].map((raw, index) =>
+                    type === 5125
+                        ? raw
+                        : readComponent(
+                              new DataView(bytes.buffer),
+                              28 + index * Ctor.BYTES_PER_ELEMENT,
+                              type,
+                              normalized,
+                          ),
+                ),
+                readers:
+                    type === 5125
+                        ? []
+                        : readers.map((reader) =>
+                              [...resolved._data].map((_raw, index) =>
+                                  reader(
+                                      new DataView(bytes.buffer),
+                                      28 + index * Ctor.BYTES_PER_ELEMENT,
+                                      type,
+                                      normalized,
+                                  ),
+                              ),
+                          ),
+            };
+        }),
+    );
+    const zeroRows = [
+        "SCALAR",
+        "VEC2",
+        "VEC3",
+        "VEC4",
+        "MAT2",
+        "MAT3",
+        "MAT4",
+        "unknown",
+    ].map((type) => {
+        const result = resolveAccessor(
+            { accessors: [{ type, componentType: 5126, count: 2 }] },
+            new DataView(new ArrayBuffer(0)),
+            0,
+        );
+        return {
+            type,
+            components: result._componentCount,
+            values: [...result._data],
         };
-    }));
-    const zeroRows = ["SCALAR", "VEC2", "VEC3", "VEC4", "MAT2", "MAT3", "MAT4", "unknown"].map(type => {
-        const result = resolveAccessor({ accessors: [{ type, componentType: 5126, count: 2 }] }, new DataView(new ArrayBuffer(0)), 0);
-        return { type, components: result._componentCount, values: [...result._data] };
     });
     const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
-    const records = loader.slice(loader.indexOf("struct BufferViewInfo {"), loader.indexOf("using Matrix ="));
-    const helpers = cppSection(loader, "std::size_t component_count(", "struct GltfAccessorView {") +
-        cppRecord(loader, "struct GltfAccessorView {") + cppFunction(loader, "std::vector<float> gltf_skin_float32_view(");
+    const records = loader.slice(
+        loader.indexOf("struct BufferViewInfo {"),
+        loader.indexOf("using Matrix ="),
+    );
+    const helpers =
+        cppSection(
+            loader,
+            "std::size_t component_count(",
+            "struct GltfAccessorView {",
+        ) +
+        cppRecord(loader, "struct GltfAccessorView {") +
+        cppFunction(loader, "std::vector<float> gltf_skin_float32_view(");
     const changedReaders = readerContexts.map((ctx, index) =>
-        lowerAccessorNormalizationCpp(ctx.sourceFile(quantizationModule)).replace("read_quantized_component(", `reader_${index}(`));
-    const changedShape = lowerGltfAccessorShape(doctoredContext(parserModule, "MAT3: 9", "MAT3: 8"))
-        .replace("component_count(", "changed_component_count(").replace("component_size(", "changed_component_size(");
+        lowerAccessorNormalizationCpp(
+            ctx.sourceFile(quantizationModule),
+        ).replace("read_quantized_component(", `reader_${index}(`),
+    );
+    const changedShape = lowerGltfAccessorShape(
+        doctoredContext(parserModule, "MAT3: 9", "MAT3: 8"),
+    )
+        .replace("component_count(", "changed_component_count(")
+        .replace("component_size(", "changed_component_size(");
     const directory = resolve("artifacts/test-gltf-accessor");
     const parserHeader = new GltfLowerer(context).lowerGlbParser().header;
     const containerStart = parserHeader.indexOf("struct ParsedGlbContainer {");
     assert.ok(containerStart >= 0);
-    const containerRecord = parserHeader.slice(containerStart, parserHeader.indexOf("\n};", containerStart) + 3);
+    const containerRecord = parserHeader.slice(
+        containerStart,
+        parserHeader.indexOf("\n};", containerStart) + 3,
+    );
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "expected.json"), JSON.stringify({ rows, zeroRows }));
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/ts_runtime.hpp>
+    writeFileSync(
+        join(directory, "expected.json"),
+        JSON.stringify({ rows, zeroRows }),
+    );
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        source,
+        `#include <bblite/ts_runtime.hpp>
 #include <nlohmann/json.hpp>
 #include <cassert>
 #include <fstream>
@@ -98,7 +259,7 @@ ${containerRecord}
 }
 ${records}
 using JsonObject = ts::JsonValue::Object; using JsonArray = ts::JsonValue::Array;
-${["const ts::JsonValue& required(", "const ts::JsonValue* optional("].map(signature => cppFunction(loader, signature)).join("\n")}
+${["const ts::JsonValue& required(", "const ts::JsonValue* optional("].map((signature) => cppFunction(loader, signature)).join("\n")}
 ${lowerGltfParserJson(context)}
 ${helpers}
 ${changedReaders.join("\n")}
@@ -172,8 +333,22 @@ int main() {
     assert(read_component(strided,container,{{0,6,4}},accessor,1,0)==3);
     assert(read_component(strided,container,{{0,6,4}},accessor,1,1)==4);
     reject([&]{read_component(strided,container,{{0,6,1}},accessor,0,0);});
-}`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
-        "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
+}`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        source,
+    ]);
     execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

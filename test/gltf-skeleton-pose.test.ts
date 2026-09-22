@@ -1,31 +1,75 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import {LoweringContext} from "../src/lowering/context.js";
-import {lowerGltfSkeletonPose} from "../src/lowering/gltf/skeleton-pose.js";
-import {lowerMatrixComposeCpp} from "../src/lowering/gltf/matrix-leaves.js";
-import {pinnedMatrixHeader} from "../src/lowering/pinned-matrix.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerGltfSkeletonPose } from "../src/lowering/gltf/skeleton-pose.js";
+import { lowerMatrixComposeCpp } from "../src/lowering/gltf/matrix-leaves.js";
+import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const module = "src/skeleton/skeleton-pose.ts";
-const matrix = (x = 0) => new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,x,0,0,1]);
-const contexts = () => [new LoweringContext(),
-    doctoredContext(module, "currentTRS[off + T_OFF] = n.tx;", "currentTRS[off + T_OFF] = n.tx + 0.75;"),
-    doctoredContext(module, "if (skel.runtimeSkeleton?._disposed)", "if (!skel.runtimeSkeleton?._disposed)"),
-    doctoredContext("src/skeleton/bone-control.ts", "applyOverridesToTRS(overrides, currentTRS, numNodes);", "applyOverridesToTRS(overrides, currentTRS, numNodes, true);"),
+const matrix = (x = 0) =>
+    new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1]);
+const contexts = () => [
+    new LoweringContext(),
+    doctoredContext(
+        module,
+        "currentTRS[off + T_OFF] = n.tx;",
+        "currentTRS[off + T_OFF] = n.tx + 0.75;",
+    ),
+    doctoredContext(
+        module,
+        "if (skel.runtimeSkeleton?._disposed)",
+        "if (!skel.runtimeSkeleton?._disposed)",
+    ),
+    doctoredContext(
+        "src/skeleton/bone-control.ts",
+        "applyOverridesToTRS(overrides, currentTRS, numNodes);",
+        "applyOverridesToTRS(overrides, currentTRS, numNodes, true);",
+    ),
 ];
 
-function sourceCase(context: LoweringContext, disposed: boolean, override: boolean, worldOverride: boolean) {
-    const text = context.sourceFile(module).statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText().replace(/^export /, "")).join("\n");
-    const math = (name: string, path: string) => context.functionDeclaration(path, name).declaration.getText().replace(/^export /, "");
-    const build = context.functionDeclaration("src/skeleton/bone-control.ts", "buildSkeletons");
-    const bake = context.variableInitializer(build.declaration, "bake").getText();
-    const run = new Function("F32", "I32", "U8", transpileCommonJs(`
+function sourceCase(
+    context: LoweringContext,
+    disposed: boolean,
+    override: boolean,
+    worldOverride: boolean,
+) {
+    const text = context
+        .sourceFile(module)
+        .statements.filter((node) => !ts.isImportDeclaration(node))
+        .map((node) => node.getText().replace(/^export /, ""))
+        .join("\n");
+    const math = (name: string, path: string) =>
+        context
+            .functionDeclaration(path, name)
+            .declaration.getText()
+            .replace(/^export /, "");
+    const build = context.functionDeclaration(
+        "src/skeleton/bone-control.ts",
+        "buildSkeletons",
+    );
+    const bake = context
+        .variableInitializer(build.declaration, "bake")
+        .getText();
+    const run = createJavaScriptFunction(
+        "F32",
+        "I32",
+        "U8",
+        transpileCommonJs(
+            `
         ${math("composeMat4IntoBuffer", "src/math/compose-mat4-into-buffer.ts")}
         ${math("multiplyMat4IntoBuffer", "src/math/multiply-mat4-into-buffer.ts")}
         ${text}
@@ -43,29 +87,95 @@ function sourceCase(context: LoweringContext, disposed: boolean, override: boole
             return {events, topo: [...topoOrder], trs: [...new Uint32Array(currentTRS.buffer)], local: [...new Uint32Array(localMat.buffer)],
                 world: [...new Uint32Array(worldMat.buffer)], bones: skeletons.map(s => [...new Uint32Array(s.boneMatrices.buffer)])};
         };
-    `, module))(Float32Array, Int32Array, Uint8Array) as (...args: unknown[]) => unknown;
-    const nodes = [2, -1, 1].map((parentIdx, index) => ({parentIdx, tx: index + .123456789, ty: index / 3, tz: -(index + .25),
-        rx: 0, ry: 0, rz: 0, rw: 1, sx: 1, sy: 1, sz: 1, ...(index === 2 ? {_matrix: matrix(3.5)} : {})}));
-    const skeletons = [false, true].map((runtime, index) => ({jointNodes: [0, 2], boneCount: 2, invMeshWorld: matrix(-2.25),
-        inverseBindMatrices: new Float32Array([...matrix(.125), ...matrix(-.75)]), boneMatrices: new Float32Array(32).fill(9), boneTexture: index,
-        ...(runtime ? {runtimeSkeleton: {_disposed: disposed, boneTexture: index + 10}} : {})}));
-    const initial = {nodes: nodes.map(n => ({...n, _matrix: n._matrix ? [...n._matrix] : null})), disposed, override, worldOverride,
-        skeletons: skeletons.map(s => ({...s, invMeshWorld: [...s.invMeshWorld], inverseBindMatrices: [...s.inverseBindMatrices], boneMatrices: [...s.boneMatrices]}))};
-    const expected = run(nodes, skeletons, new Map(override ? [[0, {}]] : []), new Map(worldOverride ? [[2, matrix(8.25)]] : []));
-    return {initial, expected};
+    `,
+            module,
+        ),
+    )(Float32Array, Int32Array, Uint8Array) as (...args: unknown[]) => unknown;
+    const nodes = [2, -1, 1].map((parentIdx, index) => ({
+        parentIdx,
+        tx: index + 0.123456789,
+        ty: index / 3,
+        tz: -(index + 0.25),
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        rw: 1,
+        sx: 1,
+        sy: 1,
+        sz: 1,
+        ...(index === 2 ? { _matrix: matrix(3.5) } : {}),
+    }));
+    const skeletons = [false, true].map((runtime, index) => ({
+        jointNodes: [0, 2],
+        boneCount: 2,
+        invMeshWorld: matrix(-2.25),
+        inverseBindMatrices: new Float32Array([
+            ...matrix(0.125),
+            ...matrix(-0.75),
+        ]),
+        boneMatrices: new Float32Array(32).fill(9),
+        boneTexture: index,
+        ...(runtime
+            ? {
+                  runtimeSkeleton: {
+                      _disposed: disposed,
+                      boneTexture: index + 10,
+                  },
+              }
+            : {}),
+    }));
+    const initial = {
+        nodes: nodes.map((n) => ({
+            ...n,
+            _matrix: n._matrix ? [...n._matrix] : null,
+        })),
+        disposed,
+        override,
+        worldOverride,
+        skeletons: skeletons.map((s) => ({
+            ...s,
+            invMeshWorld: [...s.invMeshWorld],
+            inverseBindMatrices: [...s.inverseBindMatrices],
+            boneMatrices: [...s.boneMatrices],
+        })),
+    };
+    const expected = run(
+        nodes,
+        skeletons,
+        new Map(override ? [[0, {}]] : []),
+        new Map(worldOverride ? [[2, matrix(8.25)]] : []),
+    );
+    return { initial, expected };
 }
 
-test("eager skeleton baking follows source scratch, override order, matrix products and disposed skips", t => {
+test("eager skeleton baking follows source scratch, override order, matrix products and disposed skips", (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const variants = contexts();
-    const cases = variants.map(context => [false, true].flatMap(disposed => [false, true].flatMap(override =>
-        [false, true].map(worldOverride => sourceCase(context, disposed, override, worldOverride)))));
-    const directory = resolve("artifacts/test-gltf-skeleton-pose"); mkdirSync(directory, {recursive: true});
+    const cases = variants.map((context) =>
+        [false, true].flatMap((disposed) =>
+            [false, true].flatMap((override) =>
+                [false, true].map((worldOverride) =>
+                    sourceCase(context, disposed, override, worldOverride),
+                ),
+            ),
+        ),
+    );
+    const directory = resolve("artifacts/test-gltf-skeleton-pose");
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
-    writeFileSync(resolve(directory, "pinned_matrix.hpp"), pinnedMatrixHeader(variants[0]!));
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        resolve(directory, "pinned_matrix.hpp"),
+        pinnedMatrixHeader(variants[0]!),
+    );
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <nlohmann/json.hpp>
 #include <bit>
@@ -78,7 +188,7 @@ Json bits(const Floats& values){Json result=Json::array();for(float v:values)res
 struct Node{double parentIdx,tx,ty,tz,rx,ry,rz,rw,sx,sy,sz;std::optional<Floats> matrix;};
 struct Skeleton{double boneCount;std::vector<double> jointNodes;Floats invMeshWorld,inverseBindMatrices;std::shared_ptr<Floats> boneMatrices;bool disposed;int texture;};
 struct State{std::vector<Node> nodes;std::vector<Skeleton> skeletons;std::vector<double> topo_order;Floats currentTRS,localMat,worldMat,RH_TO_LH,_boneTmp=Floats(16);};
-${variants.map((context,index)=>`namespace variant_${index} {${lowerGltfSkeletonPose(context)}}`).join("\n")}
+${variants.map((context, index) => `namespace variant_${index} {${lowerGltfSkeletonPose(context)}}`).join("\n")}
 template<class Initialize,class Bake>void check(const Json& row,Initialize initialize,Bake bake){
     const auto& input=row.at("initial");State state;
     for(const auto& n:input.at("nodes")){Node v{n.at("parentIdx"),n.at("tx"),n.at("ty"),n.at("tz"),n.at("rx"),n.at("ry"),n.at("rz"),n.at("rw"),n.at("sx"),n.at("sy"),n.at("sz"),{}};if(!n.at("_matrix").is_null())v.matrix=n.at("_matrix").get<Floats>();state.nodes.push_back(v);}
@@ -96,10 +206,29 @@ template<class Initialize,class Bake>void check(const Json& row,Initialize initi
     if(actual!=row.at("expected")){std::ofstream("actual.json")<<actual.dump(2);std::ofstream("expected.json")<<row.at("expected").dump(2);throw std::runtime_error("Eager source/native mismatch");}
 }
 int main(){Json cases;std::ifstream("cases.json")>>cases;
-${variants.map((_context,index)=>`for(const auto& row:cases.at(${index}))check(row,[](auto& state){variant_${index}::gltf_initialize_skeleton_pose(state);},[](auto&&... args){variant_${index}::gltf_bake_skeleton_pose(args...);});`).join("\n")}
+${variants.map((_context, index) => `for(const auto& row:cases.at(${index}))check(row,[](auto& state){variant_${index}::gltf_initialize_skeleton_pose(state);},[](auto&&... args){variant_${index}::gltf_bake_skeleton_pose(args...);});`).join("\n")}
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });

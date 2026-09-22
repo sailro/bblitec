@@ -20,7 +20,7 @@ struct TextLayerBindGroup {
 struct TextLayerGpuState : TextGpuState {
     TextLayer layer;
     std::vector<std::shared_ptr<TextLayerBindGroup>> bind_group_cache;
-    std::array<float,6> last_mvp_inputs{};
+    std::array<float, 6> last_mvp_inputs{};
     bool mvp_uploaded = false;
     std::shared_ptr<void> render_bundle;
     double bundle_layout_version = -1, bundle_draw_calls = 0;
@@ -28,13 +28,13 @@ struct TextLayerGpuState : TextGpuState {
 struct TextRendererOptions {
     std::vector<TextLayer> layers;
     bool clear = true;
-    Color4 clear_value{0,0,0,1};
+    Color4 clear_value{0, 0, 0, 1};
 };
 struct TextRendererState {
     Engine* engine = nullptr;
     std::vector<TextLayer> layers;
     bool clear = true, disposed = false;
-    Color4 clear_value{0,0,0,1};
+    Color4 clear_value{0, 0, 0, 1};
     double target_width = 0, target_height = 0;
     std::unordered_map<TextLayer, std::shared_ptr<TextLayerGpuState>> layer_gpu;
     std::vector<std::shared_ptr<void>> visible_bundles;
@@ -46,7 +46,9 @@ enum class TextBundleOp { pipeline, quad, instances, group, draw };
 struct TextBundleCommand {
     TextBundleOp op;
     std::shared_ptr<void> resource;
-    std::array<std::size_t,4> draw{};
+    std::array<std::size_t, 4> draw{};
 };
-struct TextCommandBundle { std::vector<TextBundleCommand> commands; };
+struct TextCommandBundle {
+    std::vector<TextBundleCommand> commands;
+};
 } // namespace bbl

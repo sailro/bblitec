@@ -103,9 +103,8 @@ interface BillboardPipelineExports {
  * them.
  */
 export async function composeMeshPickingShader(): Promise<string> {
-    const pinned = await importPinnedModule<MeshShaderExports>(
-        meshShaderModule,
-    );
+    const pinned =
+        await importPinnedModule<MeshShaderExports>(meshShaderModule);
     return pinned.pickingShaderSource({});
 }
 
@@ -120,10 +119,9 @@ export async function composeMeshPickingShader(): Promise<string> {
  * picker.
  */
 export async function composeThinInstancePickingShader(): Promise<string> {
-    const pinned =
-        await importPinnedModule<AdvancedMeshShaderExports>(
-            advancedMeshShaderModule,
-        );
+    const pinned = await importPinnedModule<AdvancedMeshShaderExports>(
+        advancedMeshShaderModule,
+    );
     return pinned.pickingThinInstanceShaderSource({});
 }
 
@@ -146,11 +144,10 @@ export async function composeThinInstancePickingShader(): Promise<string> {
  * candidates use the separately composed projection variants below.
  */
 export async function composeDetailedMeshPickingShader(): Promise<string> {
-    const pinned =
-        await importPinnedModuleWithExports<DetailedPipelineExports>(
-            detailedPipelineModule,
-            ["shader"],
-        );
+    const pinned = await importPinnedModuleWithExports<DetailedPipelineExports>(
+        detailedPipelineModule,
+        ["shader"],
+    );
     return pinned.shader(null, null);
 }
 
@@ -179,10 +176,12 @@ export async function composeDeformPickingShaders(options: {
         MSH_HAS_SKELETON: number;
         MSH_HAS_MORPH_TARGETS: number;
     }>("material/mesh-features.js");
-    const mask = (options.skeleton ? bits.MSH_HAS_SKELETON : 0) |
+    const mask =
+        (options.skeleton ? bits.MSH_HAS_SKELETON : 0) |
         (options.morph ? bits.MSH_HAS_MORPH_TARGETS : 0);
     const shapes = [...new Set(options.meshFeatures.map((word) => word & mask))]
-        .filter((word) => word !== 0).sort((left, right) => left - right);
+        .filter((word) => word !== 0)
+        .sort((left, right) => left - right);
     if (shapes.length === 0) return [];
     const projections = await importPinnedModule<DeformProjectionExports>(
         deformProjectionModule,
@@ -190,7 +189,8 @@ export async function composeDeformPickingShaders(options: {
     const basic = await importPinnedModule<MeshShaderExports>(meshShaderModule);
     const detailed = options.detailed
         ? await importPinnedModuleWithExports<DetailedPipelineExports>(
-              detailedPipelineModule, ["shader"],
+              detailedPipelineModule,
+              ["shader"],
           )
         : undefined;
     const engine = { _device: { createBindGroupLayout: () => ({}) } };
@@ -200,21 +200,33 @@ export async function composeDeformPickingShaders(options: {
         const morph = (shape & bits.MSH_HAS_MORPH_TARGETS) !== 0;
         const projection = projections.getDeformPickingProjection(engine, {
             vat: null,
-            skeleton: skeleton ? { joints1Buffer: null, weights1Buffer: null } : null,
+            skeleton: skeleton
+                ? { joints1Buffer: null, weights1Buffer: null }
+                : null,
             morphTargets: morph ? {} : null,
         });
-        if (!projection) throw new Error("The pinned deformation projection declined its reached arm.");
+        if (!projection)
+            throw new Error(
+                "The pinned deformation projection declined its reached arm.",
+            );
         result.push({
-            skeleton, morph,
-            mesh: basic.pickingShaderSource({ _vertexProjection: projection.shader }),
-            ...(detailed ? { detailed: detailed.shader(null, projection.shader) } : {}),
+            skeleton,
+            morph,
+            mesh: basic.pickingShaderSource({
+                _vertexProjection: projection.shader,
+            }),
+            ...(detailed
+                ? { detailed: detailed.shader(null, projection.shader) }
+                : {}),
         });
     }
     return result;
 }
 
 /** One layout/selection record per deployed projection, shared by both PALs. */
-export function deformPickingHeader(variants: readonly DeformPickingShader[]): string {
+export function deformPickingHeader(
+    variants: readonly DeformPickingShader[],
+): string {
     return `#pragma once
 #include <array>
 namespace bbl::upstream {
@@ -239,11 +251,10 @@ ${variants.map((variant, index) => `    {${variant.skeleton}, ${variant.morph}, 
  * needs, which no reached scene composes.
  */
 export async function composeCloudPickingShader(): Promise<string> {
-    const pinned =
-        await importPinnedModuleWithExports<CloudPipelineExports>(
-            cloudPipelineModule,
-            ["buildPickingWgsl"],
-        );
+    const pinned = await importPinnedModuleWithExports<CloudPipelineExports>(
+        cloudPipelineModule,
+        ["buildPickingWgsl"],
+    );
     return pinned.buildPickingWgsl(false);
 }
 

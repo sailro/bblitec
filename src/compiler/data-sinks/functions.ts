@@ -5,36 +5,61 @@ import type { Value } from "../types.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
-function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
-    if (unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+function expressionFunction(
+    dataType: DataType<"function">,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
+    if (
+        unwrapped.kind === ts.SyntaxKind.NullKeyword ||
         (ts.isIdentifier(unwrapped) &&
             unwrapped.text === "undefined" &&
-            !lowerer.context.lookupIdentifierValue(unwrapped))) {
+            !lowerer.context.lookupIdentifierValue(unwrapped))
+    ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
     if (ts.isIdentifier(unwrapped)) {
         const bound = lowerer.context.lookupIdentifierValue(unwrapped);
-        if (bound &&
+        if (
+            bound &&
             (bound.kind === "callback" ||
                 bound.kind === "data" ||
-                bound.kind === "json-null")) {
+                bound.kind === "json-null")
+        ) {
             return lowerer.compileKnownValueForSink(bound, dataType, unwrapped);
         }
     }
-    if (ts.isArrowFunction(unwrapped) ||
+    if (
+        ts.isArrowFunction(unwrapped) ||
         ts.isFunctionExpression(unwrapped) ||
-        ts.isIdentifier(unwrapped)) {
+        ts.isIdentifier(unwrapped)
+    ) {
         if (ts.isIdentifier(unwrapped)) {
             const callback = lowerer.context.compileValue(unwrapped);
-            if (callback.kind === "callback" &&
-                callback.callbackDeclaration) {
-                return lowerer.compileKnownValueForSink(callback, dataType, unwrapped);
+            if (callback.kind === "callback" && callback.callbackDeclaration) {
+                return lowerer.compileKnownValueForSink(
+                    callback,
+                    dataType,
+                    unwrapped,
+                );
             }
         }
         const nativeType = lowerer.dataTypeAt(unwrapped);
-        if (nativeType?.kind === "function" && nativeType.restParameter !== undefined && dataType.restParameter === undefined) {
-            const cpp = lowerer.context.compileStoredDataFunction(unwrapped, nativeType);
-            return lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, nativeType), dataType, unwrapped);
+        if (
+            nativeType?.kind === "function" &&
+            nativeType.restParameter !== undefined &&
+            dataType.restParameter === undefined
+        ) {
+            const cpp = lowerer.context.compileStoredDataFunction(
+                unwrapped,
+                nativeType,
+            );
+            return lowerer.compileKnownValueForSink(
+                lowerer.leafValue(cpp, nativeType),
+                dataType,
+                unwrapped,
+            );
         }
         return lowerer.context.compileStoredDataFunction(unwrapped, dataType);
     }
@@ -45,7 +70,10 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
     if (value.kind === "data" && value.dataType?.kind === "function") {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
-    lowerer.context.fail(unwrapped, "Expected a local function with a native data signature.");
+    lowerer.context.fail(
+        unwrapped,
+        "Expected a local function with a native data signature.",
+    );
 }
 
 /**
@@ -55,17 +83,31 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
  * recorded none). A value without storage has no stored signature and is
  * lowered for each sink it reaches.
  */
-function storedSignature(lowerer: DataSinkHost, value: Value): DataType<"function"> | undefined {
+function storedSignature(
+    lowerer: DataSinkHost,
+    value: Value,
+): DataType<"function"> | undefined {
     if (value.cpp.length === 0) return undefined;
-    if (value.kind === "data") return value.dataType?.kind === "function" ? value.dataType : undefined;
+    if (value.kind === "data")
+        return value.dataType?.kind === "function" ? value.dataType : undefined;
     if (value.kind !== "callback") return undefined;
     const parameters = value.nativeCallbackParameterTypes;
     if (parameters === undefined) {
-        const declared = value.callbackDeclaration ? lowerer.dataTypeAt(value.callbackDeclaration) : undefined;
+        const declared = value.callbackDeclaration
+            ? lowerer.dataTypeAt(value.callbackDeclaration)
+            : undefined;
         return declared?.kind === "function" ? declared : undefined;
     }
-    return parameters.every((parameter): parameter is DataType => parameter !== undefined)
-        ? { kind: "function", parameters: [...parameters], ...(value.nativeCallbackReturnType ? { result: value.nativeCallbackReturnType } : {}) }
+    return parameters.every(
+        (parameter): parameter is DataType => parameter !== undefined,
+    )
+        ? {
+              kind: "function",
+              parameters: [...parameters],
+              ...(value.nativeCallbackReturnType
+                  ? { result: value.nativeCallbackReturnType }
+                  : {}),
+          }
         : undefined;
 }
 
@@ -82,20 +124,46 @@ function adaptedArguments(
     source: DataType<"function">,
     sink: DataType<"function">,
 ): { named: number; arguments_: string[] } | undefined {
-    if (sink.restParameter !== undefined || sink.erasedParameters?.length || source.erasedParameters?.length) return undefined;
-    if (sink.result !== undefined && (source.result === undefined || !dataTypesEqual(source.result, sink.result))) return undefined;
+    if (
+        sink.restParameter !== undefined ||
+        sink.erasedParameters?.length ||
+        source.erasedParameters?.length
+    )
+        return undefined;
+    if (
+        sink.result !== undefined &&
+        (source.result === undefined ||
+            !dataTypesEqual(source.result, sink.result))
+    )
+        return undefined;
     const fixed = source.restParameter ?? source.parameters.length;
-    if (sink.parameters.length < fixed ||
-        !source.parameters.slice(0, fixed).every((parameter, index) => dataTypesEqual(parameter, sink.parameters[index]!))) {
+    if (
+        sink.parameters.length < fixed ||
+        !source.parameters
+            .slice(0, fixed)
+            .every((parameter, index) =>
+                dataTypesEqual(parameter, sink.parameters[index]!),
+            )
+    ) {
         return undefined;
     }
     const names = sink.parameters.map((_, index) => `argument_${index}`);
-    if (source.restParameter === undefined) return { named: fixed, arguments_: names.slice(0, fixed) };
+    if (source.restParameter === undefined)
+        return { named: fixed, arguments_: names.slice(0, fixed) };
     const rest = source.parameters[source.restParameter];
-    if (rest?.kind !== "vector" || !sink.parameters.slice(fixed).every((parameter) => dataTypesEqual(parameter, rest.element))) return undefined;
+    if (
+        rest?.kind !== "vector" ||
+        !sink.parameters
+            .slice(fixed)
+            .every((parameter) => dataTypesEqual(parameter, rest.element))
+    )
+        return undefined;
     return {
         named: sink.parameters.length,
-        arguments_: [...names.slice(0, fixed), `${lowerer.context.dataTypes.cppType(rest)}{${names.slice(fixed).join(", ")}}`],
+        arguments_: [
+            ...names.slice(0, fixed),
+            `${lowerer.context.dataTypes.cppType(rest)}{${names.slice(fixed).join(", ")}}`,
+        ],
     };
 }
 
@@ -114,14 +182,27 @@ function renderSignatureAdapter(
     named: number,
     arguments_: readonly string[],
 ): string {
-    const cppType = (type: DataType): string => lowerer.context.dataTypes.cppType(type);
-    const parameters = sink.parameters.map((type, index) => `, ${cppType(type)}${index < named ? ` argument_${index}` : ""}`).join("");
+    const cppType = (type: DataType): string =>
+        lowerer.context.dataTypes.cppType(type);
+    const parameters = sink.parameters
+        .map(
+            (type, index) =>
+                `, ${cppType(type)}${index < named ? ` argument_${index}` : ""}`,
+        )
+        .join("");
     const result = sink.result ? cppType(sink.result) : "void";
-    return `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](std::remove_cvref_t<decltype(${cpp})>& callback${parameters}) -> ${result} { ` +
-        `${sink.result ? "return " : "static_cast<void>("}callback(${arguments_.join(", ")})${sink.result ? "" : ")"}; })`;
+    return (
+        `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](std::remove_cvref_t<decltype(${cpp})>& callback${parameters}) -> ${result} { ` +
+        `${sink.result ? "return " : "static_cast<void>("}callback(${arguments_.join(", ")})${sink.result ? "" : ")"}; })`
+    );
 }
 
-function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
+function valueFunction(
+    dataType: DataType<"function">,
+    lowerer: DataSinkHost,
+    value: Value,
+    _node: ts.Node,
+): string | undefined {
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
@@ -132,22 +213,50 @@ function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, va
     // itself again refuses rather than recursing.
     const stored = storedSignature(lowerer, value);
     if (stored) {
-        if (dataTypesEqual({ ...stored, identity: true }, { ...dataType, identity: true })) return value.cpp;
+        if (
+            dataTypesEqual(
+                { ...stored, identity: true },
+                { ...dataType, identity: true },
+            )
+        )
+            return value.cpp;
         const adapted = adaptedArguments(lowerer, stored, dataType);
-        if (adapted) return renderSignatureAdapter(lowerer, value.cpp, dataType, adapted.named, adapted.arguments_);
+        if (adapted)
+            return renderSignatureAdapter(
+                lowerer,
+                value.cpp,
+                dataType,
+                adapted.named,
+                adapted.arguments_,
+            );
     }
-    if (value.kind === "callback" &&
-        value.callbackDeclaration) {
+    if (value.kind === "callback" && value.callbackDeclaration) {
         const nativeType = lowerer.dataTypeAt(value.callbackDeclaration);
-        if (nativeType?.kind === "function" && nativeType.restParameter !== undefined && dataType.restParameter === undefined) {
-            const cpp = lowerer.context.compileStoredDataFunction(value.callbackDeclaration, nativeType, value.callbackRecordOwner);
-            return lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, nativeType), dataType, value.callbackDeclaration);
+        if (
+            nativeType?.kind === "function" &&
+            nativeType.restParameter !== undefined &&
+            dataType.restParameter === undefined
+        ) {
+            const cpp = lowerer.context.compileStoredDataFunction(
+                value.callbackDeclaration,
+                nativeType,
+                value.callbackRecordOwner,
+            );
+            return lowerer.compileKnownValueForSink(
+                lowerer.leafValue(cpp, nativeType),
+                dataType,
+                value.callbackDeclaration,
+            );
         }
-        return lowerer.context.compileStoredDataFunction(value.callbackDeclaration, dataType, value.callbackRecordOwner);
+        return lowerer.context.compileStoredDataFunction(
+            value.callbackDeclaration,
+            dataType,
+            value.callbackRecordOwner,
+        );
     }
     return undefined;
 }
 
 export const functionsSinks: DataSinkOperations<"function"> = {
-    "function": { expression: expressionFunction, value: valueFunction }
+    function: { expression: expressionFunction, value: valueFunction },
 };

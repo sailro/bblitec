@@ -41,16 +41,20 @@ public:
     const auto& pipelines() const noexcept { return pipelines_; }
     const auto& draws() const noexcept { return draws_; }
     void begin_frame(std::uint64_t frame) {
-        if (!enabled()) return;
+        if (!enabled())
+            return;
         GpuUploadCapture::begin_frame(frame);
         draws_.clear();
     }
     void pipeline(NodeGpuPipelineCapture receipt) {
-        if (enabled()) pipelines_.push_back(std::move(receipt));
+        if (enabled())
+            pipelines_.push_back(std::move(receipt));
     }
     void draw(NodeGpuDrawCapture receipt) {
-        if (enabled()) draws_.push_back(std::move(receipt));
+        if (enabled())
+            draws_.push_back(std::move(receipt));
     }
+
 private:
     std::vector<NodeGpuPipelineCapture> pipelines_;
     std::vector<NodeGpuDrawCapture> draws_;

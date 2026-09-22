@@ -43,7 +43,9 @@ beforeEach(() => {
     rmSync(root, { recursive: true, force: true });
     rmSync(generationStampPath(scene.id), { force: true });
     mkdirSync(resolve(scene.output, "upstream", "src"), { recursive: true });
-    mkdirSync(resolve(scene.output, "upstream", "shaders"), { recursive: true });
+    mkdirSync(resolve(scene.output, "upstream", "shaders"), {
+        recursive: true,
+    });
     writeFileSync(source, "export const probe = 1;\n");
     writeFileSync(
         resolve(scene.output, "manifest.json"),
@@ -93,7 +95,10 @@ test("a scene is regenerated until a record proves its inputs and outputs", () =
     // instrumentation left under generated/.
     touchBack(source, 5);
     assert.equal(recordGeneration(scene, arguments_, Date.now()), true);
-    writeFileSync(resolve(scene.output, "main.cpp"), "int main() { return 1; }\n");
+    writeFileSync(
+        resolve(scene.output, "main.cpp"),
+        "int main() { return 1; }\n",
+    );
     assert.equal(generationIsCurrent(scene, arguments_), false);
 });
 
@@ -103,7 +108,12 @@ test("the shader compiler's products and the stamp pair move without a miss", ()
 
     // The offline shader compiler runs after generation and writes beside the
     // WGSL; those are not generation's outputs.
-    for (const name of ["a.dxil", "a.slots", "a.hlsl", "shader-compiler.json"]) {
+    for (const name of [
+        "a.dxil",
+        "a.slots",
+        "a.hlsl",
+        "shader-compiler.json",
+    ]) {
         writeFileSync(resolve(scene.output, "upstream", "shaders", name), "x");
     }
     assert.equal(generationIsCurrent(scene, arguments_), true);
@@ -151,11 +161,26 @@ test("post-compilation materialization refreshes the generated input digests", (
     const sameTimestamp = new Date(1_000_000);
     writeFileSync(path, "const float shape[] = {1.0f};\n");
     utimesSync(path, sameTimestamp, sameTimestamp);
-    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
-    const first = readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8");
+    assert.equal(
+        refreshBuildStamp(scene.output, { generatedInputsChanged: true }),
+        true,
+    );
+    const first = readFileSync(
+        resolve(scene.output, buildStampHeaderPath),
+        "utf8",
+    );
     writeFileSync(path, "const float shape[] = {2.0f};\n");
     utimesSync(path, sameTimestamp, sameTimestamp);
-    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
-    assert.notEqual(readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8"), first);
-    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), false);
+    assert.equal(
+        refreshBuildStamp(scene.output, { generatedInputsChanged: true }),
+        true,
+    );
+    assert.notEqual(
+        readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8"),
+        first,
+    );
+    assert.equal(
+        refreshBuildStamp(scene.output, { generatedInputsChanged: true }),
+        false,
+    );
 });

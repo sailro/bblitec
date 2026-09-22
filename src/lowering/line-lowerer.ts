@@ -162,27 +162,19 @@ export class LineLowerer {
      * that states it: a line material blends when its vertex alpha is on,
      * takes the pin's own `"alpha"` equation, and never culls.
      */
-    private assertMaterialState(
-        call: ts.ObjectLiteralExpression,
-    ): void {
+    private assertMaterialState(call: ts.ObjectLiteralExpression): void {
         const blending = this.context.propertyInitializer(
             call,
             "needAlphaBlending",
         );
-        if (
-            !ts.isIdentifier(blending) ||
-            blending.text !== "useVertexAlpha"
-        ) {
+        if (!ts.isIdentifier(blending) || blending.text !== "useVertexAlpha") {
             this.context.contractError(
                 blending,
                 "Expected a line material to blend on `useVertexAlpha`.",
             );
         }
         const blendMode = this.context.propertyInitializer(call, "blendMode");
-        if (
-            !ts.isStringLiteral(blendMode) ||
-            blendMode.text !== "alpha"
-        ) {
+        if (!ts.isStringLiteral(blendMode) || blendMode.text !== "alpha") {
             this.context.contractError(
                 blendMode,
                 "Expected a line material to take the pin's `alpha` blend equation.",
@@ -205,10 +197,7 @@ export class LineLowerer {
         call: ts.ObjectLiteralExpression,
         useVertexColor: boolean,
     ): string[] {
-        const attributes = this.context.propertyInitializer(
-            call,
-            "attributes",
-        );
+        const attributes = this.context.propertyInitializer(call, "attributes");
         if (
             !ts.isConditionalExpression(attributes) ||
             !ts.isIdentifier(attributes.condition) ||
@@ -287,8 +276,7 @@ export class LineLowerer {
         if (
             !conditional ||
             !ts.isPrefixUnaryExpression(conditional.condition) ||
-            conditional.condition.operator !==
-                ts.SyntaxKind.ExclamationToken ||
+            conditional.condition.operator !== ts.SyntaxKind.ExclamationToken ||
             !ts.isIdentifier(conditional.condition.operand) ||
             conditional.condition.operand.text !== "hasColorVarying"
         ) {
@@ -308,7 +296,7 @@ export class LineLowerer {
                 "Expected one `lineColor` uniform declaration.",
             );
         }
-        const declaration = list.elements[0] as ts.ObjectLiteralExpression;
+        const declaration = list.elements[0];
         const name = this.context.propertyInitializer(declaration, "name");
         const type = this.context.propertyInitializer(declaration, "type");
         if (
@@ -344,7 +332,7 @@ export class LineLowerer {
         ) {
             this.context.contractError(
                 declaration,
-                "Expected createLineMaterial to stamp `_topology: \"line-list\"`.",
+                'Expected createLineMaterial to stamp `_topology: "line-list"`.',
             );
         }
         return "line-list";
@@ -755,11 +743,10 @@ void update_line_system(
             "Line system data requires one color per point",
         );
 
-        const { declaration: assertFinite } =
-            this.context.functionDeclaration(
-                lineSystemModule,
-                "assertFinite",
-            );
+        const { declaration: assertFinite } = this.context.functionDeclaration(
+            lineSystemModule,
+            "assertFinite",
+        );
         this.assertThrow(
             assertFinite,
             "!Number.isFinite(value)",
@@ -931,7 +918,6 @@ void update_line_system(
             );
         }
     }
-
 }
 
 /**
@@ -949,8 +935,8 @@ export function variantName(options: LineMaterialOptions): string {
         options.depthWrite === undefined
             ? undefined
             : options.depthWrite
-                ? "depth-write"
-                : "depth-read",
+              ? "depth-write"
+              : "depth-read",
     ].filter((part): part is string => part !== undefined);
     return ["line-material", ...suffix].join("-");
 }

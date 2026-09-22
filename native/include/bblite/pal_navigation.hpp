@@ -139,10 +139,8 @@ NavigationHandle navigation_create_plugin();
  * (2048 nodes, include-all filter). Throws with the wrapper's own
  * failure spelling when a stage fails.
  */
-void navigation_create_solo_nav_mesh(
-    NavigationHandle plugin,
-    const NavMeshGeometry& geometry,
-    const NavMeshBuildParams& params);
+void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
+                                     const NavMeshBuildParams& params);
 
 #ifndef BBLITE_HAS_NAV_TILE_CACHE
 #define BBLITE_HAS_NAV_TILE_CACHE 0
@@ -163,10 +161,8 @@ void navigation_create_solo_nav_mesh(
  * the arm exists for. Throws with the wrapper's own failure spelling when a
  * stage fails.
  */
-void navigation_create_tile_cache_nav_mesh(
-    NavigationHandle plugin,
-    const NavMeshGeometry& geometry,
-    const NavMeshBuildParams& params);
+void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
+                                           const NavMeshBuildParams& params);
 
 /**
  * One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
@@ -185,23 +181,15 @@ struct NavObstacleHandle {
  * `addBoxObstacle(position, halfExtents, angle)`: the cache's own oriented
  * box. Throws where the pinned factory returns null -- the cache is full.
  */
-NavObstacleHandle navigation_add_box_obstacle(
-    NavigationHandle plugin,
-    NavVec3 position,
-    NavVec3 half_extents,
-    float angle);
+NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
+                                              NavVec3 half_extents, float angle);
 
 /** `addCylinderObstacle(position, radius, height)`, likewise. */
-NavObstacleHandle navigation_add_cylinder_obstacle(
-    NavigationHandle plugin,
-    NavVec3 position,
-    float radius,
-    float height);
+NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
+                                                   float radius, float height);
 
 /** `removeObstacle`: drop one the cache holds. */
-void navigation_remove_obstacle(
-    NavigationHandle plugin,
-    NavObstacleHandle obstacle);
+void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obstacle);
 
 /**
  * `updateNavMeshObstacles`: run `tileCache.update()` until it reports no
@@ -219,10 +207,8 @@ void navigation_update_obstacles(NavigationHandle plugin);
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin);
 
 /** `raycast(plugin, start, end)`: hit iff `0 < t < 1`, point lerped. */
-NavRaycastHit navigation_raycast(
-    NavigationHandle plugin,
-    float start_x, float start_y, float start_z,
-    float end_x, float end_y, float end_z);
+NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float start_y,
+                                 float start_z, float end_x, float end_y, float end_z);
 
 /**
  * `NavMeshQuery.findClosestPoint(position, { halfExtents: ±1 })`: the
@@ -238,24 +224,17 @@ NavRaycastHit navigation_raycast(
  * `findClosestPointWithin` is the pinned entry point that does report
  * one, and it is unreached.
  */
-NavVec3 navigation_closest_point(
-    NavigationHandle plugin,
-    float x, float y, float z);
+NavVec3 navigation_closest_point(NavigationHandle plugin, float x, float y, float z);
 
 /** `computePath`: the corridor between two snapped points, straightened. */
-std::vector<NavVec3> navigation_compute_path(
-    NavigationHandle plugin,
-    NavVec3 start,
-    NavVec3 end);
+std::vector<NavVec3> navigation_compute_path(NavigationHandle plugin, NavVec3 start, NavVec3 end);
 
 /**
  * `new Crowd(navMesh, { maxAgents, maxAgentRadius })`: `dtAllocCrowd`
  * followed by `init`, over the plugin's own navmesh.
  */
-NavCrowdHandle navigation_create_crowd(
-    NavigationHandle plugin,
-    int max_agents,
-    float max_agent_radius);
+NavCrowdHandle navigation_create_crowd(NavigationHandle plugin, int max_agents,
+                                       float max_agent_radius);
 
 /**
  * `Crowd.addAgent`'s `dtCrowdAgentParams`, field for field. The three
@@ -277,31 +256,22 @@ struct NavAgentParams {
 };
 
 /** `Crowd.addAgent(position, params)` → the agent index it returned. */
-int navigation_add_agent(
-    NavCrowdHandle crowd,
-    float x, float y, float z,
-    const NavAgentParams& params);
+int navigation_add_agent(NavCrowdHandle crowd, float x, float y, float z,
+                         const NavAgentParams& params);
 
 /**
  * `CrowdAgent.position()`: the agent's `npos`. Absent when the crowd
  * holds no agent at that index, which is the `?.` the pinned
  * `getAgentPosition` reads through.
  */
-std::optional<NavVec3> navigation_agent_position(
-    NavCrowdHandle crowd,
-    int index);
+std::optional<NavVec3> navigation_agent_position(NavCrowdHandle crowd, int index);
 
 /** `agentGoto`: snap the destination, then move toward that polygon.
  *  False when the crowd holds no agent at that index -- the `?.` the
  *  pinned `agentGoto` reads through, reported rather than decided here. */
-bool navigation_agent_goto(
-    NavCrowdHandle crowd,
-    int index,
-    NavVec3 destination);
+bool navigation_agent_goto(NavCrowdHandle crowd, int index, NavVec3 destination);
 
 /** `updateNavCrowd`: advance the crowd simulation. */
-void navigation_update_crowd(
-    NavCrowdHandle crowd,
-    float delta_seconds);
+void navigation_update_crowd(NavCrowdHandle crowd, float delta_seconds);
 
 } // namespace bbl::pal

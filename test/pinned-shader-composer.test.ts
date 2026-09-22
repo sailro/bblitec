@@ -36,10 +36,7 @@ test("the composer emits the clearcoat base-F0 remap the pin owns", async () => 
     assert.equal(composed.fragmentKey, "ibl|clearcoat");
     // The remap the renderer currently hand-writes as bblClearcoatRemappedF0.
     // Composing it from the pin is what retires that transcription.
-    assert.match(
-        composed.fragmentWgsl,
-        /fn getR0RemappedForClearCoat\(/,
-    );
+    assert.match(composed.fragmentWgsl, /fn getR0RemappedForClearCoat\(/);
     assert.match(
         composed.fragmentWgsl,
         /colorF0=mix\(colorF0,remappedF0,ccInt_r\);/,

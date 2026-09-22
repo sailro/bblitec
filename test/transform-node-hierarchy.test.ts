@@ -51,13 +51,8 @@ test("compiles mixed TransformNode children in source insertion order", () => {
         "set_mesh_transform_parent",
         "push_transform_node_child",
     ]);
-    assert.equal(
-        result.cpp.match(/bbl::add_to_scene\(/g)?.length,
-        2,
-    );
-    assert.ok(
-        result.manifest.features.includes("mesh:transform-node"),
-    );
+    assert.equal(result.cpp.match(/bbl::add_to_scene\(/g)?.length, 2);
+    assert.ok(result.manifest.features.includes("mesh:transform-node"));
 });
 
 test("keeps a direct parent write out of the traversal list", () => {
@@ -79,10 +74,7 @@ test("keeps a direct parent write out of the traversal list", () => {
     `);
 
     assert.match(result.cpp, /bbl::set_mesh_transform_parent\(/);
-    assert.doesNotMatch(
-        result.cpp,
-        /bbl::push_transform_node_child\(/,
-    );
+    assert.doesNotMatch(result.cpp, /bbl::push_transform_node_child\(/);
 });
 
 test("refuses non-mesh and non-TransformNode traversal children", () => {
@@ -90,15 +82,13 @@ test("refuses non-mesh and non-TransformNode traversal children", () => {
         {
             name: "light",
             imports: "createHemisphericLight,",
-            value:
-                "createHemisphericLight({ x: 0, y: 1, z: 0 }, 1)",
+            value: "createHemisphericLight({ x: 0, y: 1, z: 0 }, 1)",
             kind: "light",
         },
         {
             name: "camera",
             imports: "createArcRotateCamera,",
-            value:
-                "createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 })",
+            value: "createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 })",
             kind: "camera",
         },
         {
@@ -150,9 +140,9 @@ test("refuses non-mesh and non-TransformNode traversal children", () => {
 });
 
 test("emits a depth-first ordered TransformNode traversal", () => {
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore({ transformNodes: true }).source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore({
+        transformNodes: true,
+    }).source;
 
     assert.match(
         source,
@@ -166,19 +156,16 @@ test("emits a depth-first ordered TransformNode traversal", () => {
     const addMeshStart = source.indexOf(
         "void add_to_scene(Scene& scene, MeshHandle mesh)",
     );
-    const addMeshEnd = source.indexOf(
-        "// A static glTF mesh",
-        addMeshStart,
-    );
+    const addMeshEnd = source.indexOf("// A static glTF mesh", addMeshStart);
     const addMesh = source.slice(addMeshStart, addMeshEnd);
     assert.match(addMesh, /scene\.meshes\.push_back\(mesh\);/);
     assert.doesNotMatch(addMesh, /find|none_of|unique/);
 });
 
 test("propagates nested dirty state through deduplicated parent links", () => {
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore({ transformNodes: true }).source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore({
+        transformNodes: true,
+    }).source;
 
     assert.match(
         source,
@@ -199,9 +186,10 @@ test("propagates nested dirty state through deduplicated parent links", () => {
 });
 
 test("preserves duplicate traversal pushes and explicit mesh additions", () => {
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore({ transformNodes: true, parenting: true }).source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore({
+        transformNodes: true,
+        parenting: true,
+    }).source;
 
     const meshPushStart = source.indexOf(
         "void push_transform_node_child(\n" +
@@ -216,10 +204,7 @@ test("preserves duplicate traversal pushes and explicit mesh additions", () => {
             "    TransformNodeHandle child)",
     );
     const meshPush = source.slice(meshPushStart, nodePushStart);
-    assert.match(
-        meshPush,
-        /children\.emplace_back\(child\);/,
-    );
+    assert.match(meshPush, /children\.emplace_back\(child\);/);
     assert.doesNotMatch(meshPush, /find|unique/);
     const unlinkStart = source.indexOf(
         "template <typename Children>\nvoid unlink_child_links",
@@ -231,10 +216,7 @@ test("preserves duplicate traversal pushes and explicit mesh additions", () => {
     const unlink = source.slice(unlinkStart, linkStart);
     assert.match(unlink, /const auto traversal = std::find_if/);
     assert.match(unlink, /children\.erase\(traversal\);/);
-    assert.match(
-        unlink,
-        /registered\.erase\(\s*std::remove/,
-    );
+    assert.match(unlink, /registered\.erase\(\s*std::remove/);
 });
 
 test("refuses traversal and parent cycles before recursive evaluation", () => {
@@ -259,9 +241,9 @@ test("refuses traversal and parent cycles before recursive evaluation", () => {
         2,
     );
 
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore({ transformNodes: true }).source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore({
+        transformNodes: true,
+    }).source;
     assert.match(
         source,
         /if \(active\[node\.value\]\) \{[\s\S]{0,120}"Transform-node traversal cycle detected\."/,
@@ -277,10 +259,10 @@ test("refuses traversal and parent cycles before recursive evaluation", () => {
 });
 
 test("gizmo bounds traverse mixed transform-node children", () => {
-    const source = new GizmoLowerer(
-        new LoweringContext(),
-        ["gizmo:utility-layer", "gizmo:bounding-box"],
-    ).lower().source;
+    const source = new GizmoLowerer(new LoweringContext(), [
+        "gizmo:utility-layer",
+        "gizmo:bounding-box",
+    ]).lower().source;
 
     assert.match(source, /std::vector<TransformNodeChild> pending;/);
     assert.match(
@@ -291,15 +273,12 @@ test("gizmo bounds traverse mixed transform-node children", () => {
 });
 
 test("emits only the editing gizmo builders reached by the scene", () => {
-    const source = new GizmoLowerer(
-        new LoweringContext(),
-        [
-            "gizmo:utility-layer",
-            "gizmo:axis-drag",
-            "gizmo:plane-drag",
-            "gizmo:position",
-        ],
-    ).lower().source;
+    const source = new GizmoLowerer(new LoweringContext(), [
+        "gizmo:utility-layer",
+        "gizmo:axis-drag",
+        "gizmo:plane-drag",
+        "gizmo:position",
+    ]).lower().source;
 
     assert.match(source, /create_axis_drag_gizmo\(/);
     assert.match(source, /create_plane_drag_gizmo\(/);
@@ -311,25 +290,17 @@ test("emits only the editing gizmo builders reached by the scene", () => {
 });
 
 test("keeps the native mixed child union separate from mesh children", () => {
-    const runtime = readFileSync(
-        "native/include/bblite/runtime.hpp",
-        "utf8",
-    );
+    const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
     assert.match(
         runtime,
         /using TransformNodeChild =\s*std::variant<MeshHandle, TransformNodeHandle>;/,
     );
 
-    const transformStart = runtime.indexOf(
-        "struct TransformNodeRecord",
-    );
+    const transformStart = runtime.indexOf("struct TransformNodeRecord");
     const meshStart = runtime.indexOf("struct MeshRecord", transformStart);
     const transformRecord = runtime.slice(transformStart, meshStart);
     const meshRecord = runtime.slice(meshStart, meshStart + 5000);
-    assert.match(
-        transformRecord,
-        /std::vector<TransformNodeChild> children;/,
-    );
+    assert.match(transformRecord, /std::vector<TransformNodeChild> children;/);
     assert.match(meshRecord, /std::vector<MeshHandle> children;/);
     assert.doesNotMatch(
         meshRecord,
@@ -344,15 +315,10 @@ test("keeps the native mixed child union separate from mesh children", () => {
 });
 
 test("omits TransformNode traversal code when the feature is absent", () => {
-    const source = new SceneLowerer(
-        new LoweringContext(),
-    ).lowerCore().source;
+    const source = new SceneLowerer(new LoweringContext()).lowerCore().source;
     assert.doesNotMatch(
         source,
         /void add_to_scene\(Scene& scene, TransformNodeHandle node\)/,
     );
-    assert.doesNotMatch(
-        source,
-        /void push_transform_node_child\(/,
-    );
+    assert.doesNotMatch(source, /void push_transform_node_child\(/);
 });

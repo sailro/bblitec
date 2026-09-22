@@ -140,10 +140,7 @@ export function browserCaptureStaleness(
         scene.source,
         meta.seekSeconds ?? undefined,
         scene.parity?.referenceAnimationGroups,
-        goldenFixedFrame(
-            scene,
-            captureUiEnabled() && usesRetainedUi(scene),
-        ),
+        goldenFixedFrame(scene, captureUiEnabled() && usesRetainedUi(scene)),
     );
     if (meta.moduleSha256 !== current) {
         return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
@@ -383,7 +380,9 @@ export async function runInstrumentedCapture(
 ): Promise<void> {
     const scene = resolveScene(idOrSource);
     if (scene.parity?.independentEngines !== undefined) {
-        throw new Error("Per-draw instrumented capture does not yet aggregate independent worker realms. Use the scene parity command for full-page and canvas comparisons.");
+        throw new Error(
+            "Per-draw instrumented capture does not yet aggregate independent worker realms. Use the scene parity command for full-page and canvas comparisons.",
+        );
     }
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
@@ -413,27 +412,24 @@ export async function runInstrumentedCapture(
         animationGroups,
         referenceFrame,
     );
-    const server = createSuiteSceneServer(
-        moduleSource,
-        {
-            sourcePath: scene.source,
-            ...(referenceFrame !== undefined
-                ? { fixedAnimationFrame: referenceFrame }
-                : {}),
-            // The same stub the parity reference installs: a scene whose
-            // manifest records `deterministic-seeded-random` must draw the
-            // pinned sequence here too, or the capture describes a
-            // different set of particles than the golden renders.
-            seededRandom: usesSeededRandom(scene),
-            // The same audited host-page elements the golden's page
-            // carries. Served in the HTML ahead of the module script,
-            // after the init-script hooks are installed — the injection
-            // cannot disturb hook timing.
-            ...(scene.nativeHostUi
-                ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
-                : {}),
-        },
-    );
+    const server = createSuiteSceneServer(moduleSource, {
+        sourcePath: scene.source,
+        ...(referenceFrame !== undefined
+            ? { fixedAnimationFrame: referenceFrame }
+            : {}),
+        // The same stub the parity reference installs: a scene whose
+        // manifest records `deterministic-seeded-random` must draw the
+        // pinned sequence here too, or the capture describes a
+        // different set of particles than the golden renders.
+        seededRandom: usesSeededRandom(scene),
+        // The same audited host-page elements the golden's page
+        // carries. Served in the HTML ahead of the module script,
+        // after the init-script hooks are installed — the injection
+        // cannot disturb hook timing.
+        ...(scene.nativeHostUi
+            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
+            : {}),
+    });
     await withBrowserPage(
         server,
         {
@@ -468,12 +464,15 @@ export async function runInstrumentedCapture(
                     // animations use the document timeline directly.
                     // Freeze them at the same requested frame, as the
                     // reference capture does.
-                    await page.evaluate((elapsedMilliseconds) => {
-                        for (const animation of document.getAnimations()) {
-                            animation.pause();
-                            animation.currentTime = elapsedMilliseconds;
-                        }
-                    }, referenceFrame * (1000 / 60));
+                    await page.evaluate(
+                        (elapsedMilliseconds) => {
+                            for (const animation of document.getAnimations()) {
+                                animation.pause();
+                                animation.currentTime = elapsedMilliseconds;
+                            }
+                        },
+                        referenceFrame * (1000 / 60),
+                    );
                 }
                 await page.screenshot({ path: screenshotPath });
             } else {
@@ -483,7 +482,7 @@ export async function runInstrumentedCapture(
                 });
             }
 
-            const dump = (await page.evaluate("window.__wgpuDump")) as {
+            const dump = await page.evaluate<{
                 shaders: { label: string; code: string }[];
                 buffers: {
                     id: number;
@@ -492,12 +491,14 @@ export async function runInstrumentedCapture(
                     usage: number;
                     writeCount: number;
                 }[];
-            };
+            }>("window.__wgpuDump");
             const draws = await page.evaluate("window.__draws");
             const textureUploads = await page.evaluate("window.__texUploads");
             dump.shaders.forEach((shader, index) => {
-                const name = (shader.label || `module-${index}`)
-                    .replace(/[^a-z0-9_.-]/gi, "_");
+                const name = (shader.label || `module-${index}`).replace(
+                    /[^a-z0-9_.-]/gi,
+                    "_",
+                );
                 writeFileSync(
                     join(
                         captureShadersDirectory(outputDirectory),
@@ -546,9 +547,8 @@ export async function runInstrumentedCapture(
                       scene.id,
                       "browser-canvas.png",
                   );
-            let goldenIdentity: NonNullable<
-                CaptureMeta["goldenIdentity"]
-            > = "not-checked";
+            let goldenIdentity: NonNullable<CaptureMeta["goldenIdentity"]> =
+                "not-checked";
             if (
                 skipDrawIndexCount === 0 &&
                 referencePath &&

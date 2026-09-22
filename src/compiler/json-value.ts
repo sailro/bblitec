@@ -22,11 +22,10 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 /** The two members both converter owners already expose. */
-interface JsonValueContext
-    extends Pick<LoweringServices,
-        | "cppString"
-        | "fail"
-    > {}
+interface JsonValueContext extends Pick<
+    LoweringServices,
+    "cppString" | "fail"
+> {}
 
 /**
  * What deliberately differs between the two converters. Every member is
@@ -83,10 +82,7 @@ export function jsonToValue(
         };
     }
     if (typeof json === "number") {
-        if (
-            policy.nonFiniteMessage !== undefined &&
-            !Number.isFinite(json)
-        ) {
+        if (policy.nonFiniteMessage !== undefined && !Number.isFinite(json)) {
             context.fail(node, policy.nonFiniteMessage);
         }
         return {

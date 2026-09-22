@@ -32,15 +32,23 @@ test("reaches only the sources a feature set implies", () => {
         "mesh:thin-instances",
     ]);
     assert.deepEqual(
-        meshes.filter(
-            (source) =>
-                source === "upstream/src/mesh_factories.cpp",
-        ),
+        meshes.filter((source) => source === "upstream/src/mesh_factories.cpp"),
         ["upstream/src/mesh_factories.cpp"],
     );
-    const babylon = reachedGeneratedSources(["loader:babylon", "light:point", "texture:file"]);
-    for (const source of ["upstream/src/babylon_loader.cpp", "upstream/src/light_point.cpp", "upstream/src/texture_file.cpp"])
-        assert.equal(babylon.filter(candidate => candidate === source).length, 1);
+    const babylon = reachedGeneratedSources([
+        "loader:babylon",
+        "light:point",
+        "texture:file",
+    ]);
+    for (const source of [
+        "upstream/src/babylon_loader.cpp",
+        "upstream/src/light_point.cpp",
+        "upstream/src/texture_file.cpp",
+    ])
+        assert.equal(
+            babylon.filter((candidate) => candidate === source).length,
+            1,
+        );
 });
 
 test("keeps the manifest order stable regardless of feature order", () => {

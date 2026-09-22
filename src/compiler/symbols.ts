@@ -2,10 +2,7 @@ import ts from "typescript";
 import { stringLiteralText, unwrapExpression } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
-export const babylonPackages = [
-    "babylon-lite",
-    "@babylonjs/lite",
-] as const;
+export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
 
 /**
  * Whether an import specifier names the pinned package. A scene reaches a
@@ -62,13 +59,38 @@ export function declarationInDefaultLibrary(declaration: ts.Node): boolean {
 /** An erased ambient declaration does not provide a native runtime binding.
  * Bare typeof may observe that absence; ordinary reads and imports still need
  * their actual implementation. Library globals retain their own lowering. */
-export function isAbsentTypeofIdentifier(checker: ts.TypeChecker, identifier: ts.Identifier): boolean {
+export function isAbsentTypeofIdentifier(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): boolean {
     const symbol = checker.getSymbolAtLocation(identifier);
     if (!symbol) return true;
-    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0 || declaredInDefaultLibrary(symbol)) return false;
-    if (declaredInDefaultLibrary(checker.resolveName(identifier.text, undefined, ts.SymbolFlags.Value, false))) return false;
-    return Boolean(symbol.declarations?.length) && symbol.declarations!.every(declaration =>
-        declaration.getSourceFile().isDeclarationFile || (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0);
+    if (
+        (symbol.flags & ts.SymbolFlags.Alias) !== 0 ||
+        declaredInDefaultLibrary(symbol)
+    )
+        return false;
+    if (
+        declaredInDefaultLibrary(
+            checker.resolveName(
+                identifier.text,
+                undefined,
+                ts.SymbolFlags.Value,
+                false,
+            ),
+        )
+    )
+        return false;
+    return (
+        Boolean(symbol.declarations?.length) &&
+        symbol.declarations!.every(
+            (declaration) =>
+                declaration.getSourceFile().isDeclarationFile ||
+                (ts.getCombinedModifierFlags(declaration) &
+                    ts.ModifierFlags.Ambient) !==
+                    0,
+        )
+    );
 }
 
 /**
@@ -94,9 +116,7 @@ export function isDefaultLibraryIdentifier(
 }
 
 export class CompilerSymbols {
-    public constructor(
-        private readonly checker: ts.TypeChecker,
-    ) {}
+    public constructor(private readonly checker: ts.TypeChecker) {}
 
     /** See {@link isDefaultLibraryIdentifier}. */
     public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
@@ -105,15 +125,33 @@ export class CompilerSymbols {
 
     /** Resolve a generation-known enum value through its pinned declaration,
      * including a property whose flow type has narrowed away the alias name. */
-    public pinnedEnumMemberForValue(expression: ts.Expression, enumName: string, value: number): string | undefined {
+    public pinnedEnumMemberForValue(
+        expression: ts.Expression,
+        enumName: string,
+        value: number,
+    ): string | undefined {
         const symbol = this.checker.getSymbolAtLocation(expression);
         const declaration = symbol?.valueDeclaration;
-        const type = declaration ? this.checker.getTypeAtLocation(declaration) : this.checker.getTypeAtLocation(expression);
+        const type = declaration
+            ? this.checker.getTypeAtLocation(declaration)
+            : this.checker.getTypeAtLocation(expression);
         const owner = type.aliasSymbol;
-        if (owner?.name !== enumName || !owner.declarations?.some(entry => entry.getSourceFile().fileName.replaceAll("\\", "/").includes("/@babylonjs/lite/"))) return undefined;
+        if (
+            owner?.name !== enumName ||
+            !owner.declarations?.some((entry) =>
+                entry
+                    .getSourceFile()
+                    .fileName.replaceAll("\\", "/")
+                    .includes("/@babylonjs/lite/"),
+            )
+        )
+            return undefined;
         const bag = this.checker.getTypeOfSymbolAtLocation(owner, expression);
-        return bag.getProperties().find(property => {
-            const member = this.checker.getTypeOfSymbolAtLocation(property, expression);
+        return bag.getProperties().find((property) => {
+            const member = this.checker.getTypeOfSymbolAtLocation(
+                property,
+                expression,
+            );
             return member.isNumberLiteral() && member.value === value;
         })?.name;
     }
@@ -123,26 +161,32 @@ export class CompilerSymbols {
         expression: ts.PropertyAccessExpression,
     ): number | string | undefined {
         const owner = expression.expression;
-        if (!ts.isIdentifier(owner) ||
-            !this.declarationSourcePath(owner)?.replaceAll("\\", "/").includes("/@babylonjs/lite/")) {
+        if (
+            !ts.isIdentifier(owner) ||
+            !this.declarationSourcePath(owner)
+                ?.replaceAll("\\", "/")
+                .includes("/@babylonjs/lite/")
+        ) {
             return undefined;
         }
-        const declaration = this.checker.getSymbolAtLocation(expression.name)
+        const declaration = this.checker
+            .getSymbolAtLocation(expression.name)
             ?.declarations?.find(ts.isPropertySignature);
-        if (!declaration?.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
-        )) return undefined;
+        if (
+            !declaration?.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+            )
+        )
+            return undefined;
         const type = this.checker.getTypeAtLocation(expression);
-        return type.isNumberLiteral() || type.isStringLiteral() ? type.value : undefined;
+        return type.isNumberLiteral() || type.isStringLiteral()
+            ? type.value
+            : undefined;
     }
 
-    public valueSymbol(
-        identifier: ts.MemberName,
-    ): ts.Symbol | undefined {
+    public valueSymbol(identifier: ts.MemberName): ts.Symbol | undefined {
         const symbol =
-            ts.isShorthandPropertyAssignment(
-                identifier.parent,
-            ) &&
+            ts.isShorthandPropertyAssignment(identifier.parent) &&
             identifier.parent.name === identifier
                 ? this.checker.getShorthandAssignmentValueSymbol(
                       identifier.parent,
@@ -151,31 +195,23 @@ export class CompilerSymbols {
         if (!symbol) {
             return undefined;
         }
-        const resolved = (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? this.checker.getAliasedSymbol(symbol)
-            : symbol;
+        const resolved =
+            (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.checker.getAliasedSymbol(symbol)
+                : symbol;
         // A constructor parameter-property has one declaration but the
         // checker may expose its declaration-name symbol at the parameter
         // and its property-flavoured symbol at a use in the constructor
         // body. Canonicalize both through that shared parameter declaration
         // so lexical lookup does not depend on which view the checker gave
         // the particular identifier.
-        const parameter = resolved.declarations?.find(
-            ts.isParameter,
-        );
+        const parameter = resolved.declarations?.find(ts.isParameter);
         if (
             parameter &&
             ts.isIdentifier(parameter.name) &&
-            ts.isParameterPropertyDeclaration(
-                parameter,
-                parameter.parent,
-            )
+            ts.isParameterPropertyDeclaration(parameter, parameter.parent)
         ) {
-            return (
-                this.checker.getSymbolAtLocation(
-                    parameter.name,
-                ) ?? resolved
-            );
+            return this.checker.getSymbolAtLocation(parameter.name) ?? resolved;
         }
         return resolved;
     }
@@ -188,8 +224,7 @@ export class CompilerSymbols {
     public declarationSourcePath(
         identifier: ts.Identifier,
     ): string | undefined {
-        const declaration =
-            this.valueSymbol(identifier)?.declarations?.[0];
+        const declaration = this.valueSymbol(identifier)?.declarations?.[0];
         return declaration?.getSourceFile().fileName;
     }
 
@@ -217,9 +252,7 @@ export class CompilerSymbols {
      * specifier nests three levels under the declaration, and a DEFAULT
      * import, whose clause is the declaration's direct child.
      */
-    private importModuleSpecifier(
-        identifier: ts.Identifier,
-    ):
+    private importModuleSpecifier(identifier: ts.Identifier):
         | {
               specifier: string;
               named?: ts.ImportSpecifier;
@@ -256,9 +289,7 @@ export class CompilerSymbols {
     }
 
     /** See {@link physicsEngineModulePackage}. */
-    public isPhysicsEngineModule(
-        identifier: ts.Identifier,
-    ): boolean {
+    public isPhysicsEngineModule(identifier: ts.Identifier): boolean {
         return (
             this.importModuleSpecifier(identifier)?.specifier ===
             physicsEngineModulePackage
@@ -270,32 +301,49 @@ export class CompilerSymbols {
         active?: Set<ts.Symbol>,
     ): string | undefined {
         const identifier = unwrapExpression(expression);
-        if (ts.isPropertyAccessExpression(identifier) || ts.isElementAccessExpression(identifier)) {
+        if (
+            ts.isPropertyAccessExpression(identifier) ||
+            ts.isElementAccessExpression(identifier)
+        ) {
             const owner = unwrapExpression(identifier.expression);
             if (!ts.isIdentifier(owner)) return undefined;
             const imported = this.importModuleSpecifier(owner);
-            if (!imported?.nonNamed || imported.typeOnly || !isBabylonModule(imported.specifier)) return undefined;
-            const name = ts.isPropertyAccessExpression(identifier) ? identifier.name.text
-                : stringLiteralText(unwrapExpression(identifier.argumentExpression));
-            return name && this.checker.getPropertyOfType(this.checker.getTypeAtLocation(owner), name) ? name : undefined;
+            if (
+                !imported?.nonNamed ||
+                imported.typeOnly ||
+                !isBabylonModule(imported.specifier)
+            )
+                return undefined;
+            const name = ts.isPropertyAccessExpression(identifier)
+                ? identifier.name.text
+                : stringLiteralText(
+                      unwrapExpression(identifier.argumentExpression),
+                  );
+            return name &&
+                this.checker.getPropertyOfType(
+                    this.checker.getTypeAtLocation(owner),
+                    name,
+                )
+                ? name
+                : undefined;
         }
         if (!ts.isIdentifier(identifier)) return undefined;
         const imported = this.importModuleSpecifier(identifier);
-        if (
-            !imported?.named ||
-            !isBabylonModule(imported.specifier)
-        ) {
+        if (!imported?.named || !isBabylonModule(imported.specifier)) {
             const symbol = this.valueSymbol(identifier);
             if (!symbol || active?.has(symbol)) return undefined;
             active ??= new Set();
             active.add(symbol);
             const declaration = symbol.valueDeclaration;
-            return declaration && ts.isVariableDeclaration(declaration) && declaration.initializer &&
-                ts.isVariableDeclarationList(declaration.parent) && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-                ? this.importedName(declaration.initializer, active) : undefined;
+            return declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                ts.isVariableDeclarationList(declaration.parent) &&
+                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+                ? this.importedName(declaration.initializer, active)
+                : undefined;
         }
-        return imported.named.propertyName?.text ??
-            imported.named.name.text;
+        return imported.named.propertyName?.text ?? imported.named.name.text;
     }
 
     /**
@@ -303,9 +351,7 @@ export class CompilerSymbols {
      * which export is reached. Used by bounded executors that must reject the
      * latter rather than mistake it for a local value.
      */
-    public babylonImportName(
-        identifier: ts.Identifier,
-    ): string | undefined {
+    public babylonImportName(identifier: ts.Identifier): string | undefined {
         const imported = this.importModuleSpecifier(identifier);
         if (
             !imported ||
@@ -316,8 +362,7 @@ export class CompilerSymbols {
         }
         return imported.nonNamed
             ? "*"
-            : imported.named?.propertyName?.text ??
-                  imported.named?.name.text;
+            : (imported.named?.propertyName?.text ?? imported.named?.name.text);
     }
 
     /**

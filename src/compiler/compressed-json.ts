@@ -17,38 +17,30 @@ import type { LoweringServices } from "./lowering-services.js";
 // carry the parsed JSON through the compiler's existing record/tuple values.
 // The match is structural so this is a format capability rather than a scene
 // or export-name special case.
-import {
-    gunzipSync,
-} from "node:zlib";
+import { gunzipSync } from "node:zlib";
 import ts from "typescript";
 
 import { doubleLiteral } from "../cpp-literals.js";
-import {
-    jsonToValue,
-    type JsonValuePolicy,
-} from "./json-value.js";
+import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { Value } from "./types.js";
 import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
 import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
-interface CompressedJsonContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "compileStringLiteral"
-        | "compileValue"
-        | "cppString"
-        | "fail"
-    > {}
+interface CompressedJsonContext extends Pick<
+    LoweringServices,
+    "checker" | "compileStringLiteral" | "compileValue" | "cppString" | "fail"
+> {}
 
 function functionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): ts.FunctionDeclaration | undefined {
     const symbol = checker.getSymbolAtLocation(identifier);
-    const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-        ? checker.getAliasedSymbol(symbol)
-        : symbol;
+    const target =
+        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+            ? checker.getAliasedSymbol(symbol)
+            : symbol;
     return target?.declarations?.find(
         (candidate): candidate is ts.FunctionDeclaration =>
             ts.isFunctionDeclaration(candidate) && candidate.body !== undefined,
@@ -59,8 +51,10 @@ function identifierIs(
     expression: ts.Expression | undefined,
     expected: string,
 ): expression is ts.Identifier {
-    return !!expression &&
-        identifierText(unwrapExpression(expression)) === expected;
+    return (
+        !!expression &&
+        identifierText(unwrapExpression(expression)) === expected
+    );
 }
 
 /** A built-in rather than a same-spelled module binding. */
@@ -74,10 +68,12 @@ function globalIdentifierIs(
         return false;
     }
     const symbol = checker.getSymbolAtLocation(unwrapped);
-    return !!symbol?.declarations?.length &&
+    return (
+        !!symbol?.declarations?.length &&
         symbol.declarations.every(
             (declaration) => declaration.getSourceFile().isDeclarationFile,
-        );
+        )
+    );
 }
 
 function propertyCall(
@@ -117,9 +113,7 @@ function constBinding(
         : undefined;
 }
 
-function singleStatement(
-    statement: ts.Statement,
-): ts.Statement | undefined {
+function singleStatement(statement: ts.Statement): ts.Statement | undefined {
     return ts.isBlock(statement)
         ? statement.statements.length === 1
             ? statement.statements[0]
@@ -127,14 +121,13 @@ function singleStatement(
         : statement;
 }
 
-function isReturnOf(
-    statement: ts.Statement,
-    name: string,
-): boolean {
+function isReturnOf(statement: ts.Statement, name: string): boolean {
     const only = singleStatement(statement);
-    return !!only &&
+    return (
+        !!only &&
         ts.isReturnStatement(only) &&
-        identifierIs(only.expression, name);
+        identifierIs(only.expression, name)
+    );
 }
 
 function isContinue(statement: ts.Statement): boolean {
@@ -142,10 +135,7 @@ function isContinue(statement: ts.Statement): boolean {
     return !!only && ts.isContinueStatement(only);
 }
 
-function isStringLiteral(
-    expression: ts.Expression,
-    expected: string,
-): boolean {
+function isStringLiteral(expression: ts.Expression, expected: string): boolean {
     const unwrapped = unwrapExpression(expression);
     return ts.isStringLiteralLike(unwrapped) && unwrapped.text === expected;
 }
@@ -156,19 +146,23 @@ function isPropertyRead(
     property: string,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
-    return ts.isPropertyAccessExpression(unwrapped) &&
+    return (
+        ts.isPropertyAccessExpression(unwrapped) &&
         !unwrapped.questionDotToken &&
         unwrapped.name.text === property &&
-        identifierIs(unwrapped.expression, owner);
+        identifierIs(unwrapped.expression, owner)
+    );
 }
 
 function plainIdentifierParameter(
     parameter: ts.ParameterDeclaration,
 ): parameter is ts.ParameterDeclaration & { name: ts.Identifier } {
-    return ts.isIdentifier(parameter.name) &&
+    return (
+        ts.isIdentifier(parameter.name) &&
         !parameter.dotDotDotToken &&
         !parameter.questionToken &&
-        !parameter.initializer;
+        !parameter.initializer
+    );
 }
 
 function isArrayCheck(
@@ -177,11 +171,13 @@ function isArrayCheck(
     value: string,
 ): boolean {
     const call = propertyCall(expression, "isArray");
-    return !!call &&
+    return (
+        !!call &&
         call.arguments.length === 1 &&
         ts.isPropertyAccessExpression(call.expression) &&
         globalIdentifierIs(checker, call.expression.expression, "Array") &&
-        identifierIs(call.arguments[0], value);
+        identifierIs(call.arguments[0], value)
+    );
 }
 
 function isNegated(
@@ -189,16 +185,20 @@ function isNegated(
     predicate: (operand: ts.Expression) => boolean,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
-    return ts.isPrefixUnaryExpression(unwrapped) &&
+    return (
+        ts.isPrefixUnaryExpression(unwrapped) &&
         unwrapped.operator === ts.SyntaxKind.ExclamationToken &&
-        predicate(unwrapped.operand);
+        predicate(unwrapped.operand)
+    );
 }
 
 function isTypeOfComparison(
     expression: ts.Expression,
     owner: string,
     property: string | undefined,
-    operator: ts.SyntaxKind.EqualsEqualsEqualsToken | ts.SyntaxKind.ExclamationEqualsEqualsToken,
+    operator:
+        | ts.SyntaxKind.EqualsEqualsEqualsToken
+        | ts.SyntaxKind.ExclamationEqualsEqualsToken,
     expected: string,
 ): boolean {
     const comparison = unwrapExpression(expression);
@@ -230,7 +230,8 @@ function isMissingOrNonObjectGuard(
         return false;
     }
     const condition = unwrapExpression(statement.expression);
-    return ts.isBinaryExpression(condition) &&
+    return (
+        ts.isBinaryExpression(condition) &&
         condition.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
         isNegated(condition.left, (operand) => identifierIs(operand, value)) &&
         isTypeOfComparison(
@@ -239,7 +240,8 @@ function isMissingOrNonObjectGuard(
             undefined,
             ts.SyntaxKind.ExclamationEqualsEqualsToken,
             "object",
-        );
+        )
+    );
 }
 
 function forOfBinding(
@@ -283,11 +285,16 @@ function isGzipBase64JsonDecoder(
     ) {
         return false;
     }
-    const encoded = declaration.parameters[0]!.name.text;
+    const encoded = declaration.parameters[0].name.text;
     const bytes = constBinding(declaration.body.statements[0]!);
     const stream = constBinding(declaration.body.statements[1]!);
     const returned = declaration.body.statements[2]!;
-    if (!bytes || !stream || !ts.isReturnStatement(returned) || !returned.expression) {
+    if (
+        !bytes ||
+        !stream ||
+        !ts.isReturnStatement(returned) ||
+        !returned.expression
+    ) {
         return false;
     }
 
@@ -323,13 +330,16 @@ function isGzipBase64JsonDecoder(
     ) {
         return false;
     }
-    const char = mapper.parameters[0]!.name.text;
+    const char = mapper.parameters[0].name.text;
     const charCodeAt = propertyCall(mapper.body, "charCodeAt");
     if (
         !charCodeAt ||
         charCodeAt.arguments.length !== 1 ||
         !ts.isNumericLiteral(unwrapExpression(argumentAt(charCodeAt, 0))) ||
-        Number((unwrapExpression(argumentAt(charCodeAt, 0)) as ts.NumericLiteral).text) !== 0 ||
+        Number(
+            (unwrapExpression(argumentAt(charCodeAt, 0)) as ts.NumericLiteral)
+                .text,
+        ) !== 0 ||
         !ts.isPropertyAccessExpression(charCodeAt.expression) ||
         !identifierIs(charCodeAt.expression.expression, char)
     ) {
@@ -346,21 +356,26 @@ function isGzipBase64JsonDecoder(
         !streamCall ||
         streamCall.arguments.length !== 0 ||
         !ts.isPropertyAccessExpression(streamCall.expression) ||
-        !ts.isNewExpression(unwrapExpression(streamCall.expression.expression)) ||
+        !ts.isNewExpression(
+            unwrapExpression(streamCall.expression.expression),
+        ) ||
         !ts.isNewExpression(decompressor)
     ) {
         return false;
     }
-    const blob = unwrapExpression(streamCall.expression.expression) as ts.NewExpression;
+    const blob = unwrapExpression(
+        streamCall.expression.expression,
+    ) as ts.NewExpression;
     if (
         !globalIdentifierIs(checker, blob.expression, "Blob") ||
         (blob.typeArguments?.length ?? 0) !== 0 ||
         blob.arguments?.length !== 1 ||
         !ts.isArrayLiteralExpression(unwrapExpression(argumentAt(blob, 0))) ||
-        (unwrapExpression(argumentAt(blob, 0)) as ts.ArrayLiteralExpression).elements.length !== 1 ||
+        (unwrapExpression(argumentAt(blob, 0)) as ts.ArrayLiteralExpression)
+            .elements.length !== 1 ||
         !identifierIs(
             (unwrapExpression(argumentAt(blob, 0)) as ts.ArrayLiteralExpression)
-                .elements[0] as ts.Expression,
+                .elements[0],
             bytes.name,
         ) ||
         !globalIdentifierIs(
@@ -389,10 +404,12 @@ function isGzipBase64JsonDecoder(
     const response = unwrapExpression(
         jsonCall.expression.expression,
     ) as ts.NewExpression;
-    return globalIdentifierIs(checker, response.expression, "Response") &&
+    return (
+        globalIdentifierIs(checker, response.expression, "Response") &&
         (response.typeArguments?.length ?? 0) === 0 &&
         response.arguments?.length === 1 &&
-        identifierIs(response.arguments[0], stream.name);
+        identifierIs(response.arguments[0], stream.name)
+    );
 }
 
 function isArrayGuard(
@@ -401,18 +418,17 @@ function isArrayGuard(
     array: string,
     miss: (statement: ts.Statement) => boolean,
 ): boolean {
-    return ts.isIfStatement(statement) &&
+    return (
+        ts.isIfStatement(statement) &&
         !statement.elseStatement &&
         isNegated(statement.expression, (operand) =>
             isArrayCheck(checker, operand, array),
         ) &&
-        miss(statement.thenStatement);
+        miss(statement.thenStatement)
+    );
 }
 
-function isInputAliasLoop(
-    statement: ts.Statement,
-    inputs: string,
-): boolean {
+function isInputAliasLoop(statement: ts.Statement, inputs: string): boolean {
     const loop = forOfBinding(statement, inputs);
     if (!loop || loop.statements.length !== 3) return false;
     const [guard, entryStatement, assignmentGuard] = loop.statements;
@@ -422,11 +438,11 @@ function isInputAliasLoop(
         !entry ||
         !identifierIs(entry.initializer, loop.name) ||
         !ts.isIfStatement(assignmentGuard!) ||
-        assignmentGuard!.elseStatement
+        assignmentGuard.elseStatement
     ) {
         return false;
     }
-    const condition = unwrapExpression(assignmentGuard!.expression);
+    const condition = unwrapExpression(assignmentGuard.expression);
     if (
         !ts.isBinaryExpression(condition) ||
         condition.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken
@@ -449,13 +465,15 @@ function isInputAliasLoop(
     ) {
         return false;
     }
-    const assignment = singleStatement(assignmentGuard!.thenStatement);
+    const assignment = singleStatement(assignmentGuard.thenStatement);
     if (!assignment || !ts.isExpressionStatement(assignment)) return false;
     const binary = unwrapExpression(assignment.expression);
-    return ts.isBinaryExpression(binary) &&
+    return (
+        ts.isBinaryExpression(binary) &&
         binary.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         isPropertyRead(binary.left, entry.name, "inputName") &&
-        isPropertyRead(binary.right, entry.name, "name");
+        isPropertyRead(binary.right, entry.name, "name")
+    );
 }
 
 /** The compatibility pass the compressed NME modules apply after decoding. */
@@ -475,7 +493,7 @@ function isInputNameAliasRestorer(
     ) {
         return false;
     }
-    const json = declaration.parameters[0]!.name.text;
+    const json = declaration.parameters[0].name.text;
     const [blocksStatement, blocksGuard, blockLoopStatement, returned] =
         declaration.body.statements;
     const blocks = constBinding(blocksStatement!);
@@ -485,11 +503,8 @@ function isInputNameAliasRestorer(
     if (
         !blocks ||
         !isPropertyRead(blocks.initializer, json, "blocks") ||
-        !isArrayGuard(
-            checker,
-            blocksGuard!,
-            blocks.name,
-            (statement) => isReturnOf(statement, json),
+        !isArrayGuard(checker, blocksGuard!, blocks.name, (statement) =>
+            isReturnOf(statement, json),
         ) ||
         !blockLoop ||
         blockLoop.statements.length !== 4 ||
@@ -500,16 +515,13 @@ function isInputNameAliasRestorer(
     const [blockGuard, inputsStatement, inputsGuard, inputLoop] =
         blockLoop.statements;
     const inputs = constBinding(inputsStatement!);
-    return isMissingOrNonObjectGuard(blockGuard!, blockLoop.name) &&
+    return (
+        isMissingOrNonObjectGuard(blockGuard!, blockLoop.name) &&
         !!inputs &&
         isPropertyRead(inputs.initializer, blockLoop.name, "inputs") &&
-        isArrayGuard(
-            checker,
-            inputsGuard!,
-            inputs.name,
-            isContinue,
-        ) &&
-        isInputAliasLoop(inputLoop!, inputs.name);
+        isArrayGuard(checker, inputsGuard!, inputs.name, isContinue) &&
+        isInputAliasLoop(inputLoop!, inputs.name)
+    );
 }
 
 /**
@@ -548,7 +560,10 @@ function restoreInputNameAliases(json: unknown): unknown {
         for (const input of inputs) {
             if (!input || typeof input !== "object") continue;
             const entry = input as { name?: unknown; inputName?: unknown };
-            if (entry.inputName === undefined && typeof entry.name === "string") {
+            if (
+                entry.inputName === undefined &&
+                typeof entry.name === "string"
+            ) {
                 entry.inputName = entry.name;
             }
         }
@@ -593,8 +608,7 @@ function derivedJsonPass(
     if (
         !returnType ||
         !ts.isTypeReferenceNode(returnType) ||
-        returnType.typeName.getText(returnType.getSourceFile()) !==
-            "Record"
+        returnType.typeName.getText(returnType.getSourceFile()) !== "Record"
     ) {
         return undefined;
     }
@@ -660,7 +674,10 @@ export function compileCompressedJsonCall(
 
     if (isInputNameAliasRestorer(context.checker, declaration)) {
         if (call.arguments.length !== 1) {
-            context.fail(call, "An input-name alias restorer takes one JSON value.");
+            context.fail(
+                call,
+                "An input-name alias restorer takes one JSON value.",
+            );
         }
         const value = context.compileValue(argumentAt(call, 0));
         if (value.staticJson === undefined) {
@@ -709,10 +726,7 @@ export function compileCompressedJsonPromiseThen(
         context.checker,
         then.expression.expression,
     );
-    const restorer = functionDeclaration(
-        context.checker,
-        callback,
-    );
+    const restorer = functionDeclaration(context.checker, callback);
     if (
         !decoder ||
         !restorer ||
@@ -730,10 +744,7 @@ export function compileCompressedJsonPromiseThen(
     return jsonValue(
         context,
         restoreInputNameAliases(
-            decodeCompressedJson(
-                context,
-                argumentAt(then.expression, 0),
-            ),
+            decodeCompressedJson(context, argumentAt(then.expression, 0)),
         ),
         call,
     );

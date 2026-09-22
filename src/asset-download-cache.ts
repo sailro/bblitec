@@ -55,9 +55,7 @@ export async function downloadCached(url: string): Promise<Uint8Array> {
  */
 export function readCachedDownload(url: string): Uint8Array | undefined {
     const path = entryPath(url);
-    return existsSync(path)
-        ? new Uint8Array(readFileSync(path))
-        : undefined;
+    return existsSync(path) ? new Uint8Array(readFileSync(path)) : undefined;
 }
 
 /**
@@ -87,8 +85,7 @@ export async function downloadCachedResource(
         throw new Error(`Failed to download ${url}: HTTP ${response.status}.`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
-    const contentType = response.headers.get("content-type")
-        ?.split(";", 1)[0];
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0];
     try {
         mkdirSync(dirname(path), { recursive: true });
         storeAtomically(path, bytes);

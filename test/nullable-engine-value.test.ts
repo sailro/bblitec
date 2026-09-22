@@ -90,9 +90,16 @@ test("an uncaptured lazily created gizmo is a plain optional local", () => {
         result.cpp,
         /make_gc_shared<std::optional<bbl::CompositeGizmoHandle>>/,
     );
-    assert.match(result.cpp, /v_gizmo = bbl::create_rotation_gizmo\(v_engine, v_layer,/);
+    assert.match(
+        result.cpp,
+        /v_gizmo = bbl::create_rotation_gizmo\(v_engine, v_layer,/,
+    );
     assert.match(result.cpp, /if \(v_gizmo\.has_value\(\)\) \{/);
-    assert.match(result.cpp, /v_gizmo\.reset\(\);/, "assigning null empties the storage");
+    assert.match(
+        result.cpp,
+        /v_gizmo\.reset\(\);/,
+        "assigning null empties the storage",
+    );
 });
 
 test("one widget's storage refuses another widget's handle", () => {
@@ -129,7 +136,8 @@ test("attaching a maybe-absent node detaches instead of dereferencing", () => {
     // optional's `operator*` instead threw `std::bad_optional_access` from
     // inside the scene's own pointer callback -- and no static capture pose
     // reaches it, because the parity run never clicks.
-    const result = compileSource(`${preamble}
+    const result = compileSource(
+        `${preamble}
         const picker = createGpuPicker(scene);
         const targets = [cube];
         let gizmo: RotationGizmo | null = null;
@@ -147,9 +155,10 @@ test("attaching a maybe-absent node detaches instead of dereferencing", () => {
             attachRotationGizmoToNode(gizmo, target);
         });
     `.replace(
-        "createPositionGizmo, createRotationGizmo",
-        "createGpuPicker, createPositionGizmo, createRotationGizmo, pickAsync, type Mesh,",
-    ));
+            "createPositionGizmo, createRotationGizmo",
+            "createGpuPicker, createPositionGizmo, createRotationGizmo, pickAsync, type Mesh,",
+        ),
+    );
     const attach = result.cpp
         .split("\n")
         .find((line) => line.includes("attach_composite_gizmo_to_node"));

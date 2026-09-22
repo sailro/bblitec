@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(BBLITE_GENERATED_DIR "" CACHE PATH "Directory produced by bblitec")
 if(NOT BBLITE_GENERATED_DIR)
     message(FATAL_ERROR "Set BBLITE_GENERATED_DIR to a directory containing main.cpp and features.cmake.")

@@ -13,7 +13,9 @@
 using bbl::pal::DeviceOptions;
 using bbl::pal::use_dawn_backend;
 namespace js = bbl::js;
-struct ANativeWindow { int references = 0; };
+struct ANativeWindow {
+    int references = 0;
+};
 struct DawnDevice {
     WGPUInstance instance = nullptr;
     WGPUDevice device = nullptr;
@@ -28,18 +30,32 @@ struct DawnDevice {
     std::uint32_t surface_width = 0, surface_height = 0;
     void release_surface() noexcept;
 };
-struct OffscreenImage { virtual ~OffscreenImage() = default; };
+struct OffscreenImage {
+    virtual ~OffscreenImage() = default;
+};
 [[noreturn]] void dawn_error(const std::string& message) { throw std::runtime_error(message); }
 constexpr const char* SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER = "android.window";
 static ANativeWindow* native_window = nullptr;
 static bool locked = false, lock_succeeds = true, create_succeeds = true;
 static int live_surfaces = 0, surfaces_created = 0, configured = 0;
 void* SDL_GetWindowProperties(void* window) { return window; }
-bool SDL_LockProperties(void*) { assert(!locked); return locked = lock_succeeds; }
-void SDL_UnlockProperties(void*) { assert(locked); locked = false; }
+bool SDL_LockProperties(void*) {
+    assert(!locked);
+    return locked = lock_succeeds;
+}
+void SDL_UnlockProperties(void*) {
+    assert(locked);
+    locked = false;
+}
 const char* SDL_GetError() { return "property lock failed"; }
-void* SDL_GetPointerProperty(void*, const char*, void*) { assert(locked); return native_window; }
-void ANativeWindow_acquire(ANativeWindow* window) { assert(locked); ++window->references; }
+void* SDL_GetPointerProperty(void*, const char*, void*) {
+    assert(locked);
+    return native_window;
+}
+void ANativeWindow_acquire(ANativeWindow* window) {
+    assert(locked);
+    ++window->references;
+}
 void ANativeWindow_release(ANativeWindow* window) {
     assert(!locked && live_surfaces == 0 && window->references > 0);
     --window->references;
@@ -47,33 +63,42 @@ void ANativeWindow_release(ANativeWindow* window) {
 WGPUSurface wgpuInstanceCreateSurface(WGPUInstance, const WGPUSurfaceDescriptor* descriptor) {
     assert(!locked);
     assert(descriptor->nextInChain->sType == WGPUSType_SurfaceSourceAndroidNativeWindow);
-    const auto* source = reinterpret_cast<const WGPUSurfaceSourceAndroidNativeWindow*>(descriptor->nextInChain);
+    const auto* source =
+        reinterpret_cast<const WGPUSurfaceSourceAndroidNativeWindow*>(descriptor->nextInChain);
     assert(source->window == native_window && native_window->references == 1);
-    if (!create_succeeds) return nullptr;
+    if (!create_succeeds)
+        return nullptr;
     ++surfaces_created;
     ++live_surfaces;
     return reinterpret_cast<WGPUSurface>(std::uintptr_t{1});
 }
-void wgpuSurfaceRelease(WGPUSurface) { assert(live_surfaces == 1); --live_surfaces; }
+void wgpuSurfaceRelease(WGPUSurface) {
+    assert(live_surfaces == 1);
+    --live_surfaces;
+}
 static WGPUSurfaceConfiguration surface_configuration;
 void wgpuSurfaceConfigure(WGPUSurface, const WGPUSurfaceConfiguration* configuration) {
     ++configured;
     surface_configuration = *configuration;
 }
 using SDL_WindowFlags = std::uint64_t;
-constexpr SDL_WindowFlags SDL_WINDOW_FULLSCREEN = 1, SDL_WINDOW_VULKAN = 2, SDL_WINDOW_RESIZABLE = 4;
-struct EngineOptions { int width = 0, height = 0; };
+constexpr SDL_WindowFlags SDL_WINDOW_FULLSCREEN = 1, SDL_WINDOW_VULKAN = 2,
+                          SDL_WINDOW_RESIZABLE = 4;
+struct EngineOptions {
+    int width = 0, height = 0;
+};
 static std::string requested_backend;
 namespace bbl::pal {
 std::string environment_variable(const char*) { return requested_backend; }
-}
+} // namespace bbl::pal
 
 static std::vector<WGPUTextureFormat> formats;
 static std::vector<WGPUPresentMode> modes;
 static WGPUTextureUsage usages = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
 static WGPUStatus status = WGPUStatus_Success;
 static int freed = 0;
-WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface, WGPUAdapter, WGPUSurfaceCapabilities* capabilities) {
+WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface, WGPUAdapter,
+                                      WGPUSurfaceCapabilities* capabilities) {
     capabilities->formatCount = formats.size();
     capabilities->formats = formats.data();
     capabilities->presentModeCount = modes.size();
@@ -89,20 +114,25 @@ WGPUTexture wgpuDeviceCreateTexture(WGPUDevice, const WGPUTextureDescriptor* des
 }
 static int textures_released = 0, acquisitions = 0;
 void wgpuTextureRelease(WGPUTexture) { ++textures_released; }
-static WGPUSurfaceGetCurrentTextureStatus acquisition_status = WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal;
+static WGPUSurfaceGetCurrentTextureStatus acquisition_status =
+    WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal;
 static bool acquisition_texture = true;
 void wgpuSurfaceGetCurrentTexture(WGPUSurface, WGPUSurfaceTexture* texture) {
     ++acquisitions;
     texture->status = acquisition_status;
-    texture->texture = acquisition_texture ? reinterpret_cast<WGPUTexture>(std::uintptr_t{1}) : nullptr;
+    texture->texture =
+        acquisition_texture ? reinterpret_cast<WGPUTexture>(std::uintptr_t{1}) : nullptr;
 }
 
 #include "surface-under-test.hpp"
 
-template <typename Action>
-void expect_error(Action action) {
+template <typename Action> void expect_error(Action action) {
     bool failed = false;
-    try { action(); } catch (const std::exception&) { failed = true; }
+    try {
+        action();
+    } catch (const std::exception&) {
+        failed = true;
+    }
     assert(failed);
 }
 
@@ -110,7 +140,8 @@ int main() {
     requested_backend = "dawn";
 #if BBLITE_HAS_DAWN
     assert(use_dawn_backend());
-    assert(run_window_flags(SDL_WINDOW_RESIZABLE, {}) == (SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_VULKAN));
+    assert(run_window_flags(SDL_WINDOW_RESIZABLE, {}) ==
+           (SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_VULKAN));
 #else
     expect_error([] { use_dawn_backend(); });
 #endif
@@ -153,7 +184,8 @@ int main() {
     expect_error([&] { select_dawn_surface_configuration(state, {}); });
     assert(freed == 4);
     usages |= WGPUTextureUsage_CopySrc;
-    for (const auto supported : {std::vector<WGPUTextureFormat>{}, {WGPUTextureFormat_RGBA16Float}}) {
+    for (const auto supported :
+         {std::vector<WGPUTextureFormat>{}, {WGPUTextureFormat_RGBA16Float}}) {
         formats = supported;
         expect_error([&] { select_dawn_surface_configuration(state, {}); });
     }
@@ -172,7 +204,8 @@ int main() {
     assert(first.references == 1 && surfaces_created == 1 && configured == 1);
     native_window = &second;
     assert(!resize_dawn_surface(state, 1280, 720));
-    assert(first.references == 0 && second.references == 1 && surfaces_created == 2 && configured == 2);
+    assert(first.references == 0 && second.references == 1 && surfaces_created == 2 &&
+           configured == 2);
     assert(resize_dawn_surface(state, 960, 540));
     assert(surfaces_created == 2 && configured == 3);
     assert(surface_configuration.width == 960 && surface_configuration.height == 540);
@@ -180,12 +213,14 @@ int main() {
     assert(surface_configuration.device == state.device);
     assert(!resize_dawn_surface(state, EngineOptions{0, 540}));
     WGPUSurfaceTexture acquired = WGPU_SURFACE_TEXTURE_INIT;
-    for (const auto success : {WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal, WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal}) {
+    for (const auto success : {WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal,
+                               WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal}) {
         acquisition_status = success;
         assert(acquire_dawn_surface_texture(state, acquired));
         wgpuTextureRelease(acquired.texture);
     }
-    for (const auto retry : {WGPUSurfaceGetCurrentTextureStatus_Timeout, WGPUSurfaceGetCurrentTextureStatus_Outdated}) {
+    for (const auto retry : {WGPUSurfaceGetCurrentTextureStatus_Timeout,
+                             WGPUSurfaceGetCurrentTextureStatus_Outdated}) {
         acquisition_status = retry;
         const int released = textures_released;
         assert(!acquire_dawn_surface_texture(state, acquired));

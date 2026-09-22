@@ -102,8 +102,7 @@ const materialExtensionModules = [
 ] as const;
 
 /** Registered after the material extensions, where `buildPbrRenderables` puts it. */
-const environmentExtensionModule =
-    "material/pbr/fragments/ibl-fragment.js";
+const environmentExtensionModule = "material/pbr/fragments/ibl-fragment.js";
 
 /**
  * `pbr-renderable.ts` drains these last, after the environment extension and
@@ -178,9 +177,7 @@ async function registerPbrExtensions(): Promise<void> {
             ),
         ]);
         flags._registerPbrExt(
-            refraction.makeRefractionRttExt(
-                dispersion.DISPERSION_SAMPLE_WGSL,
-            ),
+            refraction.makeRefractionRttExt(dispersion.DISPERSION_SAMPLE_WGSL),
         );
         for (const path of meshExtensionModules) {
             const module = await importPinnedModule<{
@@ -237,9 +234,10 @@ export async function pinnedMaterialFeatures(
 ): Promise<{ features: number; features2: number }> {
     await registerPbrExtensions();
     const pbrMaterial = await importPinnedModule<{
-        _computePbrMaterialFeatures: (
-            material: PinnedMaterialInput,
-        ) => { features: number; features2: number };
+        _computePbrMaterialFeatures: (material: PinnedMaterialInput) => {
+            features: number;
+            features2: number;
+        };
     }>("material/pbr/pbr-material.js");
     return pbrMaterial._computePbrMaterialFeatures(material);
 }
@@ -367,26 +365,28 @@ export async function composePinnedPbrVariant(
     // The ESM caster view's own feature word and depth code, from the pinned
     // factory rather than from a second statement of what it does.
     const esmView = options.esmShadowView
-        ? (await importPinnedModule<{
-            createPbrEsmShadowMaterialView: (
-                source: unknown,
-                shadowParamsUBO: unknown,
-            ) => {
-                readonly _renderFeatures: {
-                    features: number;
-                    features2: number;
-                };
-                readonly _esmShadowDepthCode: string;
-            };
-        }>("material/pbr/esm-shadow-view.js")).createPbrEsmShadowMaterialView(
-            // The view reads `_renderFeatures` off its source, so the
-            // material is handed its own computed word rather than being
-            // asked for one it does not carry.
-            { ...(material as object), _renderFeatures: base },
-            // Stored for the renderable to bind; composing reads only the
-            // depth code beside it.
-            null,
-        )
+        ? (
+              await importPinnedModule<{
+                  createPbrEsmShadowMaterialView: (
+                      source: unknown,
+                      shadowParamsUBO: unknown,
+                  ) => {
+                      readonly _renderFeatures: {
+                          features: number;
+                          features2: number;
+                      };
+                      readonly _esmShadowDepthCode: string;
+                  };
+              }>("material/pbr/esm-shadow-view.js")
+          ).createPbrEsmShadowMaterialView(
+              // The view reads `_renderFeatures` off its source, so the
+              // material is handed its own computed word rather than being
+              // asked for one it does not carry.
+              { ...(material as object), _renderFeatures: base },
+              // Stored for the renderable to bind; composing reads only the
+              // depth code beside it.
+              null,
+          )
         : null;
     const features = esmView ? esmView._renderFeatures.features : base.features;
     const features2 = esmView
@@ -400,7 +400,7 @@ export async function composePinnedPbrVariant(
     // slots without the bit compose nothing at all.
     const shadowLights = options.shadowLights ?? [];
     const receivesShadows =
-        ((options.meshFeatures ?? 0) & await pinnedReceiveShadowsBit()) !== 0;
+        ((options.meshFeatures ?? 0) & (await pinnedReceiveShadowsBit())) !== 0;
     if (receivesShadows && shadowLights.length === 0) {
         throw new Error(
             "A PBR receiver variant needs the scene's shadow-light slots: " +
@@ -414,45 +414,50 @@ export async function composePinnedPbrVariant(
     if (receivesShadows) await reachCsmReceiverFactories(shadowLights);
     const pbrShadow = receivesShadows
         ? await importPinnedModule<{
-            createPbrShadowFragment: (
-                slots: readonly ShadowLightSlot[],
-            ) => unknown;
-        }>("material/pbr/fragments/pbr-shadow-fragment.js")
+              createPbrShadowFragment: (
+                  slots: readonly ShadowLightSlot[],
+              ) => unknown;
+          }>("material/pbr/fragments/pbr-shadow-fragment.js")
         : undefined;
     const [compose, templateExt, flatNormal, fog, thinInstance] =
         await Promise.all([
-        importPinnedModule<{
-            createPbrComposer: (deps: Record<string, unknown>) => PinnedComposeFn;
-        }>("material/pbr/pbr-compose.js"),
-        importPinnedModule<{ createPbrTemplateExt: unknown }>(
-            "material/pbr/pbr-template-ext.js",
-        ),
-        // The pin imports these only when a primitive lacks normals or the
-        // scene enables fog; passing them unconditionally is identical because
-        // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
-        // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
-        // fallback in another shape: Scene 255's captured fragment carried the
-        // flat-normal lines while "" composed the smooth-normal arm against
-        // them, and the byte-for-byte gate only logs a fragment nothing
-        // matches.
-        importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
-            "material/pbr/fragments/flat-normal-wgsl.js",
-        ),
-        importPinnedModule<{
-            PBR_FOG_HELPER: string;
-            PBR_FOG_BLOCK: string;
-        }>("material/pbr/pbr-fog-wgsl.js"),
-        // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
-        // fog snippets by their bits.
-        importPinnedModule<{
-            createThinInstanceFragment: (hasInstanceColor: boolean) => unknown;
-        }>("shader/fragments/thin-instance-fragment.js"),
-    ]);
+            importPinnedModule<{
+                createPbrComposer: (
+                    deps: Record<string, unknown>,
+                ) => PinnedComposeFn;
+            }>("material/pbr/pbr-compose.js"),
+            importPinnedModule<{ createPbrTemplateExt: unknown }>(
+                "material/pbr/pbr-template-ext.js",
+            ),
+            // The pin imports these only when a primitive lacks normals or the
+            // scene enables fog; passing them unconditionally is identical because
+            // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
+            // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
+            // fallback in another shape: Scene 255's captured fragment carried the
+            // flat-normal lines while "" composed the smooth-normal arm against
+            // them, and the byte-for-byte gate only logs a fragment nothing
+            // matches.
+            importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
+                "material/pbr/fragments/flat-normal-wgsl.js",
+            ),
+            importPinnedModule<{
+                PBR_FOG_HELPER: string;
+                PBR_FOG_BLOCK: string;
+            }>("material/pbr/pbr-fog-wgsl.js"),
+            // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
+            // fog snippets by their bits.
+            importPinnedModule<{
+                createThinInstanceFragment: (
+                    hasInstanceColor: boolean,
+                ) => unknown;
+            }>("shader/fragments/thin-instance-fragment.js"),
+        ]);
     const deps = {
         _singleLightWGSL: options.singleLightWgsl ?? "",
-        _getSingleLightBlock: options.singleLightBlock !== undefined
-            ? () => options.singleLightBlock ?? ""
-            : null,
+        _getSingleLightBlock:
+            options.singleLightBlock !== undefined
+                ? () => options.singleLightBlock ?? ""
+                : null,
         _multiLightWGSL: options.multiLightWgsl ?? "",
         _multiLightLoop: options.multiLightLoop ?? "",
         _tm: options.toneMapping,
@@ -462,8 +467,7 @@ export async function composePinnedPbrVariant(
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
         _createPbrShadowFragment: pbrShadow?.createPbrShadowFragment ?? null,
         _shadowLights: shadowLights,
-        _createThinInstanceFragment:
-            thinInstance.createThinInstanceFragment,
+        _createThinInstanceFragment: thinInstance.createThinInstanceFragment,
     };
     new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
         composerDepsModule,

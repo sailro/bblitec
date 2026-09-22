@@ -8,7 +8,10 @@ import { doubleLiteral } from "../src/cpp-literals.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
@@ -24,13 +27,23 @@ test("mesh data calls share typed-array results and preserve double box options"
     assert.match(result.cpp, /js::F32Array .* = std::move\(.*\.positions\)/);
     assert.equal(result.manifest.sceneMeshes.length, 0);
     assert.ok(result.manifest.features.includes("mesh:box"));
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createBoxData } from "@babylonjs/lite/mesh/create-box";
         createBoxData({ width: 2, segments: 8 });
-    `), /Box options support/);
+    `),
+        /Box options support/,
+    );
     const factory = new FactoryLowerer(new LoweringContext());
-    assert.doesNotMatch(factory.lowerMeshFactories([]).source, /MeshData create_box_data/);
-    assert.match(factory.lowerMeshFactories(["mesh:box"]).source, /shift_right_unsigned/);
+    assert.doesNotMatch(
+        factory.lowerMeshFactories([]).source,
+        /MeshData create_box_data/,
+    );
+    assert.match(
+        factory.lowerMeshFactories(["mesh:box"]).source,
+        /shift_right_unsigned/,
+    );
 });
 
 interface BoxData {
@@ -42,26 +55,55 @@ interface BoxData {
     indexCount: number;
 }
 
-test("native box payload matches every pinned lane and returned arrays retain aliases", { skip: !tools }, async () => {
-    const pin = await importPinnedModule<{
-        createBoxData(options?: number | { width: number; height: number; depth: number }): BoxData;
-    }>("mesh/create-box.js");
-    const checks: string[] = [];
-    for (const [width, height, depth] of [
-        [1, 1, 1], [0, -0, 0], [-3, 0.1, 7.3],
-        [1.0000000596046448, 1e-40, 1e40], [2 ** -149, 2 ** -150, -(2 ** -150)],
-    ]) {
-        const expected = pin.createBoxData({ width: width!, height: height!, depth: depth! });
-        checks.push(`{ const auto data = bbl::create_box_data(${[width!, height!, depth!]
-            .map((value) => Object.is(value, -0) ? "-0.0" : doubleLiteral(value)).join(", ")});`);
-        for (const name of ["positions", "normals", "uvs"] as const) {
-            const bits = [...new Uint32Array(expected[name].buffer)];
-            checks.push(`same(data.${name}, {${bits.map((value) => `${value}u`).join(", ")}});`);
+test(
+    "native box payload matches every pinned lane and returned arrays retain aliases",
+    { skip: !tools },
+    async () => {
+        const pin = await importPinnedModule<{
+            createBoxData(
+                this: void,
+                options?:
+                    number | { width: number; height: number; depth: number },
+            ): BoxData;
+        }>("mesh/create-box.js");
+        const checks: string[] = [];
+        for (const [width, height, depth] of [
+            [1, 1, 1],
+            [0, -0, 0],
+            [-3, 0.1, 7.3],
+            [1.0000000596046448, 1e-40, 1e40],
+            [2 ** -149, 2 ** -150, -(2 ** -150)],
+        ]) {
+            const expected = pin.createBoxData({
+                width: width!,
+                height: height!,
+                depth: depth!,
+            });
+            checks.push(
+                `{ const auto data = bbl::create_box_data(${[
+                    width!,
+                    height!,
+                    depth!,
+                ]
+                    .map((value) =>
+                        Object.is(value, -0) ? "-0.0" : doubleLiteral(value),
+                    )
+                    .join(", ")});`,
+            );
+            for (const name of ["positions", "normals", "uvs"] as const) {
+                const bits = [...new Uint32Array(expected[name].buffer)];
+                checks.push(
+                    `same(data.${name}, {${bits.map((value) => `${value}u`).join(", ")}});`,
+                );
+            }
+            checks.push(
+                `assert((data.indices == std::vector<std::uint32_t>{${[...expected.indices].map((value) => `${value}u`).join(", ")}}));`,
+            );
+            checks.push(
+                `assert(data.vertex_count == ${expected.vertexCount}u && data.index_count == ${expected.indexCount}u); }`,
+            );
         }
-        checks.push(`assert((data.indices == std::vector<std::uint32_t>{${[...expected.indices].map((value) => `${value}u`).join(", ")}}));`);
-        checks.push(`assert(data.vertex_count == ${expected.vertexCount}u && data.index_count == ${expected.indexCount}u); }`);
-    }
-    const program = compileSource(`
+        const program = compileSource(`
         import { createBoxData } from "@babylonjs/lite/mesh/create-box";
         import { createSphereData } from "@babylonjs/lite";
         const box = createBoxData();
@@ -86,12 +128,16 @@ test("native box payload matches every pinned lane and returned arrays retain al
         if (calls !== 3 || Math.abs(ordered.positions[0]) !== 1.5 ||
             Math.abs(ordered.positions[1]) !== 1 || Math.abs(ordered.positions[2]) !== 0.5) throw new Error("option evaluation order");
     `);
-    const output = resolve("artifacts/mesh-data-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    const factories = new FactoryLowerer(new LoweringContext()).lowerMeshFactories(["mesh:box"]).source;
-    writeFileSync(source, `#define main generated_scene_main
+        const output = resolve("artifacts/mesh-data-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        const factories = new FactoryLowerer(
+            new LoweringContext(),
+        ).lowerMeshFactories(["mesh:box"]).source;
+        writeFileSync(
+            source,
+            `#define main generated_scene_main
 ${program.cpp}
 #undef main
 ${factories}
@@ -105,11 +151,24 @@ int main() {
     assert(generated_scene_main() == 0);
 ${checks.join("\n")}
 }
-`);
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/Gy",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source,
-        "/link", "/OPT:REF",
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/Gy",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+            "/link",
+            "/OPT:REF",
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

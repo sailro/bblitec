@@ -231,7 +231,10 @@ export function numericValue(
         }
     }
     if (ts.isIdentifier(unwrapped)) {
-        const bound = (options.constant ?? sameFileConstant)(unwrapped.text, file);
+        const bound = (options.constant ?? sameFileConstant)(
+            unwrapped.text,
+            file,
+        );
         if (bound) return numericValue(bound.initializer, bound.file, options);
     }
     if (options.refuse) return options.refuse(unwrapped, file);
@@ -244,7 +247,11 @@ export function numericValue(
 export class LoweringContext {
     public constructor(public readonly store = new UpstreamSourceStore()) {}
 
-    public provenance(modulePath: string, symbolName: string, extra?: string): string {
+    public provenance(
+        modulePath: string,
+        symbolName: string,
+        extra?: string,
+    ): string {
         const base =
             `Generated from ${this.store.pin.package}@${this.store.pin.version} ` +
             `(${this.store.pin.sourceVersion}) ${modulePath}#${symbolName}`;
@@ -270,7 +277,8 @@ export class LoweringContext {
         root: ts.Node,
         predicate: (node: ts.Node) => boolean,
     ): number {
-        return findNodes(root, (node): node is ts.Node => predicate(node)).length;
+        return findNodes(root, (node): node is ts.Node => predicate(node))
+            .length;
     }
 
     public findNodes<T extends ts.Node>(
@@ -305,13 +313,8 @@ export class LoweringContext {
         return propertyName(name);
     }
 
-    public hasNamedImport(
-        modulePath: string,
-        importedName: string,
-    ): boolean {
-        return (
-            this.namedImport(modulePath, importedName) !== undefined
-        );
+    public hasNamedImport(modulePath: string, importedName: string): boolean {
+        return this.namedImport(modulePath, importedName) !== undefined;
     }
     /**
      * The declaration that brings a named import into a module.
@@ -327,13 +330,11 @@ export class LoweringContext {
             (statement): statement is ts.ImportDeclaration =>
                 ts.isImportDeclaration(statement) &&
                 statement.importClause?.namedBindings !== undefined &&
-                ts.isNamedImports(
-                    statement.importClause.namedBindings,
-                ) &&
+                ts.isNamedImports(statement.importClause.namedBindings) &&
                 statement.importClause.namedBindings.elements.some(
                     (element) =>
-                        (element.propertyName?.text ??
-                            element.name.text) === importedName,
+                        (element.propertyName?.text ?? element.name.text) ===
+                        importedName,
                 ),
         );
     }
@@ -352,10 +353,7 @@ export class LoweringContext {
         importedName: string,
     ): string | undefined {
         const declaration = this.namedImport(modulePath, importedName);
-        if (
-            !declaration ||
-            !ts.isStringLiteral(declaration.moduleSpecifier)
-        ) {
+        if (!declaration || !ts.isStringLiteral(declaration.moduleSpecifier)) {
             return undefined;
         }
         return this.store.resolveImport(
@@ -376,10 +374,7 @@ export class LoweringContext {
             "src/mesh/mesh-factories.ts",
             symbolName,
         );
-        const call = this.callExpression(
-            declaration,
-            "createMeshFromData",
-        );
+        const call = this.callExpression(declaration, "createMeshFromData");
         const name = call.arguments[1]
             ? this.unwrapExpression(call.arguments[1])
             : undefined;
@@ -392,7 +387,10 @@ export class LoweringContext {
               );
     }
 
-    public functionDeclaration(modulePath: string, symbolName: string): {
+    public functionDeclaration(
+        modulePath: string,
+        symbolName: string,
+    ): {
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;
     } {
@@ -423,7 +421,10 @@ export class LoweringContext {
      * block or a single expression: a Standard extension states `_detect`
      * both ways, and a caller that needs a block says so itself.
      */
-    public methodDeclaration(modulePath: string, path: string): {
+    public methodDeclaration(
+        modulePath: string,
+        path: string,
+    ): {
         file: ts.SourceFile;
         declaration: ts.FunctionLikeDeclarationBase;
     } {
@@ -458,10 +459,10 @@ export class LoweringContext {
                     const candidate = ts.isMethodDeclaration(property)
                         ? property
                         : initializer &&
-                                (ts.isFunctionExpression(initializer) ||
-                                    ts.isArrowFunction(initializer))
-                            ? initializer
-                            : undefined;
+                            (ts.isFunctionExpression(initializer) ||
+                                ts.isArrowFunction(initializer))
+                          ? initializer
+                          : undefined;
                     if (candidate?.body) {
                         found = candidate;
                     }
@@ -519,9 +520,9 @@ export class LoweringContext {
                 const candidate = ts.isMethodDeclaration(node)
                     ? node
                     : ts.isFunctionExpression(node.initializer) ||
-                            ts.isArrowFunction(node.initializer)
-                        ? node.initializer
-                        : undefined;
+                        ts.isArrowFunction(node.initializer)
+                      ? node.initializer
+                      : undefined;
                 if (candidate?.body && ts.isBlock(candidate.body)) {
                     found.push(
                         candidate as ts.FunctionLikeDeclarationBase & {
@@ -557,9 +558,7 @@ export class LoweringContext {
                 node.name.text === variableName &&
                 node.initializer
             ) {
-                const initializer = this.unwrapExpression(
-                    node.initializer,
-                );
+                const initializer = this.unwrapExpression(node.initializer);
                 if (ts.isObjectLiteralExpression(initializer)) {
                     object = initializer;
                 }
@@ -601,9 +600,10 @@ export class LoweringContext {
             awaited && ts.isAwaitExpression(awaited)
                 ? this.unwrapExpression(awaited.expression)
                 : undefined;
-        const specifier = imported && ts.isCallExpression(imported)
-            ? imported.arguments[0]
-            : undefined;
+        const specifier =
+            imported && ts.isCallExpression(imported)
+                ? imported.arguments[0]
+                : undefined;
         if (
             !access ||
             !ts.isPropertyAccessExpression(access) ||
@@ -613,11 +613,17 @@ export class LoweringContext {
             !specifier ||
             !ts.isStringLiteral(specifier)
         ) {
-            this.contractError(returned, "The registry arm is not a dynamic import.");
+            this.contractError(
+                returned,
+                "The registry arm is not a dynamic import.",
+            );
         }
         const module = this.store.resolveImport(registryModule, specifier.text);
         if (!module) {
-            this.contractError(specifier, "The registry imports a module the pin does not ship.");
+            this.contractError(
+                specifier,
+                "The registry imports a module the pin does not ship.",
+            );
         }
         return { module, exportName: access.name.text };
     }
@@ -655,14 +661,8 @@ export class LoweringContext {
     ): ts.ObjectLiteralExpression {
         let object: ts.ObjectLiteralExpression | undefined;
         const visit = (node: ts.Node): void => {
-            if (
-                !object &&
-                ts.isReturnStatement(node) &&
-                node.expression
-            ) {
-                const expression = this.unwrapExpression(
-                    node.expression,
-                );
+            if (!object && ts.isReturnStatement(node) && node.expression) {
+                const expression = this.unwrapExpression(node.expression);
                 if (ts.isObjectLiteralExpression(expression)) {
                     object = expression;
                     return;
@@ -680,20 +680,14 @@ export class LoweringContext {
         return object;
     }
 
-    public propertyPath(
-        expression: ts.Expression,
-    ): string[] | undefined {
+    public propertyPath(expression: ts.Expression): string[] | undefined {
         const unwrapped = this.unwrapExpression(expression);
         if (ts.isIdentifier(unwrapped)) {
             return [unwrapped.text];
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
-            const owner = this.propertyPath(
-                unwrapped.expression,
-            );
-            return owner
-                ? [...owner, unwrapped.name.text]
-                : undefined;
+            const owner = this.propertyPath(unwrapped.expression);
+            return owner ? [...owner, unwrapped.name.text] : undefined;
         }
         return undefined;
     }
@@ -739,7 +733,9 @@ export class LoweringContext {
         symbolName: string,
         restated: string,
         expected: readonly string[],
-        project: (statement: ts.Statement) => string | undefined = statementKind,
+        project: (
+            statement: ts.Statement,
+        ) => string | undefined = statementKind,
     ): void {
         const found = statements
             .map(project)
@@ -766,13 +762,29 @@ export class LoweringContext {
         expectedSource: string,
         label: string,
     ): void {
-        const expected = ts.createSourceFile("expected-statements.ts", expectedSource,
-            ts.ScriptTarget.Latest, true, ts.ScriptKind.TS).statements;
-        this.assertStatementInventory(owner, statements, label, "the native seam preserves the statements",
-            expected.map(statementKind));
+        const expected = ts.createSourceFile(
+            "expected-statements.ts",
+            expectedSource,
+            ts.ScriptTarget.Latest,
+            true,
+            ts.ScriptKind.TS,
+        ).statements;
+        this.assertStatementInventory(
+            owner,
+            statements,
+            label,
+            "the native seam preserves the statements",
+            expected.map(statementKind),
+        );
         for (const [index, statement] of statements.entries()) {
-            if (this.nodeFingerprint(statement) !== this.nodeFingerprint(expected[index]!)) {
-                this.contractError(statement, `${label} statement ${index + 1} changed; the native seam must be re-read.`);
+            if (
+                this.nodeFingerprint(statement) !==
+                this.nodeFingerprint(expected[index]!)
+            ) {
+                this.contractError(
+                    statement,
+                    `${label} statement ${index + 1} changed; the native seam must be re-read.`,
+                );
             }
         }
     }
@@ -795,10 +807,7 @@ export class LoweringContext {
             root,
             (node): node is ts.Expression =>
                 !ts.isParenthesizedExpression(node) &&
-                this.expressionMatchesShape(
-                    node as ts.Expression,
-                    expected,
-                ),
+                this.expressionMatchesShape(node as ts.Expression, expected),
         ).length;
         if (found !== count) {
             this.contractError(
@@ -814,10 +823,7 @@ export class LoweringContext {
      * same handful of strings across every scene compiled in one run.
      */
     private expectedFingerprint(expectedSource: string): string {
-        const cached =
-            LoweringContext.expectedFingerprints.get(
-                expectedSource,
-            );
+        const cached = LoweringContext.expectedFingerprints.get(expectedSource);
         if (cached !== undefined) return cached;
         const expectedFile = ts.createSourceFile(
             "expected-expression.ts",
@@ -832,36 +838,21 @@ export class LoweringContext {
                 ? statement.declarationList.declarations[0]
                 : undefined;
         if (!declaration?.initializer) {
-            throw new Error(
-                `Invalid expected expression '${expectedSource}'.`,
-            );
+            throw new Error(`Invalid expected expression '${expectedSource}'.`);
         }
-        const fingerprint = this.nodeFingerprint(
-            declaration.initializer,
-        );
-        LoweringContext.expectedFingerprints.set(
-            expectedSource,
-            fingerprint,
-        );
+        const fingerprint = this.nodeFingerprint(declaration.initializer);
+        LoweringContext.expectedFingerprints.set(expectedSource, fingerprint);
         return fingerprint;
     }
 
-    private static readonly expectedFingerprints = new Map<
-        string,
-        string
-    >();
+    private static readonly expectedFingerprints = new Map<string, string>();
 
     public assertExpressionShape(
         actual: ts.Expression,
         expectedSource: string,
         label: string,
     ): void {
-        if (
-            !this.expressionMatchesShape(
-                actual,
-                expectedSource,
-            )
-        ) {
+        if (!this.expressionMatchesShape(actual, expectedSource)) {
             this.contractError(
                 actual,
                 `${label} changed; expected '${expectedSource}', found '${actual.getText(actual.getSourceFile())}'.`,
@@ -870,13 +861,34 @@ export class LoweringContext {
     }
 
     /** Compare the complete AST of a structurally specialized function body. */
-    public assertFunctionBodyShape(declaration: ts.FunctionDeclaration, expectedBody: string, label: string): void {
-        const expectedFile = ts.createSourceFile("body-contract.ts", `function expected() ${expectedBody}`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    public assertFunctionBodyShape(
+        declaration: ts.FunctionDeclaration,
+        expectedBody: string,
+        label: string,
+    ): void {
+        const expectedFile = ts.createSourceFile(
+            "body-contract.ts",
+            `function expected() ${expectedBody}`,
+            ts.ScriptTarget.Latest,
+            true,
+            ts.ScriptKind.TS,
+        );
         const expected = expectedFile.statements[0];
-        if (!expected || !ts.isFunctionDeclaration(expected) || !expected.body || !declaration.body)
+        if (
+            !expected ||
+            !ts.isFunctionDeclaration(expected) ||
+            !expected.body ||
+            !declaration.body
+        )
             throw new Error(`Invalid function body contract: ${label}.`);
-        if (this.nodeFingerprint(declaration.body) !== this.nodeFingerprint(expected.body))
-            this.contractError(declaration, `${label} changed; re-establish its complete structural specialization.`);
+        if (
+            this.nodeFingerprint(declaration.body) !==
+            this.nodeFingerprint(expected.body)
+        )
+            this.contractError(
+                declaration,
+                `${label} changed; re-establish its complete structural specialization.`,
+            );
     }
 
     /**
@@ -908,10 +920,7 @@ export class LoweringContext {
         };
         visit(declaration);
         if (!result) {
-            this.contractError(
-                declaration,
-                `Expected call '${calleeName}'.`,
-            );
+            this.contractError(declaration, `Expected call '${calleeName}'.`);
         }
         return result;
     }
@@ -921,9 +930,9 @@ export class LoweringContext {
         calleeName: string,
         argumentIndex = 0,
     ): ts.ObjectLiteralExpression {
-        const argument =
-            this.callExpression(declaration, calleeName)
-                .arguments[argumentIndex];
+        const argument = this.callExpression(declaration, calleeName).arguments[
+            argumentIndex
+        ];
         if (!argument || !ts.isObjectLiteralExpression(argument)) {
             this.contractError(
                 argument ?? declaration,
@@ -933,28 +942,19 @@ export class LoweringContext {
         return argument;
     }
 
-    public hasCall(
-        declaration: ts.Node,
-        calleeName: string,
-    ): boolean {
+    public hasCall(declaration: ts.Node, calleeName: string): boolean {
         return this.hasNode(
             declaration,
             (node) =>
                 ts.isCallExpression(node) &&
                 ((ts.isIdentifier(node.expression) &&
                     node.expression.text === calleeName) ||
-                    (ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
-                        node.expression.name.text ===
-                            calleeName)),
+                    (ts.isPropertyAccessExpression(node.expression) &&
+                        node.expression.name.text === calleeName)),
         );
     }
 
-    public stringValue(
-        expression: ts.Expression,
-        file: ts.SourceFile,
-    ): string {
+    public stringValue(expression: ts.Expression, file: ts.SourceFile): string {
         const unwrapped = this.unwrapExpression(expression);
         if (
             ts.isStringLiteral(unwrapped) ||
@@ -963,11 +963,21 @@ export class LoweringContext {
             return unwrapped.text;
         }
         if (ts.isTemplateExpression(unwrapped)) {
-            return unwrapped.head.text + unwrapped.templateSpans.map(span => {
-                const value = this.unwrapExpression(span.expression);
-                return (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)
-                    ? value.text : String(this.numericValue(value, file))) + span.literal.text;
-            }).join("");
+            return (
+                unwrapped.head.text +
+                unwrapped.templateSpans
+                    .map((span) => {
+                        const value = this.unwrapExpression(span.expression);
+                        return (
+                            (ts.isStringLiteral(value) ||
+                            ts.isNoSubstitutionTemplateLiteral(value)
+                                ? value.text
+                                : String(this.numericValue(value, file))) +
+                            span.literal.text
+                        );
+                    })
+                    .join("")
+            );
         }
         return this.contractError(
             unwrapped,
@@ -1006,14 +1016,9 @@ export class LoweringContext {
     ): string[] {
         const array = this.unwrapExpression(expression);
         if (!ts.isArrayLiteralExpression(array)) {
-            this.contractError(
-                expression,
-                "Expected a static string array.",
-            );
+            this.contractError(expression, "Expected a static string array.");
         }
-        return array.elements.map((element) =>
-            this.stringValue(element, file),
-        );
+        return array.elements.map((element) => this.stringValue(element, file));
     }
 
     public isNumberMaxValue(expression: ts.Expression): boolean {
@@ -1026,18 +1031,19 @@ export class LoweringContext {
         );
     }
 
-    public propertyInitializer(object: ts.ObjectLiteralExpression, name: string): ts.Expression {
+    public propertyInitializer(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression {
         const property = object.properties.find(
             (candidate) =>
-                (ts.isPropertyAssignment(candidate) || ts.isShorthandPropertyAssignment(candidate)) &&
+                (ts.isPropertyAssignment(candidate) ||
+                    ts.isShorthandPropertyAssignment(candidate)) &&
                 ts.isIdentifier(candidate.name) &&
                 candidate.name.text === name,
         );
         if (!property) {
-            this.contractError(
-                object,
-                `Expected object property '${name}'.`,
-            );
+            this.contractError(object, `Expected object property '${name}'.`);
         }
         if (ts.isPropertyAssignment(property)) return property.initializer;
         if (ts.isShorthandPropertyAssignment(property)) return property.name;
@@ -1048,7 +1054,10 @@ export class LoweringContext {
     }
 
     /** `numericValue`, with a name resolving through the store's imports too. */
-    public numericValue(expression: ts.Expression, file: ts.SourceFile): number {
+    public numericValue(
+        expression: ts.Expression,
+        file: ts.SourceFile,
+    ): number {
         return numericValue(expression, file, {
             constant: (name, at) => this.moduleConstant(at, name),
         });
@@ -1077,9 +1086,7 @@ export class LoweringContext {
         if (!declaringPath) return undefined;
         const declaring = this.sourceFile(declaringPath);
         const initializer = this.moduleScopeConstant(declaring, name);
-        return initializer
-            ? { initializer, file: declaring }
-            : undefined;
+        return initializer ? { initializer, file: declaring } : undefined;
     }
 
     public moduleScopeConstant(
@@ -1217,7 +1224,10 @@ export class LoweringContext {
         file: ts.SourceFile,
     ): [number, number, number] {
         const unwrapped = this.unwrapExpression(expression);
-        if (!ts.isArrayLiteralExpression(unwrapped) || unwrapped.elements.length !== 3) {
+        if (
+            !ts.isArrayLiteralExpression(unwrapped) ||
+            unwrapped.elements.length !== 3
+        ) {
             return this.contractError(
                 unwrapped,
                 `Expected three-element tuple, found ${unwrapped.getText(file)}.`,
@@ -1300,14 +1310,14 @@ export class LoweringContext {
         ) {
             return `string:${node.text}`;
         }
-        const children = node.getChildren(
-            node.getSourceFile(),
-        ).filter(
-            (child) =>
-                !ts.isJSDoc(child) &&
-                child.kind !== ts.SyntaxKind.CommaToken &&
-                child.kind !== ts.SyntaxKind.SemicolonToken,
-        );
+        const children = node
+            .getChildren(node.getSourceFile())
+            .filter(
+                (child) =>
+                    !ts.isJSDoc(child) &&
+                    child.kind !== ts.SyntaxKind.CommaToken &&
+                    child.kind !== ts.SyntaxKind.SemicolonToken,
+            );
         if (children.length === 0) {
             return ts.SyntaxKind[node.kind];
         }

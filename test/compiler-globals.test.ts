@@ -18,10 +18,9 @@ const scene = (body: string): string => `
 `;
 
 test("the library's Math folds an exact member at generation", () => {
-    const result = compileSource(
-        scene("box.position.x = Math.floor(3.7);"),
-        { fileName: "library-math.ts" },
-    );
+    const result = compileSource(scene("box.position.x = Math.floor(3.7);"), {
+        fileName: "library-math.ts",
+    });
     assert.match(result.cpp, /position\.x = 3\.0;/);
     assert.doesNotMatch(result.cpp, /std::floor/);
 });

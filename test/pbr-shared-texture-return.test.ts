@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {compileSource} from "../src/compiler.js";
-import {FactoryLowerer} from "../src/lowering/factory-lowerer.js";
-import {LoweringContext} from "../src/lowering/context.js";
-import {cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { compileSource } from "../src/compiler.js";
+import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `import {createEngine,createSolidTexture2D,createPbrMaterial,type Texture2D} from "@babylonjs/lite";
 async function main() {
@@ -24,35 +31,80 @@ async function main() {
 }
 main();`;
 
-test("PBR helper texture returns retain their stored payload before material construction", async t => {
-    const pin=await import("@babylonjs/lite");
-    const writes:number[][]=[],creationWrites:number[]=[];
-    const engine={_device:{createTexture:()=>({createView:()=>({})}),createSampler:()=>({}),
-        queue:{writeTexture:(_target:unknown,bytes:Uint8Array)=>writes.push([...bytes])}}};
-    await new Function("require","exports",transpileCommonJs(source,"fixture.ts").replace(/main\(\);\s*$/,"return main();"))(
-        ()=>({...pin,createEngine:async()=>engine,createPbrMaterial:(options:Parameters<typeof pin.createPbrMaterial>[0])=>{
-            creationWrites.push(writes.length);return pin.createPbrMaterial(options);
-        }}),{});
-    assert.deepEqual(writes,[[255,64,0,255],[255,191,128,255],[255,128,64,255],[255,255,0,255]]);
-    assert.deepEqual(creationWrites,[1,2,4]);
-    const compiled=compileSource(source);
-    assert.equal(compiled.cpp.match(/std::get<bbl::FileTexture>/g)?.length,4);
-    const tools=optionalNativeFixtureTools(false);
-    if(!tools){t.skip("A native compiler is required.");return;}
-    const output=resolve("artifacts/test-pbr-shared-texture-return");mkdirSync(output,{recursive:true});
-    writeFileSync(join(output,"program.hpp"),compiled.cpp);
-    const lowerer=new FactoryLowerer(new LoweringContext());
-    const texture=lowerer.lowerFileTextureFactory().source;
-    const material=lowerer.lowerPbrMaterialFactory().source;
-    const functions=[
-        cppFunction(texture,"[[maybe_unused]] static TextureData solid_texture_data("),
-        cppFunction(texture,"[[maybe_unused]] static FileTexture retained_solid_texture("),
-        cppFunction(texture,"SolidTexture create_solid_texture("),
-        cppFunction(texture,"FileTexture solid_texture_file("),
-        cppFunction(material,"void set_material_base_color_file("),
-        cppFunction(material,"void set_material_orm_file(").replace("void set_material_orm_file(","void apply_material_orm_file("),
+test("PBR helper texture returns retain their stored payload before material construction", async (t) => {
+    const pin = await import("@babylonjs/lite");
+    const writes: number[][] = [],
+        creationWrites: number[] = [];
+    const engine = {
+        _device: {
+            createTexture: () => ({ createView: () => ({}) }),
+            createSampler: () => ({}),
+            queue: {
+                writeTexture: (_target: unknown, bytes: Uint8Array) =>
+                    writes.push([...bytes]),
+            },
+        },
+    };
+    await createJavaScriptFunction(
+        "require",
+        "exports",
+        transpileCommonJs(source, "fixture.ts").replace(
+            /main\(\);\s*$/,
+            "return main();",
+        ),
+    )(
+        () => ({
+            ...pin,
+            createEngine: async () => engine,
+            createPbrMaterial: (
+                options: Parameters<typeof pin.createPbrMaterial>[0],
+            ) => {
+                creationWrites.push(writes.length);
+                return pin.createPbrMaterial(options);
+            },
+        }),
+        {},
+    );
+    assert.deepEqual(writes, [
+        [255, 64, 0, 255],
+        [255, 191, 128, 255],
+        [255, 128, 64, 255],
+        [255, 255, 0, 255],
+    ]);
+    assert.deepEqual(creationWrites, [1, 2, 4]);
+    const compiled = compileSource(source);
+    assert.equal(compiled.cpp.match(/std::get<bbl::FileTexture>/g)?.length, 4);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("A native compiler is required.");
+        return;
+    }
+    const output = resolve("artifacts/test-pbr-shared-texture-return");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "program.hpp"), compiled.cpp);
+    const lowerer = new FactoryLowerer(new LoweringContext());
+    const texture = lowerer.lowerFileTextureFactory().source;
+    const material = lowerer.lowerPbrMaterialFactory().source;
+    const functions = [
+        cppFunction(
+            texture,
+            "[[maybe_unused]] static TextureData solid_texture_data(",
+        ),
+        cppFunction(
+            texture,
+            "[[maybe_unused]] static FileTexture retained_solid_texture(",
+        ),
+        cppFunction(texture, "SolidTexture create_solid_texture("),
+        cppFunction(texture, "FileTexture solid_texture_file("),
+        cppFunction(material, "void set_material_base_color_file("),
+        cppFunction(material, "void set_material_orm_file(").replace(
+            "void set_material_orm_file(",
+            "void apply_material_orm_file(",
+        ),
     ].join("\n");
-    writeFileSync(join(output,"check.cpp"),`#define main generated_main
+    writeFileSync(
+        join(output, "check.cpp"),
+        `#define main generated_main
 #include "program.hpp"
 #undef main
 #include <cassert>
@@ -82,8 +134,21 @@ MaterialHandle create_pbr_material(Engine& engine,PbrMaterialOptions options){
 }
 }
 int main(){assert(generated_main()==0);assert(attachments==3);}
-`);
-    const exe=join(output,"check.exe");
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/O2",`/Fo:${output}/`,`/Fe:${exe}`,"/I","native/include",join(output,"check.cpp")]);
-    assert.equal(execFileSync(exe,{encoding:"utf8"}),"");
+`,
+    );
+    const exe = join(output, "check.exe");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${output}/`,
+        `/Fe:${exe}`,
+        "/I",
+        "native/include",
+        join(output, "check.cpp"),
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8" }), "");
 });

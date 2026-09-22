@@ -9,10 +9,7 @@ import {
     readSeekMeta,
     writeSeekMeta,
 } from "./tooling/artifacts.js";
-import {
-    resolveNativeExecutable,
-    runMeasured,
-} from "./tooling/native-run.js";
+import { resolveNativeExecutable, runMeasured } from "./tooling/native-run.js";
 import { resolveScene, type SceneDefinition } from "./scene-registry.js";
 
 /**
@@ -62,9 +59,9 @@ export function nativeCaptureStaleness(
     const paths = captureNativePaths(captureDirectory, token);
     if (!existsSync(paths.capture)) return "missing";
     try {
-        const capture = JSON.parse(
-            readFileSync(paths.capture, "utf8"),
-        ) as { buildStamp?: string };
+        const capture = JSON.parse(readFileSync(paths.capture, "utf8")) as {
+            buildStamp?: string;
+        };
         if (
             capture.buildStamp !==
             computeBuildStamp(resolve(scene.output)).stamp
@@ -85,10 +82,7 @@ export function runNativeCapture(
     options: NativeCaptureOptions = {},
 ): NativeCaptureResult {
     const scene = resolveScene(idOrSource);
-    const backend = canonicalBackend(
-        options.backend ?? "sdl_gpu",
-        "capture",
-    );
+    const backend = canonicalBackend(options.backend ?? "sdl_gpu", "capture");
     // Filenames use the shared token ("gpu" for SDL_GPU), matching the
     // parity artifacts.
     const token = backendFileToken(backend);

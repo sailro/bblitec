@@ -18,7 +18,8 @@ int main(int argc, char** argv) {
         const auto expected = line.substr(first + 1, second - first - 1);
         const auto actual = bbl::js::number_to_string(value);
         if (actual != expected) {
-            std::cerr << line.substr(0, first) << ": expected " << expected << ", received " << actual << '\n';
+            std::cerr << line.substr(0, first) << ": expected " << expected << ", received "
+                      << actual << '\n';
             return 1;
         }
         assert(bbl::js::concat("n=", bbl::js::NumberPart(value), ";") == "n=" + expected + ";");

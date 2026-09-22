@@ -1,26 +1,57 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { jsonObject } from "./json.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-function nativeCheck(name: string, source: string, t: test.TestContext, options?: Parameters<typeof compileSource>[1]): void {
+function nativeCheck(
+    name: string,
+    source: string,
+    t: test.TestContext,
+    options?: Parameters<typeof compileSource>[1],
+): void {
     const result = compileSource(source, options);
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/recursive-json-values", name);
-    mkdirSync(directory, {recursive: true});
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    assert.equal(execFileSync(executable, {encoding: "utf8", timeout: 10000}), "");
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/I${nativeFixtureVcpkgRoot}/include`,
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
+        "",
+    );
 }
 
-test("typed dynamic record reads preserve string and enum keys and nullable results", t => {
-    nativeCheck("typed-property-keys", `
+test("typed dynamic record reads preserve string and enum keys and nullable results", (t) => {
+    nativeCheck(
+        "typed-property-keys",
+        `
         type Key="first"|"second"|"zero"|"missing";
         interface Row { score:number; }
         const parsed=JSON.parse('{"rows":{"first":{"score":2},"second":{"score":4},"zero":{"score":0}}}');
@@ -43,11 +74,15 @@ test("typed dynamic record reads preserve string and enum keys and nullable resu
         const values=JSON.parse('[0,false,"",null]');
         if((values[0]??9)!==0||(values[1]??true)!==false||(values[2]??"fallback")!==""||(values[3]??7)!==7)
             throw new Error("nullish falsy values");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("dynamic object spread snapshots native record fields and retains nested aliases", t => {
-    nativeCheck("native-record-spread", `
+test("dynamic object spread snapshots native record fields and retains nested aliases", (t) => {
+    nativeCheck(
+        "native-record-spread",
+        `
         interface Settings { enabled:boolean; weight:number; nested:{score:number}; }
         const defaults:Settings={enabled:true,weight:2,nested:{score:3}};
         let calls=0;
@@ -65,11 +100,15 @@ test("dynamic object spread snapshots native record fields and retains nested al
         const snapshot={...defaults,...later() as object};
         if(snapshot.weight!==8||defaults.weight!==10||snapshot.enabled!==false)
             throw new Error("source before later spread effects");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("typed function parameters retain dynamic record and array arguments", t => {
-    nativeCheck("dynamic-typed-arguments", `
+test("typed function parameters retain dynamic record and array arguments", (t) => {
+    nativeCheck(
+        "dynamic-typed-arguments",
+        `
         interface Row { score:number; child:{score:number}; }
         function update(row:Row, value:number):Row {row.score=value;return row;}
         function updateArray(rows:Row[]):Row {rows[0]!.score=12;return rows[0]!;}
@@ -82,28 +121,38 @@ test("typed function parameters retain dynamic record and array arguments", t =>
         const rows:Row[]=JSON.parse('[{"score":4,"extra":9,"child":{"score":5}}]');
         const item=updateArray(rows);
         if(item!==rows[0]||item.score!==12||(item as any).extra!==9)throw new Error("typed array argument");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("JSON serialization orders index keys before other object properties", t => {
-    const input = '{"tail":8,"10":10,"2":2,"01":1,"4294967295":5,"4294967294":4,"-0":6,"0":0}';
+test("JSON serialization orders index keys before other object properties", (t) => {
+    const input =
+        '{"tail":8,"10":10,"2":2,"01":1,"4294967295":5,"4294967294":4,"-0":6,"0":0}';
     const expected = JSON.stringify(JSON.parse(input));
-    nativeCheck("serialized-property-order", `
+    const parsed = jsonObject(JSON.parse(input));
+    nativeCheck(
+        "serialized-property-order",
+        `
         const parsed=JSON.parse(${JSON.stringify(input)});
         parsed.missing=undefined;
         if(JSON.stringify(parsed)!==${JSON.stringify(expected)})throw new Error("parsed key order");
         const spread={...parsed};
         if(JSON.stringify(spread)!==${JSON.stringify(expected)})throw new Error("dynamic dictionary key order");
-        const keys:string[]=${JSON.stringify(Object.keys(JSON.parse(input)).reverse())};
+        const keys:string[]=${JSON.stringify(Object.keys(parsed).reverse())};
         const dictionary:Record<string,number>={};
         for(const key of keys)dictionary[key]=parsed[key];
-        if(JSON.stringify(dictionary)!==${JSON.stringify(JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(input)).reverse())))})
+        if(JSON.stringify(dictionary)!==${JSON.stringify(JSON.stringify(Object.fromEntries(Object.entries(parsed).reverse())))})
             throw new Error("typed dictionary key order");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("typed conditional records retain selected identities and lazy branch effects", t => {
-    nativeCheck("dynamic-typed-conditional", `
+test("typed conditional records retain selected identities and lazy branch effects", (t) => {
+    nativeCheck(
+        "dynamic-typed-conditional",
+        `
         interface Row {score:number;child:{score:number};}
         const parsed:Row=JSON.parse('{"score":2,"child":{"score":3},"extra":7}');
         const fixed:Row={score:4,child:{score:5}};
@@ -120,11 +169,15 @@ test("typed conditional records retain selected identities and lazy branch effec
             }
         }
         if(conditions!==2||left!==1||right!==1)throw new Error("conditional evaluation count");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("late native record ownership preserves aliases and generic recursive returns", t => {
-    nativeCheck("late-record-ownership", `
+test("late native record ownership preserves aliases and generic recursive returns", (t) => {
+    nativeCheck(
+        "late-record-ownership",
+        `
         interface Row {count:number; child:{count:number};}
         const source:Row={count:2,child:{count:3}};
         const alias=source;
@@ -142,11 +195,15 @@ test("late native record ownership preserves aliases and generic recursive retur
         if(JSON.stringify({typed:source,dynamic:boxed})!==
             '{"typed":{"count":8,"child":{"count":9}},"dynamic":{"count":8,"child":{"count":9}}}')
             throw new Error("mixed typed and dynamic serialization");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("dynamic property keys preserve numeric spelling and receiver evaluation order", t => {
-    nativeCheck("property-key-order", `
+test("dynamic property keys preserve numeric spelling and receiver evaluation order", (t) => {
+    nativeCheck(
+        "property-key-order",
+        `
         let current=JSON.parse('{"name":1,"1":4,"-1.5":5,"true":6,"null":7,"undefined":8}');
         const one=1, negative=-1.5, flag=true;
         if(current[one]!==4||current[negative]!==5||current[flag as any]!==6||current[null as any]!==7||current[undefined as any]!==8)
@@ -166,26 +223,37 @@ test("dynamic property keys preserve numeric spelling and receiver evaluation or
         const row=JSON.parse('{"a":1,"b":2}');
         row[name]=rhs();
         if(row.a!==3||row.b!==2)throw new Error("write key before RHS");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("fetched numbers keep double precision when retained as dynamic values", t => {
-    const directory=resolve("artifacts/recursive-json-values/fetched-numbers");
-    mkdirSync(directory,{recursive:true});
-    const payload={scalar:0.86,values:[0.1,0.86,16777217,1e100]};
-    writeFileSync(join(directory,"values.json"),JSON.stringify(payload));
-    nativeCheck("fetched-numbers", `
+test("fetched numbers keep double precision when retained as dynamic values", (t) => {
+    const directory = resolve(
+        "artifacts/recursive-json-values/fetched-numbers",
+    );
+    mkdirSync(directory, { recursive: true });
+    const payload = { scalar: 0.86, values: [0.1, 0.86, 16777217, 1e100] };
+    writeFileSync(join(directory, "values.json"), JSON.stringify(payload));
+    nativeCheck(
+        "fetched-numbers",
+        `
         function retain(value:unknown,depth:number):unknown {return depth>0?retain(value,depth-1):value;}
         const response=await fetch("http://localhost/values.json");
         const loaded=await response.json();
         const value=retain(loaded,1);
         if(JSON.stringify(value)!==${JSON.stringify(JSON.stringify(payload))})
             throw new Error("fetched numeric precision");
-    `, t, {fileName:join(directory,"entry.ts"),publicDir:directory});
+    `,
+        t,
+        { fileName: join(directory, "entry.ts"), publicDir: directory },
+    );
 });
 
-test("typed arrays and tuples retain live storage across dynamic calls", t => {
-    nativeCheck("typed-arrays", `
+test("typed arrays and tuples retain live storage across dynamic calls", (t) => {
+    nativeCheck(
+        "typed-arrays",
+        `
         function retain(value:unknown,depth:number):unknown { return depth>0 ? retain(value,depth-1) : value; }
         const values:number[]=[1,2];
         const boxed=retain(values,1);
@@ -214,29 +282,49 @@ test("typed arrays and tuples retain live storage across dynamic calls", t => {
         if(filtered.length!==3||filtered[2]!==4) throw new Error("typed array filter");
         const nested=retain([[1,2],[3]],1);
         if(!Array.isArray(nested)||nested.flat().length!==3) throw new Error("typed array flatten");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("native exhaustive switch helpers compile with defined fallthrough", t => {
-    nativeCheck("exhaustive-switch", `
+test("native exhaustive switch helpers compile with defined fallthrough", (t) => {
+    nativeCheck(
+        "exhaustive-switch",
+        `
         type Kind="first"|"second";
         export function select(kind:Kind):number {switch(kind) {case "first":return 3;case "second":return 7;}}
         const keys:Kind[]=["first","second"];
         let result=0;for(const key of keys)result+=select(key);
         if(result!==10)throw new Error("exhaustive switch");
-    `, t);
+    `,
+        t,
+    );
 });
 
 test("dynamic array views refuse ambiguous absence and Map object entries", () => {
     const retain = `function retain(value:unknown,depth:number):unknown {return depth>0 ? retain(value,depth-1) : value;}`;
-    assert.throws(() => compileSource(retain + `const row:[number|null,string]=[null,"text"];const boxed=retain(row,1);row[1]="after";`),
-        /does not match the expected data json/);
-    assert.throws(() => compileSource(retain + `const rows:Array<{items:Map<string,number>}>= [{items:new Map([["first",1]])}];retain(rows,1);`),
-        /no retained value view for map/);
+    assert.throws(
+        () =>
+            compileSource(
+                retain +
+                    `const row:[number|null,string]=[null,"text"];const boxed=retain(row,1);row[1]="after";`,
+            ),
+        /does not match the expected data json/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                retain +
+                    `const rows:Array<{items:Map<string,number>}>= [{items:new Map([["first",1]])}];retain(rows,1);`,
+            ),
+        /no retained value view for map/,
+    );
 });
 
-test("native value functions preserve dynamic results and fallback aliases", t => {
-    nativeCheck("dynamic-returns", `
+test("native value functions preserve dynamic results and fallback aliases", (t) => {
+    nativeCheck(
+        "dynamic-returns",
+        `
         interface Config {branch:{size:number};keep:{value:number}}
         const defaults={branch:{size:1},keep:{value:2}};
         let effects=0;
@@ -262,11 +350,15 @@ test("native value functions preserve dynamic results and fallback aliases", t =
         defaults.keep.value=7;
         if(loaded.keep.value!==7||empty.keep.value!==7||failed.keep.value!==7)
             throw new Error("return aliases");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("dynamic object spread copies outer properties and retains nested identity", t => {
-    nativeCheck("dynamic-spread", `
+test("dynamic object spread copies outer properties and retains nested identity", (t) => {
+    nativeCheck(
+        "dynamic-spread",
+        `
         function plain(value:unknown):value is Record<string,unknown>{return typeof value==="object"&&value!==null&&!Array.isArray(value);}
         function merge<T>(base:T,source:unknown):T{
             if(!plain(base)||!plain(source))return source===undefined?base:source as T;
@@ -312,11 +404,15 @@ test("dynamic object spread copies outer properties and retains nested identity"
         function source():unknown {effects++;return base;}
         const once={...(source() as Record<string,unknown>),extra:effects};
         if(effects!==1||once.extra!==1)throw new Error("spread effects");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("guarded dynamic strings use checked string method receivers", t => {
-    nativeCheck("string-receiver", `
+test("guarded dynamic strings use checked string method receivers", (t) => {
+    nativeCheck(
+        "string-receiver",
+        `
         function normalize(value:unknown):string|null {
             if(typeof value!=="string")return null;
             return value.toLowerCase().trim();
@@ -329,11 +425,15 @@ test("guarded dynamic strings use checked string method receivers", t => {
         let caught=false;
         try {(JSON.parse('4') as string).toLowerCase();}catch {caught=true;}
         if(!caught)throw new Error("assertion must not coerce receiver");
-    `,t);
+    `,
+        t,
+    );
 });
 
-test("shared string predicates preserve constant and mutable captures", t => {
-    nativeCheck("string-captures", `
+test("shared string predicates preserve constant and mutable captures", (t) => {
+    nativeCheck(
+        "string-captures",
+        `
         const marker="control";
         export function matches(value:string):boolean {return value===marker;}
         let active="first";
@@ -343,11 +443,15 @@ test("shared string predicates preserve constant and mutable captures", t => {
         if(!isActive("first"))throw new Error("initial mutable capture");
         active="second";
         if(isActive("first")||!isActive("second"))throw new Error("updated mutable capture");
-    `,t);
+    `,
+        t,
+    );
 });
 
-test("optional scalar returns retain undefined in dynamic records", t => {
-    nativeCheck("optional-return", `
+test("optional scalar returns retain undefined in dynamic records", (t) => {
+    nativeCheck(
+        "optional-return",
+        `
         function positive(value:unknown):number|undefined {
             return typeof value==="number"&&Number.isFinite(value)&&value>0?value:undefined;
         }
@@ -356,11 +460,15 @@ test("optional scalar returns retain undefined in dynamic records", t => {
         if(present.budget!==4||absent.budget!==undefined||!Object.hasOwn(absent,"budget"))
             throw new Error("optional result kind and presence");
         if(JSON.stringify(absent)!=="{}")throw new Error("undefined property serialization");
-    `,t);
+    `,
+        t,
+    );
 });
 
-test("dynamic values retain JavaScript template and concatenation strings", t => {
-    nativeCheck("dynamic-concat", `
+test("dynamic values retain JavaScript template and concatenation strings", (t) => {
+    nativeCheck(
+        "dynamic-concat",
+        `
         const values=JSON.parse('[null,true,3.25,"text",[1,null,2],{}]');
         const expected=["value:null","value:true","value:3.25","value:text","value:1,,2","value:[object Object]"];
         let index=0;
@@ -369,11 +477,15 @@ test("dynamic values retain JavaScript template and concatenation strings", t =>
             if(actual!==expected[index]||("value:"+value)!==actual)throw new Error("dynamic string conversion");
             index++;
         }
-    `,t);
+    `,
+        t,
+    );
 });
 
-test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
-    nativeCheck("trees", `
+test("recursive unknown boundaries retain parsed trees and returned scalar kinds", (t) => {
+    nativeCheck(
+        "trees",
+        `
         function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}
         const count = (value: unknown): number => {
             if(Array.isArray(value)) { let sum=0; for(const child of value) sum+=count(child); return sum; }
@@ -397,11 +509,15 @@ test("recursive unknown boundaries retain parsed trees and returned scalar kinds
             throw new Error("recursive tree visits");
         if(first(JSON.parse('[[3]]'))!==3 || first(JSON.parse('[[true]]'))!==true ||
             first(JSON.parse('[[null]]'))!=="empty") throw new Error("dynamic recursive return");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("dynamic recursion retains native object views, array aliases and builtin callbacks", t => {
-    nativeCheck("views", `
+test("dynamic recursion retains native object views, array aliases and builtin callbacks", (t) => {
+    nativeCheck(
+        "views",
+        `
         class Packet {
             constructor(public label: string, public items: readonly unknown[]) {}
         }
@@ -435,11 +551,15 @@ test("dynamic recursion retains native object views, array aliases and builtin c
             return 1;
         }
         if (check(JSON.parse('[true]'), 2) !== 1) throw new Error("recursive result");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("recursive groups inside stored callbacks retain branch laziness and captures", t => {
-    nativeCheck("groups", `
+test("recursive groups inside stored callbacks retain branch laziness and captures", (t) => {
+    nativeCheck(
+        "groups",
+        `
         const visit = (source: unknown): number => {
             const visited: number[] = [];
             const walk = (value: unknown): void => {
@@ -457,11 +577,15 @@ test("recursive groups inside stored callbacks retain branch laziness and captur
         const callbacks = [visit];
         if (callbacks[0]!(JSON.parse('[1,[2,{"b":3,"a":4}]]')) !== 3)
             throw new Error("mutual recursion and lazy set construction");
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("default array sorting uses UTF-16 text order and comparator ties stay stable", t => {
-    nativeCheck("sorting", `
+test("default array sorting uses UTF-16 text order and comparator ties stay stable", (t) => {
+    nativeCheck(
+        "sorting",
+        `
         const words: string[] = ["\\uE000", "\\u{10000}", "z", "a"];
         const same = words.sort();
         if (same !== words || words.join(",") !== "a,z,\\u{10000},\\uE000") throw new Error("UTF-16 order");
@@ -475,11 +599,15 @@ test("default array sorting uses UTF-16 text order and comparator ties stay stab
             if(records[index]!.index!==index*2 || records[index+16]!.index!==index*2+1)
                 throw new Error("stable comparator ties");
         }
-    `, t);
+    `,
+        t,
+    );
 });
 
-test("typed dictionaries retain scalar, enum and record aliases through dynamic boundaries", t => {
-    nativeCheck("typed-dictionaries", `
+test("typed dictionaries retain scalar, enum and record aliases through dynamic boundaries", (t) => {
+    nativeCheck(
+        "typed-dictionaries",
+        `
         function retain(value: unknown, depth: number): unknown {
             return depth > 0 ? retain(value, depth - 1) : value;
         }
@@ -506,5 +634,7 @@ test("typed dictionaries retain scalar, enum and record aliases through dynamic 
         typed.nested.size = 7;
         if (first !== retainTyped(typed, 1) || (first as {nested:{size:number}}).nested.size !== 7)
             throw new Error("captured record keeps caller storage and identity");
-    `, t);
+    `,
+        t,
+    );
 });

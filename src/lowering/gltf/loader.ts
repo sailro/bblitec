@@ -9,33 +9,37 @@ import { lowerGltfMaterialTextures } from "./material-textures.js";
 import { lowerGltfMaterialProperties } from "./material-properties.js";
 import { lowerGltfInverseBindMatrices } from "./skin-data.js";
 import { lowerGltfAnimationNodeRest } from "./animation-node-rest.js";
-import {gltfAnimationPoseStorageCpp} from "./animation-pose-storage.js";
-import {lowerGltfAnimationPlayback} from "./animation-playback.js";
-import {lowerGltfAnimationPose,lowerGltfAnimationRootFlip} from "./animation-pose.js";
-import {lowerGltfAnimationEvaluator} from "./animation-evaluator.js";
-import {lowerGltfAnimationBoneOverrides} from "./animation-bone-overrides.js";
-import {lowerGltfAnimationGroupFactory} from "./animation-group-factory.js";
-import {lowerGltfSkeletonPose} from "./skeleton-pose.js";
-import {lowerGltfWeightedAnimationPasses} from "./weighted-animation-passes.js";
-import {lowerGltfWeightedAnimationRuntime} from "./weighted-animation-runtime.js";
-import {lowerGltfWeightedAnimationTargets} from "./weighted-animation-targets.js";
-import {lowerGltfAnimationPointerWriters} from "./animation-pointer-writers.js";
-import {gltfWeightedAnimationTransportCpp} from "./weighted-animation-transport.js";
-import {lowerGltfAnimationMask} from "./animation-mask.js";
-import {gltfAnimationPointerRuntimeCpp} from "./animation-pointer-runtime.js";
-import {gltfAnimationPointerOwnersCpp} from "./animation-pointer-owners.js";
-import {LightLowerer} from "../light-lowerer.js";
-import {lowerGltfVatPlayback} from "./vat-playback.js";
-import { gltfDeformationStateCpp } from "./deformation-state.js";
-import {gltfAnimationBindingsCpp} from "./animation-bindings.js";
+import { gltfAnimationPoseStorageCpp } from "./animation-pose-storage.js";
+import { lowerGltfAnimationPlayback } from "./animation-playback.js";
 import {
-    lowerAccessorNormalizationCpp,
-} from "./accessor-normalization.js";
+    lowerGltfAnimationPose,
+    lowerGltfAnimationRootFlip,
+} from "./animation-pose.js";
+import { lowerGltfAnimationEvaluator } from "./animation-evaluator.js";
+import { lowerGltfAnimationBoneOverrides } from "./animation-bone-overrides.js";
+import { lowerGltfAnimationGroupFactory } from "./animation-group-factory.js";
+import { lowerGltfSkeletonPose } from "./skeleton-pose.js";
+import { lowerGltfWeightedAnimationPasses } from "./weighted-animation-passes.js";
+import { lowerGltfWeightedAnimationRuntime } from "./weighted-animation-runtime.js";
+import { lowerGltfWeightedAnimationTargets } from "./weighted-animation-targets.js";
+import { lowerGltfAnimationPointerWriters } from "./animation-pointer-writers.js";
+import { gltfWeightedAnimationTransportCpp } from "./weighted-animation-transport.js";
+import { lowerGltfAnimationMask } from "./animation-mask.js";
+import { gltfAnimationPointerRuntimeCpp } from "./animation-pointer-runtime.js";
+import { gltfAnimationPointerOwnersCpp } from "./animation-pointer-owners.js";
+import { LightLowerer } from "../light-lowerer.js";
+import { lowerGltfVatPlayback } from "./vat-playback.js";
+import { gltfDeformationStateCpp } from "./deformation-state.js";
+import { gltfAnimationBindingsCpp } from "./animation-bindings.js";
+import { lowerAccessorNormalizationCpp } from "./accessor-normalization.js";
 
 import { lowerGltfFactorBake } from "./factor-bake.js";
-import {gltfIblLoadingCpp} from "./ibl.js";
-import {lowerGltfAssetSceneSetup, gltfAssetSceneSetupOrder} from "./asset-scene-setup.js";
-import {lowerGltfGaussianSplatSetup} from "./gaussian-splat-setup.js";
+import { gltfIblLoadingCpp } from "./ibl.js";
+import {
+    lowerGltfAssetSceneSetup,
+    gltfAssetSceneSetupOrder,
+} from "./asset-scene-setup.js";
+import { lowerGltfGaussianSplatSetup } from "./gaussian-splat-setup.js";
 import {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
@@ -132,14 +136,11 @@ export class GltfLowerer {
     public lowerGlbParser(): LoweredSource {
         const modulePath = "src/loader-gltf/gltf-glb-parser.ts";
         const symbolName = "parseGlbContainer";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        const inequalityConstant = (
-            identifier: string,
-        ): number => {
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const inequalityConstant = (identifier: string): number => {
             const expression = this.context.findNodes(
                 declaration,
                 (node): node is ts.BinaryExpression =>
@@ -156,26 +157,22 @@ export class GltfLowerer {
                     `Expected GLB '${identifier}' validation.`,
                 );
             }
-            return this.context.numericValue(
-                expression.right,
-                file,
-            );
+            return this.context.numericValue(expression.right, file);
         };
         const magic = inequalityConstant("magic");
         const jsonType = inequalityConstant("jsonType");
         const binType = inequalityConstant("binType");
         const headerSize = this.context.numericValue(
-            this.context.variableInitializer(
-                declaration,
-                "offset",
-            ),
+            this.context.variableInitializer(declaration, "offset"),
             file,
         );
         const hex = (value: number): string => `0x${value.toString(16)}`;
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<bblite/ts_runtime.hpp>","","<cstddef>"], `
+            header: pinnedHeader(
+                ["<bblite/ts_runtime.hpp>", "", "<cstddef>"],
+                `
 struct ParsedGlbContainer {
     ts::JsonValue json;
     std::size_t json_offset = 0;
@@ -185,7 +182,8 @@ struct ParsedGlbContainer {
 };
 
 ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/gltf_glb_parser.hpp>
 
@@ -229,44 +227,56 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
     }
 
     /** Source loader bodies and their native storage adapters. */
-    public lowerLoaderAdapter(
-        options: GltfLoaderOptions = {},
-    ): LoweredSource {
+    public lowerLoaderAdapter(options: GltfLoaderOptions = {}): LoweredSource {
         if (options.retainLocalNormals) {
             const { declaration } = this.context.functionDeclaration(
-                "src/loader-gltf/load-gltf.ts", "buildTightGltfMesh");
+                "src/loader-gltf/load-gltf.ts",
+                "buildTightGltfMesh",
+            );
             const data = declaration.parameters[1]?.name;
-            if (!data || !ts.isIdentifier(data) || !this.context.hasNode(
-                declaration,
-                node => {
-                    if (!ts.isPropertyAssignment(node) ||
-                        !ts.isIdentifier(node.name) || node.name.text !== "normalBuffer") return false;
-                    const call = this.context.unwrapExpression(node.initializer);
-                    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) ||
-                        call.expression.text !== "createMappedBuffer") return false;
+            if (
+                !data ||
+                !ts.isIdentifier(data) ||
+                !this.context.hasNode(declaration, (node) => {
+                    if (
+                        !ts.isPropertyAssignment(node) ||
+                        !ts.isIdentifier(node.name) ||
+                        node.name.text !== "normalBuffer"
+                    )
+                        return false;
+                    const call = this.context.unwrapExpression(
+                        node.initializer,
+                    );
+                    if (
+                        !ts.isCallExpression(call) ||
+                        !ts.isIdentifier(call.expression) ||
+                        call.expression.text !== "createMappedBuffer"
+                    )
+                        return false;
                     const argument = call.arguments[1];
                     if (!argument) return false;
                     const values = this.context.unwrapExpression(argument);
-                    return ts.isPropertyAccessExpression(values) &&
-                        ts.isIdentifier(values.expression) && values.expression.text === data.text &&
-                        values.name.text === "_normals";
-                },
-            )) {
-                this.context.contractError(declaration,
-                    "Expected the glTF normal buffer to upload source _normals without transformation.");
+                    return (
+                        ts.isPropertyAccessExpression(values) &&
+                        ts.isIdentifier(values.expression) &&
+                        values.expression.text === data.text &&
+                        values.name.text === "_normals"
+                    );
+                })
+            ) {
+                this.context.contractError(
+                    declaration,
+                    "Expected the glTF normal buffer to upload source _normals without transformation.",
+                );
             }
         }
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
-        const { declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        for (const call of [
-            "fetchGltfAsset",
-            "loadGltfFeatures",
-        ]) {
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        for (const call of ["fetchGltfAsset", "loadGltfFeatures"]) {
             if (!this.context.hasCall(declaration, call)) {
                 this.context.contractError(
                     declaration,
@@ -274,31 +284,24 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 );
             }
         }
-        const animationModule =
-            "src/loader-gltf/gltf-animation.ts";
+        const animationModule = "src/loader-gltf/gltf-animation.ts";
         for (const importedName of [
             "INTERP_CUBICSPLINE",
             "PATH_TRANSLATION",
             "PATH_ROTATION",
             "PATH_WEIGHTS",
         ]) {
-            if (
-                !this.context.hasNamedImport(
-                    animationModule,
-                    importedName,
-                )
-            ) {
+            if (!this.context.hasNamedImport(animationModule, importedName)) {
                 this.context.contractError(
                     this.context.sourceFile(animationModule),
                     `Expected glTF animation import '${importedName}'.`,
                 );
             }
         }
-        const { declaration: extractSkin } =
-            this.context.functionDeclaration(
-                animationModule,
-                "extractSkin",
-            );
+        const { declaration: extractSkin } = this.context.functionDeclaration(
+            animationModule,
+            "extractSkin",
+        );
         if (
             !this.context.hasNode(
                 extractSkin,
@@ -317,14 +320,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             "computeBoneTextureData",
         );
 
-        const skeletonModule =
-            "src/loader-gltf/gltf-feature-skeleton.ts";
-        const skeletonFile =
-            this.context.sourceFile(skeletonModule);
-        for (const call of [
-            "computeBoneTextureData",
-            "createSkeleton",
-        ]) {
+        const skeletonModule = "src/loader-gltf/gltf-feature-skeleton.ts";
+        const skeletonFile = this.context.sourceFile(skeletonModule);
+        for (const call of ["computeBoneTextureData", "createSkeleton"]) {
             if (
                 !this.context.hasNode(
                     skeletonFile,
@@ -332,11 +330,8 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                         ts.isCallExpression(node) &&
                         ((ts.isIdentifier(node.expression) &&
                             node.expression.text === call) ||
-                            (ts.isPropertyAccessExpression(
-                                node.expression,
-                            ) &&
-                                node.expression.name.text ===
-                                    call)),
+                            (ts.isPropertyAccessExpression(node.expression) &&
+                                node.expression.name.text === call)),
                 )
             ) {
                 this.context.contractError(
@@ -351,7 +346,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const accessorNormalization =
             lowerAccessorNormalizationCpp(quantization);
         const accessorShape = lowerGltfAccessorShape(this.context);
-        const factorBake = lowerGltfFactorBake(this.context.sourceFile("src/math/color.ts"));
+        const factorBake = lowerGltfFactorBake(
+            this.context.sourceFile("src/math/color.ts"),
+        );
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
         );
@@ -359,7 +356,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             "src/math/compose-mat4-into-buffer.ts",
         );
         const matrixLocal = gltfMatrixReaderCpp();
-        const matrixCompose = lowerMatrixComposeCpp(composeFile,true);
+        const matrixCompose = lowerMatrixComposeCpp(composeFile, true);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
         const gltfCameras = options.gltfCameras
             ? lowerGltfCamerasCpp(parserFile)
@@ -386,37 +383,83 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             symbolName,
             header: "",
             source: gltfLoaderCpp(
-                this.context.provenance(
-                    modulePath,
-                    symbolName,
-                ),
+                this.context.provenance(modulePath, symbolName),
                 {
                     animationStorage: gltfAnimationPoseStorageCpp(),
-                    animationMask: options.animationMask ? lowerGltfAnimationMask(this.context) : "",
-                    animationPlayback: lowerGltfAnimationPlayback(this.context,options.animationBlending===true)+(options.vat?lowerGltfVatPlayback(this.context):""),
+                    animationMask: options.animationMask
+                        ? lowerGltfAnimationMask(this.context)
+                        : "",
+                    animationPlayback:
+                        lowerGltfAnimationPlayback(
+                            this.context,
+                            options.animationBlending === true,
+                        ) +
+                        (options.vat ? lowerGltfVatPlayback(this.context) : ""),
                     animationPose: lowerGltfAnimationPose(this.context),
-                    animationEvaluator: lowerGltfAnimationEvaluator(this.context),
+                    animationEvaluator: lowerGltfAnimationEvaluator(
+                        this.context,
+                    ),
                     animationRootFlip: lowerGltfAnimationRootFlip(this.context),
-                    animationBoneOverrides: lowerGltfAnimationBoneOverrides(this.context,{visibilityOnly:true}),
-                    animationFactory: lowerGltfAnimationGroupFactory(this.context)+(options.boneControl?lowerGltfSkeletonPose(this.context):""),
-                    animationWeighted: options.animationBlending ? lowerGltfWeightedAnimationRuntime(this.context)+lowerGltfWeightedAnimationPasses(this.context)+lowerGltfWeightedAnimationTargets(this.context):"",
-                    animationWeightedTransport: options.animationBlending ? gltfWeightedAnimationTransportCpp(lowerGltfAnimationRootFlip(this.context,"src/animation/weighted-gltf-mixer.ts")) : {types:"",dispatcher:"bool update_weighted_gltf_animation_groups(Engine&,PropertyAnimationManagerRecord&,double){return false;}"},
-                    animationPointers: options.animationPointer ? lowerGltfAnimationPointerWriters(this.context).source+gltfAnimationPointerOwnersCpp+gltfAnimationPointerRuntimeCpp()+new LightLowerer(this.context).lowerSpotAngleSetter() : "",
+                    animationBoneOverrides: lowerGltfAnimationBoneOverrides(
+                        this.context,
+                        { visibilityOnly: true },
+                    ),
+                    animationFactory:
+                        lowerGltfAnimationGroupFactory(this.context) +
+                        (options.boneControl
+                            ? lowerGltfSkeletonPose(this.context)
+                            : ""),
+                    animationWeighted: options.animationBlending
+                        ? lowerGltfWeightedAnimationRuntime(this.context) +
+                          lowerGltfWeightedAnimationPasses(this.context) +
+                          lowerGltfWeightedAnimationTargets(this.context)
+                        : "",
+                    animationWeightedTransport: options.animationBlending
+                        ? gltfWeightedAnimationTransportCpp(
+                              lowerGltfAnimationRootFlip(
+                                  this.context,
+                                  "src/animation/weighted-gltf-mixer.ts",
+                              ),
+                          )
+                        : {
+                              types: "",
+                              dispatcher:
+                                  "bool update_weighted_gltf_animation_groups(Engine&,PropertyAnimationManagerRecord&,double){return false;}",
+                          },
+                    animationPointers: options.animationPointer
+                        ? lowerGltfAnimationPointerWriters(this.context)
+                              .source +
+                          gltfAnimationPointerOwnersCpp +
+                          gltfAnimationPointerRuntimeCpp() +
+                          new LightLowerer(this.context).lowerSpotAngleSetter()
+                        : "",
                     accessorNormalization,
                     accessorShape,
                     hierarchy: lowerGltfHierarchy(this.context),
                     parserJson: lowerGltfParserJson(this.context),
-                    inverseBindMatrices: lowerGltfInverseBindMatrices(this.context),
+                    inverseBindMatrices: lowerGltfInverseBindMatrices(
+                        this.context,
+                    ),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),
-                    deformationState: gltfDeformationStateCpp(options.deformPicking === true),
+                    deformationState: gltfDeformationStateCpp(
+                        options.deformPicking === true,
+                    ),
                     animationBindings: gltfAnimationBindingsCpp(),
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),
-                    materialProperties: lowerGltfMaterialProperties(this.context).source,
+                    materialProperties: lowerGltfMaterialProperties(
+                        this.context,
+                    ).source,
                     iblLoading: gltfIblLoadingCpp(),
                     assetSceneSetup: lowerGltfAssetSceneSetup(this.context),
-                    gaussianSplatSetup: options.gaussianSplats ? lowerGltfGaussianSplatSetup(this.context) : "",
-                    assetSceneSetupOrder: gltfAssetSceneSetupOrder(this.context, options.gaussianSplats === true, options.interactivity === true),
+                    gaussianSplatSetup: options.gaussianSplats
+                        ? lowerGltfGaussianSplatSetup(this.context)
+                        : "",
+                    assetSceneSetupOrder: gltfAssetSceneSetupOrder(
+                        this.context,
+                        options.gaussianSplats === true,
+                        options.interactivity === true,
+                    ),
                     factorBake,
                     matrixLocal,
                     matrixCompose,

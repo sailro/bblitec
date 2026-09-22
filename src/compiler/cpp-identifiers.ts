@@ -1,7 +1,11 @@
 /** Identifier tokens in emitted C++; comments and quoted payloads carry no reads. */
-function* identifierTokens(source: string): Generator<{ name: string; start: number; end: number; qualified: boolean }> {
-    const start = (code: number): boolean => code === 95 ||
-        (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+function* identifierTokens(
+    source: string,
+): Generator<{ name: string; start: number; end: number; qualified: boolean }> {
+    const start = (code: number): boolean =>
+        code === 95 ||
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122);
     const digit = (code: number): boolean => code >= 48 && code <= 57;
     let index = 0;
     let qualified = false;
@@ -22,9 +26,16 @@ function* identifierTokens(source: string): Generator<{ name: string; start: num
             }
         } else if (start(source.charCodeAt(index))) {
             const begin = index++;
-            while (start(source.charCodeAt(index)) || digit(source.charCodeAt(index))) index++;
+            while (
+                start(source.charCodeAt(index)) ||
+                digit(source.charCodeAt(index))
+            )
+                index++;
             const token = source.slice(begin, index);
-            if (["R", "u8R", "uR", "UR", "LR"].includes(token) && source[index] === '"') {
+            if (
+                ["R", "u8R", "uR", "UR", "LR"].includes(token) &&
+                source[index] === '"'
+            ) {
                 const opening = source.indexOf("(", index + 1);
                 if (opening >= 0 && opening - index <= 17) {
                     const closing = `)${source.slice(index + 1, opening)}"`;
@@ -40,9 +51,17 @@ function* identifierTokens(source: string): Generator<{ name: string; start: num
             qualified = false;
             // C++ numeric suffixes and digit separators belong to the literal.
             index++;
-            while (start(source.charCodeAt(index)) || digit(source.charCodeAt(index)) ||
-                source[index] === "." || source[index] === "'") index++;
-        } else if (source.startsWith("->", index) || source.startsWith("::", index)) {
+            while (
+                start(source.charCodeAt(index)) ||
+                digit(source.charCodeAt(index)) ||
+                source[index] === "." ||
+                source[index] === "'"
+            )
+                index++;
+        } else if (
+            source.startsWith("->", index) ||
+            source.startsWith("::", index)
+        ) {
             qualified = true;
             index += 2;
         } else {
@@ -59,7 +78,10 @@ export function cppIdentifiers(source: string): ReadonlySet<string> {
 }
 
 /** Rename explicit bindings without touching comments, strings or numeric suffixes. */
-export function renameCppIdentifiers(source: string, rename: (name: string, qualified: boolean) => string | undefined): string {
+export function renameCppIdentifiers(
+    source: string,
+    rename: (name: string, qualified: boolean) => string | undefined,
+): string {
     const pieces: string[] = [];
     let offset = 0;
     for (const token of identifierTokens(source)) {

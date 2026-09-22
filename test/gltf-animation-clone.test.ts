@@ -1,55 +1,127 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
-import {LoweringContext} from "../src/lowering/context.js";
-import {gltfAnimationLoadingCpp,gltfAnimationPoseTransportCpp} from "../src/lowering/gltf/animation-runtime.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {cppFunction,nativeFixtureVcpkgRoot,optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import {
+    gltfAnimationLoadingCpp,
+    gltfAnimationPoseTransportCpp,
+} from "../src/lowering/gltf/animation-runtime.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-interface Resource {weights:number[]; bone:number}
-interface Mesh {name:string;children:Mesh[];_gpu:object;skeleton:Resource;morphTargets:Resource;
-    position:{x:number;y:number;z:number};scaling:{x:number;y:number;z:number};
-    rotationQuaternion:{x:number;y:number;z:number;w:number;set(...values:number[]):void}}
-const scenarios=[
-    {sharedMorph:false,clones:[0,2,1,3]},
-    {sharedMorph:true,clones:[0,1,2,4]},
+interface Resource {
+    weights: number[];
+    bone: number;
+}
+interface Mesh {
+    name: string;
+    children: Mesh[];
+    _gpu: object;
+    skeleton: Resource;
+    morphTargets: Resource;
+    position: { x: number; y: number; z: number };
+    scaling: { x: number; y: number; z: number };
+    rotationQuaternion: {
+        x: number;
+        y: number;
+        z: number;
+        w: number;
+        set(...values: number[]): void;
+    };
+}
+const scenarios = [
+    { sharedMorph: false, clones: [0, 2, 1, 3] },
+    { sharedMorph: true, clones: [0, 1, 2, 4] },
 ];
-function sourceResults():unknown[] {
-    const context=new LoweringContext(),module="src/scene/transform-node.ts";
-    const body=context.functionDeclaration(module,"cloneMeshNode").declaration.getText();
-    const clone=new Function("initMeshTransform","retain",transpileCommonJs(body,module)+"\nreturn cloneMeshNode;")(
-        (value:Mesh)=>({...value,rotationQuaternion:{...value.rotationQuaternion,set(){}}}),()=>{}) as (value:Mesh)=>Mesh;
-    return scenarios.map(scenario=>{
-        const skeleton:Resource={weights:[],bone:1};
-        const morphs:Resource[]=[{weights:[.25,.5],bone:0},{weights:[.75,.125],bone:0}];
-        const meshes:Mesh[]=[0,1].map(index=>({name:`source${index}`,children:[],_gpu:{},skeleton,
-            morphTargets:morphs[scenario.sharedMorph?0:index]!,position:{x:0,y:0,z:0},scaling:{x:1,y:1,z:1},
-            rotationQuaternion:{x:0,y:0,z:0,w:1,set(){}}}));
-        const observations:unknown[]=[];
-        const snapshot=()=>meshes.map(mesh=>({weights:mesh.morphTargets.weights,bone:mesh.skeleton.bone}));
+function sourceResults(): unknown[] {
+    const context = new LoweringContext(),
+        module = "src/scene/transform-node.ts";
+    const body = context
+        .functionDeclaration(module, "cloneMeshNode")
+        .declaration.getText();
+    const clone = createJavaScriptFunction(
+        "initMeshTransform",
+        "retain",
+        transpileCommonJs(body, module) + "\nreturn cloneMeshNode;",
+    )(
+        (value: Mesh) => ({
+            ...value,
+            rotationQuaternion: { ...value.rotationQuaternion, set() {} },
+        }),
+        () => {},
+    ) as (value: Mesh) => Mesh;
+    return scenarios.map((scenario) => {
+        const skeleton: Resource = { weights: [], bone: 1 };
+        const morphs: Resource[] = [
+            { weights: [0.25, 0.5], bone: 0 },
+            { weights: [0.75, 0.125], bone: 0 },
+        ];
+        const meshes: Mesh[] = [0, 1].map((index) => ({
+            name: `source${index}`,
+            children: [],
+            _gpu: {},
+            skeleton,
+            morphTargets: morphs[scenario.sharedMorph ? 0 : index]!,
+            position: { x: 0, y: 0, z: 0 },
+            scaling: { x: 1, y: 1, z: 1 },
+            rotationQuaternion: { x: 0, y: 0, z: 0, w: 1, set() {} },
+        }));
+        const observations: unknown[] = [];
+        const snapshot = () =>
+            meshes.map((mesh) => ({
+                weights: mesh.morphTargets.weights,
+                bone: mesh.skeleton.bone,
+            }));
         observations.push(snapshot());
-        for(const source of scenario.clones) {
+        for (const source of scenario.clones) {
             meshes.push(clone(meshes[source]!));
-            skeleton.bone+=2;
-            morphs[0]!.weights=morphs[0]!.weights.map(value=>Math.fround(value+.125));
-            morphs[1]!.weights=morphs[1]!.weights.map(value=>Math.fround(value-.0625));
+            skeleton.bone += 2;
+            morphs[0]!.weights = morphs[0]!.weights.map((value) =>
+                Math.fround(value + 0.125),
+            );
+            morphs[1]!.weights = morphs[1]!.weights.map((value) =>
+                Math.fround(value - 0.0625),
+            );
             observations.push(snapshot());
         }
         return observations;
     });
 }
 
-test("skinned morph clones follow the source's shared skeleton and morph resource identities",t=>{
-    const native=optionalNativeFixtureTools();if(!native){t.skip("Native fixture compiler unavailable.");return;}
-    const directory=resolve("artifacts/test-gltf-animation-clone");mkdirSync(directory,{recursive:true});
-    const file=resolve(directory,"check.cpp"),executable=resolve(directory,"check.exe");
-    writeFileSync(resolve(directory,"cases.json"),JSON.stringify({scenarios,expected:sourceResults()}));
-    const loading=gltfAnimationLoadingCpp({},"{}"),pose=gltfAnimationPoseTransportCpp({},"");
-    const clone=cppFunction(loading,"asset.clone_mesh_animation=");
-    const uploadMorph=cppFunction(pose,"[&](auto& morph,const auto& values,double count)");
-    writeFileSync(file,`#include <bblite/runtime.hpp>
+test("skinned morph clones follow the source's shared skeleton and morph resource identities", (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/test-gltf-animation-clone");
+    mkdirSync(directory, { recursive: true });
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        resolve(directory, "cases.json"),
+        JSON.stringify({ scenarios, expected: sourceResults() }),
+    );
+    const loading = gltfAnimationLoadingCpp({}, "{}"),
+        pose = gltfAnimationPoseTransportCpp({}, "");
+    const clone = cppFunction(loading, "asset.clone_mesh_animation=");
+    const uploadMorph = cppFunction(
+        pose,
+        "[&](auto& morph,const auto& values,double count)",
+    );
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -100,8 +172,31 @@ Json run(const Json& scenarios) {
 }
 int main(){Json cases;std::ifstream("cases.json")>>cases;const auto actual=bbl::run(cases.at("scenarios"));
     if(actual!=cases.at("expected")){std::cerr<<actual.dump(2);return 1;}}
-`);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/permissive-","/EHsc","/MD","/O2",
-        `/Fo:${directory}/`,`/Fe:${executable}`,"/I","native/include","/I",resolve(nativeFixtureVcpkgRoot,"include"),file]);
-    assert.equal(execFileSync(executable,{cwd:directory,encoding:"utf8",stdio:"pipe"}),"");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            cwd: directory,
+            encoding: "utf8",
+            stdio: "pipe",
+        }),
+        "",
+    );
 });

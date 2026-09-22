@@ -1,6 +1,10 @@
 /** Manager-wide source mixer storage. Node-array identity is the source target key. */
-export function gltfWeightedAnimationTransportCpp(rootFlip: string): {types: string; dispatcher: string} {
-    return {types: `
+export function gltfWeightedAnimationTransportCpp(rootFlip: string): {
+    types: string;
+    dispatcher: string;
+} {
+    return {
+        types: `
 using GltfWeightedNodes = std::vector<GltfAnimationPoseNode>;
 struct GltfWeightedTarget : GltfAnimationPoseState {
     std::shared_ptr<AnimationRuntime> runtime;
@@ -16,7 +20,8 @@ struct GltfWeightedScratch {
     std::unordered_map<const GltfWeightedNodes*,std::size_t> target_indices;
     GltfAnimationFloats sample,reference,delta;
 };
-`, dispatcher: `
+`,
+        dispatcher: `
 struct GltfWeightedAnimationRuntimeState { std::shared_ptr<GltfWeightedScratch> value; };
 bool update_weighted_gltf_animation_groups(Engine& native_engine,PropertyAnimationManagerRecord& manager,double delta_ms) {
     if(!manager.source_gltf_animation)manager.source_gltf_animation=std::make_shared<GltfWeightedAnimationRuntimeState>();
@@ -134,5 +139,6 @@ bool update_weighted_gltf_animation_groups(Engine& native_engine,PropertyAnimati
     Transport transport{native_engine,manager.source_engine_present,manager.ordered_groups,scratch,scratch.keys,scratch.targets,{}};
     return gltf_update_weighted_animation_passes(transport,delta_ms);
 }
-`};
+`,
+    };
 }

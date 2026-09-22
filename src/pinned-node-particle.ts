@@ -241,12 +241,27 @@ export interface NodeParticleSprite2DRequest {
 
 /** Typed buffer columns carried through the frozen-state boundary. */
 export const nodeParticleColumnWidths = {
-    posX: "f32", posY: "f32", posZ: "f32",
-    dirX: "f32", dirY: "f32", dirZ: "f32",
-    size: "f32", angle: "f32", scaleX: "f32", scaleY: "f32",
-    colorR: "f32", colorG: "f32", colorB: "f32", colorA: "f32",
-    colorStepR: "f32", colorStepG: "f32", colorStepB: "f32", colorStepA: "f32",
-    age: "f64", lifeTime: "f64", id: "u32",
+    posX: "f32",
+    posY: "f32",
+    posZ: "f32",
+    dirX: "f32",
+    dirY: "f32",
+    dirZ: "f32",
+    size: "f32",
+    angle: "f32",
+    scaleX: "f32",
+    scaleY: "f32",
+    colorR: "f32",
+    colorG: "f32",
+    colorB: "f32",
+    colorA: "f32",
+    colorStepR: "f32",
+    colorStepG: "f32",
+    colorStepB: "f32",
+    colorStepA: "f32",
+    age: "f64",
+    lifeTime: "f64",
+    id: "u32",
 } as const;
 export type NodeParticleColumn = keyof typeof nodeParticleColumnWidths;
 
@@ -421,14 +436,21 @@ interface NodeParticleBake {
 /** The pinned package path the served driver imports. */
 const pinnedPackage = pinnedBrowserEntryUrl;
 
-function graphExpression(graph: NodeParticleGraphSource, setIndex: number): string {
+function graphExpression(
+    graph: NodeParticleGraphSource,
+    setIndex: number,
+): string {
     if (graph.kind === "literal") {
         return JSON.stringify(graph.graph);
     }
-    const args = graph.args.map((value, index) => {
-        const url = graph.urlArguments?.find((entry) => entry.index === index);
-        return url ? `url_${setIndex}_${index}` : JSON.stringify(value);
-    }).join(", ");
+    const args = graph.args
+        .map((value, index) => {
+            const url = graph.urlArguments?.find(
+                (entry) => entry.index === index,
+            );
+            return url ? `url_${setIndex}_${index}` : JSON.stringify(value);
+        })
+        .join(", ");
     return `${graph.exportName}(${args})`;
 }
 
@@ -436,7 +458,10 @@ function graphExpression(graph: NodeParticleGraphSource, setIndex: number): stri
  * The URL arguments a factory takes, produced ahead of the build by the
  * same module functions the scene awaited, in the same browser.
  */
-function urlArgumentLines(graph: NodeParticleGraphSource, setIndex: number): string[] {
+function urlArgumentLines(
+    graph: NodeParticleGraphSource,
+    setIndex: number,
+): string[] {
     if (graph.kind !== "module") return [];
     return (graph.urlArguments ?? []).map(
         (entry) =>
@@ -457,8 +482,7 @@ function graphImports(request: NodeParticleBakeRequest): string {
     const moduleImport = (module: string, exportName: string): void => {
         const specifier = `/${module.replace(/\.ts$/, ".js")}`;
         lines.add(
-            `import { ${exportName} } from ` +
-                `${JSON.stringify(specifier)};`,
+            `import { ${exportName} } from ` + `${JSON.stringify(specifier)};`,
         );
     };
     for (const set of request.sets) {
@@ -578,9 +602,7 @@ function stepProgram(steps: readonly NodeParticleStep[]): string {
         } else if (step.op === "scalar") {
             lines.push(`    ${system}.${step.name} = ${step.value};`);
         } else {
-            lines.push(
-                `    animateParticleSystem(${system}, ${step.ratio});`,
-            );
+            lines.push(`    animateParticleSystem(${system}, ${step.ratio});`);
         }
     }
     return lines.join("\n");
@@ -606,7 +628,10 @@ function cameraLines(set: NodeParticleSetRequest): string[] {
  * -- and it stays async because the normalizer fetches its heavy runtime
  * lazily, only for a graph that actually carries a Teleport-family block.
  */
-function graphArgument(graph: NodeParticleGraphSource, setIndex: number): string {
+function graphArgument(
+    graph: NodeParticleGraphSource,
+    setIndex: number,
+): string {
     const parsed = `parseNodeParticleSource(${graphExpression(graph, setIndex)})`;
     return graph.normalized
         ? `await normalizeNodeParticleGraph(${parsed})`
@@ -662,7 +687,8 @@ function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
     if (sets.some((set) => set.graph.normalized)) {
         names.add("normalizeNodeParticleGraph");
     }
-    if (sets.some((set) => set.native)) names.add("withNodeParticleEmitterProvider");
+    if (sets.some((set) => set.native))
+        names.add("withNodeParticleEmitterProvider");
     return [...names];
 }
 
@@ -744,15 +770,23 @@ ${stepProgram(request.steps)}
     // expansion happens here, in the pin's own order. Each system carries
     // the (set, system) pair it was BUILT as, which is the key the baked
     // table is looked up by.
-    const frozen = ${JSON.stringify([...request.billboards,
-        ...(request.buffers ?? []).filter((buffer) => !request.billboards.some(
-            (entry) => entry.set === buffer.set && entry.system === buffer.system,
-        )).map(({ set, system }) => ({ set, system })),
+    const frozen = ${JSON.stringify([
+        ...request.billboards,
+        ...(request.buffers ?? [])
+            .filter(
+                (buffer) =>
+                    !request.billboards.some(
+                        (entry) =>
+                            entry.set === buffer.set &&
+                            entry.system === buffer.system,
+                    ),
+            )
+            .map(({ set, system }) => ({ set, system })),
     ])};
     const bufferRequests = ${JSON.stringify(request.buffers ?? [])};
     // A live binding's systems are not frozen: the renderer animates them
     // every frame, and the live lowering takes the built graph instead.
-    const nativeSets = ${JSON.stringify(request.sets.flatMap((set, index) => set.native ? [index] : []))};
+    const nativeSets = ${JSON.stringify(request.sets.flatMap((set, index) => (set.native ? [index] : [])))};
     const expand = (requests) =>
         requests.map(({ set: setIndex, autoStart, live }, request) => ({
             request,
@@ -869,7 +903,9 @@ ${stepProgram(request.steps)}
     // evaluation of the same graph has something to be checked against.
     const live = [];
     const liveRequests = ${JSON.stringify(
-        (request.sprite2d ?? []).flatMap((entry, index) => (entry.live ? [index] : [])),
+        (request.sprite2d ?? []).flatMap((entry, index) =>
+            entry.live ? [index] : [],
+        ),
     )};
     const emitters = ${JSON.stringify(request.sets.map((set) => set.emitter))};
     const liveExpansions = sprite2dExpansions.filter((entry) => liveRequests.includes(entry.request));

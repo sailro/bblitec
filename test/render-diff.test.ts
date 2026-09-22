@@ -192,13 +192,18 @@ test("splits a captured block into named fields and reports an uncovered tail", 
 
 test("an unknown struct still yields comparable vec4 rows", () => {
     const fields = nativeFields(
-        { stage: "vertex", slot: 0, type: "viewProjection", floats: [1, 2, 3, 4, 5, 6, 7, 8] },
+        {
+            stage: "vertex",
+            slot: 0,
+            type: "viewProjection",
+            floats: [1, 2, 3, 4, 5, 6, 7, 8],
+        },
         new Map(),
     );
-    assert.deepEqual(fields.map((field) => field.name), [
-        "viewProjection[0]",
-        "viewProjection[4]",
-    ]);
+    assert.deepEqual(
+        fields.map((field) => field.name),
+        ["viewProjection[0]", "viewProjection[4]"],
+    );
 });
 
 test("classifies correspondence by value, tolerating last-bit drift", () => {
@@ -331,9 +336,7 @@ test("decodes pinned blocks into vec4 rows, flagging blocks no draw carries", ()
 });
 
 test("applies the documented mirror map: negate column-major 1, 2, 3, 4, 8, 12", () => {
-    const matrix = [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    ];
+    const matrix = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     assert.deepEqual(
         mirrorMatrixConvention(matrix),
         [0, -1, -2, -3, -4, 5, 6, 7, -8, 9, 10, 11, -12, 13, 14, 15],
@@ -349,10 +352,8 @@ test("applies the documented mirror map: negate column-major 1, 2, 3, 4, 8, 12",
 
 test("matches native bone palettes against rgba32float uploads, mirror map applied", () => {
     const nativeBone = [
-        0.5, 0.1, -0.2, 0,
-        0.3, 0.9, 0.05, 0,
-        -0.4, 0.2, 0.8, 0,
-        1.5, -2.5, 3.5, 1,
+        0.5, 0.1, -0.2, 0, 0.3, 0.9, 0.05, 0, -0.4, 0.2, 0.8, 0, 1.5, -2.5, 3.5,
+        1,
     ];
     // The browser's upload carries the mirrored form of ours; encode it
     // as the raw rgba32float texel bytes the capture records.
@@ -523,7 +524,10 @@ test("matches shader arms by normalized content and opens the closest near miss"
     const native = new Map([
         // Trailing whitespace and a trailing blank line are the cosmetic
         // differences the normalization forgives — nothing else.
-        ["pbr-variants/match.frag.wgsl", "// arm  \n@fragment\nfn main() { }\n\n"],
+        [
+            "pbr-variants/match.frag.wgsl",
+            "// arm  \n@fragment\nfn main() { }\n\n",
+        ],
         [
             "pbr-variants/near.frag.wgsl",
             "// pbr\n@fragment\nfn shade() {\n  let colorF0 = 1.0;\n  let arm = 3.0;\n}\n",
@@ -741,13 +745,17 @@ test("pairs a native capture against a browser capture end to end", () => {
                 pinnedMeshBlocks: [
                     {
                         meshIndex: 0,
-                        world: [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                        world: [
+                            -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+                        ],
                         lightCount: 1,
                         boneCount: 0,
                     },
                     {
                         meshIndex: 0,
-                        world: [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                        world: [
+                            -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+                        ],
                         lightCount: 1,
                         boneCount: 0,
                     },
@@ -755,7 +763,12 @@ test("pairs a native capture against a browser capture end to end", () => {
             }),
         );
 
-        const report = buildRenderDiff("test", capture, nativeCapture, generated);
+        const report = buildRenderDiff(
+            "test",
+            capture,
+            nativeCapture,
+            generated,
+        );
         assert.deepEqual(report.draws.shared.sort(), ["120x1", "36x1"]);
         assert.deepEqual(report.draws.onlyInNative, []);
         assert.deepEqual(report.draws.onlyInBrowser, []);
@@ -827,10 +840,7 @@ test("pairs a native capture against a browser capture end to end", () => {
                 ],
             },
         ]);
-        assert.deepEqual(arms.browserOnly, [
-            "00-fragment.wgsl",
-            "01-pbr.wgsl",
-        ]);
+        assert.deepEqual(arms.browserOnly, ["00-fragment.wgsl", "01-pbr.wgsl"]);
         assert.deepEqual(arms.nativeOnly, ["pbr-variants/near.frag.wgsl"]);
         assert.equal(arms.nearMiss?.browser, "01-pbr.wgsl");
         assert.equal(arms.nearMiss?.native, "pbr-variants/near.frag.wgsl");
@@ -930,10 +940,8 @@ test("decodes standard-family blocks through the generated variant headers", () 
                                 // dc, sc (trivial), ec, bs — the pinned
                                 // 48-byte mirror as the capture dumps it.
                                 floats: [
-                                    0.5, 0.25, 0.125, 2,
-                                    1, 1, 1, 1,
-                                    0.75, 0.5, 0.25,
-                                    24,
+                                    0.5, 0.25, 0.125, 2, 1, 1, 1, 1, 0.75, 0.5,
+                                    0.25, 24,
                                 ],
                             },
                         ],
@@ -961,9 +969,7 @@ test("decodes standard-family blocks through the generated variant headers", () 
         assert.ok(names.includes("StandardMaterialUniforms.ec"));
         assert.ok(names.includes("StandardMaterialUniforms.bs"));
         assert.ok(
-            !names.some((name) =>
-                name.startsWith("StandardMaterialUniforms["),
-            ),
+            !names.some((name) => name.startsWith("StandardMaterialUniforms[")),
         );
         // The name both headers declare reads through renderer_plan.hpp.
         assert.ok(names.includes("GridUniforms.grid_control"));
@@ -1081,10 +1087,7 @@ test("sprite layers and effect wrappers join the census, the pool and the family
         // the effect wrapper's setEffectUniforms floats — both uploaded on
         // the browser side.
         const layerUbo = [
-            10, 20, 1.5, 0,
-            320, 180, 0.5, 0.5,
-            1, 1, 1, 0.75,
-            0, 0, 0, 0,
+            10, 20, 1.5, 0, 320, 180, 0.5, 0.5, 1, 1, 1, 0.75, 0, 0, 0, 0,
         ];
         const effectUniforms = [0.1, 0.2, 0.3, 0.4];
         const layerBytes = Buffer.alloc(64);
@@ -1189,9 +1192,7 @@ test("sprite layers and effect wrappers join the census, the pool and the family
                         },
                     ],
                     renderers: [],
-                    tasks: [
-                        { taskIndex: 0, name: "fx", effect: 0, target: 1 },
-                    ],
+                    tasks: [{ taskIndex: 0, name: "fx", effect: 0, target: 1 }],
                 },
             }),
         );
@@ -1240,10 +1241,7 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
         // The sixteen-float layer block build_sprite_layer_ubo writes,
         // uploaded by the browser and reported by the native section.
         const layerUbo = [
-            0, 0, 1, 0,
-            320, 180, 0.5, 0.5,
-            1, 1, 1, 1,
-            0, 0, 0, 0,
+            0, 0, 1, 0, 320, 180, 0.5, 0.5, 1, 1, 1, 1, 0, 0, 0, 0,
         ];
         const layerBytes = Buffer.alloc(64);
         layerUbo.forEach((value, index) =>
@@ -1271,10 +1269,7 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
         // them instead of reporting a one-sided module.
         const spriteModule =
             "// sprite2d\n@fragment\nfn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\n";
-        writeFileSync(
-            join(capture, "shaders", "00-sprite.wgsl"),
-            spriteModule,
-        );
+        writeFileSync(join(capture, "shaders", "00-sprite.wgsl"), spriteModule);
         writeFileSync(
             join(generated, "upstream", "shaders", "sprite.frag.native.wgsl"),
             spriteModule,
@@ -1319,12 +1314,7 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
                 ],
             }),
         );
-        const report = buildRenderDiff(
-            "50",
-            capture,
-            nativeCapture,
-            generated,
-        );
+        const report = buildRenderDiff("50", capture, nativeCapture, generated);
         // The layer's quad is the frame's only draw shape, carried by the
         // spriteRenderers section alone — the draws array is empty.
         assert.equal(report.summary.nativeDraws, 0);
@@ -1341,10 +1331,7 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
         });
         // No false findings on a clean pairing: the all-clear line alone.
         assert.equal(report.findings.length, 1);
-        assert.match(
-            report.findings[0]!,
-            /appears in the browser's uploads/,
-        );
+        assert.match(report.findings[0]!, /appears in the browser's uploads/);
         assert.deepEqual(report.shaders.arms.matched, [
             {
                 browser: ["00-sprite.wgsl"],
@@ -1396,7 +1383,13 @@ function buildRenderDiffFromMinimalCapture(): RenderDiffReport {
 
 test("refuses a missing native capture with the command that writes one", () => {
     assert.throws(
-        () => buildRenderDiff("test", tmpdir(), join(tmpdir(), "absent.json"), tmpdir()),
+        () =>
+            buildRenderDiff(
+                "test",
+                tmpdir(),
+                join(tmpdir(), "absent.json"),
+                tmpdir(),
+            ),
         /capture <id> --native/,
     );
 });

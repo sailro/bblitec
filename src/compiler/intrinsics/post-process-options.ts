@@ -104,8 +104,7 @@ export function compilePostProcessTaskOptions(
     const viewportExpression = context.objectProperty(object, "viewport");
     let viewport = "bbl::NormalizedViewport{}";
     if (viewportExpression) {
-        const viewportObject =
-            context.expectObjectLiteral(viewportExpression);
+        const viewportObject = context.expectObjectLiteral(viewportExpression);
         const component = (field: string): string =>
             requiredObjectNumber(context, viewportObject, field, "double");
         viewport = `bbl::NormalizedViewport{${component("x")}, ${component(
@@ -203,20 +202,30 @@ export function compilePostProcessCompositeOptions(
     }
     const source = context.compileValue(sourceExpression);
     context.expectKind(source, "render-target", sourceExpression);
-    if (!source.renderTargetSignature || source.renderTargetSignature.samples !== 1) {
-        context.noteTemporalRecordBoundary(sourceExpression,
-            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state", "always");
+    if (
+        !source.renderTargetSignature ||
+        source.renderTargetSignature.samples !== 1
+    ) {
+        context.noteTemporalRecordBoundary(
+            sourceExpression,
+            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
+            "always",
+        );
     }
 
     const target = optionalRenderTarget(context, object, "targetTexture");
 
     const sourceTasks = (composite.sourceTasks ?? []).map((option) => {
         const expression = context.objectProperty(object, option);
-        if (!expression) context.fail(object, `${intrinsic} requires '${option}'.`);
+        if (!expression)
+            context.fail(object, `${intrinsic} requires '${option}'.`);
         const value = context.compileValue(expression);
         context.expectKind(value, "task", expression);
         if (!value.renderTask) {
-            context.fail(expression, `${intrinsic} '${option}' requires a proven scene render task.`);
+            context.fail(
+                expression,
+                `${intrinsic} '${option}' requires a proven scene render task.`,
+            );
         }
         context.expectSameEngine(source, value, expression);
         return value;
@@ -241,12 +250,10 @@ export function compilePostProcessCompositeOptions(
     // pass it ends on, so they are its options rather than the framework's:
     // only the name and the textures are consumed here. A `clear: false` that
     // stopped at this boundary would compose the pin's default instead.
-    const options = compileEffectOptions(
-        context,
-        object,
-        composite,
-        [...COMPOSITE_PASS_SETTINGS, ...(composite.sourceTasks ?? [])],
-    );
+    const options = compileEffectOptions(context, object, composite, [
+        ...COMPOSITE_PASS_SETTINGS,
+        ...(composite.sourceTasks ?? []),
+    ]);
     return {
         cpp:
             `bbl::PostProcessCompositeInputs{${context.cppString(name)}, ` +
@@ -299,9 +306,15 @@ export function compileDescriptorOptions(
     const options: Record<string, PostProcessOptionValue> = {};
     for (const property of object.properties) {
         const named = ts.isPropertyAssignment(property)
-            ? { key: context.propertyName(property.name), value: property.initializer }
+            ? {
+                  key: context.propertyName(property.name),
+                  value: property.initializer,
+              }
             : ts.isShorthandPropertyAssignment(property)
-              ? { key: context.propertyName(property.name), value: property.name }
+              ? {
+                    key: context.propertyName(property.name),
+                    value: property.name,
+                }
               : undefined;
         if (!named || named.key === undefined) {
             context.fail(
@@ -472,9 +485,7 @@ function compileOptionValue(
  * label: `config.name ?? "blur"`. Derived from the entry point rather than
  * listed, so a renamed factory renames its passes with it.
  */
-function defaultTaskName(
-    effect: Pick<PostProcessEffect, "intrinsic">,
-): string {
+function defaultTaskName(effect: Pick<PostProcessEffect, "intrinsic">): string {
     return effect.intrinsic
         .replace(/^create/, "")
         .replace(/PostProcessTask$/, "")

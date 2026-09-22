@@ -5,7 +5,25 @@
 namespace {
 using namespace bbl;
 using namespace std::chrono_literals;
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void require(bool condition, const char* message) {
+    if (!condition)
+        throw std::runtime_error(message);
+}
+
+void listener_identity() {
+    PlatformEventListeners<void()> listeners;
+    int regular = 0, once = 0;
+    js::Callback<void()> callback{[&] { ++regular; }};
+    listeners.add(callback);
+    listeners.add(callback);
+    listeners.add(js::Callback<void()>{[&] { ++once; }}, true);
+    listeners.dispatch();
+    listeners.dispatch();
+    require(regular == 2 && once == 1, "Listener identity or once registration was lost");
+    listeners.remove(callback.identity());
+    listeners.dispatch();
+    require(regular == 2, "Listener removal lost the callback identity");
+}
 
 void counter_module(pal::WorkerRealm& realm) {
     auto count = js::make_ref<double>(0);
@@ -14,7 +32,8 @@ void counter_module(pal::WorkerRealm& realm) {
             auto& [scope, count] = environment;
             *count += event->data<double>();
             scope->post_message(js::serialize_message(*count));
-            if (*count == 3) scope->close();
+            if (*count == 3)
+                scope->close();
         })));
 }
 
@@ -30,13 +49,15 @@ void independent_instances() {
             workers[n] = realm.create_worker(counter_module);
             workers[n]->add_message_listener([&, n](const pal::WorkerMessage& event) {
                 observed[n].push_back(event->data<double>());
-                if (observed[n].size() == 2 && ++completed == 2) loop.close();
+                if (observed[n].size() == 2 && ++completed == 2)
+                    loop.close();
             });
             workers[n]->post_message(js::serialize_message(1.0));
             workers[n]->post_message(js::serialize_message(2.0));
         }
     });
-    for (const auto& values : observed) require(values == std::vector<double>{1, 3}, "Worker instances shared module state");
+    for (const auto& values : observed)
+        require(values == std::vector<double>{1, 3}, "Worker instances shared module state");
 }
 
 void error_module(pal::WorkerRealm&) { throw std::runtime_error("startup failure"); }
@@ -65,8 +86,9 @@ void listener_error_cleanup() {
     int phase = 0;
     int errors = 0;
     loop.on_error([&](std::exception_ptr error) {
-        try { std::rethrow_exception(error); }
-        catch (const std::runtime_error& problem) {
+        try {
+            std::rethrow_exception(error);
+        } catch (const std::runtime_error& problem) {
             require(std::string(problem.what()) == "listener failure", "Wrong listener error");
             ++errors;
         }
@@ -89,7 +111,8 @@ void listener_error_cleanup() {
 
 void busy_module(pal::WorkerRealm& realm) {
     realm.post_message(js::serialize_message(1.0));
-    for (;;) realm.loop().checkpoint();
+    for (;;)
+        realm.loop().checkpoint();
 }
 
 void busy_termination() {
@@ -102,7 +125,8 @@ void busy_termination() {
         worker->add_message_listener([&](const pal::WorkerMessage&) {
             const auto before = pal::EventLoop::Clock::now();
             worker->terminate();
-            require(pal::EventLoop::Clock::now() - before < 500ms, "Worker terminate blocked its parent");
+            require(pal::EventLoop::Clock::now() - before < 500ms,
+                    "Worker terminate blocked its parent");
             loop.close();
         });
     });
@@ -140,8 +164,12 @@ void realm_state_reset() {
         const auto identity = js::next_callback_identity();
         const auto random = js::random_js();
         require(js::missing_array_value<double>() == 0, "Realm scratch survived prior scope");
-        if (n == 0) { first_identity = identity; first_random = random; }
-        else require(identity == first_identity && random == first_random, "Realm state was not reset");
+        if (n == 0) {
+            first_identity = identity;
+            first_random = random;
+        } else
+            require(identity == first_identity && random == first_random,
+                    "Realm state was not reset");
         js::missing_array_value<double>() = 12;
     }
 }
@@ -149,13 +177,15 @@ void realm_state_reset() {
 
 int main() {
     try {
+        listener_identity();
         independent_instances();
         startup_errors();
         listener_error_cleanup();
         busy_termination();
         nested_workers();
         realm_state_reset();
-        std::cout << "Worker service: independent modules, errors, nesting, termination and realm state passed.\n";
+        std::cout
+            << "Worker service: independent modules, errors, nesting, termination and realm state passed.\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

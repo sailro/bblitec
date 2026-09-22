@@ -39,13 +39,9 @@ export const compiledShaderArtifactExtensions = [
 ] as const;
 
 const compiledShaderArtifactPattern = new RegExp(
-    `^(.*/shaders/)([^/]+?)(?:${
-        compiledShaderArtifactExtensions
-            .map((extension) =>
-                extension.replace(/[.\\]/g, "\\$&"),
-            )
-            .join("|")
-    })$`,
+    `^(.*/shaders/)([^/]+?)(?:${compiledShaderArtifactExtensions
+        .map((extension) => extension.replace(/[.\\]/g, "\\$&"))
+        .join("|")})$`,
 );
 
 export class GeneratedTree {
@@ -58,10 +54,7 @@ export class GeneratedTree {
      * Returns whether it wrote, which is the one fact a caller refreshing
      * a derived file wants to report.
      */
-    public write(
-        relativePath: string,
-        data: string | Uint8Array,
-    ): boolean {
+    public write(relativePath: string, data: string | Uint8Array): boolean {
         const path = resolve(this.root, relativePath);
         this.written.add(this.key(path));
         const bytes =
@@ -78,9 +71,7 @@ export class GeneratedTree {
 
     /** Record a file this run produced through another writer. */
     public keep(relativePath: string): void {
-        this.written.add(
-            this.key(resolve(this.root, relativePath)),
-        );
+        this.written.add(this.key(resolve(this.root, relativePath)));
     }
 
     /**
@@ -95,10 +86,7 @@ export class GeneratedTree {
      * deleted with it when a scene stops reaching that shader.
      */
     public prune(relativeDirectory: string): void {
-        const directory = resolve(
-            this.root,
-            relativeDirectory,
-        );
+        const directory = resolve(this.root, relativeDirectory);
         if (!existsSync(directory)) {
             return;
         }
@@ -123,9 +111,7 @@ export class GeneratedTree {
     private isLiveShaderArtifact(key: string): boolean {
         const match = compiledShaderArtifactPattern.exec(key);
         if (match) {
-            return this.written.has(
-                `${match[1]}${match[2]}.native.wgsl`,
-            );
+            return this.written.has(`${match[1]}${match[2]}.native.wgsl`);
         }
         return /\/shaders\/shader-compiler\.json$/.test(key);
     }
@@ -146,9 +132,7 @@ export class GeneratedTree {
     }
 
     private key(path: string): string {
-        return relative(this.root, path)
-            .replace(/\\/g, "/")
-            .toLowerCase();
+        return relative(this.root, path).replace(/\\/g, "/").toLowerCase();
     }
 
     private files(directory: string, out: string[] = []): string[] {

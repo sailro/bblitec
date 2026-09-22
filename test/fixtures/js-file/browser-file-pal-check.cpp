@@ -21,11 +21,11 @@ std::string open_override;
 std::string save_override;
 
 void require(bool condition, std::string_view message) {
-    if (!condition) throw std::runtime_error(std::string(message));
+    if (!condition)
+        throw std::runtime_error(std::string(message));
 }
 
-template <typename Work>
-void require_throws(Work&& work, std::string_view message) {
+template <typename Work> void require_throws(Work&& work, std::string_view message) {
     bool threw = false;
     try {
         work();
@@ -37,9 +37,11 @@ void require_throws(Work&& work, std::string_view message) {
 
 void write_text(const std::filesystem::path& path, std::string_view text) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    if (!stream) throw std::runtime_error("Unable to create scratch file.");
+    if (!stream)
+        throw std::runtime_error("Unable to create scratch file.");
     stream.write(text.data(), static_cast<std::streamsize>(text.size()));
-    if (!stream) throw std::runtime_error("Unable to write scratch file.");
+    if (!stream)
+        throw std::runtime_error("Unable to write scratch file.");
 }
 
 } // namespace
@@ -48,8 +50,10 @@ namespace bbl::pal {
 
 std::string environment_variable(const char* name) {
     const std::string_view key(name);
-    if (key == "BBLITE_FILE_DIALOG_OPEN_PATH") return open_override;
-    if (key == "BBLITE_FILE_DIALOG_SAVE_PATH") return save_override;
+    if (key == "BBLITE_FILE_DIALOG_OPEN_PATH")
+        return open_override;
+    if (key == "BBLITE_FILE_DIALOG_SAVE_PATH")
+        return save_override;
     return {};
 }
 
@@ -60,9 +64,11 @@ int main(int argc, char** argv) {
     const std::filesystem::path root = argv[1];
     require(bbl::pal::detail::file_dialog_extensions("*.*").empty(), "all-file filter");
     require(bbl::pal::detail::file_dialog_extensions("*.json;*.TXT") ==
-        std::vector<std::string>{"json", "TXT"}, "shared extension filter");
+                std::vector<std::string>{"json", "TXT"},
+            "shared extension filter");
     for (const auto invalid : {"json", "*.", "*.json;", "*.a/b", "*.json;../private"}) {
-        require_throws([&] { bbl::pal::detail::file_dialog_extensions(invalid); }, "invalid picker filter");
+        require_throws([&] { bbl::pal::detail::file_dialog_extensions(invalid); },
+                       "invalid picker filter");
     }
     const std::filesystem::path selected_path = root / "selected.json";
     const std::filesystem::path other_path = root / "other.json";
@@ -72,80 +78,69 @@ int main(int argc, char** argv) {
     open_override = selected_path.string();
     bbl::Engine engine;
     bbl::pal::extracting_constructor_inputs = true;
-    require_throws([&] { bbl::pal::choose_open_file(engine, {}); }, "construction refuses file selection before reading an override");
-    require_throws([&] { bbl::pal::save_file(engine, {}, std::string_view("changed")); }, "construction refuses a save dialog");
-    require_throws([&] { bbl::pal::write_selected_file_atomically(selected_path.string(), std::string_view("changed")); }, "construction refuses text writes");
-    require_throws([&] { bbl::pal::write_selected_file_atomically(selected_path.string(), std::vector<std::uint8_t>{1}); }, "construction refuses byte writes");
+    require_throws([&] { bbl::pal::choose_open_file(engine, {}); },
+                   "construction refuses file selection before reading an override");
+    require_throws([&] { bbl::pal::save_file(engine, {}, std::string_view("changed")); },
+                   "construction refuses a save dialog");
+    require_throws(
+        [&] {
+            bbl::pal::write_selected_file_atomically(selected_path.string(),
+                                                     std::string_view("changed"));
+        },
+        "construction refuses text writes");
+    require_throws(
+        [&] {
+            bbl::pal::write_selected_file_atomically(selected_path.string(),
+                                                     std::vector<std::uint8_t>{1});
+        },
+        "construction refuses byte writes");
     bbl::pal::extracting_constructor_inputs = false;
     int once_dispatches = 0;
     int later_dispatches = 0;
-    engine.pointer_lock_change_callbacks.add(
-        1u,
-        [once = std::make_shared<bool>(false),
-         &engine,
-         &once_dispatches,
-         &later_dispatches]() {
-            if (*once) return;
-            *once = true;
-            ++once_dispatches;
-            engine.pointer_lock_change_callbacks.add(
-                2u,
-                [&later_dispatches]() { ++later_dispatches; });
-        });
+    engine.pointer_lock_change_callbacks.add(1u, [once = std::make_shared<bool>(false), &engine,
+                                                  &once_dispatches, &later_dispatches]() {
+        if (*once)
+            return;
+        *once = true;
+        ++once_dispatches;
+        engine.pointer_lock_change_callbacks.add(2u, [&later_dispatches]() { ++later_dispatches; });
+    });
     bbl::pal::dispatch_pointer_lock_change(engine);
-    require(
-        once_dispatches == 1 && later_dispatches == 0,
-        "dialog-induced pointer-lock dispatch snapshots listeners");
+    require(once_dispatches == 1 && later_dispatches == 0,
+            "dialog-induced pointer-lock dispatch snapshots listeners");
     bbl::pal::dispatch_pointer_lock_change(engine);
     bbl::pal::dispatch_pointer_lock_change(engine);
-    require(
-        once_dispatches == 1 && later_dispatches == 2,
-        "one-shot state survives snapshots and later transitions");
+    require(once_dispatches == 1 && later_dispatches == 2,
+            "one-shot state survives snapshots and later transitions");
     engine.pointer_lock_change_callbacks.clear();
     int remover_dispatches = 0;
     int removed_dispatches = 0;
-    engine.pointer_lock_change_callbacks.add(
-        3u,
-        [&]() {
-            ++remover_dispatches;
-            engine.pointer_lock_change_callbacks.remove(4u);
-        });
-    engine.pointer_lock_change_callbacks.add(
-        4u,
-        [&]() { ++removed_dispatches; });
+    engine.pointer_lock_change_callbacks.add(3u, [&]() {
+        ++remover_dispatches;
+        engine.pointer_lock_change_callbacks.remove(4u);
+    });
+    engine.pointer_lock_change_callbacks.add(4u, [&]() { ++removed_dispatches; });
     bbl::pal::dispatch_pointer_lock_change(engine);
-    require(
-        remover_dispatches == 1 && removed_dispatches == 0,
-        "removal suppresses a later listener in the active dispatch");
+    require(remover_dispatches == 1 && removed_dispatches == 0,
+            "removal suppresses a later listener in the active dispatch");
     engine.pointer_lock_change_callbacks.clear();
     int native_once_dispatches = 0;
-    engine.pointer_lock_change_callbacks.add(
-        5u,
-        [&]() { ++native_once_dispatches; },
-        true);
+    engine.pointer_lock_change_callbacks.add(5u, [&]() { ++native_once_dispatches; }, true);
     bbl::pal::dispatch_pointer_lock_change(engine);
     bbl::pal::dispatch_pointer_lock_change(engine);
-    require(
-        native_once_dispatches == 1,
-        "registry-owned once removes the listener before invocation");
-    engine.pointer_lock_change_callbacks.add(
-        5u,
-        [&]() { ++native_once_dispatches; });
+    require(native_once_dispatches == 1,
+            "registry-owned once removes the listener before invocation");
+    engine.pointer_lock_change_callbacks.add(5u, [&]() { ++native_once_dispatches; });
     bbl::pal::dispatch_pointer_lock_change(engine);
-    require(
-        native_once_dispatches == 2,
-        "a fired one-shot listener may be registered again");
+    require(native_once_dispatches == 2, "a fired one-shot listener may be registered again");
     engine.pointer_lock_change_callbacks.clear();
     engine.canvas_client_width = 100.0;
     engine.canvas_client_height = 80.0;
     int canvas_mouse_downs = 0;
     int canvas_mouse_ups = 0;
-    engine.mouse_down_callbacks.add(
-        6u,
-        [&](const bbl::PlatformMouseEvent&) { ++canvas_mouse_downs; });
-    engine.mouse_up_callbacks.add(
-        7u,
-        [&](const bbl::PlatformMouseEvent&) { ++canvas_mouse_ups; });
+    engine.mouse_down_callbacks.add(6u,
+                                    [&](const bbl::PlatformMouseEvent&) { ++canvas_mouse_downs; });
+    engine.mouse_up_callbacks.add(7u, [&](const bbl::PlatformMouseEvent&) { ++canvas_mouse_ups; });
     const bbl::PlatformMouseEvent outside{
         .button = 0.0,
         .buttons = 1.0,
@@ -154,9 +149,8 @@ int main(int argc, char** argv) {
     };
     bbl::pal::dispatch_platform_mouse_button(engine, outside, true);
     bbl::pal::dispatch_platform_mouse_button(engine, outside, false);
-    require(
-        canvas_mouse_downs == 0 && canvas_mouse_ups == 0,
-        "host-decoration mouse buttons do not reach canvas listeners");
+    require(canvas_mouse_downs == 0 && canvas_mouse_ups == 0,
+            "host-decoration mouse buttons do not reach canvas listeners");
     const bbl::PlatformMouseEvent inside{
         .button = 0.0,
         .buttons = 1.0,
@@ -165,9 +159,8 @@ int main(int argc, char** argv) {
     };
     bbl::pal::dispatch_platform_mouse_button(engine, inside, true);
     bbl::pal::dispatch_platform_mouse_button(engine, inside, false);
-    require(
-        canvas_mouse_downs == 1 && canvas_mouse_ups == 1,
-        "client-area mouse buttons reach canvas listeners");
+    require(canvas_mouse_downs == 1 && canvas_mouse_ups == 1,
+            "client-area mouse buttons reach canvas listeners");
     engine.mouse_down_callbacks.clear();
     engine.mouse_up_callbacks.clear();
 
@@ -188,19 +181,20 @@ int main(int argc, char** argv) {
         for (const double pixel_density : {1.0, 2.0}) {
             bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, density, pixel_density);
             require(engine.options.width == 1280 && engine.options.height == 720,
-                "DPI does not shrink the drawing buffer");
+                    "DPI does not shrink the drawing buffer");
             require(engine.canvas_client_width == 1280 / density &&
-                engine.canvas_client_height == 720 / density, "CSS canvas extent follows display scale");
+                        engine.canvas_client_height == 720 / density,
+                    "CSS canvas extent follows display scale");
             const double dpr = engine.options.width / engine.canvas_client_width;
             const double label_x = 960.0 / dpr;
             const double label_y = 540.0 / dpr;
             require(label_x * density == 960.0 && label_y * density == 540.0,
-                "CSS label projects back to its drawing-buffer anchor");
+                    "CSS label projects back to its drawing-buffer anchor");
             const auto check_pointer = [&]() {
                 require(received.client_x == label_x && received.client_y == label_y,
-                    "SDL pointer and projected CSS label agree");
+                        "SDL pointer and projected CSS label agree");
                 require(received.client_x * dpr == 960 && received.client_y * dpr == 540,
-                    "browser picking returns the drawing-buffer anchor");
+                        "browser picking returns the drawing-buffer anchor");
             };
             const float x = static_cast<float>(960.0 / pixel_density);
             const float y = static_cast<float>(540.0 / pixel_density);
@@ -235,8 +229,9 @@ int main(int argc, char** argv) {
     require(received_events == 24, "all four input kinds reach the far half of every DPI viewport");
     require(!bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, 2, 2), "unchanged metrics");
     require(bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, 1, 1),
-        "moving between DPI settings changes the CSS viewport without a pixel resize");
-    require(bbl::pal::update_engine_canvas_metrics(engine, 2560, 1440, 1, 1), "maximize updates extents");
+            "moving between DPI settings changes the CSS viewport without a pixel resize");
+    require(bbl::pal::update_engine_canvas_metrics(engine, 2560, 1440, 1, 1),
+            "maximize updates extents");
     engine.mouse_down_callbacks.clear();
     engine.mouse_up_callbacks.clear();
     engine.mouse_move_callbacks.clear();
@@ -255,47 +250,36 @@ int main(int argc, char** argv) {
 
     bbl::BrowserFileHandle file;
     bbl::js::replace_browser_file(engine, file, std::move(*selected));
-    require(
-        bbl::js::file_text(engine, file) == "selected bytes",
-        "initial File.text snapshot");
+    require(bbl::js::file_text(engine, file) == "selected bytes", "initial File.text snapshot");
 
     const std::filesystem::path save_path = root / "saved.json";
     save_override = save_path.string();
-    require(
-        bbl::pal::save_file(engine, options, std::string_view("saved bytes")),
-        "environment-selected save file");
-    require(
-        bbl::pal::detail::read_text_file_bounded(
-            save_path,
-            64u,
-            "saved file") == "saved bytes",
-        "real PAL atomic save");
-    require_throws([&] {
-        bbl::pal::save_file(engine, options, std::string_view("must not replace"), [] {
-            throw std::runtime_error("invalidated download activation");
-        });
-    }, "save validation precedes publication");
+    require(bbl::pal::save_file(engine, options, std::string_view("saved bytes")),
+            "environment-selected save file");
     require(bbl::pal::detail::read_text_file_bounded(save_path, 64u, "saved file") == "saved bytes",
-        "failed save validation preserves the destination");
+            "real PAL atomic save");
+    require_throws(
+        [&] {
+            bbl::pal::save_file(engine, options, std::string_view("must not replace"), [] {
+                throw std::runtime_error("invalidated download activation");
+            });
+        },
+        "save validation precedes publication");
+    require(bbl::pal::detail::read_text_file_bounded(save_path, 64u, "saved file") == "saved bytes",
+            "failed save validation preserves the destination");
 
     write_text(selected_path, "replacement bytes");
-    require(
-        bbl::js::file_text(engine, file) == "selected bytes",
-        "File.text cannot follow pathname replacement");
+    require(bbl::js::file_text(engine, file) == "selected bytes",
+            "File.text cannot follow pathname replacement");
 
     std::filesystem::remove(selected_path);
     std::error_code symlink_error;
     std::filesystem::create_symlink(other_path, selected_path, symlink_error);
     if (!symlink_error) {
-        require(
-            bbl::js::file_text(engine, file) == "selected bytes",
-            "File.text cannot follow a post-selection symlink");
-        require_throws(
-            [&]() {
-                static_cast<void>(
-                    bbl::pal::choose_open_file(engine, options));
-            },
-            "a picker result that resolves to a symlink is rejected");
+        require(bbl::js::file_text(engine, file) == "selected bytes",
+                "File.text cannot follow a post-selection symlink");
+        require_throws([&]() { static_cast<void>(bbl::pal::choose_open_file(engine, options)); },
+                       "a picker result that resolves to a symlink is rejected");
     }
 
     const std::filesystem::path oversized = root / "oversized.bin";
@@ -305,11 +289,8 @@ int main(int argc, char** argv) {
         stream.put('\0');
     }
     open_override = oversized.string();
-    require_throws(
-        [&]() {
-            static_cast<void>(bbl::pal::choose_open_file(engine, options));
-        },
-        "selected-file bound is checked before allocation");
+    require_throws([&]() { static_cast<void>(bbl::pal::choose_open_file(engine, options)); },
+                   "selected-file bound is checked before allocation");
 
     std::cout << "browser-file-pal-check: ok\n";
     return 0;

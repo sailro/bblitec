@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+    discoverClangTool,
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
@@ -14,17 +15,84 @@ function touch(path: string): void {
     writeFileSync(path, "");
 }
 
-test("tool discovery skips directories named like executables", t => {
+test("quality tools honor explicit paths, versioned LLVM, and Visual Studio discovery", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-quality-tools-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const bin = join(root, "bin");
+    const vs = join(root, "Visual Studio");
+    const bundled = join(
+        vs,
+        "VC",
+        "Tools",
+        "Llvm",
+        "x64",
+        "bin",
+        "clang-format.exe",
+    );
+    touch(bundled);
+    mkdirSync(join(vs, "VC", "Tools", "MSVC"), { recursive: true });
+    const environment = { PATH: bin, VSINSTALLDIR: vs };
+    assert.equal(
+        discoverClangTool("clang-format", {
+            cwd: root,
+            platform: "win32",
+            environment,
+        }),
+        bundled,
+    );
+    const versioned = join(bin, "clang-format-22");
+    touch(versioned);
+    assert.equal(
+        discoverClangTool("clang-format", {
+            cwd: root,
+            platform: "linux",
+            environment,
+        }),
+        versioned,
+    );
+    assert.equal(
+        discoverClangTool("clang-format", {
+            cwd: root,
+            platform: "win32",
+            environment: {
+                ...environment,
+                CLANG_FORMAT: join(root, "missing"),
+            },
+        }),
+        undefined,
+    );
+    const explicit = join(bin, "selected-tidy");
+    touch(explicit);
+    assert.equal(
+        discoverClangTool("clang-tidy", {
+            cwd: root,
+            platform: "linux",
+            environment: { PATH: "", CLANG_TIDY: explicit },
+        }),
+        explicit,
+    );
+});
+
+test("tool discovery skips directories named like executables", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-tools-directories-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const bin = join(root, "bin");
     mkdirSync(join(bin, "git"), { recursive: true });
     touch(join(bin, "git.exe"));
-    const tools = discoverDevelopmentTools({ cwd: root, platform: "win32", environment: { PATH: bin } });
+    const tools = discoverDevelopmentTools({
+        cwd: root,
+        platform: "win32",
+        environment: { PATH: bin },
+    });
     assert.equal(tools.git, join(bin, "git.exe"));
-    assert.equal(discoverDevelopmentTools({
-        cwd: root, platform: "win32", environment: { PATH: bin, CMAKE_COMMAND: join(bin, "git") },
-    }).cmake, undefined);
+    assert.equal(
+        discoverDevelopmentTools({
+            cwd: root,
+            platform: "win32",
+            environment: { PATH: bin, CMAKE_COMMAND: join(bin, "git") },
+        }).cmake,
+        undefined,
+    );
 });
 
 test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio", (t) => {
@@ -71,9 +139,16 @@ test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio
     const ccache = resolve(root, "artifacts/tools/ccache/ccache.exe");
     touch(ccache);
     assert.equal(discoverDevelopmentTools(options).ccache, ccache);
-    assert.equal(discoverDevelopmentTools({ ...options, environment: {
-        ...environment, CCACHE_PATH: resolve(root, "missing-ccache.exe"),
-    } }).ccache, undefined);
+    assert.equal(
+        discoverDevelopmentTools({
+            ...options,
+            environment: {
+                ...environment,
+                CCACHE_PATH: resolve(root, "missing-ccache.exe"),
+            },
+        }).ccache,
+        undefined,
+    );
 });
 
 test("an explicit invalid vcpkg root is reported instead of hidden by a fallback", (t) => {
@@ -91,40 +166,76 @@ test("an explicit invalid vcpkg root is reported instead of hidden by a fallback
     assert.equal(tools.vcpkg, undefined);
 });
 
-for (const platform of ["linux", "darwin"] as const) test(`${platform} discovery finds native tools and archives without Windows artifacts`, (t) => {
-    const root = mkdtempSync(join(tmpdir(), "bblitec-linux-tools-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const bin = join(root, "bin");
-    for (const name of ["cmake", "pwsh", "git", "ccache", "clang", "clang++", "gcc", "g++"]) touch(join(bin, name));
-    const vcpkg = join(root, "vcpkg");
-    touch(join(vcpkg, "vcpkg"));
-    touch(join(vcpkg, "scripts/buildsystems/vcpkg.cmake"));
-    const dawn = join(root, "artifacts/tools/dawn");
-    touch(join(dawn, "lib/cmake/Dawn/DawnConfig.cmake"));
-    const dawnLibrary = join(dawn, `lib/libwebgpu_dawn.${platform === "darwin" ? "dylib" : "so"}`);
-    touch(dawnLibrary);
-    const labsound = join(root, "artifacts/tools/labsound");
-    for (const path of ["lib/libLabSound.a", "lib/liblibnyquist.a", "include/libnyquist/Decoders.h"]) {
-        touch(join(labsound, path));
-    }
-    const dxc = join(root, `tools/shader-compiler/vcpkg_installed/${process.arch}-linux/tools/directx-dxc/dxc`);
-    touch(dxc);
-    touch(join(root, "artifacts/tools/tint/tint"));
-    const options = { cwd: root, platform, environment: { PATH: "bin", VCPKG_ROOT: vcpkg } };
-    const tools = discoverDevelopmentTools(options);
-    assert.equal(tools.cmake, join(bin, "cmake"));
-    assert.equal(tools.cc, join(bin, "clang"));
-    assert.equal(tools.cxx, join(bin, "clang++"));
-    const gcc = discoverDevelopmentTools({ cwd: root, platform: "linux", environment: { PATH: "bin", CC: "gcc", CXX: "g++" } });
-    assert.equal(gcc.cc, join(bin, "gcc"));
-    assert.equal(gcc.cxx, join(bin, "g++"));
-    assert.equal(discoverDevelopmentTools({ cwd: root, platform: "linux", environment: { PATH: "bin", CXX: "missing" } }).cxx, undefined);
-    assert.equal(tools.powershell, join(bin, "pwsh"));
-    assert.equal(tools.vcpkg, join(vcpkg, "vcpkg"));
-    if (platform === "linux") assert.equal(tools.dxc, dxc);
-    assert.equal(tools.dawnInstalled, true);
-    assert.equal(tools.labSoundInstalled, true);
-    assert.equal(tools.visualStudioRoot, undefined);
-    rmSync(dawnLibrary);
-    assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
-});
+for (const platform of ["linux", "darwin"] as const)
+    test(`${platform} discovery finds native tools and archives without Windows artifacts`, (t) => {
+        const root = mkdtempSync(join(tmpdir(), "bblitec-linux-tools-"));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const bin = join(root, "bin");
+        for (const name of [
+            "cmake",
+            "pwsh",
+            "git",
+            "ccache",
+            "clang",
+            "clang++",
+            "gcc",
+            "g++",
+        ])
+            touch(join(bin, name));
+        const vcpkg = join(root, "vcpkg");
+        touch(join(vcpkg, "vcpkg"));
+        touch(join(vcpkg, "scripts/buildsystems/vcpkg.cmake"));
+        const dawn = join(root, "artifacts/tools/dawn");
+        touch(join(dawn, "lib/cmake/Dawn/DawnConfig.cmake"));
+        const dawnLibrary = join(
+            dawn,
+            `lib/libwebgpu_dawn.${platform === "darwin" ? "dylib" : "so"}`,
+        );
+        touch(dawnLibrary);
+        const labsound = join(root, "artifacts/tools/labsound");
+        for (const path of [
+            "lib/libLabSound.a",
+            "lib/liblibnyquist.a",
+            "include/libnyquist/Decoders.h",
+        ]) {
+            touch(join(labsound, path));
+        }
+        const dxc = join(
+            root,
+            `tools/shader-compiler/vcpkg_installed/${process.arch}-linux/tools/directx-dxc/dxc`,
+        );
+        touch(dxc);
+        touch(join(root, "artifacts/tools/tint/tint"));
+        const options = {
+            cwd: root,
+            platform,
+            environment: { PATH: "bin", VCPKG_ROOT: vcpkg },
+        };
+        const tools = discoverDevelopmentTools(options);
+        assert.equal(tools.cmake, join(bin, "cmake"));
+        assert.equal(tools.cc, join(bin, "clang"));
+        assert.equal(tools.cxx, join(bin, "clang++"));
+        const gcc = discoverDevelopmentTools({
+            cwd: root,
+            platform: "linux",
+            environment: { PATH: "bin", CC: "gcc", CXX: "g++" },
+        });
+        assert.equal(gcc.cc, join(bin, "gcc"));
+        assert.equal(gcc.cxx, join(bin, "g++"));
+        assert.equal(
+            discoverDevelopmentTools({
+                cwd: root,
+                platform: "linux",
+                environment: { PATH: "bin", CXX: "missing" },
+            }).cxx,
+            undefined,
+        );
+        assert.equal(tools.powershell, join(bin, "pwsh"));
+        assert.equal(tools.vcpkg, join(vcpkg, "vcpkg"));
+        if (platform === "linux") assert.equal(tools.dxc, dxc);
+        assert.equal(tools.dawnInstalled, true);
+        assert.equal(tools.labSoundInstalled, true);
+        assert.equal(tools.visualStudioRoot, undefined);
+        rmSync(dawnLibrary);
+        assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
+    });

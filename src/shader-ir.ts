@@ -16,11 +16,7 @@ export interface ShaderStageConstant {
 }
 
 export type ShaderType =
-    | "f32"
-    | "mat4x4<f32>"
-    | "vec2<f32>"
-    | "vec3<f32>"
-    | "vec4<f32>";
+    "f32" | "mat4x4<f32>" | "vec2<f32>" | "vec3<f32>" | "vec4<f32>";
 
 export interface ShaderAttribute {
     kind: "builtin" | "location";
@@ -39,7 +35,12 @@ export interface ShaderStruct {
 }
 
 export type ShaderExpression =
-    | { kind: "binary"; operator: "+" | "-" | "*" | "/" | "<" | ">" | ">="; left: ShaderExpression; right: ShaderExpression }
+    | {
+          kind: "binary";
+          operator: "+" | "-" | "*" | "/" | "<" | ">" | ">=";
+          left: ShaderExpression;
+          right: ShaderExpression;
+      }
     | { kind: "call"; name: string; arguments: ShaderExpression[] }
     | { kind: "construct"; type: ShaderType; arguments: ShaderExpression[] }
     | { kind: "index"; expression: ShaderExpression; index: ShaderExpression }
@@ -51,7 +52,13 @@ export type ShaderStatement =
     | { kind: "assign"; target: ShaderExpression; value: ShaderExpression }
     | { kind: "discard" }
     | { kind: "expression"; value: ShaderExpression }
-    | { kind: "for"; initializer: Extract<ShaderStatement, { kind: "var" }>; condition: ShaderExpression; update: Extract<ShaderStatement, { kind: "assign" }>; statements: ShaderStatement[] }
+    | {
+          kind: "for";
+          initializer: Extract<ShaderStatement, { kind: "var" }>;
+          condition: ShaderExpression;
+          update: Extract<ShaderStatement, { kind: "assign" }>;
+          statements: ShaderStatement[];
+      }
     | { kind: "if"; condition: ShaderExpression; statements: ShaderStatement[] }
     | { kind: "let"; name: string; type?: string; value: ShaderExpression }
     | { kind: "return"; value?: ShaderExpression }
@@ -93,7 +100,12 @@ export interface ShaderModule {
 
 export interface ShaderComputeModule {
     bindings: ShaderBinding[];
-    overrides: Array<{ name: string; type: string; id: number; value: ShaderExpression }>;
+    overrides: Array<{
+        name: string;
+        type: string;
+        id: number;
+        value: ShaderExpression;
+    }>;
     name: string;
     parameters: ShaderParameter[];
     workgroupSize: number[];
@@ -249,14 +261,19 @@ function tokenize(source: string): Token[] {
             index += identifier[0].length;
             continue;
         }
-        const number = source.slice(index).match(/^(?:\d+\.\d*|\d+|\.\d+)(?:[eE][+-]?\d+)?[fuih]?/);
+        const number = source
+            .slice(index)
+            .match(/^(?:\d+\.\d*|\d+|\.\d+)(?:[eE][+-]?\d+)?[fuih]?/);
         if (number) {
             tokens.push({ kind: "number", text: number[0] });
             index += number[0].length;
             continue;
         }
         if (source.startsWith("->", index) || source.startsWith(">=", index)) {
-            tokens.push({ kind: "symbol", text: source.slice(index, index + 2) });
+            tokens.push({
+                kind: "symbol",
+                text: source.slice(index, index + 2),
+            });
             index += 2;
             continue;
         }
@@ -265,7 +282,9 @@ function tokenize(source: string): Token[] {
             index += 1;
             continue;
         }
-        throw new Error(`Unsupported WGSL token '${character}' at offset ${index}.`);
+        throw new Error(
+            `Unsupported WGSL token '${character}' at offset ${index}.`,
+        );
     }
     tokens.push({ kind: "eof", text: "" });
     return tokens;
@@ -287,7 +306,8 @@ class WgslSubsetParser {
 
     public statements(): ShaderStatement[] {
         const statements: ShaderStatement[] = [];
-        while (this.peek().kind !== "eof") statements.push(this.parseStatement());
+        while (this.peek().kind !== "eof")
+            statements.push(this.parseStatement());
         return statements;
     }
 
@@ -312,12 +332,19 @@ class WgslSubsetParser {
         const overrides: ShaderComputeModule["overrides"] = [];
         const bindings: ShaderBinding[] = [];
         while (this.tokens[this.index + 1]?.text !== "compute") {
-            if (["group", "binding"].includes(this.tokens[this.index + 1]?.text ?? "")) {
+            if (
+                ["group", "binding"].includes(
+                    this.tokens[this.index + 1]?.text ?? "",
+                )
+            ) {
                 bindings.push(this.parseBinding());
             } else {
-                this.expect("@"); this.expect("id"); this.expect("(");
+                this.expect("@");
+                this.expect("id");
+                this.expect("(");
                 const id = Number(this.expectNumber());
-                this.expect(")"); this.expect("override");
+                this.expect(")");
+                this.expect("override");
                 const name = this.expectIdentifier();
                 this.expect(":");
                 const type = this.parseNamedType();
@@ -327,22 +354,40 @@ class WgslSubsetParser {
                 overrides.push({ name, type, id, value });
             }
         }
-        this.expect("@"); this.expect("compute"); this.expect("@"); this.expect("workgroup_size"); this.expect("(");
+        this.expect("@");
+        this.expect("compute");
+        this.expect("@");
+        this.expect("workgroup_size");
+        this.expect("(");
         const workgroupSize: number[] = [];
-        do { workgroupSize.push(Number(this.expectNumber())); } while (this.accept(","));
-        this.expect(")"); this.expect("fn");
+        do {
+            workgroupSize.push(Number(this.expectNumber()));
+        } while (this.accept(","));
+        this.expect(")");
+        this.expect("fn");
         const name = this.expectIdentifier();
         const parameters = this.parseParameters();
         const statements = this.parseBlock();
         this.expectEof();
-        return { bindings, overrides, name, parameters, workgroupSize, statements };
+        return {
+            bindings,
+            overrides,
+            name,
+            parameters,
+            workgroupSize,
+            statements,
+        };
     }
 
     public parse(): ShaderModule {
         const { structs, bindings } = this.parseDeclarations();
         const entryPoint = this.parseEntryPoint(this.expectedStage);
         this.expectEof();
-        return { structs, ...(bindings.length ? { bindings } : {}), entryPoint };
+        return {
+            structs,
+            ...(bindings.length ? { bindings } : {}),
+            entryPoint,
+        };
     }
 
     public stages(): ShaderModule[] {
@@ -350,20 +395,37 @@ class WgslSubsetParser {
         const modules: ShaderModule[] = [];
         while (this.peek().kind !== "eof") {
             const entryPoint = this.parseEntryPoint();
-            if (modules.some(module => module.entryPoint.stage === entryPoint.stage)) {
-                throw new Error(`Duplicate @${entryPoint.stage} WGSL entry point.`);
+            if (
+                modules.some(
+                    (module) => module.entryPoint.stage === entryPoint.stage,
+                )
+            ) {
+                throw new Error(
+                    `Duplicate @${entryPoint.stage} WGSL entry point.`,
+                );
             }
-            modules.push({ structs, ...(bindings.length ? { bindings } : {}), entryPoint });
+            modules.push({
+                structs,
+                ...(bindings.length ? { bindings } : {}),
+                entryPoint,
+            });
         }
         return modules;
     }
 
-    private parseDeclarations(): { structs: ShaderStruct[]; bindings: ShaderBinding[] } {
+    private parseDeclarations(): {
+        structs: ShaderStruct[];
+        bindings: ShaderBinding[];
+    } {
         const structs: ShaderStruct[] = [];
         const bindings: ShaderBinding[] = [];
-        while (this.peek().text === "struct" ||
-               (this.peek().text === "@" &&
-                ["group", "binding"].includes(this.tokens[this.index + 1]!.text))) {
+        while (
+            this.peek().text === "struct" ||
+            (this.peek().text === "@" &&
+                ["group", "binding"].includes(
+                    this.tokens[this.index + 1]!.text,
+                ))
+        ) {
             if (this.peek().text === "struct") structs.push(this.parseStruct());
             else bindings.push(this.parseBinding());
         }
@@ -375,26 +437,28 @@ class WgslSubsetParser {
         if (
             stageAttribute.kind !== "builtin" ||
             !["vertex", "fragment"].includes(String(stageAttribute.value)) ||
-            (expectedStage !== undefined && stageAttribute.value !== expectedStage)
+            (expectedStage !== undefined &&
+                stageAttribute.value !== expectedStage)
         ) {
-            throw new Error(`Expected ${expectedStage ? `@${expectedStage}` : "a vertex or fragment"} WGSL entry point.`);
+            throw new Error(
+                `Expected ${expectedStage ? `@${expectedStage}` : "a vertex or fragment"} WGSL entry point.`,
+            );
         }
         this.expect("fn");
         const name = this.expectIdentifier();
         const parameters = this.parseParameters();
         this.expect("->");
-        const returnAttribute = this.peek().text === "@"
-            ? this.parseAttribute()
-            : undefined;
+        const returnAttribute =
+            this.peek().text === "@" ? this.parseAttribute() : undefined;
         const returnType = this.parseNamedType();
         const statements = this.parseBlock();
         return {
-                stage: stageAttribute.value as ShaderStage,
-                name,
-                parameters,
-                returnType,
-                returnAttribute,
-                statements,
+            stage: stageAttribute.value as ShaderStage,
+            name,
+            parameters,
+            returnType,
+            returnAttribute,
+            statements,
         };
     }
 
@@ -402,10 +466,15 @@ class WgslSubsetParser {
         this.expect("(");
         const parameters: ShaderParameter[] = [];
         while (this.peek().text !== ")") {
-            const attribute = this.peek().text === "@" ? this.parseAttribute() : undefined;
+            const attribute =
+                this.peek().text === "@" ? this.parseAttribute() : undefined;
             const name = this.expectIdentifier();
             this.expect(":");
-            parameters.push({ name, type: this.parseNamedType(), ...(attribute ? { attribute } : {}) });
+            parameters.push({
+                name,
+                type: this.parseNamedType(),
+                ...(attribute ? { attribute } : {}),
+            });
             if (!this.accept(",")) break;
         }
         this.expect(")");
@@ -417,7 +486,9 @@ class WgslSubsetParser {
         while (this.accept("@")) {
             const name = this.expectIdentifier();
             if (!["group", "binding"].includes(name) || attributes.has(name)) {
-                throw new Error(`Unsupported or duplicate WGSL binding attribute '${name}'.`);
+                throw new Error(
+                    `Unsupported or duplicate WGSL binding attribute '${name}'.`,
+                );
             }
             this.expect("(");
             attributes.set(name, Number(this.expectNumber()));
@@ -425,7 +496,8 @@ class WgslSubsetParser {
         }
         const group = attributes.get("group");
         const binding = attributes.get("binding");
-        if (group === undefined || binding === undefined) throw new Error("WGSL resource needs group and binding.");
+        if (group === undefined || binding === undefined)
+            throw new Error("WGSL resource needs group and binding.");
         this.expect("var");
         let addressSpace: ShaderBinding["addressSpace"];
         if (this.accept("<")) {
@@ -442,7 +514,13 @@ class WgslSubsetParser {
         this.expect(":");
         const type = this.parseNamedType();
         this.expect(";");
-        return { name, type, group, binding, ...(addressSpace ? { addressSpace } : {}) };
+        return {
+            name,
+            type,
+            group,
+            binding,
+            ...(addressSpace ? { addressSpace } : {}),
+        };
     }
 
     private parseStruct(): ShaderStruct {
@@ -451,9 +529,8 @@ class WgslSubsetParser {
         this.expect("{");
         const members: ShaderStructMember[] = [];
         while (!this.accept("}")) {
-            const attribute = this.peek().text === "@"
-                ? this.parseAttribute()
-                : undefined;
+            const attribute =
+                this.peek().text === "@" ? this.parseAttribute() : undefined;
             const memberName = this.expectIdentifier();
             this.expect(":");
             members.push({
@@ -509,9 +586,15 @@ class WgslSubsetParser {
             const name = this.expectIdentifier();
             const type = this.accept(":") ? this.parseNamedType() : undefined;
             const value = this.accept("=") ? this.parseExpression() : undefined;
-            if (!type && !value) throw new Error("WGSL var needs a type or initializer.");
+            if (!type && !value)
+                throw new Error("WGSL var needs a type or initializer.");
             this.expect(";");
-            return { kind: "var", name, ...(type ? { type } : {}), ...(value ? { value } : {}) };
+            return {
+                kind: "var",
+                name,
+                ...(type ? { type } : {}),
+                ...(value ? { value } : {}),
+            };
         }
         if (this.accept("if")) {
             this.expect("(");
@@ -526,7 +609,10 @@ class WgslSubsetParser {
         if (this.accept("for")) {
             this.expect("(");
             const initializer = this.parseStatement();
-            if (initializer.kind !== "var") throw new Error("WGSL for initializer must declare a variable.");
+            if (initializer.kind !== "var")
+                throw new Error(
+                    "WGSL for initializer must declare a variable.",
+                );
             const condition = this.parseExpression();
             this.expect(";");
             const target = this.parseExpression();
@@ -552,7 +638,8 @@ class WgslSubsetParser {
             return { kind: "return", value };
         }
         const target = this.parseExpression();
-        if (target.kind === "call" && this.accept(";")) return { kind: "expression", value: target };
+        if (target.kind === "call" && this.accept(";"))
+            return { kind: "expression", value: target };
         this.expect("=");
         const value = this.parseExpression();
         this.expect(";");
@@ -563,7 +650,11 @@ class WgslSubsetParser {
         let expression = this.parsePrimaryExpression();
         while (true) {
             if (this.accept(".")) {
-                expression = { kind: "member", expression, member: this.expectIdentifier() };
+                expression = {
+                    kind: "member",
+                    expression,
+                    member: this.expectIdentifier(),
+                };
             } else if (this.accept("[")) {
                 const index = this.parseExpression();
                 this.expect("]");
@@ -582,12 +673,16 @@ class WgslSubsetParser {
         while (true) {
             const operator = this.peek().text;
             const precedence = precedences[operator];
-            if (precedence === undefined || precedence < minimumPrecedence) break;
+            if (precedence === undefined || precedence < minimumPrecedence)
+                break;
             this.index += 1;
             const right = this.parseExpression(precedence + 1);
             expression = {
                 kind: "binary",
-                operator: operator as Extract<ShaderExpression, { kind: "binary" }>["operator"],
+                operator: operator as Extract<
+                    ShaderExpression,
+                    { kind: "binary" }
+                >["operator"],
                 left: expression,
                 right,
             };
@@ -605,23 +700,37 @@ class WgslSubsetParser {
             return expression;
         }
         const name = this.expectIdentifier();
-        const shorthand = ({ vec2f: "vec2<f32>", vec3f: "vec3<f32>", vec4f: "vec4<f32>", mat4x4f: "mat4x4<f32>" } as const)[name as "vec2f" | "vec3f" | "vec4f" | "mat4x4f"];
-        if (shorthand) return { kind: "construct", type: shorthand, arguments: this.parseArguments() };
+        const shorthand = (
+            {
+                vec2f: "vec2<f32>",
+                vec3f: "vec3<f32>",
+                vec4f: "vec4<f32>",
+                mat4x4f: "mat4x4<f32>",
+            } as const
+        )[name as "vec2f" | "vec3f" | "vec4f" | "mat4x4f"];
+        if (shorthand)
+            return {
+                kind: "construct",
+                type: shorthand,
+                arguments: this.parseArguments(),
+            };
         const genericType =
             this.peek().text === "<" &&
             this.tokens[this.index + 1]?.kind === "identifier" &&
             this.tokens[this.index + 2]?.text === ">"
                 ? `${name}<${this.tokens[this.index + 1]!.text}>`
                 : undefined;
-        if (
-            genericType && this.tokens[this.index + 3]?.text === "("
-        ) {
+        if (genericType && this.tokens[this.index + 3]?.text === "(") {
             this.expect("<");
             const component = this.expectIdentifier();
             this.expect(">");
             const type = `${name}<${component}>`;
             if (!shaderTypes.has(type as ShaderType)) {
-                return { kind: "call", name: type, arguments: this.parseArguments() };
+                return {
+                    kind: "call",
+                    name: type,
+                    arguments: this.parseArguments(),
+                };
             }
             return {
                 kind: "construct",
@@ -656,7 +765,13 @@ class WgslSubsetParser {
         const name = this.expectIdentifier();
         if (!this.accept("<")) return name;
         const components: string[] = [];
-        do { components.push(this.peek().kind === "number" ? this.expectNumber() : this.parseNamedType()); } while (this.accept(","));
+        do {
+            components.push(
+                this.peek().kind === "number"
+                    ? this.expectNumber()
+                    : this.parseNamedType(),
+            );
+        } while (this.accept(","));
         this.expect(">");
         return `${name}<${components.join(",")}>`;
     }
@@ -670,7 +785,9 @@ class WgslSubsetParser {
     private expect(text: string): void {
         const token = this.peek();
         if (token.text !== text) {
-            throw new Error(`Expected WGSL token '${text}', received '${token.text}'.`);
+            throw new Error(
+                `Expected WGSL token '${text}', received '${token.text}'.`,
+            );
         }
         this.index += 1;
     }
@@ -678,7 +795,9 @@ class WgslSubsetParser {
     private expectIdentifier(): string {
         const token = this.peek();
         if (token.kind !== "identifier") {
-            throw new Error(`Expected WGSL identifier, received '${token.text}'.`);
+            throw new Error(
+                `Expected WGSL identifier, received '${token.text}'.`,
+            );
         }
         this.index += 1;
         return token.text;
@@ -705,7 +824,10 @@ class WgslSubsetParser {
 }
 
 /** Strict typed parsing for transformations: unsupported syntax never becomes raw text. */
-export function parseWgslModule(source: string, stage: ShaderStage): ShaderModule {
+export function parseWgslModule(
+    source: string,
+    stage: ShaderStage,
+): ShaderModule {
     return new WgslSubsetParser(tokenize(source), stage).parse();
 }
 
@@ -739,15 +861,35 @@ export function mapShaderExpression(
     expression: ShaderExpression,
     rewrite: (expression: ShaderExpression) => ShaderExpression,
 ): ShaderExpression {
-    const map = (child: ShaderExpression): ShaderExpression => mapShaderExpression(child, rewrite);
+    const map = (child: ShaderExpression): ShaderExpression =>
+        mapShaderExpression(child, rewrite);
     switch (expression.kind) {
-        case "binary": return rewrite({ ...expression, left: map(expression.left), right: map(expression.right) });
+        case "binary":
+            return rewrite({
+                ...expression,
+                left: map(expression.left),
+                right: map(expression.right),
+            });
         case "call":
-        case "construct": return rewrite({ ...expression, arguments: expression.arguments.map(map) });
-        case "index": return rewrite({ ...expression, expression: map(expression.expression), index: map(expression.index) });
-        case "member": return rewrite({ ...expression, expression: map(expression.expression) });
+        case "construct":
+            return rewrite({
+                ...expression,
+                arguments: expression.arguments.map(map),
+            });
+        case "index":
+            return rewrite({
+                ...expression,
+                expression: map(expression.expression),
+                index: map(expression.index),
+            });
+        case "member":
+            return rewrite({
+                ...expression,
+                expression: map(expression.expression),
+            });
         case "number":
-        case "path": return rewrite(expression);
+        case "path":
+            return rewrite(expression);
     }
 }
 
@@ -755,26 +897,58 @@ export function mapShaderStatements(
     statements: readonly ShaderStatement[],
     rewrite: (expression: ShaderExpression) => ShaderExpression,
 ): ShaderStatement[] {
-    const map = (expression: ShaderExpression): ShaderExpression => mapShaderExpression(expression, rewrite);
+    const map = (expression: ShaderExpression): ShaderExpression =>
+        mapShaderExpression(expression, rewrite);
     return statements.map((statement) => {
         switch (statement.kind) {
-            case "assign": return { ...statement, target: map(statement.target), value: map(statement.value) };
-            case "if": return { ...statement, condition: map(statement.condition), statements: mapShaderStatements(statement.statements, rewrite) };
-            case "for": return {
-                ...statement,
-                initializer: {
-                    ...statement.initializer,
-                    ...(statement.initializer.value ? { value: map(statement.initializer.value) } : {}),
-                },
-                condition: map(statement.condition),
-                update: { ...statement.update, target: map(statement.update.target), value: map(statement.update.value) },
-                statements: mapShaderStatements(statement.statements, rewrite),
-            };
+            case "assign":
+                return {
+                    ...statement,
+                    target: map(statement.target),
+                    value: map(statement.value),
+                };
+            case "if":
+                return {
+                    ...statement,
+                    condition: map(statement.condition),
+                    statements: mapShaderStatements(
+                        statement.statements,
+                        rewrite,
+                    ),
+                };
+            case "for":
+                return {
+                    ...statement,
+                    initializer: {
+                        ...statement.initializer,
+                        ...(statement.initializer.value
+                            ? { value: map(statement.initializer.value) }
+                            : {}),
+                    },
+                    condition: map(statement.condition),
+                    update: {
+                        ...statement.update,
+                        target: map(statement.update.target),
+                        value: map(statement.update.value),
+                    },
+                    statements: mapShaderStatements(
+                        statement.statements,
+                        rewrite,
+                    ),
+                };
             case "let":
-            case "expression": return { ...statement, value: map(statement.value) };
-            case "return": return statement.value ? { ...statement, value: map(statement.value) } : statement;
-            case "var": return statement.value ? { ...statement, value: map(statement.value) } : statement;
-            case "discard": return statement;
+            case "expression":
+                return { ...statement, value: map(statement.value) };
+            case "return":
+                return statement.value
+                    ? { ...statement, value: map(statement.value) }
+                    : statement;
+            case "var":
+                return statement.value
+                    ? { ...statement, value: map(statement.value) }
+                    : statement;
+            case "discard":
+                return statement;
         }
     });
 }
@@ -795,7 +969,7 @@ function validateBalancedWgsl(source: string): void {
         }
         const character = source[index]!;
         if (pairs[character]) {
-            stack.push(pairs[character]!);
+            stack.push(pairs[character]);
         } else if ([")", "}", "]"].includes(character)) {
             const expected = stack.pop();
             if (expected !== character) {
@@ -807,9 +981,7 @@ function validateBalancedWgsl(source: string): void {
         index += 1;
     }
     if (stack.length > 0) {
-        throw new Error(
-            `Unclosed WGSL delimiter; expected '${stack.at(-1)}'.`,
-        );
+        throw new Error(`Unclosed WGSL delimiter; expected '${stack.at(-1)}'.`);
     }
 }
 
@@ -869,9 +1041,7 @@ function canonicalRawWgsl(source: string): string {
             "^=",
             ">>",
             "<<",
-        ].find((candidate) =>
-            source.startsWith(candidate, index),
-        );
+        ].find((candidate) => source.startsWith(candidate, index));
         if (operator) {
             tokens.push(operator);
             index += operator.length;
@@ -882,15 +1052,12 @@ function canonicalRawWgsl(source: string): string {
     }
     return tokens
         .join(" ")
-        .replace(/\s+([,;:()\[\]{}<>.])/g, "$1")
-        .replace(/([@({\[<.])\s+/g, "$1")
+        .replace(/\s+([,;:()[\]{}<>.])/g, "$1")
+        .replace(/([@({[<.])\s+/g, "$1")
         .trim();
 }
 
-function parseRawModule(
-    source: string,
-    stage: ShaderStage,
-): ShaderModule {
+function parseRawModule(source: string, stage: ShaderStage): ShaderModule {
     const canonicalSource = canonicalRawWgsl(source);
     validateBalancedWgsl(canonicalSource);
     const entry = new RegExp(
@@ -955,7 +1122,7 @@ function parseRawModule(
                 : undefined;
             members.push({
                 name: member[3]!,
-                type: type as ShaderType,
+                type: type,
                 ...(attribute ? { attribute } : {}),
             });
             offset = memberPattern.lastIndex;
@@ -996,9 +1163,19 @@ function parseRawModule(
  */
 export const shaderSystemMatrixTable = [
     { name: "world", enumerator: "world", type: "mat4x4<f32>", floatSize: 16 },
-    { name: "worldView", enumerator: "world_view", type: "mat4x4<f32>", floatSize: 16 },
+    {
+        name: "worldView",
+        enumerator: "world_view",
+        type: "mat4x4<f32>",
+        floatSize: 16,
+    },
     { name: "view", enumerator: "view", type: "mat4x4<f32>", floatSize: 16 },
-    { name: "projection", enumerator: "projection", type: "mat4x4<f32>", floatSize: 16 },
+    {
+        name: "projection",
+        enumerator: "projection",
+        type: "mat4x4<f32>",
+        floatSize: 16,
+    },
     {
         name: "viewProjection",
         enumerator: "view_projection",
@@ -1027,9 +1204,7 @@ export const shaderSystemMatrices = shaderSystemMatrixTable.map(
     ({ name }) => name,
 ) as readonly ShaderSystemMatrix[];
 
-export function isShaderSystemMatrix(
-    name: string,
-): name is ShaderSystemMatrix {
+export function isShaderSystemMatrix(name: string): name is ShaderSystemMatrix {
     return (shaderSystemMatrices as readonly string[]).includes(name);
 }
 
@@ -1044,25 +1219,22 @@ function shaderSystemUniformRow(
 }
 
 /** The C++ enumerator for a system matrix; total over the table. */
-export function shaderSystemMatrixEnumerator(
-    name: ShaderSystemMatrix,
-): string {
+export function shaderSystemMatrixEnumerator(name: ShaderSystemMatrix): string {
     return shaderSystemUniformRow(name).enumerator;
 }
 
-export function shaderSystemUniformType(
-    name: ShaderSystemMatrix,
-): ShaderType {
+export function shaderSystemUniformType(name: ShaderSystemMatrix): ShaderType {
     return shaderSystemUniformRow(name).type;
 }
 
-export function shaderSystemUniformFloatSize(
-    name: ShaderSystemMatrix,
-): number {
+export function shaderSystemUniformFloatSize(name: ShaderSystemMatrix): number {
     return shaderSystemUniformRow(name).floatSize;
 }
 
-function parseUniformSignature(signature: string): { name: string; type: ShaderType } {
+function parseUniformSignature(signature: string): {
+    name: string;
+    type: ShaderType;
+} {
     if (isShaderSystemMatrix(signature)) {
         return {
             name: signature,
@@ -1070,7 +1242,8 @@ function parseUniformSignature(signature: string): { name: string; type: ShaderT
         };
     }
     const separator = signature.indexOf(":");
-    if (separator < 1) throw new Error(`Invalid shader uniform '${signature}'.`);
+    if (separator < 1)
+        throw new Error(`Invalid shader uniform '${signature}'.`);
     const name = signature.slice(0, separator);
     const type = signature.slice(separator + 1);
     if (!shaderTypes.has(type as ShaderType)) {
@@ -1095,20 +1268,22 @@ export function expressionUsesPath(
 ): boolean {
     switch (expression.kind) {
         case "binary":
-            return expressionUsesPath(expression.left, matches) ||
-                expressionUsesPath(expression.right, matches);
+            return (
+                expressionUsesPath(expression.left, matches) ||
+                expressionUsesPath(expression.right, matches)
+            );
         case "call":
         case "construct":
             return expression.arguments.some((argument) =>
-                expressionUsesPath(argument, matches));
-        case "member":
-            return expressionUsesPath(
-                expression.expression,
-                matches,
+                expressionUsesPath(argument, matches),
             );
+        case "member":
+            return expressionUsesPath(expression.expression, matches);
         case "index":
-            return expressionUsesPath(expression.expression, matches) ||
-                expressionUsesPath(expression.index, matches);
+            return (
+                expressionUsesPath(expression.expression, matches) ||
+                expressionUsesPath(expression.index, matches)
+            );
         case "path":
             return matches(expression.parts);
         case "number":
@@ -1122,24 +1297,39 @@ export function statementUsesPath(
 ): boolean {
     switch (statement.kind) {
         case "assign":
-            return expressionUsesPath(statement.target, matches) ||
-                expressionUsesPath(statement.value, matches);
+            return (
+                expressionUsesPath(statement.target, matches) ||
+                expressionUsesPath(statement.value, matches)
+            );
         case "if":
-            return expressionUsesPath(statement.condition, matches) ||
+            return (
+                expressionUsesPath(statement.condition, matches) ||
                 statement.statements.some((nested) =>
-                    statementUsesPath(nested, matches));
+                    statementUsesPath(nested, matches),
+                )
+            );
         case "for":
-            return statementUsesPath(statement.initializer, matches) ||
+            return (
+                statementUsesPath(statement.initializer, matches) ||
                 expressionUsesPath(statement.condition, matches) ||
                 statementUsesPath(statement.update, matches) ||
-                statement.statements.some(nested => statementUsesPath(nested, matches));
+                statement.statements.some((nested) =>
+                    statementUsesPath(nested, matches),
+                )
+            );
         case "let":
         case "expression":
             return expressionUsesPath(statement.value, matches);
         case "return":
-            return statement.value !== undefined && expressionUsesPath(statement.value, matches);
+            return (
+                statement.value !== undefined &&
+                expressionUsesPath(statement.value, matches)
+            );
         case "var":
-            return statement.value !== undefined && expressionUsesPath(statement.value, matches);
+            return (
+                statement.value !== undefined &&
+                expressionUsesPath(statement.value, matches)
+            );
         case "discard":
             return false;
     }
@@ -1152,15 +1342,16 @@ function stageReadsUniform(
     member: string,
 ): boolean {
     if (module.rawSource !== undefined) {
-        return new RegExp(
-            `\\b${root}\\s*\\.\\s*${member}\\b`,
-        ).test(module.rawSource);
+        return new RegExp(`\\b${root}\\s*\\.\\s*${member}\\b`).test(
+            module.rawSource,
+        );
     }
     return module.entryPoint.statements.some((statement) =>
         statementUsesPath(
             statement,
             (parts) => parts[0] === root && parts[1] === member,
-        ));
+        ),
+    );
 }
 
 /**
@@ -1170,34 +1361,27 @@ function stageReadsUniform(
  * `<name>Sampler` companion still needs the binding, and the two are
  * declared and bound together either way.
  */
-function stageReadsSampler(
-    module: ShaderModule,
-    name: string,
-): boolean {
+function stageReadsSampler(module: ShaderModule, name: string): boolean {
     if (module.rawSource !== undefined) {
-        return new RegExp(
-            `\\b(?:${name}|${name}Sampler)\\b`,
-        ).test(module.rawSource);
+        return new RegExp(`\\b(?:${name}|${name}Sampler)\\b`).test(
+            module.rawSource,
+        );
     }
     return module.entryPoint.statements.some((statement) =>
         statementUsesPath(
             statement,
             (parts) => parts[0] === name || parts[0] === `${name}Sampler`,
-        ));
+        ),
+    );
 }
 
-function stageReadsStorageBuffer(
-    module: ShaderModule,
-    name: string,
-): boolean {
+function stageReadsStorageBuffer(module: ShaderModule, name: string): boolean {
     if (module.rawSource !== undefined) {
         return new RegExp(`\\b${name}\\b`).test(module.rawSource);
     }
     return module.entryPoint.statements.some((statement) =>
-        statementUsesPath(
-            statement,
-            (parts) => parts[0] === name,
-        ));
+        statementUsesPath(statement, (parts) => parts[0] === name),
+    );
 }
 
 /** How many floats a custom uniform type spans; the one such table. */
@@ -1257,20 +1441,18 @@ function reflectUniformBlock(
     if (systemMatrices.length === 0 && custom.length === 0) return undefined;
 
     let byteOffset = systemMatrices.reduce(
-        (sum, name) =>
-            sum + shaderSystemUniformFloatSize(name) * 4,
+        (sum, name) => sum + shaderSystemUniformFloatSize(name) * 4,
         0,
     );
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
         const count = typeComponents(uniform.type);
         if (count > 4) {
-            throw new Error(`Custom matrix uniform '${uniform.name}' is not supported.`);
+            throw new Error(
+                `Custom matrix uniform '${uniform.name}' is not supported.`,
+            );
         }
-        byteOffset = roundUp(
-            uniformTypeAlignment(uniform.type),
-            byteOffset,
-        );
+        byteOffset = roundUp(uniformTypeAlignment(uniform.type), byteOffset);
         const slot = Math.floor(byteOffset / 16);
         const component = (byteOffset % 16) / 4;
         members.push({
@@ -1301,16 +1483,15 @@ export function lowerWgslShaderProgram(
         /\bfor\s*\(/.test(text) ||
         /%/.test(text) ||
         /\bvar\s+[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text);
-    const lowerModule = (
-        text: string,
-        stage: ShaderStage,
-    ): ShaderModule => {
+    const lowerModule = (text: string, stage: ShaderStage): ShaderModule => {
         try {
             const module = parseWgslModule(text, stage);
             for (const structure of module.structs) {
                 for (const member of structure.members) {
                     if (!shaderTypes.has(member.type as ShaderType)) {
-                        throw new Error(`Unsupported WGSL shader type '${member.type}' in struct '${structure.name}'.`);
+                        throw new Error(
+                            `Unsupported WGSL shader type '${member.type}' in struct '${structure.name}'.`,
+                        );
                     }
                 }
             }
@@ -1330,7 +1511,8 @@ export function lowerWgslShaderProgram(
     const fragment = lowerModule(source.fragmentSource, "fragment");
     const attributes = source.attributes.map((name) => {
         const attribute = attributeTypes[name];
-        if (!attribute) throw new Error(`Unsupported vertex attribute '${name}'.`);
+        if (!attribute)
+            throw new Error(`Unsupported vertex attribute '${name}'.`);
         return { name, ...attribute };
     });
     if (source.useThinInstances) {

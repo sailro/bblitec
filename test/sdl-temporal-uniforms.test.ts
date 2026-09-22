@@ -2,15 +2,25 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("SDL deferred draws observe final source UBO bytes while ordinary blocks retain prepared values", (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler and SDL headers unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler and SDL headers unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/sdl-temporal-uniforms-check");
     mkdirSync(directory, { recursive: true });
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include "pal_sdl_gpu_temporal.hpp"
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        source,
+        `#include "pal_sdl_gpu_temporal.hpp"
 #include <cassert>
 struct Block { const void* data; std::size_t bytes; };
 int main() {
@@ -53,9 +63,21 @@ int main() {
     } catch (const std::runtime_error&) { failed = true; }
     assert(failed);
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/I${resolve("native/include")}`, `/I${resolve("native/src")}`, `/I${join(nativeFixtureVcpkgRoot, "include")}`,
-        `/Fo:${directory}\\`, `/Fe:${executable}`, source]);
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/I${resolve("native/include")}`,
+        `/I${resolve("native/src")}`,
+        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
+        `/Fo:${directory}\\`,
+        `/Fe:${executable}`,
+        source,
+    ]);
     execFileSync(executable);
 });

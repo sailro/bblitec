@@ -6,11 +6,20 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools();
-test("conditional object spreads retain fresh identity through a returned callback", { skip: !nativeTools }, () => {
-    for (const active of [false, true]) runScene(`conditional-spread-${active}`, `
+test(
+    "conditional object spreads retain fresh identity through a returned callback",
+    { skip: !nativeTools },
+    () => {
+        for (const active of [false, true])
+            runScene(
+                `conditional-spread-${active}`,
+                `
         const idle = { x: 0, y: -0.5, z: 0 };
         const walking = { x: 0.7, y: -0.5, z: 2 };
         function wire(input: { x: number; y: number; z: number }): () => void {
@@ -21,11 +30,19 @@ test("conditional object spreads retain fresh identity through a returned callba
         callback(); callback();
         if (input.x !== 5 || input.z !== ${active ? 4 : 2}) throw new Error("Callback lost input object identity.");
         if (idle.x !== 0 || walking.x !== 0.7) throw new Error("Object spread mutated its source.");
-    `, "int main() { return generated_scene_main(); }");
-});
+    `,
+                "int main() { return generated_scene_main(); }",
+            );
+    },
+);
 
-test("conditional nullable records preserve selected identity and live rebinding", { skip: !nativeTools }, () => {
-    runScene("conditional-nullable-record", `
+test(
+    "conditional nullable records preserve selected identity and live rebinding",
+    { skip: !nativeTools },
+    () => {
+        runScene(
+            "conditional-nullable-record",
+            `
         import { createEngine } from "@babylonjs/lite";
         const engine = await createEngine({});
         function mutate(value: { x: number }): void { value.x += 2; }
@@ -41,8 +58,11 @@ test("conditional nullable records preserve selected identity and live rebinding
         if (!retained) throw new Error("Alias lost the original object.");
         mutate(retained);
         if (retained.x !== 6) throw new Error("Alias lost shared storage.");
-    `, "int main() { return generated_scene_main(); }");
-});
+    `,
+            "int main() { return generated_scene_main(); }",
+        );
+    },
+);
 
 const raycastSource = `
     import HavokPhysics from "@babylonjs/havok";
@@ -72,18 +92,27 @@ test("direct raycast-result conditions emit one call per source evaluation", () 
     assert.equal(cpp.match(/bbl::upstream::physics_raycast\(/g)?.length, 2);
 });
 
-function runScene(name: string, source: string, observer: string, physics = false): void {
+function runScene(
+    name: string,
+    source: string,
+    observer: string,
+    physics = false,
+): void {
     const output = resolve("artifacts/generated-scene-warnings", name);
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
     if (physics) {
         const includes = join(output, "bblite/upstream");
         mkdirSync(includes, { recursive: true });
-        writeFileSync(join(includes, "physics.hpp"),
-            new PhysicsLowerer(new LoweringContext()).lowerPhysics().header);
+        writeFileSync(
+            join(includes, "physics.hpp"),
+            new PhysicsLowerer(new LoweringContext()).lowerPhysics().header,
+        );
     }
     const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `
+    writeFileSync(
+        fixture,
+        `
 #define main generated_scene_main
 #include "program.hpp"
 #undef main
@@ -96,18 +125,36 @@ void mark_mesh_dirty(Engine&, MeshHandle) {}
 void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
 }
 ${observer}
-`);
+`,
+    );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", output, fixture,
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        output,
+        fixture,
         "test/fixtures/js-callback/data-engine-stubs.cpp",
     ]);
     execFileSync(executable, { encoding: "utf8" });
 }
 
-test("direct raycast conditions compile warning-clean and evaluate hits and misses once", { skip: !nativeTools }, () => {
-    runScene("raycast", raycastSource, `
+test(
+    "direct raycast conditions compile warning-clean and evaluate hits and misses once",
+    { skip: !nativeTools },
+    () => {
+        runScene(
+            "raycast",
+            raycastSource,
+            `
 namespace { bool has_hit = false; unsigned raycasts = 0; }
 namespace bbl::upstream {
 PhysicsWorldHandle create_havok_world(Scene&, Vec3d) { return {}; }
@@ -142,11 +189,19 @@ int main() {
         assert(raycasts == 3);
     }
 }
-`, true);
-});
+`,
+            true,
+        );
+    },
+);
 
-test("Vec3 literals in frame callbacks compile warning-clean and preserve live components", { skip: !nativeTools }, () => {
-    runScene("frame-vec3", `
+test(
+    "Vec3 literals in frame callbacks compile warning-clean and preserve live components",
+    { skip: !nativeTools },
+    () => {
+        runScene(
+            "frame-vec3",
+            `
         import { createEngine, createSceneContext, createBox, onBeforeRender } from "@babylonjs/lite";
         import type { Vec3 } from "@babylonjs/lite";
         const engine = await createEngine({});
@@ -158,7 +213,8 @@ test("Vec3 literals in frame callbacks compile warning-clean and preserve live c
             const rotation = { x: 0, y: 1, z: 2 };
             box.rotation.set(rotation.x, rotation.y, rotation.z);
         });
-    `, `
+    `,
+            `
 namespace bbl {
 void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
     for (const float delta : {16.0f, 32.0f}) {
@@ -171,5 +227,7 @@ void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
 }
 }
 int main() { assert(generated_scene_main() == 0); }
-`);
-});
+`,
+        );
+    },
+);

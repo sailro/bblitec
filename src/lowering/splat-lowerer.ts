@@ -38,10 +38,7 @@ import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
-import {
-    pinnedHypotCall,
-    pinnedNumericMathCalls,
-} from "./pinned-operators.js";
+import { pinnedHypotCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import {
     SPLAT_CONTAINERS,
@@ -116,18 +113,16 @@ function nativeAddressMode(mode: string): string {
  * lowerer learns is a member all of them know. Only the two that are NOT a
  * `<cmath>` call of the same meaning are stated here, and each says why.
  */
-const MATH_CALLS: ReadonlyMap<
-    string,
-    (args: readonly string[]) => string
-> = new Map<string, (args: readonly string[]) => string>([
-    ...pinnedNumericMathCalls(),
-    // JS rounds a half toward +Infinity; std::round rounds it away from zero,
-    // so the two disagree at -0.5, -1.5, ...
-    ["Math.round", (a) => `bbl::js::round_js(${a[0]})`],
-    // Math.hypot is implementation-approximated by the ECMAScript spec; see
-    // the module comment for the measured effect of using the plain root.
-    ["Math.hypot", pinnedHypotCall],
-]);
+const MATH_CALLS: ReadonlyMap<string, (args: readonly string[]) => string> =
+    new Map<string, (args: readonly string[]) => string>([
+        ...pinnedNumericMathCalls(),
+        // JS rounds a half toward +Infinity; std::round rounds it away from zero,
+        // so the two disagree at -0.5, -1.5, ...
+        ["Math.round", (a) => `bbl::js::round_js(${a[0]})`],
+        // Math.hypot is implementation-approximated by the ECMAScript spec; see
+        // the module comment for the measured effect of using the plain root.
+        ["Math.hypot", pinnedHypotCall],
+    ]);
 
 export class SplatLowerer {
     /**
@@ -247,12 +242,9 @@ export class SplatLowerer {
             bindings,
             calls: MATH_CALLS,
             returnValue: (expression, lowerer): string => {
-                if (
-                    !expression ||
-                    !ts.isObjectLiteralExpression(expression)
-                ) {
+                if (!expression || !ts.isObjectLiteralExpression(expression)) {
                     return this.context.contractError(
-                        found!,
+                        found,
                         "Expected chooseTextureSize to return an object literal.",
                     );
                 }
@@ -260,7 +252,7 @@ export class SplatLowerer {
                     expression,
                     ["width", "height"],
                     lowerer,
-                    found!,
+                    found,
                 ).join(", ")}}`;
             },
         });
@@ -449,10 +441,7 @@ ${body}
                 return [
                     {
                         binding: this.context.numericValue(
-                            this.context.propertyInitializer(
-                                entry,
-                                "binding",
-                            ),
+                            this.context.propertyInitializer(entry, "binding"),
                             pipelineFile,
                         ),
                         view: resource.name.text,
@@ -497,9 +486,7 @@ ${body}
  *  domain the fragment stage's \`exp(-dot(k, k))\` kernel is written
  *  against. */
 inline constexpr std::array<float, 8> splat_quad_vertices{
-    {${quad
-        .map((value) => this.context.floatLiteral(value))
-        .join(", ")}}};
+    {${quad.map((value) => this.context.floatLiteral(value)).join(", ")}}};
 
 /** One draw: the quad's six indices. */
 inline constexpr std::array<std::uint16_t, 6> splat_quad_indices{
@@ -519,30 +506,28 @@ inline constexpr TextureSamplerState splat_data_sampler{
 
 /** One cloud's four RGBA32F payloads, slot for slot in the pin's own
  *  bind-group order (gaussian-splatting-pipeline.ts bindings ${
-        payloadEntries[0]!.binding
-    }..${payloadEntries[payloadEntries.length - 1]!.binding}): what the
+     payloadEntries[0]!.binding
+ }..${payloadEntries[payloadEntries.length - 1]!.binding}): what the
  *  pinned bind group hands the WGSL is what a backend must upload. */
 inline std::array<const std::vector<float>*, ${payloads.length}>
 splat_texture_payloads(const SplatMeshRecord& record) {
     return {
-${payloads
-    .map((field) => `        &record.${field}_rgba,`)
-    .join("\n")}
+${payloads.map((field) => `        &record.${field}_rgba,`).join("\n")}
     };
 }`;
     }
 
     public lowerGeometry(): LoweredSource {
         const symbolName = "buildSplatGeometry";
-        const { file, declaration } = this.declaration(
-            DATA_MODULE,
-            symbolName,
-        );
+        const { file, declaration } = this.declaration(DATA_MODULE, symbolName);
         const rowLength = this.rowLength();
         const textureSize = this.lowerTextureSize();
         const gpuConstants = this.pinnedGpuConstants();
-        this.context.expectShapeCount(declaration, "new F32(splatBuffer)",
-            "the geometry builder's whole-buffer float view");
+        this.context.expectShapeCount(
+            declaration,
+            "new F32(splatBuffer)",
+            "the geometry builder's whole-buffer float view",
+        );
 
         const bindings = new Map<string, PinnedBinding>([
             // The pin's parameter is an ArrayBuffer; ours is the packaged
@@ -559,13 +544,14 @@ ${payloads
             // above rather than repeated as a literal here.
             [
                 "ROW_LENGTH",
-                { cpp: `static_cast<double>(splat_row_length)`, type: "scalar" },
+                {
+                    cpp: `static_cast<double>(splat_row_length)`,
+                    type: "scalar",
+                },
             ],
         ]);
 
-
-        const body = lowerPinnedBody(file, declaration
-            .body!.statements, {
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls: new Map([
                 ...MATH_CALLS,
@@ -578,10 +564,7 @@ ${payloads
             // The four texture payloads are moved rather than copied; every
             // one is texelCount * 4 floats.
             returnValue: (expression, lowerer): string => {
-                if (
-                    !expression ||
-                    !ts.isObjectLiteralExpression(expression)
-                ) {
+                if (!expression || !ts.isObjectLiteralExpression(expression)) {
                     return this.context.contractError(
                         declaration,
                         `Expected ${symbolName} to return an object literal.`,
@@ -607,10 +590,9 @@ ${payloads
                 const moved = fields
                     .slice(5)
                     .map((field) => `std::move(${field})`);
-                return `SplatGeometry{${[
-                    ...fields.slice(0, 5),
-                    ...moved,
-                ].join(", ")}}`;
+                return `SplatGeometry{${[...fields.slice(0, 5), ...moved].join(
+                    ", ",
+                )}}`;
             },
         });
 
@@ -810,20 +792,19 @@ ${body}
      */
     private lowerUniformWriter(): string {
         const file = this.context.sourceFile(this.pipelineModule);
-        const update = this.context
-            .findNodes(
-                file,
-                (
-                    node,
-                ): node is ts.VariableDeclaration & {
-                    initializer: ts.ArrowFunction;
-                } =>
-                    ts.isVariableDeclaration(node) &&
-                    ts.isIdentifier(node.name) &&
-                    node.name.text === "update" &&
-                    node.initializer !== undefined &&
-                    ts.isArrowFunction(node.initializer),
-            )[0]?.initializer;
+        const update = this.context.findNodes(
+            file,
+            (
+                node,
+            ): node is ts.VariableDeclaration & {
+                initializer: ts.ArrowFunction;
+            } =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "update" &&
+                node.initializer !== undefined &&
+                ts.isArrowFunction(node.initializer),
+        )[0]?.initializer;
         if (!update || !ts.isBlock(update.body)) {
             return this.context.contractError(
                 file,
@@ -880,26 +861,45 @@ ${body}
      */
     private lowerDataLifecycle(): string {
         const { file, declaration } = this.declaration(
-            SORT_MODULE_MESH, "createGaussianSplattingMesh",
+            SORT_MODULE_MESH,
+            "createGaussianSplattingMesh",
         );
-        this.context.expectShapeCount(declaration,
+        this.context.expectShapeCount(
+            declaration,
             'Object.defineProperty(mesh, "splatsData", { get: () => retainedSplatsData })',
-            "the retained splat buffer getter");
+            "the retained splat buffer getter",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "retainedSplatsData"),
-            "parsed.data", "the initial retained splat buffer");
-        const assigned = this.context.findNodes(declaration,
-            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node) &&
+            "parsed.data",
+            "the initial retained splat buffer",
+        );
+        const assigned = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                this.context.expressionMatchesShape(node.left, "mesh.updateData"));
-        const update = assigned.length === 1
-            ? this.context.unwrapExpression(assigned[0]!.right) : undefined;
-        if (!update || !ts.isArrowFunction(update) || !ts.isBlock(update.body) ||
+                this.context.expressionMatchesShape(
+                    node.left,
+                    "mesh.updateData",
+                ),
+        );
+        const update =
+            assigned.length === 1
+                ? this.context.unwrapExpression(assigned[0]!.right)
+                : undefined;
+        if (
+            !update ||
+            !ts.isArrowFunction(update) ||
+            !ts.isBlock(update.body) ||
             update.parameters.length !== 1 ||
             !ts.isIdentifier(update.parameters[0]!.name) ||
-            update.parameters[0]!.name.text !== "newBuffer") {
-            return this.context.contractError(declaration,
-                "Expected exactly one updateData(newBuffer) body.");
+            update.parameters[0]!.name.text !== "newBuffer"
+        ) {
+            return this.context.contractError(
+                declaration,
+                "Expected exactly one updateData(newBuffer) body.",
+            );
         }
         const statements = update.body.statements;
         const expressions = [
@@ -913,44 +913,92 @@ ${body}
             "mesh._sortDepthTransform.fill(0)",
             "retainedSplatsData = newBuffer",
         ];
-        this.context.assertStatementInventory(update, statements, "updateData",
+        this.context.assertStatementInventory(
+            update,
+            statements,
+            "updateData",
             "the CPU commit folds the ordered GPU/worker handoff",
             ["newGeom", "count guard", "gs", "writeTex", ...expressions],
             (statement) => {
-                if (ts.isVariableStatement(statement) && statement.declarationList.declarations.length === 1) {
+                if (
+                    ts.isVariableStatement(statement) &&
+                    statement.declarationList.declarations.length === 1
+                ) {
                     const variable = statement.declarationList.declarations[0]!;
-                    if (ts.isIdentifier(variable.name)) return variable.name.text;
+                    if (ts.isIdentifier(variable.name))
+                        return variable.name.text;
                 }
                 if (ts.isIfStatement(statement)) return "count guard";
                 if (ts.isExpressionStatement(statement)) {
-                    return expressions.find((shape) => this.context.expressionMatchesShape(statement.expression, shape)) ?? "unknown expression";
+                    return (
+                        expressions.find((shape) =>
+                            this.context.expressionMatchesShape(
+                                statement.expression,
+                                shape,
+                            ),
+                        ) ?? "unknown expression"
+                    );
                 }
                 return ts.SyntaxKind[statement.kind];
-            });
-        for (const [name, shape] of [["newGeom", "buildSplatGeometry(newBuffer)"], ["gs", "mesh._gs"]] as const) {
+            },
+        );
+        for (const [name, shape] of [
+            ["newGeom", "buildSplatGeometry(newBuffer)"],
+            ["gs", "mesh._gs"],
+        ] as const) {
             this.context.assertExpressionShape(
-                this.context.variableInitializer(update, name), shape, `updateData ${name}`);
+                this.context.variableInitializer(update, name),
+                shape,
+                `updateData ${name}`,
+            );
         }
         const writer = this.context.variableInitializer(update, "writeTex");
-        this.context.assertExpressionShape(writer,
+        this.context.assertExpressionShape(
+            writer,
             "(tex: GPUTexture, data: Float32Array): void => { queue.writeTexture({ texture: tex }, data.buffer, { bytesPerRow: newGeom.textureWidth * 16 }, { width: newGeom.textureWidth, height: newGeom.textureHeight }); }",
-            "updateData texture upload layout");
+            "updateData texture upload layout",
+        );
         const guard = statements[1]!;
-        if (!ts.isIfStatement(guard) || guard.elseStatement || !ts.isBlock(guard.thenStatement) ||
-            guard.thenStatement.statements.length !== 1 || !ts.isThrowStatement(guard.thenStatement.statements[0]!)) {
-            return this.context.contractError(guard, "Expected the updateData count guard to throw before publishing any data.");
+        if (
+            !ts.isIfStatement(guard) ||
+            guard.elseStatement ||
+            !ts.isBlock(guard.thenStatement) ||
+            guard.thenStatement.statements.length !== 1 ||
+            !ts.isThrowStatement(guard.thenStatement.statements[0]!)
+        ) {
+            return this.context.contractError(
+                guard,
+                "Expected the updateData count guard to throw before publishing any data.",
+            );
         }
-        const thrown = (guard.thenStatement.statements[0] as ts.ThrowStatement).expression;
-        if (!(ts.isCallExpression(thrown) || ts.isNewExpression(thrown)) ||
-            !ts.isIdentifier(thrown.expression) || thrown.expression.text !== "Error" ||
-            thrown.arguments?.length !== 1 || !ts.isStringLiteral(thrown.arguments[0]!)) {
-            return this.context.contractError(thrown, "Expected the pinned updateData error message.");
+        const thrown = guard.thenStatement.statements[0].expression;
+        if (
+            !(ts.isCallExpression(thrown) || ts.isNewExpression(thrown)) ||
+            !ts.isIdentifier(thrown.expression) ||
+            thrown.expression.text !== "Error" ||
+            thrown.arguments?.length !== 1 ||
+            !ts.isStringLiteral(thrown.arguments[0]!)
+        ) {
+            return this.context.contractError(
+                thrown,
+                "Expected the pinned updateData error message.",
+            );
         }
         const numeric = new PinnedNumericLowerer(file, {
             bindings: new Map([
-                ["newGeom.vertexCount", { cpp: "geometry.vertexCount", type: "scalar" }],
-                ["mesh.vertexCount", { cpp: "static_cast<double>(mesh.vertex_count)", type: "scalar" }],
-            ]), calls: new Map(),
+                [
+                    "newGeom.vertexCount",
+                    { cpp: "geometry.vertexCount", type: "scalar" },
+                ],
+                [
+                    "mesh.vertexCount",
+                    {
+                        cpp: "static_cast<double>(mesh.vertex_count)",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            calls: new Map(),
         });
         return `// ${this.context.provenance(SORT_MODULE_MESH, "createGaussianSplattingMesh.updateData")}
 js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat) {
@@ -972,7 +1020,7 @@ void update_splat_data(
     upstream::SplatGeometry geometry = upstream::build_splat_geometry(
         std::span<const std::uint8_t>(buffer.data(), buffer.byte_length()));
     if (${numeric.expression(guard.expression)}) {
-        throw std::runtime_error(${JSON.stringify(thrown.arguments[0]!.text)});
+        throw std::runtime_error(${JSON.stringify(thrown.arguments[0].text)});
     }
     // Allocate the carrier before publishing: a failed build, guard or
     // allocation leaves the old geometry, retained buffer and version intact.
@@ -1021,7 +1069,10 @@ void update_splat_data(
         // build it runs, and the SH fork that decides which pipeline
         // attaches. A pin that stops calling either changes what this slice
         // means, so both refuse rather than drift.
-        for (const anchor of ["buildSplatGeometry", "attachGaussianSplattingMesh"]) {
+        for (const anchor of [
+            "buildSplatGeometry",
+            "attachGaussianSplattingMesh",
+        ]) {
             if (!this.context.hasCall(declaration, anchor)) {
                 this.context.contractError(
                     declaration,
@@ -1232,9 +1283,9 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
     // The one lane ${symbol} writes on the cloud it attached, observed by
     // running that loader at generation rather than restated here.
     scene.engine->splat_meshes[handle.value].rotation =
-        Vec3{${this.context.floatLiteral(x)}, ${
-            this.context.floatLiteral(y)
-        }, ${this.context.floatLiteral(z)}};
+        Vec3{${this.context.floatLiteral(x)}, ${this.context.floatLiteral(
+            y,
+        )}, ${this.context.floatLiteral(z)}};
     return handle;
 }
 `;
@@ -1263,11 +1314,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         // The GPU half this port owns. Their presence is what bounds the
         // fold below; a pin that stops making them means the packing this
         // function performs is no longer what a texture upload consumes.
-        for (const anchor of [
-            "createTexture",
-            "writeTexture",
-            "createView",
-        ]) {
+        for (const anchor of ["createTexture", "writeTexture", "createView"]) {
             if (!this.context.hasCall(declaration, anchor)) {
                 this.context.contractError(
                     declaration,
@@ -1321,10 +1368,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
 
         // Everything ahead of the loop except the four GPU-side bindings,
         // named by the shape each has rather than by position.
-        const gpuPrologue = [
-            "scene.surface.engine",
-            "engine._device",
-        ];
+        const gpuPrologue = ["scene.surface.engine", "engine._device"];
         let skipped = 0;
         const prologue: string[] = [];
         for (const statement of statements) {
@@ -1386,7 +1430,16 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         return {
             modulePath: SH_PIPELINE_MODULE,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>","<bblite/upstream/render_capabilities.hpp>","","<cstddef>","<cstdint>","<vector>"], `
+            header: pinnedHeader(
+                [
+                    "<bblite/runtime.hpp>",
+                    "<bblite/upstream/render_capabilities.hpp>",
+                    "",
+                    "<cstddef>",
+                    "<cstdint>",
+                    "<vector>",
+                ],
+                `
 /** The spherical-harmonic degree this scene's packaged cloud parsed to. */
 inline constexpr std::uint32_t splat_sh_degree = ${this.shDegree}u;
 
@@ -1411,7 +1464,8 @@ std::vector<std::vector<std::uint8_t>> build_splat_sh_textures(
     double texture_width,
     double texture_height,
     double splat_count);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(
                 SH_PIPELINE_MODULE,
                 symbolName,
@@ -1457,7 +1511,6 @@ ${body}
         };
     }
 
-
     /**
      * The buffer read, copy and updateData handoff. The native adapter owns
      * those boundaries; the lowered numeric body writes only the fresh copy.
@@ -1479,7 +1532,7 @@ ${body}
             first.declarationList.declarations.length === 1 &&
             first.declarationList.declarations[0]!.initializer !== undefined &&
             this.context.expressionMatchesShape(
-                first.declarationList.declarations[0]!.initializer!,
+                first.declarationList.declarations[0]!.initializer,
                 "mesh.splatsData",
             );
         if (!opensWithRead) {
@@ -1488,15 +1541,24 @@ ${body}
                 "Expected the bake to open by reading mesh.splatsData.",
             );
         }
-        if (!copy || !ts.isVariableStatement(copy) ||
+        if (
+            !copy ||
+            !ts.isVariableStatement(copy) ||
             copy.declarationList.declarations.length !== 1 ||
             !ts.isIdentifier(copy.declarationList.declarations[0]!.name) ||
             copy.declarationList.declarations[0]!.name.text !== "newBuffer" ||
-            !copy.declarationList.declarations[0]!.initializer) {
-            this.context.contractError(declaration, "Expected the bake to copy its retained ArrayBuffer before writing.");
+            !copy.declarationList.declarations[0]!.initializer
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the bake to copy its retained ArrayBuffer before writing.",
+            );
         }
-        this.context.assertExpressionShape(copy.declarationList.declarations[0]!.initializer!,
-            "arrayBuffer.slice(0)", "the bake's retained-buffer copy");
+        this.context.assertExpressionShape(
+            copy.declarationList.declarations[0]!.initializer,
+            "arrayBuffer.slice(0)",
+            "the bake's retained-buffer copy",
+        );
         const closesWithHandover =
             last !== undefined &&
             ts.isExpressionStatement(last) &&
@@ -1609,9 +1671,7 @@ ${multiply}`;
      * out beside it, so it pins the callee, its argument, the member, and
      * the identity of the local all four components read.
      */
-    private assertDecomposeAdapter(
-        declaration: ts.FunctionDeclaration,
-    ): void {
+    private assertDecomposeAdapter(declaration: ts.FunctionDeclaration): void {
         const statements = declaration.body!.statements;
         const bound = statements[0];
         if (
@@ -1641,8 +1701,11 @@ ${multiply}`;
             "the mat4ToRotationQuat decomposition",
         );
         const returned = statements[1];
-        if (!returned || !ts.isReturnStatement(returned) ||
-            !returned.expression) {
+        if (
+            !returned ||
+            !ts.isReturnStatement(returned) ||
+            !returned.expression
+        ) {
             this.context.contractError(
                 declaration,
                 "Expected mat4ToRotationQuat to return its components.",
@@ -1775,10 +1838,7 @@ ${writes.join("\n")}
      */
     public lowerBake(): LoweredSource {
         const symbolName = "bakeTransformIntoVertices";
-        const { file, declaration } = this.declaration(
-            BAKE_MODULE,
-            symbolName,
-        );
+        const { file, declaration } = this.declaration(BAKE_MODULE, symbolName);
         const bakeRowLength = this.pinnedNumber(BAKE_MODULE, "ROW_LENGTH");
         if (bakeRowLength !== this.rowLength()) {
             this.context.contractError(
@@ -1851,7 +1911,15 @@ ${writes.join("\n")}
         return {
             modulePath: BAKE_MODULE,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
+            header: pinnedHeader(
+                [
+                    "<bblite/runtime.hpp>",
+                    "",
+                    "<array>",
+                    "<cstdint>",
+                    "<vector>",
+                ],
+                `
 /**
  * Rewrites every splat row so the cloud renders identically under an
  * identity transform.
@@ -1865,7 +1933,8 @@ void bake_splat_transform(
 
 /** The TRS \`bakeCurrentTransformIntoVertices\` leaves behind. */
 void reset_splat_transform(SplatMeshRecord& mesh);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(BAKE_MODULE, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/splat_bake.hpp>
@@ -1920,10 +1989,7 @@ void bake_current_transform_into_vertices(
 
     public lowerSort(): LoweredSource {
         const symbolName = "sortSplatsBackToFront";
-        const { file, declaration } = this.declaration(
-            SORT_MODULE,
-            symbolName,
-        );
+        const { file, declaration } = this.declaration(SORT_MODULE, symbolName);
         const bits = this.declaration(SORT_MODULE, "splatSortBucketBits");
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
@@ -1941,18 +2007,18 @@ void bake_current_transform_into_vertices(
         // world matrix through the same writer.
         const splatTrs = pinnedTrsComposition(this.context);
 
-
-        const bucketBody = lowerPinnedBody(bits.file, bits.declaration
-            .body!.statements, {
+        const bucketBody = lowerPinnedBody(
+            bits.file,
+            bits.declaration.body!.statements,
+            {
                 bindings: new Map<string, PinnedBinding>([
                     ["vertexCount", { cpp: "vertex_count", type: "scalar" }],
                 ]),
                 calls: MATH_CALLS,
                 returnValue: (expression, bucketLowerer) =>
-                    expression
-                        ? bucketLowerer.expression(expression)
-                        : "0.0",
-            });
+                    expression ? bucketLowerer.expression(expression) : "0.0",
+            },
+        );
 
         const bindings = new Map<string, PinnedBinding>([
             ["positions", { cpp: "positions", type: "f32" }],
@@ -1987,7 +2053,15 @@ void bake_current_transform_into_vertices(
         return {
             modulePath: SORT_MODULE,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
+            header: pinnedHeader(
+                [
+                    "<bblite/runtime.hpp>",
+                    "",
+                    "<array>",
+                    "<cstdint>",
+                    "<vector>",
+                ],
+                `
 /** Per-cloud scratch reused across sorts, sized once per upload. */
 struct SplatSortScratch {
     std::vector<float> depths;
@@ -2012,8 +2086,10 @@ SplatSortScratch create_splat_sort_scratch(double vertex_count);
 std::array<float, 16> build_splat_world(const SplatMeshRecord& mesh);
 
 /** The pin's own splat UBO: three matrices then viewport/focal/dataSize${
-                this.shDegree > 0 ? ",\n *  then the eye position the SH view direction is built from" : ""
-            }. */
+                    this.shDegree > 0
+                        ? ",\n *  then the eye position the SH view direction is built from"
+                        : ""
+                }. */
 struct SplatUniforms {
     std::array<float, ${blockFloats}> block{};
 };
@@ -2051,7 +2127,8 @@ void sort_splats_back_to_front(
     const std::array<float, 4>& depth_transform,
     std::vector<std::uint32_t>& order,
     SplatSortScratch& scratch);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(SORT_MODULE, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/splat_sort.hpp>

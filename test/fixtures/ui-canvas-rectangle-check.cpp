@@ -12,7 +12,8 @@ static void check_coverage(double start, double end) {
     const auto bands = canvas_coverage_bands(start, end);
     double area = 0.0;
     for (const auto& band : bands) {
-        if (band.coverage == 0.0) continue;
+        if (band.coverage == 0.0)
+            continue;
         assert(band.start == std::floor(band.start));
         assert(band.end == std::floor(band.end));
         assert(band.coverage > 0.0 && band.coverage <= 1.0);
@@ -40,9 +41,12 @@ int main() {
             check_coverage(start, start + width);
         }
     }
-    for (const auto& band : canvas_coverage_bands(1.0, 1.0)) assert(band.coverage == 0.0);
-    for (const auto& band : canvas_coverage_bands(3.0, -1.0)) assert(band.coverage == 0.0);
-    for (const auto& band : canvas_coverage_bands(0.0, std::numeric_limits<double>::infinity())) assert(band.coverage == 0.0);
+    for (const auto& band : canvas_coverage_bands(1.0, 1.0))
+        assert(band.coverage == 0.0);
+    for (const auto& band : canvas_coverage_bands(3.0, -1.0))
+        assert(band.coverage == 0.0);
+    for (const auto& band : canvas_coverage_bands(0.0, std::numeric_limits<double>::infinity()))
+        assert(band.coverage == 0.0);
 
     UiElementRecord element;
     auto& canvas = element.canvas.emplace();

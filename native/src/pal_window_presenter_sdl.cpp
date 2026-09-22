@@ -7,14 +7,20 @@
 namespace bbl::pal {
 namespace {
 class SdlWindowPresenter final : public WindowPresenter {
-  public:
+public:
     explicit SdlWindowPresenter(SDL_Window* window)
-        : window_(window), device_(SDL_CreateGPUDevice(
-              SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL,
-              environment_variable("BBLITE_GPU_DEBUG") == "1", nullptr), &SDL_DestroyGPUDevice), shared_(device_.get()) {
-        if (!device_) gpu_error("SDL_CreateGPUDevice Window");
-        if (!SDL_SetGPUAllowedFramesInFlight(device_.get(), 3)) gpu_error("SDL_SetGPUAllowedFramesInFlight Window");
-        if (!SDL_ClaimWindowForGPUDevice(device_.get(), window_)) gpu_error("SDL_ClaimWindowForGPUDevice Window");
+        : window_(window),
+          device_(SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV |
+                                          SDL_GPU_SHADERFORMAT_MSL,
+                                      environment_variable("BBLITE_GPU_DEBUG") == "1", nullptr),
+                  &SDL_DestroyGPUDevice),
+          shared_(device_.get()) {
+        if (!device_)
+            gpu_error("SDL_CreateGPUDevice Window");
+        if (!SDL_SetGPUAllowedFramesInFlight(device_.get(), 3))
+            gpu_error("SDL_SetGPUAllowedFramesInFlight Window");
+        if (!SDL_ClaimWindowForGPUDevice(device_.get(), window_))
+            gpu_error("SDL_ClaimWindowForGPUDevice Window");
     }
     ~SdlWindowPresenter() override {
         SDL_WaitForGPUIdle(device_.get());
@@ -26,52 +32,71 @@ class SdlWindowPresenter final : public WindowPresenter {
     OffscreenDevice& device() override { return shared_; }
 
     bool can_present() override {
-        while (!in_flight_.empty() && SDL_QueryGPUFence(device_.get(), in_flight_.front().fence.get())) in_flight_.pop_front();
+        while (!in_flight_.empty() &&
+               SDL_QueryGPUFence(device_.get(), in_flight_.front().fence.get()))
+            in_flight_.pop_front();
         return in_flight_.size() < 3;
     }
-    bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame& ui, const std::string& capture) override {
+    bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame& ui,
+                 const std::string& capture) override {
         SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device_.get())};
-        if (!command) gpu_error("SDL_AcquireGPUCommandBuffer Window");
+        if (!command)
+            gpu_error("SDL_AcquireGPUCommandBuffer Window");
         SDL_GPUTexture* swapchain = nullptr;
         Uint32 width = 0, height = 0;
-        if (!command.acquire_swapchain(window_, &swapchain, &width, &height)) gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture Window");
-        if (!swapchain || width == 0 || height == 0) return false;
+        if (!command.acquire_swapchain(window_, &swapchain, &width, &height))
+            gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture Window");
+        if (!swapchain || width == 0 || height == 0)
+            return false;
         const auto format = SDL_GetGPUSwapchainTextureFormat(device_.get(), window_);
-        auto* destination = composite_.target(device_.get(), swapchain, format,
-            width, height, !capture.empty() || ui_frame_reads_target(ui));
+        auto* destination = composite_.target(device_.get(), swapchain, format, width, height,
+                                              !capture.empty() || ui_frame_reads_target(ui));
         SDL_GPUColorTargetInfo target{};
         target.texture = destination;
         target.load_op = SDL_GPU_LOADOP_CLEAR;
         target.store_op = SDL_GPU_STOREOP_STORE;
         target.clear_color = {0, 0, 0, 1};
         SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
-        if (!pass) gpu_error("SDL_BeginGPURenderPass Window");
+        if (!pass)
+            gpu_error("SDL_BeginGPURenderPass Window");
         pass.end();
 
         const auto external_texture = [&](std::uint64_t id) -> SDL_GPUTexture* {
-            const auto texture = std::find_if(ui.textures.begin(), ui.textures.end(), [&](const auto& value) { return value.id == id; });
-            if (texture == ui.textures.end() || texture->external_canvas == invalid_handle) return nullptr;
-            const auto found = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) { return frame.element.value == texture->external_canvas; });
-            if (found == frames.end()) return nullptr;
+            const auto texture = std::find_if(ui.textures.begin(), ui.textures.end(),
+                                              [&](const auto& value) { return value.id == id; });
+            if (texture == ui.textures.end() || texture->external_canvas == invalid_handle)
+                return nullptr;
+            const auto found = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) {
+                return frame.element.value == texture->external_canvas;
+            });
+            if (found == frames.end())
+                return nullptr;
             const auto* image = dynamic_cast<SdlOffscreenImage*>(found->frame.image.get());
-            if (!image) throw std::runtime_error("Window received an incompatible canvas GPU image.");
+            if (!image)
+                throw std::runtime_error("Window received an incompatible canvas GPU image.");
             return image->texture;
         };
-        render_sprite_ui_sdl_frame(device_.get(), command, destination, format, ui_, ui, external_texture);
+        render_sprite_ui_sdl_frame(device_.get(), command, destination, format, ui_, ui,
+                                   external_texture);
         UiSdlReadableSurface::present(command, destination, swapchain, width, height);
         if (!capture.empty()) {
             save_texture_png(device_.get(), command, destination, format, width, height, capture);
         } else {
             Fence fence(command.submit_with_fence(), {device_.get()});
-            if (!fence) gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence Window");
+            if (!fence)
+                gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence Window");
             in_flight_.push_back({std::move(fence), {frames.begin(), frames.end()}});
         }
         return true;
     }
-  private:
+
+private:
     using Device = std::unique_ptr<SDL_GPUDevice, decltype(&SDL_DestroyGPUDevice)>;
     using Fence = std::unique_ptr<SDL_GPUFence, SdlGpuDeleter<SDL_GPUFence, SDL_ReleaseGPUFence>>;
-    struct InFlight { Fence fence; std::vector<WindowCanvasFrame> leases; };
+    struct InFlight {
+        Fence fence;
+        std::vector<WindowCanvasFrame> leases;
+    };
     SDL_Window* window_;
     Device device_;
     SdlOffscreenDevice shared_;
@@ -80,5 +105,7 @@ class SdlWindowPresenter final : public WindowPresenter {
     std::deque<InFlight> in_flight_;
 };
 } // namespace
-std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window* window) { return std::make_shared<SdlWindowPresenter>(window); }
+std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window* window) {
+    return std::make_shared<SdlWindowPresenter>(window);
+}
 } // namespace bbl::pal

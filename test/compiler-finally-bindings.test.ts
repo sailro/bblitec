@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("finally sees a generation-only binding assigned within each static loop scope", () => {
     const result = compileSource(`
@@ -29,18 +32,24 @@ test("finally sees a generation-only binding assigned within each static loop sc
 });
 
 test("a nested loop cannot establish an outer generation-only binding", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createEngine, createBox, createCsgFromMesh } from "@babylonjs/lite";
         const engine = await createEngine({});
         let solid: ReturnType<typeof createCsgFromMesh> | undefined;
         for (const size of [1, 2]) {
             solid = createCsgFromMesh(createBox(engine, size));
         }
-    `), /assigned inside a ForOfStatement/);
+    `),
+        /assigned inside a ForOfStatement/,
+    );
 });
 
 test("hoisted finally refuses a generation record containing a try-local native handle", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createEngine, createBox } from "@babylonjs/lite";
         const engine = await createEngine({});
         let saved;
@@ -50,7 +59,9 @@ test("hoisted finally refuses a generation record containing a try-local native 
         } finally {
             saved.box.position.x = 1;
         }
-    `), /input\.ts:\d+:\d+: A hoisted finally guard cannot reference native local 'v_\w+_box'/);
+    `),
+        /input\.ts:\d+:\d+: A hoisted finally guard cannot reference native local 'v_\w+_box'/,
+    );
 });
 
 test("hoisted finally accepts a pure CSG plan produced from a try-local native mesh", () => {
@@ -77,14 +88,27 @@ function runNativeProgram(name: string, cpp: string): void {
     const executable = join(output, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", source,
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native\\include",
+        source,
     ]);
     execFileSync(executable, { stdio: "pipe" });
 }
 
-test("native finally preserves return, catch, break and cleanup order", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "native finally preserves return, catch, break and cleanup order",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         const seen: number[] = [];
         function settle(mode: number, seen: number[]): number {
             let value = 1;
@@ -122,11 +146,15 @@ test("native finally preserves return, catch, break and cleanup order", { skip: 
         }
         if (cleanup !== 20) throw new Error("break cleanup");
     `);
-    runNativeProgram("control-flow", result.cpp);
-});
+        runNativeProgram("control-flow", result.cpp);
+    },
+);
 
-test("static-loop finally runs complete nested cleanup and can override break with continue", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "static-loop finally runs complete nested cleanup and can override break with continue",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createBox } from "@babylonjs/lite";
         const engine = await createEngine({});
         for (const size of [1, 2]) {
@@ -147,8 +175,10 @@ test("static-loop finally runs complete nested cleanup and can override break wi
             }
         }
     `);
-    assert.equal(result.manifest.sceneMeshes.length, 9);
-    runNativeProgram("static-cleanup", `
+        assert.equal(result.manifest.sceneMeshes.length, 9);
+        runNativeProgram(
+            "static-cleanup",
+            `
 #define main generated_scene_main
 ${result.cpp}
 #undef main
@@ -165,11 +195,16 @@ MeshHandle create_box(Engine&, BoxOptions options) {
 }
 }
 int main() { assert(generated_scene_main() == 0); assert(calls == 9); }
-`);
-});
+`,
+        );
+    },
+);
 
-test("hoisted finally builds with outer native captures and its own local declarations", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "hoisted finally builds with outer native captures and its own local declarations",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createBox } from "@babylonjs/lite";
         const engine = await createEngine({});
         const box = createBox(engine);
@@ -183,7 +218,9 @@ test("hoisted finally builds with outer native captures and its own local declar
         }
         if (box.position.x !== 1) throw new Error("cleanup did not write outer box");
     `);
-    runNativeProgram("visible-captures", `
+        runNativeProgram(
+            "visible-captures",
+            `
 #define main generated_scene_main
 ${result.cpp}
 #undef main
@@ -202,12 +239,17 @@ void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
 }
 }
 int main() { assert(generated_scene_main() == 0); assert(writes == 2); }
-`);
-});
+`,
+        );
+    },
+);
 
-test("pure CSG and CSG2 plans build and materialize in hoisted finally guards", { skip: !nativeTools }, () => {
-    for (const version of ["", "2"]) {
-        const result = compileSource(`
+test(
+    "pure CSG and CSG2 plans build and materialize in hoisted finally guards",
+    { skip: !nativeTools },
+    () => {
+        for (const version of ["", "2"]) {
+            const result = compileSource(`
             import { createEngine, createBox, initializeCsg2Async,
                 createCsg${version}FromMesh, createMeshFromCsg${version} } from "@babylonjs/lite";
             const engine = await createEngine({});
@@ -220,11 +262,19 @@ test("pure CSG and CSG2 plans build and materialize in hoisted finally guards", 
                 createMeshFromCsg${version}(engine, solid, "cleanup");
             }
         `);
-        const payloads = [...result.assetPayloads.values()].filter(value => value.startsWith("data:application/x-bblite-mesh;base64,"));
-        assert.equal(payloads.length, 1);
-        const payload = payloads[0]!;
-        const bytes = Buffer.from(payload.slice(payload.indexOf(",") + 1), "base64");
-        runNativeProgram(`csg${version}-plan`, `
+            const payloads = [...result.assetPayloads.values()].filter(
+                (value) =>
+                    value.startsWith("data:application/x-bblite-mesh;base64,"),
+            );
+            assert.equal(payloads.length, 1);
+            const payload = payloads[0]!;
+            const bytes = Buffer.from(
+                payload.slice(payload.indexOf(",") + 1),
+                "base64",
+            );
+            runNativeProgram(
+                `csg${version}-plan`,
+                `
 #define main generated_scene_main
 ${result.cpp}
 #undef main
@@ -253,6 +303,8 @@ MeshHandle create_mesh_from_data(Engine&, const std::string& name,
 }
 }
 int main() { assert(generated_scene_main() == 0); assert(materialized == 1); }
-`);
-    }
-});
+`,
+            );
+        }
+    },
+);

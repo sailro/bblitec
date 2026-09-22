@@ -7,7 +7,10 @@ import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { handleCppType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
-import { resolveFunctionDeclaration, tryResolveFunctionDeclaration } from "./user-functions.js";
+import {
+    resolveFunctionDeclaration,
+    tryResolveFunctionDeclaration,
+} from "./user-functions.js";
 import { CompilerSymbols } from "./symbols.js";
 import {
     argumentAt,
@@ -39,9 +42,7 @@ import {
 // "which meshes of this file are skinned" has one answer in the compiler.
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
-import {
-    skinnedMeshIndices,
-} from "../pinned-mesh-features.js";
+import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 
 /**
@@ -56,17 +57,17 @@ import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 export type HandleCollectionTarget = HandleCollectionInfo;
 
 /** What emitting a loop over one of those collections needs. */
-interface HandleCollectionLoopContext
-    extends Pick<LoweringServices,
-        | "allocateTemporaryCppName"
-        | "allocateBlockPrefix"
-        | "emit"
-        | "increaseIndent"
-        | "decreaseIndent"
-        | "pushScope"
-        | "popScope"
-        | "bindLocalValue"
-    > {}
+interface HandleCollectionLoopContext extends Pick<
+    LoweringServices,
+    | "allocateTemporaryCppName"
+    | "allocateBlockPrefix"
+    | "emit"
+    | "increaseIndent"
+    | "decreaseIndent"
+    | "pushScope"
+    | "popScope"
+    | "bindLocalValue"
+> {}
 
 /**
  * The emitted range-for over an engine handle collection: the loop, its
@@ -78,7 +79,14 @@ export function emitHandleCollectionLoop<
     Context extends HandleCollectionLoopContext,
 >(
     context: Context,
-    target: Pick<HandleCollectionTarget, "temporaryLabel" | "elementCppType" | "containerCpp" | "elementKind" | "engineCpp">,
+    target: Pick<
+        HandleCollectionTarget,
+        | "temporaryLabel"
+        | "elementCppType"
+        | "containerCpp"
+        | "elementKind"
+        | "engineCpp"
+    >,
     binding: ts.Identifier,
     emitBody: (context: Context) => void,
     /**
@@ -89,20 +97,21 @@ export function emitHandleCollectionLoop<
      */
     extraBinding?: Partial<ValueBase>,
 ): void {
-    const item = context.allocateTemporaryCppName(
-        target.temporaryLabel,
-    );
+    const item = context.allocateTemporaryCppName(target.temporaryLabel);
     context.emit(
         `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
     );
     context.increaseIndent();
     context.pushScope(context.allocateBlockPrefix());
     try {
-        context.bindLocalValue(binding, valueForKind(target.elementKind, {
-            cpp: item,
-            engineCpp: target.engineCpp,
-            ...(extraBinding ?? {}),
-        }));
+        context.bindLocalValue(
+            binding,
+            valueForKind(target.elementKind, {
+                cpp: item,
+                engineCpp: target.engineCpp,
+                ...(extraBinding ?? {}),
+            }),
+        );
         emitBody(context);
     } finally {
         context.popScope();
@@ -129,112 +138,249 @@ function assetOwnerMapBuilder(
     resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
     isGlobal: (name: ts.Identifier) => boolean,
 ): AssetOwnerMapProof | undefined {
-    const parameters = (fn: ts.FunctionDeclaration, count: number): ts.Identifier[] | undefined => {
-        if (!fn.body || fn.asteriskToken || fn.typeParameters?.length ||
-            fn.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
-            fn.parameters.length !== count || fn.parameters.some(parameter =>
-                !ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken || parameter.questionToken)) return undefined;
+    const parameters = (
+        fn: ts.FunctionDeclaration,
+        count: number,
+    ): ts.Identifier[] | undefined => {
+        if (
+            !fn.body ||
+            fn.asteriskToken ||
+            fn.typeParameters?.length ||
+            fn.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            ) ||
+            fn.parameters.length !== count ||
+            fn.parameters.some(
+                (parameter) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.initializer ||
+                    parameter.dotDotDotToken ||
+                    parameter.questionToken,
+            )
+        )
+            return undefined;
         const names = fn.parameters.flatMap((parameter) =>
             ts.isIdentifier(parameter.name) ? [parameter.name] : [],
         );
-        return new EmissionSet(names.map(name => name.text)).size === count ? names : undefined;
+        return new EmissionSet(names.map((name) => name.text)).size === count
+            ? names
+            : undefined;
     };
-    const loopBinding = (statement: ts.Statement): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
-        if (!ts.isForOfStatement(statement) || statement.awaitModifier ||
+    const loopBinding = (
+        statement: ts.Statement,
+    ): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
+        if (
+            !ts.isForOfStatement(statement) ||
+            statement.awaitModifier ||
             !ts.isVariableDeclarationList(statement.initializer) ||
-            !(statement.initializer.flags & ts.NodeFlags.Const) || statement.initializer.declarations.length !== 1) return undefined;
+            !(statement.initializer.flags & ts.NodeFlags.Const) ||
+            statement.initializer.declarations.length !== 1
+        )
+            return undefined;
         const binding = statement.initializer.declarations[0]!;
-        return ts.isIdentifier(binding.name) && !binding.initializer ? { loop: statement, name: binding.name } : undefined;
+        return ts.isIdentifier(binding.name) && !binding.initializer
+            ? { loop: statement, name: binding.name }
+            : undefined;
     };
     const params = parameters(declaration, 1);
     if (!params || declaration.body!.statements.length !== 3) return undefined;
     const [mapStatement, roots, returned] = declaration.body!.statements;
     const map = singleConstDeclaration(mapStatement!);
     const rootLoop = loopBinding(roots!);
-    if (!map || !rootLoop || map.name.text === params[0]!.text ||
-        !ts.isNewExpression(map.initializer) || !ts.isIdentifier(map.initializer.expression) ||
-        map.initializer.expression.text !== "Map" || !isGlobal(map.initializer.expression) ||
+    if (
+        !map ||
+        !rootLoop ||
+        map.name.text === params[0]!.text ||
+        !ts.isNewExpression(map.initializer) ||
+        !ts.isIdentifier(map.initializer.expression) ||
+        map.initializer.expression.text !== "Map" ||
+        !isGlobal(map.initializer.expression) ||
         (map.initializer.arguments?.length ?? 0) !== 0 ||
         !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
-        !ts.isReturnStatement(returned!) || !isIdentifierRead(returned.expression, map.name)) return undefined;
-    const rootStatements = ts.isBlock(rootLoop.loop.statement) ? rootLoop.loop.statement.statements : [rootLoop.loop.statement];
+        !ts.isReturnStatement(returned!) ||
+        !isIdentifierRead(returned.expression, map.name)
+    )
+        return undefined;
+    const rootStatements = ts.isBlock(rootLoop.loop.statement)
+        ? rootLoop.loop.statement.statements
+        : [rootLoop.loop.statement];
     if (rootStatements.length !== 1) return undefined;
     const rootGuard = guardedArm(rootStatements[0]!);
-    if (!rootGuard || !guardedBy(rootGuard.test, rootLoop.name, resolve, fn => isChildrenPresenceGuard(fn, isGlobal))) return undefined;
+    if (
+        !rootGuard ||
+        !guardedBy(rootGuard.test, rootLoop.name, resolve, (fn) =>
+            isChildrenPresenceGuard(fn, isGlobal),
+        )
+    )
+        return undefined;
     const call = singleExpressionStatement(rootGuard.body);
-    if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.arguments.length !== 3 ||
-        !isIdentifierRead(argumentAt(call, 0), rootLoop.name) || !isPropertyReadOf(argumentAt(call, 1), rootLoop.name, "name") ||
-        !isIdentifierRead(argumentAt(call, 2), map.name)) return undefined;
+    if (
+        !call ||
+        !ts.isCallExpression(call) ||
+        !ts.isIdentifier(call.expression) ||
+        call.arguments.length !== 3 ||
+        !isIdentifierRead(argumentAt(call, 0), rootLoop.name) ||
+        !isPropertyReadOf(argumentAt(call, 1), rootLoop.name, "name") ||
+        !isIdentifierRead(argumentAt(call, 2), map.name)
+    )
+        return undefined;
     const visitor = resolve(call.expression);
     const visitorParams = visitor && parameters(visitor, 3);
-    if (!visitor || !visitorParams || visitor.body!.statements.length !== 1) return undefined;
-    const [node, ownerName, output] = visitorParams as [ts.Identifier, ts.Identifier, ts.Identifier];
+    if (!visitor || !visitorParams || visitor.body!.statements.length !== 1)
+        return undefined;
+    const [node, ownerName, output] = visitorParams as [
+        ts.Identifier,
+        ts.Identifier,
+        ts.Identifier,
+    ];
     const children = loopBinding(visitor.body!.statements[0]!);
-    if (!children || visitorParams.some(name => name.text === children.name.text) ||
-        !isPropertyReadOf(children.loop.expression, node, "children") || !ts.isBlock(children.loop.statement) ||
-        children.loop.statement.statements.length !== 2) return undefined;
+    if (
+        !children ||
+        visitorParams.some((name) => name.text === children.name.text) ||
+        !isPropertyReadOf(children.loop.expression, node, "children") ||
+        !ts.isBlock(children.loop.statement) ||
+        children.loop.statement.statements.length !== 2
+    )
+        return undefined;
     const collect = guardedArm(children.loop.statement.statements[0]!);
     const descend = guardedArm(children.loop.statement.statements[1]!);
-    if (!collect || !descend || !ts.isBlock(collect.body) || collect.body.statements.length !== 3 ||
-        !guardedBy(collect.test, children.name, resolve, isRenderablePresenceGuard) ||
-        !guardedBy(descend.test, children.name, resolve, fn => isChildrenPresenceGuard(fn, isGlobal))) return undefined;
+    if (
+        !collect ||
+        !descend ||
+        !ts.isBlock(collect.body) ||
+        collect.body.statements.length !== 3 ||
+        !guardedBy(
+            collect.test,
+            children.name,
+            resolve,
+            isRenderablePresenceGuard,
+        ) ||
+        !guardedBy(descend.test, children.name, resolve, (fn) =>
+            isChildrenPresenceGuard(fn, isGlobal),
+        )
+    )
+        return undefined;
     const [listStatement, pushed, stored] = collect.body.statements;
     const list = singleConstDeclaration(listStatement!);
-    if (!list || [...visitorParams, children.name].some(name => name.text === list.name.text)) return undefined;
+    if (
+        !list ||
+        [...visitorParams, children.name].some(
+            (name) => name.text === list.name.text,
+        )
+    )
+        return undefined;
     const initial = unwrapWalkExpression(list.initializer);
-    if (!ts.isBinaryExpression(initial) || initial.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
-        !ts.isCallExpression(initial.left) || initial.left.arguments.length !== 1 ||
-        !isPropertyReadOf(initial.left.expression, output, "get") || !isIdentifierRead(argumentAt(initial.left, 0), ownerName) ||
-        !ts.isArrayLiteralExpression(initial.right) || initial.right.elements.length !== 0 ||
-        !isIdentifierRead(pushedArgument(singleExpressionStatement(pushed!), list.name, false), children.name)) return undefined;
+    if (
+        !ts.isBinaryExpression(initial) ||
+        initial.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
+        !ts.isCallExpression(initial.left) ||
+        initial.left.arguments.length !== 1 ||
+        !isPropertyReadOf(initial.left.expression, output, "get") ||
+        !isIdentifierRead(argumentAt(initial.left, 0), ownerName) ||
+        !ts.isArrayLiteralExpression(initial.right) ||
+        initial.right.elements.length !== 0 ||
+        !isIdentifierRead(
+            pushedArgument(
+                singleExpressionStatement(pushed!),
+                list.name,
+                false,
+            ),
+            children.name,
+        )
+    )
+        return undefined;
     const set = singleExpressionStatement(stored!);
-    if (!set || !ts.isCallExpression(set) || set.arguments.length !== 2 || !isPropertyReadOf(set.expression, output, "set") ||
-        !isIdentifierRead(argumentAt(set, 0), ownerName) || !isIdentifierRead(argumentAt(set, 1), list.name)) return undefined;
+    if (
+        !set ||
+        !ts.isCallExpression(set) ||
+        set.arguments.length !== 2 ||
+        !isPropertyReadOf(set.expression, output, "set") ||
+        !isIdentifierRead(argumentAt(set, 0), ownerName) ||
+        !isIdentifierRead(argumentAt(set, 1), list.name)
+    )
+        return undefined;
     const recursive = singleExpressionStatement(descend.body);
-    if (!recursive || !ts.isCallExpression(recursive) || !ts.isIdentifier(recursive.expression) ||
-        resolve(recursive.expression) !== visitor || recursive.arguments.length !== 3 ||
-        !isIdentifierRead(argumentAt(recursive, 0), children.name) || !isIdentifierRead(argumentAt(recursive, 2), output)) return undefined;
+    if (
+        !recursive ||
+        !ts.isCallExpression(recursive) ||
+        !ts.isIdentifier(recursive.expression) ||
+        resolve(recursive.expression) !== visitor ||
+        recursive.arguments.length !== 3 ||
+        !isIdentifierRead(argumentAt(recursive, 0), children.name) ||
+        !isIdentifierRead(argumentAt(recursive, 2), output)
+    )
+        return undefined;
     const nextOwner = unwrapWalkExpression(argumentAt(recursive, 1));
-    if (!ts.isConditionalExpression(nextOwner) || !guardedBy(nextOwner.condition, children.name, resolve, isRenderablePresenceGuard) ||
-        !isIdentifierRead(nextOwner.whenTrue, ownerName) || !isPropertyReadOf(nextOwner.whenFalse, children.name, "name")) return undefined;
+    if (
+        !ts.isConditionalExpression(nextOwner) ||
+        !guardedBy(
+            nextOwner.condition,
+            children.name,
+            resolve,
+            isRenderablePresenceGuard,
+        ) ||
+        !isIdentifierRead(nextOwner.whenTrue, ownerName) ||
+        !isPropertyReadOf(nextOwner.whenFalse, children.name, "name")
+    )
+        return undefined;
     const helpers = new EmissionSet<ts.FunctionDeclaration>([visitor]);
-    for (const guard of [rootGuard.test, collect.test, descend.test, nextOwner.condition]) {
+    for (const guard of [
+        rootGuard.test,
+        collect.test,
+        descend.test,
+        nextOwner.condition,
+    ]) {
         const invocation = unwrapWalkExpression(guard);
-        if (!ts.isCallExpression(invocation) || !ts.isIdentifier(invocation.expression)) return undefined;
+        if (
+            !ts.isCallExpression(invocation) ||
+            !ts.isIdentifier(invocation.expression)
+        )
+            return undefined;
         helpers.add(resolve(invocation.expression)!);
     }
-    return { mapStatement: mapStatement!, map: map.name, meshArray: list.name, child: children.name, ownerName, output, collect: collect.body, helpers: [...helpers] };
+    return {
+        mapStatement: mapStatement!,
+        map: map.name,
+        meshArray: list.name,
+        child: children.name,
+        ownerName,
+        output,
+        collect: collect.body,
+        helpers: [...helpers],
+    };
 }
 
 interface HandleCollectionsContext
-    extends HandleCollectionLoopContext,
-    Pick<LoweringServices,
-        | "guardStaticConstructionRead"
-        | "meshWalks"
-        | "checker"
-        | "dataTypes"
-        | "options"
-        | "assetPayloads"
-        | "reachedNodeParticles"
-        | "unwrap"
-        | "importedName"
-        | "fail"
-        | "compileValue"
-        | "emitStatement"
-        | "isDefaultLibraryIdentifier"
-        | "compileCondition"
-        | "compileStringLiteral"
-        | "cppString"
-        | "lookup"
-        | "lookupOptional"
-        | "resolveStaticExpression"
-        | "probeStaticArrayLiteral"
-        | "requireEngine"
-        | "expectKind"
-        | "expectSameEngine"
-        | "expectArgumentCount"
-        | "addSceneLight"
-    > {}
+    extends
+        HandleCollectionLoopContext,
+        Pick<
+            LoweringServices,
+            | "guardStaticConstructionRead"
+            | "meshWalks"
+            | "checker"
+            | "dataTypes"
+            | "options"
+            | "assetPayloads"
+            | "reachedNodeParticles"
+            | "unwrap"
+            | "importedName"
+            | "fail"
+            | "compileValue"
+            | "emitStatement"
+            | "isDefaultLibraryIdentifier"
+            | "compileCondition"
+            | "compileStringLiteral"
+            | "cppString"
+            | "lookup"
+            | "lookupOptional"
+            | "resolveStaticExpression"
+            | "probeStaticArrayLiteral"
+            | "requireEngine"
+            | "expectKind"
+            | "expectSameEngine"
+            | "expectArgumentCount"
+            | "addSceneLight"
+        > {}
 
 /**
  * The value kinds that stand for an engine handle.
@@ -267,7 +413,6 @@ const compileTimeListKinds: readonly ValueKind[] = [
     "tuple",
 ];
 
-
 /** One member of an asset-derived collection, in document order. */
 interface HandleCollectionMember {
     name: string;
@@ -276,43 +421,71 @@ interface HandleCollectionMember {
 
 export class HandleCollections {
     /** Fold only the hierarchy traversal; lower the source's Map updates normally. */
-    public compileAssetOwnerMap(call: ts.CallExpression, identifier: ts.Identifier): Value | undefined {
-        const resolve = (name: ts.Identifier): ts.FunctionDeclaration | undefined => {
-            const declaration = resolveFunctionDeclaration(this.context.checker, name,
-                (node, message) => this.context.fail(node, message));
-            return declaration && ts.isFunctionDeclaration(declaration) ? declaration : undefined;
+    public compileAssetOwnerMap(
+        call: ts.CallExpression,
+        identifier: ts.Identifier,
+    ): Value | undefined {
+        const resolve = (
+            name: ts.Identifier,
+        ): ts.FunctionDeclaration | undefined => {
+            const declaration = resolveFunctionDeclaration(
+                this.context.checker,
+                name,
+                (node, message) => this.context.fail(node, message),
+            );
+            return declaration && ts.isFunctionDeclaration(declaration)
+                ? declaration
+                : undefined;
         };
         const declaration = resolve(identifier);
         if (!declaration || call.arguments.length !== 1) return undefined;
-        const proof = assetOwnerMapBuilder(declaration, resolve,
-            name => this.context.isDefaultLibraryIdentifier(name));
+        const proof = assetOwnerMapBuilder(declaration, resolve, (name) =>
+            this.context.isDefaultLibraryIdentifier(name),
+        );
         if (!proof) return undefined;
         const owner = this.context.compileValue(argumentAt(call, 0));
-        if (owner.kind !== "asset" || owner.asset?.kind !== "gltf") return undefined;
-        const target = this.assetMeshCollection(owner, proof.meshArray).handleCollection!;
+        if (owner.kind !== "asset" || owner.asset?.kind !== "gltf")
+            return undefined;
+        const target = this.assetMeshCollection(
+            owner,
+            proof.meshArray,
+        ).handleCollection!;
         const walk = this.sourceMeshWalk(owner, target, {
             kind: "owner-map",
             parameter: declaration.parameters[0]!.name.getText(),
-            body: `{ ${proof.helpers.map(helper => helper.getText()).join("\n")} ${declaration.body!.statements.map(statement => statement.getText()).join("\n")} }`,
+            body: `{ ${proof.helpers.map((helper) => helper.getText()).join("\n")} ${declaration.body!.statements.map((statement) => statement.getText()).join("\n")} }`,
         });
         this.context.pushScope(this.context.allocateBlockPrefix());
         try {
             this.context.emitStatement(proof.mapStatement);
             const map = this.context.lookup(proof.map);
-            if (map.dataType?.kind !== "map" || map.dataType.key.kind !== "string" ||
-                map.dataType.value.kind !== "vector" || map.dataType.value.element.kind !== "handle" ||
-                map.dataType.value.element.handle !== "mesh") {
-                this.context.fail(call, "An asset owner map requires Map<string, Mesh[]> storage.");
+            if (
+                map.dataType?.kind !== "map" ||
+                map.dataType.key.kind !== "string" ||
+                map.dataType.value.kind !== "vector" ||
+                map.dataType.value.element.kind !== "handle" ||
+                map.dataType.value.element.handle !== "mesh"
+            ) {
+                this.context.fail(
+                    call,
+                    "An asset owner map requires Map<string, Mesh[]> storage.",
+                );
             }
-            emitHandleCollectionLoop(this.context, walk, proof.child, context => {
-                const child = context.lookup(proof.child);
-                context.bindLocalValue(proof.ownerName, {
-                    kind: "string", cpp: `${target.engineCpp}.meshes[${child.cpp}.value].scene_node_name`,
-                    dataType: { kind: "string" },
-                });
-                context.bindLocalValue(proof.output, map);
-                context.emitStatement(proof.collect);
-            });
+            emitHandleCollectionLoop(
+                this.context,
+                walk,
+                proof.child,
+                (context) => {
+                    const child = context.lookup(proof.child);
+                    context.bindLocalValue(proof.ownerName, {
+                        kind: "string",
+                        cpp: `${target.engineCpp}.meshes[${child.cpp}.value].scene_node_name`,
+                        dataType: { kind: "string" },
+                    });
+                    context.bindLocalValue(proof.output, map);
+                    context.emitStatement(proof.collect);
+                },
+            );
             return { ...map, engineCpp: target.engineCpp };
         } finally {
             this.context.popScope();
@@ -321,12 +494,22 @@ export class HandleCollections {
 
     private readonly meshCardinalities = new EmissionMap<string, number>();
 
-    public collectionCardinality(target: HandleCollectionTarget, node: ts.Node): number | undefined {
+    public collectionCardinality(
+        target: HandleCollectionTarget,
+        node: ts.Node,
+    ): number | undefined {
         const asset = target.asset;
-        if (target.property !== "meshes" || target.elementKind !== "mesh" || asset?.kind !== "gltf") return undefined;
+        if (
+            target.property !== "meshes" ||
+            target.elementKind !== "mesh" ||
+            asset?.kind !== "gltf"
+        )
+            return undefined;
         const cached = this.meshCardinalities.get(asset.source);
         if (cached !== undefined) return cached;
-        const primitives = instantiatedPrimitiveRecords(this.readAssetDocument(asset, node));
+        const primitives = instantiatedPrimitiveRecords(
+            this.readAssetDocument(asset, node),
+        );
         if (primitives.some(isGaussianSplatPrimitive)) return undefined;
         this.meshCardinalities.set(asset.source, primitives.length);
         return primitives.length;
@@ -350,9 +533,7 @@ export class HandleCollections {
      */
     private readonly foldedFlattenLoops = new EmissionSet<ts.Statement>();
 
-    public constructor(
-        private readonly context: HandleCollectionsContext,
-    ) {}
+    public constructor(private readonly context: HandleCollectionsContext) {}
 
     /**
      * A collection expression past the two shapes that leave it
@@ -416,9 +597,7 @@ export class HandleCollections {
             ts.isArrayLiteralExpression(unwrapped.right) &&
             unwrapped.right.elements.length === 0
         ) {
-            return this.unwrapCollectionExpression(
-                unwrapped.left,
-            );
+            return this.unwrapCollectionExpression(unwrapped.left);
         }
         return unwrapped;
     }
@@ -428,17 +607,13 @@ export class HandleCollections {
      * local declared from `container.animationGroups ?? []`, or an inlined
      * user-function parameter the caller passed that local through.
      */
-    private boundCollectionValue(
-        expression: ts.Expression,
-    ): Value | undefined {
+    private boundCollectionValue(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (!ts.isIdentifier(unwrapped)) {
             return undefined;
         }
-        const value =
-            this.context.lookupOptional(unwrapped);
-        return value?.kind === "handle-collection" &&
-            value.handleCollection
+        const value = this.context.lookupOptional(unwrapped);
+        return value?.kind === "handle-collection" && value.handleCollection
             ? value
             : undefined;
     }
@@ -448,9 +623,7 @@ export class HandleCollections {
      * the `getContainerMeshes(container)` call itself rather than a local
      * bound to it -- the same collection `iterationTarget` loops over.
      */
-    private flattenedMeshesValue(
-        expression: ts.Expression,
-    ): Value | undefined {
+    private flattenedMeshesValue(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (
             !ts.isCallExpression(unwrapped) ||
@@ -473,11 +646,8 @@ export class HandleCollections {
      */
     private resolveExpressionTarget(
         expression: ts.Expression,
-    ):
-        | { target: HandleCollectionTarget; owner: Value }
-        | undefined {
-        const unwrapped =
-            this.unwrapCollectionExpression(expression);
+    ): { target: HandleCollectionTarget; owner: Value } | undefined {
+        const unwrapped = this.unwrapCollectionExpression(expression);
         if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
@@ -488,18 +658,15 @@ export class HandleCollections {
         if (!isHandleCollectionProperty(unwrapped.name.text)) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            unwrapped.expression,
-        );
-        const collection = readHandleCollection(
-            owner,
-            unwrapped.name.text,
-        );
+        const owner = this.context.compileValue(unwrapped.expression);
+        const collection = readHandleCollection(owner, unwrapped.name.text);
         if (!collection) {
             return undefined;
         }
         if (owner.kind === "scene" && collection.property === "meshes") {
-            this.context.guardStaticConstructionRead("observable scene mesh membership");
+            this.context.guardStaticConstructionRead(
+                "observable scene mesh membership",
+            );
         }
         // The declared type carries the element model: the property's own
         // number-index type is what an iteration yields, and the pinned
@@ -516,8 +683,12 @@ export class HandleCollections {
         const declared = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(unwrapped),
         );
-        const awaited = this.context.checker.getAwaitedType(declared) ?? declared;
-        if (awaited !== declared && !this.awaitStripped(expression, unwrapped)) {
+        const awaited =
+            this.context.checker.getAwaitedType(declared) ?? declared;
+        if (
+            awaited !== declared &&
+            !this.awaitStripped(expression, unwrapped)
+        ) {
             this.context.fail(
                 unwrapped,
                 `'${unwrapped.name.text}' is a promise of its collection; read it under await.`,
@@ -545,22 +716,14 @@ export class HandleCollections {
                     "no engine handle to bind.",
             );
         }
-        const engineCpp = this.context.requireEngine(
-            owner,
-            unwrapped,
-        );
+        const engineCpp = this.context.requireEngine(owner, unwrapped);
         return {
             target: {
                 property: collection.property,
                 temporaryLabel: collection.temporaryLabel,
-                containerCpp: nativeLocation(
-                    collection,
-                    owner.cpp,
-                    engineCpp,
-                ),
+                containerCpp: nativeLocation(collection, owner.cpp, engineCpp),
                 elementKind: element.handle,
-                elementCppType:
-                    this.context.dataTypes.cppType(element),
+                elementCppType: this.context.dataTypes.cppType(element),
                 engineCpp,
             },
             owner,
@@ -592,8 +755,7 @@ export class HandleCollections {
                 ? value.handleCollection
                 : undefined;
         }
-        return this.resolveExpressionTarget(expression)
-            ?.target;
+        return this.resolveExpressionTarget(expression)?.target;
     }
 
     /**
@@ -607,9 +769,7 @@ export class HandleCollections {
      */
     public assetFlattenedMeshesIterationTarget(
         expression: ts.Expression,
-    ):
-        | { target: HandleCollectionTarget; asset: CompileAsset }
-        | undefined {
+    ): { target: HandleCollectionTarget; asset: CompileAsset } | undefined {
         const call = this.context.unwrap(expression);
         if (
             !ts.isCallExpression(call) ||
@@ -633,14 +793,14 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            argumentAt(call, 0),
-        );
+        const owner = this.context.compileValue(argumentAt(call, 0));
         if (owner.kind !== "asset") {
             return undefined;
         }
-        const collection = this.assetMeshCollection(owner, call)
-            .handleCollection;
+        const collection = this.assetMeshCollection(
+            owner,
+            call,
+        ).handleCollection;
         if (!collection || !owner.asset) {
             return undefined;
         }
@@ -661,13 +821,14 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         walk: CompiledMeshWalk,
     ): HandleCollectionTarget {
-        if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon") return target;
+        if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon")
+            return target;
         const key = JSON.stringify(walk);
         let index = this.context.meshWalks.findIndex(
-            candidate => JSON.stringify(candidate) === key,
+            (candidate) => JSON.stringify(candidate) === key,
         );
         if (index < 0) index = this.context.meshWalks.push(walk) - 1;
-        const demanded = owner.asset.meshWalks ??= [];
+        const demanded = (owner.asset.meshWalks ??= []);
         if (!demanded.includes(index)) demanded.push(index);
         return {
             ...target,
@@ -713,15 +874,10 @@ export class HandleCollections {
     public assetRecursiveFlattenDeclaration(
         declaration: ts.VariableDeclaration,
     ): Value | undefined {
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer
-        ) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
             return undefined;
         }
-        const empty = this.context.unwrap(
-            declaration.initializer,
-        );
+        const empty = this.context.unwrap(declaration.initializer);
         if (
             !ts.isArrayLiteralExpression(empty) ||
             empty.elements.length !== 0
@@ -729,9 +885,7 @@ export class HandleCollections {
             return undefined;
         }
         const annotated = this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(
-                declaration.name,
-            ),
+            this.context.checker.getTypeAtLocation(declaration.name),
             declaration.name,
         );
         if (
@@ -759,8 +913,7 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const entity =
-            loop.initializer.declarations[0]!.name;
+        const entity = loop.initializer.declarations[0]!.name;
         const entities = this.context.unwrap(loop.expression);
         if (
             !ts.isIdentifier(entity) ||
@@ -777,10 +930,7 @@ export class HandleCollections {
             !ts.isIdentifier(visit.expression) ||
             visit.arguments.length !== 2 ||
             !isIdentifierRead(argumentAt(visit, 0), entity) ||
-            !isIdentifierRead(
-                argumentAt(visit, 1),
-                declaration.name,
-            )
+            !isIdentifierRead(argumentAt(visit, 1), declaration.name)
         ) {
             return undefined;
         }
@@ -790,12 +940,9 @@ export class HandleCollections {
             const found = resolveFunctionDeclaration(
                 this.context.checker,
                 identifier,
-                (node, message) =>
-                    this.context.fail(node, message),
+                (node, message) => this.context.fail(node, message),
             );
-            return found && ts.isFunctionDeclaration(found)
-                ? found
-                : undefined;
+            return found && ts.isFunctionDeclaration(found) ? found : undefined;
         };
         const walk = resolve(visit.expression);
         if (
@@ -803,29 +950,22 @@ export class HandleCollections {
             !isRecursiveMeshFlattenVisitor(
                 walk,
                 resolve,
-                (identifier) =>
-                    !this.context.lookupOptional(identifier),
+                (identifier) => !this.context.lookupOptional(identifier),
             )
         ) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            entities.expression,
-        );
+        const owner = this.context.compileValue(entities.expression);
         if (owner.kind !== "asset" || !owner.asset) {
             return undefined;
         }
-        this.requireLoaderFlattenedContainer(
-            owner.asset,
-            entities,
-        );
+        this.requireLoaderFlattenedContainer(owner.asset, entities);
         this.foldedFlattenLoops.add(loop);
-        const result = this.assetMeshCollection(
-            owner,
-            declaration.name,
-        );
+        const result = this.assetMeshCollection(owner, declaration.name);
         result.handleCollection = this.sourceMeshWalk(
-            owner, result.handleCollection!, {kind: "preorder"},
+            owner,
+            result.handleCollection!,
+            { kind: "preorder" },
         );
         return result;
     }
@@ -839,10 +979,7 @@ export class HandleCollections {
     }
 
     /** `getContainerMeshes(container)` as the asset's flattened mesh list. */
-    public assetMeshCollection(
-        owner: Value,
-        expression: ts.Expression,
-    ): Value {
+    public assetMeshCollection(owner: Value, expression: ts.Expression): Value {
         this.context.expectKind(owner, "asset", expression);
         const collection = readHandleCollection(owner, "meshes");
         if (!collection) {
@@ -874,11 +1011,7 @@ export class HandleCollections {
             handleCollection: {
                 property: "meshes",
                 temporaryLabel: collection.temporaryLabel,
-                containerCpp: nativeLocation(
-                    collection,
-                    owner.cpp,
-                    engineCpp,
-                ),
+                containerCpp: nativeLocation(collection, owner.cpp, engineCpp),
                 elementKind: element.handle,
                 elementCppType: this.context.dataTypes.cppType(element),
                 engineCpp,
@@ -901,9 +1034,7 @@ export class HandleCollections {
     public resolveNullishCollection(
         expression: ts.BinaryExpression,
     ): Value | undefined {
-        const fallback = this.context.unwrap(
-            expression.right,
-        );
+        const fallback = this.context.unwrap(expression.right);
         if (
             expression.operatorToken.kind !==
                 ts.SyntaxKind.QuestionQuestionToken ||
@@ -912,16 +1043,13 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const resolved = this.resolveExpressionTarget(
-            expression.left,
-        );
+        const resolved = this.resolveExpressionTarget(expression.left);
         if (!resolved) {
             return undefined;
         }
         const { target, owner } = resolved;
         const asset =
-            owner.kind === "asset" &&
-            owner.asset?.kind === "gltf"
+            owner.kind === "asset" && owner.asset?.kind === "gltf"
                 ? owner.asset
                 : undefined;
         return {
@@ -997,9 +1125,7 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            unwrapped.expression,
-        );
+        const owner = this.context.compileValue(unwrapped.expression);
         if (owner.kind !== "asset") {
             return undefined;
         }
@@ -1012,10 +1138,7 @@ export class HandleCollections {
         return {
             ...owner,
             kind: "asset-entity",
-            engineCpp: this.context.requireEngine(
-                owner,
-                unwrapped,
-            ),
+            engineCpp: this.context.requireEngine(owner, unwrapped),
         };
     }
 
@@ -1032,18 +1155,14 @@ export class HandleCollections {
     public assetRootElementAccess(
         expression: ts.ElementAccessExpression,
     ): Value | undefined {
-        const collection = this.context.unwrap(
-            expression.expression,
-        );
+        const collection = this.context.unwrap(expression.expression);
         if (
             !ts.isPropertyAccessExpression(collection) ||
             collection.name.text !== "entities"
         ) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            collection.expression,
-        );
+        const owner = this.context.compileValue(collection.expression);
         if (owner.kind !== "asset") {
             return undefined;
         }
@@ -1053,13 +1172,8 @@ export class HandleCollections {
                 "Indexing entities is lowered for a glTF container, whose first entity is its synthetic root transform; another container's roots are not.",
             );
         }
-        const index = this.context.compileValue(
-            expression.argumentExpression,
-        );
-        if (
-            index.kind !== "number" ||
-            index.staticNumber !== 0
-        ) {
+        const index = this.context.compileValue(expression.argumentExpression);
+        if (index.kind !== "number" || index.staticNumber !== 0) {
             this.context.fail(
                 expression.argumentExpression,
                 "A glTF container's entities are indexed only at static index 0, which is its synthetic root transform.",
@@ -1068,10 +1182,7 @@ export class HandleCollections {
         return {
             ...owner,
             kind: "asset-root",
-            engineCpp: this.context.requireEngine(
-                owner,
-                collection,
-            ),
+            engineCpp: this.context.requireEngine(owner, collection),
         };
     }
 
@@ -1085,15 +1196,11 @@ export class HandleCollections {
     public collectionElementAccess(
         expression: ts.ElementAccessExpression,
     ): Value | undefined {
-        const target = this.iterationTarget(
-            expression.expression,
-        );
+        const target = this.iterationTarget(expression.expression);
         if (!target) {
             return undefined;
         }
-        const index = this.context.compileValue(
-            expression.argumentExpression,
-        );
+        const index = this.context.compileValue(expression.argumentExpression);
         if (index.kind !== "number") {
             this.context.fail(
                 expression.argumentExpression,
@@ -1109,15 +1216,24 @@ export class HandleCollections {
         const element = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_at`,
         );
-        this.context.emit(
-            { kind: "declaration", type: "const std::size_t", name: slot, initializer: `static_cast<std::size_t>(${index.cpp})` },
-        );
-        this.context.emit(
-            { kind: "declaration", type: "const bool", name: found, initializer: `${slot} < ${target.containerCpp}.size()` },
-        );
-        this.context.emit(
-            { kind: "declaration", type: `const ${target.elementCppType}`, name: element, initializer: `${found} ? ${target.containerCpp}[${slot}] : ${target.elementCppType}{}` },
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: "const std::size_t",
+            name: slot,
+            initializer: `static_cast<std::size_t>(${index.cpp})`,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name: found,
+            initializer: `${slot} < ${target.containerCpp}.size()`,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: `const ${target.elementCppType}`,
+            name: element,
+            initializer: `${found} ? ${target.containerCpp}[${slot}] : ${target.elementCppType}{}`,
+        });
         return valueForKind(target.elementKind, {
             cpp: element,
             engineCpp: target.engineCpp,
@@ -1141,21 +1257,15 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const owner = this.context.compileValue(
-            unwrapped.expression,
-        );
+        const owner = this.context.compileValue(unwrapped.expression);
         if (owner.kind !== "asset-root") {
             return undefined;
         }
-        const engineCpp = this.context.requireEngine(
-            owner,
-            unwrapped,
-        );
+        const engineCpp = this.context.requireEngine(owner, unwrapped);
         return {
             property: "children",
             temporaryLabel: "asset_descendant_mesh",
-            containerCpp:
-                `${engineCpp}.assets[${owner.cpp}.value].meshes`,
+            containerCpp: `${engineCpp}.assets[${owner.cpp}.value].meshes`,
             elementKind: "mesh",
             elementCppType: handleCppType("mesh"),
             engineCpp,
@@ -1168,9 +1278,10 @@ export class HandleCollections {
      * scene selected — written inline or bound to a local, which the
      * compile-time tuple value carries.
      */
-    public compileAnimationGroupList(
-        expression: ts.Expression,
-    ): { cpp: string; engineCpp: string } {
+    public compileAnimationGroupList(expression: ts.Expression): {
+        cpp: string;
+        engineCpp: string;
+    } {
         const collection = this.iterationTarget(expression);
         if (collection) {
             if (collection.elementKind !== "animation-group") {
@@ -1199,13 +1310,8 @@ export class HandleCollections {
             );
         }
         for (const [index, value] of groups.entries()) {
-            const element =
-                literal?.elements[index] ?? expression;
-            this.context.expectKind(
-                value,
-                "animation-group",
-                element,
-            );
+            const element = literal?.elements[index] ?? expression;
+            this.context.expectKind(value, "animation-group", element);
             requireGltfGroupSource(
                 this.context,
                 value,
@@ -1214,10 +1320,7 @@ export class HandleCollections {
             );
         }
         const engineCpp = groups[0]
-            ? this.context.requireEngine(
-                  groups[0],
-                  expression,
-              )
+            ? this.context.requireEngine(groups[0], expression)
             : this.context.fail(
                   expression,
                   "addAnimationGroups requires at least one group.",
@@ -1245,16 +1348,23 @@ export class HandleCollections {
             : ts.isCallExpression(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped) ||
-                (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+                (ts.isBinaryExpression(unwrapped) &&
+                    unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.QuestionQuestionToken)
               ? this.context.compileValue(unwrapped)
               : undefined;
-        if ((value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality)?.untrackedAliases) {
+        if (
+            (
+                value?.collectionCardinality ??
+                value?.staticElementsOwner?.collectionCardinality
+            )?.untrackedAliases
+        ) {
             return undefined;
         }
         return value?.kind === "tuple"
             ? value.tupleElements
-            : value?.staticElementsOwner?.staticElements ??
-                  value?.staticElements;
+            : (value?.staticElementsOwner?.staticElements ??
+                  value?.staticElements);
     }
 
     /**
@@ -1270,9 +1380,7 @@ export class HandleCollections {
      * spelling — and the fat resource kinds (textures, physics bodies)
      * never form these lists at all.
      */
-    public staticHandleTableCppType(
-        kind: ValueKind,
-    ): string | undefined {
+    public staticHandleTableCppType(kind: ValueKind): string | undefined {
         if (
             kind !== "mesh" &&
             kind !== "material" &&
@@ -1307,9 +1415,7 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const scene = this.context.compileValue(
-            callee.expression.expression,
-        );
+        const scene = this.context.compileValue(callee.expression.expression);
         if (scene.kind !== "scene") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const light = this.context.compileValue(argumentAt(call, 0));
@@ -1350,9 +1456,7 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const set = this.context.compileValue(
-            callee.expression.expression,
-        );
+        const set = this.context.compileValue(callee.expression.expression);
         if (set.kind !== "node-particle-set") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const system = this.context.compileValue(argumentAt(call, 0));
@@ -1371,16 +1475,28 @@ export class HandleCollections {
                 "A pushed particle system comes from a built set.",
             );
         }
-        if (this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]?.native ||
-            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]?.native) {
-            this.context.fail(call,
-                "System-list composition with a provider-backed particle set is not lowered; pushed systems must retain their original native identity.");
+        if (
+            this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]
+                ?.native ||
+            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]
+                ?.native
+        ) {
+            this.context.fail(
+                call,
+                "System-list composition with a provider-backed particle set is not lowered; pushed systems must retain their original native identity.",
+            );
         }
-        if (this.context.reachedNodeParticles.buffers.some((buffer) =>
-            buffer.set === set.nodeParticleSetIndex ||
-            buffer.set === system.nodeParticleSetIndex)) {
-            this.context.fail(call,
-                "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.");
+        if (
+            this.context.reachedNodeParticles.buffers.some(
+                (buffer) =>
+                    buffer.set === set.nodeParticleSetIndex ||
+                    buffer.set === system.nodeParticleSetIndex,
+            )
+        ) {
+            this.context.fail(
+                call,
+                "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.",
+            );
         }
         this.context.reachedNodeParticles.steps.push({
             op: "push-system",
@@ -1464,9 +1580,7 @@ export class HandleCollections {
         if (callee.name.text !== "find") {
             return undefined;
         }
-        const mapped = this.mappedMaterialFindSource(
-            callee.expression,
-        );
+        const mapped = this.mappedMaterialFindSource(callee.expression);
         // A named collection, or the asset's flattened mesh list searched
         // in place -- `getContainerMeshes(asset).find(...)` -- which is
         // the same iteration target a `for..of` over that call resolves.
@@ -1479,9 +1593,7 @@ export class HandleCollections {
             return undefined;
         }
         this.context.expectArgumentCount(call, 1, 1);
-        const predicate = this.context.unwrap(
-            argumentAt(call, 0),
-        );
+        const predicate = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isArrowFunction(predicate) ||
             predicate.parameters.length !== 1 ||
@@ -1522,9 +1634,7 @@ export class HandleCollections {
      * binding the selector result directly into the `find` predicate is the
      * identical object-identity path with no intermediate storage.
      */
-    private mappedMaterialFindSource(
-        expression: ts.Expression,
-    ):
+    private mappedMaterialFindSource(expression: ts.Expression):
         | {
               target: HandleCollectionTarget;
               selector: ts.ArrowFunction;
@@ -1538,14 +1648,10 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const target = this.iterationTarget(
-            mapCall.expression.expression,
-        );
+        const target = this.iterationTarget(mapCall.expression.expression);
         if (!target) return undefined;
         this.context.expectArgumentCount(mapCall, 1, 1);
-        const selector = this.context.unwrap(
-            argumentAt(mapCall, 0),
-        );
+        const selector = this.context.unwrap(argumentAt(mapCall, 0));
         if (
             !ts.isArrowFunction(selector) ||
             selector.parameters.length !== 1 ||
@@ -1568,21 +1674,29 @@ export class HandleCollections {
     ): Value {
         const selectorParameter = selector.parameters[0]?.name;
         if (!selectorParameter || !ts.isIdentifier(selectorParameter)) {
-            this.context.fail(selector, "Handle searches require one identifier parameter.");
+            this.context.fail(
+                selector,
+                "Handle searches require one identifier parameter.",
+            );
         }
         const predicateParameter = predicate.parameters[0]?.name;
         if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
-            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+            this.context.fail(
+                predicate,
+                "Handle searches require one identifier parameter.",
+            );
         }
 
-        const result = this.context.allocateTemporaryCppName(
-            "material_match",
-        );
-        const found = this.context.allocateTemporaryCppName(
-            "material_found",
-        );
+        const result = this.context.allocateTemporaryCppName("material_match");
+        const found = this.context.allocateTemporaryCppName("material_found");
         this.context.emit(`${handleCppType("material")} ${result}{};`);
-        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: found,
+            initializer: "false",
+            attributes: "[[maybe_unused]] ",
+        });
         let assetPbrMaterial = false;
         emitHandleCollectionLoop(
             this.context,
@@ -1592,20 +1706,13 @@ export class HandleCollections {
                 const selected = context.compileValue(
                     selector.body as ts.Expression,
                 );
-                context.expectKind(
-                    selected,
-                    "material",
-                    selector.body,
-                );
+                context.expectKind(selected, "material", selector.body);
                 assetPbrMaterial = selected.assetPbrMaterial === true;
                 if (selected.optionalFoundCpp) {
                     context.emit(`if (${selected.optionalFoundCpp}) {`);
                     context.increaseIndent();
                 }
-                context.bindLocalValue(
-                    predicateParameter,
-                    selected,
-                );
+                context.bindLocalValue(predicateParameter, selected);
                 const test = context.compileCondition(
                     predicate.body as ts.Expression,
                 );
@@ -1627,9 +1734,7 @@ export class HandleCollections {
             cpp: result,
             engineCpp: target.engineCpp,
             optionalFoundCpp: found,
-            ...(assetPbrMaterial
-                ? { assetPbrMaterial: true as const }
-                : {}),
+            ...(assetPbrMaterial ? { assetPbrMaterial: true as const } : {}),
         };
     }
 
@@ -1647,7 +1752,10 @@ export class HandleCollections {
         if (call.arguments.length !== 2) {
             return undefined;
         }
-        const declaration = tryResolveFunctionDeclaration(this.context.checker, callee);
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            callee,
+        );
         if (
             !declaration ||
             !ts.isFunctionDeclaration(declaration) ||
@@ -1676,7 +1784,13 @@ export class HandleCollections {
             "asset_descendant_mesh",
         );
         this.context.emit(`${handleCppType("mesh")} ${result}{};`);
-        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: found,
+            initializer: "false",
+            attributes: "[[maybe_unused]] ",
+        });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
@@ -1722,7 +1836,10 @@ export class HandleCollections {
         callee: ts.Identifier,
     ): Value | undefined {
         if (call.arguments.length !== 1) return undefined;
-        const declaration = tryResolveFunctionDeclaration(this.context.checker, callee);
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            callee,
+        );
         if (
             !declaration ||
             !ts.isFunctionDeclaration(declaration) ||
@@ -1746,19 +1863,22 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             "asset_skinned_found",
         );
-        const item = this.context.allocateTemporaryCppName(
-            "asset_skinned_mesh",
-        );
+        const item =
+            this.context.allocateTemporaryCppName("asset_skinned_mesh");
         this.context.emit(`${handleCppType("mesh")} ${result}{};`);
-        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: found,
+            initializer: "false",
+            attributes: "[[maybe_unused]] ",
+        });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
         );
         this.context.increaseIndent();
-        this.context.emit(
-            `if (${engine}.meshes[${item}.value].skinned) {`,
-        );
+        this.context.emit(`if (${engine}.meshes[${item}.value].skinned) {`);
         this.context.increaseIndent();
         this.context.emit(`${result} = ${item};`);
         this.context.emit(`${found} = true;`);
@@ -1855,7 +1975,11 @@ export class HandleCollections {
             const authoredMeshName = asString(mesh.name);
             const nodeMatches = nodeName === name;
             let thisNodeMatches = 0;
-            for (let primitive = 0; primitive < primitives.length; primitive++) {
+            for (
+                let primitive = 0;
+                primitive < primitives.length;
+                primitive++
+            ) {
                 const meshName =
                     authoredMeshName || `gltf_mesh_${primitiveOrdinal}`;
                 if (nodeMatches || meshName === name) {
@@ -1896,7 +2020,10 @@ export class HandleCollections {
     ): Value {
         const predicateParameter = predicate.parameters[0]?.name;
         if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
-            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+            this.context.fail(
+                predicate,
+                "Handle searches require one identifier parameter.",
+            );
         }
 
         const result = this.context.allocateTemporaryCppName(
@@ -1905,23 +2032,25 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_found`,
         );
-        this.context.emit(
-            `${target.elementCppType} ${result}{};`,
-        );
+        this.context.emit(`${target.elementCppType} ${result}{};`);
         // A caller may use the selected handle without testing the optional
         // result (for example, a scene whose asset contract guarantees the
         // named camera). The search still needs the flag for callers that do
         // test it and for optional composition, so keep it and make that
         // deliberate unused case warning-clean.
-        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
+        this.context.emit({
+            kind: "declaration",
+            type: "bool",
+            name: found,
+            initializer: "false",
+            attributes: "[[maybe_unused]] ",
+        });
         emitHandleCollectionLoop(
             this.context,
             target,
             predicateParameter,
             (context) => {
-                const item = context.lookup(
-                    predicateParameter,
-                ).cpp;
+                const item = context.lookup(predicateParameter).cpp;
                 const test = context.compileCondition(
                     predicate.body as ts.Expression,
                 );
@@ -1954,7 +2083,10 @@ export class HandleCollections {
     ): Value | undefined {
         const predicateParameter = predicate.parameters[0]?.name;
         if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
-            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+            this.context.fail(
+                predicate,
+                "Handle searches require one identifier parameter.",
+            );
         }
 
         // The members this resolution reads are the materialized
@@ -1965,16 +2097,11 @@ export class HandleCollections {
         if (target.property !== "animationGroups") {
             return undefined;
         }
-        const body = this.context.unwrap(
-            predicate.body as ts.Expression,
-        );
-        const parameter = (
-            predicateParameter
-        ).text;
+        const body = this.context.unwrap(predicate.body as ts.Expression);
+        const parameter = predicateParameter.text;
         if (
             !ts.isBinaryExpression(body) ||
-            body.operatorToken.kind !==
-                ts.SyntaxKind.EqualsEqualsEqualsToken
+            body.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken
         ) {
             return undefined;
         }
@@ -1991,9 +2118,7 @@ export class HandleCollections {
             return undefined;
         }
         const members = this.collectionMembers(asset, call);
-        const member = members.find(
-            (candidate) => candidate.name === name,
-        );
+        const member = members.find((candidate) => candidate.name === name);
         if (!member) {
             this.context.fail(
                 call,
@@ -2003,10 +2128,7 @@ export class HandleCollections {
                         members.length === 0
                             ? "no animation groups"
                             : members
-                                  .map(
-                                      (candidate) =>
-                                          `'${candidate.name}'`,
-                                  )
+                                  .map((candidate) => `'${candidate.name}'`)
                                   .join(", ")
                     }.`,
             );
@@ -2017,15 +2139,12 @@ export class HandleCollections {
             // Resolved at generation, so the scene's own not-found guard
             // reads a constant truth and its throw arm erases.
             optionalFoundCpp: "true",
-            handleIdentity:
-                `${asset.source}#${target.property}[${member.index}]`,
+            handleIdentity: `${asset.source}#${target.property}[${member.index}]`,
         });
     }
 
     /** A static string, or undefined — never a failure. */
-    private staticStringProbe(
-        expression: ts.Expression,
-    ): string | undefined {
+    private staticStringProbe(expression: ts.Expression): string | undefined {
         const resolved = this.context.unwrap(
             this.context.resolveStaticExpression(expression),
         );
@@ -2036,11 +2155,8 @@ export class HandleCollections {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
-            const value =
-                this.context.lookupOptional(resolved);
-            return value?.kind === "string"
-                ? value.staticString
-                : undefined;
+            const value = this.context.lookupOptional(resolved);
+            return value?.kind === "string" ? value.staticString : undefined;
         }
         return undefined;
     }
@@ -2051,9 +2167,7 @@ export class HandleCollections {
      * statically in the current scope — which is exactly the shape
      * `requireGroup` writes, its template over the bound name parameter.
      */
-    private sceneMissMessage(
-        call: ts.CallExpression,
-    ): string | undefined {
+    private sceneMissMessage(call: ts.CallExpression): string | undefined {
         let owner: ts.Node | undefined = call.parent;
         while (owner && !ts.isFunctionLike(owner)) {
             owner = owner.parent;
@@ -2063,9 +2177,7 @@ export class HandleCollections {
         const visit = (node: ts.Node): void => {
             if (message !== undefined) return;
             if (ts.isThrowStatement(node)) {
-                const thrown = this.context.unwrap(
-                    node.expression,
-                );
+                const thrown = this.context.unwrap(node.expression);
                 const argument =
                     ts.isNewExpression(thrown) &&
                     ts.isIdentifier(thrown.expression) &&
@@ -2075,10 +2187,7 @@ export class HandleCollections {
                         : undefined;
                 if (argument) {
                     try {
-                        message =
-                            this.context.compileStringLiteral(
-                                argument,
-                            );
+                        message = this.context.compileStringLiteral(argument);
                     } catch (error) {
                         // A refusal means the message is not static in
                         // this scope, so the search keeps looking; any
@@ -2150,15 +2259,10 @@ export class HandleCollections {
      * The materialized document's JSON, from GLB, JSON glTF or `.babylon`
      * bytes -- every container kind whose document generation reads.
      */
-    private readAssetDocument(
-        asset: CompileAsset,
-        node: ts.Node,
-    ): JsonObject {
+    private readAssetDocument(asset: CompileAsset, node: ts.Node): JsonObject {
         const memoized = this.assetDocuments.get(asset.source);
         if (memoized !== undefined) return memoized;
-        const inline = this.context.assetPayloads.get(
-            asset.source,
-        );
+        const inline = this.context.assetPayloads.get(asset.source);
         let bytes: Uint8Array;
         try {
             bytes = readAssetBytesSync(
@@ -2169,9 +2273,7 @@ export class HandleCollections {
             this.context.fail(
                 node,
                 `Resolving this read needs the materialized asset '${asset.output}': ${
-                    error instanceof Error
-                        ? error.message
-                        : String(error)
+                    error instanceof Error ? error.message : String(error)
                 }`,
             );
         }
@@ -2180,8 +2282,7 @@ export class HandleCollections {
             bytes.byteOffset,
             bytes.byteLength,
         );
-        const text =
-            glbJsonText(buffer) ?? buffer.toString("utf8");
+        const text = glbJsonText(buffer) ?? buffer.toString("utf8");
         try {
             const parsed: unknown = JSON.parse(text);
             if (
@@ -2198,9 +2299,7 @@ export class HandleCollections {
             this.context.fail(
                 node,
                 `Asset '${asset.output}' did not parse as a JSON document: ${
-                    error instanceof Error
-                        ? error.message
-                        : String(error)
+                    error instanceof Error ? error.message : String(error)
                 }`,
             );
         }
@@ -2219,32 +2318,20 @@ export class HandleCollections {
     ): string | undefined {
         const operator = expression.operatorToken.kind;
         if (
-            operator !==
-                ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            operator !==
-                ts.SyntaxKind.ExclamationEqualsEqualsToken
+            operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+            operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
         ) {
             return undefined;
         }
-        const left = this.lookupHandleOperand(
-            expression.left,
-        );
-        const right = this.lookupHandleOperand(
-            expression.right,
-        );
+        const left = this.lookupHandleOperand(expression.left);
+        const right = this.lookupHandleOperand(expression.right);
         if (!left || !right || left.kind !== right.kind) {
             return undefined;
         }
-        this.context.expectSameEngine(
-            left,
-            right,
-            expression,
-        );
-        const equals =
-            operator === ts.SyntaxKind.EqualsEqualsEqualsToken;
+        this.context.expectSameEngine(left, right, expression);
+        const equals = operator === ts.SyntaxKind.EqualsEqualsEqualsToken;
         if (left.handleIdentity && right.handleIdentity) {
-            const same =
-                left.handleIdentity === right.handleIdentity;
+            const same = left.handleIdentity === right.handleIdentity;
             return same === equals ? "true" : "false";
         }
         return `(${left.cpp}.value ${equals ? "==" : "!="} ${right.cpp}.value)`;
@@ -2262,8 +2349,7 @@ export class HandleCollections {
     public staticHandleList(
         expression: ts.Expression,
     ): readonly { value: Value; node: ts.Node }[] | undefined {
-        const literal =
-            this.context.probeStaticArrayLiteral(expression);
+        const literal = this.context.probeStaticArrayLiteral(expression);
         if (literal) {
             const entries: { value: Value; node: ts.Node }[] = [];
             for (const element of literal.elements) {
@@ -2287,13 +2373,10 @@ export class HandleCollections {
     }
 
     /** An identifier bound to an engine handle, without emission. */
-    private lookupHandleOperand(
-        expression: ts.Expression,
-    ): Value | undefined {
+    private lookupHandleOperand(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const value =
-                this.context.lookupOptional(unwrapped);
+            const value = this.context.lookupOptional(unwrapped);
             if (value) {
                 return handleKinds.includes(value.kind) &&
                     value.animationGroupSource !== "property"
@@ -2305,10 +2388,7 @@ export class HandleCollections {
             this.context.checker.getTypeAtLocation(unwrapped),
             unwrapped,
         );
-        if (
-            type?.kind !== "handle" ||
-            !handleKinds.includes(type.handle)
-        ) {
+        if (type?.kind !== "handle" || !handleKinds.includes(type.handle)) {
             return undefined;
         }
         const value = this.context.compileValue(unwrapped);
@@ -2328,14 +2408,11 @@ function walkBodyStatements(
         : [statement.statement];
 }
 
-function logicalAndOperands(
-    expression: ts.Expression,
-): ts.Expression[] {
+function logicalAndOperands(expression: ts.Expression): ts.Expression[] {
     const current = unwrapWalkExpression(expression);
     if (
         ts.isBinaryExpression(current) &&
-        current.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken
+        current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
     ) {
         return [
             ...logicalAndOperands(current.left),
@@ -2412,22 +2489,37 @@ function isAssetDescendantNameSearch(
     declaration: ts.FunctionDeclaration,
 ): boolean {
     const symbols = new CompilerSymbols(checker);
-    const isIdentifierRead = (expression: ts.Expression | undefined, name: ts.Identifier): boolean => {
+    const isIdentifierRead = (
+        expression: ts.Expression | undefined,
+        name: ts.Identifier,
+    ): boolean => {
         const current = expression && unwrapWalkExpression(expression);
         const binding = symbols.valueSymbol(name);
-        return !!binding && !!current && ts.isIdentifier(current) && symbols.valueSymbol(current) === binding;
+        return (
+            !!binding &&
+            !!current &&
+            ts.isIdentifier(current) &&
+            symbols.valueSymbol(current) === binding
+        );
     };
-    const isPropertyReadOf = (expression: ts.Expression, name: ts.Identifier, property: string): boolean => {
+    const isPropertyReadOf = (
+        expression: ts.Expression,
+        name: ts.Identifier,
+        property: string,
+    ): boolean => {
         const current = unwrapWalkExpression(expression);
-        return ts.isPropertyAccessExpression(current) && current.name.text === property && isIdentifierRead(current.expression, name);
+        return (
+            ts.isPropertyAccessExpression(current) &&
+            current.name.text === property &&
+            isIdentifierRead(current.expression, name)
+        );
     };
     if (
         !declaration.name ||
         !declaration.body ||
         declaration.asteriskToken ||
         declaration.modifiers?.some(
-            (modifier) =>
-                modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
         ) ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
@@ -2457,23 +2549,16 @@ function isAssetDescendantNameSearch(
     }
     const [selfArm, walk, miss] = declaration.body.statements;
 
-    if (
-        !ts.isIfStatement(selfArm!) ||
-        !!selfArm.elseStatement
-    ) {
+    if (!ts.isIfStatement(selfArm!) || !!selfArm.elseStatement) {
         return false;
     }
     const selfTest = unwrapWalkExpression(selfArm.expression);
     if (
         !ts.isBinaryExpression(selfTest) ||
-        selfTest.operatorToken.kind !==
-            ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        selfTest.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
         !isPropertyReadOf(selfTest.left, root, "name") ||
         !isIdentifierRead(selfTest.right, name) ||
-        !isIdentifierRead(
-            singleReturnExpression(selfArm.thenStatement),
-            root,
-        )
+        !isIdentifierRead(singleReturnExpression(selfArm.thenStatement), root)
     ) {
         return false;
     }
@@ -2510,9 +2595,7 @@ function isAssetDescendantNameSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0]!.declarationList.flags &
-            ts.NodeFlags.Const) ===
-            0
+        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0
     ) {
         return false;
     }
@@ -2555,8 +2638,15 @@ function isAssetDescendantNameSearch(
     const missValue = unwrapWalkExpression(miss.expression);
     return (
         missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) && missValue.text === "undefined" &&
-            checker.getSymbolAtLocation(missValue) === checker.resolveName("undefined", undefined, ts.SymbolFlags.Value, false))
+        (ts.isIdentifier(missValue) &&
+            missValue.text === "undefined" &&
+            checker.getSymbolAtLocation(missValue) ===
+                checker.resolveName(
+                    "undefined",
+                    undefined,
+                    ts.SymbolFlags.Value,
+                    false,
+                ))
     );
 }
 
@@ -2589,8 +2679,7 @@ function isAssetSkinnedDescendantSearch(
         !declaration.body ||
         declaration.asteriskToken ||
         declaration.modifiers?.some(
-            (modifier) =>
-                modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
         ) ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
@@ -2604,7 +2693,8 @@ function isAssetSkinnedDescendantSearch(
     }
     const root = declaration.parameters[0]!.name;
     if (
-        new EmissionSet([declaration.name.text, root.text, "undefined"]).size !== 3
+        new EmissionSet([declaration.name.text, root.text, "undefined"])
+            .size !== 3
     ) {
         return false;
     }
@@ -2635,10 +2725,7 @@ function isAssetSkinnedDescendantSearch(
             self,
             "skeleton",
         ) ||
-        !isIdentifierRead(
-            singleReturnExpression(selfArm.thenStatement),
-            self,
-        )
+        !isIdentifierRead(singleReturnExpression(selfArm.thenStatement), self)
     ) {
         return false;
     }
@@ -2657,13 +2744,10 @@ function isAssetSkinnedDescendantSearch(
     const walked = unwrapWalkExpression(walk.expression);
     const children =
         ts.isBinaryExpression(walked) &&
-        walked.operatorToken.kind ===
-            ts.SyntaxKind.QuestionQuestionToken &&
-        ts.isArrayLiteralExpression(
-            unwrapWalkExpression(walked.right),
-        ) &&
+        walked.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+        ts.isArrayLiteralExpression(unwrapWalkExpression(walked.right)) &&
         (unwrapWalkExpression(walked.right) as ts.ArrayLiteralExpression)
-                .elements.length === 0
+            .elements.length === 0
             ? unwrapWalkExpression(walked.left)
             : walked;
     if (!isPropertyReadOf(children, root, "children")) return false;
@@ -2691,8 +2775,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0]!.declarationList.flags &
-            ts.NodeFlags.Const) === 0 ||
+        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
         ) ||
@@ -2747,11 +2830,11 @@ export function isRecursiveImportedMeshWalk(
     if (
         statements.length !== 1 ||
         !ts.isIfStatement(statements[0]!) ||
-        !statements[0]!.elseStatement
+        !statements[0].elseStatement
     ) {
         return undefined;
     }
-    const branch = statements[0]!;
+    const branch = statements[0];
     const operands = logicalAndOperands(branch.expression);
     if (operands.length !== 3) {
         return undefined;
@@ -2764,13 +2847,7 @@ export function isRecursiveImportedMeshWalk(
             children = true;
             continue;
         }
-        if (
-            isPropertyPresenceProbe(
-                operand,
-                binding,
-                "rotationQuaternion",
-            )
-        ) {
+        if (isPropertyPresenceProbe(operand, binding, "rotationQuaternion")) {
             rotationQuaternion = true;
             continue;
         }
@@ -2778,11 +2855,7 @@ export function isRecursiveImportedMeshWalk(
         if (
             ts.isPrefixUnaryExpression(current) &&
             current.operator === ts.SyntaxKind.ExclamationToken &&
-            isPropertyPresenceProbe(
-                current.operand,
-                binding,
-                "_gpu",
-            )
+            isPropertyPresenceProbe(current.operand, binding, "_gpu")
         ) {
             gpuNegated = true;
             continue;
@@ -2805,15 +2878,14 @@ export function isRecursiveImportedMeshWalk(
         owner.body.statements.length !== 1 ||
         owner.body.statements[0] !== statement ||
         owner.parameters.length !== 2 ||
-        owner.parameters.some(
-            (parameter) => !ts.isIdentifier(parameter.name),
-        )
+        owner.parameters.some((parameter) => !ts.isIdentifier(parameter.name))
     ) {
         return undefined;
     }
     const nodeParameter = owner.parameters[0]!.name;
     const materialParameter = owner.parameters[1]!.name;
-    if (!ts.isIdentifier(nodeParameter) || !ts.isIdentifier(materialParameter)) return undefined;
+    if (!ts.isIdentifier(nodeParameter) || !ts.isIdentifier(materialParameter))
+        return undefined;
     if (
         [binding, nodeParameter, materialParameter].some(
             (identifier) => identifier.text === owner.name!.text,
@@ -2821,18 +2893,10 @@ export function isRecursiveImportedMeshWalk(
     ) {
         return undefined;
     }
-    if (
-        !isPropertyReadOf(
-            statement.expression,
-            nodeParameter,
-            "children",
-        )
-    ) {
+    if (!isPropertyReadOf(statement.expression, nodeParameter, "children")) {
         return undefined;
     }
-    const recursive = singleExpressionStatement(
-        branch.thenStatement,
-    );
+    const recursive = singleExpressionStatement(branch.thenStatement);
     if (
         !recursive ||
         !ts.isCallExpression(recursive) ||
@@ -2846,9 +2910,7 @@ export function isRecursiveImportedMeshWalk(
     if (!ts.isIdentifier(first) || first.text !== binding.text) {
         return undefined;
     }
-    const recursiveMaterial = unwrapWalkExpression(
-        argumentAt(recursive, 1),
-    );
+    const recursiveMaterial = unwrapWalkExpression(argumentAt(recursive, 1));
     if (
         !ts.isIdentifier(recursiveMaterial) ||
         recursiveMaterial.text !== materialParameter.text
@@ -2879,11 +2941,7 @@ function isIdentifierRead(
     name: ts.Identifier,
 ): boolean {
     const current = expression && unwrapWalkExpression(expression);
-    return (
-        !!current &&
-        ts.isIdentifier(current) &&
-        current.text === name.text
-    );
+    return !!current && ts.isIdentifier(current) && current.text === name.text;
 }
 
 /** Whether an expression is the read `<name>.<property>`. */
@@ -2903,19 +2961,15 @@ function isPropertyReadOf(
 /** A `const <name> = <initializer>;` statement, as its two halves. */
 function singleConstDeclaration(
     statement: ts.Statement,
-):
-    | { name: ts.Identifier; initializer: ts.Expression }
-    | undefined {
+): { name: ts.Identifier; initializer: ts.Expression } | undefined {
     if (
         !ts.isVariableStatement(statement) ||
         statement.declarationList.declarations.length !== 1
     ) {
         return undefined;
     }
-    const declaration =
-        statement.declarationList.declarations[0]!;
-    return ts.isIdentifier(declaration.name) &&
-        declaration.initializer
+    const declaration = statement.declarationList.declarations[0]!;
+    return ts.isIdentifier(declaration.name) && declaration.initializer
         ? {
               name: declaration.name,
               initializer: declaration.initializer,
@@ -2932,8 +2986,7 @@ function pushedArgument(
     collection: ts.Identifier,
     spread: boolean,
 ): ts.Expression | undefined {
-    const current =
-        expression && unwrapWalkExpression(expression);
+    const current = expression && unwrapWalkExpression(expression);
     if (
         !current ||
         !ts.isCallExpression(current) ||
@@ -2947,9 +3000,7 @@ function pushedArgument(
         return undefined;
     }
     return unwrapWalkExpression(
-        ts.isSpreadElement(argument)
-            ? argument.expression
-            : argument,
+        ts.isSpreadElement(argument) ? argument.expression : argument,
     );
 }
 
@@ -2990,11 +3041,7 @@ function provesRenderableCollectArm(
             isPropertyPresenceProbe(probe, node, "material"),
         ) &&
         isIdentifierRead(
-            pushedArgument(
-                singleExpressionStatement(arm.body),
-                result,
-                false,
-            ),
+            pushedArgument(singleExpressionStatement(arm.body), result, false),
             node,
         )
     );
@@ -3060,17 +3107,13 @@ function isImportedMeshFlattenWalk(
         return false;
     }
     const container = declaration.parameters[0]!.name;
-    const [collected, worklist, loop, returned] =
-        declaration.body.statements;
+    const [collected, worklist, loop, returned] = declaration.body.statements;
 
     // `const meshes: Mesh[] = []` — the result, empty before the walk.
     const result = singleConstDeclaration(collected!);
     if (!result) return false;
     const empty = unwrapWalkExpression(result.initializer);
-    if (
-        !ts.isArrayLiteralExpression(empty) ||
-        empty.elements.length !== 0
-    ) {
+    if (!ts.isArrayLiteralExpression(empty) || empty.elements.length !== 0) {
         return false;
     }
 
@@ -3083,11 +3126,7 @@ function isImportedMeshFlattenWalk(
         !ts.isArrayLiteralExpression(seed) ||
         seed.elements.length !== 1 ||
         !ts.isSpreadElement(seed.elements[0]!) ||
-        !isPropertyReadOf(
-            seed.elements[0]!.expression,
-            container,
-            "entities",
-        )
+        !isPropertyReadOf(seed.elements[0].expression, container, "entities")
     ) {
         return false;
     }
@@ -3216,17 +3255,13 @@ function isClosureMeshFlattenCollector(
         return false;
     }
     const container = declaration.parameters[0]!.name;
-    const [collected, visitor, loop, returned] =
-        declaration.body.statements;
+    const [collected, visitor, loop, returned] = declaration.body.statements;
 
     // `const meshes: Mesh[] = []` -- the result, empty before the walk.
     const result = singleConstDeclaration(collected!);
     if (!result) return false;
     const empty = unwrapWalkExpression(result.initializer);
-    if (
-        !ts.isArrayLiteralExpression(empty) ||
-        empty.elements.length !== 0
-    ) {
+    if (!ts.isArrayLiteralExpression(empty) || empty.elements.length !== 0) {
         return false;
     }
 
@@ -3298,10 +3333,7 @@ function isClosureMeshFlattenCollector(
     ) {
         return false;
     }
-    if (
-        !ts.isBlock(objectArm.body) ||
-        objectArm.body.statements.length !== 3
-    ) {
+    if (!ts.isBlock(objectArm.body) || objectArm.body.statements.length !== 3) {
         return false;
     }
     const [collect, childrenRead, descend] = objectArm.body.statements;
@@ -3372,8 +3404,7 @@ function isTypeofObjectProbe(
     const current = unwrapWalkExpression(expression);
     if (
         !ts.isBinaryExpression(current) ||
-        current.operatorToken.kind !==
-            ts.SyntaxKind.EqualsEqualsEqualsToken
+        current.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken
     ) {
         return false;
     }
@@ -3398,8 +3429,7 @@ function isNotNullProbe(
         current.operatorToken.kind ===
             ts.SyntaxKind.ExclamationEqualsEqualsToken &&
         isIdentifierRead(current.left, parameter) &&
-        unwrapWalkExpression(current.right).kind ===
-            ts.SyntaxKind.NullKeyword
+        unwrapWalkExpression(current.right).kind === ts.SyntaxKind.NullKeyword
     );
 }
 
@@ -3416,10 +3446,7 @@ function isChildrenArrayProbe(
     isGlobal: (identifier: ts.Identifier) => boolean,
 ): boolean {
     const current = unwrapWalkExpression(expression);
-    if (
-        !ts.isCallExpression(current) ||
-        current.arguments.length !== 1
-    ) {
+    if (!ts.isCallExpression(current) || current.arguments.length !== 1) {
         return false;
     }
     const callee = unwrapWalkExpression(current.expression);
@@ -3432,19 +3459,13 @@ function isChildrenArrayProbe(
     ) {
         return false;
     }
-    return isPropertyReadOf(
-        argumentAt(current, 0),
-        parameter,
-        "children",
-    );
+    return isPropertyReadOf(argumentAt(current, 0), parameter, "children");
 }
 
 /** The single `return <conjunction>` a one-parameter type guard is. */
 function typeGuardConjunction(
     declaration: ts.FunctionDeclaration,
-):
-    | { parameter: ts.Identifier; operands: ts.Expression[] }
-    | undefined {
+): { parameter: ts.Identifier; operands: ts.Expression[] } | undefined {
     if (
         !declaration.body ||
         declaration.asteriskToken ||
@@ -3497,9 +3518,7 @@ function isRenderablePresenceGuard(
             gpu = true;
             continue;
         }
-        if (
-            isPropertyPresenceProbe(operand, parameter, "material")
-        ) {
+        if (isPropertyPresenceProbe(operand, parameter, "material")) {
             continue;
         }
         if (isTypeofObjectProbe(operand, parameter)) {
@@ -3536,9 +3555,7 @@ function isChildrenPresenceGuard(
     let typeofObject = false;
     let notNull = false;
     for (const operand of operands) {
-        if (
-            isPropertyPresenceProbe(operand, parameter, "children")
-        ) {
+        if (isPropertyPresenceProbe(operand, parameter, "children")) {
             children = true;
             continue;
         }
@@ -3563,9 +3580,7 @@ function isChildrenPresenceGuard(
 function guardedBy(
     test: ts.Expression,
     node: ts.Identifier,
-    resolve: (
-        identifier: ts.Identifier,
-    ) => ts.FunctionDeclaration | undefined,
+    resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
     proves: (declaration: ts.FunctionDeclaration) => boolean,
 ): boolean {
     const current = unwrapWalkExpression(test);
@@ -3611,9 +3626,7 @@ function guardedBy(
  */
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,
-    resolve: (
-        identifier: ts.Identifier,
-    ) => ts.FunctionDeclaration | undefined,
+    resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
     isGlobal: (identifier: ts.Identifier) => boolean,
 ): boolean {
     if (
@@ -3641,18 +3654,9 @@ function isRecursiveMeshFlattenVisitor(
     const collect = guardedArm(declaration.body.statements[0]!);
     if (
         !collect ||
-        !guardedBy(
-            collect.test,
-            node,
-            resolve,
-            isRenderablePresenceGuard,
-        ) ||
+        !guardedBy(collect.test, node, resolve, isRenderablePresenceGuard) ||
         !isIdentifierRead(
-            pushedArgument(
-                singleExpressionStatement(collect.body),
-                out,
-                false,
-            ),
+            pushedArgument(singleExpressionStatement(collect.body), out, false),
             node,
         )
     ) {
@@ -3664,12 +3668,8 @@ function isRecursiveMeshFlattenVisitor(
     const descend = guardedArm(declaration.body.statements[1]!);
     if (
         !descend ||
-        !guardedBy(
-            descend.test,
-            node,
-            resolve,
-            (candidate) =>
-                isChildrenPresenceGuard(candidate, isGlobal),
+        !guardedBy(descend.test, node, resolve, (candidate) =>
+            isChildrenPresenceGuard(candidate, isGlobal),
         )
     ) {
         return false;
@@ -3708,9 +3708,7 @@ function isRecursiveMeshFlattenVisitor(
  * written as an empty declaration plus its driver loop is two statements
  * of one construct, so the pair has to be read together.
  */
-function nextSibling(
-    statement: ts.Statement,
-): ts.Statement | undefined {
+function nextSibling(statement: ts.Statement): ts.Statement | undefined {
     const parent = statement.parent;
     const siblings =
         parent && (ts.isBlock(parent) || ts.isSourceFile(parent))

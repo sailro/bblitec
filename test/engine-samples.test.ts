@@ -12,7 +12,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("runtime engine samples preserve strict selection, one evaluation and scene defaults", t => {
+test("runtime engine samples preserve strict selection, one evaluation and scene defaults", (t) => {
     const result = compileSource(`
         import {createEngine,createSceneContext,stopEngine} from "@babylonjs/lite";
         async function main(){
@@ -28,8 +28,11 @@ test("runtime engine samples preserve strict selection, one evaluation and scene
         }
         void main();
     `);
-    assert.equal(result.manifest.engineMsaaSamples, undefined,
-        "runtime choice must not fold to a global sample count");
+    assert.equal(
+        result.manifest.engineMsaaSamples,
+        undefined,
+        "runtime choice must not fold to a global sample count",
+    );
     const native = optionalNativeFixtureTools(false);
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -38,8 +41,13 @@ test("runtime engine samples preserve strict selection, one evaluation and scene
     const directory = resolve("artifacts/engine-samples");
     mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "main.cpp"), result.cpp);
-    writeFileSync(resolve(directory, "pinned_surface.hpp"), pinnedSurfaceHeader(new LoweringContext()));
-    writeFileSync(resolve(directory, "factories.cpp"), `
+    writeFileSync(
+        resolve(directory, "pinned_surface.hpp"),
+        pinnedSurfaceHeader(new LoweringContext()),
+    );
+    writeFileSync(
+        resolve(directory, "factories.cpp"),
+        `
         #include <bblite/runtime.hpp>
         #include "pinned_surface.hpp"
         #include <stdexcept>
@@ -54,13 +62,23 @@ test("runtime engine samples preserve strict selection, one evaluation and scene
                 throw std::runtime_error("generated default changed");
         }
         }
-    `);
+    `,
+    );
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD",
-        "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`,
-        resolve(directory, "main.cpp"), resolve(directory, "factories.cpp"),
-        `/Fo:${directory}/`, `/Fe:${executable}`,
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/I",
+        "native/include",
+        `/I${nativeFixtureVcpkgRoot}/include`,
+        resolve(directory, "main.cpp"),
+        resolve(directory, "factories.cpp"),
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
     ]);
     execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

@@ -7,7 +7,10 @@
 
 namespace {
 using namespace bbl;
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void require(bool condition, const char* message) {
+    if (!condition)
+        throw std::runtime_error(message);
+}
 
 js::Promise<double> compute(js::Promise<double> input, std::vector<int>* order) {
     order->push_back(1);
@@ -16,7 +19,8 @@ js::Promise<double> compute(js::Promise<double> input, std::vector<int>* order) 
     co_return value * 2;
 }
 
-js::Promise<js::PromiseVoid> await_result_view(js::Promise<std::optional<double>> input, std::vector<int>* order) {
+js::Promise<js::PromiseVoid> await_result_view(js::Promise<std::optional<double>> input,
+                                               std::vector<int>* order) {
     require(co_await input == std::optional<double>{7}, "Promise view lost its awaited result");
     order->push_back(3);
     co_return js::PromiseVoid{};
@@ -29,16 +33,26 @@ void result_views_preserve_protocol() {
         std::vector<int> order;
         loop.run([&] {
             auto source = settled ? js::Promise<double>::resolved(7) : js::Promise<double>{};
-            auto view = js::Promise<std::optional<double>>::view(source, [](double value) { return std::optional<double>{value}; });
-            require(source == view && source.pending() == view.pending(), "Promise view changed identity or settlement");
+            auto view = js::Promise<std::optional<double>>::view(
+                source, [](double value) { return std::optional<double>{value}; });
+            require(source == view && source.pending() == view.pending(),
+                    "Promise view changed identity or settlement");
             source.then([&](double) { order.push_back(1); });
-            view.then([&](std::optional<double> value) { require(value == 7, "Promise view conversion failed"); order.push_back(2); });
+            view.then([&](std::optional<double> value) {
+                require(value == 7, "Promise view conversion failed");
+                order.push_back(2);
+            });
             await_result_view(view, &order);
-            source.then([&](double) { order.push_back(4); loop.close(); });
+            source.then([&](double) {
+                order.push_back(4);
+                loop.close();
+            });
             js::collect_cycles();
-            if (!settled) source.resolve(7);
+            if (!settled)
+                source.resolve(7);
         });
-        require(order == std::vector<int>{1, 2, 3, 4}, "Promise view changed microtask registration order");
+        require(order == std::vector<int>{1, 2, 3, 4},
+                "Promise view changed microtask registration order");
     }
     const js::RealmScope realm;
     pal::EventLoop loop;
@@ -46,22 +60,36 @@ void result_views_preserve_protocol() {
     loop.on_unhandled_rejection([&](std::exception_ptr) { ++unhandled; });
     loop.run([&] {
         auto absent = js::Promise<js::PromiseVoid>::resolved({});
-        auto view = js::Promise<std::optional<double>>::view(absent, [](const js::PromiseVoid&) { return std::optional<double>{}; });
+        auto view = js::Promise<std::optional<double>>::view(
+            absent, [](const js::PromiseVoid&) { return std::optional<double>{}; });
         require(view == absent, "Undefined promise view changed identity");
-        auto done = [&] { if (++completed == 2) loop.close(); };
-        view.then([done](std::optional<double> value) { require(!value, "Undefined promise acquired a value"); done(); });
-        auto rejected = js::Promise<double>::rejected(std::make_exception_ptr(std::runtime_error("failure")));
-        auto failure = js::Promise<std::optional<double>>::view(rejected, [](double value) { return std::optional<double>{value}; });
+        auto done = [&] {
+            if (++completed == 2)
+                loop.close();
+        };
+        view.then([done](std::optional<double> value) {
+            require(!value, "Undefined promise acquired a value");
+            done();
+        });
+        auto rejected =
+            js::Promise<double>::rejected(std::make_exception_ptr(std::runtime_error("failure")));
+        auto failure = js::Promise<std::optional<double>>::view(
+            rejected, [](double value) { return std::optional<double>{value}; });
         failure.catch_error([done](std::exception_ptr error) {
-            require(js::promise_error_message(error) == "failure", "Promise view replaced its rejection");
-            done(); return std::optional<double>{};
+            require(js::promise_error_message(error) == "failure",
+                    "Promise view replaced its rejection");
+            done();
+            return std::optional<double>{};
         });
         std::weak_ptr<int> released;
         {
-            auto token = std::make_shared<int>(1); released = token;
+            auto token = std::make_shared<int>(1);
+            released = token;
             js::Promise<double> source;
-            auto cycle = js::Promise<std::optional<double>>::view(source, [](double value) { return std::optional<double>{value}; });
-            source.observe(js::make_closure(std::tuple{cycle, token}, [](auto&, double) {}), [](std::exception_ptr) {});
+            auto cycle = js::Promise<std::optional<double>>::view(
+                source, [](double value) { return std::optional<double>{value}; });
+            source.observe(js::make_closure(std::tuple{cycle, token}, [](auto&, double) {}),
+                           [](std::exception_ptr) {});
         }
         js::collect_cycles();
         require(released.expired(), "Promise result view retained an unreachable cycle");
@@ -76,20 +104,25 @@ void ordering_and_recovery() {
     double result = 0;
     loop.run([&] {
         auto input = js::Promise<double>::resolved(4);
-        compute(input, &order).then([&](double value) {
-            order.push_back(4);
-            return js::Promise<double>::resolved(value + 1);
-        }).then([&](double value) {
-            result = value;
-            throw std::runtime_error("reaction failure");
-        }).catch_error([&](std::exception_ptr error) {
-            require(js::promise_error_string(error) == "Error: reaction failure", "Rejection lost its error");
-            order.push_back(5);
-            loop.close();
-        });
+        compute(input, &order)
+            .then([&](double value) {
+                order.push_back(4);
+                return js::Promise<double>::resolved(value + 1);
+            })
+            .then([&](double value) {
+                result = value;
+                throw std::runtime_error("reaction failure");
+            })
+            .catch_error([&](std::exception_ptr error) {
+                require(js::promise_error_string(error) == "Error: reaction failure",
+                        "Rejection lost its error");
+                order.push_back(5);
+                loop.close();
+            });
         order.push_back(2);
     });
-    require(order == std::vector<int>{1, 2, 3, 4, 5} && result == 9, "Promise reactions ran in the wrong order");
+    require(order == std::vector<int>{1, 2, 3, 4, 5} && result == 9,
+            "Promise reactions ran in the wrong order");
 }
 
 void aggregate_promises() {
@@ -102,22 +135,32 @@ void aggregate_promises() {
     loop.run([&] {
         auto done = [&] {
             require(!synchronous, "Aggregate reaction ran synchronously");
-            if (++completed == 4) loop.close();
+            if (++completed == 4)
+                loop.close();
         };
         js::Promise<double> first, second;
-        js::promise_all_tuple(std::tuple{first, second, js::Promise<std::string>::resolved("tail")}).then([&, done](const auto& values) {
-            require(std::get<0>(values) == 1 && std::get<1>(values) == 2 && std::get<2>(values) == "tail", "Tuple aggregation lost input order");
-            done();
-        });
-        js::promise_all(js::Array<js::Promise<double>>{first, second}).then([&, done](const auto& values) {
-            require(values.size() == 2 && values[0] == 1 && values[1] == 2, "Array aggregation lost input order");
-            done();
-        });
+        js::promise_all_tuple(std::tuple{first, second, js::Promise<std::string>::resolved("tail")})
+            .then([&, done](const auto& values) {
+                require(std::get<0>(values) == 1 && std::get<1>(values) == 2 &&
+                            std::get<2>(values) == "tail",
+                        "Tuple aggregation lost input order");
+                done();
+            });
+        js::promise_all(js::Array<js::Promise<double>>{first, second})
+            .then([&, done](const auto& values) {
+                require(values.size() == 2 && values[0] == 1 && values[1] == 2,
+                        "Array aggregation lost input order");
+                done();
+            });
         js::promise_all_tuple(std::tuple{}).then([done](const auto&) { done(); });
         js::Promise<double> rejected, later;
-        js::promise_all_tuple(std::tuple{rejected, later}).observe(
-            [](const auto&) { require(false, "Rejected aggregate fulfilled"); },
-            [done](std::exception_ptr error) { require(js::promise_error_string(error) == "Error: first", "Aggregate rejection changed"); done(); });
+        js::promise_all_tuple(std::tuple{rejected, later})
+            .observe([](const auto&) { require(false, "Rejected aggregate fulfilled"); },
+                     [done](std::exception_ptr error) {
+                         require(js::promise_error_string(error) == "Error: first",
+                                 "Aggregate rejection changed");
+                         done();
+                     });
         rejected.reject(std::make_exception_ptr(std::runtime_error("first")));
         later.reject(std::make_exception_ptr(std::runtime_error("later")));
         second.resolve(2);
@@ -131,7 +174,10 @@ void aggregate_promises() {
 struct Owned {
     std::thread::id owner = std::this_thread::get_id();
     int* destroyed;
-    ~Owned() { require(owner == std::this_thread::get_id(), "Coroutine destroyed outside its realm"); ++*destroyed; }
+    ~Owned() {
+        require(owner == std::this_thread::get_id(), "Coroutine destroyed outside its realm");
+        ++*destroyed;
+    }
 };
 
 js::Promise<js::PromiseVoid> waiting(js::Promise<double> signal, int* destroyed) {
@@ -159,12 +205,14 @@ void unhandled_rejections_reach_the_realm_error_handler() {
     pal::EventLoop loop;
     int failures = 0;
     loop.on_error([&](std::exception_ptr error) {
-        require(js::promise_error_string(error) == "Error: unhandled", "Default rejection report lost its error");
+        require(js::promise_error_string(error) == "Error: unhandled",
+                "Default rejection report lost its error");
         ++failures;
         loop.close();
     });
     loop.run([&] {
-        static_cast<void>(js::Promise<double>::rejected(std::make_exception_ptr(std::runtime_error("unhandled"))));
+        static_cast<void>(js::Promise<double>::rejected(
+            std::make_exception_ptr(std::runtime_error("unhandled"))));
     });
     require(failures == 1, "Unhandled rejection disappeared without a dedicated listener");
 }
@@ -173,10 +221,12 @@ int frame_steps = 0;
 int frame_cleanup = 0;
 pal::FrameDriver renderer_activation(Engine& engine) {
     const auto cleanup = js::finally([&] {
-        require(pal::OffscreenRun::current() == engine.offscreen_run.get(), "Renderer cleanup lost its canvas binding");
+        require(pal::OffscreenRun::current() == engine.offscreen_run.get(),
+                "Renderer cleanup lost its canvas binding");
         ++frame_cleanup;
     });
-    require(pal::OffscreenRun::current() == engine.offscreen_run.get(), "Renderer activation lost its canvas binding");
+    require(pal::OffscreenRun::current() == engine.offscreen_run.get(),
+            "Renderer activation lost its canvas binding");
     ++frame_steps;
     co_yield false; // No output image was available yet.
     ++frame_steps;
@@ -196,18 +246,23 @@ void renderer_tasks_yield_and_retire() {
     bool timer_ran = false;
     loop.run([&] {
         auto driver = renderer_activation(engine);
-        driver.ready().observe([&](const js::PromiseVoid&) {
-            require(frame_steps == 2 && timer_ran, "Readiness preceded output or renderer prevented timer dispatch");
-            require(!pal::OffscreenRun::current(), "Renderer leaked its canvas binding into a reaction");
-            loop.close();
-        }, [](std::exception_ptr error) { std::rethrow_exception(error); });
+        driver.ready().observe(
+            [&](const js::PromiseVoid&) {
+                require(frame_steps == 2 && timer_ran,
+                        "Readiness preceded output or renderer prevented timer dispatch");
+                require(!pal::OffscreenRun::current(),
+                        "Renderer leaked its canvas binding into a reaction");
+                loop.close();
+            },
+            [](std::exception_ptr error) { std::rethrow_exception(error); });
         driver.start();
         loop.set_timeout([frames] { frames->tick(pal::EventLoop::Clock::now()); }, 1, true);
         loop.set_timeout([&] { timer_ran = true; }, 0);
     });
-    require(frame_cleanup == 1 && !pal::OffscreenRun::current(), "Renderer frame survived shutdown or kept its canvas bound");
+    require(frame_cleanup == 1 && !pal::OffscreenRun::current(),
+            "Renderer frame survived shutdown or kept its canvas bound");
 }
-}
+} // namespace
 
 int main() {
     try {

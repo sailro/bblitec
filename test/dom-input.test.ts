@@ -1,15 +1,16 @@
-import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import {compileSource} from "../src/compiler.js";
-import {cppFunction, runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { cppFunction, runRmlUiFixture } from "./native-fixture.js";
 
-test("generated DOM listeners receive retained SDL paths and control native defaults", t => {
+test("generated DOM listeners receive retained SDL paths and control native defaults", (t) => {
     const directory = resolve("artifacts/dom-input");
-    mkdirSync(directory, {recursive: true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const log = document.createElement("div");
@@ -64,16 +65,32 @@ test("generated DOM listeners receive retained SDL paths and control native defa
             if (event.code === "Escape") { record("K"); event.preventDefault(); }
         });
         globalThis.close();
-    `, {fileName:join(directory, "entry.ts")});
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    writeFileSync(join(directory, "focus.hpp"), "namespace bbl {\n" +
-        cppFunction(readFileSync("src/lowering/scene-lowerer.ts", "utf8"), "void focus_canvas(") + "\n}");
-    assert.throws(() => compileSource(`
+    writeFileSync(
+        join(directory, "focus.hpp"),
+        "namespace bbl {\n" +
+            cppFunction(
+                readFileSync("src/lowering/scene-lowerer.ts", "utf8"),
+                "void focus_canvas(",
+            ) +
+            "\n}",
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const label = document.createElement("div");
         document.body.appendChild(label);
         label.addEventListener("click", () => { label.textContent += "clicked"; });
-    `, {fileName:join(directory, "entry.ts")}), /Compound retained text assignments/);
+    `,
+                { fileName: join(directory, "entry.ts") },
+            ),
+        /Compound retained text assignments/,
+    );
     runRmlUiFixture(t, "dom-input");
 });

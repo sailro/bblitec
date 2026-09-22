@@ -1,12 +1,9 @@
 import { EmissionMap } from "../emission-transaction.js";
-import {compileAssetDecoderConfiguration} from "../asset-decoders.js";
+import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type {
-    SplatFragmentManifest,
-    Value,
-} from "../types.js";
+import type { SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
 import { compressedTextureUrls } from "../compressed-texture.js";
@@ -33,45 +30,45 @@ interface CompiledEnvironmentOptions {
     skipGround: boolean;
 }
 
-
-
 export interface AssetIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    Pick<LoweringServices,
-        | "options"
-        | "dataLowerer"
-        | "expectObjectLiteral"
-        | "compileStringLiteral"
-        | "compileNumber"
-        | "compileEnvironmentOptions"
-        | "compileHdrEnvironmentOptions"
-        | "compileDdsEnvironmentOptions"
-        | "compileDdsEnvironmentBackgroundOptions"
-        | "registerAsset"
-        | "setAssetDecoderConfiguration"
-        | "lookupIdentifierValue"
-        | "emitDiscardedValue"
-        | "recordGltfContainerLoad"
-        | "enableGltfCameras"
-        | "hasFeature"
-        | "selectGltfVariant"
-        | "resolveBundledAsset"
-        | "unwrap"
-        | "cppString"
-        | "objectProperty"
-        | "compileBoolean"
-        | "lookupOptional"
-        | "staticAssetUrlCandidates"
-        | "reachJsData"
-        | "probeEmission"
-        | "requireEngine"
-        | "fail"
-        | "resolveStaticExpression"
-        | "expectStaticArrayLiteral"
-        | "recordSplatFragments"
-        | "assetMeshCollection"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        Pick<
+            LoweringServices,
+            | "options"
+            | "dataLowerer"
+            | "expectObjectLiteral"
+            | "compileStringLiteral"
+            | "compileNumber"
+            | "compileEnvironmentOptions"
+            | "compileHdrEnvironmentOptions"
+            | "compileDdsEnvironmentOptions"
+            | "compileDdsEnvironmentBackgroundOptions"
+            | "registerAsset"
+            | "setAssetDecoderConfiguration"
+            | "lookupIdentifierValue"
+            | "emitDiscardedValue"
+            | "recordGltfContainerLoad"
+            | "enableGltfCameras"
+            | "hasFeature"
+            | "selectGltfVariant"
+            | "resolveBundledAsset"
+            | "unwrap"
+            | "cppString"
+            | "objectProperty"
+            | "compileBoolean"
+            | "lookupOptional"
+            | "staticAssetUrlCandidates"
+            | "reachJsData"
+            | "probeEmission"
+            | "requireEngine"
+            | "fail"
+            | "resolveStaticExpression"
+            | "expectStaticArrayLiteral"
+            | "recordSplatFragments"
+            | "assetMeshCollection"
+        > {}
 
 /**
  * The `GsShaderFragment` records a `loadSplat` call's third argument names.
@@ -161,9 +158,7 @@ function sceneSplatFragment(
  * the plugin reaches run time, which is why the value has no native
  * expression.
  */
-export function compileAssetConstant(
-    importedName: string,
-): Value | undefined {
+export function compileAssetConstant(importedName: string): Value | undefined {
     if (!isSplatFragmentExport(importedName)) return undefined;
     return {
         kind: "splat-fragment",
@@ -215,7 +210,10 @@ export function compileAssetIntrinsic(
     return assetIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
-function compileAcquireTexture(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileAcquireTexture(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const texture = context.compileValue(argumentAt(call, 0));
     context.expectKind(texture, "texture", argumentAt(call, 0));
@@ -226,13 +224,19 @@ function compileAcquireTexture(context: AssetIntrinsicContext, call: ts.CallExpr
     return { kind: "void", cpp: "" };
 }
 
-function compileGetContainerMeshes(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileGetContainerMeshes(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const container = context.compileValue(argumentAt(call, 0));
     return context.assetMeshCollection(container, call);
 }
 
-function compileLoadGltf(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadGltf(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -243,7 +247,8 @@ function compileLoadGltf(context: AssetIntrinsicContext, call: ts.CallExpression
     context.reachFeature("renderer:scene", call);
     return {
         kind: "asset",
-        cpp: `bbl::load_gltf(${engine.cpp}, ` +
+        cpp:
+            `bbl::load_gltf(${engine.cpp}, ` +
             `bbl::asset_path(` +
             `${context.cppString(asset.output)})${context.hasFeature("loader:gltf-cameras") ? ", true" : ""})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
@@ -252,7 +257,10 @@ function compileLoadGltf(context: AssetIntrinsicContext, call: ts.CallExpression
     };
 }
 
-function compileLoadSplat(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadSplat(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `loadSplat(scene, url, fragments?)`. The third parameter is
     // the pin's own opt-in for splat shader plugins: with none the
     // stock module composes and the mangling table upstream inlines
@@ -264,7 +272,10 @@ function compileLoadSplat(context: AssetIntrinsicContext, call: ts.CallExpressio
     const source = context.compileStringLiteral(argumentAt(call, 1));
     const asset = context.registerAsset(source, "splat");
     if (call.arguments.length === 3) {
-        context.recordSplatFragments(compileSplatFragments(context, call), call);
+        context.recordSplatFragments(
+            compileSplatFragments(context, call),
+            call,
+        );
     }
     context.reachFeature("loader:splat", call);
     // A splat cloud is a scene renderable -- upstream pushes it onto
@@ -274,7 +285,8 @@ function compileLoadSplat(context: AssetIntrinsicContext, call: ts.CallExpressio
     context.reachFeature("renderer:scene", call);
     return {
         kind: "splat-mesh",
-        cpp: `bbl::load_splat(${scene.cpp}, ` +
+        cpp:
+            `bbl::load_splat(${scene.cpp}, ` +
             `bbl::asset_path(` +
             `${context.cppString(asset.output)}))`,
         engineCpp: context.requireEngine(scene, argumentAt(call, 0)),
@@ -282,7 +294,11 @@ function compileLoadSplat(context: AssetIntrinsicContext, call: ts.CallExpressio
     };
 }
 
-function compileLoadSPZ(context: AssetIntrinsicContext, call: ts.CallExpression, importedName: "loadSPZ" | "loadSOG"): Value | undefined {
+function compileLoadSPZ(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    importedName: "loadSPZ" | "loadSOG",
+): Value | undefined {
     // `loadSPZ(scene, url)` and `loadSOG(scene, url)`, the pin's
     // second and third splat entry points. Each takes a different
     // container -- SPZ is a gzip stream the loader inflates through
@@ -315,7 +331,8 @@ function compileLoadSPZ(context: AssetIntrinsicContext, call: ts.CallExpression,
     context.reachFeature("renderer:scene", call);
     return {
         kind: "splat-mesh",
-        cpp: `bbl::${container.entryPoint}(${scene.cpp}, ` +
+        cpp:
+            `bbl::${container.entryPoint}(${scene.cpp}, ` +
             `bbl::asset_path(` +
             `${context.cppString(asset.output)}))`,
         engineCpp: context.requireEngine(scene, argumentAt(call, 0)),
@@ -323,7 +340,10 @@ function compileLoadSPZ(context: AssetIntrinsicContext, call: ts.CallExpression,
     };
 }
 
-function compileBakeCurrentTransformIntoVertices(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileBakeCurrentTransformIntoVertices(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/mesh/GaussianSplatting/gaussian-splatting-bake.ts. The pin
     // reads the cloud's own world matrix, rewrites every row through
     // it, hands the result to `updateData`, and resets the TRS; each
@@ -339,12 +359,16 @@ function compileBakeCurrentTransformIntoVertices(context: AssetIntrinsicContext,
     context.reachFeature("loader:splat-bake", call);
     return {
         kind: "void",
-        cpp: `bbl::bake_current_transform_into_vertices(` +
+        cpp:
+            `bbl::bake_current_transform_into_vertices(` +
             `${context.requireEngine(splat, call)}, ${splat.cpp})`,
     };
 }
 
-function compileSelectVariant(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSelectVariant(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/loader-gltf/material-variants.ts: `selectVariant` restores
     // every original material and then applies the chosen variant's
     // mapped entries. The reached shape is one static selection made
@@ -356,25 +380,39 @@ function compileSelectVariant(context: AssetIntrinsicContext, call: ts.CallExpre
     const container = context.compileValue(argumentAt(call, 0));
     context.expectKind(container, "asset", argumentAt(call, 0));
     if (container.asset?.kind !== "gltf") {
-        context.fail(argumentAt(call, 0), "selectVariant requires the container a glTF load returned.");
+        context.fail(
+            argumentAt(call, 0),
+            "selectVariant requires the container a glTF load returned.",
+        );
     }
-    context.selectGltfVariant(container.asset, context.compileStringLiteral(argumentAt(call, 1)), call);
+    context.selectGltfVariant(
+        container.asset,
+        context.compileStringLiteral(argumentAt(call, 1)),
+        call,
+    );
     context.reachFeature("loader:gltf-variants", call);
     return { kind: "void", cpp: "" };
 }
 
-function compileEnableGltfCameras(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnableGltfCameras(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 0, 0);
     context.enableGltfCameras(call);
     return { kind: "void", cpp: "" };
 }
 
-function compileLoadBabylon(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadBabylon(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
-    let loadCamera = "true", loadTextures = "true";
+    let loadCamera = "true",
+        loadTextures = "true";
     if (call.arguments[2]) {
         // `maxMeshes` stops the pinned loader's node pass partway
         // through, so the container it returns holds fewer meshes
@@ -384,9 +422,14 @@ function compileLoadBabylon(context: AssetIntrinsicContext, call: ts.CallExpress
         // node. Accepting the option silently would hand that
         // scene meshes the pin never loaded, so the two names the
         // loader does take are named and anything else refuses.
-        validateObjectProperties(context, context.expectObjectLiteral(call.arguments[2]), ["loadCamera", "loadTextures"], "loadBabylon takes loadCamera and loadTextures; " +
-            "maxMeshes truncates the pinned loader's node " +
-            "pass, which the generated loader does not.");
+        validateObjectProperties(
+            context,
+            context.expectObjectLiteral(call.arguments[2]),
+            ["loadCamera", "loadTextures"],
+            "loadBabylon takes loadCamera and loadTextures; " +
+                "maxMeshes truncates the pinned loader's node " +
+                "pass, which the generated loader does not.",
+        );
         const options = context.expectObjectLiteral(call.arguments[2]);
         const camera = context.objectProperty(options, "loadCamera");
         const textures = context.objectProperty(options, "loadTextures");
@@ -394,15 +437,23 @@ function compileLoadBabylon(context: AssetIntrinsicContext, call: ts.CallExpress
         if (textures) loadTextures = context.compileBoolean(textures);
     }
     const asset = context.registerAsset(source, "babylon");
-    const textureModes = loadTextures === "true" ? [true] : loadTextures === "false" ? [false] : [false, true];
-    asset.babylonTextureModes = [...new Set([...(asset.babylonTextureModes ?? []), ...textureModes])];
+    const textureModes =
+        loadTextures === "true"
+            ? [true]
+            : loadTextures === "false"
+              ? [false]
+              : [false, true];
+    asset.babylonTextureModes = [
+        ...new Set([...(asset.babylonTextureModes ?? []), ...textureModes]),
+    ];
     context.reachFeature("camera:free", call);
     context.reachFeature("loader:babylon", call);
     context.reachFeature("material:standard", call);
     context.reachFeature("renderer:scene", call);
     return {
         kind: "asset",
-        cpp: `bbl::load_babylon(${engine.cpp}, ` +
+        cpp:
+            `bbl::load_babylon(${engine.cpp}, ` +
             `bbl::asset_path(` +
             `${context.cppString(asset.output)}), ${loadCamera}, ${loadTextures})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
@@ -415,18 +466,26 @@ function compileLoadBabylon(context: AssetIntrinsicContext, call: ts.CallExpress
     };
 }
 
-function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadTexture2D(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const dynamic = compileDynamicPackagedAsset(context, argumentAt(call, 1), "texture", (source) => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source));
+    const dynamic = compileDynamicPackagedAsset(
+        context,
+        argumentAt(call, 1),
+        "texture",
+        (source) => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source),
+    );
     const url = dynamic
         ? undefined
         : context.compileStringLiteral(argumentAt(call, 1));
-    const asset = url === undefined
-        ? undefined
-        : context.registerAsset(url, "texture");
-    const texturePathCpp = dynamic?.dynamicAssetPathCpp ??
+    const asset =
+        url === undefined ? undefined : context.registerAsset(url, "texture");
+    const texturePathCpp =
+        dynamic?.dynamicAssetPathCpp ??
         `bbl::asset_path(${context.cppString(asset!.output)})`;
     // The pin's own option defaults live in
     // `pinned-address-modes.ts`, beside the sampler rule the browser
@@ -443,20 +502,26 @@ function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpre
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
         for (const property of options.properties) {
-            const name = property.name &&
+            const name =
+                property.name &&
                 (ts.isIdentifier(property.name) ||
                     ts.isStringLiteral(property.name))
-                ? property.name.text
-                : undefined;
+                    ? property.name.text
+                    : undefined;
             if (!loadTexture2DOptionFields.includes(name ?? "")) {
-                context.fail(property, "Reached loadTexture2D options support srgb, invertY, premultiplyAlpha, mipMaps, minFilter, magFilter, addressModeU, and addressModeV.");
+                context.fail(
+                    property,
+                    "Reached loadTexture2D options support srgb, invertY, premultiplyAlpha, mipMaps, minFilter, magFilter, addressModeU, and addressModeV.",
+                );
             }
         }
         const filterName = (expression: ts.Expression): string => {
             const filter = context.compileStringLiteral(expression);
-            if (filter !== "nearest" &&
-                filter !== "linear") {
-                context.fail(expression, "Reached texture filters support nearest and linear.");
+            if (filter !== "nearest" && filter !== "linear") {
+                context.fail(
+                    expression,
+                    "Reached texture filters support nearest and linear.",
+                );
             }
             return filter;
         };
@@ -476,34 +541,43 @@ function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpre
             const mode = context.compileStringLiteral(expression);
             const mapped = addressModeByPin[mode];
             if (!mapped) {
-                context.fail(expression, "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.");
+                context.fail(
+                    expression,
+                    "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
+                );
             }
             return `bbl::${mapped}`;
         };
-        const addressUExpression = context.objectProperty(options, "addressModeU");
+        const addressUExpression = context.objectProperty(
+            options,
+            "addressModeU",
+        );
         if (addressUExpression) {
             addressModeU = addressMode(addressUExpression);
         }
-        const addressVExpression = context.objectProperty(options, "addressModeV");
+        const addressVExpression = context.objectProperty(
+            options,
+            "addressModeV",
+        );
         if (addressVExpression) {
             addressModeV = addressMode(addressVExpression);
         }
         const mipExpression = context.objectProperty(options, "mipMaps");
         if (mipExpression) {
-            mipMaps =
-                context.compileBoolean(mipExpression) === "true";
+            mipMaps = context.compileBoolean(mipExpression) === "true";
         }
         const invertExpression = context.objectProperty(options, "invertY");
         if (invertExpression) {
-            invertY =
-                context.compileBoolean(invertExpression) === "true";
+            invertY = context.compileBoolean(invertExpression) === "true";
         }
         const srgbExpression = context.objectProperty(options, "srgb");
         if (srgbExpression) {
-            srgb =
-                context.compileBoolean(srgbExpression) === "true";
+            srgb = context.compileBoolean(srgbExpression) === "true";
         }
-        const premultiplyExpression = context.objectProperty(options, "premultiplyAlpha");
+        const premultiplyExpression = context.objectProperty(
+            options,
+            "premultiplyAlpha",
+        );
         if (premultiplyExpression) {
             premultiplyAlpha =
                 context.compileBoolean(premultiplyExpression) === "true";
@@ -531,7 +605,8 @@ function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpre
         // because composition reads it -- the PBR lightmap arm
         // folds it against `uAng`.
         textureObjectInvertY: false,
-        cpp: `bbl::load_file_texture(${engine.cpp}, ` +
+        cpp:
+            `bbl::load_file_texture(${engine.cpp}, ` +
             `${texturePathCpp}, ` +
             `${sampler}, ${invertY ? "true" : "false"}, ` +
             `${srgb ? "true" : "false"}, ` +
@@ -541,17 +616,19 @@ function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpre
             ...(url === undefined
                 ? {}
                 : {
-                    source: url.startsWith("data:")
-                        ? url
-                        : asset!.source,
-                    entryFileName: context.options.fileName,
-                }),
+                      source: url.startsWith("data:") ? url : asset!.source,
+                      entryFileName: context.options.fileName,
+                  }),
         },
         engineCpp: engine.engineCpp ?? engine.cpp,
     };
 }
 
-function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallExpression, importedName: "loadKtxTexture2D" | "loadBasisTexture2D"): Value | undefined {
+function compileLoadKtxTexture2D(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    importedName: "loadKtxTexture2D" | "loadBasisTexture2D",
+): Value | undefined {
     // Both loaders end at the same native reader: the container's
     // blocks and its own mip chain. What differs is where the
     // container comes from — ordered device-selected KTX candidates,
@@ -569,8 +646,12 @@ function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallEx
     const url = context.compileStringLiteral(argumentAt(call, 1));
     const assets = basis
         ? [context.registerAsset(url, "basis")]
-        : ktxContainerUrls(context, call, url).map(candidate => context.registerAsset(candidate, "texture"));
-    const paths = assets.map(asset => `bbl::asset_path(${context.cppString(asset.output)})`);
+        : ktxContainerUrls(context, call, url).map((candidate) =>
+              context.registerAsset(candidate, "texture"),
+          );
+    const paths = assets.map(
+        (asset) => `bbl::asset_path(${context.cppString(asset.output)})`,
+    );
     context.reachFeature("texture:compressed", call);
     return {
         kind: "texture",
@@ -579,7 +660,8 @@ function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallEx
         // separates these two loaders (`uploadCompressed` leaves it
         // unset, `basis-loader.ts` sets it).
         textureObjectInvertY: basis,
-        cpp: `bbl::${assets.length === 1 ? "load_compressed_texture" : "load_compressed_texture_variants"}(${engine.cpp}, ` +
+        cpp:
+            `bbl::${assets.length === 1 ? "load_compressed_texture" : "load_compressed_texture_variants"}(${engine.cpp}, ` +
             `${assets.length === 1 ? paths[0] : `{${paths.join(", ")}}`}, ` +
             `${basis ? "true" : "false"})`,
         textureFile: { srgb: false },
@@ -587,52 +669,61 @@ function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallEx
     };
 }
 
-function compileLoadSkybox(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadSkybox(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 4);
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const baseUrl = context.compileStringLiteral(argumentAt(call, 1));
     const extension = context.compileStringLiteral(argumentAt(call, 2));
     // Pinned loadCubeTexture face suffix order: layers 0-5.
-    const faceAssets = [
-        "_px",
-        "_nx",
-        "_py",
-        "_ny",
-        "_pz",
-        "_nz",
-    ].map((suffix) => context.registerAsset(`${baseUrl}${suffix}${extension}`, "texture"));
+    const faceAssets = ["_px", "_nx", "_py", "_ny", "_pz", "_nz"].map(
+        (suffix) =>
+            context.registerAsset(`${baseUrl}${suffix}${extension}`, "texture"),
+    );
     const size = call.arguments[3]
         ? context.compileNumber(call.arguments[3])
         : "100.0f";
     context.reachFeature("background:image-skybox", call);
     return {
         kind: "void",
-        cpp: `bbl::load_image_skybox(${scene.cpp}, ` +
+        cpp:
+            `bbl::load_image_skybox(${scene.cpp}, ` +
             `std::array<std::string, 6>{` +
             faceAssets
-                .map((asset) => `bbl::asset_path(${context.cppString(asset.output)})`)
+                .map(
+                    (asset) =>
+                        `bbl::asset_path(${context.cppString(asset.output)})`,
+                )
                 .join(", ") +
             `}, ${size})`,
     };
 }
 
-function compileLoadEnvironment(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadEnvironment(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const environmentUrl = context.compileStringLiteral(argumentAt(call, 1));
-    const environmentAsset = context.registerAsset(environmentUrl, "environment");
+    const environmentAsset = context.registerAsset(
+        environmentUrl,
+        "environment",
+    );
     const options: CompiledEnvironmentOptions = call.arguments[2]
         ? context.compileEnvironmentOptions(call.arguments[2])
         : {
-            groundTextureUrl: "",
-            skyboxUrl: "",
-            skyboxSize: "0.0f",
-            brdfUrl: "",
-            skipSkybox: false,
-            skipGround: false,
-        };
+              groundTextureUrl: "",
+              skyboxUrl: "",
+              skyboxSize: "0.0f",
+              brdfUrl: "",
+              skipSkybox: false,
+              skipGround: false,
+          };
     const groundAsset = options.groundTextureUrl
         ? context.registerAsset(options.groundTextureUrl, "texture")
         : undefined;
@@ -641,16 +732,19 @@ function compileLoadEnvironment(context: AssetIntrinsicContext, call: ts.CallExp
     // and reuses the cubemap it just parsed instead of fetching a
     // DDS. That is decided by the two URLs alone, so it is decided
     // here.
-    const skyboxUsesEnvironment = options.skyboxUrl !== "" &&
+    const skyboxUsesEnvironment =
+        options.skyboxUrl !== "" &&
         (options.skyboxUrl === environmentUrl ||
-            options.skyboxUrl
-                .toLowerCase()
-                .endsWith(".env"));
-    const skyboxAsset = options.skyboxUrl && !skyboxUsesEnvironment
-        ? context.registerAsset(options.skyboxUrl, "texture")
-        : undefined;
+            options.skyboxUrl.toLowerCase().endsWith(".env"));
+    const skyboxAsset =
+        options.skyboxUrl && !skyboxUsesEnvironment
+            ? context.registerAsset(options.skyboxUrl, "texture")
+            : undefined;
     const brdfAsset = options.brdfUrl
-        ? context.registerAsset(context.resolveBundledAsset(options.brdfUrl), "texture")
+        ? context.registerAsset(
+              context.resolveBundledAsset(options.brdfUrl),
+              "texture",
+          )
         : undefined;
     context.reachFeature("environment:ibl", call);
     context.reachFeature("environment:env", call);
@@ -668,16 +762,16 @@ function compileLoadEnvironment(context: AssetIntrinsicContext, call: ts.CallExp
     // The deferred builder's own condition: a scene that names no DDS
     // or .env skybox and does not skip one gets the solid-colour cube
     // shaded from the clear colour.
-    const solidSkybox = !skyboxAsset &&
-        !skyboxUsesEnvironment &&
-        !options.skipSkybox;
+    const solidSkybox =
+        !skyboxAsset && !skyboxUsesEnvironment && !options.skipSkybox;
     const hasEnvironmentSkybox = Boolean(skyboxAsset || skyboxUsesEnvironment);
-    if (hasEnvironmentSkybox &&
-        scene.sceneEnvironmentState!.rotationSet) {
-        context.fail(call, "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.");
+    if (hasEnvironmentSkybox && scene.sceneEnvironmentState!.rotationSet) {
+        context.fail(
+            call,
+            "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+        );
     }
-    scene.sceneEnvironmentState!
-        .hasTexturedSkybox ||= hasEnvironmentSkybox;
+    scene.sceneEnvironmentState!.hasTexturedSkybox ||= hasEnvironmentSkybox;
     if (solidSkybox) {
         context.reachFeature("background:solid-skybox", call);
     }
@@ -685,7 +779,8 @@ function compileLoadEnvironment(context: AssetIntrinsicContext, call: ts.CallExp
         kind: "environment-textures",
         engineCpp: scene.engineCpp!,
         environmentAsset,
-        cpp: `bbl::load_environment(${scene.cpp}, ` +
+        cpp:
+            `bbl::load_environment(${scene.cpp}, ` +
             `bbl::EnvironmentOptions{` +
             `bbl::asset_path(${context.cppString(environmentAsset.output)}), ` +
             `${groundAsset ? `bbl::asset_path(${context.cppString(groundAsset.output)})` : context.cppString("")}, ` +
@@ -698,7 +793,10 @@ function compileLoadEnvironment(context: AssetIntrinsicContext, call: ts.CallExp
     };
 }
 
-function compileAddDdsEnvironmentBackground(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileAddDdsEnvironmentBackground(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/background-dds-environment.ts: the two
     // renderables `loadEnvironment`'s deferred builder can push,
     // reached without it. The module takes no skip flags, so both
@@ -707,19 +805,28 @@ function compileAddDdsEnvironmentBackground(context: AssetIntrinsicContext, call
     context.expectArgumentCount(call, 2, 2);
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
-    const options = context.compileDdsEnvironmentBackgroundOptions(argumentAt(call, 1));
-    const groundAsset = context.registerAsset(options.groundTextureUrl, "texture");
+    const options = context.compileDdsEnvironmentBackgroundOptions(
+        argumentAt(call, 1),
+    );
+    const groundAsset = context.registerAsset(
+        options.groundTextureUrl,
+        "texture",
+    );
     const skyboxAsset = context.registerAsset(options.skyboxUrl, "texture");
     context.reachFeature("background:dds-environment", call);
     context.reachFeature("background:ground", call);
     context.reachFeature("background:skybox", call);
     if (scene.sceneEnvironmentState!.rotationSet) {
-        context.fail(call, "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.");
+        context.fail(
+            call,
+            "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+        );
     }
     scene.sceneEnvironmentState!.hasTexturedSkybox = true;
     return {
         kind: "void",
-        cpp: `bbl::add_dds_environment_background(${scene.cpp}, ` +
+        cpp:
+            `bbl::add_dds_environment_background(${scene.cpp}, ` +
             `bbl::DdsEnvironmentBackgroundOptions{` +
             `bbl::asset_path(${context.cppString(groundAsset.output)}), ` +
             `bbl::asset_path(${context.cppString(skyboxAsset.output)}), ` +
@@ -728,7 +835,10 @@ function compileAddDdsEnvironmentBackground(context: AssetIntrinsicContext, call
     };
 }
 
-function compileLoadDdsEnvironment(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadDdsEnvironment(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/loader-env/load-dds-env.ts: a prefiltered DDS cubemap is
     // the IBL source itself, uploaded mip for mip, with the
     // irradiance harmonics projected out of mip 0. Both halves are
@@ -751,14 +861,18 @@ function compileLoadDdsEnvironment(context: AssetIntrinsicContext, call: ts.Call
     context.reachFeature("environment:dds", call);
     return {
         kind: "void",
-        cpp: `bbl::load_dds_environment(${scene.cpp}, ` +
+        cpp:
+            `bbl::load_dds_environment(${scene.cpp}, ` +
             `bbl::DdsEnvironmentOptions{` +
             `bbl::asset_path(${context.cppString(environmentAsset.output)}), ` +
             `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}})`,
     };
 }
 
-function compileLoadHdrEnvironment(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileLoadHdrEnvironment(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
@@ -766,26 +880,36 @@ function compileLoadHdrEnvironment(context: AssetIntrinsicContext, call: ts.Call
     const options = call.arguments[2]
         ? context.compileHdrEnvironmentOptions(call.arguments[2])
         : {
-            faceSize: 256,
-            useCubemapSkybox: false,
-            skipGround: false,
-            skyboxSize: "0.0f",
-            skyboxPosition: "bbl::Vec3{}",
-        };
+              faceSize: 256,
+              useCubemapSkybox: false,
+              skipGround: false,
+              skyboxSize: "0.0f",
+              skyboxPosition: "bbl::Vec3{}",
+          };
     if (!options.skipGround) {
-        context.fail(call.arguments[2] ?? call, "Reached HDR environment lowering currently requires skipGround: true.");
+        context.fail(
+            call.arguments[2] ?? call,
+            "Reached HDR environment lowering currently requires skipGround: true.",
+        );
     }
-    if (options.useCubemapSkybox &&
-        scene.sceneEnvironmentState!.rotationSet) {
-        context.fail(call, "Loading a visible HDR environment skybox after setEnvironmentRotation requires native skybox rotation support.");
+    if (options.useCubemapSkybox && scene.sceneEnvironmentState!.rotationSet) {
+        context.fail(
+            call,
+            "Loading a visible HDR environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+        );
     }
-    scene.sceneEnvironmentState!
-        .hasTexturedSkybox ||=
-        options.useCubemapSkybox;
-    const environmentAsset = context.registerAsset(source, "hdr-environment", options.faceSize);
+    scene.sceneEnvironmentState!.hasTexturedSkybox ||= options.useCubemapSkybox;
+    const environmentAsset = context.registerAsset(
+        source,
+        "hdr-environment",
+        options.faceSize,
+    );
     // Pinned load-hdr generates its 256x256 rgba16f BRDF LUT
     // with a compute pass instead of loading the bundled PNG.
-    const brdfAsset = context.registerAsset("generated:pinned-ibl-brdf-lut", "texture");
+    const brdfAsset = context.registerAsset(
+        "generated:pinned-ibl-brdf-lut",
+        "texture",
+    );
     context.reachFeature("environment:ibl", call);
     context.reachFeature("environment:hdr", call);
     if (options.useCubemapSkybox) {
@@ -793,7 +917,8 @@ function compileLoadHdrEnvironment(context: AssetIntrinsicContext, call: ts.Call
     }
     return {
         kind: "void",
-        cpp: `bbl::load_hdr_environment(${scene.cpp}, ` +
+        cpp:
+            `bbl::load_hdr_environment(${scene.cpp}, ` +
             `bbl::HdrEnvironmentOptions{` +
             `bbl::asset_path(${context.cppString(environmentAsset.output)}), ` +
             `bbl::asset_path(${context.cppString(brdfAsset.output)}), ` +
@@ -803,9 +928,27 @@ function compileLoadHdrEnvironment(context: AssetIntrinsicContext, call: ts.Call
     };
 }
 
-const assetIntrinsicHandlers = new EmissionMap<string, (context: AssetIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
-    ["setKtx2DecoderUrl", (context, call) => compileAssetDecoderConfiguration(context, "setKtx2DecoderUrl", call)],
-    ["setDracoBaseUrl", (context, call) => compileAssetDecoderConfiguration(context, "setDracoBaseUrl", call)],
+const assetIntrinsicHandlers = new EmissionMap<
+    string,
+    (
+        context: AssetIntrinsicContext,
+        call: ts.CallExpression,
+    ) => Value | undefined
+>([
+    [
+        "setKtx2DecoderUrl",
+        (context, call) =>
+            compileAssetDecoderConfiguration(
+                context,
+                "setKtx2DecoderUrl",
+                call,
+            ),
+    ],
+    [
+        "setDracoBaseUrl",
+        (context, call) =>
+            compileAssetDecoderConfiguration(context, "setDracoBaseUrl", call),
+    ],
     ["acquireTexture", compileAcquireTexture],
     ["releaseTexture", compileAcquireTexture],
     ["getContainerMeshes", compileGetContainerMeshes],
@@ -813,13 +956,24 @@ const assetIntrinsicHandlers = new EmissionMap<string, (context: AssetIntrinsicC
     ["loadSplat", compileLoadSplat],
     ["loadSPZ", (context, call) => compileLoadSPZ(context, call, "loadSPZ")],
     ["loadSOG", (context, call) => compileLoadSPZ(context, call, "loadSOG")],
-    ["bakeCurrentTransformIntoVertices", compileBakeCurrentTransformIntoVertices],
+    [
+        "bakeCurrentTransformIntoVertices",
+        compileBakeCurrentTransformIntoVertices,
+    ],
     ["selectVariant", compileSelectVariant],
     ["enableGltfCameras", compileEnableGltfCameras],
     ["loadBabylon", compileLoadBabylon],
     ["loadTexture2D", compileLoadTexture2D],
-    ["loadKtxTexture2D", (context, call) => compileLoadKtxTexture2D(context, call, "loadKtxTexture2D")],
-    ["loadBasisTexture2D", (context, call) => compileLoadKtxTexture2D(context, call, "loadBasisTexture2D")],
+    [
+        "loadKtxTexture2D",
+        (context, call) =>
+            compileLoadKtxTexture2D(context, call, "loadKtxTexture2D"),
+    ],
+    [
+        "loadBasisTexture2D",
+        (context, call) =>
+            compileLoadKtxTexture2D(context, call, "loadBasisTexture2D"),
+    ],
     ["loadSkybox", compileLoadSkybox],
     ["loadEnvironment", compileLoadEnvironment],
     ["addDdsEnvironmentBackground", compileAddDdsEnvironmentBackground],
@@ -828,4 +982,6 @@ const assetIntrinsicHandlers = new EmissionMap<string, (context: AssetIntrinsicC
 ]);
 
 /** Packaged asset effects can be replayed at each statically reached shared call. */
-export function isAssetCallEffectIntrinsic(name: string): boolean { return assetIntrinsicHandlers.has(name); }
+export function isAssetCallEffectIntrinsic(name: string): boolean {
+    return assetIntrinsicHandlers.has(name);
+}

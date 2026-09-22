@@ -21,10 +21,7 @@ import { deploymentAssetSource, type DeploymentOptions } from "./deployment.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import {
-    findRepositoryRoot,
-    readUpstreamPin,
-} from "../upstream-source.js";
+import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
@@ -35,22 +32,19 @@ import {
     staticJsonValue,
     type StaticJsonContext,
 } from "./option-helpers.js";
-import type {
-    CompileAsset,
-    Feature,
-} from "./types.js";
+import type { CompileAsset, Feature } from "./types.js";
 
-export interface AssetRegistryContext
-    extends Pick<LoweringServices,
-        | "assets"
-        | "assetPayloads"
-        | "symbols"
-        | "options"
-        | "unwrap"
-        | "compileStringLiteral"
-        | "cppString"
-        | "fail"
-    > {}
+export interface AssetRegistryContext extends Pick<
+    LoweringServices,
+    | "assets"
+    | "assetPayloads"
+    | "symbols"
+    | "options"
+    | "unwrap"
+    | "compileStringLiteral"
+    | "cppString"
+    | "fail"
+> {}
 
 function basenameWithoutExtension(name: string): string {
     const dot = name.lastIndexOf(".");
@@ -161,10 +155,8 @@ export function splatContainerByLoader(
  * extension and be missed by all, which is why the set is the container
  * table plus the plain rows rather than a second hand-kept list.
  */
-export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> = new EmissionSet([
-    "splat",
-    ...SPLAT_CONTAINERS.keys(),
-]);
+export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> =
+    new EmissionSet(["splat", ...SPLAT_CONTAINERS.keys()]);
 
 export function registerAsset(
     context: AssetRegistryContext,
@@ -177,10 +169,7 @@ export function registerAsset(
         context.options.fileName,
         context.options,
     );
-    source = canonicalLocalAssetSource(
-        source,
-        context.options.fileName,
-    );
+    source = canonicalLocalAssetSource(source, context.options.fileName);
     const key = `${kind}:${source}:${faceSize ?? ""}`;
     const existing = context.assets.get(key);
     if (existing) {
@@ -205,12 +194,7 @@ export function registerAsset(
             }
         }
     }
-    const asset = assetRecord(
-        source,
-        kind,
-        context.assetPayloads,
-        faceSize,
-    );
+    const asset = assetRecord(source, kind, context.assetPayloads, faceSize);
     context.assets.set(key, asset);
     return asset;
 }
@@ -228,18 +212,22 @@ export function registerUiImageAsset(
     source: string,
     logicalPath: string,
 ): CompileAsset {
-    const output = logicalPath
-        .replace(/\\/g, "/")
-        .replace(/^\/+/, "");
+    const output = logicalPath.replace(/\\/g, "/").replace(/^\/+/, "");
     if (
         output.length === 0 ||
-        output.split("/").some((part) => part === "" || part === "." || part === "..")
+        output
+            .split("/")
+            .some((part) => part === "" || part === "." || part === "..")
     ) {
         throw new Error(
             `Retained UI image path '${logicalPath}' is not a bounded root-relative asset path.`,
         );
     }
-    source = resolveBundledAsset(source, context.options.fileName, context.options);
+    source = resolveBundledAsset(
+        source,
+        context.options.fileName,
+        context.options,
+    );
     source = canonicalLocalAssetSource(source, context.options.fileName);
     const key = `ui-image:${source}:${output}`;
     const existing = context.assets.get(key);
@@ -273,8 +261,7 @@ export function canonicalLocalAssetSource(
 ): string {
     if (
         isDataUrl(source) ||
-        (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(source) &&
-            !isAbsolute(source))
+        (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(source) && !isAbsolute(source))
     ) {
         return source;
     }
@@ -283,9 +270,7 @@ export function canonicalLocalAssetSource(
         ? resolve(source)
         : resolve(entryDirectory, source);
     if (!existsSync(absoluteSource)) return source;
-    return relative(entryDirectory, absoluteSource)
-        .split(sep)
-        .join("/");
+    return relative(entryDirectory, absoluteSource).split(sep).join("/");
 }
 
 /**
@@ -318,26 +303,26 @@ export function assetRecord(
         kind === "gltf" && /\.gltf$/i.test(sourceName)
             ? sourceName.replace(/\.gltf$/i, ".glb")
             : kind === "hdr-environment"
-                ? sourceName.replace(/\.hdr$/i, ".bblhdr")
-            : kind === "dds-environment"
+              ? sourceName.replace(/\.hdr$/i, ".bblhdr")
+              : kind === "dds-environment"
                 ? sourceName.replace(/\.dds$/i, ".bblhdr")
-            // A drawn atlas names the module that draws it; what lands
-            // beside the executable is the PNG that module returns.
-            : kind === "sprite-atlas"
-                ? `${basenameWithoutExtension(sourceName)}.png`
-            // A pixels module likewise names the module; what lands beside
-            // the executable is the raw RGBA buffer it built.
-            : kind === "pixels"
-                ? `${basenameWithoutExtension(sourceName)}.rgba`
-            // Every splat container packages to the one row layout, so the
-            // extension names what lands beside the executable, not what the
-            // scene fetched.
-            : SPLAT_ASSET_KINDS.has(kind)
-                ? `${basenameWithoutExtension(sourceName)}.splat`
-            // Basis keeps its .ktx asset name for the packaged mip payload.
-            : kind === "basis"
-                ? `${basenameWithoutExtension(sourceName)}.ktx`
-            : sourceName;
+                : // A drawn atlas names the module that draws it; what lands
+                  // beside the executable is the PNG that module returns.
+                  kind === "sprite-atlas"
+                  ? `${basenameWithoutExtension(sourceName)}.png`
+                  : // A pixels module likewise names the module; what lands beside
+                    // the executable is the raw RGBA buffer it built.
+                    kind === "pixels"
+                    ? `${basenameWithoutExtension(sourceName)}.rgba`
+                    : // Every splat container packages to the one row layout, so the
+                      // extension names what lands beside the executable, not what the
+                      // scene fetched.
+                      SPLAT_ASSET_KINDS.has(kind)
+                      ? `${basenameWithoutExtension(sourceName)}.splat`
+                      : // Basis keeps its .ktx asset name for the packaged mip payload.
+                        kind === "basis"
+                        ? `${basenameWithoutExtension(sourceName)}.ktx`
+                        : sourceName;
     const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
     const output =
         kind === "babylon"
@@ -346,14 +331,9 @@ export function assetRecord(
     if (inline) {
         source =
             "generated:data-url:" +
-            createHash("sha256")
-                .update(materializationSource)
-                .digest("hex");
+            createHash("sha256").update(materializationSource).digest("hex");
         const existing = assetPayloads.get(source);
-        if (
-            existing !== undefined &&
-            existing !== materializationSource
-        ) {
+        if (existing !== undefined && existing !== materializationSource) {
             throw new Error(
                 `Data URL asset identity collision for '${source}'.`,
             );
@@ -387,9 +367,7 @@ function executedModuleReference(
     if (!context.symbols.isModuleExport(unwrapped)) return undefined;
     const modulePath = context.symbols.declarationSourcePath(unwrapped);
     if (!modulePath) return undefined;
-    const root = findRepositoryRoot(
-        dirname(resolve(context.options.fileName)),
-    );
+    const root = findRepositoryRoot(dirname(resolve(context.options.fileName)));
     return {
         module: relative(root, modulePath).split(sep).join("/"),
         exportName: unwrapped.text,
@@ -397,12 +375,10 @@ function executedModuleReference(
 }
 
 /** What `executedModuleReference` reads; the asset registry is a superset. */
-export interface ExecutedModuleReferenceContext
-    extends Pick<LoweringServices,
-        | "symbols"
-        | "options"
-        | "unwrap"
-    > {}
+export interface ExecutedModuleReferenceContext extends Pick<
+    LoweringServices,
+    "symbols" | "options" | "unwrap"
+> {}
 
 /**
  * The asset a zero-argument scene-module call produces, registered under
@@ -429,10 +405,7 @@ function registerExecutedModuleAsset(
         return undefined;
     }
     if (unwrapped.arguments.length !== 0) {
-        context.fail(
-            unwrapped,
-            `A ${label} factory takes no arguments.`,
-        );
+        context.fail(unwrapped, `A ${label} factory takes no arguments.`);
     }
     const asset = registerAsset(
         context,
@@ -499,10 +472,7 @@ export function probePixelsAsset(
     // A module call with arguments is a runtime producer, not the
     // zero-argument generation hook. Declining it here lets the intrinsic's
     // native Uint8Array path compile the call normally.
-    if (
-        ts.isCallExpression(unwrapped) &&
-        unwrapped.arguments.length !== 0
-    ) {
+    if (ts.isCallExpression(unwrapped) && unwrapped.arguments.length !== 0) {
         return undefined;
     }
     return registerExecutedModuleAsset(
@@ -533,14 +503,9 @@ export function resolveBundledAsset(
     }
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));
-        const local = resolve(
-            entryDirectory,
-            `.${source}`,
-        );
+        const local = resolve(entryDirectory, `.${source}`);
         if (existsSync(local)) {
-            return relative(entryDirectory, local)
-                .split(sep)
-                .join("/");
+            return relative(entryDirectory, local).split(sep).join("/");
         }
     }
     if (source.startsWith("/")) {
@@ -584,12 +549,10 @@ function hash(value: string): string {
  * not, because the pin's own graph loader is what would have to run.
  */
 interface StaticGraphDocumentContext
-    extends ExecutedModuleReferenceContext,
-    StaticJsonContext,
-    Pick<LoweringServices,
-        | "lookupOptional"
-        | "fail"
-    > {}
+    extends
+        ExecutedModuleReferenceContext,
+        StaticJsonContext,
+        Pick<LoweringServices, "lookupOptional" | "fail"> {}
 
 type StaticGraphDocument =
     | { kind: "literal"; graph: Record<string, unknown> }

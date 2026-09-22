@@ -139,9 +139,7 @@ function flattenGridUniforms(source: string): string {
         ],
     ] as const) {
         if (!pattern.test(text)) {
-            gridLiftError(
-                `fragment no longer reads ${pattern.source}`,
-            );
+            gridLiftError(`fragment no longer reads ${pattern.source}`);
         }
         pattern.lastIndex = 0;
         text = text.replace(pattern, replacement);
@@ -246,9 +244,9 @@ export function gridFragmentWgsl(
     );
     fragment = fragment.replace(
         sumFold,
-        `var grid=clamp(x+y+z,0.0,1.0);if (shaderUniforms.options.z>0.5){grid=${
-            maxFold.slice("let grid=".length)
-        }}`,
+        `var grid=clamp(x+y+z,0.0,1.0);if (shaderUniforms.options.z>0.5){grid=${maxFold.slice(
+            "let grid=".length,
+        )}}`,
     );
     fragment = fragment.replace(
         opacitySeam,
@@ -305,9 +303,7 @@ export function gridVertexWgsl(
     );
     const leftover = /shaderSystem\.\w+/.exec(vertex);
     if (leftover) {
-        gridLiftError(
-            `vertex reads '${leftover[0]}', which has no plan slot`,
-        );
+        gridLiftError(`vertex reads '${leftover[0]}', which has no plan slot`);
     }
     return `// ${provenance}
 struct VertexUniforms {

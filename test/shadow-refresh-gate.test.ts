@@ -65,18 +65,16 @@ test("swaps the floating-origin term for the camera key on the CSM arm", () => {
 });
 
 test("carries forceRefreshEveryFrame into the ESM and CSM records", () => {
-    const esm = shadowFactorySource(
-        new LoweringContext(),
-        ["shadow:esm"],
-    ).source;
+    const esm = shadowFactorySource(new LoweringContext(), [
+        "shadow:esm",
+    ]).source;
     assert.match(
         esm,
         /create_esm_directional_shadow_generator\([\s\S]{0,1200}generator\.force_refresh_every_frame = options\.force_refresh_every_frame;/,
     );
-    const csm = shadowFactorySource(
-        new LoweringContext(),
-        ["shadow:csm"],
-    ).source;
+    const csm = shadowFactorySource(new LoweringContext(), [
+        "shadow:csm",
+    ]).source;
     assert.match(
         csm,
         /create_csm_directional_shadow_generator\([\s\S]{0,1200}generator\.force_refresh_every_frame = options\.force_refresh_every_frame;/,
@@ -87,10 +85,9 @@ test("bumps the caster-list identity on every re-registration", () => {
     // The pin rebuilds its task state when handed a new caster array, and
     // the fresh state's -1 sentinels force the next render; the counter is
     // that identity change for the gate.
-    const source = shadowFactorySource(
-        new LoweringContext(),
-        ["shadow:pcf"],
-    ).source;
+    const source = shadowFactorySource(new LoweringContext(), [
+        "shadow:pcf",
+    ]).source;
     assert.match(
         source,
         /void set_shadow_task_caster_meshes\([\s\S]{0,900}\+\+engine\.shadow_generators\[generator\.value\]\.caster_list_version;/,
@@ -151,14 +148,21 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
     );
     assert.match(
         shared,
-        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instanced && active_instances > 0/,
+        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instanced &&\s*active_instances > 0/,
     );
-    assert.match(shared, /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/);
+    assert.match(
+        shared,
+        /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/,
+    );
     assert.doesNotMatch(shared, /A thin-instanced mesh is a caster/);
 
     const context = new LoweringContext();
-    const header = pinnedShadowHeader(context, ["shadow:csm"]) + csmShadowHeader(context);
-    assert.match(header, /std::array<float, 16> instance\{\};\s*bool has_instance = false;/);
+    const header =
+        pinnedShadowHeader(context, ["shadow:csm"]) + csmShadowHeader(context);
+    assert.match(
+        header,
+        /std::array<float, 16> instance\{\};\s*bool has_instance = false;/,
+    );
     assert.match(header, /inline bool csm_instance_contributes\(/);
     assert.match(
         header,
@@ -178,7 +182,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
     assert.match(
         sdl,
-        /shadow_pipeline_info[\s\S]{0,1800}if \(!variant_fragment_shader\) continue;\s*state\.shader_pipelines\[variant\]/,
+        /shadow_pipeline_info[\s\S]{0,1800}if \(!variant_fragment_shader\)\s+continue;\s*state\.shader_pipelines\[variant\]/,
     );
     assert.match(
         sdl,
@@ -193,18 +197,27 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
     assert.match(
         dawn,
-        /depth_stencil\.format = shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
+        /depth_stencil\.format =\s*shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
     );
     assert.match(
         dawn,
-        /descriptor\.fragment = shadow_pass &&\s*shader_info\s*\? nullptr/,
+        /descriptor\.fragment =\s*shadow_pass &&\s*shader_info\s*\? nullptr/,
     );
-    assert.match(dawn, /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/);
+    assert.match(
+        dawn,
+        /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/,
+    );
     // Reflection describes uniform blocks, not whether a fragment stage
     // exists. A color shader without a fragment UBO is not a shadow caster.
     const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
-    assert.match(renderer, /shader_shadow_variants\.at\(material\.shader_variant\) = true;/);
-    assert.match(renderer, /task\.render\.shadow_generator\.value != invalid_handle/);
+    assert.match(
+        renderer,
+        /shader_shadow_variants\.at\(material\.shader_variant\) = true;/,
+    );
+    assert.match(
+        renderer,
+        /task\.render\.shadow_generator\.value != invalid_handle/,
+    );
     assert.doesNotMatch(sdl, /if \(!info\.fragment\.present\)/);
     // A custom caster keeps the same reflected groups as its colour
     // sibling. In particular, group 0 is the caller's vertex storage -- it
@@ -219,14 +232,8 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         dawn,
         /descriptor\.layout = shader_info\s*\? shader_pipeline_layout_for\(state, shader_variant\)\s*: mesh_pipeline_layout_for\(state\)/,
     );
-    assert.match(
-        dawn,
-        /esm_shadow_index,\s*render_task\.view_projection\);/,
-    );
-    assert.match(
-        dawn,
-        /sync_shader_storage_buffers\(state, engine\);/,
-    );
+    assert.match(dawn, /esm_shadow_index,\s*render_task\.view_projection\);/);
+    assert.match(dawn, /sync_shader_storage_buffers\(state, engine\);/);
 });
 
 test("resolves forceRefreshEveryFrame into the emitted options", () => {
@@ -259,10 +266,7 @@ test("resolves forceRefreshEveryFrame into the emitted options", () => {
         compile("\n                forceRefreshEveryFrame: true,"),
         /EsmDirectionalShadowOptions\{[^}]*true, 0u\}/,
     );
-    assert.match(
-        compile(""),
-        /EsmDirectionalShadowOptions\{[^}]*false, 0u\}/,
-    );
+    assert.match(compile(""), /EsmDirectionalShadowOptions\{[^}]*false, 0u\}/);
 });
 
 test("carries forceRefreshEveryFrame on the PCF directional factory", () => {
@@ -290,10 +294,7 @@ test("carries forceRefreshEveryFrame on the PCF directional factory", () => {
 
         void main();
     `).cpp;
-    assert.match(
-        emitted,
-        /PcfDirectionalShadowOptions\{[^}]*true\}/,
-    );
+    assert.match(emitted, /PcfDirectionalShadowOptions\{[^}]*true\}/);
 });
 
 test("still refuses forceRefreshEveryFrame on the PCF SPOT factory", () => {

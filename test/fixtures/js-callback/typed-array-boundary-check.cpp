@@ -2,8 +2,7 @@
 #include <cassert>
 #include <iostream>
 
-template <typename T>
-void check_numeric_array() {
+template <typename T> void check_numeric_array() {
     using namespace bbl::js;
     std::vector<T> native{T{1}, T{2}, T{3}, T{4}};
     TypedArray<T> values = native;

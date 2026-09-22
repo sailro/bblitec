@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("recursive async callbacks retain activations, ordered effects and rejection boundaries", t => {
-    const directory=resolve("artifacts/async-recursion");
-    mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const result=compileSource(`
+test("recursive async callbacks retain activations, ordered effects and rejection boundaries", (t) => {
+    const directory = resolve("artifacts/async-recursion");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
         worker.terminate();
         let visits=0;
@@ -93,12 +97,30 @@ test("recursive async callbacks retain activations, ordered effects and rejectio
             if(chosen!==1||other!==4||sideEffects!=="14")throw new Error("lazy suspension");
             schedule();
         })();
-    `,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);
-    if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

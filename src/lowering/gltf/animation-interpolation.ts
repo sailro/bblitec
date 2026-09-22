@@ -1,10 +1,7 @@
 import ts from "typescript";
 import { PinnedNumericLowerer } from "../pinned-numeric-lowerer.js";
 import { cppPrecedence } from "../pinned-numeric-expression.js";
-import {
-    pinnedNumericMathCalls,
-    pinnedMathCall,
-} from "../pinned-operators.js";
+import { pinnedNumericMathCalls, pinnedMathCall } from "../pinned-operators.js";
 import {
     CppExpressionScope,
     RenderedCpp,
@@ -22,17 +19,30 @@ import {
 
 export { cppPrecedence } from "../pinned-numeric-expression.js";
 
-const expressionLowerers = new WeakMap<CppExpressionScope, PinnedNumericLowerer>();
+const expressionLowerers = new WeakMap<
+    CppExpressionScope,
+    PinnedNumericLowerer
+>();
 const interpolationMathCalls = pinnedNumericMathCalls("deduced");
 
-export function renderCppExpression(scope: CppExpressionScope, expression: ts.Expression): RenderedCpp {
+export function renderCppExpression(
+    scope: CppExpressionScope,
+    expression: ts.Expression,
+): RenderedCpp {
     let lowerer = expressionLowerers.get(scope);
     if (!lowerer) {
         lowerer = new PinnedNumericLowerer(scope.file, {
-            bindings: new Map(), calls: interpolationMathCalls, booleanOr: true, booleanAnd: true,
+            bindings: new Map(),
+            calls: interpolationMathCalls,
+            booleanOr: true,
+            booleanAnd: true,
             foldConditions: false,
-            expressionSpelling: { parentheses: "minimal", numeric: scope.numeric, remainder: "integral" },
-            expression: node => renderCppLeaf(scope, node),
+            expressionSpelling: {
+                parentheses: "minimal",
+                numeric: scope.numeric,
+                remainder: "integral",
+            },
+            expression: (node) => renderCppLeaf(scope, node),
         });
         expressionLowerers.set(scope, lowerer);
     }
@@ -92,15 +102,21 @@ function renderCppLeaf(
             scope.file,
             expression,
             ts.isPropertyAccessExpression(callee) &&
-                    ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "Math"
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Math"
                 ? `calls Math.${callee.name.text}, which has no lowering`
                 : "calls a function this lowering cannot carry",
         );
     }
-    if (ts.isNumericLiteral(expression) || ts.isPrefixUnaryExpression(expression) ||
-        ts.isConditionalExpression(expression) || ts.isBinaryExpression(expression) ||
-        expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) return undefined;
+    if (
+        ts.isNumericLiteral(expression) ||
+        ts.isPrefixUnaryExpression(expression) ||
+        ts.isConditionalExpression(expression) ||
+        ts.isBinaryExpression(expression) ||
+        expression.kind === ts.SyntaxKind.TrueKeyword ||
+        expression.kind === ts.SyntaxKind.FalseKeyword
+    )
+        return undefined;
     refuseNode(
         scope.symbol,
         scope.file,
@@ -128,10 +144,7 @@ function interpolationDeclarationLines(
  * Float32Array store, rounded exactly once. A long Hermite sum splits
  * its top-level terms greedily at the segment's 60-column measure.
  */
-function castEntryLines(
-    indent: string,
-    terms: readonly string[],
-): string[] {
+function castEntryLines(indent: string, terms: readonly string[]): string[] {
     const joined = terms.join(" + ");
     if (joined.length <= 60) {
         return [`${indent}static_cast<float>(${joined}),`];
@@ -164,9 +177,7 @@ function vecBuildLines(
 ): string[] {
     return [
         `${indent}${open}`,
-        ...entries.flatMap((terms) =>
-            castEntryLines(`${indent}    `, terms)
-        ),
+        ...entries.flatMap((terms) => castEntryLines(`${indent}    `, terms)),
         `${indent}${close}`,
     ];
 }
@@ -199,9 +210,7 @@ function emitNormalizeQuaternion(
     }
     const bufferName = parameters[0]!;
     const offsetName = parameters[1]!;
-    const laneOf = (
-        target: ts.ElementAccessExpression,
-    ): number | undefined => {
+    const laneOf = (target: ts.ElementAccessExpression): number | undefined => {
         if (
             !ts.isIdentifier(target.expression) ||
             target.expression.text !== bufferName
@@ -254,10 +263,7 @@ function emitNormalizeQuaternion(
         );
         index += 1;
         const read = unwrapExpression(binding.initializer);
-        if (
-            !ts.isElementAccessExpression(read) ||
-            laneOf(read) !== lane
-        ) {
+        if (!ts.isElementAccessExpression(read) || laneOf(read) !== lane) {
             refuseNode(
                 symbol,
                 file,
@@ -312,8 +318,7 @@ function emitNormalizeQuaternion(
     }
     const branch = guard.thenStatement.statements;
     const inverseBinding = singleBinding(symbol, file, branch[0], guard);
-    const inverseName = renames[inverseBinding.name] ??
-        inverseBinding.name;
+    const inverseName = renames[inverseBinding.name] ?? inverseBinding.name;
     lines.push(
         ...interpolationDeclarationLines(
             "        ",
@@ -429,16 +434,13 @@ function emitInterpolateQuaternion(
         target: ts.ElementAccessExpression,
     ): number | undefined =>
         ts.isIdentifier(target.expression) &&
-            target.expression.text === outName &&
-            ts.isNumericLiteral(target.argumentExpression)
+        target.expression.text === outName &&
+        ts.isNumericLiteral(target.argumentExpression)
             ? Number.parseInt(target.argumentExpression.text, 10)
             : undefined;
     const emitLocal = (statement: ts.Statement | undefined): void => {
         const binding = singleBinding(symbol, file, statement, declaration);
-        const rendered = renderCppExpression(
-            scope,
-            binding.initializer,
-        ).text;
+        const rendered = renderCppExpression(scope, binding.initializer).text;
         const cppName = renames[binding.name] ?? binding.name;
         lines.push(
             ...interpolationDeclarationLines(
@@ -474,13 +476,13 @@ function emitInterpolateQuaternion(
         `    if (${renderCppExpression(scope, flip.expression).text}) {`,
     );
     for (const inner of flip.thenStatement.statements) {
-        const assignment = ts.isExpressionStatement(inner) &&
-                ts.isBinaryExpression(inner.expression) &&
-                inner.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(inner.expression.left)
-            ? inner.expression
-            : undefined;
+        const assignment =
+            ts.isExpressionStatement(inner) &&
+            ts.isBinaryExpression(inner.expression) &&
+            inner.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(inner.expression.left)
+                ? inner.expression
+                : undefined;
         const target = assignment
             ? names.get((assignment.left as ts.Identifier).text)
             : undefined;
@@ -524,29 +526,23 @@ function emitInterpolateQuaternion(
         "        // components round to float32 between the two steps.",
     );
     const branch = nearParallel.thenStatement.statements;
-    const lerpStores = collectLaneStores(
-        scope,
-        branch,
-        0,
-        4,
-        literalLaneOf,
-    );
+    const lerpStores = collectLaneStores(scope, branch, 0, 4, literalLaneOf);
     const normalizeCall = branch[lerpStores.next];
-    const callExpression = normalizeCall &&
-            ts.isExpressionStatement(normalizeCall) &&
-            ts.isCallExpression(normalizeCall.expression)
-        ? normalizeCall.expression
-        : undefined;
-    const callTargetsScratch = callExpression !== undefined &&
+    const callExpression =
+        normalizeCall &&
+        ts.isExpressionStatement(normalizeCall) &&
+        ts.isCallExpression(normalizeCall.expression)
+            ? normalizeCall.expression
+            : undefined;
+    const callTargetsScratch =
+        callExpression !== undefined &&
         ts.isIdentifier(callExpression.expression) &&
         callExpression.expression.text === normalizePinName &&
         callExpression.arguments.length === 2 &&
         ts.isIdentifier(callExpression.arguments[0]!) &&
-        (callExpression.arguments[0] as ts.Identifier).text === outName &&
+        callExpression.arguments[0].text === outName &&
         ts.isNumericLiteral(callExpression.arguments[1]!) &&
-        Number(
-            (callExpression.arguments[1] as ts.NumericLiteral).text,
-        ) === 0;
+        Number(callExpression.arguments[1].text) === 0;
     const trailingReturn = branch[lerpStores.next + 1];
     if (
         !callTargetsScratch ||
@@ -685,10 +681,11 @@ function emitCubicHermite(
             if (!ts.isObjectBindingPattern(binding.name)) continue;
             for (const element of binding.name.elements) {
                 if (!ts.isIdentifier(element.name)) continue;
-                const property = element.propertyName &&
-                        ts.isIdentifier(element.propertyName)
-                    ? element.propertyName.text
-                    : element.name.text;
+                const property =
+                    element.propertyName &&
+                    ts.isIdentifier(element.propertyName)
+                        ? element.propertyName.text
+                        : element.name.text;
                 if (property === "output") {
                     outputName = element.name.text;
                 }
@@ -760,26 +757,18 @@ function emitCubicHermite(
     const isKeyBase = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
         statement.declarationList.declarations.length === 1 &&
-        statement.declarationList.declarations[0]!.initializer !==
-            undefined &&
-        keyBaseOf(
-            statement.declarationList.declarations[0]!.initializer!,
-        ) !== undefined;
+        statement.declarationList.declarations[0]!.initializer !== undefined &&
+        keyBaseOf(statement.declarationList.declarations[0]!.initializer) !==
+            undefined;
     let index = 0;
     // The Hermite basis. The pin's fractional time is derived from the
     // first `f2 = f * f` binding, so an upstream rename cannot silently
     // detach the correspondence.
-    const firstBinding = singleBinding(
-        symbol,
-        file,
-        block[index],
-        cubicIf,
-    );
+    const firstBinding = singleBinding(symbol, file, block[index], cubicIf);
     const firstInitializer = unwrapExpression(firstBinding.initializer);
     if (
         !ts.isBinaryExpression(firstInitializer) ||
-        firstInitializer.operatorToken.kind !==
-            ts.SyntaxKind.AsteriskToken ||
+        firstInitializer.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
         !ts.isIdentifier(firstInitializer.left) ||
         !ts.isIdentifier(firstInitializer.right) ||
         firstInitializer.left.text !== firstInitializer.right.text
@@ -813,10 +802,7 @@ function emitCubicHermite(
     ) {
         const binding = singleBinding(symbol, file, block[index], cubicIf);
         index += 1;
-        const rendered = renderCppExpression(
-            scope,
-            binding.initializer,
-        ).text;
+        const rendered = renderCppExpression(scope, binding.initializer).text;
         const cpp = renames[binding.name] ?? binding.name;
         hermiteLines.push(
             ...interpolationDeclarationLines(
@@ -868,8 +854,7 @@ function emitCubicHermite(
         );
     }
     if (
-        [...keySides.values()].filter((side) => side === "left")
-                .length !== 1 ||
+        [...keySides.values()].filter((side) => side === "left").length !== 1 ||
         keySides.size !== 2
     ) {
         refuseNode(
@@ -891,8 +876,7 @@ function emitCubicHermite(
         !ts.isIdentifier(loop.initializer.declarations[0]!.name) ||
         !loop.condition ||
         !ts.isBinaryExpression(loop.condition) ||
-        loop.condition.operatorToken.kind !==
-            ts.SyntaxKind.LessThanToken ||
+        loop.condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
         !ts.isIdentifier(loop.condition.right) ||
         loop.condition.right.text !== strideName ||
         !ts.isBlock(loop.statement)
@@ -904,15 +888,10 @@ function emitCubicHermite(
             "no longer loops one component at a time over the stride",
         );
     }
-    const componentName = (
-        loop.initializer.declarations[0]!.name as ts.Identifier
-    ).text;
+    const componentName = loop.initializer.declarations[0]!.name.text;
     const loopBody = loop.statement.statements;
     /** `output[k…]`, `output[k + stride…]`, `output[k + n·stride…]`. */
-    const tripletRead = (
-        expression: ts.Expression,
-        lane: number,
-    ): string => {
+    const tripletRead = (expression: ts.Expression, lane: number): string => {
         const read = unwrapExpression(expression);
         if (
             !ts.isElementAccessExpression(read) ||
@@ -969,12 +948,12 @@ function emitCubicHermite(
                 slot = Number(slotExpression.left.text);
             }
         }
-        const side = keyLocal === undefined
-            ? undefined
-            : keySides.get(keyLocal);
-        const vecName = side === undefined || slot === undefined
-            ? undefined
-            : cubicTripletSlots[side][slot];
+        const side =
+            keyLocal === undefined ? undefined : keySides.get(keyLocal);
+        const vecName =
+            side === undefined || slot === undefined
+                ? undefined
+                : cubicTripletSlots[side][slot];
         if (vecName === undefined) {
             refuseNode(
                 symbol,
@@ -1060,17 +1039,18 @@ function emitCubicHermite(
             );
         }
         const store = loopBody[loopBody.length - 1];
-        const assignment = store &&
-                ts.isExpressionStatement(store) &&
-                ts.isBinaryExpression(store.expression) &&
-                store.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken
-            ? store.expression
-            : undefined;
+        const assignment =
+            store &&
+            ts.isExpressionStatement(store) &&
+            ts.isBinaryExpression(store.expression) &&
+            store.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                ? store.expression
+                : undefined;
         const target = assignment
             ? unwrapExpression(assignment.left)
             : undefined;
-        const storesComponent = target !== undefined &&
+        const storesComponent =
+            target !== undefined &&
             ts.isElementAccessExpression(target) &&
             ts.isIdentifier(target.expression) &&
             target.expression.text === dstName &&
@@ -1099,35 +1079,27 @@ function emitCubicHermite(
     // the rotation variant, statically empty for vec3 — then `return`.
     const quatGuard = block[index];
     index += 1;
-    const guardCall = quatGuard &&
-            ts.isIfStatement(quatGuard) &&
-            !quatGuard.elseStatement &&
-            ts.isIdentifier(quatGuard.expression) &&
-            quatGuard.expression.text === isQuatName &&
-            ts.isBlock(quatGuard.thenStatement) &&
-            quatGuard.thenStatement.statements.length === 1 &&
-            ts.isExpressionStatement(
-                quatGuard.thenStatement.statements[0]!,
-            ) &&
-            ts.isCallExpression(
-                (
-                    quatGuard.thenStatement
-                        .statements[0] as ts.ExpressionStatement
-                ).expression,
-            )
-        ? (
-            quatGuard.thenStatement
-                .statements[0] as ts.ExpressionStatement
-        ).expression as ts.CallExpression
-        : undefined;
-    const guardNormalizes = guardCall !== undefined &&
+    const guardCall =
+        quatGuard &&
+        ts.isIfStatement(quatGuard) &&
+        !quatGuard.elseStatement &&
+        ts.isIdentifier(quatGuard.expression) &&
+        quatGuard.expression.text === isQuatName &&
+        ts.isBlock(quatGuard.thenStatement) &&
+        quatGuard.thenStatement.statements.length === 1 &&
+        ts.isExpressionStatement(quatGuard.thenStatement.statements[0]!) &&
+        ts.isCallExpression(quatGuard.thenStatement.statements[0].expression)
+            ? quatGuard.thenStatement.statements[0].expression
+            : undefined;
+    const guardNormalizes =
+        guardCall !== undefined &&
         ts.isIdentifier(guardCall.expression) &&
         guardCall.expression.text === normalizePinName &&
         guardCall.arguments.length === 2 &&
         ts.isIdentifier(guardCall.arguments[0]!) &&
-        (guardCall.arguments[0] as ts.Identifier).text === dstName &&
+        guardCall.arguments[0].text === dstName &&
         ts.isIdentifier(guardCall.arguments[1]!) &&
-        (guardCall.arguments[1] as ts.Identifier).text === dstOffsetName;
+        guardCall.arguments[1].text === dstOffsetName;
     const trailing = block[index];
     index += 1;
     if (
@@ -1246,7 +1218,7 @@ function assertPinnedStepSelection(
         refuseNode(
             symbol,
             file,
-            stepBranch!,
+            stepBranch,
             "no longer selects the later key at or past its own time",
         );
     if (
@@ -1258,8 +1230,7 @@ function assertPinnedStepSelection(
         !ts.isIdentifier(conditional.condition.left) ||
         conditional.condition.left.text !== timeName ||
         !ts.isBinaryExpression(conditional.whenTrue) ||
-        conditional.whenTrue.operatorToken.kind !==
-            ts.SyntaxKind.PlusToken ||
+        conditional.whenTrue.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
         !ts.isIdentifier(conditional.whenFalse) ||
         !ts.isIdentifier(conditional.whenTrue.left)
     ) {
@@ -1320,9 +1291,7 @@ function assertPinnedStepSelection(
  * arithmetic to lower, so what it contributes here is a gate on the key it
  * selects.
  */
-export function lowerAnimationInterpolationCpp(
-    file: ts.SourceFile,
-): string {
+export function lowerAnimationInterpolationCpp(file: ts.SourceFile): string {
     const normalize = topLevelFunction(file, "normalizeQuat4");
     const slerp = topLevelFunction(file, "quatSlerp");
     const evaluate = topLevelFunction(file, "evaluateSampler");

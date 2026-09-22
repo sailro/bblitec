@@ -20,7 +20,9 @@ struct DomEventTarget {
     static DomEventTarget window() { return {}; }
     static DomEventTarget document() { return {DomEventTargetKind::Document, {}}; }
     static DomEventTarget canvas() { return {DomEventTargetKind::Canvas, {}}; }
-    static DomEventTarget node(std::uint32_t element) { return {DomEventTargetKind::Element, element}; }
+    static DomEventTarget node(std::uint32_t element) {
+        return {DomEventTargetKind::Element, element};
+    }
     [[nodiscard]] bool operator==(const DomEventTarget&) const = default;
 };
 
@@ -32,7 +34,9 @@ struct DomEventTargetValue {
     [[nodiscard]] bool operator==(const DomEventTargetValue&) const = default;
 };
 
-inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) { return {&engine, target}; }
+inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) {
+    return {&engine, target};
+}
 
 struct DomEventState {
     std::string type;
@@ -62,18 +66,21 @@ struct DomEventState {
         propagation_stopped = true;
         immediate_propagation_stopped = true;
     }
-    [[nodiscard]] bool can_prevent_default() const noexcept { return cancelable && !passive_listener; }
+    [[nodiscard]] bool can_prevent_default() const noexcept {
+        return cancelable && !passive_listener;
+    }
 };
 
-template <typename Event>
-DomEventState& dom_event_state(const Event& event) {
-    if (!event.dom) throw std::logic_error("This platform callback has no DOM dispatch state.");
+template <typename Event> DomEventState& dom_event_state(const Event& event) {
+    if (!event.dom)
+        throw std::logic_error("This platform callback has no DOM dispatch state.");
     return *event.dom;
 }
 
 template <typename Event> Engine& dom_event_owner(const Event& event) {
     const auto* owner = dom_event_state(event).dispatch_engine;
-    if (!owner) throw std::logic_error("The event has no active owning document.");
+    if (!owner)
+        throw std::logic_error("The event has no active owning document.");
     return *dom_event_state(event).dispatch_engine;
 }
 
@@ -82,6 +89,6 @@ template <typename Event> Engine& dom_event_owner(const Event& event) {
 template <> struct std::hash<bbl::DomEventTargetValue> {
     std::size_t operator()(const bbl::DomEventTargetValue& value) const noexcept {
         return std::hash<bbl::Engine*>{}(value.engine) ^
-            (static_cast<std::size_t>(value.target.kind) << 32) ^ value.target.element;
+               (static_cast<std::size_t>(value.target.kind) << 32) ^ value.target.element;
     }
 };

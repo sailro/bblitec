@@ -111,10 +111,7 @@ function compileLightDirection(
     const expression = context.objectProperty(object, "lightDirection");
     if (kind === "color") {
         if (expression) {
-            context.fail(
-                expression,
-                `${intrinsic} reads no lightDirection.`,
-            );
+            context.fail(expression, `${intrinsic} reads no lightDirection.`);
         }
         return "bbl::ScreenSpaceLightDirection{}";
     }
@@ -135,7 +132,10 @@ function compileLightDirection(
         const component = (field: string): string => {
             const value = context.objectProperty(unwrapped, field);
             if (!value) {
-                context.fail(unwrapped, `lightDirection is missing '${field}'.`);
+                context.fail(
+                    unwrapped,
+                    `lightDirection is missing '${field}'.`,
+                );
             }
             return doubleLiteral(
                 compileStaticNumber(context, value, `lightDirection.${field}`),

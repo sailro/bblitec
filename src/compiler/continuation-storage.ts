@@ -23,11 +23,18 @@ export function persistContinuationLocals(
         for (const [lineIndex, line] of part.lines.entries()) {
             if (line.length - line.trimStart().length !== indentation) continue;
             const declaration = nativeDeclarations.get(line.trimStart());
-            if (!declaration || declaration.type.startsWith("static ")) continue;
+            if (!declaration || declaration.type.startsWith("static "))
+                continue;
             declarations.set(declaration.name, {
-                part: partIndex, line: lineIndex, type: declaration.type,
-                initializer: declaration.initialization === "default" ? `${declaration.type}{}` :
-                    declaration.initialization === "direct" ? `${declaration.type}{${declaration.initializer}}` : declaration.initializer,
+                part: partIndex,
+                line: lineIndex,
+                type: declaration.type,
+                initializer:
+                    declaration.initialization === "default"
+                        ? `${declaration.type}{}`
+                        : declaration.initialization === "direct"
+                          ? `${declaration.type}{${declaration.initializer}}`
+                          : declaration.initializer,
                 indent: " ".repeat(indentation),
                 dependencies: declaration.dependencies ?? [],
             });
@@ -35,8 +42,13 @@ export function persistContinuationLocals(
     }
     const retained = new Set<string>();
     for (const [name, sequence] of locals) {
-        if (!declarations.has(name) && [...uses.get(name) ?? []].some(use => use > sequence)) {
-            throw new Error(`Missing native declaration metadata for continuation local '${name}'.`);
+        if (
+            !declarations.has(name) &&
+            [...(uses.get(name) ?? [])].some((use) => use > sequence)
+        ) {
+            throw new Error(
+                `Missing native declaration metadata for continuation local '${name}'.`,
+            );
         }
     }
     const retain = (name: string): void => {
@@ -47,15 +59,25 @@ export function persistContinuationLocals(
         for (const dependency of declaration.dependencies) retain(dependency);
     };
     for (const [name, declaration] of declarations) {
-        if ([...uses.get(name) ?? []].some(sequence => sequence > parts[declaration.part]!.sequence)) retain(name);
+        if (
+            [...(uses.get(name) ?? [])].some(
+                (sequence) => sequence > parts[declaration.part]!.sequence,
+            )
+        )
+            retain(name);
     }
     for (const name of retained) {
         const declaration = declarations.get(name)!;
         const { part, line, type, initializer, indent } = declaration;
-        const resultType = type === "auto" || type === "const auto" ? "" :
-            type.includes("auto") ? " -> decltype(auto)" : ` -> ${type}`;
+        const resultType =
+            type === "auto" || type === "const auto"
+                ? ""
+                : type.includes("auto")
+                  ? " -> decltype(auto)"
+                  : ` -> ${type}`;
         const result = type.endsWith("&") ? `(${initializer})` : initializer;
-        parts[part]!.lines[line] = `${indent}auto& ${name} = ${storage}->retain([&]()${resultType} { return ${result}; });`;
+        parts[part]!.lines[line] =
+            `${indent}auto& ${name} = ${storage}->retain([&]()${resultType} { return ${result}; });`;
     }
     return retained.size > 0;
 }

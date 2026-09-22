@@ -148,8 +148,8 @@ export function writePinnedPbrVariants(
         `${JSON.stringify(
             // The stage text is already on disk beside this file; repeating it
             // inside the manifest would double every variant.
-            manifest.map(({ vertexWgsl: _v, fragmentWgsl: _f, ...entry }) =>
-                entry
+            manifest.map(
+                ({ vertexWgsl: _v, fragmentWgsl: _f, ...entry }) => entry,
             ),
             undefined,
             4,

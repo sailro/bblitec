@@ -70,7 +70,10 @@ import {
     type RecordEntry,
     type ValueModel,
 } from "./pinned-partial-evaluator.js";
-import { lowerNodeParticleProviderShared, lowerNodeParticleProviderState } from "./node-particle-provider-lowerer.js";
+import {
+    lowerNodeParticleProviderShared,
+    lowerNodeParticleProviderState,
+} from "./node-particle-provider-lowerer.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
 const systemModule = "src/particle/particle-system.ts";
@@ -187,8 +190,10 @@ const COLUMN_STORAGE: Record<
 };
 
 const COLUMN_CONSTRUCTORS = new Map<string, ColumnSpec["element"]>([
-    ["Float32Array", "f32"], ["Float64Array", "f64"],
-    ["Uint32Array", "u32"], ["Uint8Array", "u8"],
+    ["Float32Array", "f32"],
+    ["Float64Array", "f64"],
+    ["Uint32Array", "u32"],
+    ["Uint8Array", "u8"],
 ]);
 
 /** A `let` the build declares and a closure may capture and mutate. */
@@ -261,9 +266,14 @@ const indexedCall: NonNullable<PinnedNumericScope["indexedCall"]> = (
     list,
     index,
     args,
-) => `${list.cpp}[static_cast<std::size_t>(${index})](state, ${args.join(", ")})`;
+) =>
+    `${list.cpp}[static_cast<std::size_t>(${index})](state, ${args.join(", ")})`;
 
-function recordDeclaration(cpp: string, type: RecordShapeType, initial: readonly number[]): string {
+function recordDeclaration(
+    cpp: string,
+    type: RecordShapeType,
+    initial: readonly number[],
+): string {
     return `${RECORD_SHAPES.get(type)!.storage} ${cpp}{${initial
         .map((value) => doubleLiteral(value))
         .join(", ")}};`;
@@ -322,12 +332,17 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
 
     public lower(): string {
         this.capacity = this.pinnedCapacity();
-        this.traverse(this.facts.systemBlockId, (block) => this.evaluateBlock(block));
+        this.traverse(this.facts.systemBlockId, (block) =>
+            this.evaluateBlock(block),
+        );
         this.assertFacts();
         for (const closure of this.steps) this.lowerClosure(closure, "void");
-        for (const closure of this.slots.values()) this.lowerClosure(closure, "void");
-        for (const closure of this.hooks.values()) this.lowerClosure(closure, "void");
-        if (this.provider) this.functions.push(lowerNodeParticleProviderState(this.context));
+        for (const closure of this.slots.values())
+            this.lowerClosure(closure, "void");
+        for (const closure of this.hooks.values())
+            this.lowerClosure(closure, "void");
+        if (this.provider)
+            this.functions.push(lowerNodeParticleProviderState(this.context));
         const simulation = this.lowerSimulation();
         return this.emit(simulation);
     }
@@ -385,7 +400,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     private connected(input: LiveGraphInput): boolean {
         const fn = this.owner.pinnedFunction(buildModule, "isInputConnected");
         const truth = this.evaluator.truthiness(
-            this.callFunction(fn, [{ k: "json", value: input }], fn.declaration),
+            this.callFunction(
+                fn,
+                [{ k: "json", value: input }],
+                fn.declaration,
+            ),
             fn.declaration,
         );
         return truth.k === "static" && truth.value;
@@ -407,7 +426,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             frame(env, file, buildModule),
         );
         if (value.k !== "number") {
-            this.context.contractError(declaration, "buildNodeParticleSet capacity");
+            this.context.contractError(
+                declaration,
+                "buildNodeParticleSet capacity",
+            );
         }
         return value.value;
     }
@@ -462,7 +484,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             frame(env, file, module),
         );
         if (completion.kind === "break") {
-            this.context.contractError(build, "A build body broke out of nothing.");
+            this.context.contractError(
+                build,
+                "A build body broke out of nothing.",
+            );
         }
     }
 
@@ -472,7 +497,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         args: readonly StaticValue[],
         site: ts.Node,
     ): StaticValue {
-        return this.evaluator.callFunction({ k: "function", ...fn }, [...args], site);
+        return this.evaluator.callFunction(
+            { k: "function", ...fn },
+            [...args],
+            site,
+        );
     }
 
     // ── The value model ───────────────────────────────────────────────────
@@ -504,7 +533,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     }
 
     /** A `let` is a cell a closure may capture and mutate; a `const` is its value. */
-    public declared(name: string, value: StaticValue, mutable: boolean): StaticValue {
+    public declared(
+        name: string,
+        value: StaticValue,
+        mutable: boolean,
+    ): StaticValue {
         return mutable ? { k: "cell", cell: { name, value } } : value;
     }
 
@@ -516,9 +549,16 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         return binding.k === "cell" ? binding.cell.value : binding;
     }
 
-    public assign(binding: StaticValue | undefined, value: StaticValue, target: ts.Identifier): void {
+    public assign(
+        binding: StaticValue | undefined,
+        value: StaticValue,
+        target: ts.Identifier,
+    ): void {
         if (binding?.k !== "cell") {
-            this.context.contractError(target, "assignment to a non-let binding");
+            this.context.contractError(
+                target,
+                "assignment to a non-let binding",
+            );
         }
         binding.cell.value = value;
     }
@@ -527,7 +567,8 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         if (name === "undefined") return { k: "undefined" };
         if (name === "Array") return { k: "array-builtin", name };
         const columnElement = COLUMN_CONSTRUCTORS.get(name);
-        if (columnElement) return { k: "column-constructor", element: columnElement };
+        if (columnElement)
+            return { k: "column-constructor", element: columnElement };
         return undefined;
     }
 
@@ -541,11 +582,19 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     ): StaticValue {
         return {
             k: "closure",
-            closure: { arrow: node, env: at.env, file: at.file, module: at.module, blockId: this.currentBlockId },
+            closure: {
+                arrow: node,
+                env: at.env,
+                file: at.file,
+                module: at.module,
+                blockId: this.currentBlockId,
+            },
         };
     }
 
-    public callable(value: StaticValue): Callable<StaticValue, StaticValue> | undefined {
+    public callable(
+        value: StaticValue,
+    ): Callable<StaticValue, StaticValue> | undefined {
         if (value.k === "closure") {
             const { arrow, env, file, module } = value.closure;
             return { k: "closure", node: arrow, env, file, module };
@@ -575,7 +624,9 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         throw new Error(
             "The pin's node-particle build threw while lowering block " +
                 `${this.currentBlockId}: ${
-                    message?.k === "string" ? message.value : thrown.getText(at.file)
+                    message?.k === "string"
+                        ? message.value
+                        : thrown.getText(at.file)
                 }`,
         );
     }
@@ -604,7 +655,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         }
         if ((SLOT_NAMES as readonly string[]).includes(name)) {
             if (value.k !== "closure") {
-                this.context.contractError(site, `slot '${name}' takes a closure`);
+                this.context.contractError(
+                    site,
+                    `slot '${name}' takes a closure`,
+                );
             }
             if (this.slots.has(name as SlotName)) {
                 this.context.contractError(
@@ -650,7 +704,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         }
         const type = recordTypeOfMembers(names);
         if (!type) {
-            this.context.contractError(node, `record literal shape {${names.join(", ")}}`);
+            this.context.contractError(
+                node,
+                `record literal shape {${names.join(", ")}}`,
+            );
         }
         return { k: "record", record: { type, initial } };
     }
@@ -662,7 +719,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     }
 
     /** One member read off a static value. */
-    public member(owner: StaticValue, name: string, site: ts.Node): StaticValue {
+    public member(
+        owner: StaticValue,
+        name: string,
+        site: ts.Node,
+    ): StaticValue {
         switch (owner.k) {
             case "json": {
                 const value = owner.value;
@@ -673,11 +734,14 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             }
             case "block": {
                 const block = owner.block;
-                if (name === "serialized") return { k: "json", value: block.serialized };
+                if (name === "serialized")
+                    return { k: "json", value: block.serialized };
                 if (name === "id") return { k: "number", value: block.id };
-                if (name === "className") return { k: "string", value: block.className };
+                if (name === "className")
+                    return { k: "string", value: block.className };
                 if (name === "name") return { k: "string", value: block.name };
-                if (name === "inputs") return { k: "json", value: block.inputs };
+                if (name === "inputs")
+                    return { k: "json", value: block.inputs };
                 break;
             }
             case "ctx":
@@ -694,14 +758,17 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                         value: this.systemBlock().serialized.isLocal === true,
                     };
                 }
-                if (name === "capacity") return { k: "number", value: this.capacity };
+                if (name === "capacity")
+                    return { k: "number", value: this.capacity };
                 if (name === "textureBaseUrl") return { k: "undefined" };
                 break;
             case "system":
                 if (name === "buffer") return { k: "buffer" };
                 if (name === "updateSteps") return { k: "step-list" };
                 if (this.systemFields.has(name)) {
-                    const value = this.systemInit.get(name) ?? this.systemFields.get(name)!;
+                    const value =
+                        this.systemInit.get(name) ??
+                        this.systemFields.get(name)!;
                     return typeof value === "number"
                         ? { k: "number", value }
                         : { k: "boolean", value };
@@ -713,20 +780,26 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 }
                 break;
             case "buffer": {
-                const column = this.columns.find((candidate) => candidate.name === name);
+                const column = this.columns.find(
+                    (candidate) => candidate.name === name,
+                );
                 if (column) return { k: "column", column };
-                if (name === "capacity") return { k: "number", value: this.capacity };
+                if (name === "capacity")
+                    return { k: "number", value: this.capacity };
                 break;
             }
             case "record": {
-                const index = RECORD_SHAPES.get(owner.record.type)!.members.indexOf(name);
+                const index = RECORD_SHAPES.get(
+                    owner.record.type,
+                )!.members.indexOf(name);
                 if (index >= 0) {
                     return { k: "number", value: owner.record.initial[index]! };
                 }
                 break;
             }
             case "array-builtin":
-                if (name === "isArray") return { k: "array-builtin", name: "isArray" };
+                if (name === "isArray")
+                    return { k: "array-builtin", name: "isArray" };
                 break;
             default:
                 break;
@@ -737,8 +810,16 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         );
     }
 
-    public element(owner: StaticValue, index: StaticValue, node: ts.Node): StaticValue {
-        if (owner.k === "json" && Array.isArray(owner.value) && index.k === "number") {
+    public element(
+        owner: StaticValue,
+        index: StaticValue,
+        node: ts.Node,
+    ): StaticValue {
+        if (
+            owner.k === "json" &&
+            Array.isArray(owner.value) &&
+            index.k === "number"
+        ) {
             return fromJson(owner.value[index.value]);
         }
         return this.context.contractError(node, "build-time element access");
@@ -757,14 +838,21 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         if (method !== "push" || owner.k !== "step-list") return undefined;
         const [step, ...rest] = args();
         if (rest.length > 0 || step?.k !== "closure") {
-            this.context.contractError(node, "updateSteps.push takes one closure");
+            this.context.contractError(
+                node,
+                "updateSteps.push takes one closure",
+            );
         }
         step.closure.cpp ??= `update_step_${this.currentBlockId}`;
         this.steps.push(step.closure);
         return { k: "number", value: this.steps.length };
     }
 
-    public invoke(target: StaticValue, args: StaticValue[], site: ts.Node): StaticValue | undefined {
+    public invoke(
+        target: StaticValue,
+        args: StaticValue[],
+        site: ts.Node,
+    ): StaticValue | undefined {
         switch (target.k) {
             case "ctx-method":
                 return this.ctxCall(target.name, args, site);
@@ -773,7 +861,8 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                     const [value] = args;
                     return {
                         k: "boolean",
-                        value: value?.k === "json" && Array.isArray(value.value),
+                        value:
+                            value?.k === "json" && Array.isArray(value.value),
                     };
                 }
                 return undefined;
@@ -808,29 +897,87 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             return undefined;
         }
         const [buffer, name, ctor] = args;
-        if (buffer?.k !== "buffer" || name?.k !== "string" || ctor?.k !== "column-constructor") {
-            return this.context.contractError(site, "column requires a buffer, static name and typed-array constructor");
+        if (
+            buffer?.k !== "buffer" ||
+            name?.k !== "string" ||
+            ctor?.k !== "column-constructor"
+        ) {
+            return this.context.contractError(
+                site,
+                "column requires a buffer, static name and typed-array constructor",
+            );
         }
-        this.context.expectShapeCount(declaration, "buffer._columns.get(name)", "column lookup");
-        this.context.expectShapeCount(declaration, "new ctor(buffer.capacity)", "column allocation");
-        this.context.expectShapeCount(declaration, "buffer._columns.set(name, created)", "column identity");
-        this.context.expectShapeCount(declaration, "buffer._all.push(created)", "column swap-remove membership");
-        this.context.assertStatementInventory(declaration, declaration.body!.statements,
-            "column", "optional columns preserve allocation and insertion order",
-            ["variable statement", "if statement", "variable statement", "expression statement", "expression statement", "return statement"]);
+        this.context.expectShapeCount(
+            declaration,
+            "buffer._columns.get(name)",
+            "column lookup",
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "new ctor(buffer.capacity)",
+            "column allocation",
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "buffer._columns.set(name, created)",
+            "column identity",
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "buffer._all.push(created)",
+            "column swap-remove membership",
+        );
+        this.context.assertStatementInventory(
+            declaration,
+            declaration.body!.statements,
+            "column",
+            "optional columns preserve allocation and insertion order",
+            [
+                "variable statement",
+                "if statement",
+                "variable statement",
+                "expression statement",
+                "expression statement",
+                "return statement",
+            ],
+        );
         const reuse = declaration.body!.statements.find(ts.isIfStatement)!;
-        this.context.assertExpressionShape(reuse.expression, "existing", "column reuse guard");
-        const returned = this.context.findNodes(reuse.thenStatement, ts.isReturnStatement);
-        if (reuse.elseStatement || returned.length !== 1 || !returned[0]!.expression) {
-            this.context.contractError(reuse, "column must return existing storage before allocation");
+        this.context.assertExpressionShape(
+            reuse.expression,
+            "existing",
+            "column reuse guard",
+        );
+        const returned = this.context.findNodes(
+            reuse.thenStatement,
+            ts.isReturnStatement,
+        );
+        if (
+            reuse.elseStatement ||
+            returned.length !== 1 ||
+            !returned[0]!.expression
+        ) {
+            this.context.contractError(
+                reuse,
+                "column must return existing storage before allocation",
+            );
         }
-        this.context.assertExpressionShape(returned[0]!.expression!, "existing as T", "column reused storage");
+        this.context.assertExpressionShape(
+            returned[0]!.expression,
+            "existing as T",
+            "column reused storage",
+        );
         let column = this.dynamicColumns.get(name.value);
         if (!column) {
-            column = { name: name.value, element: ctor.element,
-                cpp: `column_${snakeCase(name.value.replace(/[^a-zA-Z0-9_]/g, "_"))}` };
+            column = {
+                name: name.value,
+                element: ctor.element,
+                cpp: `column_${snakeCase(name.value.replace(/[^a-zA-Z0-9_]/g, "_"))}`,
+            };
             if (this.columns.some((existing) => existing.cpp === column!.cpp)) {
-                return this.context.contractError(site, `column '${name.value}' has a colliding native name`);
+                return this.context.contractError(
+                    site,
+                    `column '${name.value}' has a colliding native name`,
+                );
             }
             this.dynamicColumns.set(name.value, column);
             this.columns.push(column);
@@ -854,13 +1001,20 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             case "isConnected": {
                 const name = args[1];
                 if (!block || name?.k !== "string") break;
-                const input = block.inputs.find((candidate) => candidate.name === name.value);
-                return { k: "boolean", value: input !== undefined && this.connected(input) };
+                const input = block.inputs.find(
+                    (candidate) => candidate.name === name.value,
+                );
+                return {
+                    k: "boolean",
+                    value: input !== undefined && this.connected(input),
+                };
             }
             case "input": {
                 const name = args[1];
                 if (!block || name?.k !== "string") break;
-                const input = block.inputs.find((candidate) => candidate.name === name.value);
+                const input = block.inputs.find(
+                    (candidate) => candidate.name === name.value,
+                );
                 if (input && this.connected(input)) {
                     const getter = this.outputs.get(
                         `${input.targetBlockId}:${input.targetConnectionName}`,
@@ -882,7 +1036,8 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             }
             case "setOutput": {
                 const [id, name, getter] = args;
-                if (id?.k !== "number" || name?.k !== "string" || !getter) break;
+                if (id?.k !== "number" || name?.k !== "string" || !getter)
+                    break;
                 if (getter.k === "closure") {
                     getter.closure.cpp ??= `getter_${id.value}_${snakeCase(name.value)}`;
                 }
@@ -905,7 +1060,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
      */
     private parseInputLiteral(input: LiveGraphInput): StaticValue | undefined {
         const fn = this.owner.pinnedFunction(buildModule, "parseInputLiteral");
-        const result = this.callFunction(fn, [{ k: "json", value: input }], fn.declaration);
+        const result = this.callFunction(
+            fn,
+            [{ k: "json", value: input }],
+            fn.declaration,
+        );
         if (result.k === "undefined") return undefined;
         return this.constantGetter(result, fn.declaration);
     }
@@ -922,17 +1081,26 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 site,
             );
         }
-        if (value.k === "number") return { k: "constant-getter", value: value.value };
-        if (value.k === "record") return { k: "constant-getter", value: value.record };
+        if (value.k === "number")
+            return { k: "constant-getter", value: value.value };
+        if (value.k === "record")
+            return { k: "constant-getter", value: value.record };
         if (value.k === "null") return { k: "constant-getter", value: null };
-        return this.context.contractError(site, `a ${value.k} is not a constant getter`);
+        return this.context.contractError(
+            site,
+            `a ${value.k} is not a constant getter`,
+        );
     }
 
     // ── Cross-checks against the executed pin ─────────────────────────────
 
     private assertFacts(): void {
         const facts = this.facts;
-        const mismatch = (what: string, expected: unknown, actual: unknown): never => {
+        const mismatch = (
+            what: string,
+            expected: unknown,
+            actual: unknown,
+        ): never => {
             throw new Error(
                 `The live node-particle lowering of set ${facts.set} system ` +
                     `${facts.system} derived ${what} = ${JSON.stringify(actual)}, but ` +
@@ -950,20 +1118,33 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             mismatch("the capacity", facts.capacity, this.capacity);
         }
         if (this.steps.length !== facts.updateSteps) {
-            mismatch("the update step count", facts.updateSteps, this.steps.length);
+            mismatch(
+                "the update step count",
+                facts.updateSteps,
+                this.steps.length,
+            );
         }
         for (const slot of SLOT_NAMES) {
             if (this.slots.has(slot) !== facts.slots[slot]) {
-                mismatch(`slot ${slot}`, facts.slots[slot], this.slots.has(slot));
+                mismatch(
+                    `slot ${slot}`,
+                    facts.slots[slot],
+                    this.slots.has(slot),
+                );
             }
         }
         for (const hook of HOOK_NAMES) {
-            const installed = this.hooks.has(hook) || (this.provider && hook === "_prepareFrame");
-            if (facts.hooks[hook] !== installed) mismatch(`hook ${hook}`, facts.hooks[hook], installed);
+            const installed =
+                this.hooks.has(hook) ||
+                (this.provider && hook === "_prepareFrame");
+            if (facts.hooks[hook] !== installed)
+                mismatch(`hook ${hook}`, facts.hooks[hook], installed);
         }
         const scalar = (name: string, expected: number): void => {
-            const actual = this.systemInit.get(name) ?? this.systemFields.get(name);
-            if (actual !== expected) mismatch(`system.${name}`, expected, actual);
+            const actual =
+                this.systemInit.get(name) ?? this.systemFields.get(name);
+            if (actual !== expected)
+                mismatch(`system.${name}`, expected, actual);
         };
         scalar("emitRate", facts.emitRate);
         scalar("updateSpeed", facts.updateSpeed);
@@ -975,16 +1156,26 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
 
     private memberFor(cpp: string, declaration: string): string {
         if (this.members.has(cpp)) {
-            throw new Error(`The live node-particle state already has a member '${cpp}'.`);
+            throw new Error(
+                `The live node-particle state already has a member '${cpp}'.`,
+            );
         }
         this.members.set(cpp, declaration);
         return cpp;
     }
 
-    private recordMember(record: RecordValue, blockId: number, name: string): string {
+    private recordMember(
+        record: RecordValue,
+        blockId: number,
+        name: string,
+    ): string {
         record.member ??= this.memberFor(
             `b${blockId}_${snakeCase(name)}`,
-            recordDeclaration(`b${blockId}_${snakeCase(name)}`, record.type, record.initial),
+            recordDeclaration(
+                `b${blockId}_${snakeCase(name)}`,
+                record.type,
+                record.initial,
+            ),
         );
         return record.member;
     }
@@ -1005,18 +1196,31 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             const value = cell.value;
             if (assigned && isRecordType(assigned)) {
                 cell.type = assigned;
-                cell.member = this.memberFor(cpp, `${RECORD_SHAPES.get(assigned)!.storage} ${cpp}{};`);
+                cell.member = this.memberFor(
+                    cpp,
+                    `${RECORD_SHAPES.get(assigned)!.storage} ${cpp}{};`,
+                );
             } else if (value.k === "number") {
                 cell.type = "scalar";
-                cell.member = this.memberFor(cpp, `double ${cpp} = ${doubleLiteral(value.value)};`);
+                cell.member = this.memberFor(
+                    cpp,
+                    `double ${cpp} = ${doubleLiteral(value.value)};`,
+                );
             } else if (value.k === "boolean") {
                 cell.type = "bool";
-                cell.member = this.memberFor(cpp, `bool ${cpp} = ${value.value ? "true" : "false"};`);
+                cell.member = this.memberFor(
+                    cpp,
+                    `bool ${cpp} = ${value.value ? "true" : "false"};`,
+                );
             } else if (value.k === "record") {
                 cell.type = value.record.type;
                 cell.member = this.memberFor(
                     cpp,
-                    recordDeclaration(cpp, value.record.type, value.record.initial),
+                    recordDeclaration(
+                        cpp,
+                        value.record.type,
+                        value.record.initial,
+                    ),
                 );
             } else {
                 throw new Error(
@@ -1029,7 +1233,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     }
 
     private columnBinding(column: ColumnSpec): PinnedBinding {
-        return { cpp: `state.${column.cpp}`, type: COLUMN_STORAGE[column.element].binding };
+        return {
+            cpp: `state.${column.cpp}`,
+            type: COLUMN_STORAGE[column.element].binding,
+        };
     }
 
     /** The text-keyed bindings a `system` or `buffer` local exposes. */
@@ -1041,13 +1248,23 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     ): void {
         bindings.set(local, { cpp: "state", type: "opaque" });
         const buffer = kind === "buffer" ? local : `${local}.buffer`;
-        if (kind === "system") bindings.set(buffer, { cpp: "state", type: "opaque" });
+        if (kind === "system")
+            bindings.set(buffer, { cpp: "state", type: "opaque" });
         for (const column of this.columns) {
-            bindings.set(`${buffer}.${column.name}`, this.columnBinding(column));
+            bindings.set(
+                `${buffer}.${column.name}`,
+                this.columnBinding(column),
+            );
         }
         bindings.set(`${buffer}.alive`, { cpp: "state.alive", type: "scalar" });
-        bindings.set(`${buffer}.capacity`, { cpp: "state.capacity", type: "scalar" });
-        bindings.set(`${buffer}._nextId`, { cpp: "state.next_id", type: "scalar" });
+        bindings.set(`${buffer}.capacity`, {
+            cpp: "state.capacity",
+            type: "scalar",
+        });
+        bindings.set(`${buffer}._nextId`, {
+            cpp: "state.next_id",
+            type: "scalar",
+        });
         if (kind !== "system") return;
         for (const [field, value] of this.systemFields) {
             bindings.set(`${local}.${field}`, {
@@ -1055,28 +1272,49 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 type: typeof value === "boolean" ? "bool" : "scalar",
             });
         }
-        bindings.set(`${local}.updateSteps`, { cpp: "update_steps", type: "function-list" });
+        bindings.set(`${local}.updateSteps`, {
+            cpp: "update_steps",
+            type: "function-list",
+        });
         for (const slot of SLOT_NAMES) {
             const closure = this.slots.get(slot);
             if (closure) {
                 const cpp = closure.cpp!;
-                bindings.set(`${local}.${slot}`, { cpp, type: "bool", staticBoolean: true });
-                calls.set(`${local}.${slot}`, (args) => `${cpp}(state, ${args.join(", ")})`);
+                bindings.set(`${local}.${slot}`, {
+                    cpp,
+                    type: "bool",
+                    staticBoolean: true,
+                });
+                calls.set(
+                    `${local}.${slot}`,
+                    (args) => `${cpp}(state, ${args.join(", ")})`,
+                );
             } else {
                 bindings.set(`${local}.${slot}`, absentBinding());
             }
         }
         for (const hook of [...HOOK_NAMES, "texture"]) {
             if (hook === "_prepareFrame" && this.provider) {
-                bindings.set(`${local}.${hook}`, { cpp: "prepare_frame", type: "bool", staticBoolean: true });
+                bindings.set(`${local}.${hook}`, {
+                    cpp: "prepare_frame",
+                    type: "bool",
+                    staticBoolean: true,
+                });
                 calls.set(`${local}.${hook}`, () => "prepare_frame(state)");
                 continue;
             }
             const closure = this.hooks.get(hook as HookName);
             if (closure) {
                 const cpp = closure.cpp!;
-                bindings.set(`${local}.${hook}`, { cpp, type: "bool", staticBoolean: true });
-                calls.set(`${local}.${hook}`, (args) => `${cpp}(state, ${args.join(", ")})`);
+                bindings.set(`${local}.${hook}`, {
+                    cpp,
+                    type: "bool",
+                    staticBoolean: true,
+                });
+                calls.set(
+                    `${local}.${hook}`,
+                    (args) => `${cpp}(state, ${args.join(", ")})`,
+                );
             } else {
                 bindings.set(`${local}.${hook}`, absentBinding());
             }
@@ -1111,7 +1349,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isIdentifier(node.left)
             ) {
-                assigned.set(node.left.text, this.context.unwrapExpression(node.right));
+                assigned.set(
+                    node.left.text,
+                    this.context.unwrapExpression(node.right),
+                );
             }
             ts.forEachChild(node, visit);
         };
@@ -1124,7 +1365,14 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             if (!value) continue;
             if (value.k === "cell") {
                 if (value.cell.value.k === "closure") {
-                    this.bindValue(name, value.cell.value, blockId, bindings, calls, callShapes);
+                    this.bindValue(
+                        name,
+                        value.cell.value,
+                        blockId,
+                        bindings,
+                        calls,
+                        callShapes,
+                    );
                 } else {
                     cells.push([name, value.cell]);
                 }
@@ -1137,9 +1385,20 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         for (const call of callSites) {
             const callee = this.context.unwrapExpression(call.expression);
             if (!ts.isIdentifier(callee)) continue;
-            const value = env.lookup(callee.text) ?? this.evaluator.findFree(callee.text, file, module);
+            const value =
+                env.lookup(callee.text) ??
+                this.evaluator.findFree(callee.text, file, module);
             if (value?.k === "function") {
-                this.bindFunctionCall(callee.text, value.fn, call, env, blockId, calls, callShapes, file);
+                this.bindFunctionCall(
+                    callee.text,
+                    value.fn,
+                    call,
+                    env,
+                    blockId,
+                    calls,
+                    callShapes,
+                    file,
+                );
             }
         }
         for (const [name, cell] of cells) {
@@ -1197,7 +1456,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 return;
             case "record": {
                 const member = this.recordMember(value.record, blockId, name);
-                bindings.set(name, { cpp: `state.${member}`, type: value.record.type });
+                bindings.set(name, {
+                    cpp: `state.${member}`,
+                    type: value.record.type,
+                });
                 return;
             }
             case "closure": {
@@ -1227,7 +1489,9 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 } else {
                     const literal = recordLiteralCpp(
                         constant.type,
-                        constant.initial.map((component) => doubleLiteral(component)),
+                        constant.initial.map((component) =>
+                            doubleLiteral(component),
+                        ),
                     );
                     calls.set(name, () => literal);
                     callShapes.set(name, constant.type);
@@ -1236,7 +1500,12 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 return;
             }
             case "matrix":
-                bindings.set(name, { cpp: this.provider ? "state.emitter_world_matrix" : "emitter_world_matrix", type: "f32" });
+                bindings.set(name, {
+                    cpp: this.provider
+                        ? "state.emitter_world_matrix"
+                        : "emitter_world_matrix",
+                    type: "f32",
+                });
                 return;
             case "emitter":
                 bindings.set(name, { cpp: "state.emitter", type: "vec3" });
@@ -1272,15 +1541,16 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     ): void {
         const text = call.getText(file);
         if (calls.has(text)) return;
-        const annotations = fn.declaration.parameters.map((parameter) =>
-            parameter.type?.getText(fn.file) ?? "",
+        const annotations = fn.declaration.parameters.map(
+            (parameter) => parameter.type?.getText(fn.file) ?? "",
         );
         const returns = fn.declaration.type?.getText(fn.file);
         // What `sharedFunction` cannot take: a getter parameter, or a
         // record result.
         const perCallSite =
             annotations.includes("NpeGetter") ||
-            annotations.includes("ParticleSystem") || annotations.includes("ParticleBuffer") ||
+            annotations.includes("ParticleSystem") ||
+            annotations.includes("ParticleBuffer") ||
             (returns !== "void" && returns !== "number");
         if (!perCallSite) {
             const shared = this.owner.sharedFunction(fn, annotations);
@@ -1297,7 +1567,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             }
             const argument = call.arguments[index];
             if (!argument) {
-                this.context.contractError(call, `argument ${index} of '${name}'`);
+                this.context.contractError(
+                    call,
+                    `argument ${index} of '${name}'`,
+                );
             }
             if (annotations[index] === "number") {
                 numeric.push(parameter.name.text);
@@ -1305,7 +1578,9 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 return;
             }
             const unwrapped = this.context.unwrapExpression(argument);
-            const value = ts.isIdentifier(unwrapped) ? env.lookup(unwrapped.text) : undefined;
+            const value = ts.isIdentifier(unwrapped)
+                ? env.lookup(unwrapped.text)
+                : undefined;
             if (!value) {
                 this.context.contractError(
                     argument,
@@ -1325,8 +1600,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             returns === "void" ? "void" : undefined,
             `${fn.module}#${fn.declaration.name!.text}`,
         );
-        calls.set(text, (args) =>
-            `${instance}(state${positions.map((index) => `, ${args[index]}`).join("")})`,
+        calls.set(
+            text,
+            (args) =>
+                `${instance}(state${positions.map((index) => `, ${args[index]}`).join("")})`,
         );
         if (shape !== "void") callShapes.set(text, shape);
     }
@@ -1338,7 +1615,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     ): PinnedBinding["type"] | "void" {
         if (closure.shape) return closure.shape;
         if (!closure.cpp) {
-            this.context.contractError(closure.arrow, "a closure reached before it was installed");
+            this.context.contractError(
+                closure.arrow,
+                "a closure reached before it was installed",
+            );
         }
         const params = closure.arrow.parameters.map((parameter) =>
             parameter.name.getText(closure.file),
@@ -1431,7 +1711,9 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             .map((name) => `, [[maybe_unused]] double ${name}`)
             .join("")})`;
         this.prototypes.push(`${signature};`);
-        this.functions.push(`// ${provenance}\n${signature} {\n${lines.join("\n")}\n}`);
+        this.functions.push(
+            `// ${provenance}\n${signature} {\n${lines.join("\n")}\n}`,
+        );
         return shape;
     }
 
@@ -1453,13 +1735,17 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             extra: ReadonlyArray<readonly [pinned: string, cpp: string]>,
             returns: "void" | "double",
         ): void => {
-            const { file, declaration } = this.context.functionDeclaration(module, name);
+            const { file, declaration } = this.context.functionDeclaration(
+                module,
+                name,
+            );
             const first = declaration.parameters[0];
             const annotation = first?.type?.getText(file);
             if (
                 !first ||
                 !ts.isIdentifier(first.name) ||
-                (annotation !== "ParticleSystem" && annotation !== "ParticleBuffer")
+                (annotation !== "ParticleSystem" &&
+                    annotation !== "ParticleBuffer")
             ) {
                 this.context.contractError(
                     declaration,
@@ -1481,7 +1767,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 "killParticle",
                 "spawnParticle",
             ]) {
-                calls.set(callee, (args) => `${snakeCase(callee)}(${args.join(", ")})`);
+                calls.set(
+                    callee,
+                    (args) => `${snakeCase(callee)}(${args.join(", ")})`,
+                );
             }
             const parameters: PinnedFunctionParameter[] = [
                 {
@@ -1499,24 +1788,50 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 })),
             ];
             memberBindings.delete(first.name.text);
-            const parts = lowerPinnedFunctionParts(this.context, module, name, parameters, {
-                cppName: cpp,
-                returns,
-                calls,
-                booleanAnd: true,
-                booleanOr: true,
-                memberBindings,
-                leadingParameters: ["State& state"],
-                indexedCall,
-            });
+            const parts = lowerPinnedFunctionParts(
+                this.context,
+                module,
+                name,
+                parameters,
+                {
+                    cppName: cpp,
+                    returns,
+                    calls,
+                    booleanAnd: true,
+                    booleanOr: true,
+                    memberBindings,
+                    leadingParameters: ["State& state"],
+                    indexedCall,
+                },
+            );
             this.prototypes.push(`${parts.declaration};`);
-            lowered.push(`// ${parts.provenance}\n${parts.declaration} {\n${parts.body}\n}`);
+            lowered.push(
+                `// ${parts.provenance}\n${parts.declaration} {\n${parts.body}\n}`,
+            );
         };
-        lowerPinned(bufferModule, "spawnParticle", "spawn_particle", [], "double");
+        lowerPinned(
+            bufferModule,
+            "spawnParticle",
+            "spawn_particle",
+            [],
+            "double",
+        );
         lowered.push(this.killParticleCpp());
         this.prototypes.push("void kill_particle(State& state, double i);");
-        lowerPinned(systemModule, "startParticleSystem", "start_particle_system", [], "void");
-        lowerPinned(systemModule, "stopParticleSystem", "stop_particle_system", [], "void");
+        lowerPinned(
+            systemModule,
+            "startParticleSystem",
+            "start_particle_system",
+            [],
+            "void",
+        );
+        lowerPinned(
+            systemModule,
+            "stopParticleSystem",
+            "stop_particle_system",
+            [],
+            "void",
+        );
         lowerPinned(
             systemModule,
             "updateExisting",
@@ -1524,7 +1839,13 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             [["scaledUpdateSpeed", "scaled_update_speed"]],
             "void",
         );
-        lowerPinned(systemModule, "createNew", "create_new", [["count", "count"]], "void");
+        lowerPinned(
+            systemModule,
+            "createNew",
+            "create_new",
+            [["count", "count"]],
+            "void",
+        );
         lowerPinned(
             systemModule,
             "animateParticleSystem",
@@ -1560,16 +1881,26 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             "killParticle release",
         );
         const guard = declaration.body!.statements.find(ts.isIfStatement)!;
-        this.context.assertExpressionShape(guard.expression, "i !== last", "killParticle guard");
-        const copies = this.context.findNodes(guard, ts.isBinaryExpression).filter(
-            (candidate) =>
-                candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+        this.context.assertExpressionShape(
+            guard.expression,
+            "i !== last",
+            "killParticle guard",
         );
+        const copies = this.context
+            .findNodes(guard, ts.isBinaryExpression)
+            .filter(
+                (candidate) =>
+                    candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+            );
         if (
             copies.length !== 1 ||
-            copies[0]!.getText(file).replace(/\s+/g, " ") !== "col[i] = col[last]!"
+            copies[0]!.getText(file).replace(/\s+/g, " ") !==
+                "col[i] = col[last]!"
         ) {
-            this.context.contractError(guard, "killParticle no longer copies each column's last slot.");
+            this.context.contractError(
+                guard,
+                "killParticle no longer copies each column's last slot.",
+            );
         }
         const lines = this.columns.map(
             (column) =>
@@ -1606,7 +1937,9 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         // arms a shape test pruned still named theirs, and the translator
         // never emitted them.
         const emitted = `${this.functions.join("\n")}\n${simulation}`;
-        const members = [...this.members].filter(([cpp]) => emitted.includes(`state.${cpp}`));
+        const members = [...this.members].filter(([cpp]) =>
+            emitted.includes(`state.${cpp}`),
+        );
         const emitterUsed = emitted.includes("state.emitter");
         return `namespace ${this.namespace} {
 
@@ -1618,7 +1951,10 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
  */
 struct State {
 ${this.columns
-    .map((column) => `    ${COLUMN_STORAGE[column.element].vector} ${column.cpp};`)
+    .map(
+        (column) =>
+            `    ${COLUMN_STORAGE[column.element].vector} ${column.cpp};`,
+    )
     .join("\n")}
     double capacity;
     double alive = 0.0;
@@ -1630,22 +1966,33 @@ ${scalarMembers.join("\n")}${
                       .join(", ")}};`
                 : ""
         }
-${this.provider ? `    std::array<float, 16> emitter_world_matrix{};
+${
+    this.provider
+        ? `    std::array<float, 16> emitter_world_matrix{};
     std::array<float, 16> next_emitter_matrix{};
-    bbl::js::Callback<std::array<float, 16>()> emitter_provider;` : ""}
+    bbl::js::Callback<std::array<float, 16>()> emitter_provider;`
+        : ""
+}
 ${members.map(([, declaration]) => `    ${declaration}`).join("\n")}
 
     explicit State(std::size_t capacity_)
         : ${this.columns
-            .map((column) => `${column.cpp}(capacity_, ${COLUMN_STORAGE[column.element].zero})`)
+            .map(
+                (column) =>
+                    `${column.cpp}(capacity_, ${COLUMN_STORAGE[column.element].zero})`,
+            )
             .join(",\n          ")},
           capacity(static_cast<double>(capacity_)) {}
 };
 
-${this.provider ? "" : `// The emitter world matrix the build composed (createTranslationMat4 of the
+${
+    this.provider
+        ? ""
+        : `// The emitter world matrix the build composed (createTranslationMat4 of the
 // emitter option), as the executed pin reported it.
 const std::array<float, 16> emitter_world_matrix = {
-    ${facts.emitterWorldMatrix.map((value) => floatLiteral(value)).join(", ")}};`}
+    ${facts.emitterWorldMatrix.map((value) => floatLiteral(value)).join(", ")}};`
+}
 
 ${this.prototypes.join("\n")}
 
@@ -1672,21 +2019,31 @@ State state(${this.capacity}u);
 export class NodeParticleLiveLowerer {
     private readonly shared = new Map<string, string>();
     private readonly functions = new Map<string, PinnedFunction>();
-    private readonly registries = new Map<string, Map<string, { module: string; exportName: string }>>();
+    private readonly registries = new Map<
+        string,
+        Map<string, { module: string; exportName: string }>
+    >();
     private columns?: ColumnSpec[];
     private systemFields?: Map<string, number | boolean>;
     private walkAsserted = false;
 
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerSystem(graph: LiveGraph, facts: LiveSystemFacts, provider = false): LoweredLiveSystem {
+    public lowerSystem(
+        graph: LiveGraph,
+        facts: LiveSystemFacts,
+        provider = false,
+    ): LoweredLiveSystem {
         if (!this.walkAsserted) {
             this.assertBuildWalk();
             this.walkAsserted = true;
         }
         const namespace = `npe_${facts.set}_${facts.system}`;
         if (provider && !this.shared.has("emitter_provider")) {
-            this.shared.set("emitter_provider", lowerNodeParticleProviderShared(this.context));
+            this.shared.set(
+                "emitter_provider",
+                lowerNodeParticleProviderShared(this.context),
+            );
         }
         const lowering = new SystemLowering(
             this.context,
@@ -1715,7 +2072,10 @@ export class NodeParticleLiveLowerer {
         const key = `${module}#${name}`;
         let fn = this.functions.get(key);
         if (!fn) {
-            const { declaration, file } = this.context.functionDeclaration(module, name);
+            const { declaration, file } = this.context.functionDeclaration(
+                module,
+                name,
+            );
             fn = { declaration, file, module };
             this.functions.set(key, fn);
         }
@@ -1740,26 +2100,63 @@ export class NodeParticleLiveLowerer {
                 : 0;
         if (isLocal && block.className.endsWith("ShapeBlock")) {
             const local = this.registryEntries(
-                "src/particle/node/npe-registry-local-shapes.ts", "loadLocalShapeEvaluator",
+                "src/particle/node/npe-registry-local-shapes.ts",
+                "loadLocalShapeEvaluator",
             ).get(block.className);
-            if (!local) throw new Error(`No pinned local shape evaluator for '${block.className}'.`);
+            if (!local)
+                throw new Error(
+                    `No pinned local shape evaluator for '${block.className}'.`,
+                );
             return local;
         }
         if (block.className === "ParticleInputBlock") {
             const module = "src/particle/node/npe-registry-variants.ts";
-            const { declaration } = this.context.functionDeclaration(module, "loadVariantBlockEvaluator");
-            const clause = this.context.findNodes(declaration, ts.isCaseClause).find((candidate) =>
-                ts.isStringLiteral(candidate.expression) && candidate.expression.text === block.className);
-            const guard = clause ? this.context.findNodes(clause, ts.isIfStatement)[0] : undefined;
-            if (!guard || !ts.isBinaryExpression(guard.expression) ||
-                guard.expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) {
-                this.context.contractError(clause ?? declaration, "Expected the local particle-input variant guard.");
+            const { declaration } = this.context.functionDeclaration(
+                module,
+                "loadVariantBlockEvaluator",
+            );
+            const clause = this.context
+                .findNodes(declaration, ts.isCaseClause)
+                .find(
+                    (candidate) =>
+                        ts.isStringLiteral(candidate.expression) &&
+                        candidate.expression.text === block.className,
+                );
+            const guard = clause
+                ? this.context.findNodes(clause, ts.isIfStatement)[0]
+                : undefined;
+            if (
+                !guard ||
+                !ts.isBinaryExpression(guard.expression) ||
+                guard.expression.operatorToken.kind !==
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+            ) {
+                this.context.contractError(
+                    clause ?? declaration,
+                    "Expected the local particle-input variant guard.",
+                );
             }
-            this.context.assertExpressionShape(guard.expression.left,
-                "block.serialized.contextualValue", "local particle-input variant source");
-            if (contextual === this.context.numericValue(guard.expression.right, declaration.getSourceFile())) {
-                const returned = this.context.findNodes(guard.thenStatement, ts.isReturnStatement)[0];
-                if (!returned) this.context.contractError(guard, "Local input variant returns no evaluator.");
+            this.context.assertExpressionShape(
+                guard.expression.left,
+                "block.serialized.contextualValue",
+                "local particle-input variant source",
+            );
+            if (
+                contextual ===
+                this.context.numericValue(
+                    guard.expression.right,
+                    declaration.getSourceFile(),
+                )
+            ) {
+                const returned = this.context.findNodes(
+                    guard.thenStatement,
+                    ts.isReturnStatement,
+                )[0];
+                if (!returned)
+                    this.context.contractError(
+                        guard,
+                        "Local input variant returns no evaluator.",
+                    );
                 return this.evaluatorReturn(module, returned);
             }
         }
@@ -1771,8 +2168,12 @@ export class NodeParticleLiveLowerer {
         const variant =
             (block.className === "ParticleInputBlock" &&
                 contextual !== 0 &&
-                !((contextual <= 6 && contextual !== 2) || contextual === 0x17)) ||
-            (block.className === "ParticleRandomBlock" && block.serialized.lockMode === 3) ||
+                !(
+                    (contextual <= 6 && contextual !== 2) ||
+                    contextual === 0x17
+                )) ||
+            (block.className === "ParticleRandomBlock" &&
+                block.serialized.lockMode === 3) ||
             (block.className === "ParticleMathBlock" &&
                 left?.targetBlockId === right?.targetBlockId &&
                 left?.targetConnectionName === right?.targetConnectionName) ||
@@ -1789,7 +2190,10 @@ export class NodeParticleLiveLowerer {
                     `evaluator '${block.className}' (block ${block.id}) selects.`,
             );
         }
-        const evaluator = this.registryEntries(registryModule, "loadNpeBlockEvaluator").get(block.className);
+        const evaluator = this.registryEntries(
+            registryModule,
+            "loadNpeBlockEvaluator",
+        ).get(block.className);
         if (!evaluator) {
             throw new Error(
                 `The live node-particle lowering does not cover the block class ` +
@@ -1799,29 +2203,56 @@ export class NodeParticleLiveLowerer {
         return evaluator;
     }
 
-    private registryEntries(module: string, symbol: string): Map<string, { module: string; exportName: string }> {
+    private registryEntries(
+        module: string,
+        symbol: string,
+    ): Map<string, { module: string; exportName: string }> {
         const key = `${module}#${symbol}`;
         const cached = this.registries.get(key);
         if (cached) return cached;
         const { declaration } = this.context.functionDeclaration(
-            module, symbol,
+            module,
+            symbol,
         );
-        const switchStatement = this.context.findNodes(declaration, ts.isSwitchStatement)[0];
+        const switchStatement = this.context.findNodes(
+            declaration,
+            ts.isSwitchStatement,
+        )[0];
         if (!switchStatement) {
-            this.context.contractError(declaration, "The registry is no longer a switch.");
+            this.context.contractError(
+                declaration,
+                "The registry is no longer a switch.",
+            );
         }
-        const entries = new Map<string, { module: string; exportName: string }>();
+        const entries = new Map<
+            string,
+            { module: string; exportName: string }
+        >();
         for (const clause of switchStatement.caseBlock.clauses) {
-            if (!ts.isCaseClause(clause) || !ts.isStringLiteral(clause.expression)) continue;
+            if (
+                !ts.isCaseClause(clause) ||
+                !ts.isStringLiteral(clause.expression)
+            )
+                continue;
             const returned = clause.statements.find(ts.isReturnStatement);
-            if (!returned) this.context.contractError(clause, "Registry arm must return an evaluator.");
-            entries.set(clause.expression.text, this.evaluatorReturn(module, returned));
+            if (!returned)
+                this.context.contractError(
+                    clause,
+                    "Registry arm must return an evaluator.",
+                );
+            entries.set(
+                clause.expression.text,
+                this.evaluatorReturn(module, returned),
+            );
         }
         this.registries.set(key, entries);
         return entries;
     }
 
-    private evaluatorReturn(registry: string, returned: ts.ReturnStatement): { module: string; exportName: string } {
+    private evaluatorReturn(
+        registry: string,
+        returned: ts.ReturnStatement,
+    ): { module: string; exportName: string } {
         return this.context.dynamicImportExport(registry, returned);
     }
 
@@ -1848,7 +2279,10 @@ export class NodeParticleLiveLowerer {
             'block.className === "ParticleRandomBlock" && ' +
                 'block.serialized.lockMode === 3 && onceValueType === "number"',
         );
-        shape("localShape", 'state.isLocal && block.className.endsWith("ShapeBlock")');
+        shape(
+            "localShape",
+            'state.isLocal && block.className.endsWith("ShapeBlock")',
+        );
         shape(
             "variant",
             '(block.className === "ParticleInputBlock" && contextualSource !== 0 && ' +
@@ -1868,7 +2302,9 @@ export class NodeParticleLiveLowerer {
                         : undefined
                     : loop.statement;
                 return body && ts.isIfStatement(body)
-                    ? body.expression.getText(declaration.getSourceFile()).replace(/\s+/g, " ")
+                    ? body.expression
+                          .getText(declaration.getSourceFile())
+                          .replace(/\s+/g, " ")
                     : undefined;
             });
         const expected = [
@@ -1903,7 +2339,12 @@ export class NodeParticleLiveLowerer {
             input.body!.statements,
             "ctx.input",
             "the live lowering restates a body",
-            ["variable statement", "if statement", "if statement", "return statement"],
+            [
+                "variable statement",
+                "if statement",
+                "if statement",
+                "return statement",
+            ],
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(input, "input"),
@@ -1920,7 +2361,8 @@ export class NodeParticleLiveLowerer {
             "parseInputLiteral(input)",
             "ctx.input literal",
         );
-        const returned = input.body!.statements[input.body!.statements.length - 1];
+        const returned =
+            input.body!.statements[input.body!.statements.length - 1];
         if (
             !returned ||
             !ts.isReturnStatement(returned) ||
@@ -1942,19 +2384,26 @@ export class NodeParticleLiveLowerer {
      * whole through `lowerPinnedFunction` the first time any system reaches
      * it. Returns the C++ name.
      */
-    public sharedFunction(fn: PinnedFunction, annotations: readonly string[]): string {
+    public sharedFunction(
+        fn: PinnedFunction,
+        annotations: readonly string[],
+    ): string {
         const name = fn.declaration.name!.text;
         const cpp = `npe_${snakeCase(name)}`;
         if (this.shared.has(cpp)) return cpp;
-        const parameters: PinnedFunctionParameter[] = fn.declaration.parameters.map(
-            (parameter, index) => {
+        const parameters: PinnedFunctionParameter[] =
+            fn.declaration.parameters.map((parameter, index) => {
                 const pinned = parameter.name.getText(fn.file);
                 const annotation = annotations[index]!;
                 if (annotation === "number") {
                     return { pinned, kind: "number", cpp: snakeCase(pinned) };
                 }
                 if (annotation === "Mat4") {
-                    return { pinned, kind: "mat4Const", cpp: snakeCase(pinned) };
+                    return {
+                        pinned,
+                        kind: "mat4Const",
+                        cpp: snakeCase(pinned),
+                    };
                 }
                 const record = recordTypeOfAnnotation(annotation);
                 if (record) {
@@ -1972,13 +2421,15 @@ export class NodeParticleLiveLowerer {
                     parameter,
                     `The live node-particle lowering has no binding for a '${annotation}' parameter.`,
                 );
-            },
-        );
+            });
         this.shared.set(
             cpp,
             lowerPinnedFunction(this.context, fn.module, name, parameters, {
                 cppName: cpp,
-                returns: fn.declaration.type?.getText(fn.file) === "void" ? "void" : "double",
+                returns:
+                    fn.declaration.type?.getText(fn.file) === "void"
+                        ? "void"
+                        : "double",
                 calls: pinnedCalls(),
                 booleanAnd: true,
                 booleanOr: true,
@@ -2013,9 +2464,14 @@ export class NodeParticleLiveLowerer {
                     initializer.arguments?.length !== 1 ||
                     initializer.arguments[0]!.getText(file) !== "capacity"
                 ) {
-                    this.context.contractError(column, "createParticleBuffer column");
+                    this.context.contractError(
+                        column,
+                        "createParticleBuffer column",
+                    );
                 }
-                const element = COLUMN_CONSTRUCTORS.get(initializer.expression.text);
+                const element = COLUMN_CONSTRUCTORS.get(
+                    initializer.expression.text,
+                );
                 if (!element) {
                     this.context.contractError(
                         initializer,
@@ -2034,12 +2490,18 @@ export class NodeParticleLiveLowerer {
             const name = element.getText(file);
             const width = declared.get(name);
             if (!width) {
-                this.context.contractError(element, `_all names an undeclared column '${name}'.`);
+                this.context.contractError(
+                    element,
+                    `_all names an undeclared column '${name}'.`,
+                );
             }
             return { name, element: width, cpp: snakeCase(name) };
         });
         if (this.columns.length !== declared.size) {
-            this.context.contractError(all, "createParticleBuffer _all omits a declared column.");
+            this.context.contractError(
+                all,
+                "createParticleBuffer _all omits a declared column.",
+            );
         }
         return this.columns;
     }
@@ -2061,15 +2523,29 @@ export class NodeParticleLiveLowerer {
         const fields = new Map<string, number | boolean>();
         const slots: string[] = [];
         for (const property of returned.properties) {
-            if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
-                this.context.contractError(property, "createParticleSystem field");
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !ts.isIdentifier(property.name)
+            ) {
+                this.context.contractError(
+                    property,
+                    "createParticleSystem field",
+                );
             }
             const name = property.name.text;
-            const initializer = this.context.unwrapExpression(property.initializer);
+            const initializer = this.context.unwrapExpression(
+                property.initializer,
+            );
             if (name === "buffer") continue;
             if (name === "updateSteps") {
-                if (!ts.isArrayLiteralExpression(initializer) || initializer.elements.length !== 0) {
-                    this.context.contractError(initializer, "createParticleSystem updateSteps");
+                if (
+                    !ts.isArrayLiteralExpression(initializer) ||
+                    initializer.elements.length !== 0
+                ) {
+                    this.context.contractError(
+                        initializer,
+                        "createParticleSystem updateSteps",
+                    );
                 }
                 continue;
             }
@@ -2077,8 +2553,10 @@ export class NodeParticleLiveLowerer {
                 if (name !== "texture") slots.push(name);
                 continue;
             }
-            if (initializer.kind === ts.SyntaxKind.TrueKeyword) fields.set(name, true);
-            else if (initializer.kind === ts.SyntaxKind.FalseKeyword) fields.set(name, false);
+            if (initializer.kind === ts.SyntaxKind.TrueKeyword)
+                fields.set(name, true);
+            else if (initializer.kind === ts.SyntaxKind.FalseKeyword)
+                fields.set(name, false);
             else fields.set(name, this.context.numericValue(initializer, file));
         }
         if (slots.join(",") !== SLOT_NAMES.join(",")) {
@@ -2092,7 +2570,8 @@ export class NodeParticleLiveLowerer {
             .interfaceDeclaration(systemModule, "ParticleSystem")
             .declaration.members.filter(
                 (member): member is ts.PropertySignature =>
-                    ts.isPropertySignature(member) && member.questionToken !== undefined,
+                    ts.isPropertySignature(member) &&
+                    member.questionToken !== undefined,
             )
             .map((member) => member.name.getText(file));
         if (optional.join(",") !== HOOK_NAMES.join(",")) {

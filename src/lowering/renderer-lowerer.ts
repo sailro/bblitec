@@ -8,7 +8,10 @@ import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
 } from "../compiler.js";
-import { emitNativeWgslProgram, emitWgslModule } from "../shader-wgsl-emitter.js";
+import {
+    emitNativeWgslProgram,
+    emitWgslModule,
+} from "../shader-wgsl-emitter.js";
 import { specializeImageSkybox } from "../shader-skybox.js";
 import {
     pinnedShaderDefineText,
@@ -28,10 +31,7 @@ import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,
 } from "../shader-material-programs.js";
-import {
-    gridFragmentWgsl,
-    gridVertexWgsl,
-} from "../shader-builtins-grid.js";
+import { gridFragmentWgsl, gridVertexWgsl } from "../shader-builtins-grid.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -68,7 +68,10 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
-import { meshProfileBindingCpp, type MeshProfileTable } from "./resource-profiles.js";
+import {
+    meshProfileBindingCpp,
+    type MeshProfileTable,
+} from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 
@@ -118,7 +121,9 @@ function pinnedFogInfosPacking(): string {
 }
 
 function liftedImageSkyboxWgsl() {
-    const module = readPinnedLibraryModule("material/standard/skybox-cubemap.js");
+    const module = readPinnedLibraryModule(
+        "material/standard/skybox-cubemap.js",
+    );
     return specializeImageSkybox(
         extractPackagedStringLiteral(module, "skyVertSrc"),
         extractPackagedStringLiteral(module, "skyFragSrc"),
@@ -132,10 +137,8 @@ const renderTaskModule = "src/frame-graph/render-task.ts";
 const IBL_SPECULAR_OCCLUSION = packagedWgsl`let seo = clamp`;
 const BRDF_LUT_COORDINATES = packagedWgsl`vec2<f32>(NdotV, roughness)`;
 const ENVIRONMENT_CUBEMAP_ROTATION = packagedWgsl`let R = rotateY(R_raw`;
-const PBR_SKYBOX_VIEW_RAY =
-    packagedWgsl`let R = input.worldPos - scene.vEyePosition.xyz`;
-const CLEARCOAT_IBL_CONSERVATION =
-    packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`;
+const PBR_SKYBOX_VIEW_RAY = packagedWgsl`let R = input.worldPos - scene.vEyePosition.xyz`;
+const CLEARCOAT_IBL_CONSERVATION = packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`;
 // A JavaScript string the pin interpolates into its template unminified,
 // so it keeps its source spacing in the package: a plain literal.
 const SHEEN_ALBEDO_SCALING = "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;";
@@ -150,8 +153,7 @@ const dispersionWgslModule =
     "src/material/pbr/fragments/refraction-dispersion-wgsl.ts";
 const clearcoatFragmentModule =
     "src/material/pbr/fragments/clearcoat-fragment.ts";
-const sheenFragmentModule =
-    "src/material/pbr/fragments/sheen-fragment.ts";
+const sheenFragmentModule = "src/material/pbr/fragments/sheen-fragment.ts";
 const iridescenceFragmentModule =
     "src/material/pbr/fragments/iridescence-fragment.ts";
 const clearcoatLoaderModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
@@ -161,17 +163,17 @@ const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const fogWgslModule = "src/shader/wgsl-fog.ts";
-const skyboxCubemapModule =
-    "src/material/standard/skybox-cubemap.ts";
-const orthoMatrixModule = "src/math/write-ortho-off-center-mat4-lh-into-buffer.ts";
-const perspectiveMatrixModule = "src/math/write-perspective-mat4-lh-into-buffer.ts";
+const skyboxCubemapModule = "src/material/standard/skybox-cubemap.ts";
+const orthoMatrixModule =
+    "src/math/write-ortho-off-center-mat4-lh-into-buffer.ts";
+const perspectiveMatrixModule =
+    "src/math/write-perspective-mat4-lh-into-buffer.ts";
 const cameraModule = "src/camera/camera.ts";
 const cameraViewportModule = "src/camera/viewport.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
-const backgroundSolidModule =
-    "src/material/pbr/background-solid-skybox.ts";
+const backgroundSolidModule = "src/material/pbr/background-solid-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
@@ -210,9 +212,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
     };
     // The enclosing renderable object's literal `isTransparent`, when
     // one exists — classifies the plain-numeric shader-material stamps.
-    const literalTransparency = (
-        node: ts.Node,
-    ): boolean | undefined => {
+    const literalTransparency = (node: ts.Node): boolean | undefined => {
         for (
             let current: ts.Node | undefined = node;
             current;
@@ -227,9 +227,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
                 ) {
                     continue;
                 }
-                const value = unwrapStampExpression(
-                    property.initializer,
-                );
+                const value = unwrapStampExpression(property.initializer);
                 if (value.kind === ts.SyntaxKind.TrueKeyword) {
                     return true;
                 }
@@ -246,15 +244,16 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
             ts.forEachChild(node, visit);
             if (
                 !ts.isBinaryExpression(node) ||
-                node.operatorToken.kind !==
-                    ts.SyntaxKind.QuestionQuestionToken
+                node.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
             ) {
                 return;
             }
             const read = unwrapStampExpression(node.left);
             if (
-                !(ts.isPropertyAccessExpression(read) ||
-                    ts.isPropertyAccessChain(read)) ||
+                !(
+                    ts.isPropertyAccessExpression(read) ||
+                    ts.isPropertyAccessChain(read)
+                ) ||
                 read.name.text !== "renderOrder"
             ) {
                 throw new Error(
@@ -317,9 +316,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
  * that disagree refuse generation — the moment the retired pipeline
  * grouping question has to be reopened.
  */
-export function lowerOpaqueOrderStamp(
-    files: readonly ts.SourceFile[],
-): string {
+export function lowerOpaqueOrderStamp(files: readonly ts.SourceFile[]): string {
     const opaqueArms: number[] = [];
     for (const file of files) {
         const arms = opaqueOrderArmsOf(file);
@@ -353,47 +350,48 @@ const compiledSceneUniformsWgslCache = new Map<string, string>();
 export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerRenderPlan(options: {
-        standardVertexAlpha?: boolean;
-        standardVertexColors?: boolean;
-        meshProfiles?: MeshProfileTable;
-        fog?: boolean;
-        imageSkybox?: boolean;
-        solidSkybox?: boolean;
-        environmentRotation?: boolean;
-        gpuInstancing?: boolean;
-        punctualLights?: boolean;
-        nodeVisibility?: boolean;
-        /** The scene reaches `createGpuPicker`. */
-        picking?: boolean;
-        /** The scene reaches `enableMirroredMeshes`. */
-        mirroredMeshes?: boolean;
-        /** The scene reaches `createTransformNode`. */
-        transformNodes?: boolean;
-        /**
-         * The scene composed a node-material geometry-output view.
-         *
-         * Only then does a geometry task's draw list admit the node family:
-         * a graph a task draws with no composed view has no module to draw
-         * with, so the list would carry a draw both PALs must refuse.
-         */
-        nodeGeometryViews?: boolean;
-        orthographicCamera?: boolean;
-        background?: boolean;
-        shaderPrograms?: CompiledShaderProgram[];
-        /**
-         * The engine's floating-origin mode.
-         *
-         * It reaches the view matrix and nothing else here: the pin's own
-         * `getViewMatrix` forks on it, so the emission takes whichever arm
-         * the engine asked for rather than one of the two.
-         */
-        floatingOrigin?: boolean;
-    } = {}): LoweredSource {
+    public lowerRenderPlan(
+        options: {
+            standardVertexAlpha?: boolean;
+            standardVertexColors?: boolean;
+            meshProfiles?: MeshProfileTable;
+            fog?: boolean;
+            imageSkybox?: boolean;
+            solidSkybox?: boolean;
+            environmentRotation?: boolean;
+            gpuInstancing?: boolean;
+            punctualLights?: boolean;
+            nodeVisibility?: boolean;
+            /** The scene reaches `createGpuPicker`. */
+            picking?: boolean;
+            /** The scene reaches `enableMirroredMeshes`. */
+            mirroredMeshes?: boolean;
+            /** The scene reaches `createTransformNode`. */
+            transformNodes?: boolean;
+            /**
+             * The scene composed a node-material geometry-output view.
+             *
+             * Only then does a geometry task's draw list admit the node family:
+             * a graph a task draws with no composed view has no module to draw
+             * with, so the list would carry a draw both PALs must refuse.
+             */
+            nodeGeometryViews?: boolean;
+            orthographicCamera?: boolean;
+            background?: boolean;
+            shaderPrograms?: CompiledShaderProgram[];
+            /**
+             * The engine's floating-origin mode.
+             *
+             * It reaches the view matrix and nothing else here: the pin's own
+             * `getViewMatrix` forks on it, so the emission takes whichever arm
+             * the engine asked for rather than one of the two.
+             */
+            floatingOrigin?: boolean;
+        } = {},
+    ): LoweredSource {
         this.assertRenderPlanPins(options);
         this.assertPinnedTransparentSort();
-        const reachedShaderPrograms =
-            options.shaderPrograms ?? [];
+        const reachedShaderPrograms = options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
             this.loweredShaderVariants(reachedShaderPrograms);
         // The camera matrix chain the source below emits comes from the
@@ -405,8 +403,7 @@ export class RendererLowerer {
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
         this.assertPinnedAffectsMesh();
-        const opaqueOrderStamp =
-            this.provedOpaqueOrderStamp();
+        const opaqueOrderStamp = this.provedOpaqueOrderStamp();
         // Emitted from the compiler's own table so the generated enum's
         // order and the enumerators the variant rows name cannot disagree.
         const systemMatrixEnumerators = shaderSystemMatrixTable
@@ -467,10 +464,9 @@ export class RendererLowerer {
         // Under multi-light the pinned lights block owns every light past
         // the primary slot, so the legacy capture block keeps its second
         // analytic slot empty there exactly as the retired uploader did.
-        const secondAnalyticLightFill =
-            options.punctualLights
-                ? ""
-                : `    if (scene.lights.size() > 1) {
+        const secondAnalyticLightFill = options.punctualLights
+            ? ""
+            : `    if (scene.lights.size() > 1) {
         write_pbr_light(
             scene.lights[1],
             result.light_direction_2,
@@ -482,10 +478,7 @@ export class RendererLowerer {
         return {
             modulePath: renderTaskModule,
             symbolName: "buildBindings",
-            header: this.renderPlanHeaderCpp(
-                options,
-                systemMatrixEnumerators,
-            ),
+            header: this.renderPlanHeaderCpp(options, systemMatrixEnumerators),
             source: this.renderPlanSourceCpp(options, {
                 viewMatrixBody,
                 opaqueOrderStamp,
@@ -664,9 +657,7 @@ export class RendererLowerer {
                             lowerer,
                             expression,
                             ["x", "y", "width", "height"],
-                        ).map(
-                            (lane) => `static_cast<std::int32_t>(${lane})`,
-                        );
+                        ).map((lane) => `static_cast<std::int32_t>(${lane})`);
                         return `PixelViewport{${lanes.join(", ")}}`;
                     },
                 },
@@ -690,11 +681,12 @@ export class RendererLowerer {
         orthographicCamera?: boolean;
         background?: boolean;
     }): void {
-        for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
-            this.context.functionDeclaration(
-                renderTaskModule,
-                symbol,
-            );
+        for (const symbol of [
+            "buildBindings",
+            "sortTransparentBindings",
+            "drawList",
+        ]) {
+            this.context.functionDeclaration(renderTaskModule, symbol);
         }
         // The mesh world is composed from these on EVERY plan now -- the
         // CPU vertex bake reads it for any scene that draws a mesh -- so
@@ -740,11 +732,9 @@ export class RendererLowerer {
             sortTransparentBindings,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                this.context
-                    .propertyPath(node.left)
-                    ?.join(".") === "b._sortDistance",
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.propertyPath(node.left)?.join(".") ===
+                    "b._sortDistance",
         )[0];
         if (!sortDistance) {
             this.context.contractError(
@@ -761,9 +751,7 @@ export class RendererLowerer {
             sortTransparentBindings,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
+                ts.isPropertyAccessExpression(node.expression) &&
                 node.expression.name.text === "sort",
         )[0];
         if (!sortCall) {
@@ -828,73 +816,74 @@ export class RendererLowerer {
             type === "vec4<f32>"
                 ? typeComponents(type)
                 : 0;
-        const shaderVariantTable = reachedShaderPrograms.map(
-            (program) => {
-                const reflection =
-                    lowerWgslShaderProgram(program).reflection;
-                // Canonical custom-uniform value layout: declaration
-                // order, sized by component count. The material record
-                // stores this flat vector; per-stage gathers map it into
-                // the reflected vec4-slot block layout.
-                const valueOffsets = new Map<string, number>();
-                let valueCount = 0;
-                for (const signature of program.uniforms) {
-                    const separator = signature.indexOf(":");
-                    if (separator < 1) continue;
-                    const memberName = signature.slice(0, separator);
-                    const componentCount = uniformComponentCount(
-                        signature.slice(separator + 1),
-                    );
-                    valueOffsets.set(memberName, valueCount);
-                    valueCount += componentCount;
-                }
-                const defaults = new Array<number>(valueCount).fill(0);
-                for (const entry of program.uniformDefaults) {
-                    const offset = valueOffsets.get(entry.name);
-                    if (offset === undefined) continue;
-                    entry.values.forEach((value, index) => {
-                        defaults[offset + index] = value;
-                    });
-                }
-                const stageBlock = (stage: "vertex" | "fragment") => {
-                    const block = reflection.uniformBlocks.find(
-                        (candidate) => candidate.stage === stage,
-                    );
-                    if (!block) {
-                        return { present: false, systemMatrices: [] as string[], floatSize: 0, gather: [] as number[][] };
-                    }
+        const shaderVariantTable = reachedShaderPrograms.map((program) => {
+            const reflection = lowerWgslShaderProgram(program).reflection;
+            // Canonical custom-uniform value layout: declaration
+            // order, sized by component count. The material record
+            // stores this flat vector; per-stage gathers map it into
+            // the reflected vec4-slot block layout.
+            const valueOffsets = new Map<string, number>();
+            let valueCount = 0;
+            for (const signature of program.uniforms) {
+                const separator = signature.indexOf(":");
+                if (separator < 1) continue;
+                const memberName = signature.slice(0, separator);
+                const componentCount = uniformComponentCount(
+                    signature.slice(separator + 1),
+                );
+                valueOffsets.set(memberName, valueCount);
+                valueCount += componentCount;
+            }
+            const defaults = new Array<number>(valueCount).fill(0);
+            for (const entry of program.uniformDefaults) {
+                const offset = valueOffsets.get(entry.name);
+                if (offset === undefined) continue;
+                entry.values.forEach((value, index) => {
+                    defaults[offset + index] = value;
+                });
+            }
+            const stageBlock = (stage: "vertex" | "fragment") => {
+                const block = reflection.uniformBlocks.find(
+                    (candidate) => candidate.stage === stage,
+                );
+                if (!block) {
                     return {
-                        present: true,
-                        systemMatrices: block.systemMatrices,
-                        floatSize: block.size / 4,
-                        gather: block.members.map((member) => [
-                            member.offset / 4,
-                            valueOffsets.get(member.name) ?? 0,
-                            member.size / 4,
-                        ]),
+                        present: false,
+                        systemMatrices: [] as string[],
+                        floatSize: 0,
+                        gather: [] as number[][],
                     };
-                };
+                }
                 return {
-                    name: program.name,
-                    samplers: reflection.samplers,
-                    samplerDeclarations: reflection.samplerDeclarations,
-                    storageBuffers: reflection.storageBuffers,
-                    topology: program.topology ?? "triangle-list",
-                    instanceColors:
-                        program.useThinInstanceColors === true,
-                    alphaBlending: program.needAlphaBlending,
-                    additiveBlending: program.blendMode === "additive",
-                    alphaTesting: program.needAlphaTesting,
-                    backFaceCulling: program.backFaceCulling,
-                    depthWrite: program.depthWrite,
-                    depthCompare: program.depthCompare,
-                    valueCount,
-                    defaults,
-                    vertex: stageBlock("vertex"),
-                    fragment: stageBlock("fragment"),
+                    present: true,
+                    systemMatrices: block.systemMatrices,
+                    floatSize: block.size / 4,
+                    gather: block.members.map((member) => [
+                        member.offset / 4,
+                        valueOffsets.get(member.name) ?? 0,
+                        member.size / 4,
+                    ]),
                 };
-            },
-        );
+            };
+            return {
+                name: program.name,
+                samplers: reflection.samplers,
+                samplerDeclarations: reflection.samplerDeclarations,
+                storageBuffers: reflection.storageBuffers,
+                topology: program.topology ?? "triangle-list",
+                instanceColors: program.useThinInstanceColors === true,
+                alphaBlending: program.needAlphaBlending,
+                additiveBlending: program.blendMode === "additive",
+                alphaTesting: program.needAlphaTesting,
+                backFaceCulling: program.backFaceCulling,
+                depthWrite: program.depthWrite,
+                depthCompare: program.depthCompare,
+                valueCount,
+                defaults,
+                vertex: stageBlock("vertex"),
+                fragment: stageBlock("fragment"),
+            };
+        });
         const floatLiteral = (value: number): string =>
             this.context.floatLiteral(value);
         const stageBlockLiteral = (block: {
@@ -916,9 +905,10 @@ export class RendererLowerer {
                         `{${blockOffset}u, ${valueOffset}u, ${count}u}`,
                 )
                 .join(", ")}}}`;
-        const shaderVariantEntries = shaderVariantTable.map(
-            (info) =>
-                `    ShaderVariantInfo{
+        const shaderVariantEntries = shaderVariantTable
+            .map(
+                (info) =>
+                    `    ShaderVariantInfo{
         "${info.name}",
         ShaderTopology::${info.topology === "line-list" ? "line_list" : "triangle_list"},
         ${info.instanceColors},
@@ -933,14 +923,21 @@ export class RendererLowerer {
         ${stageBlockLiteral(info.vertex)},
         ${stageBlockLiteral(info.fragment)},
         {${info.samplers.map((name) => `"${name}"`).join(", ")}},
-        {${info.samplerDeclarations.map((decl) =>
-            `ShaderSamplerShape{ShaderSamplerSampleType::${decl.sampleType === "depth" ? "depth" : decl.sampleType === "unfilterable-float" ? "unfilterable_float" : "float_sample"}, ShaderSamplerViewDimension::${decl.viewDimension === "2d-array" ? "texture_2d_array" : "texture_2d"}, ${decl.comparison}}`
-        ).join(", ")}},
-        {${info.storageBuffers.map((buffer) =>
-            `ShaderStorageBufferInfo{"${buffer.name}", ${buffer.vertex}, ${buffer.fragment}}`
-        ).join(", ")}},
+        {${info.samplerDeclarations
+            .map(
+                (decl) =>
+                    `ShaderSamplerShape{ShaderSamplerSampleType::${decl.sampleType === "depth" ? "depth" : decl.sampleType === "unfilterable-float" ? "unfilterable_float" : "float_sample"}, ShaderSamplerViewDimension::${decl.viewDimension === "2d-array" ? "texture_2d_array" : "texture_2d"}, ${decl.comparison}}`,
+            )
+            .join(", ")}},
+        {${info.storageBuffers
+            .map(
+                (buffer) =>
+                    `ShaderStorageBufferInfo{"${buffer.name}", ${buffer.vertex}, ${buffer.fragment}}`,
+            )
+            .join(", ")}},
     },`,
-        ).join("\n");
+            )
+            .join("\n");
         return { shaderVariantTable, shaderVariantEntries };
     }
 
@@ -1287,8 +1284,9 @@ struct SkyboxUniforms {
     std::array<float, 4> background_center{};
     std::array<float, 4> image_parameters{};
 };
-${options.solidSkybox
-    ? `
+${
+    options.solidSkybox
+        ? `
 struct SolidSkyboxPlan {
     std::array<std::array<float, 3>, 8> positions{};
     std::array<std::uint32_t, 36> indices{};
@@ -1315,9 +1313,11 @@ struct SolidSkyboxSceneUniforms {
     std::array<float, 4> eye_position{};
 };
 `
-    : ""}\
-${options.imageSkybox
-    ? `
+        : ""
+}\
+${
+    options.imageSkybox
+        ? `
 struct ImageSkyboxPlan {
     std::array<std::array<float, 3>, 8> positions{};
     std::array<std::uint32_t, 36> indices{};
@@ -1333,7 +1333,8 @@ struct ImageSkyboxUniforms {
     std::array<float, 4> fog_color{};
 };
 `
-    : ""}\
+        : ""
+}\
 
 ${options.meshProfiles ? "MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_t profile);\n" : ""}\
 void initialize_composition_feature_rows(Engine& engine);
@@ -1425,8 +1426,9 @@ std::array<float, 16> transform_node_world(
     const Engine& engine,
     TransformNodeHandle node);
 
-${options.mirroredMeshes
-    ? `// The mirrored-mesh watcher, run once per frame on an opted-in scene.
+${
+    options.mirroredMeshes
+        ? `// The mirrored-mesh watcher, run once per frame on an opted-in scene.
 //
 // std-mirrored-support.ts compares each mesh's live world determinant
 // against the sign its renderable was built at and enqueues a material
@@ -1435,9 +1437,11 @@ ${options.mirroredMeshes
 // equivalent of that queue: the caller rebuilds the render plan, which is
 // where a pipeline is chosen.
 bool refresh_mirrored_meshes(Scene& scene, Engine& engine);`
-    : ""}\
-${options.floatingOrigin
-    ? `// A mesh's own world matrix, eye-relative.
+        : ""
+}\
+${
+    options.floatingOrigin
+        ? `// A mesh's own world matrix, eye-relative.
 //
 // This port bakes a mesh's TRS into its vertices, which at large-world
 // coordinates quantizes them before anything can recover the remainder --
@@ -1450,15 +1454,19 @@ std::array<float, 16> mesh_world_eye_relative(
     const MeshRecord& mesh,
     const std::array<float, 16>& base,
     Vec3d eye);`
-    : ""}\
-${options.gpuInstancing
-    ? `std::array<float, 16> build_instance_parent_world(
+        : ""
+}\
+${
+    options.gpuInstancing
+        ? `std::array<float, 16> build_instance_parent_world(
     const MeshRecord& mesh);
 
 ${pinnedInstanceAttributesCpp(this.context)}`
-    : ""}\
-${options.picking
-    ? `// src/picking/gpu-picker.ts: the picker walks the scene's meshes and
+        : ""
+}\
+${
+    options.picking
+        ? `// src/picking/gpu-picker.ts: the picker walks the scene's meshes and
 // takes the ones whose pickable flag is not false. One definition, because
 // both backends' pick passes ask it, and because the pin's own predicate has
 // arms this port has not reached yet -- a supplied pickFilter, and
@@ -1470,7 +1478,8 @@ ${options.picking
 // reaches the next pick. A copy taken when the plan was built would freeze it.
 bool pick_candidate(const MeshRecord& mesh);
 `
-    : ""}// scene-node.ts visible: undefined or true draws, false skips. One
+        : ""
+}// scene-node.ts visible: undefined or true draws, false skips. One
 // definition, because the draw-list seam and both backends' depth-only task
 // path ask it -- that path consumes no draw list, so it cannot inherit the
 // seam's answer. The seam re-runs on the visibility epoch (setMeshVisible's
@@ -1506,8 +1515,9 @@ SkyboxVertexUniforms build_skybox_vertex_uniforms(
 SkyboxUniforms build_skybox_uniforms(
     const EnvironmentState& environment,
     bool linear_image_processing);
-${options.solidSkybox
-    ? `SolidSkyboxPlan build_solid_skybox_plan(
+${
+    options.solidSkybox
+        ? `SolidSkyboxPlan build_solid_skybox_plan(
     const EnvironmentState& environment);
 SolidSkyboxUniforms build_solid_skybox_uniforms(
     const Scene& scene);
@@ -1515,15 +1525,18 @@ SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     const CameraRecord& camera,
     const std::array<float, 16>& view_projection);
 `
-    : ""}\
-${options.imageSkybox
-    ? `ImageSkyboxPlan build_image_skybox_plan(
+        : ""
+}\
+${
+    options.imageSkybox
+        ? `ImageSkyboxPlan build_image_skybox_plan(
     const EnvironmentState& environment);
 ImageSkyboxUniforms build_image_skybox_uniforms(
     const Scene& scene,
     const CameraRecord& camera);
 `
-    : ""}\
+        : ""
+}\
 
 } // namespace bbl::upstream
 `;
@@ -1595,10 +1608,10 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             `${this.context.floatLiteral(linearToneMapping)}\n            ` +
             `: (environment.tone_mapping_enabled ? 1.0f : 0.0f)`;
         return `// ${this.context.provenance(
-                renderTaskModule,
-                "buildBindings",
-                `${renderTaskModule}#sortTransparentBindings`,
-            )}
+            renderTaskModule,
+            "buildBindings",
+            `${renderTaskModule}#sortTransparentBindings`,
+        )}
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
@@ -1655,7 +1668,9 @@ RenderItem bind_render_item(
             ? RenderBucket::alpha_blend
             : material.alpha_mode == MaterialAlphaMode::mask
                 ? RenderBucket::alpha_mask
-                : RenderBucket::opaque;${options.standardVertexAlpha ? `
+                : RenderBucket::opaque;${
+                    options.standardVertexAlpha
+                        ? `
     if (material.standard_material && item.mesh.value < engine.meshes.size()) {
         const MeshRecord& mesh = engine.meshes[item.mesh.value];
         const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
@@ -1665,7 +1680,9 @@ RenderItem bind_render_item(
                 has_instance_colors(mesh)) != 0u) {
             item.bucket = RenderBucket::alpha_blend;
         }
-    }` : ""}
+    }`
+                        : ""
+                }
     item.cull_mode = material.double_sided
         ? RenderCullMode::none
         : RenderCullMode::back;
@@ -1931,13 +1948,15 @@ RenderDrawLists build_render_task_draw_lists(
                 items[index].material);
             if (
                 item.material_kind != RenderMaterialKind::pbr &&
-${options.nodeGeometryViews
-    ? `                // \`resolveMaterialFamily\` admits the node family to a
+${
+    options.nodeGeometryViews
+        ? `                // \`resolveMaterialFamily\` admits the node family to a
                 // geometry task beside the other two, and this scene
                 // composed a geometry view for every graph a task draws.
                 item.material_kind != RenderMaterialKind::node &&
 `
-    : ""}\
+        : ""
+}\
                 item.material_kind != RenderMaterialKind::standard) {
                 continue;
             }
@@ -2083,10 +2102,14 @@ void initialize_composition_feature_rows(Engine& engine) {
         MeshRecord& mesh = engine.meshes[index];
 ${options.meshProfiles ? `        if (mesh.composition_feature_row != invalid_handle) continue;\n` : ""}\
         if (mesh.feature_source_mesh == invalid_handle) {
-${options.meshProfiles ? `            mesh.composition_feature_row = next_row < static_mesh_profile_rows.size()
+${
+    options.meshProfiles
+        ? `            mesh.composition_feature_row = next_row < static_mesh_profile_rows.size()
                 ? static_mesh_profile_rows[next_row]
                 : ${options.meshProfiles.rowCount}u + next_row - static_cast<std::uint32_t>(static_mesh_profile_rows.size());
-            ++next_row;` : "            mesh.composition_feature_row = next_row++;"}\
+            ++next_row;`
+        : "            mesh.composition_feature_row = next_row++;"
+}\
             continue;
         }
         if (
@@ -2154,9 +2177,13 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
 ${cameraViewport}
 
 ${perspectiveWriter}
-${orthoWriter ? `
+${
+    orthoWriter
+        ? `
 ${orthoWriter}
-` : ""}\
+`
+        : ""
+}\
 
 std::array<float, 16> build_projection(
     const CameraRecord& camera,
@@ -2176,8 +2203,9 @@ std::array<float, 16> build_projection(
 std::array<float, 16> build_scene_projection(
     const CameraRecord& camera,
     double aspect) {
-${options.orthographicCamera
-    ? `    if (camera.orthographic) {
+${
+    options.orthographicCamera
+        ? `    if (camera.orthographic) {
         // src/camera/orthographic.ts writeOrthoProjection: every plane
         // derives from the half-extent (the derivation and all seven
         // call arguments are shape-asserted where the single-extent
@@ -2199,7 +2227,8 @@ ${options.orthographicCamera
         return projection;
     }
 `
-    : ""}\
+        : ""
+}\
     return build_projection(camera, aspect);
 }
 
@@ -2285,8 +2314,9 @@ std::array<float, 16> mesh_world_matrix(
     return local;
 }
 
-${options.mirroredMeshes
-    ? `bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
+${
+    options.mirroredMeshes
+        ? `bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
     bool flipped = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
@@ -2318,7 +2348,8 @@ ${options.mirroredMeshes
     return flipped;
 }
 `
-    : ""}std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
+        : ""
+}std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
     return trs_matrix(mesh);
 }
 
@@ -2335,8 +2366,9 @@ std::array<double, 16> apply_mesh_outer_transform(
         mesh.outer_position, mesh.outer_rotation, world);
 }
 
-${options.floatingOrigin
-    ? `// The eye-relative world of one mesh, declared above.
+${
+    options.floatingOrigin
+        ? `// The eye-relative world of one mesh, declared above.
 //
 // The composition is the pin's own composeTrsLocalMatrix, in double, and
 // the subtraction is packMat4IntoF32WithOffset's: the offset is the
@@ -2364,9 +2396,11 @@ std::array<float, 16> mesh_world_eye_relative(
 }
 
 `
-    : ""}\
-${options.gpuInstancing
-    ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
+        : ""
+}\
+${
+    options.gpuInstancing
+        ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
 // src/math/compose-mat4-into-buffer.ts composeMat4IntoBuffer: a thin-instanced mesh
 // reaches the vertex stage's mesh.world (the instance parent-world
 // uniform) from its record TRS, composed in JavaScript double precision
@@ -2394,16 +2428,19 @@ std::array<float, 16> build_instance_parent_world(
 }
 
 `
-    : ""}\
-${options.picking
-    ? `// src/picking/gpu-picker.ts: mesh.pickable !== false, where an
+        : ""
+}\
+${
+    options.picking
+        ? `// src/picking/gpu-picker.ts: mesh.pickable !== false, where an
 // unwritten flag is pickable -- which the record's default-true lane is.
 bool pick_candidate(const MeshRecord& mesh) {
     return mesh.pickable;
 }
 
 `
-    : ""}// scene-node.ts visible, written by scene code and materialized per mesh by
+        : ""
+}// scene-node.ts visible, written by scene code and materialized per mesh by
 // the KHR_node_visibility loader and the animation pointer, exactly as the
     // pinned setSubtreeVisible materializes it per node. A thin-instance pool with
     // no active rows issues no draw upstream; filter it before either backend asks
@@ -2552,11 +2589,13 @@ ${secondAnalyticLightFill}    const CameraBasis basis = camera_basis(camera);
     };
     result.image_processing_options[0] =
         scene.transmission_enabled ? 1.0f : 0.0f;
-${options.environmentRotation
-    ? `    result.image_processing_options[1] =
+${
+    options.environmentRotation
+        ? `    result.image_processing_options[1] =
         scene.environment.rotation_y;
 `
-    : ""}\
+        : ""
+}\
     if (item.material.value < engine.materials.size()) {
         const MaterialRecord& material = engine.materials[item.material.value];
         result.base_color_factor = {
@@ -2773,8 +2812,9 @@ SkyboxUniforms build_skybox_uniforms(
     };
     return result;
 }
-${options.solidSkybox
-    ? `
+${
+    options.solidSkybox
+        ? `
 SolidSkyboxPlan build_solid_skybox_plan(
     const EnvironmentState& environment) {
     // createSkyboxBuffers(engine, skyHalfSize): the cube is authored around
@@ -2838,9 +2878,11 @@ SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     return result;
 }
 `
-    : ""}\
-${options.imageSkybox
-    ? `
+        : ""
+}\
+${
+    options.imageSkybox
+        ? `
 ImageSkyboxPlan build_image_skybox_plan(
     const EnvironmentState& environment) {
     // Pinned loadSkybox: createBoxData(size) spans plus/minus size/2
@@ -2876,50 +2918,53 @@ ${pinnedFogInfosPacking()}    };
     return result;
 }
 `
-    : ""}\
+        : ""
+}\
 
 } // namespace bbl::upstream
 `;
     }
 
-    public lowerShaders(options: {
-        ground: boolean;
-        skybox: boolean;
-        ddsEnvironment?: boolean;
-        imageSkybox?: boolean;
-        solidSkybox?: boolean;
-        transmission?: boolean;
-        fog?: boolean;
-        shaderPrograms: CompiledShaderProgram[];
-        gridMaterial?: boolean;
-        idDiagnostics: boolean;
-        geometryOutputTasks: GeometryOutputTaskManifest[];
-        frameGraph?: boolean;
-        gpuDeformation?: boolean;
-        morphStorage?: boolean;
-        gpuInstancing?: boolean;
-        clearcoat?: boolean;
-        sheen?: boolean;
-        iridescence?: boolean;
-        dispersion?: boolean;
-    } = {
-        ground: true,
-        skybox: true,
-        transmission: true,
-        shaderPrograms: shaderMaterialPrograms.map(
-            predeclaredShaderProgram,
-        ),
-        gridMaterial: false,
-        idDiagnostics: true,
-        geometryOutputTasks: [],
-        gpuDeformation: false,
-        morphStorage: false,
-        gpuInstancing: false,
-        clearcoat: false,
-        sheen: false,
-        iridescence: false,
-        dispersion: false,
-    }): LoweredShader[] {
+    public lowerShaders(
+        options: {
+            ground: boolean;
+            skybox: boolean;
+            ddsEnvironment?: boolean;
+            imageSkybox?: boolean;
+            solidSkybox?: boolean;
+            transmission?: boolean;
+            fog?: boolean;
+            shaderPrograms: CompiledShaderProgram[];
+            gridMaterial?: boolean;
+            idDiagnostics: boolean;
+            geometryOutputTasks: GeometryOutputTaskManifest[];
+            frameGraph?: boolean;
+            gpuDeformation?: boolean;
+            morphStorage?: boolean;
+            gpuInstancing?: boolean;
+            clearcoat?: boolean;
+            sheen?: boolean;
+            iridescence?: boolean;
+            dispersion?: boolean;
+        } = {
+            ground: true,
+            skybox: true,
+            transmission: true,
+            shaderPrograms: shaderMaterialPrograms.map(
+                predeclaredShaderProgram,
+            ),
+            gridMaterial: false,
+            idDiagnostics: true,
+            geometryOutputTasks: [],
+            gpuDeformation: false,
+            morphStorage: false,
+            gpuInstancing: false,
+            clearcoat: false,
+            sheen: false,
+            iridescence: false,
+            dispersion: false,
+        },
+    ): LoweredShader[] {
         this.assertPinnedShaderFormulas(options);
         const result: Array<{ output: string; data: string }> = [];
         result.push({
@@ -2939,10 +2984,7 @@ ${pinnedFogInfosPacking()}    };
                 [options.gridMaterial, "GridMaterial"],
                 [options.ground, "environment grounds"],
                 [options.transmission, "transmission"],
-                [
-                    options.geometryOutputTasks.length > 0,
-                    "geometry outputs",
-                ],
+                [options.geometryOutputTasks.length > 0, "geometry outputs"],
             ];
             for (const [reached, label] of unportedFogSurfaces) {
                 if (reached) {
@@ -2971,16 +3013,14 @@ ${pinnedFogInfosPacking()}    };
             // the environment's own `enable_noise`, read through the shared
             // `background_ground_fragment` selector.
             result.push({
-                output:
-                    "upstream/shaders/background-ground.frag.native.wgsl",
+                output: "upstream/shaders/background-ground.frag.native.wgsl",
                 data: backgroundGroundFragmentWgsl(
                     groundProvenance,
                     pinnedGround,
                 ),
             });
             result.push({
-                output:
-                    "upstream/shaders/background-ground-dither.frag.native.wgsl",
+                output: "upstream/shaders/background-ground-dither.frag.native.wgsl",
                 data: backgroundGroundFragmentWgsl(
                     groundProvenance,
                     pinnedGround,
@@ -3005,24 +3045,21 @@ ${pinnedFogInfosPacking()}    };
             // undithered forms — scene 112 is the corpus scene that asks
             // for the second.
             result.push({
-                output:
-                    "upstream/shaders/background-skybox-dds.vert.native.wgsl",
+                output: "upstream/shaders/background-skybox-dds.vert.native.wgsl",
                 data: backgroundDdsSkyboxVertexWgsl(
                     skyboxProvenance,
                     pinnedSkybox,
                 ),
             });
             result.push({
-                output:
-                    "upstream/shaders/background-skybox.frag.native.wgsl",
+                output: "upstream/shaders/background-skybox.frag.native.wgsl",
                 data: backgroundSkyboxFragmentWgsl(
                     skyboxProvenance,
                     pinnedSkybox,
                 ),
             });
             result.push({
-                output:
-                    "upstream/shaders/background-skybox-dither.frag.native.wgsl",
+                output: "upstream/shaders/background-skybox-dither.frag.native.wgsl",
                 data: backgroundSkyboxFragmentWgsl(
                     skyboxProvenance,
                     pinnedSkybox,
@@ -3038,8 +3075,7 @@ ${pinnedFogInfosPacking()}    };
             // does not carry its four compiled outputs.
             if (options.ddsEnvironment) {
                 result.push({
-                    output:
-                        "upstream/shaders/background-skybox-dds.frag.native.wgsl",
+                    output: "upstream/shaders/background-skybox-dds.frag.native.wgsl",
                     data: backgroundSkyboxFragmentWgsl(
                         skyboxProvenance,
                         pinnedSkybox,
@@ -3061,13 +3097,11 @@ ${pinnedFogInfosPacking()}    };
             );
             result.push(
                 {
-                    output:
-                        "upstream/shaders/solid-skybox.vert.native.wgsl",
+                    output: "upstream/shaders/solid-skybox.vert.native.wgsl",
                     data: solidSkyboxVertexWgsl(provenance, pinned),
                 },
                 {
-                    output:
-                        "upstream/shaders/solid-skybox.frag.native.wgsl",
+                    output: "upstream/shaders/solid-skybox.frag.native.wgsl",
                     data: solidSkyboxFragmentWgsl(provenance, pinned),
                 },
             );
@@ -3077,23 +3111,22 @@ ${pinnedFogInfosPacking()}    };
             // literals and re-homed onto the native binding contract;
             // the departures are documented on `liftedImageSkyboxWgsl`.
             const lifted = liftedImageSkyboxWgsl();
-            const imageSkyboxProvenance =
-                this.context.provenance(
-                    skyboxCubemapModule,
-                    "buildSkyboxCubeMapGPU",
-                    `the module's own skyVertSrc/skyFragSrc with ${fogWgslModule}#WGSL_FOG`,
-                );
+            const imageSkyboxProvenance = this.context.provenance(
+                skyboxCubemapModule,
+                "buildSkyboxCubeMapGPU",
+                `the module's own skyVertSrc/skyFragSrc with ${fogWgslModule}#WGSL_FOG`,
+            );
             result.push(
                 {
-                    output:
-                        "upstream/shaders/skybox-cubemap.vert.native.wgsl",
-                    data: `// ${imageSkyboxProvenance}\n` +
+                    output: "upstream/shaders/skybox-cubemap.vert.native.wgsl",
+                    data:
+                        `// ${imageSkyboxProvenance}\n` +
                         emitWgslModule(lifted.vertex),
                 },
                 {
-                    output:
-                        "upstream/shaders/skybox-cubemap.frag.native.wgsl",
-                    data: `// ${imageSkyboxProvenance}\n` +
+                    output: "upstream/shaders/skybox-cubemap.frag.native.wgsl",
+                    data:
+                        `// ${imageSkyboxProvenance}\n` +
                         emitWgslModule(lifted.fragment, fogFactorWgsl()),
                 },
             );
@@ -3101,18 +3134,15 @@ ${pinnedFogInfosPacking()}    };
         if (options.transmission) {
             result.push(
                 {
-                    output:
-                        "upstream/shaders/image-processing.vert.native.wgsl",
+                    output: "upstream/shaders/image-processing.vert.native.wgsl",
                     data: blitVertexWgsl(),
                 },
                 {
-                    output:
-                        "upstream/shaders/image-processing.frag.native.wgsl",
+                    output: "upstream/shaders/image-processing.frag.native.wgsl",
                     data: imageProcessingFragmentWgsl(),
                 },
                 {
-                    output:
-                        "upstream/shaders/image-processing-ms.frag.native.wgsl",
+                    output: "upstream/shaders/image-processing-ms.frag.native.wgsl",
                     data: imageProcessingMultisampledFragmentWgsl(),
                 },
             );
@@ -3137,21 +3167,16 @@ ${pinnedFogInfosPacking()}    };
         if (options.idDiagnostics) {
             result.push(
                 {
-                    output:
-                        "upstream/shaders/diagnostic-id.frag.native.wgsl",
+                    output: "upstream/shaders/diagnostic-id.frag.native.wgsl",
                     data: diagnosticIdFragmentWgsl(),
                 },
                 {
-                    output:
-                        "upstream/shaders/diagnostic-cluster.frag.native.wgsl",
+                    output: "upstream/shaders/diagnostic-cluster.frag.native.wgsl",
                     data: diagnosticClusterFragmentWgsl(),
                 },
             );
         }
-        if (
-            options.frameGraph ||
-            options.geometryOutputTasks.length > 0
-        ) {
+        if (options.frameGraph || options.geometryOutputTasks.length > 0) {
             result.push(
                 {
                     output: "upstream/shaders/blit.vert.native.wgsl",
@@ -3162,15 +3187,15 @@ ${pinnedFogInfosPacking()}    };
                     data: blitFragmentWgsl(),
                 },
                 {
-                    output:
-                        "upstream/shaders/depth-only.frag.native.wgsl",
+                    output: "upstream/shaders/depth-only.frag.native.wgsl",
                     data: depthOnlyFragmentWgsl(),
                 },
             );
         }
-        const sceneUniformsWgsl = options.shaderPrograms.length > 0
-            ? this.compiledSceneUniformsWgsl()
-            : "";
+        const sceneUniformsWgsl =
+            options.shaderPrograms.length > 0
+                ? this.compiledSceneUniformsWgsl()
+                : "";
         for (const source of options.shaderPrograms) {
             const name = source.name;
             const program = lowerWgslShaderProgram(source);
@@ -3205,11 +3230,7 @@ ${pinnedFogInfosPacking()}    };
                 },
                 {
                     output: `upstream/shaders/${name}.vert.native.wgsl`,
-                    data: emitNativeWgslProgram(
-                        program,
-                        "vertex",
-                        defineText,
-                    ),
+                    data: emitNativeWgslProgram(program, "vertex", defineText),
                 },
                 {
                     output: `upstream/shaders/${name}.frag.native.wgsl`,
@@ -3245,14 +3266,14 @@ ${pinnedFogInfosPacking()}    };
         const ibl = this.context.store.getSource(iblFragmentModule);
         const iblSkybox = this.context.store.getSource(iblSkyboxModule);
         const refraction = this.context.store.getSource(refractionModule);
-        const dielectric = this.context.store.getSource(
-            dielectricLoaderModule,
-        );
+        const dielectric = this.context.store.getSource(dielectricLoaderModule);
         const transmissionFrameGraph = this.context.store.getSource(
             transmissionFrameGraphModule,
         );
         const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
-        const backgroundGround = this.context.store.getSource(backgroundGroundModule);
+        const backgroundGround = this.context.store.getSource(
+            backgroundGroundModule,
+        );
         const backgroundDds = this.context.store.getSource(backgroundDdsModule);
         const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
         const pbrGeometryModule =
@@ -3261,25 +3282,21 @@ ${pinnedFogInfosPacking()}    };
         const clearcoatFragment = this.context.store.getSource(
             clearcoatFragmentModule,
         );
-        const sheenFragment = this.context.store.getSource(
-            sheenFragmentModule,
-        );
+        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
         const iridescenceFragment = this.context.store.getSource(
             iridescenceFragmentModule,
         );
-        const dispersionWgsl = this.context.store.getSource(
-            dispersionWgslModule,
-        );
+        const dispersionWgsl =
+            this.context.store.getSource(dispersionWgslModule);
         const clearcoatLoader = this.context.store.getSource(
             clearcoatLoaderModule,
         );
-        const sheenLoader = this.context.store.getSource(
-            sheenLoaderModule,
-        );
+        const sheenLoader = this.context.store.getSource(sheenLoaderModule);
         const iridescenceLoader = this.context.store.getSource(
             iridescenceLoaderModule,
         );
-        const shaderPipeline = this.context.store.getSource(shaderPipelineModule);
+        const shaderPipeline =
+            this.context.store.getSource(shaderPipelineModule);
         const sceneUniformsSource = this.context.store.getSource(
             sceneUniformsSourceModule,
         );
@@ -3288,12 +3305,28 @@ ${pinnedFogInfosPacking()}    };
         > = [
             [pbr, packagedWgsl`roughness*roughness+0.0005`, "GGX roughness"],
             [pbr, packagedWgsl`0.5/(gl+gv)`, "Smith geometry"],
-            [pbr, packagedWgsl`luminanceOverAlpha+=dot`, "transparent alpha luminance"],
+            [
+                pbr,
+                packagedWgsl`luminanceOverAlpha+=dot`,
+                "transparent alpha luminance",
+            ],
             [pbr, packagedWgsl`finalAlpha=saturate`, "transparent alpha fold"],
-            [pbrExt, packagedWgsl`baseColor *= input.vColor.rgb`, "vertex color base color"],
-            [pbrExt, packagedWgsl`alpha *= input.vColor.a`, "vertex color alpha"],
+            [
+                pbrExt,
+                packagedWgsl`baseColor *= input.vColor.rgb`,
+                "vertex color base color",
+            ],
+            [
+                pbrExt,
+                packagedWgsl`alpha *= input.vColor.a`,
+                "vertex color alpha",
+            ],
             [pbrHelper, "1.590579", "image-processing calibration"],
-            [ibl, packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`, "IBL mip selection"],
+            [
+                ibl,
+                packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`,
+                "IBL mip selection",
+            ],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
             [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
@@ -3301,37 +3334,79 @@ ${pinnedFogInfosPacking()}    };
             [ibl, BRDF_LUT_COORDINATES, "BRDF LUT coordinates"],
             [ibl, ENVIRONMENT_CUBEMAP_ROTATION, "environment cubemap rotation"],
             [iblSkybox, PBR_SKYBOX_VIEW_RAY, "PBR skybox view ray"],
-            [iblSkybox, packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`, "PBR skybox LOD alphaG"],
-            [refraction, packagedWgsl`let rd=refract(-V,N,material.refractionParams.y)`, "scene-color refraction ray"],
-            [refraction, packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`, "Beer-Lambert attenuation"],
-            [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
-            [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
-            [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
-            [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
+            [
+                iblSkybox,
+                packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`,
+                "PBR skybox LOD alphaG",
+            ],
+            [
+                refraction,
+                packagedWgsl`let rd=refract(-V,N,material.refractionParams.y)`,
+                "scene-color refraction ray",
+            ],
+            [
+                refraction,
+                packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
+                "Beer-Lambert attenuation",
+            ],
+            [
+                refraction,
+                "colorSpecularEnvReflectance.rgb",
+                "transmission Fresnel complement",
+            ],
+            [
+                dielectric,
+                "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+                "glTF IOR Fresnel",
+            ],
+            [
+                transmissionFrameGraph,
+                "updateTransmissionTexture(state, engine)",
+                "scene-color copy ordering",
+            ],
+            [
+                sceneUniforms,
+                "lodGenerationScale ?? 0.8",
+                "environment LOD scale",
+            ],
             // The ground/skybox fragment *formulas* are no longer asserted
             // here: they are lifted from the modules' own literals, and the
             // lift throws naming the missing literal itself.
             [backgroundGround, "ground renders last", "background ordering"],
-            [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
+            [
+                backgroundDds,
+                'GPUTextureFormat = "rgba16float"',
+                "DDS cubemap format",
+            ],
             [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
             [backgroundDds, "order: 0", "DDS skybox ordering"],
             [backgroundHdr, "order: 0", "HDR skybox ordering"],
-            [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
-            [pbrGeometry, packagedWgsl`directDiffuse + finalIrradiance`, "geometry irradiance"],
-            [pbrGeometry, packagedWgsl`colorF0, 1.0 - roughness`, "geometry reflectivity"],
+            [
+                backgroundHdr,
+                "buildHdrSkyboxRenderable",
+                "HDR skybox renderable",
+            ],
+            [
+                pbrGeometry,
+                packagedWgsl`directDiffuse + finalIrradiance`,
+                "geometry irradiance",
+            ],
+            [
+                pbrGeometry,
+                packagedWgsl`colorF0, 1.0 - roughness`,
+                "geometry reflectivity",
+            ],
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
         ];
         if (options.morphStorage) {
             const morphTargetsModule = "src/morph/create-morph-targets.ts";
             const morphTargets =
                 this.context.store.getSource(morphTargetsModule);
-            requiredUpstreamFormulas.push(
-                [
-                    morphTargets,
-                    "MORPH_WEIGHTS_HEADER_BYTES = 16",
-                    "morph weights header ABI",
-                ],
-            );
+            requiredUpstreamFormulas.push([
+                morphTargets,
+                "MORPH_WEIGHTS_HEADER_BYTES = 16",
+                "morph weights header ABI",
+            ]);
         }
         // The GridMaterial WGSL needs no marker rows: both stages are built
         // by evaluating the pinned template functions, which throws on any
@@ -3377,11 +3452,7 @@ ${pinnedFogInfosPacking()}    };
                     packagedWgsl`return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));`,
                     "sheen Ashikhmin visibility",
                 ],
-                [
-                    sheenFragment,
-                    SHEEN_ALBEDO_SCALING,
-                    "sheen albedo scaling",
-                ],
+                [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
                 [
                     sheenLoader,
                     "albedoScaling: true",
@@ -3424,7 +3495,9 @@ ${pinnedFogInfosPacking()}    };
         }
         for (const [source, formula, label] of requiredUpstreamFormulas) {
             if (!source.includes(formula)) {
-                throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
+                throw new Error(
+                    `Pinned Babylon Lite source is missing ${label}: ${formula}.`,
+                );
             }
             if (options.shaderPrograms.length > 0) {
                 for (const marker of [
@@ -3440,10 +3513,14 @@ ${pinnedFogInfosPacking()}    };
                         );
                     }
                 }
-                if (!sceneUniformsSource.includes(
-                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
-                )) {
-                    throw new Error("Pinned scene uniform WGSL import changed.");
+                if (
+                    !sceneUniformsSource.includes(
+                        'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
+                    )
+                ) {
+                    throw new Error(
+                        "Pinned scene uniform WGSL import changed.",
+                    );
                 }
             }
         }
@@ -3465,13 +3542,9 @@ ${pinnedFogInfosPacking()}    };
             true,
             ts.ScriptKind.JS,
         );
-        const initializer =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    file,
-                    "sceneUniformsWgsl",
-                ),
-            );
+        const initializer = this.context.unwrapExpression(
+            this.context.variableInitializer(file, "sceneUniformsWgsl"),
+        );
         if (
             !ts.isStringLiteral(initializer) &&
             !ts.isNoSubstitutionTemplateLiteral(initializer)
@@ -3489,8 +3562,7 @@ ${pinnedFogInfosPacking()}    };
         programs: CompiledShaderProgram[],
     ): ShaderProgramReflection[] {
         return programs.map(
-            (program) =>
-                lowerWgslShaderProgram(program).reflection,
+            (program) => lowerWgslShaderProgram(program).reflection,
         );
     }
 
@@ -3500,20 +3572,19 @@ ${pinnedFogInfosPacking()}    };
         const clearcoatFragment = this.context.store.getSource(
             clearcoatFragmentModule,
         );
-        const sheenFragment = this.context.store.getSource(
-            sheenFragmentModule,
-        );
+        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
         const iridescenceFragment = this.context.store.getSource(
             iridescenceFragmentModule,
         );
-        const dispersionWgsl = this.context.store.getSource(
-            dispersionWgslModule,
-        );
+        const dispersionWgsl =
+            this.context.store.getSource(dispersionWgslModule);
         const clearcoatLoader = this.context.store.getSource(
             clearcoatLoaderModule,
         );
         if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
-            throw new Error("Pinned Babylon Lite RGBD vertical flip semantics changed.");
+            throw new Error(
+                "Pinned Babylon Lite RGBD vertical flip semantics changed.",
+            );
         }
         if (!surface.includes("Defaults to `4`.")) {
             throw new Error("Pinned Babylon Lite MSAA default changed.");
@@ -3543,11 +3614,7 @@ ${pinnedFogInfosPacking()}    };
                 "useF0Remap: false",
                 "glTF clearcoat F0 remap opt-out",
             ],
-            [
-                sheenFragment,
-                SHEEN_ALBEDO_SCALING,
-                "sheen albedo scaling",
-            ],
+            [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
             [
                 iridescenceFragment,
                 packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
@@ -3585,8 +3652,12 @@ ${pinnedFogInfosPacking()}    };
                     id: "surface-msaa",
                     upstreamModule: surfaceModule,
                     upstreamMarker: "Defaults to `4`.",
-                    nativeBehavior: "SDL_GPU requests 4x MSAA and resolves into the single-sample presentation or capture target.",
-                    validation: ["source marker assertion", "edge MAD attribution"],
+                    nativeBehavior:
+                        "SDL_GPU requests 4x MSAA and resolves into the single-sample presentation or capture target.",
+                    validation: [
+                        "source marker assertion",
+                        "edge MAD attribution",
+                    ],
                 },
                 {
                     id: "pbr-skybox-mode",
@@ -3594,13 +3665,15 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: PBR_SKYBOX_VIEW_RAY,
                     nativeBehavior:
                         "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
-                    validation: ["source marker assertion", "skybox gate parity"],
+                    validation: [
+                        "source marker assertion",
+                        "skybox gate parity",
+                    ],
                 },
                 {
                     id: "scene-color-transmission",
                     upstreamModule: transmissionFrameGraphModule,
-                    upstreamMarker:
-                        "updateTransmissionTexture(state, engine)",
+                    upstreamMarker: "updateTransmissionTexture(state, engine)",
                     nativeBehavior:
                         "PAL renders linear RGBA16F scene color, copies completed opaque color and its pinned mip chain before the first transmissive draw, then applies image processing once to the final visible output.",
                     validation: [
@@ -3611,8 +3684,7 @@ ${pinnedFogInfosPacking()}    };
                 {
                     id: "ior-fresnel",
                     upstreamModule: dielectricLoaderModule,
-                    upstreamMarker:
-                        "((ior - 1) / (ior + 1)) ** 2 / 0.04",
+                    upstreamMarker: "((ior - 1) / (ior + 1)) ** 2 / 0.04",
                     nativeBehavior:
                         "KHR_materials_ior maps to dielectric F0=((ior-1)/(ior+1))^2 and the transmitted lobe uses the Fresnel complement.",
                     validation: ["source marker assertion", "IOR gate parity"],
@@ -3620,8 +3692,7 @@ ${pinnedFogInfosPacking()}    };
                 {
                     id: "volume-beer-lambert",
                     upstreamModule: refractionModule,
-                    upstreamMarker:
-                        packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
+                    upstreamMarker: packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
                     nativeBehavior:
                         "KHR_materials_volume attenuation uses exp(log(attenuationColor)/attenuationDistance * thickness).",
                     validation: [
@@ -3643,8 +3714,7 @@ ${pinnedFogInfosPacking()}    };
                 {
                     id: "sheen-layer",
                     upstreamModule: sheenFragmentModule,
-                    upstreamMarker:
-                        SHEEN_ALBEDO_SCALING,
+                    upstreamMarker: SHEEN_ALBEDO_SCALING,
                     nativeBehavior:
                         "KHR_materials_sheen uses the Charlie distribution with Ashikhmin visibility, samples the BRDF LUT blue channel at sheen roughness, and scales the base layer by 1-maxSheenColor*brdf.b.",
                     validation: [
@@ -3655,8 +3725,7 @@ ${pinnedFogInfosPacking()}    };
                 {
                     id: "iridescence-thin-film",
                     upstreamModule: iridescenceFragmentModule,
-                    upstreamMarker:
-                        packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
+                    upstreamMarker: packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                     nativeBehavior:
                         "KHR_materials_iridescence evaluates Babylon's thin-film airy summation in XYZ and blends the result into base F0 by the iridescence intensity.",
                     validation: [
@@ -3667,8 +3736,7 @@ ${pinnedFogInfosPacking()}    };
                 {
                     id: "dispersion-chromatic-refraction",
                     upstreamModule: dispersionWgslModule,
-                    upstreamMarker:
-                        packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
+                    upstreamMarker: packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                     nativeBehavior:
                         "KHR_materials_dispersion splits the refracted scene-color ray into per-RGB etas using Babylon's 20/dispersion Abbe strength.",
                     validation: [
@@ -3680,78 +3748,113 @@ ${pinnedFogInfosPacking()}    };
                     id: "ggx-smith",
                     upstreamModule: pbrTemplateModule,
                     upstreamMarker: "roughness*roughness+0.0005; 0.5/(gl+gv)",
-                    nativeBehavior: "GGX distribution and Smith correlated geometry use Babylon alphaG conventions.",
+                    nativeBehavior:
+                        "GGX distribution and Smith correlated geometry use Babylon alphaG conventions.",
                     validation: ["source marker assertions", "GPU parity"],
                 },
                 {
                     id: "ibl-energy-conservation",
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: "getEnergyConservationFactor",
-                    nativeBehavior: "BRDF LUT reflectance is multiplied by Babylon's energy-conservation factor.",
+                    nativeBehavior:
+                        "BRDF LUT reflectance is multiplied by Babylon's energy-conservation factor.",
                     validation: ["source marker assertions", "GPU parity"],
                 },
                 {
                     id: "ibl-horizon-occlusion",
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: "environmentHorizonOcclusion",
-                    nativeBehavior: "Normal-mapped IBL squares Babylon's saturated reflection-to-geometric-normal horizon term.",
-                    validation: ["source marker assertions", "Scene 1 diagnostics"],
+                    nativeBehavior:
+                        "Normal-mapped IBL squares Babylon's saturated reflection-to-geometric-normal horizon term.",
+                    validation: [
+                        "source marker assertions",
+                        "Scene 1 diagnostics",
+                    ],
                 },
                 {
                     id: "ibl-specular-occlusion",
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: IBL_SPECULAR_OCCLUSION,
-                    nativeBehavior: "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
-                    validation: ["source marker assertions", "Scene 1 diagnostics"],
+                    nativeBehavior:
+                        "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
+                    validation: [
+                        "source marker assertions",
+                        "Scene 1 diagnostics",
+                    ],
                 },
                 {
                     id: "environment-lod",
                     upstreamModule: sceneUniformsModule,
                     upstreamMarker: "lodGenerationScale ?? 0.8",
-                    nativeBehavior: "Cubemap mip selection uses log2(cubemapDim * alphaG) with the environment's pinned lodGenerationScale.",
-                    validation: ["source marker assertions", "generated uniform tests"],
+                    nativeBehavior:
+                        "Cubemap mip selection uses log2(cubemapDim * alphaG) with the environment's pinned lodGenerationScale.",
+                    validation: [
+                        "source marker assertions",
+                        "generated uniform tests",
+                    ],
                 },
                 {
                     id: "brdf-lut-coordinates",
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: BRDF_LUT_COORDINATES,
-                    nativeBehavior: "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
-                    validation: ["source marker assertions", "CPU/GPU visual parity"],
+                    nativeBehavior:
+                        "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
+                    validation: [
+                        "source marker assertions",
+                        "CPU/GPU visual parity",
+                    ],
                 },
                 {
                     id: "environment-cubemap-orientation",
                     upstreamModule: iblFragmentModule,
                     upstreamMarker: ENVIRONMENT_CUBEMAP_ROTATION,
-                    nativeBehavior: "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
-                    validation: ["source marker assertions", "Scenes 1 and 8 parity"],
+                    nativeBehavior:
+                        "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
+                    validation: [
+                        "source marker assertions",
+                        "Scenes 1 and 8 parity",
+                    ],
                 },
                 {
                     id: "rgbd-cubemap-y-flip",
                     upstreamModule: rgbdDecodeModule,
                     upstreamMarker: "select(g.y,d.y-1u-g.y,f)",
-                    nativeBehavior: "RGBD cubemap rows are vertically reversed during SDL_GPU upload.",
-                    validation: ["source marker assertion", "Scene 1 foreground parity"],
+                    nativeBehavior:
+                        "RGBD cubemap rows are vertically reversed during SDL_GPU upload.",
+                    validation: [
+                        "source marker assertion",
+                        "Scene 1 foreground parity",
+                    ],
                 },
                 {
                     id: "image-processing",
                     upstreamModule: pbrHelperCoreModule,
                     upstreamMarker: "1.590579",
-                    nativeBehavior: "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
+                    nativeBehavior:
+                        "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
                     validation: ["source marker assertions", "GPU parity"],
                 },
                 {
                     id: "hdr-cubemap-skybox",
                     upstreamModule: backgroundHdrModule,
                     upstreamMarker: "buildHdrSkyboxRenderable",
-                    nativeBehavior: "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
-                    validation: ["source marker assertions", "scene 8 GPU parity"],
+                    nativeBehavior:
+                        "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
+                    validation: [
+                        "source marker assertions",
+                        "scene 8 GPU parity",
+                    ],
                 },
                 {
                     id: "solid-skybox",
                     upstreamModule: backgroundSolidModule,
                     upstreamMarker: "buildSolidSkyboxRenderable",
-                    nativeBehavior: "The clear-colour skybox an .env scene reaches without a DDS or HDR skybox is drawn as the pin's own cube, with its infinite-distance vertex stage and unconditional dither taken from the packaged WGSL.",
-                    validation: ["packaged WGSL extraction", "scene 7 background attribution"],
+                    nativeBehavior:
+                        "The clear-colour skybox an .env scene reaches without a DDS or HDR skybox is drawn as the pin's own cube, with its infinite-distance vertex stage and unconditional dither taken from the packaged WGSL.",
+                    validation: [
+                        "packaged WGSL extraction",
+                        "scene 7 background attribution",
+                    ],
                 },
             ],
         };
@@ -3837,7 +3940,6 @@ ${pinnedFogInfosPacking()}    };
             `Expected an indexed read of '${base}'.`,
         );
     }
-
 
     /**
      * The view-transpose body, derived from the pinned getViewMatrix store
@@ -3986,7 +4088,7 @@ ${pinnedFogInfosPacking()}    };
             floatingOrigin
                 ? `    const double ${name} = 0.0;\n`
                 : `    const double ${name} = ` +
-                    `static_cast<double>(world[${index}]);\n`;
+                  `static_cast<double>(world[${index}]);\n`;
         let body =
             eye("cx", eyeIndices[0]!) +
             eye("cy", eyeIndices[1]!) +
@@ -4038,16 +4140,14 @@ ${pinnedFogInfosPacking()}    };
      * invention of this port.
      */
     private assertPinnedDrawListRules(): void {
-        const { declaration: buildBindings } =
-            this.context.functionDeclaration(
-                renderTaskModule,
-                "buildBindings",
-            );
+        const { declaration: buildBindings } = this.context.functionDeclaration(
+            renderTaskModule,
+            "buildBindings",
+        );
         const bucketFork = this.context.findNodes(
             buildBindings,
             (node): node is ts.IfStatement =>
-                ts.isIfStatement(node) &&
-                node.elseStatement !== undefined,
+                ts.isIfStatement(node) && node.elseStatement !== undefined,
         )[0];
         if (!bucketFork) {
             this.context.contractError(
@@ -4083,10 +4183,7 @@ ${pinnedFogInfosPacking()}    };
                 "Pinned bucket store",
             );
         };
-        bucketStore(
-            bucketFork.thenStatement,
-            "transparent.push(binding)",
-        );
+        bucketStore(bucketFork.thenStatement, "transparent.push(binding)");
         const directFork = bucketFork.elseStatement;
         if (!directFork || !ts.isIfStatement(directFork)) {
             this.context.contractError(
@@ -4117,12 +4214,11 @@ ${pinnedFogInfosPacking()}    };
             );
         }
         orderSorts.forEach((sort, index) => {
-            const receiver =
-                ts.isPropertyAccessExpression(sort.expression)
-                    ? this.context
-                          .propertyPath(sort.expression.expression)
-                          ?.join(".")
-                    : undefined;
+            const receiver = ts.isPropertyAccessExpression(sort.expression)
+                ? this.context
+                      .propertyPath(sort.expression.expression)
+                      ?.join(".")
+                : undefined;
             if (receiver !== sortedBuckets[index]) {
                 this.context.contractError(
                     sort,
@@ -4264,9 +4360,7 @@ ${pinnedFogInfosPacking()}    };
                 "strip index format",
             ],
         ] as const) {
-            if (
-                !this.context.store.getSource(modulePath).includes(marker)
-            ) {
+            if (!this.context.store.getSource(modulePath).includes(marker)) {
                 throw new Error(
                     `Pinned Babylon Lite ${label} changed: ${marker}`,
                 );
@@ -4288,11 +4382,10 @@ ${pinnedFogInfosPacking()}    };
      */
     private assertPinnedLightSlotPacking(): void {
         const lightsUboModule = "src/render/lights-ubo.ts";
-        const { declaration: affects } =
-            this.context.functionDeclaration(
-                lightsUboModule,
-                "affectsMesh",
-            );
+        const { declaration: affects } = this.context.functionDeclaration(
+            lightsUboModule,
+            "affectsMesh",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(affects, "meshId"),
             "mesh.id",
@@ -4320,8 +4413,7 @@ ${pinnedFogInfosPacking()}    };
         );
         const affectsReturns = this.context.findNodes(
             affects,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node),
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
         );
         if (
             affectsReturns.length !== 2 ||
@@ -4344,11 +4436,10 @@ ${pinnedFogInfosPacking()}    };
             "Pinned excluded-mesh arm",
         );
 
-        const { declaration: selection } =
-            this.context.functionDeclaration(
-                lightsUboModule,
-                "writeMeshLightSelection",
-            );
+        const { declaration: selection } = this.context.functionDeclaration(
+            lightsUboModule,
+            "writeMeshLightSelection",
+        );
         const selectionGuards: ReadonlyArray<readonly [string, string]> = [
             ["pi >= MAX_LIGHTS", "Pinned light-slot cursor break"],
             ["!light._writeLightUbo", "Pinned light-slot eligibility skip"],
@@ -4407,16 +4498,11 @@ ${pinnedFogInfosPacking()}    };
                 offset,
                 `${label} offset`,
             );
-            this.context.assertExpressionShape(
-                store.right,
-                value,
-                label,
-            );
+            this.context.assertExpressionShape(store.right, value, label);
         });
         const selectionReturn = this.context.findNodes(
             selection,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node),
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
         )[0];
         if (!selectionReturn?.expression) {
             this.context.contractError(
@@ -4534,9 +4620,7 @@ ${pinnedFogInfosPacking()}    };
                 `Expected a pinned typed-array literal for '${name}'.`,
             );
         }
-        const array = this.context.unwrapExpression(
-            initializer.arguments[0]!,
-        );
+        const array = this.context.unwrapExpression(initializer.arguments[0]!);
         if (!ts.isArrayLiteralExpression(array)) {
             this.context.contractError(
                 array,
@@ -4545,10 +4629,7 @@ ${pinnedFogInfosPacking()}    };
         }
         return array.elements.map((element) => {
             const unwrapped = this.context.unwrapExpression(element);
-            if (
-                ts.isIdentifier(unwrapped) &&
-                unwrapped.text === halfName
-            ) {
+            if (ts.isIdentifier(unwrapped) && unwrapped.text === halfName) {
                 return 1;
             }
             if (
@@ -4558,10 +4639,7 @@ ${pinnedFogInfosPacking()}    };
                 const operand = this.context.unwrapExpression(
                     unwrapped.operand,
                 );
-                if (
-                    ts.isIdentifier(operand) &&
-                    operand.text === halfName
-                ) {
+                if (ts.isIdentifier(operand) && operand.text === halfName) {
                     return -1;
                 }
             }
@@ -4694,10 +4772,7 @@ ${pinnedFogInfosPacking()}    };
             backgroundGroundModule,
         );
         for (const [marker, what] of [
-            [
-                "const eps = 2.220446049250313e-16;",
-                "ground world epsilon",
-            ],
+            ["const eps = 2.220446049250313e-16;", "ground world epsilon"],
             ["data[0] = data[15] = 1;", "ground world unit lanes"],
             ["data[5] = data[10] = eps;", "ground world epsilon lanes"],
             ["data[6] = -1;", "ground world -y-to-z lane"],
@@ -4719,14 +4794,13 @@ ${pinnedFogInfosPacking()}    };
             backgroundGroundModule,
             "createBgMeshUBO",
         );
-        const alphaStore = this.context.pinnedElementStores(
-            groundUbo.declaration,
-            "data",
-        ).find(
-            (store) =>
-                ts.isNumericLiteral(store.left.argumentExpression) &&
-                Number(store.left.argumentExpression.text) === 19,
-        );
+        const alphaStore = this.context
+            .pinnedElementStores(groundUbo.declaration, "data")
+            .find(
+                (store) =>
+                    ts.isNumericLiteral(store.left.argumentExpression) &&
+                    Number(store.left.argumentExpression.text) === 19,
+            );
         if (!alphaStore) {
             this.context.contractError(
                 groundUbo.declaration,
@@ -4802,9 +4876,7 @@ ${pinnedFogInfosPacking()}    };
                 indices.length !== 36 ||
                 indices.some(
                     (value) =>
-                        !Number.isInteger(value) ||
-                        value < 0 ||
-                        value >= 8,
+                        !Number.isInteger(value) || value < 0 || value >= 8,
                 )
             ) {
                 this.context.contractError(
@@ -4818,12 +4890,8 @@ ${pinnedFogInfosPacking()}    };
                 continue;
             }
             if (
-                positions.some(
-                    (value, index) => value !== corners![index],
-                ) ||
-                indices.some(
-                    (value, index) => value !== cubeIndices![index],
-                )
+                positions.some((value, index) => value !== corners![index]) ||
+                indices.some((value, index) => value !== cubeIndices![index])
             ) {
                 this.context.contractError(
                     cube.declaration,

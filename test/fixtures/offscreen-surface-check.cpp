@@ -8,10 +8,13 @@ using namespace bbl::pal;
 struct Device final : OffscreenDevice {};
 struct Image final : OffscreenImage {};
 
-template <typename Action>
-void refuses(Action action) {
+template <typename Action> void refuses(Action action) {
     bool refused = false;
-    try { action(); } catch (const std::runtime_error&) { refused = true; }
+    try {
+        action();
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
     assert(refused);
 }
 
@@ -32,7 +35,10 @@ int main() {
         contender.join();
         OffscreenImagePool<Image> pool;
         int allocations = 0;
-        const auto create = [&](auto, auto) { ++allocations; return std::make_shared<Image>(); };
+        const auto create = [&](auto, auto) {
+            ++allocations;
+            return std::make_shared<Image>();
+        };
         std::vector<OffscreenFrame> leases;
         for (int index = 0; index < 3; ++index) {
             assert(pool.acquire(16, 8, run, create));
@@ -74,9 +80,11 @@ int main() {
     std::jthread producer([&] {
         OffscreenRun run(live, device);
         started.store(true);
-        while (!run.closed()) run.publish(1, 1, std::make_shared<Image>());
+        while (!run.closed())
+            run.publish(1, 1, std::make_shared<Image>());
     });
-    while (!started.load()) std::this_thread::yield();
+    while (!started.load())
+        std::this_thread::yield();
     live.close();
     producer.join();
     std::cout << "offscreen ownership, bounded leases, resize and close passed\n";

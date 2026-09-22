@@ -45,15 +45,15 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { transpileForBrowser } from "../typescript-transpile.js";
 
-export interface DeterministicRandomContext
-    extends Pick<LoweringServices,
-        | "isDefaultLibraryIdentifier"
-        | "reachedNodeParticles"
-        | "lookup"
-        | "compileForDataSink"
-        | "emit"
-        | "fail"
-    > {}
+export interface DeterministicRandomContext extends Pick<
+    LoweringServices,
+    | "isDefaultLibraryIdentifier"
+    | "reachedNodeParticles"
+    | "lookup"
+    | "compileForDataSink"
+    | "emit"
+    | "fail"
+> {}
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
@@ -127,7 +127,7 @@ function seedFactoryDeclaration(
                 "not one.",
         );
     }
-    const factory = declaration as ts.FunctionDeclaration;
+    const factory = declaration;
     if (
         factory.modifiers?.some(
             (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
@@ -140,7 +140,10 @@ function seedFactoryDeclaration(
         );
     }
     if (!factory.getSourceFile().fileName.endsWith(".ts")) {
-        context.fail(callee, "A deterministic Math.random factory needs its source.");
+        context.fail(
+            callee,
+            "A deterministic Math.random factory needs its source.",
+        );
     }
     return factory;
 }
@@ -169,7 +172,11 @@ function capturedDeclarations(
     arrow: ts.ArrowFunction | ts.FunctionDeclaration,
     checker: ts.TypeChecker,
 ): string[] {
-    const captured: Array<{ declaration: ts.VariableDeclaration; name: ts.Identifier; initializer: ts.NumericLiteral }> = [];
+    const captured: Array<{
+        declaration: ts.VariableDeclaration;
+        name: ts.Identifier;
+        initializer: ts.NumericLiteral;
+    }> = [];
     const declared = new EmissionSet<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
@@ -191,14 +198,16 @@ function capturedDeclarations(
     collectDeclared(arrow);
 
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isPropertyAccessExpression(node)
-        ) {
+        if (ts.isPropertyAccessExpression(node)) {
             visit(node.expression);
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (node.text === "Math" && context.isDefaultLibraryIdentifier(node)) return;
+            if (
+                node.text === "Math" &&
+                context.isDefaultLibraryIdentifier(node)
+            )
+                return;
             const symbol = checker.getSymbolAtLocation(node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
@@ -215,8 +224,14 @@ function capturedDeclarations(
                         `numeric locals only; '${node.text}' is not one.`,
                 );
             }
-            if (!captured.some(capture => capture.declaration === declaration)) {
-                captured.push({ declaration, name: declaration.name, initializer: declaration.initializer });
+            if (
+                !captured.some((capture) => capture.declaration === declaration)
+            ) {
+                captured.push({
+                    declaration,
+                    name: declaration.name,
+                    initializer: declaration.initializer,
+                });
             }
             return;
         }
@@ -227,10 +242,7 @@ function capturedDeclarations(
     return captured
         .sort((left, right) => left.declaration.pos - right.declaration.pos)
         .map(({ name, initializer }) => {
-            return (
-                `let ${name.text} = ` +
-                `${initializer.text};`
-            );
+            return `let ${name.text} = ` + `${initializer.text};`;
         });
 }
 
@@ -255,14 +267,22 @@ export function emitDeterministicRandomInstall(
     }
     if (context.reachedNodeParticles.sets.some((set) => set.native)) {
         if (context.reachedNodeParticles.sets.some((set) => !set.native)) {
-            context.fail(expression, "A Math.random override cannot span native and generation-only particle systems.");
+            context.fail(
+                expression,
+                "A Math.random override cannot span native and generation-only particle systems.",
+            );
         }
-        const saved = ts.isIdentifier(expression.right) ? context.lookup(expression.right) : undefined;
-        const callback = saved?.kind === "js-random"
-            ? saved.cpp || "bbl::js::Callback<double()>{}"
-            : context.compileForDataSink(expression.right, {
-                kind: "function", parameters: [], result: { kind: "number" },
-            });
+        const saved = ts.isIdentifier(expression.right)
+            ? context.lookup(expression.right)
+            : undefined;
+        const callback =
+            saved?.kind === "js-random"
+                ? saved.cpp || "bbl::js::Callback<double()>{}"
+                : context.compileForDataSink(expression.right, {
+                      kind: "function",
+                      parameters: [],
+                      result: { kind: "number" },
+                  });
         context.emit(`bbl::js::set_random_override(${callback});`);
         return true;
     }

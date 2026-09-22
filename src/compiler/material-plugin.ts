@@ -125,27 +125,25 @@ import type {
 // `standard_binding_resources` table is rendered from.
 // The pin's own Standard binding names, from the one list the generated
 // `standard_binding_resources` table is rendered from.
-import {
-    standardBuiltinBindingNames,
-} from "../pinned-standard-variants.js";
+import { standardBuiltinBindingNames } from "../pinned-standard-variants.js";
 import type { Value } from "./types.js";
 
 /** Which family's bind path the material a plugin attaches to takes. */
 type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-interface MaterialPluginContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "resolveStaticExpression"
-        | "unwrap"
-        | "propertyName"
-        | "probeStaticArrayLiteral"
-        | "compileStaticString"
-        | "compileValue"
-        | "withBoundParameters"
-        | "fail"
-    > {}
+interface MaterialPluginContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "resolveStaticExpression"
+    | "unwrap"
+    | "propertyName"
+    | "probeStaticArrayLiteral"
+    | "compileStaticString"
+    | "compileValue"
+    | "withBoundParameters"
+    | "fail"
+> {}
 
 /** One texture a plugin's `bindTextures` binds, and where it came from. */
 interface MaterialPluginTextureBinding {
@@ -189,9 +187,11 @@ function sameResolvedTexture(
     left: ResolvedTextureIdentity,
     right: ResolvedTextureIdentity,
 ): boolean {
-    return left.root === right.root &&
+    return (
+        left.root === right.root &&
         left.path.length === right.path.length &&
-        left.path.every((name, index) => name === right.path[index]);
+        left.path.every((name, index) => name === right.path[index])
+    );
 }
 
 /**
@@ -228,9 +228,10 @@ function resolveTextureIdentity(
         );
     }
     return {
-        root: symbol.flags & ts.SymbolFlags.Alias
-            ? context.checker.getAliasedSymbol(symbol)
-            : symbol,
+        root:
+            symbol.flags & ts.SymbolFlags.Alias
+                ? context.checker.getAliasedSymbol(symbol)
+                : symbol,
         path,
     };
 }
@@ -297,20 +298,17 @@ function pinnedPluginContract(): PinnedPluginContract {
         "buildPluginFragment",
     );
     const names = (constant: string): string[] =>
-        context.objectInitializer(file, constant).properties.map(
-            (property) => {
-                const name = property.name &&
-                    context.propertyName(property.name);
-                if (name === undefined) {
-                    return context.contractError(
-                        property,
-                        `Pinned ${constant} carries an entry that is not a ` +
-                            "plain named injection point.",
-                    );
-                }
-                return name;
-            },
-        );
+        context.objectInitializer(file, constant).properties.map((property) => {
+            const name = property.name && context.propertyName(property.name);
+            if (name === undefined) {
+                return context.contractError(
+                    property,
+                    `Pinned ${constant} carries an entry that is not a ` +
+                        "plain named injection point.",
+                );
+            }
+            return name;
+        });
     contract = {
         fragmentPoints: new EmissionSet([
             ...names("FRAG_POINT_TO_SLOTS"),
@@ -339,8 +337,7 @@ function definitionsPoint(
         declaration,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
-            node.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
             ts.isStringLiteral(node.right),
     );
     if (!comparison) {
@@ -364,8 +361,7 @@ function samplerTypeDefault(
         declaration,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
-            node.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken &&
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
             ts.isPropertyAccessExpression(node.left) &&
             node.left.name.text === field &&
             ts.isStringLiteral(node.right),
@@ -447,7 +443,9 @@ function pluginObjectSite(
     context: MaterialPluginContext,
     expression: ts.Expression,
 ): PluginObjectSite {
-    const resolved = context.unwrap(context.resolveStaticExpression(expression));
+    const resolved = context.unwrap(
+        context.resolveStaticExpression(expression),
+    );
     if (ts.isObjectLiteralExpression(resolved)) {
         return { object: resolved, bindings: [] };
     }
@@ -728,9 +726,7 @@ function foldSamplerDeclarations(
     const pinned = pinnedPluginContract();
     const builtins = standardBuiltinBindingNames();
     return array.elements.map((element) => {
-        const object = context.unwrap(
-            context.resolveStaticExpression(element),
-        );
+        const object = context.unwrap(context.resolveStaticExpression(element));
         if (!ts.isObjectLiteralExpression(object)) {
             context.fail(
                 element,
@@ -744,8 +740,7 @@ function foldSamplerDeclarations(
             samplerType?: string;
         } = {};
         for (const property of object.properties) {
-            const field = property.name &&
-                context.propertyName(property.name);
+            const field = property.name && context.propertyName(property.name);
             if (field === undefined || !ts.isPropertyAssignment(property)) {
                 context.fail(
                     property,
@@ -754,8 +749,10 @@ function foldSamplerDeclarations(
                 );
             }
             if (
-                field !== "texture" && field !== "sampler" &&
-                field !== "textureType" && field !== "samplerType"
+                field !== "texture" &&
+                field !== "sampler" &&
+                field !== "textureType" &&
+                field !== "samplerType"
             ) {
                 context.fail(
                     property,
@@ -1067,10 +1064,7 @@ function foldPluginTexture(
                 `${member} takes a Texture2D.`,
         );
     }
-    if (
-        value.textureStorage !== "file" &&
-        value.textureStorage !== "pixels"
-    ) {
+    if (value.textureStorage !== "file" && value.textureStorage !== "pixels") {
         context.fail(
             node,
             `MaterialPlugin "${plugin}" binds a ` +
@@ -1148,9 +1142,10 @@ function foldCustomCode(
     accepted: ReadonlySet<string>,
 ): Readonly<Record<string, string>> | undefined {
     const parameter = declaration.parameters[0];
-    const parameterName = parameter && ts.isIdentifier(parameter.name)
-        ? parameter.name.text
-        : undefined;
+    const parameterName =
+        parameter && ts.isIdentifier(parameter.name)
+            ? parameter.name.text
+            : undefined;
     const body = declaration.body;
     if (!body) {
         context.fail(declaration, "getCustomCode has no body.");
@@ -1198,11 +1193,7 @@ function foldCustomCode(
                     "getCustomCode returns a value or null.",
                 );
             }
-            return foldCustomCodeValue(
-                context,
-                statement.expression,
-                accepted,
-            );
+            return foldCustomCodeValue(context, statement.expression, accepted);
         }
         context.fail(
             statement,
@@ -1250,7 +1241,9 @@ function foldCustomCodeChoice(
 /** The single `return` a guard's branch carries. */
 function onlyReturn(branch: ts.Statement): ts.Expression | undefined {
     const statement = ts.isBlock(branch)
-        ? branch.statements.length === 1 ? branch.statements[0] : undefined
+        ? branch.statements.length === 1
+            ? branch.statements[0]
+            : undefined
         : branch;
     return statement && ts.isReturnStatement(statement)
         ? statement.expression
@@ -1341,9 +1334,9 @@ function foldCustomCodeValue(
             context.fail(
                 property.name,
                 `${point} is not an injection point the pin maps onto a ` +
-                    `template slot; it accepts ${
-                        [...accepted].sort().join(", ")
-                    }.`,
+                    `template slot; it accepts ${[...accepted]
+                        .sort()
+                        .join(", ")}.`,
             );
         }
         // The pin splices this text into the composed fragment at

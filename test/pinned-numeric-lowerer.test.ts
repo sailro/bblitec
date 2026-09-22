@@ -16,7 +16,10 @@ import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import ts from "typescript";
 import {
     PinnedNumericLowerer,
@@ -64,89 +67,180 @@ function lower(
 }
 
 test("loop and branch locals preserve outer bindings and avoid native shadowing", () => {
-    const cpp = lower(`let p = 7; let pi = 2; for (let p = 0; p < 3; p++) { pi += p; } if (pi > 0) { let p = 9; pi += p; } { let p = 4; pi += p; } p += pi;`);
+    const cpp = lower(
+        `let p = 7; let pi = 2; for (let p = 0; p < 3; p++) { pi += p; } if (pi > 0) { let p = 9; pi += p; } { let p = 4; pi += p; } p += pi;`,
+    );
     assert.match(cpp, /double pi_1 = 2.0/);
     assert.match(cpp, /std::int64_t p_1 =/);
     assert.match(cpp, /pi_1 \+= p_1/);
     assert.match(cpp, /double p_1 = 9.0/);
-    assert.match(cpp, /\{\n    double p_1 = 4.0;/);
+    assert.match(cpp, /\{\n {4}double p_1 = 4.0;/);
     assert.match(cpp, /p \+= pi_1;$/);
 });
 
 test("shared statement lowering handles continue and ordered scalar assignment chains", () => {
-    const cpp = lower("let a = 0; let b = 0; let c = 0; a = b = c = next(); for (let i = 0; i < 2; i++) { if (i === 1) continue; a += i; }",
-        [], { calls: new Map([["next", () => "next_value()"]]) });
+    const cpp = lower(
+        "let a = 0; let b = 0; let c = 0; a = b = c = next(); for (let i = 0; i < 2; i++) { if (i === 1) continue; a += i; }",
+        [],
+        { calls: new Map([["next", () => "next_value()"]]) },
+    );
     assert.match(cpp, /c = next_value\(\);\nb = c;\na = b;/);
     assert.equal(cpp.match(/next_value\(\)/g)?.length, 1);
     assert.match(cpp, /continue;/);
-    assert.throws(() => lower("continue outer;"), /Unsupported pinned statement/);
-    assert.throws(() => lower("values[0] = a = 1;", [
-        ["values", { cpp: "values", type: "f32" }], ["a", { cpp: "a", type: "scalar" }],
-    ]), /scalar chained assignment targets/);
+    assert.throws(
+        () => lower("continue outer;"),
+        /Unsupported pinned statement/,
+    );
+    assert.throws(
+        () =>
+            lower("values[0] = a = 1;", [
+                ["values", { cpp: "values", type: "f32" }],
+                ["a", { cpp: "a", type: "scalar" }],
+            ]),
+        /scalar chained assignment targets/,
+    );
 });
 
 test("method dispatch receives binding identity through aliases and element access", () => {
-    const values: PinnedBinding = { cpp: "renamed_native_carrier", type: "scalar", absentCpp: "false" };
+    const values: PinnedBinding = {
+        cpp: "renamed_native_carrier",
+        type: "scalar",
+        absentCpp: "false",
+    };
     const functions = new Map([[values, "place_anchor"]]);
-    const cpp = lower("const alias = values; alias[0].place(1); values[1].place(2);", [["values", values]], {
-        methods: new Map([["place", (receiver, args, binding) => {
-            const fn = functions.get(binding);
-            assert.ok(fn, "dispatch must use the original binding, not a native-name prefix");
-            return `${fn}(${receiver}, ${args.join(", ")})`;
-        }]]),
-    });
-    assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(0\.0\)\], 1\.0\)/);
-    assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(1\.0\)\], 2\.0\)/);
+    const cpp = lower(
+        "const alias = values; alias[0].place(1); values[1].place(2);",
+        [["values", values]],
+        {
+            methods: new Map([
+                [
+                    "place",
+                    (receiver, args, binding) => {
+                        const fn = functions.get(binding);
+                        assert.ok(
+                            fn,
+                            "dispatch must use the original binding, not a native-name prefix",
+                        );
+                        return `${fn}(${receiver}, ${args.join(", ")})`;
+                    },
+                ],
+            ]),
+        },
+    );
+    assert.match(
+        cpp,
+        /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(0\.0\)\], 1\.0\)/,
+    );
+    assert.match(
+        cpp,
+        /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(1\.0\)\], 2\.0\)/,
+    );
 });
 
 test("indexed store adapters survive buffer aliases and refuse unsupported updates", () => {
-    const values: PinnedBinding = { cpp: "native_view", type: "f32", mutable: true,
-        indexedStore: (owner, index, value) => `store(${owner}, ${index}, ${value})` };
-    assert.equal(lower("const alias = values; alias[-0.25] = 0.1;", [["values", values]]), "store(native_view, (-0.25), 0.1);");
-    assert.throws(() => lower("values[0] += 1;", [["values", values]]), /compound assignment through an indexed store adapter/);
-    assert.throws(() => lower("values[0]++;", [["values", values]]), /reference to an adapted indexed store/);
+    const values: PinnedBinding = {
+        cpp: "native_view",
+        type: "f32",
+        mutable: true,
+        indexedStore: (owner, index, value) =>
+            `store(${owner}, ${index}, ${value})`,
+    };
+    assert.equal(
+        lower("const alias = values; alias[-0.25] = 0.1;", [
+            ["values", values],
+        ]),
+        "store(native_view, (-0.25), 0.1);",
+    );
+    assert.throws(
+        () => lower("values[0] += 1;", [["values", values]]),
+        /compound assignment through an indexed store adapter/,
+    );
+    assert.throws(
+        () => lower("values[0]++;", [["values", values]]),
+        /reference to an adapted indexed store/,
+    );
 });
 
-test("native typed-array chains capture indices before writes and preserve unrounded assignment values", t => {
+test("native typed-array chains capture indices before writes and preserve unrounded assignment values", (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const bindings: [string, PinnedBinding][] = [
-        ["values", { cpp: "values", type: "f32" }], ["bytes", { cpp: "bytes", type: "u8" }],
+        ["values", { cpp: "values", type: "f32" }],
+        ["bytes", { cpp: "bytes", type: "u8" }],
     ];
-    const body = lower("values[values[0]] = values[0] = 1; values[2] = bytes[0] = 257.25;", bindings);
-    const values = new Float32Array([3, 0, 0, 0]), bytes = new Uint8Array(1);
+    const body = lower(
+        "values[values[0]] = values[0] = 1; values[2] = bytes[0] = 257.25;",
+        bindings,
+    );
+    const values = new Float32Array([3, 0, 0, 0]),
+        bytes = new Uint8Array(1);
     values[values[0]!] = values[0] = 1;
     values[2] = bytes[0] = 257.25;
-    const output = resolve("artifacts/pinned-numeric-chains"); mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `#include <bblite/js_data.hpp>
+    const output = resolve("artifacts/pinned-numeric-chains");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
         #include <cassert>
         int main() {
             std::vector<float> values{3, 0, 0, 0}; std::vector<std::uint8_t> bytes(1);
             ${body}
-            assert((values == std::vector<float>{${[...values]}}));
+            assert((values == std::vector<float>{${[...values].join(",")}}));
             assert(bytes[0] == ${bytes[0]});
-        }`);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/include", file]);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
-    for (const source of ["values[0] = values[1] = next();", "values[bytes[0]++] = values[0] = 1;"])
-        assert.throws(() => lower(source, bindings), /scalar chained assignment targets/);
-    assert.throws(() => lower("values[0] = values[1] = -1;", [["values", { cpp: "values", type: "u32" }]]), /scalar chained assignment targets/);
+    for (const source of [
+        "values[0] = values[1] = next();",
+        "values[bytes[0]++] = values[0] = 1;",
+    ])
+        assert.throws(
+            () => lower(source, bindings),
+            /scalar chained assignment targets/,
+        );
+    assert.throws(
+        () =>
+            lower("values[0] = values[1] = -1;", [
+                ["values", { cpp: "values", type: "u32" }],
+            ]),
+        /scalar chained assignment targets/,
+    );
 });
 
 test("caller substitutions can name later local declarations", () => {
-    const cpp = lower("const defaultOffset = 3; const offset = options.offset;", [
-        ["options.offset", { cpp: "defaultOffset", type: "scalar" }],
-    ]);
+    const cpp = lower(
+        "const defaultOffset = 3; const offset = options.offset;",
+        [["options.offset", { cpp: "defaultOffset", type: "scalar" }]],
+    );
     assert.match(cpp, /const double defaultOffset = 3.0/);
     assert.match(cpp, /const double offset = defaultOffset/);
 });
 
 test("optional scalar aliases retain absence in strict equality in either order", () => {
-    const cpp = lower("let result = 0; const copy = option; if (copy === undefined) result = 1; if (undefined !== copy) result = 2; if (copy === false) result = 3;", [
-        ["option", { cpp: "value", type: "bool", absentCpp: "missing" }],
-    ]);
+    const cpp = lower(
+        "let result = 0; const copy = option; if (copy === undefined) result = 1; if (undefined !== copy) result = 2; if (copy === false) result = 3;",
+        [["option", { cpp: "value", type: "bool", absentCpp: "missing" }]],
+    );
     assert.match(cpp, /if \(missing\)/);
     assert.match(cpp, /if \(!\(missing\)\)/);
     assert.match(cpp, /!\(missing\).*value == false/);
@@ -154,9 +248,13 @@ test("optional scalar aliases retain absence in strict equality in either order"
 });
 
 test("initialized Vec3 locals retain vector members through assignment", () => {
-    const cpp = lower(`let delta: Vec3 = { x: 1, y: 2, z: 3 }; const projection = delta.x; delta = { x: projection, y: 0, z: 0 };`, [], {
-        vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
-    });
+    const cpp = lower(
+        `let delta: Vec3 = { x: 1, y: 2, z: 3 }; const projection = delta.x; delta = { x: projection, y: 0, z: 0 };`,
+        [],
+        {
+            vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+        },
+    );
     assert.match(cpp, /Vec3d delta = Vec3d\{1.0, 2.0, 3.0\}/);
     assert.match(cpp, /const double projection = delta.x/);
     assert.match(cpp, /delta = Vec3d\{projection, 0.0, 0.0\}/);
@@ -319,7 +417,10 @@ test("lowers a switch over a run-time discriminant to strict-equality arms", () 
             ["value", { cpp: "value", type: "scalar" }],
         ],
     );
-    assert.match(emitted, /if \(mode == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(mode == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/);
+    assert.match(
+        emitted,
+        /if \(mode == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(mode == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/,
+    );
 });
 
 test("folds a shape test over a record the caller fixed", () => {
@@ -348,10 +449,7 @@ test("lowers the pin's signed shift as ToInt32 arithmetic", () => {
     const emitted = lower("const count = emission >> 0;", [
         ["emission", { cpp: "emission", type: "scalar" }],
     ]);
-    assert.match(
-        emitted,
-        /bbl::js::shift_right\(emission, 0\.0\)/,
-    );
+    assert.match(emitted, /bbl::js::shift_right\(emission, 0\.0\)/);
 });
 
 // The three capabilities the Gaussian-splat transform bake's fold needed.
@@ -360,14 +458,19 @@ test("lowers the pin's signed shift as ToInt32 arithmetic", () => {
 // fail generation rather than emit a guess.
 
 const tupleCall = new Map([["coord", 3]]);
-const tupleCalls = { tupleCalls: tupleCall, calls: new Map([
-    ["coord", (a: readonly string[]) => `coord(${a.join(", ")})`],
-]) };
+const tupleCalls = {
+    tupleCalls: tupleCall,
+    calls: new Map([
+        ["coord", (a: readonly string[]) => `coord(${a.join(", ")})`],
+    ]),
+};
 
 test("binds a tuple destructuring through one temporary", () => {
-    const emitted = lower("const [x, y, z] = coord(m);", [
-        ["m", { cpp: "m", type: "f32" }],
-    ], tupleCalls);
+    const emitted = lower(
+        "const [x, y, z] = coord(m);",
+        [["m", { cpp: "m", type: "f32" }]],
+        tupleCalls,
+    );
     // One call, indexed three times -- not three calls.
     assert.equal(emitted.match(/coord\(m\)/g)?.length, 1);
     assert.match(emitted, /const auto pinned_\d+_\d+ = coord\(m\);/);
@@ -377,9 +480,12 @@ test("refuses a tuple destructuring of the wrong length", () => {
     // The declared arity is what keeps this a generation error instead of an
     // index past the end of the std::array the call returns.
     assert.throws(
-        () => lower("const [x, y, z, w] = coord(m);", [
-            ["m", { cpp: "m", type: "f32" }],
-        ], tupleCalls),
+        () =>
+            lower(
+                "const [x, y, z, w] = coord(m);",
+                [["m", { cpp: "m", type: "f32" }]],
+                tupleCalls,
+            ),
         /tuple binding of 4 from a 3-element call/,
     );
 });
@@ -397,7 +503,11 @@ const recordCalls = {
 };
 
 test("binds a record call's members by their own dotted text", () => {
-    const emitted = lower("const q = basis();\nconst n = q.x + q.w;", [], recordCalls);
+    const emitted = lower(
+        "const q = basis();\nconst n = q.x + q.w;",
+        [],
+        recordCalls,
+    );
     assert.match(emitted, /const auto pinned_\d+_\d+ = basis\(\);/);
     // The members read off the temporary rather than re-calling.
     assert.equal(emitted.match(/basis\(\)/g)?.length, 1);
@@ -406,7 +516,8 @@ test("binds a record call's members by their own dotted text", () => {
 
 test("refuses a member read the caller did not list", () => {
     assert.throws(
-        () => lower("const q = basis();\nconst n = q.missing;", [], recordCalls),
+        () =>
+            lower("const q = basis();\nconst n = q.missing;", [], recordCalls),
         /Unsupported pinned/,
     );
 });
@@ -421,15 +532,17 @@ test("refuses binding one member of a record call", () => {
 });
 
 test("stores through a mutable view at the view's own element width", () => {
-    const emitted = lower(
-        "const f32 = new F32(rows);\nf32[0] = 1.5;",
-        [["rows", {
-            cpp: "rows.data()",
-            bytesCpp: "rows.size()",
-            type: "u8-view",
-            mutable: true,
-        }]],
-    );
+    const emitted = lower("const f32 = new F32(rows);\nf32[0] = 1.5;", [
+        [
+            "rows",
+            {
+                cpp: "rows.data()",
+                bytesCpp: "rows.size()",
+                type: "u8-view",
+                mutable: true,
+            },
+        ],
+    ]);
     // The view is not const, and the store rounds where the pin's typed
     // array store rounds.
     assert.match(emitted, /float\* f32 = reinterpret_cast<float\*>/);
@@ -438,28 +551,33 @@ test("stores through a mutable view at the view's own element width", () => {
 
 test("refuses a store through a view the caller left read-only", () => {
     assert.throws(
-        () => lower(
-            "const f32 = new F32(rows);\nf32[0] = 1.5;",
-            [["rows", {
-                cpp: "rows.data()",
-                bytesCpp: "rows.size()",
-                type: "u8-view",
-            }]],
-        ),
+        () =>
+            lower("const f32 = new F32(rows);\nf32[0] = 1.5;", [
+                [
+                    "rows",
+                    {
+                        cpp: "rows.data()",
+                        bytesCpp: "rows.size()",
+                        type: "u8-view",
+                    },
+                ],
+            ]),
         /store through a read-only view/,
     );
 });
 
 test("stores a byte through the spec's ToUint8 rather than a cast", () => {
-    const emitted = lower(
-        "const u8 = new U8(rows);\nu8[0] = 300;",
-        [["rows", {
-            cpp: "rows.data()",
-            bytesCpp: "rows.size()",
-            type: "u8-view",
-            mutable: true,
-        }]],
-    );
+    const emitted = lower("const u8 = new U8(rows);\nu8[0] = 300;", [
+        [
+            "rows",
+            {
+                cpp: "rows.data()",
+                bytesCpp: "rows.size()",
+                type: "u8-view",
+                mutable: true,
+            },
+        ],
+    ]);
     assert.match(emitted, /bbl::js::to_uint8\(300\.0\)/);
 });
 
@@ -472,9 +590,7 @@ test("spells a positional record literal the way the caller names it", () => {
         "const p = place({ x: a, y: 0, z: a });",
         [["a", { cpp: "a", type: "scalar" }]],
         {
-            calls: new Map([
-                ["place", (args) => `place(${args.join(", ")})`],
-            ]),
+            calls: new Map([["place", (args) => `place(${args.join(", ")})`]]),
             vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
         },
     );
@@ -483,27 +599,29 @@ test("spells a positional record literal the way the caller names it", () => {
 
 test("refuses a record literal whose lanes are not the pin's own order", () => {
     assert.throws(
-        () => lower(
-            "const p = place({ x: a, z: a, y: a });",
-            [["a", { cpp: "a", type: "scalar" }]],
-            {
-                calls: new Map([
-                    ["place", (args) => `place(${args.join(", ")})`],
-                ]),
-                vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
-            },
-        ),
+        () =>
+            lower(
+                "const p = place({ x: a, z: a, y: a });",
+                [["a", { cpp: "a", type: "scalar" }]],
+                {
+                    calls: new Map([
+                        ["place", (args) => `place(${args.join(", ")})`],
+                    ]),
+                    vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+                },
+            ),
         /record lane 'y'/,
     );
 });
 
 test("refuses a record literal when the caller named no spelling", () => {
     assert.throws(
-        () => lower("const p = place({ x: 1, y: 2, z: 3 });", [], {
-            calls: new Map([
-                ["place", (args) => `place(${args.join(", ")})`],
-            ]),
-        }),
+        () =>
+            lower("const p = place({ x: 1, y: 2, z: 3 });", [], {
+                calls: new Map([
+                    ["place", (args) => `place(${args.join(", ")})`],
+                ]),
+            }),
         /Unsupported pinned expression/,
     );
 });
@@ -538,10 +656,9 @@ test("reaches a method on an element of a bound list", () => {
 // `|` arm uses rather than through a bare cast, which is not ToInt32 for a
 // double outside int32 range. Ungated: every caller of `&` wants ToInt32.
 test("narrows both sides of a bit test the way ToInt32 does", () => {
-    const emitted = lower(
-        "const sx = i & 4 ? 1 : -1;",
-        [["i", { cpp: "i", type: "scalar" }]],
-    );
+    const emitted = lower("const sx = i & 4 ? 1 : -1;", [
+        ["i", { cpp: "i", type: "scalar" }],
+    ]);
     assert.match(emitted, /bbl::js::bitwise_and\(i, 4\.0\)/);
 });
 
@@ -551,15 +668,12 @@ test("narrows both sides of a bit test the way ToInt32 does", () => {
 // once reached the emitted text as `[object Object]`, which no unit test
 // covered and every ribbon scene's native build found.
 test("pushes a record onto a record list by its C++ spelling", () => {
-    const emitted = lower(
-        "ar1.push(pt); ar1.push(path[i]);",
-        [
-            ["ar1", { cpp: "ar1", type: "vec3-list" }],
-            ["pt", { cpp: "pt", type: "vec3" }],
-            ["path", { cpp: "path", type: "vec3-list" }],
-            ["i", { cpp: "i", type: "scalar" }],
-        ],
-    );
+    const emitted = lower("ar1.push(pt); ar1.push(path[i]);", [
+        ["ar1", { cpp: "ar1", type: "vec3-list" }],
+        ["pt", { cpp: "pt", type: "vec3" }],
+        ["path", { cpp: "path", type: "vec3-list" }],
+        ["i", { cpp: "i", type: "scalar" }],
+    ]);
     assert.match(emitted, /ar1\.push_back\(pt\);/);
     assert.match(emitted, /ar1\.push_back\(path\[[^\]]*i[^\]]*\]\);/);
     assert.doesNotMatch(emitted, /object Object/);
@@ -579,10 +693,7 @@ test("a hoisted loop variable is declared by the loops that assign it", () => {
         [["n", { cpp: "n", type: "scalar" }]],
     );
     assert.doesNotMatch(emitted, /double y = 0\.0;/);
-    assert.equal(
-        emitted.match(/for \(std::int64_t y = /g)?.length,
-        2,
-    );
+    assert.equal(emitted.match(/for \(std::int64_t y = /g)?.length, 2);
 });
 
 // The same declaration where the name is ALSO written outside a loop keeps
@@ -625,10 +736,7 @@ test("stores an in-place method back over its own receiver as the mutation", () 
         [["indices", { cpp: "indices", type: "f64-list" }]],
         {
             methods: new Map([
-                [
-                    "copy",
-                    (receiver: string): string => `copy_of(${receiver})`,
-                ],
+                ["copy", (receiver: string): string => `copy_of(${receiver})`],
             ]),
         },
     );

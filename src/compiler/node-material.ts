@@ -32,9 +32,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // compiler does not lower; that one is executed at generation, the way a drawn
 // atlas and a computed pixel buffer are, and only the module and export travel
 // from here.
-import {
-    readdirSync,
-} from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
@@ -63,21 +61,23 @@ import type {
 } from "./types.js";
 
 export interface NodeMaterialContext
-    extends ObjectValidationContext,
-    PositiveIntegerContext,
-    ExecutedModuleReferenceContext,
-    Pick<LoweringServices,
-        | "checker"
-        | "reachedNodeMaterials"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "resolveStaticExpression"
-        | "compileStaticString"
-        | "compileValue"
-        | "expectKind"
-        | "expectStaticArrayLiteral"
-        | "shadowGeneratorLight"
-    > {}
+    extends
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        ExecutedModuleReferenceContext,
+        Pick<
+            LoweringServices,
+            | "checker"
+            | "reachedNodeMaterials"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "resolveStaticExpression"
+            | "compileStaticString"
+            | "compileValue"
+            | "expectKind"
+            | "expectStaticArrayLiteral"
+            | "shadowGeneratorLight"
+        > {}
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
 interface NodeMaterialTexture {
@@ -97,11 +97,14 @@ export interface CompiledNodeMaterialCall {
 
 /** How a recorded graph is compared, so two reaches of one share an index. */
 function nodeMaterialKey(material: CompiledNodeMaterial): string {
-    const document = material.kind === "literal"
-        ? `literal:${JSON.stringify(material.graph)}`
-        : `module:${material.module}#${material.exportName}`;
-    return `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}` +
-        `|loader:${material.pinnedBlockLoader ?? "default"}`;
+    const document =
+        material.kind === "literal"
+            ? `literal:${JSON.stringify(material.graph)}`
+            : `module:${material.module}#${material.exportName}`;
+    return (
+        `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}` +
+        `|loader:${material.pinnedBlockLoader ?? "default"}`
+    );
 }
 
 const nodeBlockModulePrefixes = babylonPackages.map(
@@ -113,10 +116,9 @@ let pinnedNodeBlockModules: ReadonlySet<string> | undefined;
 /** The actual block modules shipped by the installed pinned package. */
 function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
     pinnedNodeBlockModules ??= new EmissionSet(
-        readdirSync(
-            join(pinnedLibraryRoot(), nodeBlockModuleDirectory),
-            { withFileTypes: true },
-        )
+        readdirSync(join(pinnedLibraryRoot(), nodeBlockModuleDirectory), {
+            withFileTypes: true,
+        })
             .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
             .map((entry) => `${nodeBlockModuleDirectory}/${entry.name}`),
     );
@@ -139,17 +141,18 @@ function compileBlockLoader(
 ): Pick<CompiledNodeMaterial, "blockEmitters" | "pinnedBlockLoader"> {
     if (!expression) return {};
     const loader = unwrapLoaderExpression(expression);
-    if (ts.isIdentifier(loader) &&
-        context.symbols.babylonImportName(loader) === "loadNodeBlockEmitterWithGeometry") {
+    if (
+        ts.isIdentifier(loader) &&
+        context.symbols.babylonImportName(loader) ===
+            "loadNodeBlockEmitterWithGeometry"
+    ) {
         // The pin owns both its geometry case and the registry fallback. Do
         // not turn that delegation into a scene-authored closed switch.
         return { pinnedBlockLoader: "geometry" };
     }
     const declaration = ts.isIdentifier(loader)
-        ? resolveFunctionDeclaration(
-              context.checker,
-              loader,
-              (node, message) => context.fail(node, message),
+        ? resolveFunctionDeclaration(context.checker, loader, (node, message) =>
+              context.fail(node, message),
           )
         : undefined;
     if (!declaration) {
@@ -175,7 +178,7 @@ function compileBlockLoader(
         );
     }
     const parameter = declaration.parameters[0]!.name;
-    const statement = declaration.body.statements[0]!;
+    const statement = declaration.body.statements[0];
     const discriminant = unwrapLoaderExpression(statement.expression);
     if (
         !ts.isIdentifier(discriminant) ||
@@ -212,7 +215,7 @@ function compileBlockLoader(
             !ts.isStringLiteralLike(clause.expression) ||
             clause.statements.length !== 1 ||
             !ts.isReturnStatement(clause.statements[0]!) ||
-            !clause.statements[0]!.expression
+            !clause.statements[0].expression
         ) {
             context.fail(
                 clause,
@@ -230,7 +233,7 @@ function compileBlockLoader(
         classNames.add(className);
 
         const returned = unwrapLoaderExpression(
-            clause.statements[0]!.expression,
+            clause.statements[0].expression,
         );
         if (
             !ts.isPropertyAccessExpression(returned) ||

@@ -3,28 +3,48 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import ts from "typescript";
-import { canvasBakeBrowserArgs, pageBase64Script, screenshotCaptureBrowserArgs } from "../src/browser-harness.js";
+import {
+    canvasBakeBrowserArgs,
+    pageBase64Script,
+    screenshotCaptureBrowserArgs,
+} from "../src/browser-harness.js";
 
 test("Canvas2D bakes share Linux capture flags without changing Windows or macOS", () => {
-    assert.deepEqual(canvasBakeBrowserArgs, process.platform === "linux" ? screenshotCaptureBrowserArgs : []);
+    assert.deepEqual(
+        canvasBakeBrowserArgs,
+        process.platform === "linux" ? screenshotCaptureBrowserArgs : [],
+    );
 });
 
 function functionSource(path: string, name: string): string {
-    const file = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
-    const declaration = file.statements.find(statement =>
-        ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+    const file = ts.createSourceFile(
+        path,
+        readFileSync(path, "utf8"),
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const declaration = file.statements.find(
+        (statement) =>
+            ts.isFunctionDeclaration(statement) &&
+            statement.name?.text === name,
+    );
     assert.ok(declaration, name);
     return ts.transpileModule(declaration.getText(file), {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+        compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.CommonJS,
+        },
     }).outputText;
 }
 
 test("instrumented draw counts retain bundles and only the current submitted frame", () => {
-    const script: string = runInNewContext(
+    const script: unknown = runInNewContext(
         `${functionSource("src/capture-instrumented.ts", "initScript")}\ninitScript(0)`,
         { pageBase64Script },
     );
-    runInNewContext(`
+    assert.ok(typeof script === "string");
+    runInNewContext(
+        `
         const callbacks = [];
         const window = { requestAnimationFrame(callback) { callbacks.push(callback); } };
         class GPUDevice {
@@ -76,11 +96,14 @@ test("instrumented draw counts retain bundles and only the current submitted fra
         assert.equal(window.__draws["pass.draw(7,1,0)"], undefined);
         assert.equal(window.__draws["pass.draw(8,1,0)"], 1);
         assert.equal(queue.submissions, 5);
-    `, { assert });
+    `,
+        { assert },
+    );
 });
 
 test("canvas capture hides sibling chrome and clears focus decoration without changing canvas content", async () => {
-    await runInNewContext(`
+    await runInNewContext(
+        `
         ${functionSource("src/browser-harness.ts", "hideNonCanvasChrome")}
         class HTMLElement { style = {}; }
         const canvas = new HTMLElement(), controls = new HTMLElement(), overlay = new HTMLElement();
@@ -99,5 +122,7 @@ test("canvas capture hides sibling chrome and clears focus decoration without ch
             assert.equal(controls.style.visibility, "hidden");
             assert.equal(overlay.style.visibility, "hidden");
         });
-    `, { assert, exports: {} });
+    `,
+        { assert, exports: {} },
+    );
 });

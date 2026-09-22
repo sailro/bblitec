@@ -7,10 +7,15 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-Engine& window_document_engine() { static Engine document; return document; }
+Engine& window_document_engine() {
+    static Engine document;
+    return document;
+}
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
@@ -18,12 +23,14 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     loop.run([&] { initialize(realm); });
     return 0;
 }
-}
+} // namespace bbl::pal
 
 std::string text_content(Rml::Element& element) {
-    if (auto* text = rmlui_dynamic_cast<Rml::ElementText*>(&element)) return text->GetText();
+    if (auto* text = rmlui_dynamic_cast<Rml::ElementText*>(&element))
+        return text->GetText();
     std::string result;
-    for (int index = 0; index < element.GetNumChildren(); ++index) result += text_content(*element.GetChild(index));
+    for (int index = 0; index < element.GetNumChildren(); ++index)
+        result += text_content(*element.GetChild(index));
     return result;
 }
 
@@ -75,10 +82,12 @@ int main() {
         ui_append_text(engine, flex, " adjacent");
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(ui_element(engine, flex).children.size() == 1);
-        assert(text_content(*runtime.projected_elements.at(flex.value).element) == "visible adjacent");
+        assert(text_content(*runtime.projected_elements.at(flex.value).element) ==
+               "visible adjacent");
         ui_set_text(engine, label, " \t");
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(runtime.projected_elements.at(label.value).element->GetComputedValues().display() == Rml::Style::Display::None);
+        assert(runtime.projected_elements.at(label.value).element->GetComputedValues().display() ==
+               Rml::Style::Display::None);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

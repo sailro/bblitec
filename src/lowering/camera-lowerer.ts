@@ -11,10 +11,20 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 
-const arcRotateEyeMembers = ["alpha", "beta", "radius", "target.x", "target.y", "target.z"] as const;
+const arcRotateEyeMembers = [
+    "alpha",
+    "beta",
+    "radius",
+    "target.x",
+    "target.y",
+    "target.z",
+] as const;
 
 export class CameraLowerer {
-    public constructor(private readonly context: LoweringContext, private readonly trackVersions = false) {}
+    public constructor(
+        private readonly context: LoweringContext,
+        private readonly trackVersions = false,
+    ) {}
 
     /**
      * The parented-world composition `camera_world_matrix` mirrors when a
@@ -29,14 +39,13 @@ export class CameraLowerer {
     private assertParentWorldComposition(): void {
         const module = "src/scene/world-matrix-state.ts";
         const file = this.context.sourceFile(module);
-        const multiplies = this.context
-            .findNodes(
-                file,
-                (node): node is ts.CallExpression =>
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    node.expression.text === "multiplyMat4IntoBuffer",
-            );
+        const multiplies = this.context.findNodes(
+            file,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "multiplyMat4IntoBuffer",
+        );
         if (multiplies.length !== 1) {
             this.context.contractError(
                 multiplies[1] ?? file,
@@ -60,17 +69,11 @@ export class CameraLowerer {
         }
         if (
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(
-                    file,
-                    parentOperand.text,
-                ),
+                this.context.variableInitializer(file, parentOperand.text),
                 "_parent.worldMatrix",
             ) ||
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(
-                    file,
-                    localOperand.text,
-                ),
+                this.context.variableInitializer(file, localOperand.text),
                 "getLocalMatrix()",
             )
         ) {
@@ -164,12 +167,10 @@ export class CameraLowerer {
         const module = "src/camera/arc-rotate.ts";
         const symbol = "localEyePosition";
         const members = new Map<string, PinnedBinding>(
-            arcRotateEyeMembers.map(
-                (member): [string, PinnedBinding] => [
-                    `cam.${member}`,
-                    { cpp: `camera.${member}`, type: "scalar" },
-                ],
-            ),
+            arcRotateEyeMembers.map((member): [string, PinnedBinding] => [
+                `cam.${member}`,
+                { cpp: `camera.${member}`, type: "scalar" },
+            ]),
         );
         return lowerPinnedFunction(this.context, module, symbol, [], {
             cppName: "arc_rotate_local_eye_position",
@@ -210,12 +211,18 @@ export class CameraLowerer {
         const positionModule = "src/camera/camera.ts";
         const positionSymbol = "getCameraPosition";
         this.context.functionDeclaration(positionModule, positionSymbol);
-        const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const upVector = this.readPinnedUpVector();
         const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
             this.context.doubleLiteral(
-                this.context.numericValue(this.context.propertyInitializer(camera, name), file),
+                this.context.numericValue(
+                    this.context.propertyInitializer(camera, name),
+                    file,
+                ),
             );
         if (gltfCameras) {
             this.assertParentWorldComposition();
@@ -239,7 +246,9 @@ std::array<CameraMatrixScalar, 16> camera_parented_world(
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>"], `
+            header: pinnedHeader(
+                ["<bblite/runtime.hpp>", "", "<array>"],
+                `
 Vec3d arc_rotate_eye_position(const CameraRecord& camera);
 /**
  * The width the camera's world matrix is kept at.
@@ -256,7 +265,8 @@ using CameraMatrixScalar = ${highPrecisionMatrix ? "double" : "float"};
 std::array<CameraMatrixScalar, 16> camera_world_matrix(
     const CameraRecord& camera);
 Vec3d camera_position(const CameraRecord& camera);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
@@ -269,21 +279,27 @@ namespace bbl::upstream {
 ${this.lowerArcRotateEye()}
 
 Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
-    ${geospatial
-        ? `// Two of the three pinned factories hold the eye directly:
+    ${
+        geospatial
+            ? `// Two of the three pinned factories hold the eye directly:
     // createFreeCamera and createGeospatialCamera each keep position as
     // their own state and look from it. Only the ArcRotate composes an
     // eye from alpha/beta/radius about its target.
     if (camera.kind != CameraKind::arc_rotate) return camera.position;`
-        : "if (camera.kind == CameraKind::free) return camera.position;"}
-${highPrecisionMatrix ? `    // Memoize the translated eye by its exact F64 inputs.
+            : "if (camera.kind == CameraKind::free) return camera.position;"
+    }
+${
+    highPrecisionMatrix
+        ? `    // Memoize the translated eye by its exact F64 inputs.
     const std::array<std::uint64_t, ${arcRotateEyeMembers.length}> key{
         ${arcRotateEyeMembers.map((member) => `std::bit_cast<std::uint64_t>(camera.${member})`).join(",\n        ")}};
     static thread_local std::optional<std::pair<decltype(key), Vec3d>> cached;
     if (!cached || cached->first != key) {
         cached.emplace(key, arc_rotate_local_eye_position(camera));
     }
-    return cached->second;` : "    return arc_rotate_local_eye_position(camera);"}
+    return cached->second;`
+        : "    return arc_rotate_local_eye_position(camera);"
+}
 }
 
 ${parentArm}${this.lowerLookAtWorld(highPrecisionMatrix)}
@@ -304,7 +320,9 @@ std::array<CameraMatrixScalar, 16> ${gltfCameras ? "camera_local_matrix" : "came
         out, arc_rotate_eye_position(camera), camera.target, camera.up_vector);
     return out;
 }
-${gltfCameras ? `
+${
+    gltfCameras
+        ? `
 std::array<CameraMatrixScalar, 16> camera_world_matrix(
     const CameraRecord& camera) {
     const std::array<CameraMatrixScalar, 16> local =
@@ -313,7 +331,9 @@ std::array<CameraMatrixScalar, 16> camera_world_matrix(
         ? camera_parented_world(camera, local)
         : local;
 }
-` : ""}
+`
+        : ""
+}
 // ${this.context.provenance(positionModule, positionSymbol)}
 // \`const w = camera.worldMatrix; return { x: w[12], y: w[13], z: w[14] }\`.
 // The lanes are read out of the STORED matrix, so what a scene observes is
@@ -371,24 +391,20 @@ CameraHandle create_arc_rotate_camera(
         // stores exactly two facts — the `orthographic` flag and
         // `ortho_half_height` — and each assertion here is the reason
         // those two suffice; the pairings are named at each assert.
-        const { declaration: enable } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const { declaration: enable } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const orthoAssignment = this.context
-            .findNodes(
-                enable,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
+            .findNodes(enable, (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
             )
             .find(
                 (expression) =>
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "camera.ortho",
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        "camera.ortho",
             );
         if (!orthoAssignment) {
             this.context.contractError(
@@ -399,29 +415,24 @@ CameraHandle create_arc_rotate_camera(
         // ^ Paired with the emitted `record.orthographic = true`: the
         // record flag is the native form of the published bounds, the
         // one bit the projection branch dispatches on.
-        const { declaration: bounds } =
-            this.context.functionDeclaration(
-                modulePath,
-                "createOrthographicBounds",
-            );
+        const { declaration: bounds } = this.context.functionDeclaration(
+            modulePath,
+            "createOrthographicBounds",
+        );
         // Paired with the compiler intrinsic (`enableOrthographicCamera`
         // in src/compiler/intrinsics/camera.ts), which seeds "1.0" when
         // the scene passes no options. The native factory takes the
         // already-resolved extent, so the default is consumed there, not
         // emitted here.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                bounds,
-                "halfHeight",
-            ),
+            this.context.variableInitializer(bounds, "halfHeight"),
             "options.halfHeight ?? 1",
             "Orthographic half-extent default",
         );
-        const { declaration: writer } =
-            this.context.functionDeclaration(
-                modulePath,
-                "writeOrthoProjection",
-            );
+        const { declaration: writer } = this.context.functionDeclaration(
+            modulePath,
+            "writeOrthoProjection",
+        );
         // This derivation and the seven projection arguments below are
         // the sufficiency proof for the emitted single-extent store:
         // every plane is ±halfWidth/±halfHeight with halfWidth derived
@@ -435,24 +446,17 @@ CameraHandle create_arc_rotate_camera(
         // mat4 writer translated whole from its own AST; the plane
         // derivation is asserted only here.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                writer,
-                "halfWidth",
-            ),
+            this.context.variableInitializer(writer, "halfWidth"),
             "halfHeight * aspectRatio",
             "Orthographic horizontal extent",
         );
         const projection = this.context
-            .findNodes(
-                writer,
-                (node): node is ts.CallExpression =>
-                    ts.isCallExpression(node),
+            .findNodes(writer, (node): node is ts.CallExpression =>
+                ts.isCallExpression(node),
             )
             .find(
                 (call) =>
-                    this.context
-                        .propertyPath(call.expression)
-                        ?.join(".") ===
+                    this.context.propertyPath(call.expression)?.join(".") ===
                     "writeOrthoOffCenterMat4LHIntoBuffer",
             );
         if (!projection) {
@@ -514,8 +518,10 @@ CameraHandle enable_orthographic_camera(
         // with the world up vector; the banked camera passes its own. Only
         // the world-up arm is lowered, so the delegation is held to that
         // argument and the record is read off the shared body.
-        const { declaration: publicFactory } =
-            this.context.functionDeclaration(modulePath, symbolName);
+        const { declaration: publicFactory } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const delegation = this.context.callExpression(
             publicFactory,
             "_createFreeCamera",
@@ -525,22 +531,15 @@ CameraHandle enable_orthographic_camera(
             "_createFreeCamera(position, target, Vec3Up)",
             "Pinned free-camera delegation",
         );
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                "_createFreeCamera",
-            );
-        const camera = this.context.objectInitializer(
-            declaration,
-            "cam",
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            "_createFreeCamera",
         );
+        const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
             this.context.doubleLiteral(
                 this.context.numericValue(
-                    this.context.propertyInitializer(
-                        camera,
-                        name,
-                    ),
+                    this.context.propertyInitializer(camera, name),
                     file,
                 ),
             );
@@ -602,48 +601,38 @@ CameraHandle create_banked_free_camera(
     ): LoweredSource {
         const modulePath = "src/scene/scene-camera.ts";
         const symbolName = "createDefaultCamera";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        const radiusExpression =
-            this.context.variableInitializer(
-                declaration,
-                "radius",
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const radiusExpression = this.context.variableInitializer(
+            declaration,
+            "radius",
+        );
         this.context.assertExpressionShape(
             radiusExpression,
             "diag * 1.5",
             "Default camera radius",
         );
-        const radiusBinary =
-            this.context.unwrapExpression(radiusExpression);
+        const radiusBinary = this.context.unwrapExpression(radiusExpression);
         if (!ts.isBinaryExpression(radiusBinary)) {
             this.context.contractError(
                 radiusExpression,
                 "Expected computed default camera radius.",
             );
         }
-        const radiusScale = this.context.numericValue(
-            radiusBinary.right,
-            file,
-        );
+        const radiusScale = this.context.numericValue(radiusBinary.right, file);
         const assignments = this.context.findNodes(
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken,
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
         );
-        const assignment = (
-            path: string,
-        ): ts.BinaryExpression => {
+        const assignment = (path: string): ts.BinaryExpression => {
             const result = assignments.find(
                 (candidate) =>
-                    this.context
-                        .propertyPath(candidate.left)
-                        ?.join(".") === path,
+                    this.context.propertyPath(candidate.left)?.join(".") ===
+                    path,
             );
             if (!result) {
                 this.context.contractError(
@@ -653,13 +642,11 @@ CameraHandle create_banked_free_camera(
             }
             return result;
         };
-        const fallbackRadiusExpression =
-            assignment("radius").right;
-        const fallbackRadius =
-            this.context.numericValue(
-                fallbackRadiusExpression,
-                file,
-            );
+        const fallbackRadiusExpression = assignment("radius").right;
+        const fallbackRadius = this.context.numericValue(
+            fallbackRadiusExpression,
+            file,
+        );
         const createCamera = this.context.callExpression(
             declaration,
             "createArcRotateCamera",
@@ -670,10 +657,7 @@ CameraHandle create_banked_free_camera(
             "radius",
             "center",
         ];
-        if (
-            createCamera.arguments.length !==
-            expectedArguments.length
-        ) {
+        if (createCamera.arguments.length !== expectedArguments.length) {
             this.context.contractError(
                 createCamera,
                 "Unexpected default camera arguments.",
@@ -686,10 +670,8 @@ CameraHandle create_banked_free_camera(
                 `Default camera argument ${index}`,
             ),
         );
-        const nearExpression =
-            assignment("cam.nearPlane").right;
-        const farExpression =
-            assignment("cam.farPlane").right;
+        const nearExpression = assignment("cam.nearPlane").right;
+        const farExpression = assignment("cam.farPlane").right;
         this.context.assertExpressionShape(
             nearExpression,
             "radius * 0.01",
@@ -709,16 +691,12 @@ CameraHandle create_banked_free_camera(
                 "Expected scaled default camera planes.",
             );
         }
-        const nearScale = this.context.numericValue(
-            nearExpression.right,
-            file,
-        );
-        const farScale = this.context.numericValue(
-            farExpression.right,
-            file,
-        );
-        const value = (input: number): string => this.context.floatLiteral(input);
-        const dvalue = (input: number): string => this.context.doubleLiteral(input);
+        const nearScale = this.context.numericValue(nearExpression.right, file);
+        const farScale = this.context.numericValue(farExpression.right, file);
+        const value = (input: number): string =>
+            this.context.floatLiteral(input);
+        const dvalue = (input: number): string =>
+            this.context.doubleLiteral(input);
         return {
             modulePath,
             symbolName,
@@ -773,10 +751,14 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
     bool has_bounds = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = engine.meshes[handle.value];${nodeVisibility ? `
+        const MeshRecord& mesh = engine.meshes[handle.value];${
+            nodeVisibility
+                ? `
         // The pinned framing pass skips \`visible === false\` meshes, whether
         // scene source wrote the field or KHR_node_visibility materialized it.
-        if (!mesh.visible) continue;` : ""}
+        if (!mesh.visible) continue;`
+                : ""
+        }
         Vec3 local_min{};
         Vec3 local_max{};
         if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
@@ -876,9 +858,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         const matches = list.filter(
             (expression) =>
                 expression.operatorToken.kind === operator &&
-                this.context
-                    .propertyPath(expression.left)
-                    ?.join(".") === path,
+                this.context.propertyPath(expression.left)?.join(".") === path,
         );
         if (exactlyOne ? matches.length !== 1 : matches.length === 0) {
             this.context.contractError(
@@ -897,45 +877,31 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         const modulePath = "src/camera/arc-rotate-controls.ts";
         const symbolName = "attachControl";
         const freeModule = "src/camera/free-camera-controls.ts";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const numericConstant = (name: string): number =>
             this.context.numericValue(
-                this.context.variableInitializer(
-                    declaration,
-                    name,
-                ),
+                this.context.variableInitializer(declaration, name),
                 file,
             );
-        const rotationEpsilon = numericConstant(
-            "ROTATION_EPSILON",
-        );
-        const radiusEpsilon = numericConstant(
-            "RADIUS_EPSILON",
-        );
-        const panningEpsilon = numericConstant(
-            "PANNING_EPSILON",
-        );
+        const rotationEpsilon = numericConstant("ROTATION_EPSILON");
+        const radiusEpsilon = numericConstant("RADIUS_EPSILON");
+        const panningEpsilon = numericConstant("PANNING_EPSILON");
         const assignments = this.context.findNodes(
             declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
         );
         if (
             !assignments.some(
                 (expression) =>
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.AsteriskEqualsToken &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") ===
+                    this.context.propertyPath(expression.left)?.join(".") ===
                         "camera.inertialAlphaOffset" &&
-                    this.context
-                        .propertyPath(expression.right)
-                        ?.join(".") === "camera.inertia",
+                    this.context.propertyPath(expression.right)?.join(".") ===
+                        "camera.inertia",
             )
         ) {
             this.context.contractError(
@@ -950,19 +916,14 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         // emitted beta line, with `eps` left symbolic so the margin has a
         // single owner.
         const betaClampEpsilon = this.context.numericValue(
-            this.context.variableInitializer(
-                declaration,
-                "eps",
-            ),
+            this.context.variableInitializer(declaration, "eps"),
             file,
         );
         const betaClamps = assignments.filter(
             (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
-                this.context
-                    .propertyPath(expression.left)
-                    ?.join(".") === "camera.beta",
+                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.propertyPath(expression.left)?.join(".") ===
+                    "camera.beta",
         );
         if (betaClamps.length !== 1) {
             this.context.contractError(
@@ -986,44 +947,34 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 (expression) =>
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === "camera.radius",
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        "camera.radius",
             )
             .map((expression) =>
-                this.context.unwrapExpression(
-                    expression.right,
-                ),
+                this.context.unwrapExpression(expression.right),
             )
             .filter(
                 (right): right is ts.CallExpression =>
                     ts.isCallExpression(right) &&
-                    this.context
-                        .propertyPath(right.expression)
-                        ?.join(".") === "Math.max",
+                    this.context.propertyPath(right.expression)?.join(".") ===
+                        "Math.max",
             )
             .map((call) => {
                 if (
                     call.arguments.length !== 2 ||
-                    this.context
-                        .propertyPath(call.arguments[1]!)
-                        ?.join(".") !== "camera.radius"
+                    this.context.propertyPath(call.arguments[1]!)?.join(".") !==
+                        "camera.radius"
                 ) {
                     this.context.contractError(
                         call,
                         "Expected the radius floor to clamp the radius itself.",
                     );
                 }
-                return this.context.numericValue(
-                    call.arguments[0]!,
-                    file,
-                );
+                return this.context.numericValue(call.arguments[0]!, file);
             });
         if (
             radiusFloors.length === 0 ||
-            radiusFloors.some(
-                (value) => value !== radiusFloors[0],
-            )
+            radiusFloors.some((value) => value !== radiusFloors[0])
         ) {
             this.context.contractError(
                 declaration,
@@ -1037,20 +988,15 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         // inlines `rightX = -sinA` / `rightZ = cosA` into its own
         // `-sine * ...` / `cosine * ...` terms — the signs would
         // otherwise be trusted.
-        const panScaleInitializer =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    declaration,
-                    "panScale",
-                ),
-            );
+        const panScaleInitializer = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "panScale"),
+        );
         if (
             !ts.isBinaryExpression(panScaleInitializer) ||
             panScaleInitializer.operatorToken.kind !==
                 ts.SyntaxKind.AsteriskToken ||
-            this.context
-                .propertyPath(panScaleInitializer.left)
-                ?.join(".") !== "camera.radius"
+            this.context.propertyPath(panScaleInitializer.left)?.join(".") !==
+                "camera.radius"
         ) {
             this.context.contractError(
                 panScaleInitializer,
@@ -1062,18 +1008,12 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             file,
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "rightX",
-            ),
+            this.context.variableInitializer(declaration, "rightX"),
             "-sinA",
             "ArcRotate pan basis X",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "rightZ",
-            ),
+            this.context.variableInitializer(declaration, "rightZ"),
             "cosA",
             "ArcRotate pan basis Z",
         );
@@ -1086,9 +1026,8 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 (expression) =>
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.PlusEqualsToken &&
-                    this.context
-                        .propertyPath(expression.left)
-                        ?.join(".") === path,
+                    this.context.propertyPath(expression.left)?.join(".") ===
+                        path,
             );
             if (increments.length !== 1) {
                 this.context.contractError(
@@ -1135,18 +1074,12 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             "ArcRotate pointer delta Y",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "angularSensibility",
-            ),
+            this.context.variableInitializer(declaration, "angularSensibility"),
             "camera.angularSensibility",
             "ArcRotate live angular sensibility",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "panningSensibility",
-            ),
+            this.context.variableInitializer(declaration, "panningSensibility"),
             "camera.panningSensibility",
             "ArcRotate live panning sensibility",
         );
@@ -1199,9 +1132,8 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             (expression) =>
                 expression.operatorToken.kind ===
                     ts.SyntaxKind.MinusEqualsToken &&
-                this.context
-                    .propertyPath(expression.left)
-                    ?.join(".") === "camera.inertialRadiusOffset",
+                this.context.propertyPath(expression.left)?.join(".") ===
+                    "camera.inertialRadiusOffset",
         );
         if (wheelWrites.length !== 1) {
             this.context.contractError(
@@ -1209,9 +1141,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 "Expected one ArcRotate wheel-zoom accumulation.",
             );
         }
-        const wheelRight = this.context.unwrapExpression(
-            wheelWrites[0]!.right,
-        );
+        const wheelRight = this.context.unwrapExpression(wheelWrites[0]!.right);
         if (
             !ts.isBinaryExpression(wheelRight) ||
             wheelRight.operatorToken.kind !== ts.SyntaxKind.SlashToken
@@ -1226,16 +1156,12 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             "e.deltaY * camera.radius",
             "ArcRotate wheel-zoom numerator",
         );
-        const wheelDivisor = this.context.unwrapExpression(
-            wheelRight.right,
-        );
+        const wheelDivisor = this.context.unwrapExpression(wheelRight.right);
         if (
             !ts.isBinaryExpression(wheelDivisor) ||
-            wheelDivisor.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            this.context
-                .propertyPath(wheelDivisor.left)
-                ?.join(".") !== "camera.wheelPrecision"
+            wheelDivisor.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+            this.context.propertyPath(wheelDivisor.left)?.join(".") !==
+                "camera.wheelPrecision"
         ) {
             this.context.contractError(
                 wheelDivisor,
@@ -1247,14 +1173,10 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             file,
         );
         const { file: freeFile, declaration: attachFreeControl } =
-            this.context.functionDeclaration(
-                freeModule,
-                "attachFreeControl",
-            );
+            this.context.functionDeclaration(freeModule, "attachFreeControl");
         const freeAssignments = this.context.findNodes(
             attachFreeControl,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
         );
         const requireAssignment = (
             path: string,
@@ -1343,17 +1265,12 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         // `max_pitch` line (whose `pi_double` mirrors the pinned
         // Math.PI), so a retuned margin regenerates rather than
         // passing behind the shape assert above.
-        const maxPitchInitializer =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    attachFreeControl,
-                    "maxPitch",
-                ),
-            );
+        const maxPitchInitializer = this.context.unwrapExpression(
+            this.context.variableInitializer(attachFreeControl, "maxPitch"),
+        );
         if (
             !ts.isBinaryExpression(maxPitchInitializer) ||
-            maxPitchInitializer.operatorToken.kind !==
-                ts.SyntaxKind.MinusToken
+            maxPitchInitializer.operatorToken.kind !== ts.SyntaxKind.MinusToken
         ) {
             this.context.contractError(
                 maxPitchInitializer,
@@ -1365,11 +1282,9 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         );
         if (
             !ts.isBinaryExpression(pitchQuarterTurn) ||
-            pitchQuarterTurn.operatorToken.kind !==
-                ts.SyntaxKind.SlashToken ||
-            this.context
-                .propertyPath(pitchQuarterTurn.left)
-                ?.join(".") !== "Math.PI"
+            pitchQuarterTurn.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
+            this.context.propertyPath(pitchQuarterTurn.left)?.join(".") !==
+                "Math.PI"
         ) {
             this.context.contractError(
                 maxPitchInitializer,
@@ -1390,28 +1305,21 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         // that sharing to stay faithful; the shared factor then flows.
         const freeStopScale = (name: string): number => {
             const initializer = this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    attachFreeControl,
-                    name,
-                ),
+                this.context.variableInitializer(attachFreeControl, name),
             );
             if (
                 !ts.isBinaryExpression(initializer) ||
                 initializer.operatorToken.kind !==
                     ts.SyntaxKind.AsteriskToken ||
-                this.context
-                    .propertyPath(initializer.left)
-                    ?.join(".") !== "camera.speed"
+                this.context.propertyPath(initializer.left)?.join(".") !==
+                    "camera.speed"
             ) {
                 this.context.contractError(
                     initializer,
                     `Expected ${name} to scale with the camera speed.`,
                 );
             }
-            return this.context.numericValue(
-                initializer.right,
-                freeFile,
-            );
+            return this.context.numericValue(initializer.right, freeFile);
         };
         const moveStopScale = freeStopScale("moveEpsilon");
         if (moveStopScale !== freeStopScale("rotEpsilon")) {
@@ -1428,20 +1336,15 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         // caller hands in — the native loop's fixed cadence stays a
         // platform fact, never a hand-evaluated constant.
         const frameStep = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                attachFreeControl,
-                "dt",
-            ),
+            this.context.variableInitializer(attachFreeControl, "dt"),
         );
         if (
             !ts.isCallExpression(frameStep) ||
-            this.context
-                .propertyPath(frameStep.expression)
-                ?.join(".") !== "Math.max" ||
+            this.context.propertyPath(frameStep.expression)?.join(".") !==
+                "Math.max" ||
             frameStep.arguments.length !== 2 ||
-            this.context
-                .propertyPath(frameStep.arguments[0]!)
-                ?.join(".") !== "deltaMs"
+            this.context.propertyPath(frameStep.arguments[0]!)?.join(".") !==
+                "deltaMs"
         ) {
             this.context.contractError(
                 frameStep,
@@ -1453,18 +1356,13 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             freeFile,
         );
         const moveSpeed = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                attachFreeControl,
-                "moveSpeed",
-            ),
+            this.context.variableInitializer(attachFreeControl, "moveSpeed"),
         );
         if (
             !ts.isBinaryExpression(moveSpeed) ||
-            moveSpeed.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            this.context
-                .propertyPath(moveSpeed.left)
-                ?.join(".") !== "camera.speed"
+            moveSpeed.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+            this.context.propertyPath(moveSpeed.left)?.join(".") !==
+                "camera.speed"
         ) {
             this.context.contractError(
                 moveSpeed,
@@ -1474,9 +1372,8 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         const moveSqrt = this.context.unwrapExpression(moveSpeed.right);
         if (
             !ts.isCallExpression(moveSqrt) ||
-            this.context
-                .propertyPath(moveSqrt.expression)
-                ?.join(".") !== "Math.sqrt" ||
+            this.context.propertyPath(moveSqrt.expression)?.join(".") !==
+                "Math.sqrt" ||
             moveSqrt.arguments.length !== 1
         ) {
             this.context.contractError(
@@ -1484,9 +1381,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 "Expected the move scale to take a square root.",
             );
         }
-        const moveRatio = this.context.unwrapExpression(
-            moveSqrt.arguments[0]!,
-        );
+        const moveRatio = this.context.unwrapExpression(moveSqrt.arguments[0]!);
         if (
             !ts.isBinaryExpression(moveRatio) ||
             moveRatio.operatorToken.kind !== ts.SyntaxKind.SlashToken
@@ -1505,11 +1400,14 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             moveRatio.right,
             freeFile,
         );
-        const dvalue = (input: number): string => this.context.doubleLiteral(input);
+        const dvalue = (input: number): string =>
+            this.context.doubleLiteral(input);
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<bblite/runtime.hpp>"], `
+            header: pinnedHeader(
+                ["<bblite/runtime.hpp>"],
+                `
 // Event accumulation from the pinned attachControl/attachFreeControl
 // handlers. dx/dy are the pin's client-pixel pointer deltas and delta_y
 // is the DOM WheelEvent deltaY; the platform layer translates its native
@@ -1533,7 +1431,8 @@ double free_camera_move_speed(const CameraRecord& camera, double delta_ms);
 
 void apply_arc_rotate_inertia(CameraRecord& camera);
 void apply_free_camera_inertia(CameraRecord& camera);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(modulePath, symbolName, `${freeModule}#attachFreeControl`)}
 #include <bblite/upstream/camera_controls.hpp>
 
@@ -1544,7 +1443,10 @@ void apply_free_camera_inertia(CameraRecord& camera);
 namespace bbl {
 
 void clamp_camera_to_limits(CameraRecord& camera);
-${this.trackVersions ? new CameraMutationLowerer(this.context).setters() : `
+${
+    this.trackVersions
+        ? new CameraMutationLowerer(this.context).setters()
+        : `
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value) {
     camera.*field = value;
 }
@@ -1554,10 +1456,14 @@ void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::*ve
 }
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::*vector, Vec3d value) {
     camera.*vector = value;
-}`}
+}`
+}
 
 void clamp_camera_to_limits(CameraRecord& camera) {
-${this.trackVersions ? new CameraMutationLowerer(this.context).clamp() : `    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
+${
+    this.trackVersions
+        ? new CameraMutationLowerer(this.context).clamp()
+        : `    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
         camera.radius = *camera.lower_radius_limit;
         camera.inertial_radius_offset = 0.0;
     } else if (camera.upper_radius_limit && camera.radius > *camera.upper_radius_limit) {
@@ -1577,7 +1483,8 @@ ${this.trackVersions ? new CameraMutationLowerer(this.context).clamp() : `    if
     } else if (camera.upper_alpha_limit && camera.alpha > *camera.upper_alpha_limit) {
         camera.alpha = *camera.upper_alpha_limit;
         camera.inertial_alpha_offset = 0.0;
-    }`}
+    }`
+}
 }
 
 void set_camera_limits(
@@ -1650,7 +1557,10 @@ void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y) {
 }
 
 void apply_arc_rotate_inertia(CameraRecord& camera) {
-${this.trackVersions ? new CameraMutationLowerer(this.context).inertia() : `    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
+${
+    this.trackVersions
+        ? new CameraMutationLowerer(this.context).inertia()
+        : `    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
     constexpr double radius_epsilon = ${dvalue(radiusEpsilon)};
     constexpr double panning_epsilon = ${dvalue(panningEpsilon)};
     if (camera.inertial_alpha_offset != 0.0 || camera.inertial_beta_offset != 0.0) {
@@ -1683,7 +1593,8 @@ ${this.trackVersions ? new CameraMutationLowerer(this.context).inertia() : `    
         camera.inertial_panning_y *= camera.panning_inertia;
         if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0;
         if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0;
-    }`}
+    }`
+}
 }
 
 // src/camera/free-camera-controls.ts accumulates crY += dx / sensitivity

@@ -89,9 +89,10 @@ function parseDataUrlHeader(
  */
 export function dataUrlAssetName(source: string): string {
     const subtype = (dataUrlMediaType(source) ?? "").split("/")[1] ?? "";
-    const extension = /^[a-z0-9.+-]+$/.test(subtype) && subtype
-        ? subtype.replace(/\+.*$/, "")
-        : "bin";
+    const extension =
+        /^[a-z0-9.+-]+$/.test(subtype) && subtype
+            ? subtype.replace(/\+.*$/, "")
+            : "bin";
     return `inline.${extension === "jpeg" ? "jpg" : extension}`;
 }
 
@@ -104,9 +105,9 @@ export function dataUrlAssetName(source: string): string {
  * spelling starts to drift, so it is stated once beside the reader.
  */
 export function javascriptModuleUrl(source: string): string {
-    return `data:text/javascript;base64,${
-        Buffer.from(source, "utf8").toString("base64")
-    }`;
+    return `data:text/javascript;base64,${Buffer.from(source, "utf8").toString(
+        "base64",
+    )}`;
 }
 
 /** A data URL is unreadable in an error; its head identifies it. */

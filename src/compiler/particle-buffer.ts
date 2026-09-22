@@ -24,13 +24,15 @@ import {
 } from "../pinned-node-particle.js";
 
 interface ParticleBufferContext
-    extends PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "reachedNodeParticles"
-        | "unwrap"
-        | "isDefaultLibraryIdentifier"
-        | "isRuntimeResourceConstruction"
-    > {}
+    extends
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "reachedNodeParticles"
+            | "unwrap"
+            | "isDefaultLibraryIdentifier"
+            | "isRuntimeResourceConstruction"
+        > {}
 
 type BufferIdentity = { set: number; system: number };
 
@@ -39,9 +41,17 @@ export function frozenParticleBuffer(
     owner: BufferIdentity,
     node: ts.Node,
 ): NodeParticleFrozenBufferRequest {
-    if (context.reachedNodeParticles.steps.some((step) => step.op === "push-system" &&
-        (step.set === owner.set || step.fromSet === owner.set))) {
-        context.fail(node, "Native frozen particle buffer reads and sprite sheets cannot be combined with system-list composition; pushed systems share their original buffer identity.");
+    if (
+        context.reachedNodeParticles.steps.some(
+            (step) =>
+                step.op === "push-system" &&
+                (step.set === owner.set || step.fromSet === owner.set),
+        )
+    ) {
+        context.fail(
+            node,
+            "Native frozen particle buffer reads and sprite sheets cannot be combined with system-list composition; pushed systems share their original buffer identity.",
+        );
     }
     const previous = context.reachedNodeParticles.buffers.find(
         (entry) => entry.set === owner.set && entry.system === owner.system,
@@ -54,29 +64,50 @@ export function frozenParticleBuffer(
 
 /** A native read exposes the final snapshot; later simulation cannot move it. */
 export function requireParticleBakeWritable(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail" | "isRuntimeResourceConstruction">,
+    context: Pick<
+        ParticleBufferContext,
+        "reachedNodeParticles" | "fail" | "isRuntimeResourceConstruction"
+    >,
     owner: BufferIdentity,
     node: ts.Node,
 ): void {
     const program = context.reachedNodeParticles;
     if (program.sets[owner.set]?.native) {
-        context.fail(node, "Native provider-backed particle buffers cannot be written through a generation snapshot.");
+        context.fail(
+            node,
+            "Native provider-backed particle buffers cannot be written through a generation snapshot.",
+        );
     }
-    if (context.isRuntimeResourceConstruction() ||
-        program.buffers.some((entry) => entry.set === owner.set &&
-            entry.system === owner.system && entry.observed) ||
-        program.billboards.some((entry) => entry.set === owner.set && entry.system === owner.system) ||
+    if (
+        context.isRuntimeResourceConstruction() ||
+        program.buffers.some(
+            (entry) =>
+                entry.set === owner.set &&
+                entry.system === owner.system &&
+                entry.observed,
+        ) ||
+        program.billboards.some(
+            (entry) => entry.set === owner.set && entry.system === owner.system,
+        ) ||
         program.registrations.some((entry) => entry.set === owner.set) ||
-        program.sprite2d.some((entry) => entry.set === owner.set)) {
-        context.fail(node, "A frozen particle buffer can only change during definite initialization, before a native snapshot read or renderer registration.");
+        program.sprite2d.some((entry) => entry.set === owner.set)
+    ) {
+        context.fail(
+            node,
+            "A frozen particle buffer can only change during definite initialization, before a native snapshot read or renderer registration.",
+        );
     }
 }
 
 function identity(value: Value | undefined): BufferIdentity | undefined {
-    return value && !value.nodeParticleLive &&
+    return value &&
+        !value.nodeParticleLive &&
         value.nodeParticleSetIndex !== undefined &&
         value.nodeParticleSystemIndex !== undefined
-        ? { set: value.nodeParticleSetIndex, system: value.nodeParticleSystemIndex }
+        ? {
+              set: value.nodeParticleSetIndex,
+              system: value.nodeParticleSystemIndex,
+          }
         : undefined;
 }
 
@@ -91,18 +122,42 @@ export function readFrozenParticleProperty(
     if (owner.kind === "node-particle-system" && name === "buffer") {
         return { ...owner, kind: "node-particle-buffer" };
     }
-    if (owner.kind !== "node-particle-buffer" && owner.kind !== "node-particle-column") return undefined;
+    if (
+        owner.kind !== "node-particle-buffer" &&
+        owner.kind !== "node-particle-column"
+    )
+        return undefined;
     if (context.reachedNodeParticles.sets[buffer.set]?.native) {
-        if (owner.kind === "node-particle-buffer" && (name === "alive" || name === "capacity")) {
-            return { kind: "number", cpp: `bbl::upstream::native_node_particle_${name}(${buffer.set}, ${buffer.system})`, dataType: { kind: "number" } };
+        if (
+            owner.kind === "node-particle-buffer" &&
+            (name === "alive" || name === "capacity")
+        ) {
+            return {
+                kind: "number",
+                cpp: `bbl::upstream::native_node_particle_${name}(${buffer.set}, ${buffer.system})`,
+                dataType: { kind: "number" },
+            };
         }
-        context.fail(node, `Native provider-backed particle buffer property '${name}' is not lowered.`);
+        context.fail(
+            node,
+            `Native provider-backed particle buffer property '${name}' is not lowered.`,
+        );
     }
-    if (owner.kind === "node-particle-buffer" && Object.hasOwn(nodeParticleColumnWidths, name)) {
-        return { ...owner, kind: "node-particle-column", nodeParticleColumn: name as NodeParticleColumn };
+    if (
+        owner.kind === "node-particle-buffer" &&
+        Object.hasOwn(nodeParticleColumnWidths, name)
+    ) {
+        return {
+            ...owner,
+            kind: "node-particle-column",
+            nodeParticleColumn: name as NodeParticleColumn,
+        };
     }
-    if ((owner.kind === "node-particle-buffer" && (name === "alive" || name === "capacity")) ||
-        (owner.kind === "node-particle-column" && name === "length")) {
+    if (
+        (owner.kind === "node-particle-buffer" &&
+            (name === "alive" || name === "capacity")) ||
+        (owner.kind === "node-particle-column" && name === "length")
+    ) {
         const request = frozenParticleBuffer(context, buffer, node);
         const field = name === "alive" ? "alive" : "capacity";
         if (field === "alive") request.observed = true;
@@ -112,7 +167,10 @@ export function readFrozenParticleProperty(
             dataType: { kind: "number" },
         };
     }
-    context.fail(node, `Frozen particle ${owner.kind === "node-particle-buffer" ? "buffer" : "column"} property '${name}' is not lowered.`);
+    context.fail(
+        node,
+        `Frozen particle ${owner.kind === "node-particle-buffer" ? "buffer" : "column"} property '${name}' is not lowered.`,
+    );
 }
 
 export function readFrozenParticleElement(
@@ -141,7 +199,9 @@ function bufferOwner(
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
         const value = context.lookupOptional(unwrapped);
-        return value?.kind === "node-particle-buffer" ? identity(value) : undefined;
+        return value?.kind === "node-particle-buffer"
+            ? identity(value)
+            : undefined;
     }
     if (
         !ts.isPropertyAccessExpression(unwrapped) ||
@@ -173,14 +233,24 @@ export function emitParticleBufferWrite(
     const left = context.unwrap(expression.left);
     if (!ts.isElementAccessExpression(left)) return false;
     const column = context.unwrap(left.expression);
-    const alias = ts.isIdentifier(column) ? context.lookupOptional(column) : undefined;
-    const owner = alias?.kind === "node-particle-column"
-        ? identity(alias)
-        : ts.isPropertyAccessExpression(column) ? bufferOwner(context, column.expression) : undefined;
+    const alias = ts.isIdentifier(column)
+        ? context.lookupOptional(column)
+        : undefined;
+    const owner =
+        alias?.kind === "node-particle-column"
+            ? identity(alias)
+            : ts.isPropertyAccessExpression(column)
+              ? bufferOwner(context, column.expression)
+              : undefined;
     if (!owner) return false;
-    const name = alias?.nodeParticleColumn ?? (column as ts.PropertyAccessExpression).name.text;
+    const name =
+        alias?.nodeParticleColumn ??
+        (column as ts.PropertyAccessExpression).name.text;
     if (!Object.hasOwn(nodeParticleColumnWidths, name)) {
-        context.fail(column, `Particle buffer column '${name}' is not lowered.`);
+        context.fail(
+            column,
+            `Particle buffer column '${name}' is not lowered.`,
+        );
     }
     requireParticleBakeWritable(context, owner, expression);
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -191,11 +261,7 @@ export function emitParticleBufferWrite(
     }
     const index = staticNumberValue(context, left.argumentExpression);
     const value = staticNumberValue(context, expression.right);
-    if (
-        index === undefined ||
-        !Number.isInteger(index) ||
-        index < 0
-    ) {
+    if (index === undefined || !Number.isInteger(index) || index < 0) {
         context.fail(
             left.argumentExpression,
             "A particle column is written at a static slot: the write " +
@@ -234,22 +300,27 @@ export function emitParticleAliveGuard(
     const condition = context.unwrap(statement.expression);
     if (!ts.isBinaryExpression(condition)) return false;
     const left = context.unwrap(condition.left);
-    if (
-        !ts.isPropertyAccessExpression(left) ||
-        left.name.text !== "alive"
-    ) {
+    if (!ts.isPropertyAccessExpression(left) || left.name.text !== "alive") {
         return false;
     }
     const owner = bufferOwner(context, left.expression);
     if (!owner) return false;
     if (context.reachedNodeParticles.sets[owner.set]?.native) return false;
-    if (context.isRuntimeResourceConstruction() ||
-        context.reachedNodeParticles.sprite2d.some((entry) => entry.set === owner.set) ||
-        context.reachedNodeParticles.buffers.some((entry) => entry.set === owner.set &&
-            entry.system === owner.system && entry.observed)) return false;
+    if (
+        context.isRuntimeResourceConstruction() ||
+        context.reachedNodeParticles.sprite2d.some(
+            (entry) => entry.set === owner.set,
+        ) ||
+        context.reachedNodeParticles.buffers.some(
+            (entry) =>
+                entry.set === owner.set &&
+                entry.system === owner.system &&
+                entry.observed,
+        )
+    )
+        return false;
     const operator =
-        condition.operatorToken.kind ===
-        ts.SyntaxKind.EqualsEqualsEqualsToken
+        condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
             ? "==="
             : condition.operatorToken.kind ===
                 ts.SyntaxKind.ExclamationEqualsEqualsToken

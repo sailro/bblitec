@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
-test("retained DOM queries observe authored tree changes and return ordered snapshots", t => {
+test("retained DOM queries observe authored tree changes and return ordered snapshots", (t) => {
     const directory = resolve("artifacts/dom-queries");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const root = document.createElement("div");
@@ -58,7 +59,9 @@ test("retained DOM queries observe authored tree changes and return ordered snap
         log.textContent = "complete";
         document.body.appendChild(log);
         globalThis.close();
-    `, {fileName:join(directory,"entry.ts")});
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
     assert.match(result.cpp, /bbl::ui_query_element\(/);
     assert.match(result.cpp, /bbl::ui_query_elements\(/);
     assert.match(result.cpp, /bbl::ui_matches_element\(/);
@@ -68,7 +71,20 @@ test("retained DOM queries observe authored tree changes and return ordered snap
 
 test("retained queries refuse unrepresented selector and interaction forms", () => {
     const preamble = `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const root = document.createElement("div");`;
-    for (const selector of ["", ".entry,", ".entry::before", ":scope > .entry", ".entry:hover", ":has(:focus)"]) {
-        assert.throws(() => compileSource(`${preamble} const found = root.querySelector(${JSON.stringify(selector)});`), /Retained DOM query/);
+    for (const selector of [
+        "",
+        ".entry,",
+        ".entry::before",
+        ":scope > .entry",
+        ".entry:hover",
+        ":has(:focus)",
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(
+                    `${preamble} const found = root.querySelector(${JSON.stringify(selector)});`,
+                ),
+            /Retained DOM query/,
+        );
     }
 });

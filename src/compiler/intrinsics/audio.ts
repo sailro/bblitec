@@ -68,15 +68,18 @@ import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
 
 export interface AudioIntrinsicContext
-    extends IntrinsicCallContext,
-    Pick<LoweringServices,
-        | "fail"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "registerNativeBinding"
-        | "audioSessionCpp"
-        | "expectObjectLiteral"
-    > {}
+    extends
+        IntrinsicCallContext,
+        Pick<
+            LoweringServices,
+            | "fail"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "registerNativeBinding"
+            | "registerNativeTemporary"
+            | "audioSessionCpp"
+            | "expectObjectLiteral"
+        > {}
 
 /**
  * The Lite engine functions a reached scene calls. Everything else the
@@ -109,11 +112,10 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
         "runtime does not have",
     createUnmuteUI: "the unmute UI is a DOM button",
     createAudioVisualizer: "the visualizer draws through canvas2D",
-    createAudioEngineMediaStream:
-        "the media-stream tap is a browser pipeline",
+    createAudioEngineMediaStream: "the media-stream tap is a browser pipeline",
     setMasterVolume:
         "the pin has no un-ramped form of it. `setMainOutVolume` goes " +
-        "through `setRampTarget`, whose shape defaults to `\"linear\"` and " +
+        'through `setRampTarget`, whose shape defaults to `"linear"` and ' +
         "whose duration defaults to the engine's `_rampDuration` (0.01 s) " +
         "-- above `MinRampDuration`, so even a call with no options " +
         "schedules `cancelScheduledValues(0)` then a two-point " +
@@ -158,15 +160,14 @@ export function compileAudioIntrinsic(
             }
             context.reachFeature("audio:engine", call);
 
-            const engine =
-                context.allocateTemporaryCppName("audio_engine");
+            const engine = context.allocateTemporaryCppName("audio_engine");
             // The pin's own output graph, from `bus.ts`:
             //   createMainOut  -- a GainNode connected to ctx.destination
             //   createMainBus  -- a GainNode connected to mainOut._gain
             // A sound source connects into `mainBus._in`, which is that
             // second gain. Two nodes, and the shape is the contract.
             context.emit(
-                `const bbl::pal::AudioContextHandle ${engine}_ctx = ` +
+                `bbl::pal::AudioContextHandle ${engine}_ctx = ` +
                     `bbl::pal::audio_create_context(${context.audioSessionCpp()});`,
             );
             context.emit(
@@ -178,18 +179,22 @@ export function compileAudioIntrinsic(
                     `bbl::pal::audio_destination(${engine}_ctx));`,
             );
             context.emit(
-                `const bbl::pal::AudioNodeHandle ${engine}_main_bus = ` +
+                `bbl::pal::AudioNodeHandle ${engine}_main_bus = ` +
                     `bbl::pal::audio_create_gain(${engine}_ctx);`,
             );
             context.emit(
                 `bbl::pal::audio_connect(${engine}_main_bus, ${engine}_main_out);`,
             );
+            context.registerNativeTemporary(`${engine}_ctx`);
+            context.registerNativeTemporary(`${engine}_main_bus`);
             return {
                 kind: "audio-engine",
                 cpp: `${engine}_ctx`,
                 audioMainBusCpp: `${engine}_main_bus`,
                 nativeCompanionCaptures: {
-                    audioMainBusCpp: [context.registerNativeBinding(`${engine}_main_bus`)],
+                    audioMainBusCpp: [
+                        context.registerNativeBinding(`${engine}_main_bus`),
+                    ],
                 },
             };
         }
@@ -245,18 +250,13 @@ export function compileAudioIntrinsic(
                     "Audio engine value carries no main bus.",
                 );
             }
-            const source =
-                context.allocateTemporaryCppName("audio_source");
+            const source = context.allocateTemporaryCppName("audio_source");
             context.emit(
                 `const bbl::pal::AudioNodeHandle ${source} = ` +
                     `bbl::pal::audio_create_gain(${engine.cpp});`,
             );
-            context.emit(
-                `bbl::pal::audio_connect(${source}, ${mainBus});`,
-            );
-            context.emit(
-                `bbl::pal::audio_connect(${node.cpp}, ${source});`,
-            );
+            context.emit(`bbl::pal::audio_connect(${source}, ${mainBus});`);
+            context.emit(`bbl::pal::audio_connect(${node.cpp}, ${source});`);
             return {
                 kind: "audio-node",
                 cpp: source,

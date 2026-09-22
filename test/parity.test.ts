@@ -16,7 +16,10 @@ import {
 import { resolveParityThresholds } from "../src/parity-scene.js";
 import { getScene } from "../src/scene-registry.js";
 
-function writePng(path: string, pixels: Array<[number, number, number, number]>): void {
+function writePng(
+    path: string,
+    pixels: Array<[number, number, number, number]>,
+): void {
     const png = new PNG({ width: pixels.length, height: 1 });
     pixels.forEach((pixel, index) => {
         png.data.set(pixel, index * 4);
@@ -34,15 +37,18 @@ test("gates a registered scene and leaves an unthresholded one diagnostic", () =
         },
     );
     assert.deepEqual(
-        resolveParityThresholds({
-            reference: {
-                kind: "source",
-                path: "reference.png",
+        resolveParityThresholds(
+            {
+                reference: {
+                    kind: "source",
+                    path: "reference.png",
+                },
+                outputDirectory: "output",
+                backgroundColor: [0, 0, 0],
+                backgroundThreshold: 0,
             },
-            outputDirectory: "output",
-            backgroundColor: [0, 0, 0],
-            backgroundThreshold: 0,
-        }, "sdl_gpu"),
+            "sdl_gpu",
+        ),
         {
             maxMad: undefined,
             maxRegionMad: undefined,
@@ -94,12 +100,21 @@ test("matches Babylon MAD and foreground-region semantics", () => {
         });
         const breakdown = analyzeDifference(actual, reference);
         assert.deepEqual(breakdown.channelMad, { red: 1.5, green: 3, blue: 0 });
-        assert.deepEqual(breakdown.foregroundBias, { red: 3, green: 6, blue: 0 });
+        assert.deepEqual(breakdown.foregroundBias, {
+            red: 3,
+            green: 6,
+            blue: 0,
+        });
         assert.equal(breakdown.regions.background.mad, 0);
         assert.equal(breakdown.regions.foregroundEdge.mad, 3);
         assert.equal(breakdown.regions.foregroundInterior.pixels, 0);
         assert.equal(breakdown.hotspots.length, 1);
-        const idBreakdown = analyzeIdBuffer(actual, reference, ids, breakdown.hotspots);
+        const idBreakdown = analyzeIdBuffer(
+            actual,
+            reference,
+            ids,
+            breakdown.hotspots,
+        );
         assert.deepEqual(idBreakdown.draws, [
             {
                 drawId: 1,
@@ -109,10 +124,15 @@ test("matches Babylon MAD and foreground-region semantics", () => {
                 bounds: { x: 1, y: 0, width: 1, height: 1 },
             },
         ]);
-        assert.deepEqual(idBreakdown.hotspots[0]?.drawIds, [{ drawId: 1, pixels: 1 }]);
+        assert.deepEqual(idBreakdown.hotspots[0]?.drawIds, [
+            { drawId: 1, pixels: 1 },
+        ]);
         generateIdVisualization(ids, idsVisual);
         const idVisualPng = PNG.sync.read(readFileSync(idsVisual));
-        assert.deepEqual([...idVisualPng.data.slice(4, 8)], [152, 112, 192, 255]);
+        assert.deepEqual(
+            [...idVisualPng.data.slice(4, 8)],
+            [152, 112, 192, 255],
+        );
         generateHotspotMap(actual, breakdown.hotspots, hotspots);
         const hotspotPng = PNG.sync.read(readFileSync(hotspots));
         assert.deepEqual([...hotspotPng.data.slice(4, 8)], [255, 64, 64, 255]);

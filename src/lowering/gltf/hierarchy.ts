@@ -6,53 +6,124 @@ import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 /** Pinned parent-map publication over native records. */
 export function lowerGltfHierarchy(context: LoweringContext): string {
     const module = "src/loader-gltf/gltf-parser.ts";
-    const { file, declaration: parentMap } = context.functionDeclaration(module, "buildParentMap");
+    const { file, declaration: parentMap } = context.functionDeclaration(
+        module,
+        "buildParentMap",
+    );
     const mapBindings = new Map<string, PinnedBinding>([
         ["json", { cpp: "json", type: "opaque" }],
         ["parentMap", { cpp: "parents", type: "opaque" }],
         ["nodes", { cpp: "nodes", type: "opaque" }],
-        ["nodes.length", { cpp: "static_cast<std::int64_t>(nodes.size())", type: "index" }],
-        ["children", { cpp: "children", type: "opaque", absentCpp: "(!children || !children->truthy())" }],
+        [
+            "nodes.length",
+            { cpp: "static_cast<std::int64_t>(nodes.size())", type: "index" },
+        ],
+        [
+            "children",
+            {
+                cpp: "children",
+                type: "opaque",
+                absentCpp: "(!children || !children->truthy())",
+            },
+        ],
     ]);
     const mapBody = lowerPinnedBody(file, parentMap.body!.statements, {
-        bindings: mapBindings, calls: new Map(), booleanAnd: true, booleanOr: true,
+        bindings: mapBindings,
+        calls: new Map(),
+        booleanAnd: true,
+        booleanOr: true,
         forOf(iterated, element) {
-            return iterated === "children" ? { range: "children->as_array()",
-                bindings: new Map([[element, { cpp: `${element}.as_number()`, type: "scalar" }]]) } : undefined;
+            return iterated === "children"
+                ? {
+                      range: "children->as_array()",
+                      bindings: new Map([
+                          [
+                              element,
+                              { cpp: `${element}.as_number()`, type: "scalar" },
+                          ],
+                      ]),
+                  }
+                : undefined;
         },
         expression(node, lowerer) {
-            if (context.expressionMatchesShape(node, "json.nodes ?? []")) return 'gltf_array_or_empty(json, "nodes")';
-            if (ts.isPropertyAccessExpression(node) && node.name.text === "children" && ts.isElementAccessExpression(node.expression) &&
-                context.expressionMatchesShape(node.expression.expression, "nodes"))
+            if (context.expressionMatchesShape(node, "json.nodes ?? []"))
+                return 'gltf_array_or_empty(json, "nodes")';
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                node.name.text === "children" &&
+                ts.isElementAccessExpression(node.expression) &&
+                context.expressionMatchesShape(
+                    node.expression.expression,
+                    "nodes",
+                )
+            )
                 return `optional(nodes.at(static_cast<std::size_t>(${lowerer.expression(node.expression.argumentExpression)})).as_object(), "children")`;
-            if (ts.isCallExpression(node) && context.expressionMatchesShape(node.expression, "parentMap.set") && node.arguments.length === 2)
+            if (
+                ts.isCallExpression(node) &&
+                context.expressionMatchesShape(
+                    node.expression,
+                    "parentMap.set",
+                ) &&
+                node.arguments.length === 2
+            )
                 return `set_gltf_parent(parents, static_cast<double>(${lowerer.expression(node.arguments[0]!)}), static_cast<double>(${lowerer.expression(node.arguments[1]!)}))`;
             return undefined;
         },
         statement(statement, lowerer, indent) {
-            if (!ts.isVariableStatement(statement) || statement.declarationList.declarations.length !== 1) return undefined;
+            if (
+                !ts.isVariableStatement(statement) ||
+                statement.declarationList.declarations.length !== 1
+            )
+                return undefined;
             const variable = statement.declarationList.declarations[0]!;
-            if (!ts.isIdentifier(variable.name) || !variable.initializer) return undefined;
+            if (!ts.isIdentifier(variable.name) || !variable.initializer)
+                return undefined;
             const name = variable.name.text;
             if (name === "parentMap") {
-                context.assertExpressionShape(variable.initializer, "new Map<number, number>()", "glTF parent map allocation");
-                return [`${indent}std::vector<int> parents(gltf_array_or_empty(json, "nodes").size(), -1);`];
+                context.assertExpressionShape(
+                    variable.initializer,
+                    "new Map<number, number>()",
+                    "glTF parent map allocation",
+                );
+                return [
+                    `${indent}std::vector<int> parents(gltf_array_or_empty(json, "nodes").size(), -1);`,
+                ];
             }
-            if (name === "nodes") return [`${indent}const auto& nodes = ${lowerer.expression(variable.initializer)};`];
-            if (name === "children") return [`${indent}const auto* children = ${lowerer.expression(variable.initializer)};`];
+            if (name === "nodes")
+                return [
+                    `${indent}const auto& nodes = ${lowerer.expression(variable.initializer)};`,
+                ];
+            if (name === "children")
+                return [
+                    `${indent}const auto* children = ${lowerer.expression(variable.initializer)};`,
+                ];
             return undefined;
         },
         returnValue: (value, lowerer) => lowerer.expression(value!),
     });
-    const { declaration: findParent } = context.functionDeclaration(module, "findParent");
+    const { declaration: findParent } = context.functionDeclaration(
+        module,
+        "findParent",
+    );
     const findBody = lowerPinnedBody(file, findParent.body!.statements, {
-        bindings: new Map([["childIdx", { cpp: "child_index", type: "scalar" }]]), calls: new Map(),
+        bindings: new Map([
+            ["childIdx", { cpp: "child_index", type: "scalar" }],
+        ]),
+        calls: new Map(),
         expression(node, lowerer) {
-            if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
-                context.expressionMatchesShape(node.left, "parentMap.get(childIdx)"))
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                context.expressionMatchesShape(
+                    node.left,
+                    "parentMap.get(childIdx)",
+                )
+            )
                 return `(parents.at(static_cast<std::size_t>(child_index)) >= 0 ? double(parents.at(static_cast<std::size_t>(child_index))) : ${lowerer.expression(node.right)})`;
             return undefined;
-        }, returnValue: (value, lowerer) => lowerer.expression(value!),
+        },
+        returnValue: (value, lowerer) => lowerer.expression(value!),
     });
     return `// ${context.provenance(module, "buildParentMap")}
 void set_gltf_parent(std::vector<int>& parents, double child, double parent) {

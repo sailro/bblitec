@@ -3,63 +3,160 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { jsonObject } from "./json.js";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { GLTF_MESH_PLAN, GLTF_MESH_WALKS, glbJsonText } from "../src/gltf-document.js";
-import { gltfMeshWalks, packageMeshWalks, type CompiledMeshWalk } from "../src/gltf-mesh-walks.js";
+import {
+    GLTF_MESH_PLAN,
+    GLTF_MESH_WALKS,
+    glbJsonText,
+} from "../src/gltf-document.js";
+import {
+    gltfMeshWalks,
+    packageMeshWalks,
+    type CompiledMeshWalk,
+} from "../src/gltf-mesh-walks.js";
 import { packageGltf } from "../src/gltf-packager.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { withMeshPlan } from "./gltf-mesh-fixture.js";
 
 // Preserve the actual authored worklist. The graph below distinguishes its
 // order from both source preorder and reversing the native node-array table.
-const corpus = ts.createSourceFile("scene149.ts", readFileSync("corpus/babylon-lite/lab/lite/src/lite/scene149.ts", "utf8"), ts.ScriptTarget.Latest, true);
-const declaration = corpus.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "collectMeshes") as ts.FunctionDeclaration;
-const stack: CompiledMeshWalk = { kind: "source", parameter: "container", body: declaration.body!.getText(corpus) };
+const corpus = ts.createSourceFile(
+    "scene149.ts",
+    readFileSync("corpus/babylon-lite/lab/lite/src/lite/scene149.ts", "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+);
+const declaration = corpus.statements.find(
+    (statement) =>
+        ts.isFunctionDeclaration(statement) &&
+        statement.name?.text === "collectMeshes",
+) as ts.FunctionDeclaration;
+const stack: CompiledMeshWalk = {
+    kind: "source",
+    parameter: "container",
+    body: declaration.body!.getText(corpus),
+};
 const preorder: CompiledMeshWalk = { kind: "preorder" };
 const hierarchy = {
-    asset: {version: "2.0"}, scene: 0, scenes: [{nodes: [1, 0, 2]}],
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ nodes: [1, 0, 2] }],
     nodes: [
-        {mesh: 0, children: [3]}, {mesh: 1, children: [4]},
-        {mesh: 2}, {mesh: 1}, {mesh: 1},
+        { mesh: 0, children: [3] },
+        { mesh: 1, children: [4] },
+        { mesh: 2 },
+        { mesh: 1 },
+        { mesh: 1 },
     ],
-    meshes: [{primitives: [{}, {}]}, {primitives: [{}]}, {primitives: [{}, {}]}],
+    meshes: [
+        { primitives: [{}, {}] },
+        { primitives: [{}] },
+        { primitives: [{}, {}] },
+    ],
 };
 const stackOrder = [4, 3, 1, 0, 5, 2, 6];
 const preorderOrder = [6, 2, 5, 0, 1, 3, 4];
-const recursiveCorpus = ts.createSourceFile("scene41.ts", readFileSync("corpus/babylon-lite/lab/lite/src/lite/scene41.ts", "utf8"), ts.ScriptTarget.Latest, true);
-const recursiveVisitor = recursiveCorpus.statements.filter(statement => ts.isFunctionDeclaration(statement) &&
-    ["isMeshNode", "hasChildren", "collectMeshes"].includes(statement.name?.text ?? ""))
-    .map(statement => statement.getText(recursiveCorpus).replaceAll("collectMeshes", "visitMeshes")).join("\n");
+const recursiveCorpus = ts.createSourceFile(
+    "scene41.ts",
+    readFileSync("corpus/babylon-lite/lab/lite/src/lite/scene41.ts", "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+);
+const recursiveVisitor = recursiveCorpus.statements
+    .filter(
+        (statement) =>
+            ts.isFunctionDeclaration(statement) &&
+            ["isMeshNode", "hasChildren", "collectMeshes"].includes(
+                statement.name?.text ?? "",
+            ),
+    )
+    .map((statement) =>
+        statement
+            .getText(recursiveCorpus)
+            .replaceAll("collectMeshes", "visitMeshes"),
+    )
+    .join("\n");
 
 test("source collectors observe the pinned multi-level, multi-primitive hierarchy", async () => {
-    assert.deepEqual(await gltfMeshWalks(hierarchy, [stack, preorder]), [stackOrder, preorderOrder]);
+    assert.deepEqual(await gltfMeshWalks(hierarchy, [stack, preorder]), [
+        stackOrder,
+        preorderOrder,
+    ]);
     assert.notDeepEqual(stackOrder, [6, 5, 4, 3, 2, 1, 0]);
 });
 
 test("packaging retains only demanded collectors and refuses unrepresented mesh sets", async () => {
     const directory = resolve("artifacts/test-gltf-mesh-walks");
-    mkdirSync(directory, {recursive: true});
+    mkdirSync(directory, { recursive: true });
     const source = join(directory, "hierarchy.gltf");
     writeFileSync(source, JSON.stringify(hierarchy));
-    const plain = JSON.parse(glbJsonText(Buffer.from(await packageGltf(source, directory)))!);
+    const plain = jsonObject(
+        JSON.parse(
+            glbJsonText(Buffer.from(await packageGltf(source, directory)))!,
+        ),
+    );
     assert.equal(plain[GLTF_MESH_WALKS], undefined);
-    const packed = JSON.parse(glbJsonText(Buffer.from(await packageGltf(source, directory, false, [stack, undefined, preorder])))!);
+    const packed = jsonObject(
+        JSON.parse(
+            glbJsonText(
+                Buffer.from(
+                    await packageGltf(source, directory, false, [
+                        stack,
+                        undefined,
+                        preorder,
+                    ]),
+                ),
+            )!,
+        ),
+    );
     assert.deepEqual(packed[GLTF_MESH_WALKS], [stackOrder, [], preorderOrder]);
-    const inline = "data:model/gltf+json;base64," + Buffer.from(JSON.stringify(hierarchy)).toString("base64");
-    const inlinePacked = JSON.parse(glbJsonText(Buffer.from(await packageGltf(inline, directory, false, [stack])))!);
+    const inline =
+        "data:model/gltf+json;base64," +
+        Buffer.from(JSON.stringify(hierarchy)).toString("base64");
+    const inlinePacked = jsonObject(
+        JSON.parse(
+            glbJsonText(
+                Buffer.from(
+                    await packageGltf(inline, directory, false, [stack]),
+                ),
+            )!,
+        ),
+    );
     assert.deepEqual(inlinePacked[GLTF_MESH_WALKS], [stackOrder]);
     await assert.rejects(packageMeshWalks(packed, [stack]), /already carries/);
     for (const document of [
-        {...hierarchy, scenes: [{nodes: [0]}]},
-        {...hierarchy, scenes: [{nodes: [0, 0, 1, 2]}]},
-        {...hierarchy, nodes: [{...hierarchy.nodes[0], children: [0]}, ...hierarchy.nodes.slice(1)]},
-        {...hierarchy, extensionsUsed: ["EXT_mesh_gpu_instancing"]},
-        {...hierarchy, nodes: [{...hierarchy.nodes[0], extensions: {EXT_mesh_gpu_instancing: {}}}, ...hierarchy.nodes.slice(1)]},
-    ]) await assert.rejects(packageMeshWalks(document, [stack]), /mesh walks/);
+        { ...hierarchy, scenes: [{ nodes: [0] }] },
+        { ...hierarchy, scenes: [{ nodes: [0, 0, 1, 2] }] },
+        {
+            ...hierarchy,
+            nodes: [
+                { ...hierarchy.nodes[0], children: [0] },
+                ...hierarchy.nodes.slice(1),
+            ],
+        },
+        { ...hierarchy, extensionsUsed: ["EXT_mesh_gpu_instancing"] },
+        {
+            ...hierarchy,
+            nodes: [
+                {
+                    ...hierarchy.nodes[0],
+                    extensions: { EXT_mesh_gpu_instancing: {} },
+                },
+                ...hierarchy.nodes.slice(1),
+            ],
+        },
+    ])
+        await assert.rejects(packageMeshWalks(document, [stack]), /mesh walks/);
 });
 
 const closure = `function recursive(container: AssetContainer): Mesh[] {
@@ -117,35 +214,73 @@ function compiledWalks() {
 
 test("compiler demand is per asset and keeps distinct source collector orders", async () => {
     const result = compiledWalks();
-    assert.deepEqual(result.manifest.assets.map(asset => asset.meshWalks), [[0, 1, 2], undefined]);
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.meshWalks),
+        [[0, 1, 2], undefined],
+    );
     assert.equal(result.manifest.meshWalks?.length, 3);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 0\)/);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 1\)/);
     assert.match(result.cpp, /\.assets\[[^\]]+\]\.meshes/);
-    assert.deepEqual(await gltfMeshWalks(hierarchy, result.manifest.meshWalks!), [stackOrder, preorderOrder, preorderOrder]);
+    assert.deepEqual(
+        await gltfMeshWalks(hierarchy, result.manifest.meshWalks),
+        [stackOrder, preorderOrder, preorderOrder],
+    );
     const lowerer = new GltfLowerer(new LoweringContext());
-    assert(!lowerer.lowerLoaderAdapter().source.includes("load_source_mesh_walks"));
-    assert(lowerer.lowerLoaderAdapter({sourceMeshWalks: true}).source.includes("load_source_mesh_walks(asset, document)"));
+    assert(
+        !lowerer.lowerLoaderAdapter().source.includes("load_source_mesh_walks"),
+    );
+    assert(
+        lowerer
+            .lowerLoaderAdapter({ sourceMeshWalks: true })
+            .source.includes("load_source_mesh_walks(asset, document)"),
+    );
 });
 
 const tools = optionalNativeFixtureTools();
-test("native source loops observe Map insertion order and retained per-asset permutations", {skip: !tools}, async () => {
-    const result = compiledWalks();
-    const document = structuredClone(hierarchy);
-    await withMeshPlan(document);
-    await packageMeshWalks(document, result.manifest.meshWalks!);
-    const source = new GltfLowerer(new LoweringContext()).lowerLoaderAdapter({sourceMeshWalks: true}).source;
-    const helpers = ["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "std::vector<double> double_array(", "void load_source_mesh_walks("]
-        .map(signature => cppFunction(source, signature)).join("\n");
-    assert.match(source, /install_asset_scene_meshes\(asset, double_array\(&required\(mesh_plan, "sceneMeshes"\)\)\)/);
-    const scene = new SceneLowerer(new LoweringContext()).lowerCore().source;
-    const cloneHelpers = ["void require_scene_engine(", "AssetRecord& asset_record(", "AssetHandle clone_asset_root(",
-        "void add_asset_meshes(", "void add_to_scene(Scene& scene, AssetHandle asset)", "void add_asset_entities("]
-        .map(signature => cppFunction(scene, signature)).join("\n");
-    const directory = resolve("artifacts/test-gltf-mesh-walks");
-    mkdirSync(directory, {recursive: true});
-    const file = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+test(
+    "native source loops observe Map insertion order and retained per-asset permutations",
+    { skip: !tools },
+    async () => {
+        const result = compiledWalks();
+        const document = structuredClone(hierarchy);
+        await withMeshPlan(document);
+        await packageMeshWalks(document, result.manifest.meshWalks!);
+        const source = new GltfLowerer(
+            new LoweringContext(),
+        ).lowerLoaderAdapter({ sourceMeshWalks: true }).source;
+        const helpers = [
+            "const ts::JsonValue& required(",
+            "const ts::JsonValue* optional(",
+            "std::size_t unsigned_value(",
+            "std::vector<double> double_array(",
+            "void load_source_mesh_walks(",
+        ]
+            .map((signature) => cppFunction(source, signature))
+            .join("\n");
+        assert.match(
+            source,
+            /install_asset_scene_meshes\(asset, double_array\(&required\(mesh_plan, "sceneMeshes"\)\)\)/,
+        );
+        const scene = new SceneLowerer(new LoweringContext()).lowerCore()
+            .source;
+        const cloneHelpers = [
+            "void require_scene_engine(",
+            "AssetRecord& asset_record(",
+            "AssetHandle clone_asset_root(",
+            "void add_asset_meshes(",
+            "void add_to_scene(Scene& scene, AssetHandle asset)",
+            "void add_asset_entities(",
+        ]
+            .map((signature) => cppFunction(scene, signature))
+            .join("\n");
+        const directory = resolve("artifacts/test-gltf-mesh-walks");
+        mkdirSync(directory, { recursive: true });
+        const file = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <cassert>
 namespace bbl {
@@ -192,12 +327,12 @@ int main() {
         }
     };
     check_registration(first, {${preorderOrder.join(",")}});
-    check_registration(clone, {${preorderOrder.map(index => index + 7).join(",")}});
+    check_registration(clone, {${preorderOrder.map((index) => index + 7).join(",")}});
     auto& asset = engine.assets[first.value];
     const auto retained = asset.source_mesh_walks;
     for (const char* bad : {"[[0]]", "[[0,1,2,3,4,5,5]]", "[[0,1,2,3,4,5,7]]", "[[0,1,2,3,4,5,-1]]", "[[0,1,2,3,4,5,0.5]]"}) {
         bool rejected = false;
-        try { bbl::load_source_mesh_walks(asset, bbl::ts::json_parse(std::string("{\\\"${GLTF_MESH_WALKS}\\\":") + bad + "}").as_object()); }
+        try { bbl::load_source_mesh_walks(asset, bbl::ts::json_parse(std::string("{\\"${GLTF_MESH_WALKS}\\":") + bad + "}").as_object()); }
         catch (const std::runtime_error&) { rejected = true; }
         assert(rejected && asset.source_mesh_walks == retained);
     }
@@ -219,8 +354,26 @@ int main() {
     assert(original[0].value == 4 && copy[0].value == 11);
     std::puts("gltf-mesh-walks: ok");
 }
-`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}\\`, `/Fe:${executable}`,
-        "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.match(execFileSync(executable, {encoding: "utf8"}), /gltf-mesh-walks: ok/);
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            join(nativeFixtureVcpkgRoot, "include"),
+            file,
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /gltf-mesh-walks: ok/,
+        );
+    },
+);

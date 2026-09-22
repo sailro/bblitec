@@ -4,7 +4,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
@@ -18,23 +21,41 @@ function runProgram(name: string, source: string): string {
     writeFileSync(file, cpp);
     // Observe the identity passed to the already-tested dirty helper; these
     // compiler tests exercise generated alias storage without opening a GPU.
-    writeFileSync(dirty, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        dirty,
+        `#include <bblite/runtime.hpp>
         namespace bbl {
         void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
             engine.meshes.at(mesh.value).gpu_world_transform = true;
         }
-        }`);
+        }`,
+    );
     runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/permissive-",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        file, dirty, "test/fixtures/js-callback/data-engine-stubs.cpp",
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/permissive-",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+        dirty,
+        "test/fixtures/js-callback/data-engine-stubs.cpp",
     ]);
     execFileSync(executable, [], { encoding: "utf8" });
     return cpp;
 }
 
-test("pinned const enum bags retain numeric values in native arrays and helpers", { skip: !tools }, () => {
-    runProgram("enum-values", `
+test(
+    "pinned const enum bags retain numeric values in native arrays and helpers",
+    { skip: !tools },
+    () => {
+        runProgram(
+            "enum-values",
+            `
         import { PhysicsMotionType as Motion, PhysicsPrestepType as Prestep } from "babylon-lite";
         function encode(values: number[]): number {
             let result = 0;
@@ -47,11 +68,18 @@ test("pinned const enum bags retain numeric values in native arrays and helpers"
         const PhysicsMotionType = { STATIC: 9 };
         PhysicsMotionType.STATIC = 7;
         if (PhysicsMotionType.STATIC !== 7) throw new Error("local enum bag was folded");
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("observable vector aliases retain handles across index changes and arena growth", { skip: !tools }, () => {
-    const cpp = runProgram("vector-identity", `
+test(
+    "observable vector aliases retain handles across index changes and arena growth",
+    { skip: !tools },
+    () => {
+        const cpp = runProgram(
+            "vector-identity",
+            `
         import { createEngine, createBox } from "babylon-lite";
         import type { Mesh } from "babylon-lite";
         const engine = await createEngine({});
@@ -72,13 +100,20 @@ test("observable vector aliases retain handles across index changes and arena gr
         const scale = first.scaling;
         scale.set(2, 3, 4);
         if (first.scaling.z !== 4) throw new Error("scaling alias lost");
-    `);
-    assert.match(cpp, /const auto \w+vector_owner\w* =/);
-    assert.match(cpp, /mark_mesh_dirty\([^;]*vector_owner/);
-});
+    `,
+        );
+        assert.match(cpp, /const auto \w+vector_owner\w* =/);
+        assert.match(cpp, /mark_mesh_dirty\([^;]*vector_owner/);
+    },
+);
 
-test("vector aliases returned by helpers survive retained callback captures", { skip: !tools }, () => {
-    runProgram("retained-vector", `
+test(
+    "vector aliases returned by helpers survive retained callback captures",
+    { skip: !tools },
+    () => {
+        runProgram(
+            "retained-vector",
+            `
         import { createEngine, createBox } from "babylon-lite";
         import type { Mesh } from "babylon-lite";
         function position(mesh: Mesh) { return mesh.position; }
@@ -94,8 +129,10 @@ test("vector aliases returned by helpers survive retained callback captures", { 
         for (const callback of callbacks) callback();
         if (mesh.position.x !== 1 || mesh.position.y !== 2 || mesh.position.z !== 3)
             throw new Error("retained vector no longer addresses its mesh");
-    `);
-});
+    `,
+        );
+    },
+);
 
 test("exact scene106 lowers enum array sinks and its physics-step vector alias", () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene106.ts";
@@ -104,16 +141,29 @@ test("exact scene106 lowers enum array sinks and its physics-step vector alias",
     assert.match(cpp, /static_cast<bbl::upstream::PhysicsMotionType>\(/);
     assert.match(cpp, /static_cast<bbl::upstream::PhysicsPrestepType>\(/);
     assert.match(cpp, /mark_mesh_runtime_transform\([^;]*vector_owner/);
-    assert.throws(() => compileSource(source.replace(
-        "motions[motion]!", "Math.random()",
-    ), { fileName }), /Expected a value of the pinned PhysicsMotionType enum/);
-    assert.throws(() => compileSource(source.replace(
-        "presteps[prestep]!", "9",
-    ), { fileName }), /Expected a value of the pinned PhysicsPrestepType enum/);
+    assert.throws(
+        () =>
+            compileSource(source.replace("motions[motion]!", "Math.random()"), {
+                fileName,
+            }),
+        /Expected a value of the pinned PhysicsMotionType enum/,
+    );
+    assert.throws(
+        () =>
+            compileSource(source.replace("presteps[prestep]!", "9"), {
+                fileName,
+            }),
+        /Expected a value of the pinned PhysicsPrestepType enum/,
+    );
 });
 
-test("untyped handles keep native storage and metadata after selected static branches", { skip: !tools }, () => {
-    runProgram("untyped-handle", `
+test(
+    "untyped handles keep native storage and metadata after selected static branches",
+    { skip: !tools },
+    () => {
+        runProgram(
+            "untyped-handle",
+            `
         import { createEngine, createBox } from "babylon-lite";
         const engine = await createEngine({});
         let mesh;
@@ -123,12 +173,30 @@ test("untyped handles keep native storage and metadata after selected static bra
         if (false) { mesh = original; } else { mesh = createBox(engine); }
         mesh.position.set(4, 5, 6);
         if (original.position.x !== 1 || mesh.position.x !== 4) throw new Error("selected handle identity changed");
-    `);
-});
+    `,
+        );
+    },
+);
 
 test("untyped handle inference refuses mixed writes and reads before assignment", () => {
     const prefix = `import { createEngine, createBox } from "babylon-lite"; const engine = await createEngine({});`;
-    assert.throws(() => compileSource(`${prefix} let mesh; mesh = createBox(engine); mesh = 3;`), /native data type/);
-    assert.throws(() => compileSource(`${prefix} let mesh; if (mesh) throw new Error("early read"); mesh = createBox(engine); mesh.position.x = 1;`));
-    assert.throws(() => compileSource(`${prefix} let mesh = createBox(engine); const other = createBox(engine); const callbacks: (() => void)[] = []; callbacks.push(() => { if (true) { mesh = other; } }); mesh.position.x = 1;`), /nested callback/);
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix} let mesh; mesh = createBox(engine); mesh = 3;`,
+            ),
+        /native data type/,
+    );
+    assert.throws(() =>
+        compileSource(
+            `${prefix} let mesh; if (mesh) throw new Error("early read"); mesh = createBox(engine); mesh.position.x = 1;`,
+        ),
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix} let mesh = createBox(engine); const other = createBox(engine); const callbacks: (() => void)[] = []; callbacks.push(() => { if (true) { mesh = other; } }); mesh.position.x = 1;`,
+            ),
+        /nested callback/,
+    );
 });

@@ -31,16 +31,28 @@
  * name rather than approximating.
  */
 import ts from "typescript";
-import { doubleLiteral, sanitizeCppIdentifier, snakeCase } from "../cpp-literals.js";
+import {
+    doubleLiteral,
+    sanitizeCppIdentifier,
+    snakeCase,
+} from "../cpp-literals.js";
 import type {
     FlowGraphAssetPrograms,
     FlowGraphBlock,
     FlowGraphProgram,
     FlowGraphSocket,
 } from "../pinned-flow-graph.js";
-import { type LoweredSource, LoweringContext, statementKind } from "./context.js";
+import {
+    type LoweredSource,
+    LoweringContext,
+    statementKind,
+} from "./context.js";
 import { CPP_RECORD, CPP_SCALAR } from "./cpp-types.js";
-import {lowerFlowGraphDisposal, lowerFlowGraphMembership, lowerGltfFlowGraphLifecycle} from "./gltf/flow-graph-lifecycle.js";
+import {
+    lowerFlowGraphDisposal,
+    lowerFlowGraphMembership,
+    lowerGltfFlowGraphLifecycle,
+} from "./gltf/flow-graph-lifecycle.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
@@ -158,7 +170,10 @@ interface Binding {
 type FgEnv = Env<Binding>;
 
 function isNullish(value: Val): boolean {
-    return value.k === "static" && (value.value === undefined || value.value === null);
+    return (
+        value.k === "static" &&
+        (value.value === undefined || value.value === null)
+    );
 }
 
 function staticBoolean(value: boolean): Val {
@@ -212,7 +227,9 @@ function shapeOfFgType(type: string): Shape | "int" | undefined {
 }
 
 /** A residual expression's shape, or the static value's. */
-function shapeOf(value: Val): Shape | "int" | "record" | "array" | "undefined" | "null" | "other" {
+function shapeOf(
+    value: Val,
+): Shape | "int" | "record" | "array" | "undefined" | "null" | "other" {
     switch (value.k) {
         case "residual":
             return value.shape;
@@ -237,8 +254,11 @@ function shapeOf(value: Val): Shape | "int" | "record" | "array" | "undefined" |
         }
         case "record": {
             const names = [...value.members.keys()].sort().join(",");
-            if (value.members.get("__fgInt")?.k === "static" &&
-                (value.members.get("__fgInt") as { value: unknown }).value === true) {
+            if (
+                value.members.get("__fgInt")?.k === "static" &&
+                (value.members.get("__fgInt") as { value: unknown }).value ===
+                    true
+            ) {
                 return "int";
             }
             if (names === "x,y") return "vec2";
@@ -261,9 +281,22 @@ function cppOfStatic(value: unknown, at: () => never): string {
         const record = value as Record<string, unknown>;
         const lanes = Object.keys(record).sort().join(",");
         const storage =
-            lanes === "x,y" ? "FlowGraphVec2" : lanes === "x,y,z" ? "FlowGraphVec3" : lanes === "w,x,y,z" ? "FlowGraphVec4" : undefined;
+            lanes === "x,y"
+                ? "FlowGraphVec2"
+                : lanes === "x,y,z"
+                  ? "FlowGraphVec3"
+                  : lanes === "w,x,y,z"
+                    ? "FlowGraphVec4"
+                    : undefined;
         if (storage) {
-            const names = VECTOR_LANES[storage === "FlowGraphVec2" ? "vec2" : storage === "FlowGraphVec3" ? "vec3" : "vec4"];
+            const names =
+                VECTOR_LANES[
+                    storage === "FlowGraphVec2"
+                        ? "vec2"
+                        : storage === "FlowGraphVec3"
+                          ? "vec3"
+                          : "vec4"
+                ];
             return `${storage}{${names.map((lane) => cppOfStatic(record[lane], at)).join(", ")}}`;
         }
     }
@@ -332,7 +365,9 @@ class GraphLowering {
         for (const block of program.blocks) {
             for (const socket of block.dataIn) {
                 if (socket.source) {
-                    this.consumed.add(`${socket.source.blockId}:${socket.source.socket}`);
+                    this.consumed.add(
+                        `${socket.source.blockId}:${socket.source.socket}`,
+                    );
                 }
             }
         }
@@ -351,14 +386,18 @@ class GraphLowering {
             const member = `var_${identifier(name)}`;
             const seed = variable.value;
             this.variables.set(name, { member, shape });
-            this.members.push(`${this.memberType(shape)} ${member} = ${this.memberInitializer(shape, seed)};`);
+            this.members.push(
+                `${this.memberType(shape)} ${member} = ${this.memberInitializer(shape, seed)};`,
+            );
         }
-        for (const pointer of Object.keys(this.program.accessors)) this.accessorFor(pointer);
+        for (const pointer of Object.keys(this.program.accessors))
+            this.accessorFor(pointer);
         for (const block of this.program.blocks) {
             this.owner.blockDefinition(block.type);
             if (block.event === undefined) continue;
             if (block.event === START_EVENT) this.startBlocks.push(block);
-            else if (block.event === POINTER_EVENT) this.pointerBlocks.push(block);
+            else if (block.event === POINTER_EVENT)
+                this.pointerBlocks.push(block);
             else {
                 throw new Error(
                     `The flow-graph lowering does not dispatch the '${block.event}' event ` +
@@ -380,9 +419,12 @@ class GraphLowering {
     private memberInitializer(shape: Shape | "int", seed: unknown): string {
         if (shape === "int") {
             const record = seed as { value?: unknown } | undefined;
-            return doubleLiteral(typeof record?.value === "number" ? record.value : 0);
+            return doubleLiteral(
+                typeof record?.value === "number" ? record.value : 0,
+            );
         }
-        if (shape === "number") return doubleLiteral(typeof seed === "number" ? seed : 0);
+        if (shape === "number")
+            return doubleLiteral(typeof seed === "number" ? seed : 0);
         if (shape === "boolean") return seed ? "true" : "false";
         return cppOfStatic(seed, () => {
             throw new Error(`A ${shape} variable seed must be a vector.`);
@@ -412,7 +454,9 @@ class GraphLowering {
     private resolvePointer(pointer: string): NativeAccessor | null {
         const accessor = this.program.accessors[pointer];
         if (accessor === undefined) {
-            throw new Error(`The parser resolved no accessor for the pointer ${pointer}.`);
+            throw new Error(
+                `The parser resolved no accessor for the pointer ${pointer}.`,
+            );
         }
         // The pin binds nothing: the block reads the type's default with
         // `isValid` false, and a set fires `error`.
@@ -427,7 +471,13 @@ class GraphLowering {
                     `touches ${members.join(", ") || "nothing"}).`,
             );
         };
-        if (!target || touches.some((touch) => touch.kind !== target.kind || touch.index !== target.index)) {
+        if (
+            !target ||
+            touches.some(
+                (touch) =>
+                    touch.kind !== target.kind || touch.index !== target.index,
+            )
+        ) {
             return refuse();
         }
         if (target.kind === "node") {
@@ -452,7 +502,13 @@ class GraphLowering {
                     },
                 };
             }
-            if (!members.includes("visible") || !members.every((member) => member === "visible" || member === "children.length")) {
+            if (
+                !members.includes("visible") ||
+                !members.every(
+                    (member) =>
+                        member === "visible" || member === "children.length",
+                )
+            ) {
                 return refuse();
             }
             return {
@@ -467,7 +523,9 @@ class GraphLowering {
                 ...(accessor.writable
                     ? {
                           set: (value: Val, emit: (line: string) => void) => {
-                              emit(`set_gltf_node_visible(host.engine, host.asset, ${node}u, ${this.booleanCpp(value)});`);
+                              emit(
+                                  `set_gltf_node_visible(host.engine, host.asset, ${node}u, ${this.booleanCpp(value)});`,
+                              );
                           },
                       }
                     : {}),
@@ -475,7 +533,9 @@ class GraphLowering {
         }
         if (shape !== "vec2") return refuse();
         const lanes = members.filter((member) => member !== "_uboVersion");
-        const [slot, ...otherSlots] = [...new Set(lanes.map((member) => member.split(".")[0]))];
+        const [slot, ...otherSlots] = [
+            ...new Set(lanes.map((member) => member.split(".")[0])),
+        ];
         if (slot === undefined || otherSlots.length > 0) return refuse();
         if (slot !== "baseColorTexture") {
             throw new Error(
@@ -484,7 +544,8 @@ class GraphLowering {
             );
         }
         const fields = new Set(lanes.map((member) => member.split(".")[1]));
-        const pair = (u: string, v: string): boolean => fields.size === 2 && fields.has(u) && fields.has(v);
+        const pair = (u: string, v: string): boolean =>
+            fields.size === 2 && fields.has(u) && fields.has(v);
         const native = pair("uOffset", "vOffset")
             ? ["u_offset", "v_offset"]
             : pair("uScale", "vScale")
@@ -498,8 +559,22 @@ class GraphLowering {
             get: () => ({
                 k: "record",
                 members: new Map<string, Val>([
-                    ["x", { k: "residual", cpp: `static_cast<double>(${transform}.${native[0]})`, shape: "number" }],
-                    ["y", { k: "residual", cpp: `static_cast<double>(${transform}.${native[1]})`, shape: "number" }],
+                    [
+                        "x",
+                        {
+                            k: "residual",
+                            cpp: `static_cast<double>(${transform}.${native[0]})`,
+                            shape: "number",
+                        },
+                    ],
+                    [
+                        "y",
+                        {
+                            k: "residual",
+                            cpp: `static_cast<double>(${transform}.${native[1]})`,
+                            shape: "number",
+                        },
+                    ],
                 ]),
             }),
             ...(accessor.writable
@@ -507,9 +582,15 @@ class GraphLowering {
                       set: (value: Val, emit: (line: string) => void) => {
                           const [x, y] = this.vec2Lanes(value);
                           emit(`{`);
-                          emit(`    TextureTransform& transform = ${transform};`);
-                          emit(`    transform.${native[0]} = static_cast<float>(${x});`);
-                          emit(`    transform.${native[1]} = static_cast<float>(${y});`);
+                          emit(
+                              `    TextureTransform& transform = ${transform};`,
+                          );
+                          emit(
+                              `    transform.${native[0]} = static_cast<float>(${x});`,
+                          );
+                          emit(
+                              `    transform.${native[1]} = static_cast<float>(${y});`,
+                          );
                           emit(`}`);
                       },
                   }
@@ -529,14 +610,18 @@ class GraphLowering {
 
     public booleanCpp(value: Val): string {
         if (value.k === "static") return value.value ? "true" : "false";
-        if (value.k === "residual" && value.shape === "boolean") return value.cpp;
+        if (value.k === "residual" && value.shape === "boolean")
+            return value.cpp;
         throw new Error("A boolean accessor write takes a boolean.");
     }
 
     public numberCpp(value: Val): string {
-        if (value.k === "static" && typeof value.value === "number") return doubleLiteral(value.value);
-        if (value.k === "residual" && value.shape === "number") return value.cpp;
-        if (value.k === "record" && shapeOf(value) === "int") return this.numberCpp(value.members.get("value")!);
+        if (value.k === "static" && typeof value.value === "number")
+            return doubleLiteral(value.value);
+        if (value.k === "residual" && value.shape === "number")
+            return value.cpp;
+        if (value.k === "record" && shapeOf(value) === "int")
+            return this.numberCpp(value.members.get("value")!);
         throw new Error("Expected a number.");
     }
 
@@ -567,12 +652,20 @@ class GraphLowering {
         const block = this.block(id);
         const definition = this.owner.blockDefinition(block.type);
         if (!definition.updateOutputs) {
-            throw new Error(`Block '${id}' (${block.type}) has no updateOutputs and is pulled from.`);
+            throw new Error(
+                `Block '${id}' (${block.type}) has no updateOutputs and is pulled from.`,
+            );
         }
         const name = this.functionName("update", id);
         this.lowered.set(key, name);
         const emitter = new Emitter();
-        this.runBlockMethod(definition, "updateOutputs", block, emitter, undefined);
+        this.runBlockMethod(
+            definition,
+            "updateOutputs",
+            block,
+            emitter,
+            undefined,
+        );
         this.functions.push({
             name,
             signature: `void ${name}([[maybe_unused]] State& state, [[maybe_unused]] FlowGraphHost& host)`,
@@ -594,7 +687,9 @@ class GraphLowering {
         const block = this.block(id);
         const definition = this.owner.blockDefinition(block.type);
         if (!definition.execute) {
-            throw new Error(`Block '${id}' (${block.type}) has no execute and is signalled.`);
+            throw new Error(
+                `Block '${id}' (${block.type}) has no execute and is signalled.`,
+            );
         }
         const name = this.functionName("execute", id);
         // Flow edges may cycle (a loop is a signal cascade); the prototype
@@ -628,8 +723,22 @@ class GraphLowering {
             return {
                 k: "record",
                 members: new Map<string, Val>([
-                    ["nodeIndex", { k: "residual", cpp: "payload.node_index", shape: "number" }],
-                    ["controllerIndex", { k: "residual", cpp: "payload.controller_index", shape: "number" }],
+                    [
+                        "nodeIndex",
+                        {
+                            k: "residual",
+                            cpp: "payload.node_index",
+                            shape: "number",
+                        },
+                    ],
+                    [
+                        "controllerIndex",
+                        {
+                            k: "residual",
+                            cpp: "payload.controller_index",
+                            shape: "number",
+                        },
+                    ],
                     ["event", { k: "static", value: POINTER_EVENT_REFERENCE }],
                 ]),
             };
@@ -647,7 +756,9 @@ class GraphLowering {
         const declaration = definition[method]!;
         const interpreter = new Interpreter(this, this.context, emitter);
         const env: FgEnv = new Env(interpreter.moduleEnv(definition.module));
-        const params = declaration.parameters.map((parameter) => parameter.name.getText(definition.file));
+        const params = declaration.parameters.map((parameter) =>
+            parameter.name.getText(definition.file),
+        );
         const values: Val[] = [
             { k: "static", value: block },
             { k: "opaque", tag: "ctx", data: { block, payload } },
@@ -655,7 +766,10 @@ class GraphLowering {
             { k: "opaque", tag: "incoming-signal" },
         ];
         params.forEach((name, index) =>
-            env.declare(name, { value: values[index] ?? STATIC_UNDEFINED, mutable: false }),
+            env.declare(name, {
+                value: values[index] ?? STATIC_UNDEFINED,
+                mutable: false,
+            }),
         );
         const thisValue: Val = { k: "opaque", tag: "def", data: definition };
         const completion = interpreter.statements(
@@ -667,7 +781,10 @@ class GraphLowering {
             "emit",
         );
         if (completion.kind === "break") {
-            this.context.contractError(declaration, "A block body broke out of nothing.");
+            this.context.contractError(
+                declaration,
+                "A block body broke out of nothing.",
+            );
         }
     }
 
@@ -678,8 +795,15 @@ class GraphLowering {
      * runs, its transport slot is read, and the value is coerced to the
      * socket's type -- or the socket default where nothing is wired.
      */
-    public pull(block: FlowGraphBlock, socket: string, interpreter: Interpreter, emitter: Emitter): Val {
-        const input = block.dataIn.find((candidate) => candidate.name === socket);
+    public pull(
+        block: FlowGraphBlock,
+        socket: string,
+        interpreter: Interpreter,
+        emitter: Emitter,
+    ): Val {
+        const input = block.dataIn.find(
+            (candidate) => candidate.name === socket,
+        );
         if (!input) return STATIC_UNDEFINED;
         let raw: Val;
         if (input.source) {
@@ -696,24 +820,32 @@ class GraphLowering {
                 emitter.emit(`${update}(state, host);`);
                 const key = `${producerId}:${input.source.socket}`;
                 const slot = this.slots.get(key);
-                raw = slot?.stored ? this.readSlot(slot) : this.socketDefault(input, interpreter);
+                raw = slot?.stored
+                    ? this.readSlot(slot)
+                    : this.socketDefault(input, interpreter);
             }
         } else {
             raw = this.socketDefault(input, interpreter);
         }
-        return interpreter.callPinned("src/flow-graph/rich-type.ts", "coerceValue", [
-            raw,
-            { k: "static", value: input.type },
-        ]);
+        return interpreter.callPinned(
+            "src/flow-graph/rich-type.ts",
+            "coerceValue",
+            [raw, { k: "static", value: input.type }],
+        );
     }
 
-    private socketDefault(input: FlowGraphSocket, interpreter: Interpreter): Val {
+    private socketDefault(
+        input: FlowGraphSocket,
+        interpreter: Interpreter,
+    ): Val {
         if (input.defaultValue !== undefined && input.defaultValue !== null) {
             return { k: "static", value: input.defaultValue };
         }
-        return interpreter.callPinned("src/flow-graph/rich-type.ts", "defaultForType", [
-            { k: "static", value: input.type },
-        ]);
+        return interpreter.callPinned(
+            "src/flow-graph/rich-type.ts",
+            "defaultForType",
+            [{ k: "static", value: input.type }],
+        );
     }
 
     private readSlot(slot: SlotState): Val {
@@ -730,13 +862,21 @@ class GraphLowering {
                 ]),
             };
         }
-        if (slot.shape === "vec2" || slot.shape === "vec3" || slot.shape === "vec4") {
+        if (
+            slot.shape === "vec2" ||
+            slot.shape === "vec3" ||
+            slot.shape === "vec4"
+        ) {
             return {
                 k: "record",
                 members: new Map(
                     VECTOR_LANES[slot.shape].map((lane): [string, Val] => [
                         lane,
-                        { k: "residual", cpp: `${cpp}.${lane}`, shape: "number" },
+                        {
+                            k: "residual",
+                            cpp: `${cpp}.${lane}`,
+                            shape: "number",
+                        },
                     ]),
                 ),
             };
@@ -745,24 +885,50 @@ class GraphLowering {
     }
 
     /** `setDataValue(ctx, block, socket, value)`: the transport slot write. */
-    public store(block: FlowGraphBlock, socket: string, value: Val, emitter: Emitter): void {
+    public store(
+        block: FlowGraphBlock,
+        socket: string,
+        value: Val,
+        emitter: Emitter,
+    ): void {
         const key = `${block.id}:${socket}`;
         if (!this.consumed.has(key)) return;
         const shape = shapeOf(value);
         let slot = this.slots.get(key);
-        if (value.k === "static" && (shape === "number" || shape === "boolean" || shape === "string" || shape === "int" || shape === "vec2" || shape === "vec3" || shape === "vec4")) {
+        if (
+            value.k === "static" &&
+            (shape === "number" ||
+                shape === "boolean" ||
+                shape === "string" ||
+                shape === "int" ||
+                shape === "vec2" ||
+                shape === "vec3" ||
+                shape === "vec4")
+        ) {
             if (slot && slot.staticValue !== value.value) {
                 throw new Error(
                     `Block ${block.id} writes '${socket}' with different values on different paths.`,
                 );
             }
             if (!slot) {
-                slot = { member: "", shape: shape === "int" ? "int" : shape, staticValue: value.value, stored: true };
+                slot = {
+                    member: "",
+                    shape: shape === "int" ? "int" : shape,
+                    staticValue: value.value,
+                    stored: true,
+                };
                 this.slots.set(key, slot);
             }
             return;
         }
-        if (shape !== "number" && shape !== "boolean" && shape !== "int" && shape !== "vec2" && shape !== "vec3" && shape !== "vec4") {
+        if (
+            shape !== "number" &&
+            shape !== "boolean" &&
+            shape !== "int" &&
+            shape !== "vec2" &&
+            shape !== "vec3" &&
+            shape !== "vec4"
+        ) {
             throw new Error(
                 `Block ${block.id} writes a ${shape} into '${socket}', which this port does not transport.`,
             );
@@ -785,36 +951,59 @@ class GraphLowering {
         if (shape === "number") return this.numberCpp(value);
         if (shape === "boolean") return this.booleanCpp(value);
         if (shape === "vec2" || shape === "vec3" || shape === "vec4") {
-            const lanes = VECTOR_LANES[shape].map((lane) => this.numberCpp(this.member(value, lane)));
+            const lanes = VECTOR_LANES[shape].map((lane) =>
+                this.numberCpp(this.member(value, lane)),
+            );
             return `${SHAPE_CPP[shape]}{${lanes.join(", ")}}`;
         }
         throw new Error(`No storage for a ${shape}.`);
     }
 
     public member(value: Val, name: string): Val {
-        if (value.k === "record") return value.members.get(name) ?? STATIC_UNDEFINED;
+        if (value.k === "record")
+            return value.members.get(name) ?? STATIC_UNDEFINED;
         if (value.k === "static") {
             const raw = value.value;
-            if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-                return { k: "static", value: (raw as Record<string, unknown>)[name] };
+            if (
+                typeof raw === "object" &&
+                raw !== null &&
+                !Array.isArray(raw)
+            ) {
+                return {
+                    k: "static",
+                    value: (raw as Record<string, unknown>)[name],
+                };
             }
-            if (Array.isArray(raw) && name === "length") return staticNumber(raw.length);
+            if (Array.isArray(raw) && name === "length")
+                return staticNumber(raw.length);
             return STATIC_UNDEFINED;
         }
-        if (value.k === "residual" && (value.shape === "vec2" || value.shape === "vec3" || value.shape === "vec4")) {
+        if (
+            value.k === "residual" &&
+            (value.shape === "vec2" ||
+                value.shape === "vec3" ||
+                value.shape === "vec4")
+        ) {
             if (VECTOR_LANES[value.shape].includes(name)) {
-                return { k: "residual", cpp: `${value.cpp}.${name}`, shape: "number" };
+                return {
+                    k: "residual",
+                    cpp: `${value.cpp}.${name}`,
+                    shape: "number",
+                };
             }
             return STATIC_UNDEFINED;
         }
-        if (value.k === "array" && name === "length") return staticNumber(value.elements.length);
+        if (value.k === "array" && name === "length")
+            return staticNumber(value.elements.length);
         if (value.k === "residual") return STATIC_UNDEFINED;
         throw new Error(`No member '${name}' on a ${value.k}.`);
     }
 
     /** `activateSignal(ctx, env, block, socket)`: each target's `execute`. */
     public push(block: FlowGraphBlock, socket: string, emitter: Emitter): void {
-        const output = block.signalOut.find((candidate) => candidate.name === socket);
+        const output = block.signalOut.find(
+            (candidate) => candidate.name === socket,
+        );
         if (!output) return;
         for (const target of output.targets) {
             const targetBlock = this.blocks.get(target.blockId);
@@ -826,7 +1015,9 @@ class GraphLowering {
             }
             const execute = this.ensureExecute(target.blockId);
             if (this.isPointerBlock(targetBlock)) {
-                throw new Error(`Block ${block.id} signals the event block ${target.blockId}.`);
+                throw new Error(
+                    `Block ${block.id} signals the event block ${target.blockId}.`,
+                );
             }
             emitter.emit(`${execute}(state, host);`);
         }
@@ -835,7 +1026,8 @@ class GraphLowering {
     /** `ctx.userVariables[name]` as a read. */
     public readVariable(name: string): Val {
         const variable = this.variables.get(name);
-        if (!variable) throw new Error(`The flow graph declares no variable '${name}'.`);
+        if (!variable)
+            throw new Error(`The flow graph declares no variable '${name}'.`);
         const cpp = `state.${variable.member}`;
         if (variable.shape === "int") {
             return {
@@ -846,13 +1038,21 @@ class GraphLowering {
                 ]),
             };
         }
-        if (variable.shape === "vec2" || variable.shape === "vec3" || variable.shape === "vec4") {
+        if (
+            variable.shape === "vec2" ||
+            variable.shape === "vec3" ||
+            variable.shape === "vec4"
+        ) {
             return {
                 k: "record",
                 members: new Map(
                     VECTOR_LANES[variable.shape].map((lane): [string, Val] => [
                         lane,
-                        { k: "residual", cpp: `${cpp}.${lane}`, shape: "number" },
+                        {
+                            k: "residual",
+                            cpp: `${cpp}.${lane}`,
+                            shape: "number",
+                        },
                     ]),
                 ),
             };
@@ -863,8 +1063,11 @@ class GraphLowering {
     /** `ctx.userVariables[name] = value`. */
     public writeVariable(name: string, value: Val, emitter: Emitter): void {
         const variable = this.variables.get(name);
-        if (!variable) throw new Error(`The flow graph declares no variable '${name}'.`);
-        emitter.emit(`state.${variable.member} = ${this.storeCpp(value, variable.shape)};`);
+        if (!variable)
+            throw new Error(`The flow graph declares no variable '${name}'.`);
+        emitter.emit(
+            `state.${variable.member} = ${this.storeCpp(value, variable.shape)};`,
+        );
     }
 
     // ── Emission ──────────────────────────────────────────────────────────
@@ -875,13 +1078,16 @@ class GraphLowering {
             (fn) => `${fn.signature} {\n${fn.lines.join("\n")}\n}`,
         );
         const startCalls = this.startBlocks.map(
-            (block) => `        ${this.functionName("execute", block.id)}(state, host);`,
+            (block) =>
+                `        ${this.functionName("execute", block.id)}(state, host);`,
         );
         const pointerCalls = this.pointerBlocks.map(
-            (block) => `        ${this.functionName("execute", block.id)}(state, host, payload);`,
+            (block) =>
+                `        ${this.functionName("execute", block.id)}(state, host, payload);`,
         );
         const selectableCases = [...this.selectableNodes].map(
-            ([node, member]) => `            case ${node}u: return state.${member};`,
+            ([node, member]) =>
+                `            case ${node}u: return state.${member};`,
         );
         return `namespace ${this.namespace} {
 
@@ -916,13 +1122,20 @@ ${pointerCalls.length > 0 ? pointerCalls.join("\n") : "        // No event/onSel
     }
 
     void dispose() override {
-${lowerFlowGraphDisposal(this.context, [...this.slots.values()].filter(slot => slot.member).map(slot => slot.member))}
+${lowerFlowGraphDisposal(
+    this.context,
+    [...this.slots.values()]
+        .filter((slot) => slot.member)
+        .map((slot) => slot.member),
+)}
     }
 
     bool node_selectable([[maybe_unused]] std::size_t node_index) const override {
-${selectableCases.length > 0
-            ? `        switch (node_index) {\n${selectableCases.join("\n")}\n            default: return true;\n        }`
-            : "        return true;"}
+${
+    selectableCases.length > 0
+        ? `        switch (node_index) {\n${selectableCases.join("\n")}\n            default: return true;\n        }`
+        : "        return true;"
+}
     }
 };
 
@@ -967,7 +1180,13 @@ class Interpreter implements ValueModel<Val, Binding> {
         thisValue: Val | undefined,
         mode: "emit" | "inline",
     ): Completion<Val> {
-        return this.evaluator.statements(list, { env, file, module, thisValue, mode });
+        return this.evaluator.statements(list, {
+            env,
+            file,
+            module,
+            thisValue,
+            mode,
+        });
     }
 
     /** A pinned function called by name, from outside a body. */
@@ -989,15 +1208,25 @@ class Interpreter implements ValueModel<Val, Binding> {
                 return {
                     k: "residual",
                     typeofName:
-                        value.shape === "boolean" || value.shape === "number" || value.shape === "string"
+                        value.shape === "boolean" ||
+                        value.shape === "number" ||
+                        value.shape === "string"
                             ? value.shape
                             : "object",
                     truthiness: (at) => {
-                        if (value.shape === "boolean") return { k: "residual", cpp: value.cpp };
+                        if (value.shape === "boolean")
+                            return { k: "residual", cpp: value.cpp };
                         if (value.shape === "number") {
-                            return { k: "residual", cpp: `(${value.cpp} != 0.0 && !std::isnan(${value.cpp}))` };
+                            return {
+                                k: "residual",
+                                cpp: `(${value.cpp} != 0.0 && !std::isnan(${value.cpp}))`,
+                            };
                         }
-                        if (value.shape === "string") return this.fail(at, "truthiness of a run-time string");
+                        if (value.shape === "string")
+                            return this.fail(
+                                at,
+                                "truthiness of a run-time string",
+                            );
                         return { k: "static", value: true };
                     },
                 };
@@ -1023,8 +1252,13 @@ class Interpreter implements ValueModel<Val, Binding> {
         return binding.value;
     }
 
-    public assign(binding: Binding | undefined, value: Val, target: ts.Identifier): void {
-        if (!binding?.mutable) this.fail(target, "assignment to a non-let binding");
+    public assign(
+        binding: Binding | undefined,
+        value: Val,
+        target: ts.Identifier,
+    ): void {
+        if (!binding?.mutable)
+            this.fail(target, "assignment to a non-let binding");
         binding.value = value;
     }
 
@@ -1050,16 +1284,36 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     public functionValue(fn: PinnedDeclaration): Val {
-        return { k: "function", declaration: fn.declaration, file: fn.file, module: fn.module };
+        return {
+            k: "function",
+            declaration: fn.declaration,
+            file: fn.file,
+            module: fn.module,
+        };
     }
 
-    public closure(node: ts.ArrowFunction | ts.FunctionExpression, frame: Frame<Val, Binding>): Val {
-        return { k: "closure", node, env: frame.env, file: frame.file, module: frame.module };
+    public closure(
+        node: ts.ArrowFunction | ts.FunctionExpression,
+        frame: Frame<Val, Binding>,
+    ): Val {
+        return {
+            k: "closure",
+            node,
+            env: frame.env,
+            file: frame.file,
+            module: frame.module,
+        };
     }
 
     public callable(value: Val): Callable<Val, Binding> | undefined {
         if (value.k === "closure") {
-            return { k: "closure", node: value.node, env: value.env, file: value.file, module: value.module };
+            return {
+                k: "closure",
+                node: value.node,
+                env: value.env,
+                file: value.file,
+                module: value.module,
+            };
         }
         if (value.k === "function") {
             return {
@@ -1074,7 +1328,10 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     public record(entries: readonly RecordEntry<Val>[]): Val {
-        return { k: "record", members: new Map(entries.map((entry) => [entry.name, entry.value])) };
+        return {
+            k: "record",
+            members: new Map(entries.map((entry) => [entry.name, entry.value])),
+        };
     }
 
     public refuse(node: ts.Node, what: string): never {
@@ -1086,9 +1343,13 @@ class Interpreter implements ValueModel<Val, Binding> {
         frame: Frame<Val, Binding>,
         evaluator: PartialEvaluator<Val, Binding>,
     ): Val | undefined {
-        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword
+        ) {
             const left = evaluator.expression(node.left, frame);
-            if (shapeOf(left) === "other") this.fail(node, "instanceof over an unknown value");
+            if (shapeOf(left) === "other")
+                this.fail(node, "instanceof over an unknown value");
             return staticBoolean(false);
         }
         return undefined;
@@ -1103,13 +1364,25 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     public negate(operand: Val): Val {
-        return { k: "residual", cpp: `(-${this.graph.numberCpp(operand)})`, shape: "number" };
+        return {
+            k: "residual",
+            cpp: `(-${this.graph.numberCpp(operand)})`,
+            shape: "number",
+        };
     }
 
-    public hasMember(owner: Val, name: string, at: ts.Node): boolean | undefined {
+    public hasMember(
+        owner: Val,
+        name: string,
+        at: ts.Node,
+    ): boolean | undefined {
         if (owner.k === "record") return owner.members.has(name);
         if (owner.k === "residual") {
-            if (owner.shape === "vec2" || owner.shape === "vec3" || owner.shape === "vec4") {
+            if (
+                owner.shape === "vec2" ||
+                owner.shape === "vec3" ||
+                owner.shape === "vec4"
+            ) {
                 return VECTOR_LANES[owner.shape].includes(name);
             }
             return this.fail(at, "in over a run-time scalar");
@@ -1117,7 +1390,12 @@ class Interpreter implements ValueModel<Val, Binding> {
         return undefined;
     }
 
-    public equality(left: Val, right: Val, equal: boolean, node: ts.BinaryExpression): Val {
+    public equality(
+        left: Val,
+        right: Val,
+        equal: boolean,
+        node: ts.BinaryExpression,
+    ): Val {
         // A residual is never nullish, and only scalars compare by
         // value; a residual against a static of another kind is a
         // question about kinds the shapes already answer.
@@ -1132,17 +1410,40 @@ class Interpreter implements ValueModel<Val, Binding> {
         return this.fail(node, `equality over ${leftShape}`);
     }
 
-    public binary(kind: ts.SyntaxKind, left: Val, right: Val, node: ts.BinaryExpression): Val {
+    public binary(
+        kind: ts.SyntaxKind,
+        left: Val,
+        right: Val,
+        node: ts.BinaryExpression,
+    ): Val {
         const a = this.graph.numberCpp(left);
         const b = this.graph.numberCpp(right);
         const operator = PINNED_ARITHMETIC_OPERATORS.get(kind);
-        if (operator) return { k: "residual", cpp: `(${a} ${operator} ${b})`, shape: "number" };
+        if (operator)
+            return {
+                k: "residual",
+                cpp: `(${a} ${operator} ${b})`,
+                shape: "number",
+            };
         const compare = PINNED_RELATIONAL_OPERATORS.get(kind);
-        if (compare) return { k: "residual", cpp: `(${a} ${compare} ${b})`, shape: "boolean" };
+        if (compare)
+            return {
+                k: "residual",
+                cpp: `(${a} ${compare} ${b})`,
+                shape: "boolean",
+            };
         if (kind === ts.SyntaxKind.PercentToken) {
-            return { k: "residual", cpp: pinnedRemainderCall(a, b), shape: "number" };
+            return {
+                k: "residual",
+                cpp: pinnedRemainderCall(a, b),
+                shape: "number",
+            };
         }
-        if (kind === ts.SyntaxKind.BarToken && right.k === "static" && right.value === 0) {
+        if (
+            kind === ts.SyntaxKind.BarToken &&
+            right.k === "static" &&
+            right.value === 0
+        ) {
             return {
                 k: "residual",
                 cpp: `static_cast<double>(static_cast<std::int32_t>(${a}))`,
@@ -1152,7 +1453,9 @@ class Interpreter implements ValueModel<Val, Binding> {
         return this.fail(node, "binary operator");
     }
 
-    public readonly residual: NonNullable<ValueModel<Val, Binding>["residual"]> = {
+    public readonly residual: NonNullable<
+        ValueModel<Val, Binding>["residual"]
+    > = {
         not: (cpp) => ({ k: "residual", cpp: `(!${cpp})`, shape: "boolean" }),
         select: (cpp, whenTrue, whenFalse, at) => {
             const shape = this.commonShape(whenTrue, whenFalse, at);
@@ -1165,20 +1468,38 @@ class Interpreter implements ValueModel<Val, Binding> {
         join: (or, leftCpp, left, right, node) => {
             const rightKnown = this.evaluator.truthiness(right, node.right);
             if (shapeOf(left) !== "boolean" || shapeOf(right) !== "boolean") {
-                this.fail(node, "value-selecting boolean join over run-time operands");
+                this.fail(
+                    node,
+                    "value-selecting boolean join over run-time operands",
+                );
             }
-            const rightCpp = rightKnown.k === "static" ? (rightKnown.value ? "true" : "false") : rightKnown.cpp;
-            return { k: "residual", cpp: `(${leftCpp} ${or ? "||" : "&&"} ${rightCpp})`, shape: "boolean" };
+            const rightCpp =
+                rightKnown.k === "static"
+                    ? rightKnown.value
+                        ? "true"
+                        : "false"
+                    : rightKnown.cpp;
+            return {
+                k: "residual",
+                cpp: `(${leftCpp} ${or ? "||" : "&&"} ${rightCpp})`,
+                shape: "boolean",
+            };
         },
         ifStatement: (cpp, statement, branch) => {
             this.emitter.emit(`if (${cpp}) {`);
             this.emitter.indent += "    ";
-            this.emitBranchCompletion(branch(statement.thenStatement), statement);
+            this.emitBranchCompletion(
+                branch(statement.thenStatement),
+                statement,
+            );
             this.emitter.indent = this.emitter.indent.slice(4);
             if (statement.elseStatement) {
                 this.emitter.emit("} else {");
                 this.emitter.indent += "    ";
-                this.emitBranchCompletion(branch(statement.elseStatement), statement);
+                this.emitBranchCompletion(
+                    branch(statement.elseStatement),
+                    statement,
+                );
                 this.emitter.indent = this.emitter.indent.slice(4);
             }
             this.emitter.emit("}");
@@ -1187,9 +1508,15 @@ class Interpreter implements ValueModel<Val, Binding> {
     };
 
     /** A run-time branch may leave the block function, but not with a value. */
-    private emitBranchCompletion(completion: Completion<Val>, statement: ts.IfStatement): void {
+    private emitBranchCompletion(
+        completion: Completion<Val>,
+        statement: ts.IfStatement,
+    ): void {
         if (completion.kind === "return") {
-            if (completion.value.k !== "static" || completion.value.value !== undefined) {
+            if (
+                completion.value.k !== "static" ||
+                completion.value.value !== undefined
+            ) {
                 this.fail(statement, "value return inside a run-time branch");
             }
             this.emitter.emit("return;");
@@ -1202,7 +1529,8 @@ class Interpreter implements ValueModel<Val, Binding> {
         const shapes = new Set([shapeOf(left), shapeOf(right)]);
         if (shapes.size === 1) {
             const [shape] = shapes;
-            if (shape === "number" || shape === "boolean" || shape === "string") return shape;
+            if (shape === "number" || shape === "boolean" || shape === "string")
+                return shape;
         }
         return this.fail(at, `conditional over ${[...shapes].join(" and ")}`);
     }
@@ -1210,7 +1538,10 @@ class Interpreter implements ValueModel<Val, Binding> {
     private renderShape(value: Val, shape: Shape): string {
         if (shape === "number") return this.graph.numberCpp(value);
         if (shape === "boolean") return this.graph.booleanCpp(value);
-        if (value.k === "static") return cppOfStatic(value.value, () => { throw new Error("Unrenderable static."); });
+        if (value.k === "static")
+            return cppOfStatic(value.value, () => {
+                throw new Error("Unrenderable static.");
+            });
         if (value.k === "residual") return value.cpp;
         throw new Error(`Cannot render a ${value.k} as ${shape}.`);
     }
@@ -1219,7 +1550,8 @@ class Interpreter implements ValueModel<Val, Binding> {
         if (owner.k === "opaque") {
             switch (owner.tag) {
                 case "ctx":
-                    if (name === "userVariables") return { k: "opaque", tag: "user-vars" };
+                    if (name === "userVariables")
+                        return { k: "opaque", tag: "user-vars" };
                     // No admitted block type registers a pending task, so
                     // the list the pin scans for interpolations is empty.
                     if (name === "pending") return { k: "static", value: [] };
@@ -1227,14 +1559,25 @@ class Interpreter implements ValueModel<Val, Binding> {
                     return this.fail(at, `read of ctx.${name}`);
                 case "accessor": {
                     const accessor = owner.data as NativeAccessor;
-                    if (name === "type") return { k: "static", value: accessor.type };
-                    if (name === "get") return { k: "opaque", tag: "accessor-get", data: accessor };
+                    if (name === "type")
+                        return { k: "static", value: accessor.type };
+                    if (name === "get")
+                        return {
+                            k: "opaque",
+                            tag: "accessor-get",
+                            data: accessor,
+                        };
                     if (name === "set") {
                         return accessor.set
-                            ? { k: "opaque", tag: "accessor-set", data: accessor }
+                            ? {
+                                  k: "opaque",
+                                  tag: "accessor-set",
+                                  data: accessor,
+                              }
                             : STATIC_UNDEFINED;
                     }
-                    if (name === "target") return this.fail(at, "read of an accessor target");
+                    if (name === "target")
+                        return this.fail(at, "read of an accessor target");
                     return STATIC_UNDEFINED;
                 }
                 case "def": {
@@ -1242,9 +1585,16 @@ class Interpreter implements ValueModel<Val, Binding> {
                     if (name === "updateOutputs" || name === "execute") {
                         const declaration = definition[name];
                         if (!declaration) return STATIC_UNDEFINED;
-                        return { k: "function", declaration, file: definition.file, module: definition.module, thisValue: owner };
+                        return {
+                            k: "function",
+                            declaration,
+                            file: definition.file,
+                            module: definition.module,
+                            thisValue: owner,
+                        };
                     }
-                    if (name === "type") return { k: "static", value: definition.type };
+                    if (name === "type")
+                        return { k: "static", value: definition.type };
                     return this.fail(at, `read of def.${name}`);
                 }
                 case "math":
@@ -1257,7 +1607,8 @@ class Interpreter implements ValueModel<Val, Binding> {
                     return this.fail(at, `read of ${owner.tag}.${name}`);
             }
         }
-        if (owner.k === "closure" || owner.k === "function") this.fail(at, "member of a function");
+        if (owner.k === "closure" || owner.k === "function")
+            this.fail(at, "member of a function");
         return this.graph.member(owner, name);
     }
 
@@ -1268,18 +1619,25 @@ class Interpreter implements ValueModel<Val, Binding> {
             }
             return this.graph.readVariable(index.value);
         }
-        if (index.k !== "static") this.fail(at, "element access by a run-time index");
+        if (index.k !== "static")
+            this.fail(at, "element access by a run-time index");
         const key = index.value;
         if (owner.k === "static") {
             const raw = owner.value;
-            if (Array.isArray(raw) && typeof key === "number") return { k: "static", value: raw[key] };
+            if (Array.isArray(raw) && typeof key === "number")
+                return { k: "static", value: raw[key] };
             if (typeof raw === "object" && raw !== null) {
-                return { k: "static", value: (raw as Record<string, unknown>)[String(key)] };
+                return {
+                    k: "static",
+                    value: (raw as Record<string, unknown>)[String(key)],
+                };
             }
             return STATIC_UNDEFINED;
         }
-        if (owner.k === "array" && typeof key === "number") return owner.elements[key] ?? STATIC_UNDEFINED;
-        if (owner.k === "record") return owner.members.get(String(key)) ?? STATIC_UNDEFINED;
+        if (owner.k === "array" && typeof key === "number")
+            return owner.elements[key] ?? STATIC_UNDEFINED;
+        if (owner.k === "record")
+            return owner.members.get(String(key)) ?? STATIC_UNDEFINED;
         return this.fail(at, "element access");
     }
 
@@ -1291,7 +1649,10 @@ class Interpreter implements ValueModel<Val, Binding> {
     ): Val | undefined {
         if (ts.isElementAccessExpression(target)) {
             const owner = evaluator.expression(target.expression, frame);
-            const index = evaluator.expression(target.argumentExpression, frame);
+            const index = evaluator.expression(
+                target.argumentExpression,
+                frame,
+            );
             if (owner.k === "opaque" && owner.tag === "user-vars") {
                 if (index.k !== "static" || typeof index.value !== "string") {
                     this.fail(target, "variable write by a run-time name");
@@ -1321,18 +1682,35 @@ class Interpreter implements ValueModel<Val, Binding> {
             if (value.k === "static") {
                 const raw = value.value;
                 if (method === "isNaN") return staticBoolean(Number.isNaN(raw));
-                if (method === "isFinite") return staticBoolean(Number.isFinite(raw));
-                if (method === "isInteger") return staticBoolean(Number.isInteger(raw));
+                if (method === "isFinite")
+                    return staticBoolean(Number.isFinite(raw));
+                if (method === "isInteger")
+                    return staticBoolean(Number.isInteger(raw));
             } else if (value.k === "residual" && value.shape === "number") {
-                if (method === "isNaN") return { k: "residual", cpp: `std::isnan(${value.cpp})`, shape: "boolean" };
-                if (method === "isFinite") return { k: "residual", cpp: `std::isfinite(${value.cpp})`, shape: "boolean" };
+                if (method === "isNaN")
+                    return {
+                        k: "residual",
+                        cpp: `std::isnan(${value.cpp})`,
+                        shape: "boolean",
+                    };
+                if (method === "isFinite")
+                    return {
+                        k: "residual",
+                        cpp: `std::isfinite(${value.cpp})`,
+                        shape: "boolean",
+                    };
             }
             return this.fail(node, `Number.${method}`);
         }
         if (owner.k === "opaque" && owner.tag === "array-ctor") {
             if (method === "isArray") {
                 const [value] = args();
-                return staticBoolean(value !== undefined && (value.k === "array" || (value.k === "static" && Array.isArray(value.value))));
+                return staticBoolean(
+                    value !== undefined &&
+                        (value.k === "array" ||
+                            (value.k === "static" &&
+                                Array.isArray(value.value))),
+                );
             }
             return this.fail(node, `Array.${method}`);
         }
@@ -1340,17 +1718,36 @@ class Interpreter implements ValueModel<Val, Binding> {
             return (owner.data as NativeAccessor).get();
         }
         if (owner.k === "static" && Array.isArray(owner.value)) {
-            return this.arrayMethod(owner.value.map((element): Val => ({ k: "static", value: element })), method, args(), node, frame);
+            return this.arrayMethod(
+                owner.value.map((element): Val => ({
+                    k: "static",
+                    value: element,
+                })),
+                method,
+                args(),
+                node,
+                frame,
+            );
         }
         if (owner.k === "array") {
-            return this.arrayMethod(owner.elements, method, args(), node, frame);
+            return this.arrayMethod(
+                owner.elements,
+                method,
+                args(),
+                node,
+                frame,
+            );
         }
         if (owner.k === "record") {
             const member = owner.members.get(method);
-            if (member?.k === "opaque" && member.tag === "accessor-get") return (member.data as NativeAccessor).get();
+            if (member?.k === "opaque" && member.tag === "accessor-get")
+                return (member.data as NativeAccessor).get();
             if (member?.k === "opaque" && member.tag === "accessor-set") {
                 const [value] = args();
-                (member.data as NativeAccessor).set!(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
+                (member.data as NativeAccessor).set!(
+                    value ?? STATIC_UNDEFINED,
+                    (line) => this.emitter.emit(line),
+                );
                 return STATIC_UNDEFINED;
             }
         }
@@ -1358,9 +1755,12 @@ class Interpreter implements ValueModel<Val, Binding> {
             const accessor = owner.data as NativeAccessor;
             if (method === "get") return accessor.get();
             if (method === "set") {
-                if (!accessor.set) this.fail(node, "set on a read-only accessor");
+                if (!accessor.set)
+                    this.fail(node, "set on a read-only accessor");
                 const [value] = args();
-                accessor.set(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
+                accessor.set(value ?? STATIC_UNDEFINED, (line) =>
+                    this.emitter.emit(line),
+                );
                 return STATIC_UNDEFINED;
             }
         }
@@ -1375,9 +1775,16 @@ class Interpreter implements ValueModel<Val, Binding> {
         frame: Frame<Val, Binding>,
     ): Val {
         const predicate = (element: Val, index: number): boolean => {
-            const result = this.evaluator.invoke(args[0]!, [element, staticNumber(index)], node, frame, method);
+            const result = this.evaluator.invoke(
+                args[0]!,
+                [element, staticNumber(index)],
+                node,
+                frame,
+                method,
+            );
             const known = this.evaluator.truthiness(result, node);
-            if (known.k !== "static") this.fail(node, `run-time ${method} predicate`);
+            if (known.k !== "static")
+                this.fail(node, `run-time ${method} predicate`);
             return known.value;
         };
         switch (method) {
@@ -1391,14 +1798,33 @@ class Interpreter implements ValueModel<Val, Binding> {
             }
             case "includes": {
                 const [needle] = args;
-                return staticBoolean(elements.some((element) => element.k === "static" && needle?.k === "static" && element.value === needle.value));
+                return staticBoolean(
+                    elements.some(
+                        (element) =>
+                            element.k === "static" &&
+                            needle?.k === "static" &&
+                            element.value === needle.value,
+                    ),
+                );
             }
             case "map": {
                 const mapped = elements.map((element, index) =>
-                    this.evaluator.invoke(args[0]!, [element, staticNumber(index)], node, frame, method),
+                    this.evaluator.invoke(
+                        args[0]!,
+                        [element, staticNumber(index)],
+                        node,
+                        frame,
+                        method,
+                    ),
                 );
                 return mapped.every((element) => element.k === "static")
-                    ? { k: "static", value: mapped.map((element) => (element as { value: unknown }).value) }
+                    ? {
+                          k: "static",
+                          value: mapped.map(
+                              (element) =>
+                                  (element as { value: unknown }).value,
+                          ),
+                      }
                     : { k: "array", elements: mapped };
             }
             default:
@@ -1407,9 +1833,22 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     private mathCall(method: string, args: Val[], node: ts.Node): Val {
-        if (args.every((argument) => argument.k === "static" && typeof argument.value === "number")) {
-            const numbers = args.map((argument) => (argument as { value: number }).value);
-            const fn = (Math as unknown as Record<string, (...values: number[]) => number>)[method];
+        if (
+            args.every(
+                (argument) =>
+                    argument.k === "static" &&
+                    typeof argument.value === "number",
+            )
+        ) {
+            const numbers = args.map(
+                (argument) => (argument as { value: number }).value,
+            );
+            const fn = (
+                Math as unknown as Record<
+                    string,
+                    (...values: number[]) => number
+                >
+            )[method];
             if (typeof fn !== "function") this.fail(node, `Math.${method}`);
             return staticNumber(fn(...numbers));
         }
@@ -1424,12 +1863,17 @@ class Interpreter implements ValueModel<Val, Binding> {
 
     public invoke(target: Val, args: Val[], site: ts.Node): Val | undefined {
         // `unary(a, Math.abs)`: a Math member handed on as the callback.
-        if (target.k === "opaque" && target.tag === "math" && typeof target.data === "string") {
+        if (
+            target.k === "opaque" &&
+            target.tag === "math" &&
+            typeof target.data === "string"
+        ) {
             return this.mathCall(target.data, args, site);
         }
         if (target.k === "opaque" && target.tag === "string-ctor") {
             const [value] = args;
-            if (value?.k === "static") return { k: "static", value: String(value.value) };
+            if (value?.k === "static")
+                return { k: "static", value: String(value.value) };
             return this.fail(site, "String over a run-time value");
         }
         if (target.k === "opaque" && target.tag === "number-ctor") {
@@ -1444,16 +1888,23 @@ class Interpreter implements ValueModel<Val, Binding> {
      * The runtime plumbing, restated over the static graph. Each restated
      * body is asserted once against the pin (`FlowGraphLowerer.assertRuntime`).
      */
-    public intercept(target: FunctionCallable<Val>, args: Val[], node: ts.Node): Val | undefined {
+    public intercept(
+        target: FunctionCallable<Val>,
+        args: Val[],
+        node: ts.Node,
+    ): Val | undefined {
         const declared = target.declaration.name;
-        const name = declared && ts.isIdentifier(declared) ? declared.text : undefined;
+        const name =
+            declared && ts.isIdentifier(declared) ? declared.text : undefined;
         if (target.module === RUNTIME_MODULE) {
             // `getDataValue(ctx, env, block, socket)` and
             // `activateSignal(ctx, env, block, socket)` take the block
             // third; `setDataValue(ctx, block, socket, value)` and
             // `getExecVar(ctx, block, key, def)` take it second.
             const block = this.blockArgument(
-                name === "getDataValue" || name === "activateSignal" ? args[2] : args[1],
+                name === "getDataValue" || name === "activateSignal"
+                    ? args[2]
+                    : args[1],
                 node,
             );
             switch (name) {
@@ -1463,7 +1914,12 @@ class Interpreter implements ValueModel<Val, Binding> {
                 }
                 case "setDataValue": {
                     const socket = this.stringArgument(args[2], node);
-                    this.graph.store(block, socket, args[3] ?? STATIC_UNDEFINED, this.emitter);
+                    this.graph.store(
+                        block,
+                        socket,
+                        args[3] ?? STATIC_UNDEFINED,
+                        this.emitter,
+                    );
                     return STATIC_UNDEFINED;
                 }
                 case "activateSignal": {
@@ -1474,7 +1930,11 @@ class Interpreter implements ValueModel<Val, Binding> {
                 case "getExecVar": {
                     const key = this.stringArgument(args[2], node);
                     const ctx = args[0];
-                    if (key !== "lastEvent" || ctx?.k !== "opaque" || ctx.tag !== "ctx") {
+                    if (
+                        key !== "lastEvent" ||
+                        ctx?.k !== "opaque" ||
+                        ctx.tag !== "ctx"
+                    ) {
                         this.fail(node, `execution variable '${key}'`);
                     }
                     const payload = (ctx.data as { payload?: Val }).payload;
@@ -1485,16 +1945,24 @@ class Interpreter implements ValueModel<Val, Binding> {
             }
         }
         if (target.module === POINTER_TEMPLATE_MODULE) {
-            if (name === "resolveBlockPointer" || name === "resolveBlockAccessor") {
+            if (
+                name === "resolveBlockPointer" ||
+                name === "resolveBlockAccessor"
+            ) {
                 const block = this.blockArgument(args[0], node);
                 const config = block.config;
                 if (typeof config.pointerTemplate === "string") {
                     this.fail(node, "pointer with a data-driven segment");
                 }
-                if (typeof config.accessor !== "string") return { k: "static", value: null };
+                if (typeof config.accessor !== "string")
+                    return { k: "static", value: null };
                 const accessor = this.graph.accessorFor(config.accessor);
                 if (!accessor) return { k: "static", value: null };
-                const accessorValue: Val = { k: "opaque", tag: "accessor", data: accessor };
+                const accessorValue: Val = {
+                    k: "opaque",
+                    tag: "accessor",
+                    data: accessor,
+                };
                 if (name === "resolveBlockAccessor") return accessorValue;
                 return {
                     k: "record",
@@ -1508,15 +1976,24 @@ class Interpreter implements ValueModel<Val, Binding> {
         return undefined;
     }
 
-    private blockArgument(value: Val | undefined, node: ts.Node): FlowGraphBlock {
-        if (value?.k === "static" && typeof value.value === "object" && value.value !== null && "dataIn" in (value.value as object)) {
+    private blockArgument(
+        value: Val | undefined,
+        node: ts.Node,
+    ): FlowGraphBlock {
+        if (
+            value?.k === "static" &&
+            typeof value.value === "object" &&
+            value.value !== null &&
+            "dataIn" in value.value
+        ) {
             return value.value as FlowGraphBlock;
         }
         return this.fail(node, "block argument");
     }
 
     private stringArgument(value: Val | undefined, node: ts.Node): string {
-        if (value?.k === "static" && typeof value.value === "string") return value.value;
+        if (value?.k === "static" && typeof value.value === "string")
+            return value.value;
         return this.fail(node, "socket name");
     }
 }
@@ -1569,12 +2046,25 @@ export class FlowGraphLowerer {
 
     public lower(): LoweredSource {
         this.assertRuntime();
-        const graphs: Array<{ asset: string; namespace: string; source: string }> = [];
+        const graphs: Array<{
+            asset: string;
+            namespace: string;
+            source: string;
+        }> = [];
         this.assets.forEach((asset, assetIndex) => {
             asset.graphs.forEach((program) => {
                 const namespace = `flow_graph_${assetIndex}_${program.graphIndex}`;
-                const lowering = new GraphLowering(this.context, this, program, namespace);
-                graphs.push({ asset: asset.asset, namespace, source: lowering.lower() });
+                const lowering = new GraphLowering(
+                    this.context,
+                    this,
+                    program,
+                    namespace,
+                );
+                graphs.push({
+                    asset: asset.asset,
+                    namespace,
+                    source: lowering.lower(),
+                });
             });
         });
         return {
@@ -1588,39 +2078,87 @@ export class FlowGraphLowerer {
     // ── Pinned tables ─────────────────────────────────────────────────────
 
     /** `getBlockDef`'s switch: block type to the module and export it imports. */
-    private registryEntries(): Map<string, { module: string; exportName: string }> {
+    private registryEntries(): Map<
+        string,
+        { module: string; exportName: string }
+    > {
         if (this.registry) return this.registry;
-        const { declaration } = this.context.functionDeclaration(REGISTRY_MODULE, "getBlockDef");
+        const { declaration } = this.context.functionDeclaration(
+            REGISTRY_MODULE,
+            "getBlockDef",
+        );
         const typeFile = this.context.sourceFile(BLOCK_TYPE_MODULE);
-        const typeInitializer = this.context.moduleScopeConstant(typeFile, "FgBlockType");
-        const typeTable = typeInitializer ? this.context.unwrapExpression(typeInitializer) : undefined;
+        const typeInitializer = this.context.moduleScopeConstant(
+            typeFile,
+            "FgBlockType",
+        );
+        const typeTable = typeInitializer
+            ? this.context.unwrapExpression(typeInitializer)
+            : undefined;
         if (!typeTable || !ts.isObjectLiteralExpression(typeTable)) {
-            this.context.contractError(typeFile, "FgBlockType is no longer an object literal.");
+            this.context.contractError(
+                typeFile,
+                "FgBlockType is no longer an object literal.",
+            );
         }
         const types = new Map<string, string>();
         for (const property of typeTable.properties) {
-            if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
-                const value = this.context.unwrapExpression(property.initializer);
-                if (ts.isStringLiteral(value)) types.set(property.name.text, value.text);
+            if (
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name)
+            ) {
+                const value = this.context.unwrapExpression(
+                    property.initializer,
+                );
+                if (ts.isStringLiteral(value))
+                    types.set(property.name.text, value.text);
             }
         }
-        const switchStatement = this.context.findNodes(declaration, ts.isSwitchStatement)[0];
-        if (!switchStatement) this.context.contractError(declaration, "getBlockDef is no longer a switch.");
-        const entries = new Map<string, { module: string; exportName: string }>();
+        const switchStatement = this.context.findNodes(
+            declaration,
+            ts.isSwitchStatement,
+        )[0];
+        if (!switchStatement)
+            this.context.contractError(
+                declaration,
+                "getBlockDef is no longer a switch.",
+            );
+        const entries = new Map<
+            string,
+            { module: string; exportName: string }
+        >();
         for (const clause of switchStatement.caseBlock.clauses) {
             if (!ts.isCaseClause(clause)) continue;
             const label = this.context.unwrapExpression(clause.expression);
-            if (!ts.isPropertyAccessExpression(label) || !ts.isIdentifier(label.expression) || label.expression.text !== "FgBlockType") {
-                this.context.contractError(clause, "A getBlockDef case is not an FgBlockType member.");
+            if (
+                !ts.isPropertyAccessExpression(label) ||
+                !ts.isIdentifier(label.expression) ||
+                label.expression.text !== "FgBlockType"
+            ) {
+                this.context.contractError(
+                    clause,
+                    "A getBlockDef case is not an FgBlockType member.",
+                );
             }
             const type = types.get(label.name.text);
-            if (!type) this.context.contractError(clause, `FgBlockType.${label.name.text} is not declared.`);
+            if (!type)
+                this.context.contractError(
+                    clause,
+                    `FgBlockType.${label.name.text} is not declared.`,
+                );
             // `async () => (await import("./x.js")).xDef`: the loader arm
             // wraps the awaited import in an arrow the block registry
             // calls on demand.
             const returned = clause.statements.find(ts.isReturnStatement);
-            if (!returned) this.context.contractError(clause, "A getBlockDef arm does not return a loader.");
-            entries.set(type, this.context.dynamicImportExport(REGISTRY_MODULE, returned));
+            if (!returned)
+                this.context.contractError(
+                    clause,
+                    "A getBlockDef arm does not return a loader.",
+                );
+            entries.set(
+                type,
+                this.context.dynamicImportExport(REGISTRY_MODULE, returned),
+            );
         }
         this.registry = entries;
         return entries;
@@ -1637,22 +2175,42 @@ export class FlowGraphLowerer {
             );
         }
         const entry = this.registryEntries().get(type);
-        if (!entry) throw new Error(`getBlockDef has no arm for block type '${type}'.`);
+        if (!entry)
+            throw new Error(`getBlockDef has no arm for block type '${type}'.`);
         const file = this.context.sourceFile(entry.module);
-        const initializer = this.context.moduleScopeConstant(file, entry.exportName);
+        const initializer = this.context.moduleScopeConstant(
+            file,
+            entry.exportName,
+        );
         if (!initializer || !ts.isObjectLiteralExpression(initializer)) {
-            this.context.contractError(file, `Expected '${entry.exportName}' to be a block definition literal.`);
+            this.context.contractError(
+                file,
+                `Expected '${entry.exportName}' to be a block definition literal.`,
+            );
         }
         const method = (name: string): ts.MethodDeclaration | undefined => {
             const found = initializer.properties.find(
                 (property): property is ts.MethodDeclaration =>
-                    ts.isMethodDeclaration(property) && ts.isIdentifier(property.name) && property.name.text === name,
+                    ts.isMethodDeclaration(property) &&
+                    ts.isIdentifier(property.name) &&
+                    property.name.text === name,
             );
-            if (found && !found.body) this.context.contractError(found, `${entry.exportName}.${name} has no body.`);
+            if (found && !found.body)
+                this.context.contractError(
+                    found,
+                    `${entry.exportName}.${name} has no body.`,
+                );
             const assigned = initializer.properties.find(
-                (property) => ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) && property.name.text === name,
+                (property) =>
+                    ts.isPropertyAssignment(property) &&
+                    ts.isIdentifier(property.name) &&
+                    property.name.text === name,
             );
-            if (assigned) this.context.contractError(assigned, `${entry.exportName}.${name} is not a method declaration.`);
+            if (assigned)
+                this.context.contractError(
+                    assigned,
+                    `${entry.exportName}.${name} is not a method declaration.`,
+                );
             return found;
         };
         const updateOutputs = method("updateOutputs");
@@ -1665,8 +2223,17 @@ export class FlowGraphLowerer {
             ...(execute ? { execute } : {}),
         };
         for (const name of ["onTick", "cancelPending"]) {
-            if (initializer.properties.some((property) => property.name && ts.isIdentifier(property.name) && property.name.text === name)) {
-                throw new Error(`Block type '${type}' declares ${name}; async blocks are not lowered.`);
+            if (
+                initializer.properties.some(
+                    (property) =>
+                        property.name &&
+                        ts.isIdentifier(property.name) &&
+                        property.name.text === name,
+                )
+            ) {
+                throw new Error(
+                    `Block type '${type}' declares ${name}; async blocks are not lowered.`,
+                );
             }
         }
         this.definitions.set(type, definition);
@@ -1682,40 +2249,126 @@ export class FlowGraphLowerer {
     private assertRuntime(): void {
         const runtime = (name: string): ts.FunctionDeclaration =>
             this.context.functionDeclaration(RUNTIME_MODULE, name).declaration;
-        const shape = (owner: ts.Node, expected: string, label: string, count = 1): void =>
-            this.context.expectShapeCount(owner, expected, label, count);
+        const shape = (
+            owner: ts.Node,
+            expected: string,
+            label: string,
+            count = 1,
+        ): void => this.context.expectShapeCount(owner, expected, label, count);
         const pull = runtime("getDataValue");
-        shape(pull, "block.dataIn.find((s) => s.name === socket)", "getDataValue socket lookup");
-        shape(pull, "def?.updateOutputs?.(producer, ctx, env)", "getDataValue producer recompute");
+        shape(
+            pull,
+            "block.dataIn.find((s) => s.name === socket)",
+            "getDataValue socket lookup",
+        );
+        shape(
+            pull,
+            "def?.updateOutputs?.(producer, ctx, env)",
+            "getDataValue producer recompute",
+        );
         // Four default arms: guarded cycle, unwritten slot, missing
         // producer, unwired socket.
-        shape(pull, "input.defaultValue ?? defaultForType(input.type)", "getDataValue default", 4);
-        shape(pull, "raw *= input.source.scale", "getDataValue connected scale");
-        shape(pull, "coerceValue(raw, input.type)", "getDataValue consumer coercion");
-        shape(runtime("setDataValue"), "ctx.connectionValues[`${block.id}:${socket}`] = value", "setDataValue slot");
+        shape(
+            pull,
+            "input.defaultValue ?? defaultForType(input.type)",
+            "getDataValue default",
+            4,
+        );
+        shape(
+            pull,
+            "raw *= input.source.scale",
+            "getDataValue connected scale",
+        );
+        shape(
+            pull,
+            "coerceValue(raw, input.type)",
+            "getDataValue consumer coercion",
+        );
+        shape(
+            runtime("setDataValue"),
+            "ctx.connectionValues[`${block.id}:${socket}`] = value",
+            "setDataValue slot",
+        );
         const push = runtime("activateSignal");
-        shape(push, "env.defs[targetBlock.type]?.execute?.(targetBlock, ctx, env, target.socket)", "activateSignal target execute");
-        shape(push, "isFgEventTransitivePropagationStopped(env.events)", "activateSignal propagation stop", 2);
-        shape(runtime("getExecVar"), "slot in ctx.executionVariables ? (ctx.executionVariables[slot] as T) : def", "getExecVar read");
+        shape(
+            push,
+            "env.defs[targetBlock.type]?.execute?.(targetBlock, ctx, env, target.socket)",
+            "activateSignal target execute",
+        );
+        shape(
+            push,
+            "isFgEventTransitivePropagationStopped(env.events)",
+            "activateSignal propagation stop",
+            2,
+        );
+        shape(
+            runtime("getExecVar"),
+            "slot in ctx.executionVariables ? (ctx.executionVariables[slot] as T) : def",
+            "getExecVar read",
+        );
         const lifecycle = runtime("pumpFlowGraphLifecycle");
-        shape(lifecycle, "ctx.executionVariables[`${block.id}:lastEvent`] = eventPayload", "lifecycle payload");
-        shape(lifecycle, "env.defs[block.type]?.execute?.(block, ctx, env, event)", "lifecycle execute");
-        shape(runtime("fireFlowGraphStart"), `pumpFlowGraphLifecycle(rt, FgEventType.Start, { event: ${JSON.stringify(START_EVENT_REFERENCE)} })`, "start event reference");
+        shape(
+            lifecycle,
+            "ctx.executionVariables[`${block.id}:lastEvent`] = eventPayload",
+            "lifecycle payload",
+        );
+        shape(
+            lifecycle,
+            "env.defs[block.type]?.execute?.(block, ctx, env, event)",
+            "lifecycle execute",
+        );
+        shape(
+            runtime("fireFlowGraphStart"),
+            `pumpFlowGraphLifecycle(rt, FgEventType.Start, { event: ${JSON.stringify(START_EVENT_REFERENCE)} })`,
+            "start event reference",
+        );
         const startAll = runtime("startFlowGraphs");
-        shape(startAll, "runtimes.filter(subscribeFlowGraph)", "startFlowGraphs subscribe-first");
-        shape(startAll, "pendingStart.filter(isActive).forEach(fireFlowGraphStart)", "startFlowGraphs start-second");
-        shape(runtime("pumpFlowGraphEvent"), "rt.started", "pumpFlowGraphEvent started guard");
+        shape(
+            startAll,
+            "runtimes.filter(subscribeFlowGraph)",
+            "startFlowGraphs subscribe-first",
+        );
+        shape(
+            startAll,
+            "pendingStart.filter(isActive).forEach(fireFlowGraphStart)",
+            "startFlowGraphs start-second",
+        );
+        shape(
+            runtime("pumpFlowGraphEvent"),
+            "rt.started",
+            "pumpFlowGraphEvent started guard",
+        );
 
-        const coordinator = this.context.functionDeclaration(SCENE_MODULE, "ensureFlowGraphCoordinator").declaration;
-        shape(coordinator, "scene._beforeRender.unshift(tick)", "coordinator tick registration");
-        shape(coordinator, "scene._disposables.push(dispose)", "coordinator dispose registration");
-        shape(coordinator, "startFlowGraphs(runtimes, isAttached)", "coordinator start");
+        const coordinator = this.context.functionDeclaration(
+            SCENE_MODULE,
+            "ensureFlowGraphCoordinator",
+        ).declaration;
+        shape(
+            coordinator,
+            "scene._beforeRender.unshift(tick)",
+            "coordinator tick registration",
+        );
+        shape(
+            coordinator,
+            "scene._disposables.push(dispose)",
+            "coordinator dispose registration",
+        );
+        shape(
+            coordinator,
+            "startFlowGraphs(runtimes, isAttached)",
+            "coordinator start",
+        );
         // The tick the native coordinator restates: snapshot, flush the
         // event buses, subscribe-then-start, then the tick and task pumps
         // per attached runtime. An arm added here has to be read.
-        const tick = this.context.unwrapExpression(this.context.variableInitializer(coordinator, "tick"));
+        const tick = this.context.unwrapExpression(
+            this.context.variableInitializer(coordinator, "tick"),
+        );
         if (!ts.isArrowFunction(tick) || !ts.isBlock(tick.body)) {
-            this.context.contractError(coordinator, "The coordinator's tick is no longer an arrow function with a block body.");
+            this.context.contractError(
+                coordinator,
+                "The coordinator's tick is no longer an arrow function with a block body.",
+            );
         }
         this.context.assertStatementInventory(
             tick,
@@ -1731,35 +2384,109 @@ export class FlowGraphLowerer {
                 "for-of statement",
                 "for-of statement",
             ],
-            (statement) => (ts.isForOfStatement(statement) ? "for-of statement" : statementKind(statement)),
+            (statement) =>
+                ts.isForOfStatement(statement)
+                    ? "for-of statement"
+                    : statementKind(statement),
         );
-        const bridge = this.context.functionDeclaration(POINTER_MODULE, "refreshFlowGraphPointerPicking").declaration;
+        const bridge = this.context.functionDeclaration(
+            POINTER_MODULE,
+            "refreshFlowGraphPointerPicking",
+        ).declaration;
         shape(bridge, "pointer.button === 0", "pointer press button");
         // The release is dropped when it comes from another pointer than
         // the press; native mouse events carry one pointer, so the arm is
         // asserted here and stated beside the bridge, not restated.
-        shape(bridge, "start.pointerId !== pointer.pointerId", "pointer identity guard");
-        shape(bridge, "Math.hypot(pointer.offsetX - start.x, pointer.offsetY - start.y) > 5", "pointer tap threshold");
-        shape(bridge, "pickAsync(picker, pointer.offsetX, pointer.offsetY, { filter: (mesh) => isFlowGraphMeshSelectable(scene, mesh) })", "pointer pick");
-        const selectable = this.context.functionDeclaration(POINTER_MODULE, "isFlowGraphMeshSelectable").declaration;
-        shape(selectable, "runtimes.length > 0 && !runtimes.some((runtime) => runtime.env.accessors[selectablePointer]?.get() === false)", "mesh selectability");
-        const dispatch = this.context.functionDeclaration(POINTER_MODULE, "dispatchFlowGraphPointerPick").declaration;
-        shape(dispatch, `pumpFlowGraphEvent(runtime, FgEventType.Pointer, { nodeIndex, controllerIndex: 0, event: ${JSON.stringify(POINTER_EVENT_REFERENCE)} })`, "pointer dispatch payload");
-        const forMesh = this.context.functionDeclaration(POINTER_MODULE, "runtimesForMesh").declaration;
-        shape(forMesh, "runtime.env._assetScope === mesh._flowGraphAssetScope", "runtimes by asset scope");
+        shape(
+            bridge,
+            "start.pointerId !== pointer.pointerId",
+            "pointer identity guard",
+        );
+        shape(
+            bridge,
+            "Math.hypot(pointer.offsetX - start.x, pointer.offsetY - start.y) > 5",
+            "pointer tap threshold",
+        );
+        shape(
+            bridge,
+            "pickAsync(picker, pointer.offsetX, pointer.offsetY, { filter: (mesh) => isFlowGraphMeshSelectable(scene, mesh) })",
+            "pointer pick",
+        );
+        const selectable = this.context.functionDeclaration(
+            POINTER_MODULE,
+            "isFlowGraphMeshSelectable",
+        ).declaration;
+        shape(
+            selectable,
+            "runtimes.length > 0 && !runtimes.some((runtime) => runtime.env.accessors[selectablePointer]?.get() === false)",
+            "mesh selectability",
+        );
+        const dispatch = this.context.functionDeclaration(
+            POINTER_MODULE,
+            "dispatchFlowGraphPointerPick",
+        ).declaration;
+        shape(
+            dispatch,
+            `pumpFlowGraphEvent(runtime, FgEventType.Pointer, { nodeIndex, controllerIndex: 0, event: ${JSON.stringify(POINTER_EVENT_REFERENCE)} })`,
+            "pointer dispatch payload",
+        );
+        const forMesh = this.context.functionDeclaration(
+            POINTER_MODULE,
+            "runtimesForMesh",
+        ).declaration;
+        shape(
+            forMesh,
+            "runtime.env._assetScope === mesh._flowGraphAssetScope",
+            "runtimes by asset scope",
+        );
 
-        const uv = this.context.functionDeclaration(PATH_CONVERTER_MODULE, "resolveMaterialUvTransform").declaration;
-        shape(uv, "{ x: tex?.uScale ?? 1, y: tex?.vScale ?? 1 }", "material scale read");
-        shape(uv, "{ x: tex?.uOffset ?? 0, y: tex?.vOffset ?? 0 }", "material offset read");
-        shape(uv, "resolved.writer(Float32Array.of(p.x, p.y), 0)", "material transform write");
-        const visibility = this.context.functionDeclaration(PATH_CONVERTER_MODULE, "resolveVisibility").declaration;
+        const uv = this.context.functionDeclaration(
+            PATH_CONVERTER_MODULE,
+            "resolveMaterialUvTransform",
+        ).declaration;
+        shape(
+            uv,
+            "{ x: tex?.uScale ?? 1, y: tex?.vScale ?? 1 }",
+            "material scale read",
+        );
+        shape(
+            uv,
+            "{ x: tex?.uOffset ?? 0, y: tex?.vOffset ?? 0 }",
+            "material offset read",
+        );
+        shape(
+            uv,
+            "resolved.writer(Float32Array.of(p.x, p.y), 0)",
+            "material transform write",
+        );
+        const visibility = this.context.functionDeclaration(
+            PATH_CONVERTER_MODULE,
+            "resolveVisibility",
+        ).declaration;
         shape(visibility, "node.visible !== false", "visibility read");
-        shape(visibility, "resolved.writer(Float32Array.of(v ? 1 : 0), 0)", "visibility write");
-        const selectability = this.context.functionDeclaration(PATH_CONVERTER_MODULE, "resolveSelectability").declaration;
+        shape(
+            visibility,
+            "resolved.writer(Float32Array.of(v ? 1 : 0), 0)",
+            "visibility write",
+        );
+        const selectability = this.context.functionDeclaration(
+            PATH_CONVERTER_MODULE,
+            "resolveSelectability",
+        ).declaration;
         shape(selectability, "selectable = !!v", "selectability write");
-        const cascade = this.context.functionDeclaration(VISIBILITY_MODULE, "cascade").declaration;
+        const cascade = this.context.functionDeclaration(
+            VISIBILITY_MODULE,
+            "cascade",
+        ).declaration;
         shape(cascade, "node.visible !== v", "visibility cascade change");
-        shape(this.context.functionDeclaration(VISIBILITY_MODULE, "setSubtreeVisible").declaration, "bumpVisibilityEpoch()", "visibility epoch");
+        shape(
+            this.context.functionDeclaration(
+                VISIBILITY_MODULE,
+                "setSubtreeVisible",
+            ).declaration,
+            "bumpVisibilityEpoch()",
+            "visibility epoch",
+        );
     }
 
     // ── Emission ──────────────────────────────────────────────────────────
@@ -1810,7 +2537,9 @@ struct FlowGraphRuntime {
 `;
     }
 
-    private source(graphs: readonly { asset: string; namespace: string; source: string }[]): string {
+    private source(
+        graphs: readonly { asset: string; namespace: string; source: string }[],
+    ): string {
         const assets = new Map<string, string[]>();
         for (const graph of graphs) {
             const list = assets.get(graph.asset) ?? [];

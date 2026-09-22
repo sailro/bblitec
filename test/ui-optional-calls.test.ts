@@ -1,14 +1,15 @@
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
-test("optional DOM calls snapshot the receiver and skip absent-call arguments", t => {
+test("optional DOM calls snapshot the receiver and skip absent-call arguments", (t) => {
     const directory = resolve("artifacts/ui-optional-calls");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         const parent = document.createElement("div");
@@ -67,7 +68,9 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         query.visit();
         if (visits !== 1) throw new Error("absent query continuation");
         globalThis.close();
-    `, {fileName:join(directory, "entry.ts")});
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-optional-calls");
 });

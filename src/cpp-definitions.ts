@@ -10,7 +10,7 @@ export class CppDefinitions {
     table(type: string, name: string, count: number, rows: string): string {
         this.definitions.push(
             `namespace {\nconstexpr std::array<${type}, ${count}> ${name}_data{{\n${rows}\n}};\n}\n` +
-            `const TableView<${type}> ${name}{${name}_data};`,
+                `const TableView<${type}> ${name}{${name}_data};`,
         );
         return `extern const TableView<${type}> ${name};`;
     }

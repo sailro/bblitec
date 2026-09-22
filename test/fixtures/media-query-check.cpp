@@ -9,7 +9,7 @@ double ratio = 1;
 bool read_motion() { return reduced; }
 double read_ratio() { return ratio; }
 std::vector<std::shared_ptr<bbl::pal::MediaQueryList>> queries;
-}
+} // namespace
 
 namespace bbl::pal {
 std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
@@ -22,17 +22,24 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     EventLoop loop;
     WorkerRealm realm(loop);
     std::exception_ptr failure;
-    loop.on_error([&](std::exception_ptr error) { failure = error; loop.close(); });
+    loop.on_error([&](std::exception_ptr error) {
+        failure = error;
+        loop.close();
+    });
     loop.run([&] {
         initialize(realm);
         reduced = true;
-        for (const auto& query : queries) { query->deliver(); query->deliver(); }
+        for (const auto& query : queries) {
+            query->deliver();
+            query->deliver();
+        }
     });
     queries.clear();
-    if (failure) std::rethrow_exception(failure);
+    if (failure)
+        std::rethrow_exception(failure);
     return 0;
 }
-}
+} // namespace bbl::pal
 
 int main() {
     using bbl::pal::MediaQueryList;
@@ -47,10 +54,14 @@ int main() {
     assert(reduce.media() == "(prefers-reduced-motion: reduce)");
     assert(boolean.media() == "(prefers-reduced-motion)");
     assert(density.media() == "(resolution: 1.5dppx)");
-    for (const auto* query : {"(width: 600px)", "(prefers-reduced-motion: sometimes)", "(resolution: 2dpi)", "screen and (resolution: 2dppx)"}) {
+    for (const auto* query : {"(width: 600px)", "(prefers-reduced-motion: sometimes)",
+                              "(resolution: 2dpi)", "screen and (resolution: 2dppx)"}) {
         bool refused = false;
-        try { const MediaQueryList unsupported(query, read_ratio, read_motion); }
-        catch (const std::invalid_argument&) { refused = true; }
+        try {
+            const MediaQueryList unsupported(query, read_ratio, read_motion);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
         assert(refused);
     }
     reduced = false;

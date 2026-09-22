@@ -7,14 +7,33 @@
 #include <stdexcept>
 #include <string>
 
-struct SDL_GPUCommandBuffer { bool consumed = false; bool acquired = false; int passes = 0; };
-struct SDL_GPURenderPass { SDL_GPUCommandBuffer* command; bool ended = false; };
-struct SDL_GPUCopyPass { SDL_GPUCommandBuffer* command; bool ended = false; };
-struct SDL_GPUComputePass { SDL_GPUCommandBuffer* command; bool ended = false; };
+struct SDL_GPUCommandBuffer {
+    bool consumed = false;
+    bool acquired = false;
+    int passes = 0;
+};
+struct SDL_GPURenderPass {
+    SDL_GPUCommandBuffer* command;
+    bool ended = false;
+};
+struct SDL_GPUCopyPass {
+    SDL_GPUCommandBuffer* command;
+    bool ended = false;
+};
+struct SDL_GPUComputePass {
+    SDL_GPUCommandBuffer* command;
+    bool ended = false;
+};
 struct SDL_GPUTexture {};
 struct SDL_GPUFence {};
-struct SDL_GPUBuffer { bool released = false; };
-struct SDL_GPUTransferBuffer { bool released = false; bool mapped = false; std::array<std::uint8_t, 4> bytes{}; };
+struct SDL_GPUBuffer {
+    bool released = false;
+};
+struct SDL_GPUTransferBuffer {
+    bool released = false;
+    bool mapped = false;
+    std::array<std::uint8_t, 4> bytes{};
+};
 static SDL_GPUTexture texture;
 static SDL_GPUFence fence;
 static bool acquire_success = true, acquire_texture = true, submit_success = true;
@@ -25,26 +44,32 @@ static SDL_GPUTransferBuffer uploaded_transfer;
 static SDL_GPUCommandBuffer upload_command;
 static SDL_GPUCopyPass upload_copy{&upload_command};
 
-extern "C" SDL_GPUBuffer* SDLCALL SDL_CreateGPUBuffer(SDL_GPUDevice*, const SDL_GPUBufferCreateInfo*) {
+extern "C" SDL_GPUBuffer* SDLCALL SDL_CreateGPUBuffer(SDL_GPUDevice*,
+                                                      const SDL_GPUBufferCreateInfo*) {
     return fail_step == 1 ? nullptr : &uploaded_buffer;
 }
 extern "C" void SDLCALL SDL_ReleaseGPUBuffer(SDL_GPUDevice*, SDL_GPUBuffer* buffer) {
     assert(!buffer->released);
     buffer->released = true;
 }
-extern "C" SDL_GPUTransferBuffer* SDLCALL SDL_CreateGPUTransferBuffer(SDL_GPUDevice*, const SDL_GPUTransferBufferCreateInfo*) {
+extern "C" SDL_GPUTransferBuffer* SDLCALL
+SDL_CreateGPUTransferBuffer(SDL_GPUDevice*, const SDL_GPUTransferBufferCreateInfo*) {
     return fail_step == 2 ? nullptr : &uploaded_transfer;
 }
-extern "C" void SDLCALL SDL_ReleaseGPUTransferBuffer(SDL_GPUDevice*, SDL_GPUTransferBuffer* transfer) {
+extern "C" void SDLCALL SDL_ReleaseGPUTransferBuffer(SDL_GPUDevice*,
+                                                     SDL_GPUTransferBuffer* transfer) {
     assert(!transfer->released && !transfer->mapped);
     transfer->released = true;
 }
-extern "C" void* SDLCALL SDL_MapGPUTransferBuffer(SDL_GPUDevice*, SDL_GPUTransferBuffer* transfer, bool) {
-    if (fail_step == 3) return nullptr;
+extern "C" void* SDLCALL SDL_MapGPUTransferBuffer(SDL_GPUDevice*, SDL_GPUTransferBuffer* transfer,
+                                                  bool) {
+    if (fail_step == 3)
+        return nullptr;
     transfer->mapped = true;
     return transfer->bytes.data();
 }
-extern "C" void SDLCALL SDL_UnmapGPUTransferBuffer(SDL_GPUDevice*, SDL_GPUTransferBuffer* transfer) {
+extern "C" void SDLCALL SDL_UnmapGPUTransferBuffer(SDL_GPUDevice*,
+                                                   SDL_GPUTransferBuffer* transfer) {
     assert(transfer->mapped);
     transfer->mapped = false;
 }
@@ -52,21 +77,24 @@ extern "C" SDL_GPUCommandBuffer* SDLCALL SDL_AcquireGPUCommandBuffer(SDL_GPUDevi
     return fail_step == 4 ? nullptr : &upload_command;
 }
 extern "C" SDL_GPUCopyPass* SDLCALL SDL_BeginGPUCopyPass(SDL_GPUCommandBuffer* command) {
-    if (fail_step == 5) return nullptr;
+    if (fail_step == 5)
+        return nullptr;
     ++command->passes;
     return &upload_copy;
 }
-extern "C" void SDLCALL SDL_UploadToGPUBuffer(SDL_GPUCopyPass* pass, const SDL_GPUTransferBufferLocation* source,
-    const SDL_GPUBufferRegion*, bool) {
+extern "C" void SDLCALL SDL_UploadToGPUBuffer(SDL_GPUCopyPass* pass,
+                                              const SDL_GPUTransferBufferLocation* source,
+                                              const SDL_GPUBufferRegion*, bool) {
     assert(pass && !pass->ended && !source->transfer_buffer->released);
 }
 namespace bbl::pal {
 [[noreturn]] void gpu_error(const char* operation) { throw std::runtime_error(operation); }
 #include "upload-buffer.hpp"
-}
+} // namespace bbl::pal
 
-extern "C" bool SDLCALL SDL_WaitAndAcquireGPUSwapchainTexture(
-    SDL_GPUCommandBuffer* command, SDL_Window*, SDL_GPUTexture** output, Uint32*, Uint32*) {
+extern "C" bool SDLCALL SDL_WaitAndAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer* command,
+                                                              SDL_Window*, SDL_GPUTexture** output,
+                                                              Uint32*, Uint32*) {
     assert(!command->consumed);
     *output = acquire_success && acquire_texture ? &texture : nullptr;
     command->acquired = *output != nullptr;
@@ -81,7 +109,8 @@ extern "C" bool SDLCALL SDL_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer* command
     consume(command, 'S');
     return submit_success && fail_step != 6;
 }
-extern "C" SDL_GPUFence* SDLCALL SDL_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer* command) {
+extern "C" SDL_GPUFence* SDLCALL
+SDL_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer* command) {
     consume(command, 'F');
     return submit_success ? &fence : nullptr;
 }
@@ -115,7 +144,8 @@ int main() {
             ++raw.passes;
             SdlRenderPass pass{&raw_pass};
             throw std::runtime_error("recording failed");
-        } catch (const std::runtime_error&) {}
+        } catch (const std::runtime_error&) {
+        }
         assert(raw.consumed && raw_pass.ended && events == (acquired ? "ES" : "EC"));
     }
     for (bool success : {false, true}) {
@@ -125,8 +155,10 @@ int main() {
             SDL_GPUCommandBuffer raw;
             {
                 SdlGpuCommand command{&raw};
-                if (fenced) assert((command.submit_with_fence() != nullptr) == success);
-                else assert(command.submit() == success);
+                if (fenced)
+                    assert((command.submit_with_fence() != nullptr) == success);
+                else
+                    assert(command.submit() == success);
                 assert(!command);
             }
             assert(raw.consumed && events == (fenced ? "F" : "S"));
@@ -141,7 +173,8 @@ int main() {
         {
             SdlGpuCommand command{&raw};
             SDL_GPUTexture* target = nullptr;
-            assert(command.acquire_swapchain(nullptr, &target, nullptr, nullptr) == success && !target);
+            assert(command.acquire_swapchain(nullptr, &target, nullptr, nullptr) == success &&
+                   !target);
         }
         assert(events == "C");
     }
@@ -184,17 +217,23 @@ int main() {
         upload_copy = {&upload_command};
         bool failed = false;
         try {
-            auto* buffer = upload_buffer(nullptr, SDL_GPU_BUFFERUSAGE_VERTEX, bytes.data(), bytes.size());
+            auto* buffer =
+                upload_buffer(nullptr, SDL_GPU_BUFFERUSAGE_VERTEX, bytes.data(), bytes.size());
             assert(fail_step == 0 && buffer == &uploaded_buffer && !buffer->released);
             assert(uploaded_transfer.released && uploaded_transfer.bytes == bytes);
             SDL_ReleaseGPUBuffer(nullptr, buffer);
-        } catch (const std::runtime_error&) { failed = true; }
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
         assert(failed == (fail_step != 0));
         assert(uploaded_buffer.released == (fail_step != 1));
         assert(uploaded_transfer.released == (fail_step == 0 || fail_step >= 3));
-        if (fail_step == 0 || fail_step == 6) assert(events == "ES");
-        else if (fail_step == 5) assert(events == "C");
-        else assert(events.empty());
+        if (fail_step == 0 || fail_step == 6)
+            assert(events == "ES");
+        else if (fail_step == 5)
+            assert(events == "C");
+        else
+            assert(events.empty());
     }
     std::puts("transient-gpu-commands-check: ok");
 }

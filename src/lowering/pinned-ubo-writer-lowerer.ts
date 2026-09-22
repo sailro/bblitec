@@ -229,11 +229,18 @@ function templateOffsetField(
 
 /** The absolute float lane a `data[...]` index refers to. */
 function dataLane(state: WriterState, expression: ts.Expression): number {
-    if (ts.isNonNullExpression(expression)) return dataLane(state, expression.expression);
-    if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) &&
-        ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "offsets" &&
-        expression.expression.name.text === "get" && expression.arguments.length === 1 && ts.isStringLiteral(expression.arguments[0]!)) {
-        return fieldLane(state.request, expression.arguments[0]!.text);
+    if (ts.isNonNullExpression(expression))
+        return dataLane(state, expression.expression);
+    if (
+        ts.isCallExpression(expression) &&
+        ts.isPropertyAccessExpression(expression.expression) &&
+        ts.isIdentifier(expression.expression.expression) &&
+        expression.expression.expression.text === "offsets" &&
+        expression.expression.name.text === "get" &&
+        expression.arguments.length === 1 &&
+        ts.isStringLiteral(expression.arguments[0]!)
+    ) {
+        return fieldLane(state.request, expression.arguments[0].text);
     }
     const base = (local: ts.Expression): number => {
         if (!ts.isIdentifier(local)) {
@@ -272,8 +279,10 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
         ts.isNumericLiteral(expression.right)
     ) {
-        return dataLane(state, expression.left) +
-            Number.parseInt(expression.right.text, 10);
+        return (
+            dataLane(state, expression.left) +
+            Number.parseInt(expression.right.text, 10)
+        );
     }
     throw new Error(
         `Unsupported data index in pinned ${state.request.symbolName}: ` +
@@ -339,8 +348,7 @@ function collectMutatedLocals(body: ts.Node): Set<string> {
             (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
                 node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ||
                 node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken ||
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.AsteriskEqualsToken)
+                node.operatorToken.kind === ts.SyntaxKind.AsteriskEqualsToken)
         ) {
             mutated.add(node.left.text);
         }
@@ -355,9 +363,7 @@ function collectMutatedLocals(body: ts.Node): Set<string> {
  * `_uvOffsetResolver?.(material) ?? null` shape. The hook names come from the
  * request; the call's own result is the pin's uninstalled evaluation, null.
  */
-function initializerHookName(
-    expression: ts.Expression,
-): string | undefined {
+function initializerHookName(expression: ts.Expression): string | undefined {
     let node = expression;
     // `hook?.(x) ?? null` — the fallback is itself null, so either side of the
     // `??` leaves the local null.
@@ -365,13 +371,13 @@ function initializerHookName(
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
         (node.right.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(node.right) &&
-                node.right.text === "undefined"))
+            (ts.isIdentifier(node.right) && node.right.text === "undefined"))
     ) {
         node = node.left;
     }
     return ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-        ? node.expression.text : undefined;
+        ? node.expression.text
+        : undefined;
 }
 
 /** Whether an expression reads through a local that is null at generation. */
@@ -458,10 +464,12 @@ function absentComparisonResult(
     condition: ts.Expression,
 ): boolean | undefined {
     if (!ts.isBinaryExpression(condition)) return undefined;
-    const equals = condition.operatorToken.kind ===
+    const equals =
+        condition.operatorToken.kind ===
             ts.SyntaxKind.EqualsEqualsEqualsToken ||
         condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
-    const notEquals = condition.operatorToken.kind ===
+    const notEquals =
+        condition.operatorToken.kind ===
             ts.SyntaxKind.ExclamationEqualsEqualsToken ||
         condition.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
     if (!equals && !notEquals) return undefined;
@@ -476,10 +484,7 @@ function absentComparisonResult(
  * `ss.refraction`); those all correspond to the one flat record here, so the
  * bindings are aliases and only the leaf reads carry data.
  */
-function aliasesRecord(
-    state: WriterState,
-    expression: ts.Expression,
-): boolean {
+function aliasesRecord(state: WriterState, expression: ts.Expression): boolean {
     let node = expression;
     while (
         ts.isBinaryExpression(node) &&
@@ -499,9 +504,7 @@ function aliasesRecord(
 }
 
 /** The property name a vector local was bound from. */
-function vectorOriginProperty(
-    expression: ts.Expression,
-): string | undefined {
+function vectorOriginProperty(expression: ts.Expression): string | undefined {
     let node = expression;
     while (
         ts.isBinaryExpression(node) &&
@@ -510,8 +513,7 @@ function vectorOriginProperty(
         node = node.left;
     }
     if (ts.isNonNullExpression(node)) node = node.expression;
-    return ts.isPropertyAccessExpression(node) ||
-            ts.isPropertyAccessChain(node)
+    return ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)
         ? node.name.getText()
         : undefined;
 }
@@ -533,10 +535,7 @@ function discardedProperty(
         node = node.left;
     }
     if (ts.isNonNullExpression(node)) node = node.expression;
-    if (
-        ts.isPropertyAccessExpression(node) ||
-        ts.isPropertyAccessChain(node)
-    ) {
+    if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
         return node.name.getText();
     }
     if (
@@ -648,9 +647,7 @@ function matchesEntry(
             return (
                 Array.isArray(candidate) &&
                 candidate.length === folded.value.length &&
-                candidate.every(
-                    (lane, index) => lane === folded.value[index],
-                )
+                candidate.every((lane, index) => lane === folded.value[index])
             );
         }
         return false;
@@ -740,27 +737,34 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
     let lowerer = numericWriters.get(state);
     if (!lowerer) {
         lowerer = new PinnedNumericLowerer(state.file, {
-            bindings: new Map(), calls: writerMathCalls, booleanOr: true, booleanAnd: true,
+            bindings: new Map(),
+            calls: writerMathCalls,
+            booleanOr: true,
+            booleanAnd: true,
             foldConditions: false,
             expressionSpelling: {
                 parentheses: "source",
-                numeric: node => /[.e]/i.test(node.text) ? node.text + "f" : node.text + ".0f",
+                numeric: (node) =>
+                    /[.e]/i.test(node.text)
+                        ? node.text + "f"
+                        : node.text + ".0f",
             },
-            expression: node => emitRecordExpression(state, node),
+            expression: (node) => emitRecordExpression(state, node),
         });
         numericWriters.set(state, lowerer);
     }
     return lowerer.expression(expression);
 }
 
-function emitRecordExpression(state: WriterState, expression: ts.Expression): string | undefined {
+function emitRecordExpression(
+    state: WriterState,
+    expression: ts.Expression,
+): string | undefined {
     const node = expression;
     if (ts.isArrayLiteralExpression(node)) {
-        return `{${
-            node.elements
-                .map((element) => emitExpression(state, element))
-                .join(", ")
-        }}`;
+        return `{${node.elements
+            .map((element) => emitExpression(state, element))
+            .join(", ")}}`;
     }
     // `cc.intensity ?? 1` — the record always carries a value, so the fallback
     // the pin applies to an absent JavaScript property is unreachable and the
@@ -803,7 +807,8 @@ function emitRecordExpression(state: WriterState, expression: ts.Expression): st
         const condition = ts.isNonNullExpression(node.condition)
             ? node.condition.expression
             : node.condition;
-        const guardsVectorLocal = ts.isIdentifier(condition) &&
+        const guardsVectorLocal =
+            ts.isIdentifier(condition) &&
             state.vectorLocals.has(condition.text);
         if (guardsVectorLocal) {
             return emitExpression(state, node.whenTrue);
@@ -868,9 +873,10 @@ function emitRecordExpression(state: WriterState, expression: ts.Expression): st
             ts.isPropertyAccessChain(node.expression))
     ) {
         const owner = node.expression.name.getText();
-        const direct = state.request.laneSources?.[owner]?.[
-            Number.parseInt(node.argumentExpression.text, 10)
-        ];
+        const direct =
+            state.request.laneSources?.[owner]?.[
+                Number.parseInt(node.argumentExpression.text, 10)
+            ];
         if (direct !== undefined) return direct;
         const lanes = state.request.vectorProperties?.[owner];
         const source = state.request.propertySources[owner];
@@ -899,7 +905,7 @@ function emitRecordExpression(state: WriterState, expression: ts.Expression): st
                 `Pinned ${state.request.symbolName} reads '${property}', which ` +
                     (source === null
                         ? "our records do not carry and which is read outside a " +
-                            "`?? default` guard."
+                          "`?? default` guard."
                         : "has no source on our record."),
             );
         }
@@ -1000,7 +1006,7 @@ function emitStatement(
         const then = statement.thenStatement;
         const onlyReturn = ts.isBlock(then)
             ? then.statements.length === 1 &&
-                ts.isReturnStatement(then.statements[0]!)
+              ts.isReturnStatement(then.statements[0]!)
             : ts.isReturnStatement(then);
         if (onlyReturn) {
             // The mirror of the fold below: `if (mOff === undefined) return;`
@@ -1009,8 +1015,11 @@ function emitStatement(
             // is missing the return is taken and everything after it is dead.
             const absent = absentOffsetGuardFields(state, statement.expression);
             if (
-                absent?.some((field) =>
-                    !state.request.slots.some((slot) => slot.name === field)
+                absent?.some(
+                    (field) =>
+                        !state.request.slots.some(
+                            (slot) => slot.name === field,
+                        ),
                 )
             ) {
                 return { lines: [], stopped: true };
@@ -1020,11 +1029,12 @@ function emitStatement(
         // `if (vOff !== undefined) { ... }` guards a block on whether the
         // variant declares that field. Generation knows the answer, so the
         // block is inlined or dropped rather than becoming a runtime branch.
-        const guarded = guardedField(state, statement.expression) ??
+        const guarded =
+            guardedField(state, statement.expression) ??
             guardedFieldByHas(statement.expression);
         if (guarded !== undefined) {
-            const declares = state.request.slots.some((slot) =>
-                slot.name === guarded
+            const declares = state.request.slots.some(
+                (slot) => slot.name === guarded,
             );
             if (!declares) return { lines: [], stopped: false };
             const body = ts.isBlock(then) ? then.statements : [then];
@@ -1103,10 +1113,9 @@ function emitPlainStatement(
                     }
                     const property =
                         element.propertyName?.getText(state.file) ??
-                            element.name.text;
+                        element.name.text;
                     const local = element.name.text;
-                    const source =
-                        state.request.propertySources[property];
+                    const source = state.request.propertySources[property];
                     if (source === undefined || source === null) {
                         throw new Error(
                             `Pinned ${state.request.symbolName} destructures ` +
@@ -1114,8 +1123,7 @@ function emitPlainStatement(
                                 "record.",
                         );
                     }
-                    const lanes =
-                        state.request.vectorProperties?.[property];
+                    const lanes = state.request.vectorProperties?.[property];
                     if (lanes !== undefined) {
                         state.vectorLocals.set(local, {
                             lanes,
@@ -1123,17 +1131,16 @@ function emitPlainStatement(
                         });
                         state.vectorLocalOrigins.set(local, property);
                         if (
-                            state.request.laneSources?.[property] ===
-                                undefined
+                            state.request.laneSources?.[property] === undefined
                         ) {
-                            lines.push(
-                                `    const auto& ${local} = ${source};`,
-                            );
+                            lines.push(`    const auto& ${local} = ${source};`);
                         }
                         continue;
                     }
                     state.locals.add(local);
-                    lines.push(`    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`);
+                    lines.push(
+                        `    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`,
+                    );
                 }
                 continue;
             }
@@ -1152,19 +1159,27 @@ function emitPlainStatement(
                 state.nullLocals.add(name);
                 continue;
             }
-            const vectorHook = hookName ? state.request.vectorHooks?.[hookName] : undefined;
+            const vectorHook = hookName
+                ? state.request.vectorHooks?.[hookName]
+                : undefined;
             if (vectorHook) {
                 if (!state.request.laneSources?.[vectorHook.property]) {
-                    throw new Error(`Pinned vector hook '${hookName}' has no mapped lanes.`);
+                    throw new Error(
+                        `Pinned vector hook '${hookName}' has no mapped lanes.`,
+                    );
                 }
-                state.vectorLocals.set(name, { lanes: vectorHook.lanes, kind: "array" });
+                state.vectorLocals.set(name, {
+                    lanes: vectorHook.lanes,
+                    kind: "array",
+                });
                 state.vectorLocalOrigins.set(name, vectorHook.property);
                 continue;
             }
             // `const off = offsets.get("x") / 4` is the pin's own indexing, and
             // the offsets are known at generation, so the local folds away.
             if (isOffsetsLookup(binding.initializer)) {
-                const field = offsetsLookupField(binding.initializer) ??
+                const field =
+                    offsetsLookupField(binding.initializer) ??
                     // A shared helper builds its key from a template
                     // (`offsets.get(`${texName}UVm`)`), so the literal name is
                     // the caller's base field; only the trailing `m`/`t` says
@@ -1284,9 +1299,9 @@ function emitPlainStatement(
             [ts.SyntaxKind.AsteriskEqualsToken, "*="],
         ]);
         return [
-            `    ${statement.expression.left.text} ${
-                operators.get(statement.expression.operatorToken.kind)
-            } ${emitExpression(state, statement.expression.right)};`,
+            `    ${statement.expression.left.text} ${operators.get(
+                statement.expression.operatorToken.kind,
+            )} ${emitExpression(state, statement.expression.right)};`,
         ];
     }
     if (
@@ -1307,12 +1322,13 @@ function emitPlainStatement(
         }
         const lane = dataLane(state, target.argumentExpression);
         const slot = slotAtLane(state.request, lane);
-        const member = slot.lanes === 1
-            ? `out.${slot.field}`
-            : `out.${slot.field}[${slot.lane}]`;
+        const member =
+            slot.lanes === 1
+                ? `out.${slot.field}`
+                : `out.${slot.field}[${slot.lane}]`;
         return [
             `    ${member} = static_cast<float>(` +
-            `${emitExpression(state, statement.expression.right)});`,
+                `${emitExpression(state, statement.expression.right)});`,
         ];
     }
     // `for (const ext of _getPbrExts().values()) { ext.writeUbo(...) }` — each
@@ -1330,7 +1346,7 @@ function emitPlainStatement(
         if (nestedSources !== undefined) {
             // The pin passes the transform's base name as a string literal.
             const nameArgument = call.arguments.find((argument) =>
-                ts.isStringLiteral(argument)
+                ts.isStringLiteral(argument),
             );
             if (!nameArgument || !ts.isStringLiteral(nameArgument)) {
                 throw new Error(
@@ -1352,8 +1368,8 @@ function emitPlainStatement(
             const base = declares(`${literal}${suffix}m`)
                 ? `${literal}${suffix}`
                 : declares(literal) && literal.endsWith("m")
-                ? literal.slice(0, -1)
-                : undefined;
+                  ? literal.slice(0, -1)
+                  : undefined;
             if (base === undefined) return [];
             // Every string literal the call passes, against the helper's own
             // parameter names, so a key read off a parameter resolves.
@@ -1361,8 +1377,8 @@ function emitPlainStatement(
             const parameterFields: Record<string, string> = {};
             if (nested) {
                 const literals = call.arguments.filter((argument) =>
-                    ts.isStringLiteral(argument)
-                ) as ts.StringLiteral[];
+                    ts.isStringLiteral(argument),
+                );
                 const named = nested.declaration.parameters.filter(
                     (parameter) => ts.isIdentifier(parameter.name),
                 );
@@ -1468,13 +1484,13 @@ export function lowerPinnedUboWriter(
     // object a factory builds (`createPointLight#_writeLightUbo`).
     const resolved = request.symbolName.includes("#")
         ? context.propertyFunction(
-            request.modulePath,
-            request.symbolName.split("#")[0]!,
-            request.symbolName.split("#")[1]!,
-        )
+              request.modulePath,
+              request.symbolName.split("#")[0]!,
+              request.symbolName.split("#")[1]!,
+          )
         : request.symbolName.includes(".")
-        ? context.methodDeclaration(request.modulePath, request.symbolName)
-        : context.functionDeclaration(request.modulePath, request.symbolName);
+          ? context.methodDeclaration(request.modulePath, request.symbolName)
+          : context.functionDeclaration(request.modulePath, request.symbolName);
     const { file } = resolved;
     const declaration = resolved.declaration;
     if (!declaration.body || !ts.isBlock(declaration.body)) {
@@ -1492,9 +1508,10 @@ export function lowerPinnedUboWriter(
             throw new Error(`Pinned ${symbolName} has no body.`);
         }
         nestedDeclarations[symbolName] = {
-            declaration: nested.declaration as ts.FunctionLikeDeclarationBase & {
-                body: ts.Block;
-            },
+            declaration:
+                nested.declaration as ts.FunctionLikeDeclarationBase & {
+                    body: ts.Block;
+                },
         };
     }
     const offsetLocals = new Map<string, string>();

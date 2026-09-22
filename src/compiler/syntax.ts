@@ -10,19 +10,31 @@
 import ts from "typescript";
 
 /** Literal delimiters are syntax; the native regex consumes only its pattern and flags. */
-export function regularExpressionParts(expression: ts.RegularExpressionLiteral): {pattern:string; flags:string} | undefined {
+export function regularExpressionParts(
+    expression: ts.RegularExpressionLiteral,
+): { pattern: string; flags: string } | undefined {
     const delimiter = expression.text.lastIndexOf("/");
     if (delimiter <= 0) return undefined;
-    return {pattern:expression.text.slice(1, delimiter).replaceAll("\\/", "/"), flags:expression.text.slice(delimiter + 1)};
+    return {
+        pattern: expression.text.slice(1, delimiter).replaceAll("\\/", "/"),
+        flags: expression.text.slice(delimiter + 1),
+    };
 }
 import { someAnalysisNode } from "./analysis-walk.js";
 
 /** Calls, accessors and writes can change an earlier selected receiver/value. */
 export function expressionMayRunCode(expression: ts.Expression): boolean {
-    return someAnalysisNode(expression, node =>
-        ts.isCallExpression(node) || ts.isNewExpression(node) ||
-        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
-        isUpdateExpression(node) || isAssignmentExpression(node), {functions: "skip", types: "skip"});
+    return someAnalysisNode(
+        expression,
+        (node) =>
+            ts.isCallExpression(node) ||
+            ts.isNewExpression(node) ||
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node) ||
+            isUpdateExpression(node) ||
+            isAssignmentExpression(node),
+        { functions: "skip", types: "skip" },
+    );
 }
 
 export interface UnwrapOptions {
@@ -192,7 +204,10 @@ export function mutatingCallTarget(
     node: ts.Node,
     mutatesVia: (method: string) => boolean,
 ): ts.Expression | undefined {
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
+    if (
+        !ts.isCallExpression(node) ||
+        !ts.isPropertyAccessExpression(node.expression)
+    ) {
         return undefined;
     }
     const callee = node.expression;
@@ -217,7 +232,13 @@ export function iteratorMethodCall(
     expression: ts.Expression,
     isLibrary: (identifier: ts.Identifier) => boolean,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
-): { call: ts.CallExpression; method: "entries" | "keys" | "values"; receiver: ts.Expression } | undefined {
+):
+    | {
+          call: ts.CallExpression;
+          method: "entries" | "keys" | "values";
+          receiver: ts.Expression;
+      }
+    | undefined {
     const call = unwrap(expression);
     if (
         !ts.isCallExpression(call) ||
@@ -233,7 +254,10 @@ export function iteratorMethodCall(
     const receiver = call.expression.expression;
     if (
         (ts.isIdentifier(receiver) && isLibrary(receiver)) ||
-        someAnalysisNode(receiver, (node) => ts.isCallExpression(node) || ts.isNewExpression(node))
+        someAnalysisNode(
+            receiver,
+            (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
+        )
     ) {
         return undefined;
     }
@@ -255,28 +279,38 @@ export function isAssignmentExpression(
 }
 
 /** Writable leaves of a destructuring pattern; keys and defaults are reads. */
-export function assignmentTargets(expression: ts.Expression): readonly ts.Expression[] {
+export function assignmentTargets(
+    expression: ts.Expression,
+): readonly ts.Expression[] {
     const target = unwrapExpression(expression);
     if (ts.isOmittedExpression(target)) return [];
     if (ts.isSpreadElement(target)) return assignmentTargets(target.expression);
-    if (ts.isArrayLiteralExpression(target)) return target.elements.flatMap(assignmentTargets);
-    if (ts.isObjectLiteralExpression(target)) return target.properties.flatMap(property =>
-        ts.isPropertyAssignment(property) ? assignmentTargets(property.initializer)
-            : ts.isShorthandPropertyAssignment(property) ? [property.name]
-            : ts.isSpreadAssignment(property) ? assignmentTargets(property.expression) : []);
-    if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    if (ts.isArrayLiteralExpression(target))
+        return target.elements.flatMap(assignmentTargets);
+    if (ts.isObjectLiteralExpression(target))
+        return target.properties.flatMap((property) =>
+            ts.isPropertyAssignment(property)
+                ? assignmentTargets(property.initializer)
+                : ts.isShorthandPropertyAssignment(property)
+                  ? [property.name]
+                  : ts.isSpreadAssignment(property)
+                    ? assignmentTargets(property.expression)
+                    : [],
+        );
+    if (
+        ts.isBinaryExpression(target) &&
+        target.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    )
         return assignmentTargets(target.left);
     return [target];
 }
 
 /** A prefix or postfix `++`/`--`. */
 export type UpdateExpression = (
-    | ts.PrefixUnaryExpression
-    | ts.PostfixUnaryExpression
+    ts.PrefixUnaryExpression | ts.PostfixUnaryExpression
 ) & {
     readonly operator:
-        | ts.SyntaxKind.PlusPlusToken
-        | ts.SyntaxKind.MinusMinusToken;
+        ts.SyntaxKind.PlusPlusToken | ts.SyntaxKind.MinusMinusToken;
 };
 
 export function isUpdateExpression(node: ts.Node): node is UpdateExpression {
@@ -312,7 +346,9 @@ export function propertyNameText(name: ts.PropertyName): string | undefined {
 export function objectProperty(
     object: ts.ObjectLiteralExpression,
     name: string,
-    propertyName: (name: ts.PropertyName) => string | undefined = propertyNameText,
+    propertyName: (
+        name: ts.PropertyName,
+    ) => string | undefined = propertyNameText,
 ): ts.Expression | undefined {
     for (const property of object.properties) {
         if (

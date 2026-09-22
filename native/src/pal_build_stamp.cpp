@@ -11,8 +11,6 @@
 
 namespace bbl::pal {
 
-const char* bblite_build_stamp() {
-    return BBLITE_BUILD_STAMP;
-}
+const char* bblite_build_stamp() { return BBLITE_BUILD_STAMP; }
 
 } // namespace bbl::pal

@@ -4,7 +4,8 @@ import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 test("reduced-motion source and host rules share the native condition", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import { createEngine } from "@babylonjs/lite";
         await createEngine({});
         const sheet = document.createElement("style");
@@ -13,15 +14,37 @@ test("reduced-motion source and host rules share the native condition", () => {
         const panel = document.createElement("div");
         panel.className = "panel";
         document.body.appendChild(panel);
-    `, { nativeHostUi: { sourcePath: "fixture.json", elements: [], styleRules: [
-        { kind: "class", primary: "panel", reducedMotion: true, style: "animation:none;" },
-    ] } });
-    assert.match(result.cpp, /ui_add_style_rule[^\n]+UiMotionPreference::Reduce/);
-    assert.match(result.cpp, /ui_add_style_rule[^\n]+UiMotionPreference::NoPreference/);
-    assert.match(result.cpp, /ui_add_host_style_rule[^\n]+UiMotionPreference::Reduce/);
+    `,
+        {
+            nativeHostUi: {
+                sourcePath: "fixture.json",
+                elements: [],
+                styleRules: [
+                    {
+                        kind: "class",
+                        primary: "panel",
+                        reducedMotion: true,
+                        style: "animation:none;",
+                    },
+                ],
+            },
+        },
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_style_rule[^\n]+UiMotionPreference::Reduce/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_style_rule[^\n]+UiMotionPreference::NoPreference/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_host_style_rule[^\n]+UiMotionPreference::Reduce/,
+    );
 });
 
-test("reduced-motion changes update conditional styles without altering the system preference", t => {
+test("reduced-motion changes update conditional styles without altering the system preference", (t) => {
     runRmlUiFixture(t, "ui-media-motion");
 });
 
@@ -34,6 +57,9 @@ test("media rules retain native grid tracks", () => {
             sheet.textContent = "@media (prefers-reduced-motion: reduce){.panel{display:grid;grid-template-columns:${columns};}}";
             document.head.appendChild(sheet);
         `);
-        assert.match(result.cpp, /grid-template-columns:[^\n]+UiMotionPreference::Reduce/);
+        assert.match(
+            result.cpp,
+            /grid-template-columns:[^\n]+UiMotionPreference::Reduce/,
+        );
     }
 });

@@ -26,11 +26,15 @@ export interface CorpusApplication {
     id: string;
     entry: string;
     reference: {
-        source: string; sha256: string;
+        source: string;
+        sha256: string;
         capture?: {
-            frame: number; independentEngines: number;
-            moduleSha256: string; adapterSha256: string;
-            hostPage: string; hostPageSha256: string;
+            frame: number;
+            independentEngines: number;
+            moduleSha256: string;
+            adapterSha256: string;
+            hostPage: string;
+            hostPageSha256: string;
         };
     };
     files: CorpusFile[];
@@ -63,10 +67,7 @@ export interface BabylonLiteCorpusManifest {
 export function readBabylonLiteCorpus(
     repositoryRoot = findRepositoryRoot(),
 ): BabylonLiteCorpusManifest {
-    const path = resolve(
-        repositoryRoot,
-        "upstream/babylon-lite-corpus.json",
-    );
+    const path = resolve(repositoryRoot, "upstream/babylon-lite-corpus.json");
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error(`Invalid Babylon Lite corpus manifest: ${path}.`);

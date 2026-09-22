@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("scalar reads in newly allocated wrappers do not make an input mutable", () => {
     const { cpp } = compileSource(`
@@ -47,16 +50,30 @@ function runDataProgram(name: string, source: string): string {
     const executable = join(output, `${name}.exe`);
     writeFileSync(sourceFile, cpp);
     runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/permissive-",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        sourceFile, "test/fixtures/js-callback/data-engine-stubs.cpp",
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/permissive-",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        sourceFile,
+        "test/fixtures/js-callback/data-engine-stubs.cpp",
     ]);
     execFileSync(executable, [], { encoding: "utf8" });
     return cpp;
 }
 
-test("inferred factory records share replaced buffers across stored owners", { skip: !nativeTools }, () => {
-    const cpp = runDataProgram("inferred-pool-identity", `
+test(
+    "inferred factory records share replaced buffers across stored owners",
+    { skip: !nativeTools },
+    () => {
+        const cpp = runDataProgram(
+            "inferred-pool-identity",
+            `
         import { createEngine, createBox } from "babylon-lite";
         import type { Mesh, EngineContext } from "babylon-lite";
         interface Pool { mesh: Mesh; values: Float32Array; count: number; }
@@ -82,14 +99,29 @@ test("inferred factory records share replaced buffers across stored owners", { s
         pool.count += 2;
         if (second.owner.pools[key].values.length !== 3) throw new Error("replacement lost");
         if (second.owner.pools[key].count !== 3) throw new Error("count alias lost");
-    `);
-    assert.equal((cpp.match(/make_ref<bblscene::PoolData>/g) ?? []).length, 1);
-    assert.ok((cpp.match(/make_ref<bblscene::OwnerData>/g) ?? []).length <= 1);
-    assert.doesNotMatch(cpp, /std::make_shared<(?:double|bbl::js::F32Array)>/);
-});
+    `,
+        );
+        assert.equal(
+            (cpp.match(/make_ref<bblscene::PoolData>/g) ?? []).length,
+            1,
+        );
+        assert.ok(
+            (cpp.match(/make_ref<bblscene::OwnerData>/g) ?? []).length <= 1,
+        );
+        assert.doesNotMatch(
+            cpp,
+            /std::make_shared<(?:double|bbl::js::F32Array)>/,
+        );
+    },
+);
 
-test("runtime numeric tuple predicates preserve indices and short-circuiting", { skip: !nativeTools }, () => {
-    runDataProgram("tuple-predicate-observers", `
+test(
+    "runtime numeric tuple predicates preserve indices and short-circuiting",
+    { skip: !nativeTools },
+    () => {
+        runDataProgram(
+            "tuple-predicate-observers",
+            `
         const values: [number, number, number] = [Math.random(), 1, 2];
         let calls = 0;
         const all = values.every((value, index, array) => {
@@ -103,11 +135,18 @@ test("runtime numeric tuple predicates preserve indices and short-circuiting", {
             return value === 1 && index === 1 && array.length === 3;
         });
         if (!some || calls !== 2) throw new Error("some did not short-circuit");
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("stored scalar records retain their compile-time spread and enumeration metadata", { skip: !nativeTools }, () => {
-    runDataProgram("scalar-record-projections", `
+test(
+    "stored scalar records retain their compile-time spread and enumeration metadata",
+    { skip: !nativeTools },
+    () => {
+        runDataProgram(
+            "scalar-record-projections",
+            `
         import { createEngine, createBox } from "babylon-lite";
         import type { EngineContext } from "babylon-lite";
         interface Point { x: number; z: number; }
@@ -123,8 +162,10 @@ test("stored scalar records retain their compile-time spread and enumeration met
         if (copy.x !== retained[0]!.x || copy.heading !== 4 || values[1] !== point.z) {
             throw new Error("record projection changed");
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
 test("equivalent stored record types agree on native parameter member access", () => {
     const { cpp } = compileSource(`
@@ -142,14 +183,29 @@ test("equivalent stored record types agree on native parameter member access", (
     assert.doesNotMatch(cpp, /bounds\.low/);
 });
 
-test("native numeric producers and typed-array fill/slice retain their ownership rules", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/typed-array-boundary-check");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "typed-array-boundary-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/permissive-",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        "test/fixtures/js-callback/typed-array-boundary-check.cpp",
-    ]);
-    assert.match(execFileSync(executable, [], { encoding: "utf8" }), /typed-array-boundary-check: ok/);
-});
+test(
+    "native numeric producers and typed-array fill/slice retain their ownership rules",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/typed-array-boundary-check");
+        mkdirSync(output, { recursive: true });
+        const executable = join(output, "typed-array-boundary-check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/permissive-",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "test/fixtures/js-callback/typed-array-boundary-check.cpp",
+        ]);
+        assert.match(
+            execFileSync(executable, [], { encoding: "utf8" }),
+            /typed-array-boundary-check: ok/,
+        );
+    },
+);

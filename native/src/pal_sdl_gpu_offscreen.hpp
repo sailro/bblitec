@@ -13,9 +13,10 @@ struct SdlOffscreenDevice final : OffscreenDevice {
 
 struct SdlOffscreenImage final : OffscreenImage {
     SdlOffscreenImage(SDL_GPUDevice* owner, std::uint32_t width, std::uint32_t height)
-        : device(owner), texture(create_frame_texture(owner,
-              SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_SAMPLECOUNT_1,
-              width, height, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER)) {}
+        : device(owner),
+          texture(create_frame_texture(
+              owner, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_SAMPLECOUNT_1, width, height,
+              SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER)) {}
     ~SdlOffscreenImage() override { SDL_ReleaseGPUTexture(device, texture); }
     SDL_GPUDevice* device;
     SDL_GPUTexture* texture;
@@ -23,7 +24,7 @@ struct SdlOffscreenImage final : OffscreenImage {
 
 /** Three GPU images, reused only after the presenter releases its GPU fences. */
 class SdlOffscreenTarget {
-  public:
+public:
     explicit SdlOffscreenTarget(SDL_GPUDevice* device) : device_(device) {}
 
     SDL_GPUTexture* acquire(std::uint32_t width, std::uint32_t height, OffscreenRun& run) {
@@ -34,12 +35,13 @@ class SdlOffscreenTarget {
     }
 
     void publish(SdlGpuCommand& command, OffscreenRun& run) {
-        if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer offscreen");
+        if (!command.submit())
+            gpu_error("SDL_SubmitGPUCommandBuffer offscreen");
         // The presenter's submit follows this one on the same device queue.
         images_.publish(run);
     }
 
-  private:
+private:
     SDL_GPUDevice* device_;
     OffscreenImagePool<SdlOffscreenImage> images_;
 };

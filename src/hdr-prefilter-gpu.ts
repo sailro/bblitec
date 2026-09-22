@@ -1,18 +1,12 @@
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import {
-    dirname,
-    resolve,
-} from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
-import {
-    findRepositoryRoot,
-    readUpstreamPin,
-} from "./upstream-source.js";
+import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
 
 export function getHdrGgxPrefilterProvenance() {
@@ -55,9 +49,7 @@ function loadPinnedHdrShaders(): {
         /const equirectToCubeWGSL = ("(?:[^"\\]|\\.)*");/,
     );
     if (!prefilterMatch?.[1] || !equirectMatch?.[1]) {
-        throw new Error(
-            "Pinned Babylon Lite HDR IBL shaders were not found.",
-        );
+        throw new Error("Pinned Babylon Lite HDR IBL shaders were not found.");
     }
     const prefilterCube: unknown = JSON.parse(prefilterMatch[1]);
     const equirectToCube: unknown = JSON.parse(equirectMatch[1]);
@@ -73,7 +65,6 @@ function loadPinnedHdrShaders(): {
     }
     return { equirectToCube, prefilterCube };
 }
-
 
 function concatenateFaces(faces: Uint16Array[]): Uint8Array {
     const faceBytes = faces[0]?.byteLength ?? 0;
@@ -94,7 +85,9 @@ function decodeMip(base64: string): Uint16Array[] {
     const faceBytes = bytes.byteLength / 6;
     const result: Uint16Array[] = [];
     for (let face = 0; face < 6; face += 1) {
-        const copy = Uint8Array.from(bytes.subarray(face * faceBytes, (face + 1) * faceBytes));
+        const copy = Uint8Array.from(
+            bytes.subarray(face * faceBytes, (face + 1) * faceBytes),
+        );
         result.push(new Uint16Array(copy.buffer));
     }
     return result;
@@ -116,11 +109,7 @@ function encodePrefilterLevels(levels: Uint16Array[][]): Uint8Array {
         offset += 4;
         for (const face of mip) {
             out.set(
-                new Uint8Array(
-                    face.buffer,
-                    face.byteOffset,
-                    face.byteLength,
-                ),
+                new Uint8Array(face.buffer, face.byteOffset, face.byteLength),
                 offset,
             );
             offset += face.byteLength;
@@ -130,11 +119,7 @@ function encodePrefilterLevels(levels: Uint16Array[][]): Uint8Array {
 }
 
 function decodePrefilterLevels(bytes: Uint8Array): Uint16Array[][] {
-    const view = new DataView(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength,
-    );
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const mipCount = view.getUint32(0, true);
     let offset = 4;
     const levels: Uint16Array[][] = [];
@@ -222,36 +207,38 @@ async function runPrefilterInChromium(
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>HDR GGX prefilter</title>");
     });
-    return withBrowserPage(server, {
-        serverName: "HDR prefilter server",
-        browserRequirement:
-            "Exact HDR GGX prefiltering requires Chrome or Edge.",
-        browserArgs: webgpuComputeBrowserArgs,
-    }, async (page, origin) => {
-        await page.goto(origin);
-        await page.evaluate(
-            (source) => {
-                (
-                    globalThis as typeof globalThis & {
-                        hdrSource: {
-                            base64: string;
-                            width: number;
-                            height: number;
-                            equirect: boolean;
-                        };
-                    }
-                ).hdrSource = source;
-            },
-            {
-                base64: Buffer.from(sourceBytes).toString("base64"),
-                width: equirect?.width ?? faceSize,
-                height: equirect?.height ?? faceSize,
-                equirect: !!equirect,
-            },
-        );
-        const shaders = loadPinnedHdrShaders();
-        await page.evaluate(
-            (value) => {
+    return withBrowserPage(
+        server,
+        {
+            serverName: "HDR prefilter server",
+            browserRequirement:
+                "Exact HDR GGX prefiltering requires Chrome or Edge.",
+            browserArgs: webgpuComputeBrowserArgs,
+        },
+        async (page, origin) => {
+            await page.goto(origin);
+            await page.evaluate(
+                (source) => {
+                    (
+                        globalThis as typeof globalThis & {
+                            hdrSource: {
+                                base64: string;
+                                width: number;
+                                height: number;
+                                equirect: boolean;
+                            };
+                        }
+                    ).hdrSource = source;
+                },
+                {
+                    base64: Buffer.from(sourceBytes).toString("base64"),
+                    width: equirect?.width ?? faceSize,
+                    height: equirect?.height ?? faceSize,
+                    equirect: !!equirect,
+                },
+            );
+            const shaders = loadPinnedHdrShaders();
+            await page.evaluate((value) => {
                 (
                     globalThis as typeof globalThis & {
                         hdrIblShaders: {
@@ -260,11 +247,9 @@ async function runPrefilterInChromium(
                         };
                     }
                 ).hdrIblShaders = value;
-            },
-            shaders,
-        );
+            }, shaders);
 
-        const result: unknown = await page.evaluate(`(async () => {
+            const result: unknown = await page.evaluate(`(async () => {
             const adapter = await navigator.gpu?.requestAdapter();
             if (!adapter) throw new Error("No WebGPU adapter is available for HDR prefiltering.");
             const device = await adapter.requestDevice();
@@ -485,9 +470,15 @@ async function runPrefilterInChromium(
             device.destroy();
             return encodedMips;
         })()`);
-        if (!Array.isArray(result) || !result.every((entry) => typeof entry === "string")) {
-            throw new Error("HDR GGX prefilter returned an invalid result.");
-        }
-        return result.map((entry) => decodeMip(entry));
-    });
+            if (
+                !Array.isArray(result) ||
+                !result.every((entry) => typeof entry === "string")
+            ) {
+                throw new Error(
+                    "HDR GGX prefilter returned an invalid result.",
+                );
+            }
+            return result.map((entry) => decodeMip(entry));
+        },
+    );
 }

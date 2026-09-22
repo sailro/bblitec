@@ -43,7 +43,9 @@ function anchorPinnedLightMode(): void {
     ): (ts.VariableDeclaration & { initializer: ts.Expression })[] =>
         context.findNodes(
             root,
-            (node): node is ts.VariableDeclaration & {
+            (
+                node,
+            ): node is ts.VariableDeclaration & {
                 initializer: ts.Expression;
             } =>
                 ts.isVariableDeclaration(node) &&

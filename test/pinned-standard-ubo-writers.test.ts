@@ -82,12 +82,21 @@ test("lowers writeStdMaterialData from its own AST", () => {
     assert.match(body, /out\.dc\[0\] = static_cast<float>\(dc\.r\);/);
     assert.match(body, /out\.dc\[2\] = static_cast<float>\(dc\.b\);/);
     assert.match(body, /out\.dc\[3\] = static_cast<float>\(material\.alpha\);/);
-    assert.match(body, /out\.sc\[3\] = static_cast<float>\(material\.specular_power\);/);
+    assert.match(
+        body,
+        /out\.sc\[3\] = static_cast<float>\(material\.specular_power\);/,
+    );
     // `1.0 / mat.bumpLevel` — the arithmetic is the pin's, not restated.
-    assert.match(body, /out\.bs = static_cast<float>\(1\.0f \/ material\.bump_level\);/);
+    assert.match(
+        body,
+        /out\.bs = static_cast<float>\(1\.0f \/ material\.bump_level\);/,
+    );
     // `textureLevel` is the writer's own parameter, resolved like a capture.
     assert.match(body, /out\.tl = static_cast<float>\(texture_level\);/);
-    assert.match(body, /out\.rCm = static_cast<float>\(material\.reflection_coord_mode\);/);
+    assert.match(
+        body,
+        /out\.rCm = static_cast<float>\(material\.reflection_coord_mode\);/,
+    );
     // The pad lanes are never written.
     assert.ok(!body.includes("out._0"));
     assert.ok(!body.includes("out._1"));
@@ -137,36 +146,31 @@ test("emits the Standard header with the pin's own offsets", async () => {
         { diffuseTexture: {}, bumpTexture: {} },
         { fog: true },
     );
-    const header = inlineCpp(pinnedStandardVariantsHeader(
-        context(),
-        "test provenance",
-        [pinnedStandardVariantManifestEntry(variant)],
-    ));
-    // The mirror totals the renderable's own F32(24) scratch: 96 bytes.
-    assert.match(
-        header,
-        /sizeof\(StandardMaterialUniforms\) == 96/,
+    const header = inlineCpp(
+        pinnedStandardVariantsHeader(context(), "test provenance", [
+            pinnedStandardVariantManifestEntry(variant),
+        ]),
     );
+    // The mirror totals the renderable's own F32(24) scratch: 96 bytes.
+    assert.match(header, /sizeof\(StandardMaterialUniforms\) == 96/);
     assert.match(header, /standard_material_ubo_bytes = 96;/);
     // Each field sits where the WGSL layout puts it — the same lanes
     // writeStdMaterialData writes (dc 0, sc 16, ec 32, bs 44, ac 48, tl 60,
     // then the scalars through rCm at 84).
-    for (
-        const [field, offset] of [
-            ["dc", 0],
-            ["sc", 16],
-            ["ec", 32],
-            ["bs", 44],
-            ["ac", 48],
-            ["tl", 60],
-            ["ambTexLvl", 64],
-            ["lmLvl", 68],
-            ["opLvl", 72],
-            ["aCut", 76],
-            ["rLvl", 80],
-            ["rCm", 84],
-        ] as const
-    ) {
+    for (const [field, offset] of [
+        ["dc", 0],
+        ["sc", 16],
+        ["ec", 32],
+        ["bs", 44],
+        ["ac", 48],
+        ["tl", 60],
+        ["ambTexLvl", 64],
+        ["lmLvl", 68],
+        ["opLvl", 72],
+        ["aCut", 76],
+        ["rLvl", 80],
+        ["rCm", 84],
+    ] as const) {
         assert.ok(
             header.includes(
                 `offsetof(StandardMaterialUniforms, ${field}) == ${offset}`,
@@ -202,27 +206,18 @@ test("emits the Standard header with the pin's own offsets", async () => {
         /\{\d+, "up", PinnedBindingKind::uniformBuffer, true, false\},/,
     );
     // Attributes are the pin's own, densely numbered per variant.
-    assert.match(
-        header,
-        /\{0, "position", "vec3<f32>"\},/,
-    );
+    assert.match(header, /\{0, "position", "vec3<f32>"\},/);
     assert.match(header, /\{2, "uv", "vec2<f32>"\},/);
 });
 
 test("the header emitter is deterministic", async () => {
-    const variant = await composePinnedStandardVariant(
-        { diffuseTexture: {} },
-    );
+    const variant = await composePinnedStandardVariant({ diffuseTexture: {} });
     const entries = [pinnedStandardVariantManifestEntry(variant)];
-    const first = inlineCpp(pinnedStandardVariantsHeader(
-        context(),
-        "test provenance",
-        entries,
-    ));
-    const second = inlineCpp(pinnedStandardVariantsHeader(
-        context(),
-        "test provenance",
-        entries,
-    ));
+    const first = inlineCpp(
+        pinnedStandardVariantsHeader(context(), "test provenance", entries),
+    );
+    const second = inlineCpp(
+        pinnedStandardVariantsHeader(context(), "test provenance", entries),
+    );
     assert.equal(second, first);
 });

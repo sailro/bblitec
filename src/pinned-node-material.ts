@@ -262,17 +262,17 @@ function nodeSharedBindings(
         ]),
         ...(compile._envBindings
             ? ([
-                ["env.ibl", compile._envBindings._iblTexture],
-                ["env.iblSampler", compile._envBindings._iblSampler],
-                ["env.brdf", compile._envBindings._brdfLUT],
-                ["env.brdfSampler", compile._envBindings._brdfSampler],
-            ] as const)
+                  ["env.ibl", compile._envBindings._iblTexture],
+                  ["env.iblSampler", compile._envBindings._iblSampler],
+                  ["env.brdf", compile._envBindings._brdfLUT],
+                  ["env.brdfSampler", compile._envBindings._brdfSampler],
+              ] as const)
             : []),
         ...(compile._morphBindings
             ? ([
-                ["morph.deltas", compile._morphBindings._deltasBinding],
-                ["morph.weights", compile._morphBindings._uboBinding],
-            ] as const)
+                  ["morph.deltas", compile._morphBindings._deltasBinding],
+                  ["morph.weights", compile._morphBindings._uboBinding],
+              ] as const)
             : []),
     ];
 }
@@ -559,14 +559,8 @@ function assertServedBuildFlags(
 }
 
 /** Refuse every arm outside the reached slice, naming the block. */
-function assertReachedSlice(
-    material: PinnedNodeMaterial,
-    label: string,
-): void {
-    if (
-        material._graph.needsAlphaBlending &&
-        material._graph.alphaMode !== 2
-    ) {
+function assertReachedSlice(material: PinnedNodeMaterial, label: string): void {
+    if (material._graph.needsAlphaBlending && material._graph.alphaMode !== 2) {
         refuse(
             label,
             `alpha mode ${material._graph.alphaMode}; only BJS ` +
@@ -641,59 +635,62 @@ export async function composeNodeMaterial(
     const device = compositionEngine();
     const engine = device.engine;
     if (pinnedBlockLoader && blockEmitters.length > 0) {
-        throw new Error("A node material cannot combine pinned and closed block loaders.");
+        throw new Error(
+            "A node material cannot combine pinned and closed block loaders.",
+        );
     }
     const emitterModules = new Map(
         blockEmitters.map(({ className, module }) => [className, module]),
     );
-    const blockLoader = pinnedBlockLoader === "geometry"
-        ? (await importPinnedModule<{
-              loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown>;
-          }>("material/node/node-geometry-block-loader.js")).loadNodeBlockEmitterWithGeometry
-        : blockEmitters.length > 0
-        ? async (className: string): Promise<unknown> => {
-              const emitterModule = emitterModules.get(className);
-              if (!emitterModule) {
-                  throw new Error(
-                      `NodeMaterial: custom block loader has no emitter ` +
-                          `for block "${className}"`,
-                  );
+    const blockLoader =
+        pinnedBlockLoader === "geometry"
+            ? (
+                  await importPinnedModule<{
+                      loadNodeBlockEmitterWithGeometry(
+                          this: void,
+                          className: string,
+                      ): Promise<unknown>;
+                  }>("material/node/node-geometry-block-loader.js")
+              ).loadNodeBlockEmitterWithGeometry
+            : blockEmitters.length > 0
+              ? async (className: string): Promise<unknown> => {
+                    const emitterModule = emitterModules.get(className);
+                    if (!emitterModule) {
+                        throw new Error(
+                            `NodeMaterial: custom block loader has no emitter ` +
+                                `for block "${className}"`,
+                        );
+                    }
+                    const imported =
+                        await importPinnedModule<unknown>(emitterModule);
+                    if (
+                        typeof imported !== "object" ||
+                        imported === null ||
+                        !("emitter" in imported) ||
+                        imported.emitter === undefined
+                    ) {
+                        throw new Error(
+                            `NodeMaterial: pinned block module '${emitterModule}' ` +
+                                "does not export 'emitter'.",
+                        );
+                    }
+                    return imported.emitter;
+                }
+              : undefined;
+    const material = await module.parseNodeMaterialFromSnippet(engine, "", {
+        json,
+        ...(blockLoader ? { blockLoader } : {}),
+        ...(shadowLights.length > 0
+            ? {
+                  shadowGenerators: shadowLights.map(({ shadowType }) => ({
+                      _shadowType: shadowType,
+                  })),
+                  shadowLightIndices: shadowLights.map(
+                      ({ lightIndex }) => lightIndex,
+                  ),
               }
-              const imported = await importPinnedModule<unknown>(
-                  emitterModule,
-              );
-              if (
-                  typeof imported !== "object" ||
-                  imported === null ||
-                  !("emitter" in imported) ||
-                  imported.emitter === undefined
-              ) {
-                  throw new Error(
-                      `NodeMaterial: pinned block module '${emitterModule}' ` +
-                          "does not export 'emitter'.",
-                  );
-              }
-              return imported.emitter;
-          }
-        : undefined;
-    const material = await module.parseNodeMaterialFromSnippet(
-        engine,
-        "",
-        {
-            json,
-            ...(blockLoader ? { blockLoader } : {}),
-            ...(shadowLights.length > 0
-                ? {
-                      shadowGenerators: shadowLights.map(({ shadowType }) => ({
-                          _shadowType: shadowType,
-                      })),
-                      shadowLightIndices: shadowLights.map(
-                          ({ lightIndex }) => lightIndex,
-                      ),
-                  }
-                : {}),
-        },
-    );
+            : {}),
+    });
     assertReachedSlice(material, label);
     const attributes = composedAttributes(
         material._state.vertexAttributes.map(({ _name }) => _name),
@@ -731,22 +728,25 @@ export async function composeNodeMaterial(
             texture: binding._texBinding,
             sampler: binding._sampBinding,
         })),
-        inputs: Object.entries(material.inputs).map(([name, input]) => ({ name, type: input.type })),
+        inputs: Object.entries(material.inputs).map(([name, input]) => ({
+            name,
+            type: input.type,
+        })),
         backFaceCulling: material._graph.backFaceCulling,
         alphaBlending: material._graph.needsAlphaBlending,
         envBindings: env
             ? {
-                iblTexture: env._iblTexture,
-                iblSampler: env._iblSampler,
-                brdfLut: env._brdfLUT,
-                brdfSampler: env._brdfSampler,
-            }
+                  iblTexture: env._iblTexture,
+                  iblSampler: env._iblSampler,
+                  brdfLut: env._brdfLUT,
+                  brdfSampler: env._brdfSampler,
+              }
             : null,
         morphBindings: morph
             ? {
-                deltas: morph._deltasBinding,
-                weights: morph._uboBinding,
-            }
+                  deltas: morph._deltasBinding,
+                  weights: morph._uboBinding,
+              }
             : null,
         shadowBindings: material._compile._shadowBindings.map((binding) => ({
             lightIndex: binding._lightIndex,
@@ -859,6 +859,7 @@ async function composeNodeGeometryViews(
                     `raised: ${
                         error instanceof Error ? error.message : String(error)
                     }`,
+                { cause: error },
             );
         }
         assertServedBuildFlags(resources._geomState, viewLabel);
@@ -1012,8 +1013,8 @@ async function composeNodeEsmCaster(
     // Binding 0 is the mesh block, which neither list carries.
     if (
         compiled._esmShadowParamsBinding === 0 ||
-        casterShared.some(([, binding]) =>
-            binding === compiled._esmShadowParamsBinding
+        casterShared.some(
+            ([, binding]) => binding === compiled._esmShadowParamsBinding,
         )
     ) {
         throw new Error(

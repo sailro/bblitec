@@ -35,17 +35,25 @@ export function errorConstructor(
 
 /**
  * The Error a native catch binds. The exception's message is copied into
- * one temporary, and the value is that string itself, so `String(e)`,
- * `e.message` and `instanceof Error` all read it without another copy.
+ * one temporary; the error fields refer to it without another string binding.
  */
 export function caughtErrorValue(
-    context: Pick<LoweringServices, "emit" | "allocateTemporaryCppName" | "cppString">,
+    context: Pick<
+        LoweringServices,
+        "emit" | "allocateTemporaryCppName" | "cppString"
+    >,
     exceptionCpp: string,
 ): Value {
     const pinned = context.allocateTemporaryCppName("caught_message");
-    context.emit(`const std::string ${pinned} = std::string(${exceptionCpp}.what());`);
-    const message: Extract<Value, { kind: "data" }> = { kind: "data", cpp: pinned, dataType: { kind: "string" } };
-    return errorValue(message, "Error", context.cppString, message);
+    context.emit(
+        `const std::string ${pinned} = std::string(${exceptionCpp}.what());`,
+    );
+    const message: Extract<Value, { kind: "data" }> = {
+        kind: "data",
+        cpp: pinned,
+        dataType: { kind: "string" },
+    };
+    return errorValue(message, "Error", context.cppString);
 }
 
 /**
@@ -58,7 +66,10 @@ export function errorValue(
     message: Value,
     name: string,
     cppString: (text: string) => string,
-    base: Extract<Value, { kind: "record" | "data" }> = { kind: "record", cpp: "" },
+    base: Extract<Value, { kind: "record" | "data" }> = {
+        kind: "record",
+        cpp: "",
+    },
 ): Value {
     return {
         ...base,
@@ -85,13 +96,16 @@ function isDroppedCause(options: ts.Expression): boolean {
         ts.isObjectLiteralExpression(options) &&
         options.properties.every(
             (property) =>
-                (ts.isShorthandPropertyAssignment(property) && property.name.text === "cause") ||
+                (ts.isShorthandPropertyAssignment(property) &&
+                    property.name.text === "cause") ||
                 (ts.isPropertyAssignment(property) &&
                     ts.isIdentifier(property.name) &&
                     property.name.text === "cause" &&
                     !someAnalysisNode(
                         property.initializer,
-                        (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
+                        (node) =>
+                            ts.isCallExpression(node) ||
+                            ts.isNewExpression(node),
                     )),
         )
     );
@@ -121,7 +135,10 @@ export function compileErrorConstruction(
 ): Value {
     const arguments_ = expression.arguments ?? [];
     const [argument, options] = arguments_;
-    if (arguments_.length > 2 || (options !== undefined && !isDroppedCause(context.unwrap(options)))) {
+    if (
+        arguments_.length > 2 ||
+        (options !== undefined && !isDroppedCause(context.unwrap(options)))
+    ) {
         context.fail(
             expression,
             `new ${name} takes a message and a { cause } option; the native exception carries the message alone.`,
@@ -129,7 +146,11 @@ export function compileErrorConstruction(
     }
     let message: Value;
     if (!argument) {
-        message = { kind: "string", cpp: context.cppString(""), staticString: "" };
+        message = {
+            kind: "string",
+            cpp: context.cppString(""),
+            staticString: "",
+        };
     } else {
         const value = context.compileValue(argument);
         if (value.staticString !== undefined) {
@@ -145,7 +166,8 @@ export function compileErrorConstruction(
                 argument,
             );
             if (consumer === "held") {
-                const temporary = context.allocateTemporaryCppName("error_message");
+                const temporary =
+                    context.allocateTemporaryCppName("error_message");
                 context.emit(`const std::string ${temporary} = ${cpp};`);
                 cpp = temporary;
             }

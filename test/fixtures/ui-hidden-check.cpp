@@ -2,10 +2,12 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -43,8 +45,11 @@ int main() {
         ui_set_style_property(engine, panel, "display", "");
         display(Rml::Style::Display::None);
         bool refused = false;
-        try { ui_set_attribute(engine, panel, "hidden", "UnTiL-FoUnD"); }
-        catch (const std::runtime_error&) { refused = true; }
+        try {
+            ui_set_attribute(engine, panel, "hidden", "UnTiL-FoUnD");
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
         assert(refused && ui_get_attribute(engine, panel, "hidden").empty());
     }
     SDL_DestroyWindow(window);

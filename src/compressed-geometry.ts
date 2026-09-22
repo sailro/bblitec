@@ -1,6 +1,6 @@
 import { BinaryBuilder } from "./glb-binary-builder.js";
-import {createHash} from "node:crypto";
-import type {AssetDecoders, DracoDecoderAssets} from "./asset-decoders.js";
+import { createHash } from "node:crypto";
+import type { AssetDecoders, DracoDecoderAssets } from "./asset-decoders.js";
 // Compressed and quantized glTF geometry, resolved at generation time.
 //
 // `KHR_draco_mesh_compression` and `EXT_meshopt_compression` are decoded by
@@ -202,8 +202,7 @@ async function loadPinnedMeshoptDecoder(): Promise<MeshoptDecoderModule> {
                 filename: "meshopt_decoder.js",
             });
             const decoder = sandbox.MeshoptDecoder as
-                | MeshoptDecoderModule
-                | undefined;
+                MeshoptDecoderModule | undefined;
             if (!decoder || typeof decoder.decodeGltfBuffer !== "function") {
                 throw new Error(
                     "The pinned meshopt_decoder.js did not define MeshoptDecoder.",
@@ -254,7 +253,9 @@ async function preparePinnedMeshoptDecoder(): Promise<void> {
             });
             try {
                 const module = await importPinnedModule<{
-                    getMeshoptDecoder(): Promise<MeshoptDecoderModule>;
+                    getMeshoptDecoder(
+                        this: void,
+                    ): Promise<MeshoptDecoderModule>;
                 }>("loader-gltf/meshopt-decode.js");
                 const captured = await module.getMeshoptDecoder();
                 if (captured !== decoder) {
@@ -296,16 +297,26 @@ async function preparePinnedMeshoptDecoder(): Promise<void> {
  * else; the WebAssembly is handed over directly rather than fetched, which
  * is what keeps the whole thing offline.
  */
-async function loadDracoModule(configured?: DracoDecoderAssets): Promise<DracoModule> {
-    const key = configured ? createHash("sha256").update(String(configured.javascript.length)).update(":")
-        .update(configured.javascript).update(configured.wasm).digest("hex") : "pinned";
+async function loadDracoModule(
+    configured?: DracoDecoderAssets,
+): Promise<DracoModule> {
+    const key = configured
+        ? createHash("sha256")
+              .update(String(configured.javascript.length))
+              .update(":")
+              .update(configured.javascript)
+              .update(configured.wasm)
+              .digest("hex")
+        : "pinned";
     const previous = dracoModules.get(key);
     if (previous) return previous;
     const loading = (async () => {
-        const [glue, wasm] = configured ? [configured.javascript, configured.wasm] : await Promise.all([
-            pinnedArtifact("draco_decoder.js"),
-            pinnedArtifact("draco_decoder.wasm"),
-        ]);
+        const [glue, wasm] = configured
+            ? [configured.javascript, configured.wasm]
+            : await Promise.all([
+                  pinnedArtifact("draco_decoder.js"),
+                  pinnedArtifact("draco_decoder.wasm"),
+              ]);
         const sandbox: Record<string, unknown> = {
             console,
             WebAssembly,
@@ -325,8 +336,7 @@ async function loadDracoModule(configured?: DracoDecoderAssets): Promise<DracoMo
             filename: "draco_decoder.js",
         });
         const factory = sandbox.DracoDecoderModule as
-            | ((options: unknown) => Promise<DracoModule>)
-            | undefined;
+            ((options: unknown) => Promise<DracoModule>) | undefined;
         if (typeof factory !== "function") {
             throw new Error(
                 "draco_decoder.js did not define DracoDecoderModule.",
@@ -335,8 +345,12 @@ async function loadDracoModule(configured?: DracoDecoderAssets): Promise<DracoMo
         return factory({ wasmBinary: new Uint8Array(wasm) });
     })();
     dracoModules.set(key, loading);
-    try { return await loading; }
-    catch (error) { if (dracoModules.get(key) === loading) dracoModules.delete(key); throw error; }
+    try {
+        return await loading;
+    } catch (error) {
+        if (dracoModules.get(key) === loading) dracoModules.delete(key);
+        throw error;
+    }
 }
 
 interface DecodedPrimitive {
@@ -530,10 +544,14 @@ async function decodeDracoGlb(
                 start + numberValue(view.byteLength),
             );
 
-            const attributeMap = (asObject(draco.attributes) ??
-                {}) as Record<string, number>;
-            const declared = (asObject(primitive.attributes) ??
-                {}) as Record<string, number>;
+            const attributeMap = (asObject(draco.attributes) ?? {}) as Record<
+                string,
+                number
+            >;
+            const declared = (asObject(primitive.attributes) ?? {}) as Record<
+                string,
+                number
+            >;
             const componentCounts: Record<string, number> = {};
             for (const name of Object.keys(attributeMap)) {
                 const accessor = accessors[declared[name] ?? -1];
@@ -569,8 +587,7 @@ async function decodeDracoGlb(
                     continue;
                 }
                 if (data instanceof Int32Array) {
-                    const componentCount =
-                        data.length / decoded.vertexCount;
+                    const componentCount = data.length / decoded.vertexCount;
                     const existing = accessors[declared[name] ?? -1];
                     const index = addAccessor(
                         encodeUnsignedShortJoints(data, label, name),
@@ -616,9 +633,7 @@ async function decodeDracoGlb(
     const built = binary.build();
     glb.binary = built;
     json.buffers = [{ byteLength: built.length }];
-    console.log(
-        `Decoded ${decodedPrimitives} Draco primitive(s) in ${label}.`,
-    );
+    console.log(`Decoded ${decodedPrimitives} Draco primitive(s) in ${label}.`);
     return true;
 }
 
@@ -704,10 +719,7 @@ async function runPinnedPreParse(
     if (!pass.trigger(glb.json)) return false;
     await pass.prepare?.();
     const feature = await loadPreParseFeature(pass);
-    const rewritten = await feature.preParse?.(
-        glb.json,
-        binaryChunkView(glb),
-    );
+    const rewritten = await feature.preParse?.(glb.json, binaryChunkView(glb));
     if (!rewritten) {
         throw new Error(
             `${label} ${pass.shape}, but the pinned ${pass.id} feature ` +
@@ -734,8 +746,7 @@ async function runPinnedPreParse(
 const meshoptPreParsePass: PinnedPreParsePass = {
     module: "loader-gltf/gltf-feature-meshopt.js",
     id: MESHOPT_EXTENSION,
-    trigger: (json) =>
-        declaredExtensions(json).includes(MESHOPT_EXTENSION),
+    trigger: (json) => declaredExtensions(json).includes(MESHOPT_EXTENSION),
     verb: "Decompressed",
     shape: `declares ${MESHOPT_EXTENSION}`,
     prepare: preparePinnedMeshoptDecoder,
@@ -831,9 +842,7 @@ async function convertGaussianSplats(
     glb: GlbChunks,
     label: string,
 ): Promise<boolean> {
-    const { extractGltfGaussianSplats } = await import(
-        "./splat-packager.js"
-    );
+    const { extractGltfGaussianSplats } = await import("./splat-packager.js");
     const splats = await extractGltfGaussianSplats(
         glb.json,
         binaryChunkView(glb),
@@ -859,9 +868,7 @@ async function convertGaussianSplats(
         glb.json.accessors = [];
     }
     const bufferViews = reachable ? asRecords(glb.json.bufferViews) : [];
-    const binary = new BinaryBuilder(
-        reachable ? glb.binary : Buffer.alloc(0),
-    );
+    const binary = new BinaryBuilder(reachable ? glb.binary : Buffer.alloc(0));
     glb.json[GAUSSIAN_SPLAT_DOCUMENT_KEY] = splats.map((splat) => ({
         name: splat.name,
         bufferView: appendBufferView(bufferViews, binary, splat.rows),
@@ -930,11 +937,17 @@ export async function resolveGeometryExtensions(
 ): Promise<Uint8Array> {
     const glb = readGlb(bytes);
     if (!glb) return bytes;
-    return await resolveGlbGeometry(glb, label) ? writeGlb(glb.json, glb.binary) : bytes;
+    return (await resolveGlbGeometry(glb, label))
+        ? writeGlb(glb.json, glb.binary)
+        : bytes;
 }
 
 /** Resolve geometry in an already parsed container, retaining its updated BIN bytes. */
-export async function resolveGlbGeometry(glb: GlbChunks, label: string, decoders: AssetDecoders = {}): Promise<boolean> {
+export async function resolveGlbGeometry(
+    glb: GlbChunks,
+    label: string,
+    decoders: AssetDecoders = {},
+): Promise<boolean> {
     let rewrote = false;
     for (const pass of pinnedPreParsePasses) {
         rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;

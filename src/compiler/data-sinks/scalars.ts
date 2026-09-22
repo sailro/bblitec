@@ -3,108 +3,199 @@ import ts from "typescript";
 import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import {eventTargetCpp} from "../dom-targets.js";
-import {compileJsonRecordView, compileJsonTupleView} from "../json-record-views.js";
+import { eventTargetCpp } from "../dom-targets.js";
+import {
+    compileJsonRecordView,
+    compileJsonTupleView,
+} from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
-function expressionNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, expression: ts.Expression, _unwrapped: ts.Expression): string {
+function expressionNumber(
+    _dataType: DataType<"number">,
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+    _unwrapped: ts.Expression,
+): string {
     return lowerer.context.compileNumber(expression, "double");
 }
 
-function expressionBoolean(_dataType: DataType<"boolean">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+function expressionBoolean(
+    _dataType: DataType<"boolean">,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
     return lowerer.context.compileCondition(unwrapped);
 }
 
-function expressionBorrowedPlatformEvent(dataType: DataType<"borrowed-platform-event">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+function expressionBorrowedPlatformEvent(
+    dataType: DataType<"borrowed-platform-event">,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
     const value = lowerer.context.compileValue(unwrapped);
-    return valueBorrowedPlatformEvent(dataType, lowerer, value, unwrapped) ??
-        lowerer.context.fail(unwrapped, `A borrowed DOM ${dataType.event} event must come from the active synchronous platform callback.`);
+    return (
+        valueBorrowedPlatformEvent(dataType, lowerer, value, unwrapped) ??
+        lowerer.context.fail(
+            unwrapped,
+            `A borrowed DOM ${dataType.event} event must come from the active synchronous platform callback.`,
+        )
+    );
 }
 
-function expressionString(dataType: DataType<"string">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+function expressionString(
+    dataType: DataType<"string">,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
     return lowerer.compileStringSink(unwrapped, dataType);
 }
 
-function expressionJson(dataType: DataType<"json">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
-    return lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), dataType, unwrapped);
+function expressionJson(
+    dataType: DataType<"json">,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
+    return lowerer.compileKnownValueForSink(
+        lowerer.context.compileValue(unwrapped),
+        dataType,
+        unwrapped,
+    );
 }
 
-function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+function valueJson(
+    _dataType: DataType<"json">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
     lowerer.context.reachJson();
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
     }
-    if (value.kind === "json-null") return value.cpp === "std::nullopt"
-        ? "bbl::js::JsonValue{}" : "bbl::js::JsonValue::null_value()";
+    if (value.kind === "json-null")
+        return value.cpp === "std::nullopt"
+            ? "bbl::js::JsonValue{}"
+            : "bbl::js::JsonValue::null_value()";
     if (value.kind === "record" && !value.cpp) {
         const view = compileJsonRecordView(lowerer, value, node);
         if (view !== undefined) return view;
     }
-    if (value.kind === "tuple" && !value.cpp) return compileJsonTupleView(lowerer, value, node);
-    const type = value.dataType ?? (value.kind === "number" || value.kind === "boolean" || value.kind === "string"
-        ? {kind: value.kind} : undefined);
-    const cpp = value.kind === "number" ? lowerer.context.castNumber(value, "double") : value.cpp;
-    return type ? lowerer.context.dataTypes.jsonValueCpp(type, cpp, node) : undefined;
+    if (value.kind === "tuple" && !value.cpp)
+        return compileJsonTupleView(lowerer, value, node);
+    const type =
+        value.dataType ??
+        (value.kind === "number" ||
+        value.kind === "boolean" ||
+        value.kind === "string"
+            ? { kind: value.kind }
+            : undefined);
+    const cpp =
+        value.kind === "number"
+            ? lowerer.context.castNumber(value, "double")
+            : value.cpp;
+    return type
+        ? lowerer.context.dataTypes.jsonValueCpp(type, cpp, node)
+        : undefined;
 }
 
-function valuePromise(type: DataType<"promise">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+function valuePromise(
+    type: DataType<"promise">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
     if (value.kind !== "promise") return undefined;
     const types = lowerer.context.dataTypes;
     const result = type.result;
     const expected = result ? types.cppType(result) : "bbl::js::PromiseVoid";
     if (value.promiseType === expected) return value.cpp;
     let converted: string | undefined;
-    if (value.promiseResult?.kind === "void" && result &&
-        (result.kind === "optional" || result.kind === "function" || result.kind === "json" ||
-            (result.kind === "struct" && types.isReferenceStruct(result.name)))) {
+    if (
+        value.promiseResult?.kind === "void" &&
+        result &&
+        (result.kind === "optional" ||
+            result.kind === "function" ||
+            result.kind === "json" ||
+            (result.kind === "struct" && types.isReferenceStruct(result.name)))
+    ) {
         converted = `${expected}{}`;
-    } else if (result?.kind === "optional" && value.promiseType === types.cppType(result.inner)) {
+    } else if (
+        result?.kind === "optional" &&
+        value.promiseType === types.cppType(result.inner)
+    ) {
         converted = `${expected}{value}`;
     }
-    if (!converted) return lowerer.context.fail(node, `Promise storage requires ${expected}, received ${value.promiseType}.`);
+    if (!converted)
+        return lowerer.context.fail(
+            node,
+            `Promise storage requires ${expected}, received ${value.promiseType}.`,
+        );
     return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& value) -> ${expected} { return ${converted}; })`;
 }
 
-function valueNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
+function valueNumber(
+    _dataType: DataType<"number">,
+    lowerer: DataSinkHost,
+    value: Value,
+    _node: ts.Node,
+): string | undefined {
     // A parsed document coerces at the sink, which is where
     // JavaScript coerces one: `Number(document)`.
     if (isJsonValue(value)) {
         return lowerer.context.castNumber(value, "double");
     }
-    if (value.kind !== "number")
-        return undefined;
+    if (value.kind !== "number") return undefined;
     // A data-model number is a native double, which is the
     // width `castNumber` writes a static lane at.
     return lowerer.context.castNumber(value, "double");
 }
 
-function valueBoolean(_dataType: DataType<"boolean">, _lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
-    if (value.kind === "boolean")
-        return value.cpp;
+function valueBoolean(
+    _dataType: DataType<"boolean">,
+    _lowerer: DataSinkHost,
+    value: Value,
+    _node: ts.Node,
+): string | undefined {
+    if (value.kind === "boolean") return value.cpp;
     if (isJsonValue(value)) {
         return `${value.cpp}.truthy()`;
     }
     return undefined;
 }
 
-function valueBorrowedPlatformEvent(dataType: DataType<"borrowed-platform-event">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
-    const compatible = dataType.event === "error" || dataType.event === "rejection"
-        ? value.nativeErrorEvent && value.recordProperties?.type?.staticString === (dataType.event === "error" ? "error" : "unhandledrejection")
-        : dataType.event === "event"
-        ? value.kind === "platform-keyboard-event" ||
-            value.kind === "platform-mouse-event"
-        : value.kind ===
-            `platform-${dataType.event}-event`;
-    if (!compatible)
-        return undefined;
+function valueBorrowedPlatformEvent(
+    dataType: DataType<"borrowed-platform-event">,
+    lowerer: DataSinkHost,
+    value: Value,
+    _node: ts.Node,
+): string | undefined {
+    const compatible =
+        dataType.event === "error" || dataType.event === "rejection"
+            ? value.nativeErrorEvent &&
+              value.recordProperties?.type?.staticString ===
+                  (dataType.event === "error" ? "error" : "unhandledrejection")
+            : dataType.event === "event"
+              ? value.kind === "platform-keyboard-event" ||
+                value.kind === "platform-mouse-event"
+              : value.kind === `platform-${dataType.event}-event`;
+    if (!compatible) return undefined;
     return dataType.event === "event"
         ? `bbl::js::BorrowedEvent(${value.cpp})`
         : `${lowerer.context.dataTypes.cppType(dataType)}(${value.cpp})`;
 }
 
-function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+function valueString(
+    _dataType: DataType<"string">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
     if (value.staticString !== undefined) {
         return lowerer.context.cppString(value.staticString);
     }
@@ -115,13 +206,15 @@ function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value
         // just like a data-model string leaf below.
         return value.cpp;
     }
-    if (value.kind === "data" &&
-        value.dataType?.kind === "string") {
+    if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
-    if (value.kind === "data" &&
-        value.dataType?.kind === "enum") {
-        return lowerer.context.dataTypes.enumToStringCpp(value.dataType, value.cpp, node);
+    if (value.kind === "data" && value.dataType?.kind === "enum") {
+        return lowerer.context.dataTypes.enumToStringCpp(
+            value.dataType,
+            value.cpp,
+            node,
+        );
     }
     if (isJsonValue(value)) {
         return `${value.cpp}.to_string()`;
@@ -129,38 +222,87 @@ function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value
     return undefined;
 }
 
-export const scalarsSinks: DataSinkOperations<"event-target" | "search-params" | "http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+export const scalarsSinks: DataSinkOperations<
+    | "event-target"
+    | "search-params"
+    | "http-response"
+    | "promise"
+    | "storage"
+    | "date"
+    | "date-time-format"
+    | "number"
+    | "boolean"
+    | "string"
+    | "json"
+    | "borrowed-platform-event"
+> = {
     "search-params": {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
-        value: (_type, _lowerer, value) => value.dataType?.kind === "search-params" ? value.cpp : undefined,
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "search-params" ? value.cpp : undefined,
     },
     "event-target": {
-        expression: (type, lowerer, expression) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(expression), type, expression),
-        value: (_type, lowerer, value, node) => eventTargetCpp(lowerer.context, value, node),
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value, node) =>
+            eventTargetCpp(lowerer.context, value, node),
     },
     "http-response": {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
-        value: (_type, _lowerer, value) => value.dataType?.kind === "http-response" ? value.cpp : undefined,
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "http-response" ? value.cpp : undefined,
     },
     promise: {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
         value: valuePromise,
     },
     storage: {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
-        value: (_type, _lowerer, value) => value.dataType?.kind === "storage" ? value.cpp : undefined,
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "storage" ? value.cpp : undefined,
     },
     "date-time-format": {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) => value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
     },
-    "date": {
-        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
-        value: (_type, _lowerer, value) => value.dataType?.kind === "date" ? value.cpp : undefined,
+    date: {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "date" ? value.cpp : undefined,
     },
-    "number": { expression: expressionNumber, value: valueNumber },
-    "boolean": { expression: expressionBoolean, value: valueBoolean },
-    "string": { expression: expressionString, value: valueString },
-    "json": { expression: expressionJson, value: valueJson },
-    "borrowed-platform-event": { expression: expressionBorrowedPlatformEvent, value: valueBorrowedPlatformEvent }
+    number: { expression: expressionNumber, value: valueNumber },
+    boolean: { expression: expressionBoolean, value: valueBoolean },
+    string: { expression: expressionString, value: valueString },
+    json: { expression: expressionJson, value: valueJson },
+    "borrowed-platform-event": {
+        expression: expressionBorrowedPlatformEvent,
+        value: valueBorrowedPlatformEvent,
+    },
 };

@@ -5,35 +5,71 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { CompileError, compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools();
-for (const workers of [false, true]) test(`DOM phases and listener ownership with workers=${workers}`, {skip: !nativeTools}, () => {
-    const output = resolve(`artifacts/dom-event-check-${workers ? "workers" : "scene"}`);
-    mkdirSync(output, {recursive: true});
-    const executable = join(output, "dom-event-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        "test/fixtures/js-callback/dom-event-check.cpp",
-    ]);
-    assert.match(execFileSync(executable, [], {encoding: "utf8"}), /dom-event-check: ok/);
-});
+for (const workers of [false, true])
+    test(
+        `DOM phases and listener ownership with workers=${workers}`,
+        { skip: !nativeTools },
+        () => {
+            const output = resolve(
+                `artifacts/dom-event-check-${workers ? "workers" : "scene"}`,
+            );
+            mkdirSync(output, { recursive: true });
+            const executable = join(output, "dom-event-check.exe");
+            runNativeFixtureCompiler(nativeTools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                "native/include",
+                "test/fixtures/js-callback/dom-event-check.cpp",
+            ]);
+            assert.match(
+                execFileSync(executable, [], { encoding: "utf8" }),
+                /dom-event-check: ok/,
+            );
+        },
+    );
 
-test("retained callback snapshots preserve mutable state and survive self-disposal", {
-    skip: !nativeTools,
-}, () => {
-    const output = resolve("artifacts/retained-callback-check");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "retained-callback-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        "test/fixtures/js-callback/retained-callback-check.cpp",
-    ]);
-    assert.match(execFileSync(executable, [], { encoding: "utf8" }), /retained-callback-check: ok/);
-});
+test(
+    "retained callback snapshots preserve mutable state and survive self-disposal",
+    {
+        skip: !nativeTools,
+    },
+    () => {
+        const output = resolve("artifacts/retained-callback-check");
+        mkdirSync(output, { recursive: true });
+        const executable = join(output, "retained-callback-check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "test/fixtures/js-callback/retained-callback-check.cpp",
+        ]);
+        assert.match(
+            execFileSync(executable, [], { encoding: "utf8" }),
+            /retained-callback-check: ok/,
+        );
+    },
+);
 
 const platformPreamble = `
     import { createEngine } from "@babylonjs/lite";
@@ -112,7 +148,10 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
         result.cpp,
         /MousePayloadData\{bbl::js::Borrowed<const bbl::PlatformMouseEvent>\(/,
     );
-    assert.match(result.cpp, /using MousePayload = bbl::js::Ref<MousePayloadData>;/);
+    assert.match(
+        result.cpp,
+        /using MousePayload = bbl::js::Ref<MousePayloadData>;/,
+    );
     assert.match(
         result.cpp,
         /bbl::js::Callback<void\(bblscene::MousePayload\)>/,
@@ -150,29 +189,18 @@ test("lowers Map.get optional Set.delete for found and missing entries", () => {
     `);
 
     assert.equal(
-        (
-            result.cpp.match(
-                /auto v_bblite_optional_chain_\d+ =/g,
-            ) ?? []
-        ).length,
+        (result.cpp.match(/auto v_bblite_optional_chain_\d+ =/g) ?? []).length,
         3,
     );
     assert.equal((result.cpp.match(/\)\.erase\(4\.0\)/g) ?? []).length, 3);
     assert.match(result.cpp, /bbl::js::Nullable<bool>/);
-    assert.match(
-        result.cpp,
-        /nullable_truthy\(v_presentFalse\)/,
-    );
+    assert.match(result.cpp, /nullable_truthy\(v_presentFalse\)/);
 
     const runtime = readFileSync("native/include/bblite/js_data.hpp", "utf8");
-    assert.match(
-        runtime,
-        /!std::is_same_v<std::remove_cvref_t<U>, Nullable>/,
-    );
+    assert.match(runtime, /!std::is_same_v<std::remove_cvref_t<U>, Nullable>/);
 
-    assert.doesNotThrow(
-        () =>
-            compileSource(`
+    assert.doesNotThrow(() =>
+        compileSource(`
                 const groups = new Map<string, Set<number>>();
                 groups.get("missing")?.clear();
             `),
@@ -220,11 +248,7 @@ test("owns an optional Map Set before delete-argument side effects", () => {
     `);
 
     assert.equal(
-        (
-            result.cpp.match(
-                /auto v_bblite_optional_chain_\d+ =/g,
-            ) ?? []
-        ).length,
+        (result.cpp.match(/auto v_bblite_optional_chain_\d+ =/g) ?? []).length,
         3,
     );
     for (const effect of [
@@ -238,10 +262,7 @@ test("owns an optional Map Set before delete-argument side effects", () => {
             "auto v_bblite_optional_chain_",
             match.index,
         );
-        const deleted = result.cpp.indexOf(
-            ").erase(",
-            match.index,
-        );
+        const deleted = result.cpp.indexOf(").erase(", match.index);
         assert.ok(owned >= 0 && owned < match.index);
         assert.ok(deleted > match.index);
     }
@@ -278,10 +299,7 @@ test("keeps optional delete argument mutations path-dependent in manifests", () 
         result.manifest.scenePbrMaterials[0]?.sceneMeshIndices,
         [],
     );
-    assert.equal(
-        result.manifest.scenePbrMaterials[0]?.unknownSceneMesh,
-        true,
-    );
+    assert.equal(result.manifest.scenePbrMaterials[0]?.unknownSceneMesh, true);
     assert.doesNotMatch(
         JSON.stringify(result.manifest.scenePbrMaterials[0]),
         /"sceneMeshIndices":\[1\]/,
@@ -344,10 +362,7 @@ test("erases never and void callback payloads without runtime placeholders", () 
         const unused = count;
     `);
 
-    assert.match(
-        result.cpp,
-        /bbl::js::Set<bbl::js::Callback<void\(\)>>/,
-    );
+    assert.match(result.cpp, /bbl::js::Set<bbl::js::Callback<void\(\)>>/);
     assert.doesNotMatch(result.cpp, /Callback<void\(void\)>/);
     assert.doesNotMatch(result.cpp, /arg_\d+[^)]*void/);
     assert.match(result.cpp, /\(\);/);
@@ -372,12 +387,8 @@ test("evaluates erased void callback defaults before the callback body", () => {
         }
     `);
 
-    const defaultMark = result.cpp.indexOf(
-        "v_marks.add(1.0)",
-    );
-    const bodyMark = result.cpp.indexOf(
-        "v_marks.add(2.0)",
-    );
+    const defaultMark = result.cpp.indexOf("v_marks.add(1.0)");
+    const bodyMark = result.cpp.indexOf("v_marks.add(2.0)");
     assert.ok(defaultMark >= 0);
     assert.ok(bodyMark > defaultMark);
     assert.match(
@@ -403,15 +414,13 @@ test("distinguishes callback expressions in static and runtime loops", () => {
         }
     `);
     const identities = [
-        ...result.cpp.matchAll(
-            /bbl::js::Callback<void\(\)> \w+\{(\d+)u,/g,
-        ),
+        ...result.cpp.matchAll(/bbl::js::Callback<void\(\)> \w+\{(\d+)u,/g),
     ].map((match) => match[1]);
     assert.equal(identities.length, 2);
     assert.equal(new Set(identities).size, 2);
     assert.match(
         result.cpp,
-        /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = \1;\s*\2\(\);/,
+        /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = bbl::js::snapshot_callback\(\1\);\s*\2\(\);/,
     );
 
     const runtime = compileSource(`
@@ -439,11 +448,8 @@ test("distinguishes callback expressions in static and runtime loops", () => {
         }
     `);
     assert.equal(
-        (
-            named.cpp.match(
-                /bbl::js::Callback<void\(\)> \w+\{\d+u,/g,
-            ) ?? []
-        ).length,
+        (named.cpp.match(/bbl::js::Callback<void\(\)> \w+\{\d+u,/g) ?? [])
+            .length,
         1,
     );
 });
@@ -488,7 +494,8 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
 test("inlined class parameters keep borrowed event wrappers alive", () => {
     for (const eventType of ["MouseEvent", "KeyboardEvent", "Event"]) {
         const target = eventType === "KeyboardEvent" ? "window" : "canvas";
-        const eventName = eventType === "KeyboardEvent" ? "keydown" : "mousedown";
+        const eventName =
+            eventType === "KeyboardEvent" ? "keydown" : "mousedown";
         const result = compileSource(`
             ${platformPreamble}
             class Handler {
@@ -502,8 +509,14 @@ test("inlined class parameters keep borrowed event wrappers alive", () => {
             handler.on(event => event.preventDefault());
             ${target}.addEventListener("${eventName}", (event) => handler.consume(event));
         `);
-        assert.match(result.cpp, /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*\[\[maybe_unused\]\] const auto& \w+ = \1\.get\(\);/);
-        assert.doesNotMatch(result.cpp, /const auto& \w+ = bbl::js::Borrowed[^;]+\.get\(\);/);
+        assert.match(
+            result.cpp,
+            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*\[\[maybe_unused\]\] const auto& \w+ = \1\.get\(\);/,
+        );
+        assert.doesNotMatch(
+            result.cpp,
+            /const auto& \w+ = bbl::js::Borrowed[^;]+\.get\(\);/,
+        );
     }
 });
 
@@ -558,7 +571,8 @@ test("refuses borrowed payloads at retained storage and capture sites", () => {
             name: "timer",
             declarations: "",
             body: "setTimeout(() => payload.domEvent.preventDefault(), 0);",
-            pattern: /escaping callback cannot capture platform event value 'payload'/,
+            pattern:
+                /escaping callback cannot capture platform event value 'payload'/,
         },
         {
             name: "listener",
@@ -568,7 +582,8 @@ test("refuses borrowed payloads at retained storage and capture sites", () => {
                     payload.domEvent.preventDefault();
                 });
             `,
-            pattern: /escaping callback cannot capture platform event value 'payload'/,
+            pattern:
+                /escaping callback cannot capture platform event value 'payload'/,
         },
         {
             name: "stored-closure",
@@ -579,7 +594,8 @@ test("refuses borrowed payloads at retained storage and capture sites", () => {
                 };
                 saved.add(later);
             `,
-            pattern: /escaping callback cannot capture platform event value '(?:payload|later)'/,
+            pattern:
+                /escaping callback cannot capture platform event value '(?:payload|later)'/,
         },
         {
             name: "nested-record-array",
@@ -694,8 +710,7 @@ test("follows helper call graphs when checking borrowed callback captures", () =
                         });
                     `,
                     {
-                        fileName:
-                            `test/borrow-helper-${entry.name}.ts`,
+                        fileName: `test/borrow-helper-${entry.name}.ts`,
                     },
                 ),
             (error: unknown) => {

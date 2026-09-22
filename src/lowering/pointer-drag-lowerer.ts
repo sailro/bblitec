@@ -4,68 +4,169 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { lowerMat4InvertCpp, lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    lowerMat4InvertCpp,
+    lowerPinnedFunction,
+} from "./pinned-function-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { lowerRotationPointerDrag } from "./rotation-pointer-drag-lowerer.js";
 
 const POINTER = "src/gizmo/pointer-drag.ts";
 const MATH = "src/gizmo/gizmo-math.ts";
 
-export function lowerPointerDrag(context: LoweringContext, rotation = false): string {
+export function lowerPointerDrag(
+    context: LoweringContext,
+    rotation = false,
+): string {
     const calls = new Map(pinnedNumericMathCallsWithHypot());
-    const materialFactory = context.functionDeclaration("src/gizmo/gizmo-core.ts", "createGizmoMaterials").declaration;
-    const hoverColor = context.numericTuple(materialFactory.parameters[1]!.initializer!, materialFactory.getSourceFile());
-    calls.set("normalizeVec3Obj", (args) => `normalize_vec3(${args.join(", ")})`);
+    const materialFactory = context.functionDeclaration(
+        "src/gizmo/gizmo-core.ts",
+        "createGizmoMaterials",
+    ).declaration;
+    const hoverColor = context.numericTuple(
+        materialFactory.parameters[1]!.initializer!,
+        materialFactory.getSourceFile(),
+    );
+    calls.set(
+        "normalizeVec3Obj",
+        (args) => `normalize_vec3(${args.join(", ")})`,
+    );
     calls.set("dotVec3", (args) => `drag_dot(${args.join(", ")})`);
     const vector = (cpp: string): PinnedBinding => ({ cpp, type: "vec3" });
-    const vec3Literal = (x: string, y: string, z: string): string => `Vec3d{${x}, ${y}, ${z}}`;
-    const parameters = (names: string[]) => names.map((name) => ({
-        pinned: name, kind: "record" as const, cpp: name, cppType: "Vec3d",
-        annotation: "Vec3", binding: vector(name),
-    }));
-    const dot = lowerPinnedFunction(context, "src/math/dot-vec3.ts", "dotVec3",
-        parameters(["a", "b"]), { cppName: "drag_dot", calls, returns: "double" });
+    const vec3Literal = (x: string, y: string, z: string): string =>
+        `Vec3d{${x}, ${y}, ${z}}`;
+    const parameters = (names: string[]) =>
+        names.map((name) => ({
+            pinned: name,
+            kind: "record" as const,
+            cpp: name,
+            cppType: "Vec3d",
+            annotation: "Vec3",
+            binding: vector(name),
+        }));
+    const dot = lowerPinnedFunction(
+        context,
+        "src/math/dot-vec3.ts",
+        "dotVec3",
+        parameters(["a", "b"]),
+        { cppName: "drag_dot", calls, returns: "double" },
+    );
     const ray = context.functionDeclaration(MATH, "rayPlaneIntersect");
-    const rayLowerer = new PinnedNumericLowerer(ray.file, {
-        bindings: new Map(["rayOrigin", "rayDir", "planePoint", "planeNormal"].map((name) => [name, vector(name)])),
-        calls, vec3Literal,
-        returnValue: (expression) => expression?.kind === ts.SyntaxKind.NullKeyword
-            ? "std::nullopt" : rayLowerer.expression(expression!),
-    });
+    const rayLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
+        ray.file,
+        {
+            bindings: new Map(
+                ["rayOrigin", "rayDir", "planePoint", "planeNormal"].map(
+                    (name) => [name, vector(name)],
+                ),
+            ),
+            calls,
+            vec3Literal,
+            returnValue: (expression) =>
+                expression?.kind === ts.SyntaxKind.NullKeyword
+                    ? "std::nullopt"
+                    : rayLowerer.expression(expression!),
+        },
+    );
     const normal = context.functionDeclaration(POINTER, "pickDragPlaneNormal");
-    const normalStart = normal.declaration.body!.statements.findIndex((statement) =>
-        ts.isVariableStatement(statement) && statement.declarationList.declarations[0]?.name.getText(normal.file) === "dx");
-    if (normalStart < 0) context.contractError(normal.declaration, "Missing camera-facing drag plane arithmetic.");
-    const normalLowerer = new PinnedNumericLowerer(normal.file, {
-        bindings: new Map(["camPos", "ref", "axis"].map((name) => [name, vector(name)])),
-        calls, vec3Literal, returnValue: (expression) => normalLowerer.expression(expression!),
-    });
+    const normalStart = normal.declaration.body!.statements.findIndex(
+        (statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations[0]?.name.getText(
+                normal.file,
+            ) === "dx",
+    );
+    if (normalStart < 0)
+        context.contractError(
+            normal.declaration,
+            "Missing camera-facing drag plane arithmetic.",
+        );
+    const normalLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
+        normal.file,
+        {
+            bindings: new Map(
+                ["camPos", "ref", "axis"].map((name) => [name, vector(name)]),
+            ),
+            calls,
+            vec3Literal,
+            returnValue: (expression) => normalLowerer.expression(expression!),
+        },
+    );
     const move = context.functionDeclaration(POINTER, "handlePointerMove");
     const statements = [...move.declaration.body!.statements];
-    const begin = statements.findIndex((statement) => ts.isVariableStatement(statement) && statement.declarationList.declarations[0]?.name.getText(move.file) === "delta");
-    const end = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression) && statement.expression.left.getText(move.file) === "active.lastPlanePoint");
-    if (begin < 0 || end <= begin) context.contractError(move.declaration, "Missing pinned drag delta/projection slice.");
+    const begin = statements.findIndex(
+        (statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations[0]?.name.getText(
+                move.file,
+            ) === "delta",
+    );
+    const end = statements.findIndex(
+        (statement) =>
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            statement.expression.left.getText(move.file) ===
+                "active.lastPlanePoint",
+    );
+    if (begin < 0 || end <= begin)
+        context.contractError(
+            move.declaration,
+            "Missing pinned drag delta/projection slice.",
+        );
     const moveLowerer = new PinnedNumericLowerer(move.file, {
         bindings: new Map([
-            ["hit", vector("hit")], ["axis", { ...vector("axis"), absentCpp: "!axis_mode" }],
-            ["active.lastPlanePoint", vector("last")], ["active.startPlanePoint", vector("start")],
-            ...["x", "y", "z"].flatMap((component): [string, PinnedBinding][] => [
-                [`active.lastPlanePoint.${component}`, { cpp: `last.${component}`, type: "scalar" }],
-                [`active.startPlanePoint.${component}`, { cpp: `start.${component}`, type: "scalar" }],
-            ]),
-        ]), calls, vec3Literal,
+            ["hit", vector("hit")],
+            ["axis", { ...vector("axis"), absentCpp: "!axis_mode" }],
+            ["active.lastPlanePoint", vector("last")],
+            ["active.startPlanePoint", vector("start")],
+            ...["x", "y", "z"].flatMap(
+                (component): [string, PinnedBinding][] => [
+                    [
+                        `active.lastPlanePoint.${component}`,
+                        { cpp: `last.${component}`, type: "scalar" },
+                    ],
+                    [
+                        `active.startPlanePoint.${component}`,
+                        { cpp: `start.${component}`, type: "scalar" },
+                    ],
+                ],
+            ),
+        ]),
+        calls,
+        vec3Literal,
     });
     const local = context.functionDeclaration(MATH, "worldDeltaToLocal");
     const localReturn = local.declaration.body!.statements.at(-1)!;
-    if (!ts.isReturnStatement(localReturn)) context.contractError(localReturn, "Expected local delta return.");
-    const localLowerer = new PinnedNumericLowerer(local.file, {
-        bindings: new Map<string, PinnedBinding>([
-            ["inv", { cpp: "(*inverse)", type: "f32" }],
-            ...["dx", "dy", "dz"].map((name): [string, PinnedBinding] => [name, { cpp: name, type: "scalar" }]),
-        ]), calls, vec3Literal, returnValue: (expression) => localLowerer.expression(expression!),
-    });
-    for (const symbol of ["registerPointerDrag", "installDispatcher", "handlePointerDown", "handlePointerUp", "handleHoverMove", "findDragForMesh", "canvasRayFromPointer"]) {
+    if (!ts.isReturnStatement(localReturn))
+        context.contractError(localReturn, "Expected local delta return.");
+    const localLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
+        local.file,
+        {
+            bindings: new Map<string, PinnedBinding>([
+                ["inv", { cpp: "(*inverse)", type: "f32" }],
+                ...["dx", "dy", "dz"].map((name): [string, PinnedBinding] => [
+                    name,
+                    { cpp: name, type: "scalar" },
+                ]),
+            ]),
+            calls,
+            vec3Literal,
+            returnValue: (expression) => localLowerer.expression(expression!),
+        },
+    );
+    for (const symbol of [
+        "registerPointerDrag",
+        "installDispatcher",
+        "handlePointerDown",
+        "handlePointerUp",
+        "handleHoverMove",
+        "findDragForMesh",
+        "canvasRayFromPointer",
+    ]) {
         context.functionDeclaration(POINTER, symbol);
     }
     return `
@@ -80,13 +181,19 @@ ${ray.declaration.body!.statements.flatMap((statement) => rayLowerer.statement(s
 }
 // ${context.provenance(POINTER, "pickDragPlaneNormal")}
 Vec3d drag_axis_plane(const Vec3d& camPos, const Vec3d& ref, const Vec3d& axis) {
-${normal.declaration.body!.statements.slice(normalStart).flatMap((statement) => normalLowerer.statement(statement, "    ")).join("\n")}
+${normal.declaration
+    .body!.statements.slice(normalStart)
+    .flatMap((statement) => normalLowerer.statement(statement, "    "))
+    .join("\n")}
 }
 struct DragStep { Vec3d delta; double distance; };
 // ${context.provenance(POINTER, "handlePointerMove")}
 DragStep drag_step(const Vec3d& hit, const Vec3d& last, const Vec3d& start,
     const Vec3d& axis, bool axis_mode) {
-${statements.slice(begin, end).flatMap((statement) => moveLowerer.statement(statement, "    ")).join("\n")}
+${statements
+    .slice(begin, end)
+    .flatMap((statement) => moveLowerer.statement(statement, "    "))
+    .join("\n")}
     return {delta, dragDistance};
 }
 // ${context.provenance(MATH, "worldDeltaToLocal")}
@@ -196,13 +303,17 @@ void drag_event(PointerDragDispatcher& state, unsigned event_kind, const Platfor
         state.plane_point = drag_anchor(engine, drag);
         const auto hit = drag_pointer_hit(state, event);
         if (!hit) return;
-${rotation ? `        if (drag.rotation_drag) {
+${
+    rotation
+        ? `        if (drag.rotation_drag) {
             if (drag.attached_node.value < engine.meshes.size()) {
                 drag_rotate(engine, drag.attached_node, state.last_point, *hit, drag_axis(engine, drag));
             }
             state.last_point = *hit;
             return;
-        }` : ""}
+        }`
+        : ""
+}
         const auto step = drag_step(*hit, state.last_point, state.start_point, drag_axis(engine, drag), !drag.plane_drag);
         state.last_point = *hit;
         if (drag.attached_node.value < engine.meshes.size()) {

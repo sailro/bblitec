@@ -15,7 +15,7 @@ void start_engine(Engine& engine) {
     callbacks.front()();
     assert(engine.deferred_callbacks.empty());
 }
-}
+} // namespace bbl
 
 int main() {
     assert(generated_main() == 0);
@@ -28,8 +28,12 @@ int main() {
     }
     assert(cleanups == 1);
     try {
-        auto action = bbl::js::finally([&] { ++cleanups; throw std::runtime_error("cleanup"); });
+        auto action = bbl::js::finally([&] {
+            ++cleanups;
+            throw std::runtime_error("cleanup");
+        });
         action.run();
-    } catch (const std::runtime_error&) {}
+    } catch (const std::runtime_error&) {
+    }
     assert(cleanups == 2);
 }

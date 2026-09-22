@@ -50,7 +50,8 @@ int main() {
     assert(body_at(first).contact_quiet_seconds == 0.25);
     physics_world_add_body(a, first, false);
     assert(world_at(b).world->getNumCollisionObjects() == 0);
-    assert((world_at(a).members == std::vector<std::shared_ptr<PhysicsBodyState>>{first.ownership, second.ownership}));
+    assert((world_at(a).members ==
+            std::vector<std::shared_ptr<PhysicsBodyState>>{first.ownership, second.ownership}));
     physics_world_remove_body(b, first); // Removing from another world is inert.
     physics_world_release(a);
     assert(body_at(first).world == 0 && body_at(second).world == 0);
@@ -112,7 +113,8 @@ int main() {
     auto replacement = physics_shape_create_sphere({0, 0, 0}, 1);
     physics_body_set_shape(held_body, replacement);
     assert(retired_shape.expired());
-    assert(replacement.ownership->users == std::vector<PhysicsBodyState*>{held_body.ownership.get()});
+    assert(replacement.ownership->users ==
+           std::vector<PhysicsBodyState*>{held_body.ownership.get()});
     physics_world_release(held_world);
     physics_world_release(held_world); // Release is idempotent for owned handles.
     assert(held_body.ownership->owner_world.expired());
@@ -142,7 +144,8 @@ int main() {
     for (int region = 0; region < 32; ++region) {
         const auto world = physics_world_create();
         regions.push_back(world);
-        for (int i = 0; i < 64; ++i) sphere(world, i * 2.0);
+        for (int i = 0; i < 64; ++i)
+            sphere(world, i * 2.0);
     }
     std::vector<std::shared_ptr<PhysicsBodyState>> all_bodies;
     for (const auto& region : regions) {
@@ -166,14 +169,15 @@ int main() {
                 }
             }
         }
-        return std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - start).count();
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+            .count();
     };
     const double global_ms = benchmark(true);
     const double members_ms = benchmark(false);
-    std::cout << "32 regions, 2048 bodies: global " << global_ms
-              << " ms, membership " << members_ms << " ms\n";
-    for (auto world : regions) physics_world_release(world);
+    std::cout << "32 regions, 2048 bodies: global " << global_ms << " ms, membership " << members_ms
+              << " ms\n";
+    for (auto world : regions)
+        physics_world_release(world);
     physics_world_release(b);
     physics_world_release(trigger_world);
     std::cout << "physics-membership-check: ok\n";

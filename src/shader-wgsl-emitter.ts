@@ -51,10 +51,7 @@ function emitStatements(
             case "if":
                 lines.push(
                     `${indent}if (${emitExpression(statement.condition)}) {`,
-                    ...emitStatements(
-                        statement.statements,
-                        `${indent}    `,
-                    ),
+                    ...emitStatements(statement.statements, `${indent}    `),
                     `${indent}}`,
                 );
                 break;
@@ -82,21 +79,28 @@ function emitStatements(
     return lines;
 }
 
-function emitVariable(statement: Extract<ShaderStatement, { kind: "var" | "let" }>): string {
+function emitVariable(
+    statement: Extract<ShaderStatement, { kind: "var" | "let" }>,
+): string {
     return `${statement.kind} ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""}`;
 }
 
-function emitAssignment(statement: Extract<ShaderStatement, { kind: "assign" }>): string {
+function emitAssignment(
+    statement: Extract<ShaderStatement, { kind: "assign" }>,
+): string {
     return `${emitExpression(statement.target)} = ${emitExpression(statement.value)}`;
 }
 
-export function emitWgslStatements(statements: ShaderStatement[], indent = "    "): string {
+export function emitWgslStatements(
+    statements: ShaderStatement[],
+    indent = "    ",
+): string {
     return emitStatements(statements, indent).join("\n");
 }
 
 export function emitWgslFunction(fn: ShaderFunction): string {
     return [
-        `fn ${fn.name}(${fn.parameters.map(parameter => `${parameter.name}: ${parameter.type}`).join(", ")}) -> ${fn.returnType} {`,
+        `fn ${fn.name}(${fn.parameters.map((parameter) => `${parameter.name}: ${parameter.type}`).join(", ")}) -> ${fn.returnType} {`,
         ...emitStatements(fn.statements, "    "),
         "}",
     ].join("\n");
@@ -105,8 +109,10 @@ export function emitWgslFunction(fn: ShaderFunction): string {
 function emitStruct(structure: ShaderStruct): string {
     return [
         `struct ${structure.name} {`,
-        ...structure.members.map((member) =>
-            `    ${memberAttribute(member)}${member.name}: ${member.type},`),
+        ...structure.members.map(
+            (member) =>
+                `    ${memberAttribute(member)}${member.name}: ${member.type},`,
+        ),
         "}",
     ].join("\n");
 }
@@ -114,8 +120,14 @@ function emitStruct(structure: ShaderStruct): string {
 function emitEntryPoint(entry: ShaderEntryPoint): string {
     return [
         `@${entry.stage}`,
-        `fn ${entry.name}(${entry.parameters.map((parameter) =>
-            `${memberAttribute(parameter)}${parameter.name}: ${parameter.type}`).join(", ")}) -> ${memberAttribute({ attribute: entry.returnAttribute })}${entry.returnType} {`,
+        `fn ${entry.name}(${entry.parameters
+            .map(
+                (parameter) =>
+                    `${memberAttribute(parameter)}${parameter.name}: ${parameter.type}`,
+            )
+            .join(
+                ", ",
+            )}) -> ${memberAttribute({ attribute: entry.returnAttribute })}${entry.returnType} {`,
         ...emitStatements(entry.statements, "    "),
         "}",
     ].join("\n");
@@ -123,20 +135,23 @@ function emitEntryPoint(entry: ShaderEntryPoint): string {
 
 /** Emit a complete typed module without inventing or specializing bindings. */
 export function emitWgslModule(module: ShaderModule, helpers = ""): string {
-    if (module.rawSource !== undefined) throw new Error("Typed WGSL emission requires parsed declarations.");
+    if (module.rawSource !== undefined)
+        throw new Error("Typed WGSL emission requires parsed declarations.");
     return [
         ...module.structs.map(emitStruct),
-        ...(module.bindings ?? []).map((binding) =>
-            `@group(${binding.group}) @binding(${binding.binding}) var${binding.addressSpace ? `<${binding.addressSpace}>` : ""} ${binding.name}: ${binding.type};`),
+        ...(module.bindings ?? []).map(
+            (binding) =>
+                `@group(${binding.group}) @binding(${binding.binding}) var${binding.addressSpace ? `<${binding.addressSpace}>` : ""} ${binding.name}: ${binding.type};`,
+        ),
         helpers,
         emitEntryPoint(module.entryPoint),
         "",
     ].join("\n");
 }
 
-function memberAttribute(
-    member: { attribute?: ShaderStruct["members"][number]["attribute"] },
-): string {
+function memberAttribute(member: {
+    attribute?: ShaderStruct["members"][number]["attribute"];
+}): string {
     if (!member.attribute) return "";
     return member.attribute.kind === "builtin"
         ? `@builtin(${member.attribute.value}) `
@@ -163,9 +178,7 @@ ${block.systemMatrices
 ${block.systemMatrices
     .map((name) => `    ${name}: ${shaderSystemUniformType(name)},`)
     .join("\n")}
-${block.members
-    .map(({ name, type }) => `    ${name}: ${type},`)
-    .join("\n")}
+${block.members.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
 }
 @group(${group}) @binding(0) var<uniform> shaderUniforms: ShaderUniforms;`;
 }
@@ -209,8 +222,8 @@ function emitSamplerBindings(
                     ? "texture_depth_2d_array"
                     : "texture_depth_2d"
                 : decl.viewDimension === "2d-array"
-                    ? "texture_2d_array<f32>"
-                    : "texture_2d<f32>";
+                  ? "texture_2d_array<f32>"
+                  : "texture_2d<f32>";
             return [
                 `@group(2) @binding(${index * 2}) var ${decl.name}: ${textureType};`,
                 `@group(2) @binding(${index * 2 + 1}) var ${shaderSamplerName(decl.name)}: ${decl.comparison ? "sampler_comparison" : "sampler"};`,
@@ -233,9 +246,10 @@ function emitStorageBindings(
     // two WebGPU bindings but one t-register, which Tint compacts for the
     // target artifact and publishes through the stage-slot sidecar.
     const group = stage === "vertex" ? 0 : 2;
-    const firstBinding = stage === "vertex"
-        ? 0
-        : program.reflection.samplerDeclarations.length * 2;
+    const firstBinding =
+        stage === "vertex"
+            ? 0
+            : program.reflection.samplerDeclarations.length * 2;
     return reached
         .map(
             ({ name, type, binding }) =>
@@ -260,50 +274,63 @@ export function emitNativeWgslProgram(
     const block = program.reflection.uniformBlocks.find(
         (candidate) => candidate.stage === stage,
     );
-    const vertexInput = stage === "vertex"
-        ? [
-              "struct VertexInput {",
-              ...program.reflection.attributes.map(
-                  ({ name, location, type }) =>
-                      `    @location(${location}) ${name}: ${type},`,
-              ),
-              "};",
-          ].join("\n")
-        : undefined;
+    const vertexInput =
+        stage === "vertex"
+            ? [
+                  "struct VertexInput {",
+                  ...program.reflection.attributes.map(
+                      ({ name, location, type }) =>
+                          `    @location(${location}) ${name}: ${type},`,
+                  ),
+                  "};",
+              ].join("\n")
+            : undefined;
     if (module.rawSource !== undefined) {
-        return specializeMixedUniformRoot([
-            "// Native-specialized WGSL generated from the bblitec shader surface.",
-            emitUniformBlock(block),
-            emitStorageBindings(program, stage),
-            emitSamplerBindings(program, stage),
-            defineText.length > 0 ? defineText.trimEnd() : undefined,
-            vertexInput,
-            module.rawSource.trim(),
-            "",
-        ]
-            .filter((value): value is string => value !== undefined)
-            .join("\n"), block);
+        return specializeMixedUniformRoot(
+            [
+                "// Native-specialized WGSL generated from the bblitec shader surface.",
+                emitUniformBlock(block),
+                emitStorageBindings(program, stage),
+                emitSamplerBindings(program, stage),
+                defineText.length > 0 ? defineText.trimEnd() : undefined,
+                vertexInput,
+                module.rawSource.trim(),
+                "",
+            ]
+                .filter((value): value is string => value !== undefined)
+                .join("\n"),
+            block,
+        );
     }
     // Native shader inputs carry attributes on their reflected structs;
     // this entry interface preserves only a direct return location.
     const entry: ShaderEntryPoint = {
         ...module.entryPoint,
         stage,
-        parameters: module.entryPoint.parameters.map(({ name, type }) => ({ name, type })),
-        returnAttribute: module.entryPoint.returnAttribute?.kind === "location"
-            ? module.entryPoint.returnAttribute
-            : undefined,
+        parameters: module.entryPoint.parameters.map(({ name, type }) => ({
+            name,
+            type,
+        })),
+        returnAttribute:
+            module.entryPoint.returnAttribute?.kind === "location"
+                ? module.entryPoint.returnAttribute
+                : undefined,
     };
-    return specializeMixedUniformRoot([
-        "// Native-specialized WGSL generated from the bblitec typed shader IR.",
-        emitUniformBlock(block),
-        emitStorageBindings(program, stage),
-        emitSamplerBindings(program, stage),
-        defineText.length > 0 ? defineText.trimEnd() : undefined,
-        vertexInput,
-        ...module.structs.map((structure) => `${emitStruct(structure)};`),
-        "",
-        emitEntryPoint(entry),
-        "",
-    ].filter((value): value is string => value !== undefined).join("\n"), block);
+    return specializeMixedUniformRoot(
+        [
+            "// Native-specialized WGSL generated from the bblitec typed shader IR.",
+            emitUniformBlock(block),
+            emitStorageBindings(program, stage),
+            emitSamplerBindings(program, stage),
+            defineText.length > 0 ? defineText.trimEnd() : undefined,
+            vertexInput,
+            ...module.structs.map((structure) => `${emitStruct(structure)};`),
+            "",
+            emitEntryPoint(entry),
+            "",
+        ]
+            .filter((value): value is string => value !== undefined)
+            .join("\n"),
+        block,
+    );
 }

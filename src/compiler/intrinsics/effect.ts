@@ -39,24 +39,26 @@ import {
 } from "../option-helpers.js";
 
 export interface EffectIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "requireDefaultEngine"
-        | "requireEngine"
-        | "expectSameEngine"
-        | "unwrap"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "cppString"
-        | "compileBoolean"
-        | "compileNumber"
-        | "compileStaticString"
-        | "recordEffect"
-        | "emit"
-        | "fail"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "requireDefaultEngine"
+            | "requireEngine"
+            | "expectSameEngine"
+            | "unwrap"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "cppString"
+            | "compileBoolean"
+            | "compileNumber"
+            | "compileStaticString"
+            | "recordEffect"
+            | "emit"
+            | "fail"
+        > {}
 
 /** The pin's own align4 on a uniform binding's declared byte length. */
 function align4(value: number): number {
@@ -90,9 +92,7 @@ function clearFlag(
     context: EffectIntrinsicContext,
     object: ts.ObjectLiteralExpression | undefined,
 ): string {
-    const value = object
-        ? context.objectProperty(object, "clear")
-        : undefined;
+    const value = object ? context.objectProperty(object, "clear") : undefined;
     return value ? context.compileBoolean(value) : "true";
 }
 
@@ -177,17 +177,18 @@ function compileBindings(
             kind,
             // The pin aligns a uniform binding's declared length to four and
             // defaults it to sixteen; both live in `createBindingSlots`.
-            uniformBytes: kind === "uniform"
-                ? align4(
-                    uniformExpression
-                        ? compileStaticNumber(
-                            context,
-                            uniformExpression,
-                            "an effect uniform byte length",
-                        )
-                        : 16,
-                )
-                : 0,
+            uniformBytes:
+                kind === "uniform"
+                    ? align4(
+                          uniformExpression
+                              ? compileStaticNumber(
+                                    context,
+                                    uniformExpression,
+                                    "an effect uniform byte length",
+                                )
+                              : 16,
+                      )
+                    : 0,
             texture: -1,
         };
         bindings.push(manifest);
@@ -200,9 +201,7 @@ function compileBindings(
         }
     }
     bindings.sort((left, right) => left.binding - right.binding);
-    const textures = bindings.filter(
-        (manifest) => manifest.kind === "texture",
-    );
+    const textures = bindings.filter((manifest) => manifest.kind === "texture");
     for (const { entry, reference, manifest } of samplers) {
         // The pin's own resolution: the texture `textureBinding` identifies
         // when the descriptor supplies one, the first texture slot otherwise.
@@ -212,19 +211,19 @@ function compileBindings(
         const match = !named
             ? textures[0]
             : ts.isStringLiteral(named)
-                ? textures.find(
+              ? textures.find(
                     (texture) =>
                         texture.name === named.text ||
                         String(texture.binding) === named.text,
                 )
-                : textures.find(
+              : textures.find(
                     (texture) =>
                         texture.binding ===
-                            compileStaticNumber(
-                                context,
-                                named,
-                                "an effect sampler's textureBinding",
-                            ),
+                        compileStaticNumber(
+                            context,
+                            named,
+                            "an effect sampler's textureBinding",
+                        ),
                 );
         if (!match) {
             context.fail(
@@ -302,13 +301,15 @@ export function compileEffectIntrinsic(
                     ? context.compileStaticString(nameExpression)
                     : "uniform-effect-wrapper",
                 fragment,
-                bindings: [{
-                    name: "",
-                    binding: 0,
-                    kind: "uniform",
-                    uniformBytes,
-                    texture: -1,
-                }],
+                bindings: [
+                    {
+                        name: "",
+                        binding: 0,
+                        kind: "uniform",
+                        uniformBytes,
+                        texture: -1,
+                    },
+                ],
             });
             context.reachFeature("effect:wrapper", call);
             return {
@@ -376,11 +377,7 @@ export function compileEffectIntrinsic(
             // binding name or index and no reached scene writes one.
             context.expectArgumentCount(call, 2, 2);
             const wrapper = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                wrapper,
-                "effect-wrapper",
-                argumentAt(call, 0),
-            );
+            context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 0));
             const data = context.compileValue(argumentAt(call, 1));
             if (data.kind !== "data" || data.dataType?.kind !== "f32array") {
                 context.fail(
@@ -401,11 +398,7 @@ export function compileEffectIntrinsic(
         case "setEffectTexture": {
             context.expectArgumentCount(call, 3, 3);
             const wrapper = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                wrapper,
-                "effect-wrapper",
-                argumentAt(call, 0),
-            );
+            context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 0));
             const name = context.compileStaticString(argumentAt(call, 1));
             const texture = context.compileValue(argumentAt(call, 2));
             context.expectKind(texture, "texture", argumentAt(call, 2));
@@ -431,11 +424,7 @@ export function compileEffectIntrinsic(
             const surface = context.compileValue(argumentAt(call, 0));
             context.expectKind(surface, "engine", argumentAt(call, 0));
             const wrapper = context.compileValue(argumentAt(call, 1));
-            context.expectKind(
-                wrapper,
-                "effect-wrapper",
-                argumentAt(call, 1),
-            );
+            context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 1));
             const object = call.arguments[2]
                 ? context.expectObjectLiteral(call.arguments[2])
                 : undefined;

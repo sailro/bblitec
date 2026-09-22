@@ -7,7 +7,8 @@
 namespace bbl::upstream {
 bbl::js::Callback<bbl::js::F32Array()> provider;
 bool started = false;
-std::array<float, 16> sample_node_particle_emitter(bbl::js::Callback<bbl::js::F32Array()> callback) {
+std::array<float, 16>
+sample_node_particle_emitter(bbl::js::Callback<bbl::js::F32Array()> callback) {
     const auto matrix = callback();
     assert(matrix.size() == 16);
     std::array<float, 16> result;
@@ -15,23 +16,33 @@ std::array<float, 16> sample_node_particle_emitter(bbl::js::Callback<bbl::js::F3
     return result;
 }
 void initialize_native_node_particle_set(int set, bbl::js::Callback<bbl::js::F32Array()> callback,
-    const std::array<float, 16>& matrix) {
+                                         const std::array<float, 16>& matrix) {
     assert(set == 0);
     assert(matrix[12] == 0); // The wrapper's snapshot preceded the source write.
     provider = std::move(callback);
 }
-void start_native_node_particle_system(int set, int system) { assert(set == 0 && system == 0); started = true; }
+void start_native_node_particle_system(int set, int system) {
+    assert(set == 0 && system == 0);
+    started = true;
+}
 void stop_native_node_particle_system(int set, int system) { assert(set == 0 && system == 0); }
 void animate_native_node_particle_system(int set, int system, double ratio) {
     assert(set == 0 && system == 0 && ratio == 1);
-    if (started) assert(sample_node_particle_emitter(provider)[12] == 9);
+    if (started)
+        assert(sample_node_particle_emitter(provider)[12] == 9);
 }
 void set_native_node_particle_scalar(int set, int system, std::string_view name, double value) {
     assert(set == 0 && system == 0 && name == "updateSpeed" && value == 0);
 }
-double native_node_particle_alive(int set, int system) { assert(set == 0 && system == 0); return 0; }
-double native_node_particle_capacity(int set, int system) { assert(set == 0 && system == 0); return 640; }
+double native_node_particle_alive(int set, int system) {
+    assert(set == 0 && system == 0);
+    return 0;
 }
+double native_node_particle_capacity(int set, int system) {
+    assert(set == 0 && system == 0);
+    return 640;
+}
+} // namespace bbl::upstream
 
 #define main generated_main
 #include "provider.hpp"
@@ -39,8 +50,12 @@ double native_node_particle_capacity(int set, int system) { assert(set == 0 && s
 
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
-Scene create_scene_context(Engine& engine) { Scene scene{}; scene.engine = &engine; return scene; }
+Scene create_scene_context(Engine& engine) {
+    Scene scene{};
+    scene.engine = &engine;
+    return scene;
 }
+} // namespace bbl
 
 int main() {
     const auto initial = bbl::js::managed_node_count();

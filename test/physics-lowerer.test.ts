@@ -59,16 +59,10 @@ test("the step clamp flows from the pinned MAX_STEP_MS", () => {
 test("gravity and the material defaults flow from their own `??` arms", () => {
     assert.match(
         lowered.header,
-        /pinned_default_gravity\(\) \{\n    return Vec3d\{0\.0, -9\.81, 0\.0\};/,
+        /pinned_default_gravity\(\) \{\n {4}return Vec3d\{0\.0, -9\.81, 0\.0\};/,
     );
-    assert.match(
-        lowered.header,
-        /physics_default_friction = 0\.2;/,
-    );
-    assert.match(
-        lowered.header,
-        /physics_default_restitution = 0\.2;/,
-    );
+    assert.match(lowered.header, /physics_default_friction = 0\.2;/);
+    assert.match(lowered.header, /physics_default_restitution = 0\.2;/);
 });
 
 test("the three pinned enumerations keep the pin's own numbering", () => {
@@ -77,15 +71,15 @@ test("the three pinned enumerations keep the pin's own numbering", () => {
     // run time could be consulted instead.
     assert.match(
         lowered.header,
-        /enum class PhysicsShapeType : std::int32_t \{\n    SPHERE = 0,\n    CAPSULE = 1,\n    CYLINDER = 2,\n    BOX = 3,\n    CONVEX_HULL = 4,\n    CONTAINER = 5,\n    MESH = 6,\n    HEIGHTFIELD = 7,\n\};/,
+        /enum class PhysicsShapeType : std::int32_t \{\n {4}SPHERE = 0,\n {4}CAPSULE = 1,\n {4}CYLINDER = 2,\n {4}BOX = 3,\n {4}CONVEX_HULL = 4,\n {4}CONTAINER = 5,\n {4}MESH = 6,\n {4}HEIGHTFIELD = 7,\n\};/,
     );
     assert.match(
         lowered.header,
-        /enum class PhysicsMotionType : std::int32_t \{\n    STATIC = 0,\n    ANIMATED = 1,\n    DYNAMIC = 2,\n\};/,
+        /enum class PhysicsMotionType : std::int32_t \{\n {4}STATIC = 0,\n {4}ANIMATED = 1,\n {4}DYNAMIC = 2,\n\};/,
     );
     assert.match(
         lowered.header,
-        /enum class PhysicsPrestepType : std::int32_t \{\n    DISABLED = 0,\n    TELEPORT = 1,\n    ACTION = 2,\n\};/,
+        /enum class PhysicsPrestepType : std::int32_t \{\n {4}DISABLED = 0,\n {4}TELEPORT = 1,\n {4}ACTION = 2,\n\};/,
     );
 });
 
@@ -95,9 +89,9 @@ test("the pin's own motion-type mapping is emitted, not left to the PAL", () => 
     // mapping in generated code is what makes a renumbering upstream a
     // change here rather than a silent swap inside whichever solver links.
     for (const arm of [
-        /case PhysicsMotionType::STATIC:\n            return pal::PhysicsMotionType::immovable;/,
-        /case PhysicsMotionType::ANIMATED:\n            return pal::PhysicsMotionType::node_driven;/,
-        /case PhysicsMotionType::DYNAMIC:\n            return pal::PhysicsMotionType::simulated;/,
+        /case PhysicsMotionType::STATIC:\n {12}return pal::PhysicsMotionType::immovable;/,
+        /case PhysicsMotionType::ANIMATED:\n {12}return pal::PhysicsMotionType::node_driven;/,
+        /case PhysicsMotionType::DYNAMIC:\n {12}return pal::PhysicsMotionType::simulated;/,
     ]) {
         assert.match(lowered.header, arm);
     }
@@ -216,7 +210,10 @@ test("the mass-properties setter overrides only the terms it is given", () => {
         body,
         /pal::physics_shape_build_mass_properties\(\n *live\.shape\.handle, mass\)/,
     );
-    assert.match(body, /const double mass = overrides\.mass \? \*overrides\.mass : pal::physics_shape_default_mass\(live\.shape\.handle\);/);
+    assert.match(
+        body,
+        /const double mass = overrides\.mass \? \*overrides\.mass : pal::physics_shape_default_mass\(live\.shape\.handle\);/,
+    );
     assert.match(body, /properties\.mass = mass;/);
     assert.match(
         body,
@@ -316,8 +313,9 @@ test("every aggregate arm takes its explicit override through the pin's `??`", (
     // Only the two cases that state a centre take the derived one, and only
     // when the options bag left it absent -- the pin's `params.center ??`.
     assert.equal(
-        body.match(/if \(!params\.center\) \{\n *params\.center = bounding_center\(sized\);/g)
-            ?.length,
+        body.match(
+            /if \(!params\.center\) \{\n *params\.center = bounding_center\(sized\);/g,
+        )?.length,
         2,
     );
     // Both bags declare the same five members in the same order, because the
@@ -422,7 +420,7 @@ test("a body follows either kind of pinned scene node", () => {
     // the same two properties off either.
     assert.match(
         lowered.header,
-        /enum class PhysicsNodeKind : std::int32_t \{\n    mesh,\n    transform_node,\n\};/,
+        /enum class PhysicsNodeKind : std::int32_t \{\n {4}mesh,\n {4}transform_node,\n\};/,
     );
     assert.match(lowered.header, /PhysicsNodeRef node\{\};/);
     for (const record of ["TransformNodeRecord", "MeshRecord"]) {
@@ -444,7 +442,7 @@ test("both shape paths route through the pin's own primitive factory", () => {
         /primitive_physics_shape_handle\(type, /g,
     );
     assert.equal(calls?.length, 2);
-    assert.match(lowered.source, /default:\n            return std::nullopt;/);
+    assert.match(lowered.source, /default:\n {12}return std::nullopt;/);
 });
 
 test("the two mesh arms share one accumulator and split on the pin's own boolean", () => {
@@ -513,7 +511,7 @@ test("the trigger stream carries the pin's own two event names", () => {
     // what a comparison reads and it must spell them the pin's way.
     assert.match(
         reachingModules.header,
-        /enum class PhysicsTriggerType \{\n    ENTERED,\n    EXITED,\n\};/,
+        /enum class PhysicsTriggerType \{\n {4}ENTERED,\n {4}EXITED,\n\};/,
     );
     assert.match(
         reachingModules.source,
@@ -540,22 +538,36 @@ test("a tree that reaches neither standalone module emits neither arm", () => {
     // must neither declare nor call either family, or it would name PAL
     // entry points that its build leaves out.
     for (const text of [lowered.header, lowered.source]) {
-        assert.doesNotMatch(text, /PhysicsTriggerType|PhysicsTriggerInfo|on_physics_trigger|set_physics_shape_is_trigger|physics_world_trigger_events|physics_shape_set_trigger/);
-        assert.doesNotMatch(text, /PhysicsRegion|PhysicsFloatingOrigin|enable_havok_floating_origin|pinned_floating_origin_radius|fo_step_world|get_or_create_region|physics_world_get_speed_limit|physics_world_set_speed_limit|world\.fo|body\.region/);
+        assert.doesNotMatch(
+            text,
+            /PhysicsTriggerType|PhysicsTriggerInfo|on_physics_trigger|set_physics_shape_is_trigger|physics_world_trigger_events|physics_shape_set_trigger/,
+        );
+        assert.doesNotMatch(
+            text,
+            /PhysicsRegion|PhysicsFloatingOrigin|enable_havok_floating_origin|pinned_floating_origin_radius|fo_step_world|get_or_create_region|physics_world_get_speed_limit|physics_world_set_speed_limit|world\.fo|body\.region/,
+        );
     }
     // The plain factory keeps the pin's add-then-transform pair and its
     // rollback, with no region to consult.
     const factory = emittedBody("PhysicsBody create_physics_body(");
     assert.match(
         factory,
-        /try \{\n        pal::physics_world_add_body\(\n            world\.handle, body\.handle, starts_asleep\);\n        sync_node_to_body\(engine, body, false\);\n    \} catch \(\.\.\.\) \{\n        pal::physics_world_remove_body\(world\.handle, body\.handle\);/,
+        /try \{\n {8}pal::physics_world_add_body\(\n {12}world\.handle, body\.handle, starts_asleep\);\n {8}sync_node_to_body\(engine, body, false\);\n {4}\} catch \(\.\.\.\) \{\n {8}pal::physics_world_remove_body\(world\.handle, body\.handle\);/,
     );
     // `setPhysicsGravity` takes the pin's absent-`_fo` arm alone.
-    const gravity = emittedBody("void set_physics_gravity(PhysicsWorldHandle handle");
-    assert.match(gravity, /static_cast<void>\(world_position\);\n    pal::physics_world_set_gravity\(world\.handle, values\);/);
+    const gravity = emittedBody(
+        "void set_physics_gravity(PhysicsWorldHandle handle",
+    );
     assert.match(
-        emittedBody("void set_physics_gravity(PhysicsWorldHandle handle", reachingModules.source),
-        /if \(world\.fo\) \{[\s\S]*?get_or_create_region\(world, \*world_position\)[\s\S]*?\n    pal::physics_world_set_gravity\(world\.handle, values\);/,
+        gravity,
+        /static_cast<void>\(world_position\);\n {4}pal::physics_world_set_gravity\(world\.handle, values\);/,
+    );
+    assert.match(
+        emittedBody(
+            "void set_physics_gravity(PhysicsWorldHandle handle",
+            reachingModules.source,
+        ),
+        /if \(world\.fo\) \{[\s\S]*?get_or_create_region\(world, \*world_position\)[\s\S]*?\n {4}pal::physics_world_set_gravity\(world\.handle, values\);/,
     );
 });
 
@@ -575,8 +587,11 @@ test("a floating-origin world replaces the single-world frame", () => {
     // neither the prestep gate nor the after-step hooks. Both are the pin's
     // and both are observable, so the emitted arm has to return too.
     assert.match(
-        emittedBody("void step_world(PhysicsWorld& world, double delta_ms)", reachingModules.source),
-        /if \(world\.fo\) \{\n        fo_step_world\(world, dt\);\n        return;\n    \}/,
+        emittedBody(
+            "void step_world(PhysicsWorld& world, double delta_ms)",
+            reachingModules.source,
+        ),
+        /if \(world\.fo\) \{\n {8}fo_step_world\(world, dt\);\n {8}return;\n {4}\}/,
     );
     // `createPhysicsBody`'s own `_fo` arm: `placeBody` REPLACES the plain
     // add-then-transform pair rather than running before it.
@@ -596,7 +611,10 @@ test("the region phases keep the pin's own order", () => {
     // re-based after its node sync would be stepped from the previous
     // region's frame, so the first edge is as observable as the last.
     assert.match(
-        emittedBody("void fo_step_world(PhysicsWorld& world, double dt)", reachingModules.source),
+        emittedBody(
+            "void fo_step_world(PhysicsWorld& world, double dt)",
+            reachingModules.source,
+        ),
         /re_region_body\([\s\S]*?fo_sync_node_to_body\([\s\S]*?physics_world_step\([\s\S]*?fo_sync_body_to_node\([\s\S]*?gc_regions\(world\);/,
     );
     // `_getOrCreateRegion` seeds a new region from the CONTEXT's gravity
@@ -607,7 +625,7 @@ test("the region phases keep the pin's own order", () => {
             "[[nodiscard]] pal::PhysicsWorldHandle get_or_create_region(",
             reachingModules.source,
         ),
-        /physics_world_create\(\);\n    pal::physics_world_set_gravity\(new_world, fo\.gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n    pal::physics_world_set_speed_limit\(/,
+        /physics_world_create\(\);\n {4}pal::physics_world_set_gravity\(new_world, fo\.gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n {4}pal::physics_world_set_speed_limit\(/,
     );
 });
 
@@ -633,11 +651,11 @@ test("the node keeps true world coordinates under floating origin", () => {
     // subtracts the camera's own offset -- is untouched.
     assert.match(
         emittedBody("void fo_sync_body_to_node(", reachingModules.source),
-        /transform\.position\[0\] \+ origin\.x,\n            transform\.position\[1\] \+ origin\.y,\n            transform\.position\[2\] \+ origin\.z,/,
+        /transform\.position\[0\] \+ origin\.x,\n {12}transform\.position\[1\] \+ origin\.y,\n {12}transform\.position\[2\] \+ origin\.z,/,
     );
     assert.match(
         emittedBody("void fo_sync_node_to_body(", reachingModules.source),
-        /pose\.position\.x - origin\.x,\n             pose\.position\.y - origin\.y,\n             pose\.position\.z - origin\.z/,
+        /pose\.position\.x - origin\.x,\n {13}pose\.position\.y - origin\.y,\n {13}pose\.position\.z - origin\.z/,
     );
 });
 
@@ -652,10 +670,12 @@ test("no solver is named in generated code", () => {
             .split("\n")
             .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
             .join("\n");
-    for (const text of [lowered.header, lowered.source, reachingModules.header, reachingModules.source]) {
-        assert.doesNotMatch(
-            code(text),
-            /bullet|btRigidBody|btVector3|hknp/i,
-        );
+    for (const text of [
+        lowered.header,
+        lowered.source,
+        reachingModules.header,
+        reachingModules.source,
+    ]) {
+        assert.doesNotMatch(code(text), /bullet|btRigidBody|btVector3|hknp/i);
     }
 });

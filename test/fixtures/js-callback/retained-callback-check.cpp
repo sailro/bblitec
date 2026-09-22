@@ -1,25 +1,9 @@
 #include <bblite/js_callback.hpp>
+#include "../allocation-tracker.hpp"
 
 #include <cassert>
-#include <cstdlib>
 #include <iostream>
-#include <new>
 #include <vector>
-
-std::size_t allocation_count = 0;
-
-void* operator new(std::size_t size) {
-    if (void* memory = std::malloc(size ? size : 1)) {
-        ++allocation_count;
-        return memory;
-    }
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 void recursive_callback_lifetime() {
     using Function = bbl::js::Callback<void(int)>;
@@ -61,7 +45,8 @@ void recursive_callback_allocations() {
     int calls = 0;
     *owner = Function{[weak, &calls](int depth) {
         ++calls;
-        if (depth > 0) bbl::js::retain_callback(weak.lock())(depth - 1);
+        if (depth > 0)
+            bbl::js::retain_callback(weak.lock())(depth - 1);
     }};
     const std::size_t before = allocation_count;
     Function outward = bbl::js::retain_callback(owner);
@@ -129,12 +114,70 @@ void retained_body_survives_owner_replacement() {
     assert(weak_payload.expired());
 }
 
+void prepared_invocation_retains_once() {
+    using Function = bbl::js::Callback<int(int)>;
+    bbl::js::gc::Node* node = nullptr;
+    const auto baseline = bbl::js::managed_node_count();
+    {
+        Function callback{[&](int value) {
+            assert(node->owners() == 1);
+            bbl::js::collect_cycles();
+            return value + 1;
+        }};
+        node = bbl::js::gc::registry.nodes.back();
+        assert(node->owners() == 1);
+        const auto allocations = allocation_count;
+        const auto invocation = bbl::js::snapshot_callback(callback);
+        assert(node->owners() == 2);
+        assert(allocation_count == allocations);
+        callback = {};
+        assert(node->owners() == 1);
+        assert(invocation(7) == 8);
+        assert(node->owners() == 1);
+    }
+    assert(bbl::js::managed_node_count() == baseline);
+    assert(!Function{}.snapshot());
+    bool failed = false;
+    try {
+        Function{static_cast<int (*)(int)>(nullptr)}.snapshot()(0);
+    } catch (const std::bad_function_call&) {
+        failed = true;
+    }
+    assert(failed);
+}
+
+void native_invocation_snapshot() {
+    int (*function)(int) = +[](int value) { return value + 1; };
+    const auto allocations = allocation_count;
+    const auto selected = bbl::js::snapshot_callback(function);
+    function = nullptr;
+    assert(selected && selected(7) == 8);
+    assert(allocation_count == allocations);
+    const auto absent = bbl::js::snapshot_callback(function);
+    assert(!absent);
+    bool failed = false;
+    try {
+        (void)absent(0);
+    } catch (const std::bad_function_call&) {
+        failed = true;
+    }
+    assert(failed);
+    int value = 1;
+    auto reference = bbl::js::snapshot_callback(+[](int& input) noexcept -> int& { return input; });
+    reference(value) = 9;
+    assert(value == 9);
+    const auto lambda = bbl::js::snapshot_callback([](int input) { return input * 2; });
+    assert(lambda(3) == 6);
+}
+
 int main() {
     recursive_callback_lifetime();
     recursive_callback_allocations();
     retained_body_survives_owner_replacement();
     identity_erasure_shares_captures();
     identity_erasure_retains_recursive_owner();
+    prepared_invocation_retains_once();
+    native_invocation_snapshot();
     using Callback = bbl::js::Callback<void(double)>;
     std::vector<Callback> callbacks;
     int steps = 0;
@@ -148,7 +191,8 @@ int main() {
     for (int frame = 0; frame < 8; ++frame) {
         const auto snapshot = callbacks;
         assert(snapshot.front() == callbacks.front());
-        for (const auto& callback : snapshot) callback(0.25);
+        for (const auto& callback : snapshot)
+            callback(0.25);
     }
     assert(steps == 2);
 

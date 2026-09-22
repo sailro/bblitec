@@ -1,155 +1,427 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import {LoweringContext} from "../src/lowering/context.js";
-import {lowerPinnedBody} from "../src/lowering/pinned-body-lowerer.js";
-import type {PinnedBinding} from "../src/lowering/pinned-numeric-lowerer.js";
-import {pinnedNumericMathCalls} from "../src/lowering/pinned-operators.js";
-import {lowerGltfAnimationPlayback} from "../src/lowering/gltf/animation-playback.js";
-import {lowerGltfAnimationEvaluator} from "../src/lowering/gltf/animation-evaluator.js";
-import {lowerGltfAnimationBoneOverrides} from "../src/lowering/gltf/animation-bone-overrides.js";
-import {lowerGltfWeightedAnimationRuntime} from "../src/lowering/gltf/weighted-animation-runtime.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerPinnedBody } from "../src/lowering/pinned-body-lowerer.js";
+import type { PinnedBinding } from "../src/lowering/pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
+import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
+import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
+import { lowerGltfAnimationBoneOverrides } from "../src/lowering/gltf/animation-bone-overrides.js";
+import { lowerGltfWeightedAnimationRuntime } from "../src/lowering/gltf/weighted-animation-runtime.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const module = "src/animation/weighted-gltf-mixer.ts";
 const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const inputs = {
     nodes: [
-        {parentIdx: -1, tx: 1, ty: 2, tz: 3, rx: 0, ry: 0, rz: 0, rw: 1, sx: 1, sy: 1, sz: 1},
-        {parentIdx: 0, tx: 0, ty: 1, tz: 0, rx: 0, ry: 0, rz: 0, rw: 1, sx: 1, sy: 1, sz: 1},
-        {parentIdx: 0, tx: 9, ty: 8, tz: 7, rx: 0, ry: 0, rz: 0, rw: 1, sx: 1, sy: 1, sz: 1, _matrix: [...identity.slice(0, 12), 5, 6, 7, 1]},
+        {
+            parentIdx: -1,
+            tx: 1,
+            ty: 2,
+            tz: 3,
+            rx: 0,
+            ry: 0,
+            rz: 0,
+            rw: 1,
+            sx: 1,
+            sy: 1,
+            sz: 1,
+        },
+        {
+            parentIdx: 0,
+            tx: 0,
+            ty: 1,
+            tz: 0,
+            rx: 0,
+            ry: 0,
+            rz: 0,
+            rw: 1,
+            sx: 1,
+            sy: 1,
+            sz: 1,
+        },
+        {
+            parentIdx: 0,
+            tx: 9,
+            ty: 8,
+            tz: 7,
+            rx: 0,
+            ry: 0,
+            rz: 0,
+            rw: 1,
+            sx: 1,
+            sy: 1,
+            sz: 1,
+            _matrix: [...identity.slice(0, 12), 5, 6, 7, 1],
+        },
     ],
     samples: [
-        {input: [0, 2], output: [2, 0, -1, 5, 2, 1], interpolation: 0},
-        {input: [0, 2], output: [0, 0, 0, 1, 0, 0, 0.6, 0.8], interpolation: 0},
-        {input: [0, 2], output: [1, 1, 1, 2, 3, 4], interpolation: 0},
-        {input: [0, 2], output: [0, 0.6, 0, 0.8, 0, -0.6, 0, 0.8], interpolation: 0},
+        { input: [0, 2], output: [2, 0, -1, 5, 2, 1], interpolation: 0 },
+        {
+            input: [0, 2],
+            output: [0, 0, 0, 1, 0, 0, 0.6, 0.8],
+            interpolation: 0,
+        },
+        { input: [0, 2], output: [1, 1, 1, 2, 3, 4], interpolation: 0 },
+        {
+            input: [0, 2],
+            output: [0, 0.6, 0, 0.8, 0, -0.6, 0, 0.8],
+            interpolation: 0,
+        },
     ],
     channels: [
-        {nodeIdx: 0, samplerIdx: 0, path: 0}, {nodeIdx: 0, samplerIdx: 1, path: 1}, {nodeIdx: 0, samplerIdx: 2, path: 2},
-        {nodeIdx: 1, samplerIdx: 3, path: 1}, {nodeIdx: 1, samplerIdx: 2, path: 2}, {nodeIdx: 2, samplerIdx: 0, path: 0},
+        { nodeIdx: 0, samplerIdx: 0, path: 0 },
+        { nodeIdx: 0, samplerIdx: 1, path: 1 },
+        { nodeIdx: 0, samplerIdx: 2, path: 2 },
+        { nodeIdx: 1, samplerIdx: 3, path: 1 },
+        { nodeIdx: 1, samplerIdx: 2, path: 2 },
+        { nodeIdx: 2, samplerIdx: 0, path: 0 },
     ],
     names: ["hip", "hip", "hip", "child", "child", null],
 };
-type Target = {trs: Float32Array; localMat: Float32Array; worldMat: Float32Array; tWeight: Float32Array; rWeight: Float32Array; sWeight: Float32Array; baseRot?: Float32Array};
-type Group = {currentTime: number; isPlaying: boolean; loopAnimation: boolean; speedRatio: number; weight: number; _additive?: {referenceTime: number};
-    mask?: {names: string[]; mode: number; disabled: boolean}; targetedAnimations: Array<{targetName?: string}>};
-const bits = (values: Float32Array) => [...new Uint32Array(values.buffer, values.byteOffset, values.length)];
+type Target = {
+    trs: Float32Array;
+    localMat: Float32Array;
+    worldMat: Float32Array;
+    tWeight: Float32Array;
+    rWeight: Float32Array;
+    sWeight: Float32Array;
+    baseRot?: Float32Array;
+};
+type Group = {
+    currentTime: number;
+    isPlaying: boolean;
+    loopAnimation: boolean;
+    speedRatio: number;
+    weight: number;
+    _additive?: { referenceTime: number };
+    mask?: { names: string[]; mode: number; disabled: boolean };
+    targetedAnimations: Array<{ targetName?: string }>;
+};
+const bits = (values: Float32Array) => [
+    ...new Uint32Array(values.buffer, values.byteOffset, values.length),
+];
 
 function sourceResult(context: LoweringContext, overrides: boolean): unknown {
     const printer = ts.createPrinter();
     const text = (path: string) => {
         const file = context.sourceFile(path);
-        return file.statements.filter(statement => !ts.isImportDeclaration(statement)).map(statement =>
-            printer.printNode(ts.EmitHint.Unspecified, statement, file).replace(/^export /gm, "")).join("\n");
+        return file.statements
+            .filter((statement) => !ts.isImportDeclaration(statement))
+            .map((statement) =>
+                printer
+                    .printNode(ts.EmitHint.Unspecified, statement, file)
+                    .replace(/^export /gm, ""),
+            )
+            .join("\n");
     };
-    const events: unknown[] = [], palettes: number[][] = [];
+    const events: unknown[] = [],
+        palettes: number[][] = [];
     const types = context.sourceFile("src/animation/types.ts");
-    const constantNames = ["PATH_TRANSLATION", "PATH_ROTATION", "PATH_SCALE", "INTERP_STEP", "INTERP_CUBICSPLINE"];
-    const constants = constantNames.map(name => context.numericValue(ts.factory.createIdentifier(name), types));
-    const body = text("src/animation/evaluate.ts") + "\n" + text(module) + "\n" +
-        context.functionDeclaration("src/math/compose-mat4-into-buffer.ts", "composeMat4IntoBuffer").declaration.getText().replace(/^export /, "") + "\n" +
-        context.functionDeclaration("src/math/multiply-mat4-into-buffer.ts", "multiplyMat4IntoBuffer").declaration.getText().replace(/^export /, "") + "\n" +
-        context.functionDeclaration("src/skeleton/bone-control.ts", "applyOverridesToTRS").declaration.getText() + `
+    const constantNames = [
+        "PATH_TRANSLATION",
+        "PATH_ROTATION",
+        "PATH_SCALE",
+        "INTERP_STEP",
+        "INTERP_CUBICSPLINE",
+    ];
+    const constants = constantNames.map((name) =>
+        context.numericValue(ts.factory.createIdentifier(name), types),
+    );
+    const body =
+        text("src/animation/evaluate.ts") +
+        "\n" +
+        text(module) +
+        "\n" +
+        context
+            .functionDeclaration(
+                "src/math/compose-mat4-into-buffer.ts",
+                "composeMat4IntoBuffer",
+            )
+            .declaration.getText()
+            .replace(/^export /, "") +
+        "\n" +
+        context
+            .functionDeclaration(
+                "src/math/multiply-mat4-into-buffer.ts",
+                "multiplyMat4IntoBuffer",
+            )
+            .declaration.getText()
+            .replace(/^export /, "") +
+        "\n" +
+        context
+            .functionDeclaration(
+                "src/skeleton/bone-control.ts",
+                "applyOverridesToTRS",
+            )
+            .declaration.getText() +
+        `
 const _boneApplier = (overrides, trs, count, hiddenOnly) => {
     events.push(["bones", !!hiddenOnly]); applyOverridesToTRS(overrides, trs, count, hiddenOnly);
 };`;
-    const runtime = new Function("F32", "I32", "U8", ...constantNames, "events",
-        transpileCommonJs(body, module) + "\nreturn {getScratch, getTarget, resetWeightedGltfTarget, accumulateGroup, accumulateAdditiveGroup, advanceGroupTime, uploadTarget};")(
-        Float32Array, Int32Array, Uint8Array, ...constants, events) as {
-            getScratch(manager: object): unknown; getTarget(scratch: unknown, mixer: unknown[]): Target;
-            resetWeightedGltfTarget(target: Target): void;
-            accumulateGroup(manager: object, scratch: unknown, group: Group, mixer: unknown[], delta: number): void;
-            advanceGroupTime(group: Group, mixer: unknown[], delta: number): number;
-            accumulateAdditiveGroup(scratch: unknown, group: Group, mixer: unknown[]): void;
-            uploadTarget(manager: object, target: Target): void;
-        };
-    const overrideMap = overrides ? new Map([[0, {mask: 2, rx: 0.6, ry: 0, rz: 0, rw: 0.8}], [1, {mask: 8}]]) : undefined;
-    const skeletons = [false, true].map(disposed => ({boneCount: 3, jointNodes: [0, 1, 2], invMeshWorld: new Float32Array(identity),
-        inverseBindMatrices: new Float32Array([...identity, ...identity, ...identity]), boneMatrices: new Float32Array(48),
-        runtimeSkeleton: {_overrides: overrideMap, _disposed: disposed}, boneTexture: {}}));
-    const nodes = inputs.nodes.map(node => ({...node, ...(node._matrix ? {_matrix: new Float32Array(node._matrix)} : {})}));
-    const clip = {duration: 2, channels: inputs.channels, samplers: inputs.samples.map(sample => ({...sample, input: new Float32Array(sample.input), output: new Float32Array(sample.output)}))};
+    const runtime = createJavaScriptFunction(
+        "F32",
+        "I32",
+        "U8",
+        ...constantNames,
+        "events",
+        transpileCommonJs(body, module) +
+            "\nreturn {getScratch, getTarget, resetWeightedGltfTarget, accumulateGroup, accumulateAdditiveGroup, advanceGroupTime, uploadTarget};",
+    )(Float32Array, Int32Array, Uint8Array, ...constants, events) as {
+        getScratch(manager: object): unknown;
+        getTarget(scratch: unknown, mixer: unknown[]): Target;
+        resetWeightedGltfTarget(target: Target): void;
+        accumulateGroup(
+            manager: object,
+            scratch: unknown,
+            group: Group,
+            mixer: unknown[],
+            delta: number,
+        ): void;
+        advanceGroupTime(group: Group, mixer: unknown[], delta: number): number;
+        accumulateAdditiveGroup(
+            scratch: unknown,
+            group: Group,
+            mixer: unknown[],
+        ): void;
+        uploadTarget(manager: object, target: Target): void;
+    };
+    const overrideMap = overrides
+        ? new Map([
+              [0, { mask: 2, rx: 0.6, ry: 0, rz: 0, rw: 0.8 }],
+              [1, { mask: 8 }],
+          ])
+        : undefined;
+    const skeletons = [false, true].map((disposed) => ({
+        boneCount: 3,
+        jointNodes: [0, 1, 2],
+        invMeshWorld: new Float32Array(identity),
+        inverseBindMatrices: new Float32Array([
+            ...identity,
+            ...identity,
+            ...identity,
+        ]),
+        boneMatrices: new Float32Array(48),
+        runtimeSkeleton: { _overrides: overrideMap, _disposed: disposed },
+        boneTexture: {},
+    }));
+    const nodes = inputs.nodes.map((node) => ({
+        ...node,
+        ...(node._matrix ? { _matrix: new Float32Array(node._matrix) } : {}),
+    }));
+    const clip = {
+        duration: 2,
+        channels: inputs.channels,
+        samplers: inputs.samples.map((sample) => ({
+            ...sample,
+            input: new Float32Array(sample.input),
+            output: new Float32Array(sample.output),
+        })),
+    };
     const mixer = [clip, nodes, skeletons];
-    const group = (weight: number): Group => ({currentTime: 0.25, isPlaying: true, loopAnimation: true, speedRatio: 1, weight,
-        targetedAnimations: inputs.names.map(name => name === null ? {} : {targetName: name})});
+    const group = (weight: number): Group => ({
+        currentTime: 0.25,
+        isPlaying: true,
+        loopAnimation: true,
+        speedRatio: 1,
+        weight,
+        targetedAnimations: inputs.names.map((name) =>
+            name === null ? {} : { targetName: name },
+        ),
+    });
     const groups = [group(0.35), group(0.45), group(0.2)];
-    groups[0]!.mask = {names: ["hip", "child"], mode: 0, disabled: false};
-    groups[1]!.mask = {names: ["child"], mode: 1, disabled: false};
-    groups[2]!._additive = {referenceTime: 0.125}; groups[2]!.speedRatio = -0.5;
-    groups[2]!.mask = {names: ["child"], mode: 0, disabled: false};
-    const manager = {engine: {_device: {queue: {writeTexture: (_destination: unknown, buffer: ArrayBuffer) => palettes.push(bits(new Float32Array(buffer)))}}}};
-    const scratch = runtime.getScratch(manager), target = runtime.getTarget(scratch, mixer);
+    groups[0]!.mask = { names: ["hip", "child"], mode: 0, disabled: false };
+    groups[1]!.mask = { names: ["child"], mode: 1, disabled: false };
+    groups[2]!._additive = { referenceTime: 0.125 };
+    groups[2]!.speedRatio = -0.5;
+    groups[2]!.mask = { names: ["child"], mode: 0, disabled: false };
+    const manager = {
+        engine: {
+            _device: {
+                queue: {
+                    writeTexture: (
+                        _destination: unknown,
+                        buffer: ArrayBuffer,
+                    ) => palettes.push(bits(new Float32Array(buffer))),
+                },
+            },
+        },
+    };
+    const scratch = runtime.getScratch(manager),
+        target = runtime.getTarget(scratch, mixer);
     const snapshots = [];
     for (let frame = 0; frame < 2; frame++) {
-        if (frame > 0) { runtime.resetWeightedGltfTarget(target); groups[0]!.mask!.disabled = true; groups[2]!.mask!.disabled = true; }
+        if (frame > 0) {
+            runtime.resetWeightedGltfTarget(target);
+            groups[0]!.mask.disabled = true;
+            groups[2]!.mask.disabled = true;
+        }
         runtime.accumulateGroup(manager, scratch, groups[0]!, mixer, 250);
         runtime.accumulateGroup(manager, scratch, groups[1]!, mixer, 250);
-        runtime.advanceGroupTime(groups[2]!, mixer, 250); runtime.accumulateAdditiveGroup(scratch, groups[2]!, mixer);
+        runtime.advanceGroupTime(groups[2]!, mixer, 250);
+        runtime.accumulateAdditiveGroup(scratch, groups[2]!, mixer);
         runtime.uploadTarget(manager, target);
-        snapshots.push({trs: bits(target.trs), local: bits(target.localMat), world: bits(target.worldMat),
-            weights: [bits(target.tWeight), bits(target.rWeight), bits(target.sWeight)], base: target.baseRot ? bits(target.baseRot) : null,
-            times: groups.map(group => group.currentTime), events: events.splice(0), palettes: palettes.splice(0)});
+        snapshots.push({
+            trs: bits(target.trs),
+            local: bits(target.localMat),
+            world: bits(target.worldMat),
+            weights: [
+                bits(target.tWeight),
+                bits(target.rWeight),
+                bits(target.sWeight),
+            ],
+            base: target.baseRot ? bits(target.baseRot) : null,
+            times: groups.map((group) => group.currentTime),
+            events: events.splice(0),
+            palettes: palettes.splice(0),
+        });
     }
     const errors: string[] = [];
-    for (const action of [() => runtime.accumulateGroup({}, scratch, groups[0]!, mixer, 1), () => runtime.uploadTarget({}, target)])
-        try { action(); } catch (error) { errors.push((error as Error).message); }
-    return {snapshots, errors};
+    for (const action of [
+        () => runtime.accumulateGroup({}, scratch, groups[0]!, mixer, 1),
+        () => runtime.uploadTarget({}, target),
+    ])
+        try {
+            action();
+        } catch (error) {
+            errors.push((error as Error).message);
+        }
+    return { snapshots, errors };
 }
 
 /** Fixture matrix callbacks use the shared numeric body lowerer. */
 function numericCallbacks(context: LoweringContext): string {
     const functions = [
-        ["src/math/compose-mat4-into-buffer.ts", "composeMat4IntoBuffer", [0]], ["src/math/multiply-mat4-into-buffer.ts", "multiplyMat4IntoBuffer", [0, 2, 4]],
+        ["src/math/compose-mat4-into-buffer.ts", "composeMat4IntoBuffer", [0]],
+        [
+            "src/math/multiply-mat4-into-buffer.ts",
+            "multiplyMat4IntoBuffer",
+            [0, 2, 4],
+        ],
     ] as const;
-    return functions.map(([path, name, arrays]) => {
-        const {file, declaration} = context.functionDeclaration(path, name), bindings = new Map<string, PinnedBinding>();
-        const params = declaration.parameters.map((parameter, index) => {
-            assert.ok(ts.isIdentifier(parameter.name)); const cpp = parameter.name.text;
-            const array = (arrays as readonly number[]).includes(index);
-            bindings.set(cpp, {cpp, type: array ? "f32" : "scalar"});
-            return `${array ? "std::vector<float>&" : "double"} ${cpp}`;
-        });
-        return `void ${name}(${params.join(", ")}) {
-${lowerPinnedBody(file, declaration.body!.statements, {bindings, calls: new Map([...pinnedNumericMathCalls(),
-            ...functions.map(([, name]) => [name, (args: readonly string[]) => `${name}(${args.join(", ")})`] as const)]),
-            booleanAnd: true, booleanOr: true,
-        })}
+    return functions
+        .map(([path, name, arrays]) => {
+            const { file, declaration } = context.functionDeclaration(
+                    path,
+                    name,
+                ),
+                bindings = new Map<string, PinnedBinding>();
+            const params = declaration.parameters.map((parameter, index) => {
+                assert.ok(ts.isIdentifier(parameter.name));
+                const cpp = parameter.name.text;
+                const array = (arrays as readonly number[]).includes(index);
+                bindings.set(cpp, { cpp, type: array ? "f32" : "scalar" });
+                return `${array ? "std::vector<float>&" : "double"} ${cpp}`;
+            });
+            return `void ${name}(${params.join(", ")}) {
+${lowerPinnedBody(file, declaration.body!.statements, {
+    bindings,
+    calls: new Map([
+        ...pinnedNumericMathCalls(),
+        ...functions.map(
+            ([, name]) =>
+                [
+                    name,
+                    (args: readonly string[]) => `${name}(${args.join(", ")})`,
+                ] as const,
+        ),
+    ]),
+    booleanAnd: true,
+    booleanOr: true,
+})}
 }`;
-    }).join("\n");
+        })
+        .join("\n");
 }
 
 function contexts(): LoweringContext[] {
-    return [new LoweringContext(),
-        doctoredContext(module, "scratch.sample[0]! * weight", "(scratch.sample[0]! + 1) * weight"),
-        doctoredContext(module, "(scratch.sample[0]! - scratch.reference[0]!) * weight", "(scratch.sample[0]! + scratch.reference[0]!) * weight"),
+    return [
+        new LoweringContext(),
+        doctoredContext(
+            module,
+            "scratch.sample[0]! * weight",
+            "(scratch.sample[0]! + 1) * weight",
+        ),
+        doctoredContext(
+            module,
+            "(scratch.sample[0]! - scratch.reference[0]!) * weight",
+            "(scratch.sample[0]! + scratch.reference[0]!) * weight",
+        ),
         doctoredContext(module, "mask.mode === 0", "mask.mode === 1"),
-        doctoredContext(module, "trs, nodes.length, true)", "trs, nodes.length, false)"),
+        doctoredContext(
+            module,
+            "trs, nodes.length, true)",
+            "trs, nodes.length, false)",
+        ),
     ];
 }
 
 test("weighted runtime source mutations change TRS, masks and post-animation bone visibility", () => {
-    const variants = contexts(), expected = variants.map(context => [sourceResult(context, false), sourceResult(context, true)]);
-    for (const value of expected.slice(1)) assert.notDeepEqual(value, expected[0]);
-    for (const context of variants) { assert.ok(lowerGltfWeightedAnimationRuntime(context)); assert.ok(numericCallbacks(context)); assert.ok(lowerGltfAnimationBoneOverrides(context)); }
-    const visible = lowerGltfAnimationBoneOverrides(variants[0]!, {visibilityOnly: true});
+    const variants = contexts(),
+        expected = variants.map((context) => [
+            sourceResult(context, false),
+            sourceResult(context, true),
+        ]);
+    for (const value of expected.slice(1))
+        assert.notDeepEqual(value, expected[0]);
+    for (const context of variants) {
+        assert.ok(lowerGltfWeightedAnimationRuntime(context));
+        assert.ok(numericCallbacks(context));
+        assert.ok(lowerGltfAnimationBoneOverrides(context));
+    }
+    const visible = lowerGltfAnimationBoneOverrides(variants[0]!, {
+        visibilityOnly: true,
+    });
     assert.doesNotMatch(visible, /o\.(?:tx|ty|tz|rx|ry|rz|rw|sx|sy|sz)\b/);
-    assert.throws(() => lowerGltfAnimationBoneOverrides(doctoredContext("src/skeleton/bone-control.ts", "mask: 0, tx: 0", "mask: 1, tx: 0"), {visibilityOnly: true}), /changed|specialization/);
+    assert.throws(
+        () =>
+            lowerGltfAnimationBoneOverrides(
+                doctoredContext(
+                    "src/skeleton/bone-control.ts",
+                    "mask: 0, tx: 0",
+                    "mask: 1, tx: 0",
+                ),
+                { visibilityOnly: true },
+            ),
+        /changed|specialization/,
+    );
 });
 
-test("native weighted source bodies match Float32 stores, masks, bone overrides and palette publication", t => {
+test("native weighted source bodies match Float32 stores, masks, bone overrides and palette publication", (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const variants = contexts(), expected = variants.map(context => [sourceResult(context, false), sourceResult(context, true)]);
-    const directory = resolve("artifacts/test-gltf-weighted-animation-runtime"); mkdirSync(directory, {recursive: true});
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(resolve(directory, "cases.json"), JSON.stringify({inputs, expected}));
-    writeFileSync(file, `#include <bblite/js_data.hpp>
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const variants = contexts(),
+        expected = variants.map((context) => [
+            sourceResult(context, false),
+            sourceResult(context, true),
+        ]);
+    const directory = resolve("artifacts/test-gltf-weighted-animation-runtime");
+    mkdirSync(directory, { recursive: true });
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        resolve(directory, "cases.json"),
+        JSON.stringify({ inputs, expected }),
+    );
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <bit>
@@ -177,7 +449,9 @@ struct Clip { std::vector<Channel> channels; std::vector<Sampler> samplers; };
 struct Group { double time = 0.25, duration = 2, speed_ratio = 1, weight = 1, additive_reference_time = 0.125;
     bool playing = true, loop = true, additive = false; Mask* mask = nullptr; std::vector<std::optional<std::string>> target_names; };
 Json bits(const std::vector<float>& values) { Json result = Json::array(); for (float value : values) result.push_back(std::bit_cast<std::uint32_t>(value)); return result; }
-${variants.map((context, index) => `namespace variant_${index} {
+${variants
+    .map(
+        (context, index) => `namespace variant_${index} {
 ${numericCallbacks(context)}
 ${lowerGltfAnimationEvaluator(context)}
 ${lowerGltfAnimationBoneOverrides(context)}
@@ -226,9 +500,11 @@ Json run(const Json& input, bool has_overrides) {
     catch (const std::exception& error) { errors.push_back(error.what()); }
     return {{"snapshots", snapshots}, {"errors", errors}};
 }
-}`).join("\n")}
+}`,
+    )
+    .join("\n")}
 namespace visibility_only {
-${lowerGltfAnimationBoneOverrides(variants[0]!, {visibilityOnly: true})}
+${lowerGltfAnimationBoneOverrides(variants[0]!, { visibilityOnly: true })}
 struct VisibleOverride { std::uint32_t mask; };
 bool check() {
     const std::vector<std::pair<double, VisibleOverride>> visible{{0, {8}}, {2, {0}}, {-1, {8}}, {4, {8}}};
@@ -247,8 +523,27 @@ int main() { Json cases; std::ifstream("cases.json") >> cases; Json actual = Jso
 ${variants.map((_, index) => `    actual.push_back({variant_${index}::run(cases.at("inputs"), false), variant_${index}::run(cases.at("inputs"), true)});`).join("\n")}
     std::ofstream("actual.json") << actual.dump(); if (actual != cases.at("expected") || !visibility_only::check()) return 1;
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });

@@ -33,12 +33,16 @@
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 #include "pal_text_capture.hpp"
 #else
-namespace bbl::pal { class TextGpuCapture; }
+namespace bbl::pal {
+class TextGpuCapture;
+}
 #endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 #include "pal_node_capture.hpp"
 #else
-namespace bbl::pal { class NodeGpuCapture; }
+namespace bbl::pal {
+class NodeGpuCapture;
+}
 #endif
 
 #if BBLITE_VISUAL_CAPTURE
@@ -73,8 +77,7 @@ namespace bbl::pal { class NodeGpuCapture; }
 #include <bblite/upstream/billboard_system.hpp>
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER
-#if BBLITE_HAS_BILLBOARDS || \
-    (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
 // The layer UBO builder, shared by the 2D layer and — for the fx block
 // sizes — the billboard family; generated whenever either is reached.
 #include <bblite/upstream/sprite_layer.hpp>
@@ -156,7 +159,8 @@ public:
         *stream_ << (flag ? "true" : "false");
         first_ = false;
     }
-    template <typename T> requires (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+    template <typename T>
+        requires(std::is_integral_v<T> && !std::is_same_v<T, bool>)
     void value(T number) {
         separate();
         *stream_ << +number;
@@ -212,8 +216,7 @@ public:
     // Named shorthands. Every one of these is a "field: value" pair, and
     // writing them as one call each is what keeps the dumps below
     // readable at the scale of ninety material fields.
-    template <typename T>
-    void field(const char* name, T number) {
+    template <typename T> void field(const char* name, T number) {
         key(name);
         value(number);
     }
@@ -281,32 +284,37 @@ public:
 
 private:
     void separate() {
-        if (!first_) *stream_ << ',';
+        if (!first_)
+            *stream_ << ',';
         first_ = false;
     }
     void write_string(const char* text) {
         *stream_ << '"';
         for (const char* cursor = text; *cursor; ++cursor) {
-            const unsigned char character =
-                static_cast<unsigned char>(*cursor);
+            const unsigned char character = static_cast<unsigned char>(*cursor);
             switch (character) {
-                case '"': *stream_ << "\\\""; break;
-                case '\\': *stream_ << "\\\\"; break;
-                case '\n': *stream_ << "\\n"; break;
-                case '\r': *stream_ << "\\r"; break;
-                case '\t': *stream_ << "\\t"; break;
-                default:
-                    if (character < 0x20) {
-                        *stream_
-                            << "\\u"
-                            << std::hex
-                            << std::setw(4)
-                            << std::setfill('0')
-                            << static_cast<int>(character)
-                            << std::dec;
-                    } else {
-                        *stream_ << *cursor;
-                    }
+            case '"':
+                *stream_ << "\\\"";
+                break;
+            case '\\':
+                *stream_ << "\\\\";
+                break;
+            case '\n':
+                *stream_ << "\\n";
+                break;
+            case '\r':
+                *stream_ << "\\r";
+                break;
+            case '\t':
+                *stream_ << "\\t";
+                break;
+            default:
+                if (character < 0x20) {
+                    *stream_ << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                             << static_cast<int>(character) << std::dec;
+                } else {
+                    *stream_ << *cursor;
+                }
             }
         }
         *stream_ << '"';
@@ -324,9 +332,8 @@ private:
  * digest across two slots is itself a finding (the same texture bound
  * twice is a real defect shape here).
  */
-inline std::uint64_t fold_payload(
-    std::span<const std::uint8_t> bytes,
-    std::uint64_t hash = 0xcbf29ce484222325ull) {
+inline std::uint64_t fold_payload(std::span<const std::uint8_t> bytes,
+                                  std::uint64_t hash = 0xcbf29ce484222325ull) {
     for (const std::uint8_t byte : bytes) {
         hash ^= byte;
         hash *= 0x100000001b3ull;
@@ -364,33 +371,20 @@ inline std::string payload_digest(const std::vector<std::uint8_t>& bytes) {
  * which is how a diff can say `emissive_factor` instead of `float 41`.
  */
 template <typename Uniforms>
-inline void write_uniform_block(
-    JsonWriter& json,
-    const char* stage,
-    std::uint32_t slot,
-    const char* type_name,
-    const Uniforms& uniforms) {
-    static_assert(
-        sizeof(Uniforms) % sizeof(float) == 0,
-        "uniform blocks are float aggregates");
+inline void write_uniform_block(JsonWriter& json, const char* stage, std::uint32_t slot,
+                                const char* type_name, const Uniforms& uniforms) {
+    static_assert(sizeof(Uniforms) % sizeof(float) == 0, "uniform blocks are float aggregates");
     json.begin_object();
     json.field("stage", stage);
     json.field("slot", slot);
     json.field("type", type_name);
-    json.field(
-        "floats",
-        reinterpret_cast<const float*>(&uniforms),
-        sizeof(Uniforms) / sizeof(float));
+    json.field("floats", reinterpret_cast<const float*>(&uniforms),
+               sizeof(Uniforms) / sizeof(float));
     json.end_object();
 }
 
-inline void write_float_block(
-    JsonWriter& json,
-    const char* stage,
-    std::uint32_t slot,
-    const char* type_name,
-    const float* values,
-    std::size_t count) {
+inline void write_float_block(JsonWriter& json, const char* stage, std::uint32_t slot,
+                              const char* type_name, const float* values, std::size_t count) {
     json.begin_object();
     json.field("stage", stage);
     json.field("slot", slot);
@@ -407,143 +401,169 @@ inline void write_float_block(
 
 inline const char* primitive_name(PrimitiveKind kind) {
     switch (kind) {
-        case PrimitiveKind::babylon: return "babylon";
-        case PrimitiveKind::box: return "box";
-        case PrimitiveKind::gltf: return "gltf";
-        case PrimitiveKind::ground: return "ground";
-        case PrimitiveKind::sphere: return "sphere";
-        case PrimitiveKind::torus: return "torus";
+    case PrimitiveKind::babylon:
+        return "babylon";
+    case PrimitiveKind::box:
+        return "box";
+    case PrimitiveKind::gltf:
+        return "gltf";
+    case PrimitiveKind::ground:
+        return "ground";
+    case PrimitiveKind::sphere:
+        return "sphere";
+    case PrimitiveKind::torus:
+        return "torus";
     }
     return "unknown";
 }
 
 inline const char* camera_kind_name(CameraKind kind) {
     switch (kind) {
-        case CameraKind::arc_rotate: return "arcRotate";
-        case CameraKind::free: return "free";
-        case CameraKind::geospatial: return "geospatial";
+    case CameraKind::arc_rotate:
+        return "arcRotate";
+    case CameraKind::free:
+        return "free";
+    case CameraKind::geospatial:
+        return "geospatial";
     }
     return "unknown";
 }
 
 inline const char* light_kind_name(LightKind kind) {
     switch (kind) {
-        case LightKind::directional: return "directional";
-        case LightKind::hemispheric: return "hemispheric";
-        case LightKind::point: return "point";
-        case LightKind::spot: return "spot";
+    case LightKind::directional:
+        return "directional";
+    case LightKind::hemispheric:
+        return "hemispheric";
+    case LightKind::point:
+        return "point";
+    case LightKind::spot:
+        return "spot";
     }
     return "unknown";
 }
 
 inline const char* alpha_mode_name(MaterialAlphaMode mode) {
     switch (mode) {
-        case MaterialAlphaMode::opaque: return "OPAQUE";
-        case MaterialAlphaMode::mask: return "MASK";
-        case MaterialAlphaMode::blend: return "BLEND";
+    case MaterialAlphaMode::opaque:
+        return "OPAQUE";
+    case MaterialAlphaMode::mask:
+        return "MASK";
+    case MaterialAlphaMode::blend:
+        return "BLEND";
     }
     return "unknown";
 }
 
 inline const char* material_kind_name(upstream::RenderMaterialKind kind) {
     switch (kind) {
-        case upstream::RenderMaterialKind::pbr: return "pbr";
-        case upstream::RenderMaterialKind::standard: return "standard";
-        case upstream::RenderMaterialKind::grid: return "grid";
-        case upstream::RenderMaterialKind::shader: return "shader";
-        case upstream::RenderMaterialKind::node: return "node";
+    case upstream::RenderMaterialKind::pbr:
+        return "pbr";
+    case upstream::RenderMaterialKind::standard:
+        return "standard";
+    case upstream::RenderMaterialKind::grid:
+        return "grid";
+    case upstream::RenderMaterialKind::shader:
+        return "shader";
+    case upstream::RenderMaterialKind::node:
+        return "node";
     }
     return "unknown";
 }
 
 inline const char* bucket_name(upstream::RenderBucket bucket) {
     switch (bucket) {
-        case upstream::RenderBucket::opaque: return "opaque";
-        case upstream::RenderBucket::alpha_mask: return "alphaMask";
-        case upstream::RenderBucket::alpha_blend: return "alphaBlend";
+    case upstream::RenderBucket::opaque:
+        return "opaque";
+    case upstream::RenderBucket::alpha_mask:
+        return "alphaMask";
+    case upstream::RenderBucket::alpha_blend:
+        return "alphaBlend";
     }
     return "unknown";
 }
 
 inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
     switch (kind) {
-        case upstream::RenderPipelineKind::pbr_opaque_back:
-            return "pbr_opaque_back";
-        case upstream::RenderPipelineKind::pbr_opaque_back_clockwise:
-            return "pbr_opaque_back_clockwise";
-        case upstream::RenderPipelineKind::pbr_opaque_none:
-            return "pbr_opaque_none";
-        case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-            return "pbr_opaque_none_clockwise";
-        case upstream::RenderPipelineKind::pbr_transparent_back:
-            return "pbr_transparent_back";
-        case upstream::RenderPipelineKind::pbr_transparent_back_clockwise:
-            return "pbr_transparent_back_clockwise";
-        case upstream::RenderPipelineKind::pbr_transparent_none:
-            return "pbr_transparent_none";
-        case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-            return "pbr_transparent_none_clockwise";
-        case upstream::RenderPipelineKind::pbr_opaque_points:
-            return "pbr_opaque_points";
-        case upstream::RenderPipelineKind::pbr_opaque_lines:
-            return "pbr_opaque_lines";
-        case upstream::RenderPipelineKind::pbr_opaque_line_strip:
-            return "pbr_opaque_line_strip";
-        case upstream::RenderPipelineKind::pbr_transparent_points:
-            return "pbr_transparent_points";
-        case upstream::RenderPipelineKind::pbr_transparent_lines:
-            return "pbr_transparent_lines";
-        case upstream::RenderPipelineKind::pbr_transparent_line_strip:
-            return "pbr_transparent_line_strip";
-        case upstream::RenderPipelineKind::standard_opaque_back:
-            return "standard_opaque_back";
-        case upstream::RenderPipelineKind::standard_opaque_none:
-            return "standard_opaque_none";
-        case upstream::RenderPipelineKind::standard_transparent_back:
-            return "standard_transparent_back";
-        case upstream::RenderPipelineKind::standard_transparent_none:
-            return "standard_transparent_none";
-        case upstream::RenderPipelineKind::standard_opaque_back_clockwise:
-            return "standard_opaque_back_clockwise";
-        case upstream::RenderPipelineKind::standard_opaque_none_clockwise:
-            return "standard_opaque_none_clockwise";
-        case upstream::RenderPipelineKind::
-            standard_transparent_back_clockwise:
-            return "standard_transparent_back_clockwise";
-        case upstream::RenderPipelineKind::
-            standard_transparent_none_clockwise:
-            return "standard_transparent_none_clockwise";
+    case upstream::RenderPipelineKind::pbr_opaque_back:
+        return "pbr_opaque_back";
+    case upstream::RenderPipelineKind::pbr_opaque_back_clockwise:
+        return "pbr_opaque_back_clockwise";
+    case upstream::RenderPipelineKind::pbr_opaque_none:
+        return "pbr_opaque_none";
+    case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
+        return "pbr_opaque_none_clockwise";
+    case upstream::RenderPipelineKind::pbr_transparent_back:
+        return "pbr_transparent_back";
+    case upstream::RenderPipelineKind::pbr_transparent_back_clockwise:
+        return "pbr_transparent_back_clockwise";
+    case upstream::RenderPipelineKind::pbr_transparent_none:
+        return "pbr_transparent_none";
+    case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
+        return "pbr_transparent_none_clockwise";
+    case upstream::RenderPipelineKind::pbr_opaque_points:
+        return "pbr_opaque_points";
+    case upstream::RenderPipelineKind::pbr_opaque_lines:
+        return "pbr_opaque_lines";
+    case upstream::RenderPipelineKind::pbr_opaque_line_strip:
+        return "pbr_opaque_line_strip";
+    case upstream::RenderPipelineKind::pbr_transparent_points:
+        return "pbr_transparent_points";
+    case upstream::RenderPipelineKind::pbr_transparent_lines:
+        return "pbr_transparent_lines";
+    case upstream::RenderPipelineKind::pbr_transparent_line_strip:
+        return "pbr_transparent_line_strip";
+    case upstream::RenderPipelineKind::standard_opaque_back:
+        return "standard_opaque_back";
+    case upstream::RenderPipelineKind::standard_opaque_none:
+        return "standard_opaque_none";
+    case upstream::RenderPipelineKind::standard_transparent_back:
+        return "standard_transparent_back";
+    case upstream::RenderPipelineKind::standard_transparent_none:
+        return "standard_transparent_none";
+    case upstream::RenderPipelineKind::standard_opaque_back_clockwise:
+        return "standard_opaque_back_clockwise";
+    case upstream::RenderPipelineKind::standard_opaque_none_clockwise:
+        return "standard_opaque_none_clockwise";
+    case upstream::RenderPipelineKind::standard_transparent_back_clockwise:
+        return "standard_transparent_back_clockwise";
+    case upstream::RenderPipelineKind::standard_transparent_none_clockwise:
+        return "standard_transparent_none_clockwise";
 
-        case upstream::RenderPipelineKind::grid_opaque_back:
-            return "grid_opaque_back";
-        case upstream::RenderPipelineKind::grid_opaque_none:
-            return "grid_opaque_none";
-        case upstream::RenderPipelineKind::grid_transparent_back:
-            return "grid_transparent_back";
-        case upstream::RenderPipelineKind::grid_transparent_none:
-            return "grid_transparent_none";
-        case upstream::RenderPipelineKind::shader:
-            return "shader";
-        case upstream::RenderPipelineKind::shader_a2c:
-            return "shader_a2c";
-        case upstream::RenderPipelineKind::node_opaque_back:
-            return "node_opaque_back";
-        case upstream::RenderPipelineKind::node_opaque_none:
-            return "node_opaque_none";
-        case upstream::RenderPipelineKind::node_transparent_back:
-            return "node_transparent_back";
-        case upstream::RenderPipelineKind::node_transparent_none:
-            return "node_transparent_none";
+    case upstream::RenderPipelineKind::grid_opaque_back:
+        return "grid_opaque_back";
+    case upstream::RenderPipelineKind::grid_opaque_none:
+        return "grid_opaque_none";
+    case upstream::RenderPipelineKind::grid_transparent_back:
+        return "grid_transparent_back";
+    case upstream::RenderPipelineKind::grid_transparent_none:
+        return "grid_transparent_none";
+    case upstream::RenderPipelineKind::shader:
+        return "shader";
+    case upstream::RenderPipelineKind::shader_a2c:
+        return "shader_a2c";
+    case upstream::RenderPipelineKind::node_opaque_back:
+        return "node_opaque_back";
+    case upstream::RenderPipelineKind::node_opaque_none:
+        return "node_opaque_none";
+    case upstream::RenderPipelineKind::node_transparent_back:
+        return "node_transparent_back";
+    case upstream::RenderPipelineKind::node_transparent_none:
+        return "node_transparent_none";
     }
     return "unknown";
 }
 
 inline const char* topology_name(MeshTopology topology) {
     switch (topology) {
-        case MeshTopology::points: return "points";
-        case MeshTopology::lines: return "lines";
-        case MeshTopology::line_strip: return "line-strip";
-        case MeshTopology::triangles: return "triangles";
+    case MeshTopology::points:
+        return "points";
+    case MeshTopology::lines:
+        return "lines";
+    case MeshTopology::line_strip:
+        return "line-strip";
+    case MeshTopology::triangles:
+        return "triangles";
     }
     return "unknown";
 }
@@ -554,18 +574,19 @@ inline const char* filter_name(TextureFilter filter) {
 
 inline const char* address_name(TextureAddressMode mode) {
     switch (mode) {
-        case TextureAddressMode::repeat: return "repeat";
-        case TextureAddressMode::clamp: return "clamp";
-        case TextureAddressMode::mirror: return "mirror";
+    case TextureAddressMode::repeat:
+        return "repeat";
+    case TextureAddressMode::clamp:
+        return "clamp";
+    case TextureAddressMode::mirror:
+        return "mirror";
     }
     return "unknown";
 }
 
-inline void write_texture_slot(
-    JsonWriter& json,
-    const char* slot,
-    const TextureData& texture) {
-    if (!texture.has_image()) return;
+inline void write_texture_slot(JsonWriter& json, const char* slot, const TextureData& texture) {
+    if (!texture.has_image())
+        return;
     json.begin_object();
     json.field("slot", slot);
     if (texture.compressed_alternatives && !texture.compressed_alternatives->empty()) {
@@ -580,7 +601,8 @@ inline void write_texture_slot(
             json.end_object();
         };
         candidate(texture.compressed);
-        for (const auto& compressed : *texture.compressed_alternatives) candidate(compressed);
+        for (const auto& compressed : *texture.compressed_alternatives)
+            candidate(compressed);
         json.end_array();
     } else {
         std::size_t byte_length = texture.bytes.size();
@@ -603,11 +625,8 @@ inline void write_texture_slot(
     json.begin_object();
     json.field("minFilter", filter_name(texture.sampler.min_filter));
     json.field("magFilter", filter_name(texture.sampler.mag_filter));
-    json.field(
-        "mipmapMode",
-        texture.sampler.mipmap_mode == TextureMipmapMode::nearest
-            ? "nearest"
-            : "linear");
+    json.field("mipmapMode",
+               texture.sampler.mipmap_mode == TextureMipmapMode::nearest ? "nearest" : "linear");
     json.field("addressU", address_name(texture.sampler.address_u));
     json.field("addressV", address_name(texture.sampler.address_v));
     json.field("maxAnisotropy", texture.sampler.max_anisotropy);
@@ -616,16 +635,13 @@ inline void write_texture_slot(
     json.end_object();
 }
 
-inline void write_texture_transform(
-    JsonWriter& json,
-    const char* name,
-    const TextureTransform& transform) {
+inline void write_texture_transform(JsonWriter& json, const char* name,
+                                    const TextureTransform& transform) {
     // An identity transform is the overwhelming majority and says
     // nothing; printing only the ones a scene actually set keeps the
     // material record readable enough to scan by eye.
-    if (transform.u_scale == 1.0f && transform.v_scale == 1.0f &&
-        transform.u_offset == 0.0f && transform.v_offset == 0.0f &&
-        transform.rotation == 0.0f) {
+    if (transform.u_scale == 1.0f && transform.v_scale == 1.0f && transform.u_offset == 0.0f &&
+        transform.v_offset == 0.0f && transform.rotation == 0.0f) {
         return;
     }
     json.key(name);
@@ -638,10 +654,7 @@ inline void write_texture_transform(
     json.end_array();
 }
 
-inline void write_material(
-    JsonWriter& json,
-    std::size_t index,
-    const MaterialRecord& material) {
+inline void write_material(JsonWriter& json, std::size_t index, const MaterialRecord& material) {
     json.begin_object();
     json.field("index", index);
     json.field("alphaMode", alpha_mode_name(material.alpha_mode));
@@ -677,9 +690,7 @@ inline void write_material(
     json.field("hasMetallicReflectance", material.has_metallic_reflectance);
     json.field("metallicF0Factor", material.metallic_f0_factor);
     json.field("specularWeight", material.specular_weight);
-    json.field(
-        "metallicReflectanceColor",
-        material.metallic_reflectance_color);
+    json.field("metallicReflectanceColor", material.metallic_reflectance_color);
 
     json.field("hasIor", material.has_ior);
     json.field("indexOfRefraction", material.index_of_refraction);
@@ -693,23 +704,15 @@ inline void write_material(
 
     json.field("clearcoatIntensity", material.clearcoat_intensity);
     json.field("clearcoatRoughness", material.clearcoat_roughness);
-    json.field(
-        "clearcoatIndexOfRefraction",
-        material.clearcoat_index_of_refraction);
+    json.field("clearcoatIndexOfRefraction", material.clearcoat_index_of_refraction);
     json.field("clearcoatNormalScale", material.clearcoat_normal_scale);
     json.field("sheenColor", material.sheen_color);
     json.field("sheenRoughness", material.sheen_roughness);
     json.field("sheenIntensity", material.sheen_intensity);
     json.field("iridescenceIntensity", material.iridescence_intensity);
-    json.field(
-        "iridescenceIndexOfRefraction",
-        material.iridescence_index_of_refraction);
-    json.field(
-        "iridescenceMinimumThickness",
-        material.iridescence_minimum_thickness);
-    json.field(
-        "iridescenceMaximumThickness",
-        material.iridescence_maximum_thickness);
+    json.field("iridescenceIndexOfRefraction", material.iridescence_index_of_refraction);
+    json.field("iridescenceMinimumThickness", material.iridescence_minimum_thickness);
+    json.field("iridescenceMaximumThickness", material.iridescence_maximum_thickness);
 
     json.field("diffuseColor", material.diffuse_color);
     json.field("specularColor", material.specular_color);
@@ -752,68 +755,42 @@ inline void write_material(
     json.end_array();
 
     if (!material.shader_uniform_values.empty()) {
-        json.field(
-            "shaderUniformValues",
-            material.shader_uniform_values.data(),
-            material.shader_uniform_values.size());
+        json.field("shaderUniformValues", material.shader_uniform_values.data(),
+                   material.shader_uniform_values.size());
     }
 
-    write_texture_transform(
-        json, "baseColorTransform", material.base_color_transform);
+    write_texture_transform(json, "baseColorTransform", material.base_color_transform);
     write_texture_transform(json, "ormTransform", material.orm_transform);
-    write_texture_transform(
-        json, "occlusionTransform", material.occlusion_transform);
-    write_texture_transform(
-        json, "normalTransform", material.normal_transform);
-    write_texture_transform(
-        json, "emissiveTransform", material.emissive_transform);
-    write_texture_transform(
-        json, "clearcoatTransform", material.clearcoat_transform);
-    write_texture_transform(
-        json,
-        "clearcoatRoughnessTransform",
-        material.clearcoat_roughness_transform);
-    write_texture_transform(
-        json,
-        "clearcoatNormalTransform",
-        material.clearcoat_normal_transform);
+    write_texture_transform(json, "occlusionTransform", material.occlusion_transform);
+    write_texture_transform(json, "normalTransform", material.normal_transform);
+    write_texture_transform(json, "emissiveTransform", material.emissive_transform);
+    write_texture_transform(json, "clearcoatTransform", material.clearcoat_transform);
+    write_texture_transform(json, "clearcoatRoughnessTransform",
+                            material.clearcoat_roughness_transform);
+    write_texture_transform(json, "clearcoatNormalTransform", material.clearcoat_normal_transform);
     write_texture_transform(json, "sheenTransform", material.sheen_transform);
-    write_texture_transform(
-        json, "sheenRoughnessTransform", material.sheen_roughness_transform);
-    write_texture_transform(
-        json, "iridescenceTransform", material.iridescence_transform);
-    write_texture_transform(
-        json,
-        "iridescenceThicknessTransform",
-        material.iridescence_thickness_transform);
-    write_texture_transform(
-        json, "transmissionTransform", material.transmission_transform);
-    write_texture_transform(
-        json, "thicknessTransform", material.thickness_transform);
+    write_texture_transform(json, "sheenRoughnessTransform", material.sheen_roughness_transform);
+    write_texture_transform(json, "iridescenceTransform", material.iridescence_transform);
+    write_texture_transform(json, "iridescenceThicknessTransform",
+                            material.iridescence_thickness_transform);
+    write_texture_transform(json, "transmissionTransform", material.transmission_transform);
+    write_texture_transform(json, "thicknessTransform", material.thickness_transform);
 
     json.key("textures");
     json.begin_array();
     write_texture_slot(json, "baseColor", material.base_color_texture);
-    write_texture_slot(
-        json, "metallicRoughness", material.metallic_roughness_texture);
+    write_texture_slot(json, "metallicRoughness", material.metallic_roughness_texture);
     write_texture_slot(json, "normal", material.normal_texture);
     write_texture_slot(json, "transmission", material.transmission_texture);
     write_texture_slot(json, "thickness", material.thickness_texture);
     write_texture_slot(json, "clearcoat", material.clearcoat_texture);
-    write_texture_slot(
-        json, "clearcoatRoughness", material.clearcoat_roughness_texture);
-    write_texture_slot(
-        json, "clearcoatNormal", material.clearcoat_normal_texture);
+    write_texture_slot(json, "clearcoatRoughness", material.clearcoat_roughness_texture);
+    write_texture_slot(json, "clearcoatNormal", material.clearcoat_normal_texture);
     write_texture_slot(json, "sheenColor", material.sheen_color_texture);
-    write_texture_slot(
-        json, "sheenRoughness", material.sheen_roughness_texture);
+    write_texture_slot(json, "sheenRoughness", material.sheen_roughness_texture);
     write_texture_slot(json, "iridescence", material.iridescence_texture);
-    write_texture_slot(
-        json, "iridescenceThickness", material.iridescence_thickness_texture);
-    write_texture_slot(
-        json,
-        "metallicReflectance",
-        material.metallic_reflectance_texture);
+    write_texture_slot(json, "iridescenceThickness", material.iridescence_thickness_texture);
+    write_texture_slot(json, "metallicReflectance", material.metallic_reflectance_texture);
     write_texture_slot(json, "reflectance", material.reflectance_texture);
     write_texture_slot(json, "emissive", material.emissive_texture);
     write_texture_slot(json, "opacity", material.opacity_texture);
@@ -825,11 +802,8 @@ inline void write_material(
     json.end_object();
 }
 
-inline void write_mesh(
-    JsonWriter& json,
-    std::size_t index,
-    const MeshRecord& mesh,
-    const Engine& engine) {
+inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& mesh,
+                       const Engine& engine) {
     json.begin_object();
     json.field("index", index);
     json.field("primitive", primitive_name(mesh.primitive));
@@ -850,22 +824,15 @@ inline void write_mesh(
     json.field("thinInstanced", mesh.thin_instanced);
     json.field("instanceCount", mesh.instance_count);
     json.field("loaderInstanceCount", mesh.instance_matrices.size());
-    if (
-        mesh.thin_instanced &&
-        mesh.instance_source &&
-        mesh.instance_source->size() >=
-            static_cast<std::size_t>(mesh.instance_count) * 16u) {
-        json.field(
-            "instanceMatrices",
-            mesh.instance_source->data(),
-            static_cast<std::size_t>(mesh.instance_count) * 16u);
+    if (mesh.thin_instanced && mesh.instance_source &&
+        mesh.instance_source->size() >= static_cast<std::size_t>(mesh.instance_count) * 16u) {
+        json.field("instanceMatrices", mesh.instance_source->data(),
+                   static_cast<std::size_t>(mesh.instance_count) * 16u);
     }
     json.field("morphWeights", mesh.morph_weights.data(), 4);
     if (!mesh.morph_storage_weights.empty()) {
-        json.field(
-            "morphStorageWeights",
-            mesh.morph_storage_weights.data(),
-            mesh.morph_storage_weights.size());
+        json.field("morphStorageWeights", mesh.morph_storage_weights.data(),
+                   mesh.morph_storage_weights.size());
     }
     if (mesh.geometry < engine.geometries.size()) {
         const ModelGeometry& geometry = engine.geometries[mesh.geometry];
@@ -886,10 +853,7 @@ inline void write_mesh(
     json.end_object();
 }
 
-inline void write_light(
-    JsonWriter& json,
-    std::size_t index,
-    const LightRecord& light) {
+inline void write_light(JsonWriter& json, std::size_t index, const LightRecord& light) {
     json.begin_object();
     json.field("index", index);
     json.field("kind", light_kind_name(light.kind));
@@ -907,9 +871,7 @@ inline void write_light(
     json.end_object();
 }
 
-inline void write_environment(
-    JsonWriter& json,
-    const EnvironmentState& environment) {
+inline void write_environment(JsonWriter& json, const EnvironmentState& environment) {
     json.begin_object();
     json.field("hasIrradiance", environment.has_irradiance);
     json.field("exposure", environment.exposure);
@@ -926,11 +888,8 @@ inline void write_environment(
     json.field("hasGround", environment.has_ground);
     json.field("hasSkybox", environment.has_skybox);
     json.field("hasImageSkybox", environment.has_image_skybox);
-    json.field(
-        "backgroundEnabledByDefault",
-        environment.background_enabled_by_default);
-    json.field(
-        "skyboxUsesEnvironment", environment.skybox_uses_environment);
+    json.field("backgroundEnabledByDefault", environment.background_enabled_by_default);
+    json.field("skyboxUsesEnvironment", environment.skybox_uses_environment);
     json.field("groundSize", environment.ground_size);
     json.field("skyboxSize", environment.skybox_size);
     json.field("imageSkyboxSize", environment.image_skybox_size);
@@ -958,139 +917,100 @@ inline void write_environment(
  * uploads `PbrUniforms` any more, so its dump is the reduced base-lane
  * block documented at the arm itself.
  */
-inline void write_draw_uniforms(
-    JsonWriter& json,
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const upstream::RenderDrawCommand& draw,
-    const std::array<float, 16>& view_projection,
-    // The pass's own factors beside its product, for a shader material
-    // that declares one.
-    const ShaderPassMatrices& pass_matrices) {
+inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engine& engine,
+                                const CameraRecord& camera, const upstream::RenderDrawCommand& draw,
+                                const std::array<float, 16>& view_projection,
+                                // The pass's own factors beside its product, for a shader material
+                                // that declares one.
+                                const ShaderPassMatrices& pass_matrices) {
     json.key("uniforms");
     json.begin_array();
-    write_float_block(
-        json,
-        "vertex",
-        0,
-        "viewProjection",
-        view_projection.data(),
-        view_projection.size());
+    write_float_block(json, "vertex", 0, "viewProjection", view_projection.data(),
+                      view_projection.size());
     switch (draw.item.material_kind) {
-        case upstream::RenderMaterialKind::standard: {
+    case upstream::RenderMaterialKind::standard: {
 #if BBLITE_STANDARD_VARIANTS > 0
-            // The transcribed StandardUniforms block is retired: the
-            // draw path fills the pin's own 96-byte material mirror, so
-            // the capture dumps the same bytes the same writer builds.
-            const MaterialRecord* material =
-                draw.item.material.value < engine.materials.size()
-                    ? &handle_at(engine.materials, draw.item.material)
-                    : nullptr;
-            std::uint32_t features = material
-                ? upstream::standard_material_features(*material)
-                : 0u;
-            if (material && material->no_color) {
-                features |= upstream::standard_no_color_output_flag;
-            }
-            const upstream::StandardMaterialUniforms fragment =
-                standard_material_block(material, features);
-            write_uniform_block(
-                json,
-                "fragment",
-                0,
-                "StandardMaterialUniforms",
-                fragment);
+        // The transcribed StandardUniforms block is retired: the
+        // draw path fills the pin's own 96-byte material mirror, so
+        // the capture dumps the same bytes the same writer builds.
+        const MaterialRecord* material = draw.item.material.value < engine.materials.size()
+                                             ? &handle_at(engine.materials, draw.item.material)
+                                             : nullptr;
+        std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
+        if (material && material->no_color) {
+            features |= upstream::standard_no_color_output_flag;
+        }
+        const upstream::StandardMaterialUniforms fragment =
+            standard_material_block(material, features);
+        write_uniform_block(json, "fragment", 0, "StandardMaterialUniforms", fragment);
 #endif
-            break;
+        break;
+    }
+    case upstream::RenderMaterialKind::grid: {
+        const upstream::GridUniforms fragment = upstream::build_grid_uniforms(engine, draw.item);
+        write_uniform_block(json, "fragment", 0, "GridUniforms", fragment);
+        break;
+    }
+    case upstream::RenderMaterialKind::shader: {
+        // The custom-shader path packs its block from the variant's
+        // reflected gathers, so it has no named struct to parse. Mirror
+        // the real draw path's per-mesh world products before packing:
+        // passing only the frame factors made capture fail for any
+        // shader that declared worldView even though rendering itself
+        // supplied it correctly.
+        if (draw.item.material.value < engine.materials.size() &&
+            draw.item.mesh.value < engine.meshes.size()) {
+            const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
+            const ShaderDrawMatrices shader_matrices(
+                engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
+            const ShaderPassMatrices shader_pass_matrices = shader_matrices.apply(pass_matrices);
+            const upstream::ShaderVariantInfo& info =
+                upstream::shader_variant_info(draw.item.shader_variant);
+            // The scratch the shared packer fills -- the same
+            // caller-owned shape both backends' draw loops thread
+            // through it, reused here across the two stages.
+            std::vector<float> stage_block_floats;
+            const auto emit_block = [&](const upstream::ShaderVariantStageBlock& block,
+                                        const char* stage) {
+                if (!block.present)
+                    return;
+                shader_stage_block_floats(block, shader_pass_matrices, material,
+                                          stage_block_floats);
+                write_float_block(json, stage, 0, info.name, stage_block_floats.data(),
+                                  stage_block_floats.size());
+            };
+            emit_block(info.vertex, "vertex");
+            emit_block(info.fragment, "fragment");
         }
-        case upstream::RenderMaterialKind::grid: {
-            const upstream::GridUniforms fragment =
-                upstream::build_grid_uniforms(engine, draw.item);
-            write_uniform_block(
-                json, "fragment", 0, "GridUniforms", fragment);
-            break;
-        }
-        case upstream::RenderMaterialKind::shader: {
-            // The custom-shader path packs its block from the variant's
-            // reflected gathers, so it has no named struct to parse. Mirror
-            // the real draw path's per-mesh world products before packing:
-            // passing only the frame factors made capture fail for any
-            // shader that declared worldView even though rendering itself
-            // supplied it correctly.
-            if (
-                draw.item.material.value < engine.materials.size() &&
-                draw.item.mesh.value < engine.meshes.size()) {
-                const MaterialRecord& material =
-                    handle_at(engine.materials, draw.item.material);
-                const ShaderDrawMatrices shader_matrices(
-                    engine,
-                    handle_at(engine.meshes, draw.item.mesh),
-                    pass_matrices);
-                const ShaderPassMatrices shader_pass_matrices =
-                    shader_matrices.apply(pass_matrices);
-                const upstream::ShaderVariantInfo& info =
-                    upstream::shader_variant_info(draw.item.shader_variant);
-                // The scratch the shared packer fills -- the same
-                // caller-owned shape both backends' draw loops thread
-                // through it, reused here across the two stages.
-                std::vector<float> stage_block_floats;
-                const auto emit_block =
-                    [&](
-                        const upstream::ShaderVariantStageBlock& block,
-                        const char* stage) {
-                        if (!block.present) return;
-                        shader_stage_block_floats(
-                            block,
-                            shader_pass_matrices,
-                            material,
-                            stage_block_floats);
-                        write_float_block(
-                            json,
-                            stage,
-                            0,
-                            info.name,
-                            stage_block_floats.data(),
-                            stage_block_floats.size());
-                    };
-                emit_block(info.vertex, "vertex");
-                emit_block(info.fragment, "fragment");
-            }
-            break;
-        }
-        case upstream::RenderMaterialKind::pbr:
-        default: {
-            // Reduced to the base lanes: PBR draws bind the pinned
-            // material, scene and lights blocks, so the transcribed
-            // struct now carries only the scene-and-light-derived values
-            // a diff still pairs by name (analytic light slots, camera
-            // basis, base material factors, harmonics). The option-gated
-            // extension lanes it used to mirror -- fog, transmission,
-            // texture transforms, specular, extra lights, clearcoat,
-            // sheen, iridescence, occlusion -- are pruned from the
-            // generated struct; their real values are the
-            // pinnedMaterialBlocks section below and the capture's own
-            // scene and lights dumps.
-            const upstream::PbrUniforms fragment =
-                upstream::build_pbr_uniforms(
-                    scene, engine, camera, draw.item);
-            write_uniform_block(
-                json, "fragment", 0, "PbrUniforms", fragment);
-            break;
-        }
+        break;
+    }
+    case upstream::RenderMaterialKind::pbr:
+    default: {
+        // Reduced to the base lanes: PBR draws bind the pinned
+        // material, scene and lights blocks, so the transcribed
+        // struct now carries only the scene-and-light-derived values
+        // a diff still pairs by name (analytic light slots, camera
+        // basis, base material factors, harmonics). The option-gated
+        // extension lanes it used to mirror -- fog, transmission,
+        // texture transforms, specular, extra lights, clearcoat,
+        // sheen, iridescence, occlusion -- are pruned from the
+        // generated struct; their real values are the
+        // pinnedMaterialBlocks section below and the capture's own
+        // scene and lights dumps.
+        const upstream::PbrUniforms fragment =
+            upstream::build_pbr_uniforms(scene, engine, camera, draw.item);
+        write_uniform_block(json, "fragment", 0, "PbrUniforms", fragment);
+        break;
+    }
     }
     json.end_array();
 }
 
-inline void write_draw_list(
-    JsonWriter& json,
-    const char* stage,
-    const upstream::RenderDrawList& list,
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& view_projection,
-    const ShaderPassMatrices& pass_matrices) {
+inline void write_draw_list(JsonWriter& json, const char* stage,
+                            const upstream::RenderDrawList& list, const Scene& scene,
+                            const Engine& engine, const CameraRecord& camera,
+                            const std::array<float, 16>& view_projection,
+                            const ShaderPassMatrices& pass_matrices) {
     for (const upstream::RenderDrawCommand& draw : list.commands) {
         json.begin_object();
         json.field("stage", stage);
@@ -1098,11 +1018,8 @@ inline void write_draw_list(
         json.field("pipeline", pipeline_name(draw.pipeline));
         json.field("materialKind", material_kind_name(draw.item.material_kind));
         json.field("bucket", bucket_name(draw.item.bucket));
-        json.field(
-            "cullMode",
-            draw.item.cull_mode == upstream::RenderCullMode::none
-                ? "none"
-                : "back");
+        json.field("cullMode",
+                   draw.item.cull_mode == upstream::RenderCullMode::none ? "none" : "back");
         json.field("clockwiseFrontFace", draw.item.clockwise_front_face);
         json.field("alphaToCoverage", draw.item.alpha_to_coverage);
         json.field("transmissive", draw.item.transmissive);
@@ -1114,88 +1031,54 @@ inline void write_draw_list(
         json.handle("geometry", draw.item.geometry);
         json.field("shaderVariant", draw.item.shader_variant);
 #if BBLITE_STANDARD_VARIANTS > 0
-        if (
-            draw.item.material_kind ==
-            upstream::RenderMaterialKind::standard) {
+        if (draw.item.material_kind == upstream::RenderMaterialKind::standard) {
             StandardVariantKey key;
-            const std::size_t variant = standard_variant_for_draw(
-                scene,
-                engine,
-                draw,
-                npos,
-                &key);
+            const std::size_t variant = standard_variant_for_draw(scene, engine, draw, npos, &key);
             json.field("standardFeatures", key.features);
             json.field("standardMeshFeatures", key.mesh_features);
-            json.field(
-                "composedVariant",
-                variant == npos ? invalid_handle : variant);
-            json.field(
-                "shadowBindingCount",
-                variant == npos
-                    ? 0u
-                    : upstream::standard_variants[variant]
-                          .shadow_binding_count);
+            json.field("composedVariant", variant == npos ? invalid_handle : variant);
+            json.field("shadowBindingCount",
+                       variant == npos ? 0u
+                                       : upstream::standard_variants[variant].shadow_binding_count);
         }
 #endif
         if (draw.item.geometry < engine.geometries.size()) {
-            const ModelGeometry& geometry =
-                engine.geometries[draw.item.geometry];
+            const ModelGeometry& geometry = engine.geometries[draw.item.geometry];
             json.field("indexCount", geometry.indices.size());
             json.field("vertexCount", geometry.vertices.size());
         }
         if (draw.item.mesh.value < engine.meshes.size()) {
             const MeshRecord& mesh = handle_at(engine.meshes, draw.item.mesh);
-            json.field(
-                "instanceCount",
-                mesh.thin_instanced
-                    ? mesh.instance_count
-                    : static_cast<std::uint32_t>(
-                          mesh.instance_matrices.size()));
+            json.field("instanceCount", mesh.thin_instanced ? mesh.instance_count
+                                                            : static_cast<std::uint32_t>(
+                                                                  mesh.instance_matrices.size()));
         }
-        write_draw_uniforms(
-            json, scene, engine, camera, draw, view_projection,
-            pass_matrices);
+        write_draw_uniforms(json, scene, engine, camera, draw, view_projection, pass_matrices);
         json.end_object();
     }
 }
 
 #if BBLITE_SHADOW_RECEIVERS
-inline void write_shadow_generator(
-    JsonWriter& json,
-    const Engine& engine,
-    ShadowGeneratorHandle handle,
-    LightHandle light,
-    std::size_t slot) {
-    const ShadowGeneratorRecord& generator =
-        handle_at(engine.shadow_generators, handle);
+inline void write_shadow_generator(JsonWriter& json, const Engine& engine,
+                                   ShadowGeneratorHandle handle, LightHandle light,
+                                   std::size_t slot) {
+    const ShadowGeneratorRecord& generator = handle_at(engine.shadow_generators, handle);
     json.begin_object();
     json.handle("index", handle.value);
     json.handle("light", light.value);
     json.field("lightSlot", slot);
-    json.field(
-        "filter",
-        static_cast<std::uint32_t>(generator.filter));
+    json.field("filter", static_cast<std::uint32_t>(generator.filter));
     json.field("mapSize", generator.map_size);
     json.field("bias", generator.bias);
     json.field("darkness", generator.darkness);
     json.field("nearPlane", generator.near_plane);
     json.field("farPlane", generator.far_plane);
-    json.field(
-        "forceRefreshEveryFrame",
-        generator.force_refresh_every_frame);
+    json.field("forceRefreshEveryFrame", generator.force_refresh_every_frame);
     json.handle("mapTarget", generator.map_target.value);
-    json.field(
-        "lightMatrix",
-        generator.light_matrix.data(),
-        generator.light_matrix.size());
-    json.field(
-        "casterView",
-        generator.caster_view.data(),
-        generator.caster_view.size());
-    json.field(
-        "casterViewProjection",
-        generator.caster_view_projection.data(),
-        generator.caster_view_projection.size());
+    json.field("lightMatrix", generator.light_matrix.data(), generator.light_matrix.size());
+    json.field("casterView", generator.caster_view.data(), generator.caster_view.size());
+    json.field("casterViewProjection", generator.caster_view_projection.data(),
+               generator.caster_view_projection.size());
     json.key("casterMeshes");
     json.begin_array();
     for (const MeshHandle mesh : generator.caster_meshes) {
@@ -1208,8 +1091,7 @@ inline void write_shadow_generator(
         json.begin_object();
         json.handle("task", task_handle.value);
         if (task_handle.value < engine.frame_tasks.size()) {
-            const FrameTaskRecord& task =
-                handle_at(engine.frame_tasks, task_handle);
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, task_handle);
             json.field("renderMeshes", task.render_meshes.size());
             json.handle("target", task.render.target.value);
         }
@@ -1222,13 +1104,11 @@ inline void write_shadow_generator(
 
 #if BBLITE_HAS_SPLATS
 /** Retained source bytes are separate from regenerated GPU texture payloads. */
-inline void write_splat_list(
-    JsonWriter& json,
-    const Scene& scene,
-    const Engine& engine,
-    const std::string& capture_path) {
+inline void write_splat_list(JsonWriter& json, const Scene& scene, const Engine& engine,
+                             const std::string& capture_path) {
     for (const SplatMeshHandle handle : scene.splat_meshes) {
-        if (handle.value >= engine.splat_meshes.size()) continue;
+        if (handle.value >= engine.splat_meshes.size())
+            continue;
         const SplatMeshRecord& splat = handle_at(engine.splat_meshes, handle);
         json.begin_object();
         json.field("index", handle.value);
@@ -1239,18 +1119,18 @@ inline void write_splat_list(
         json.field("boundMax", splat.bound_max.data(), splat.bound_max.size());
         if (splat.splats_data) {
             const std::filesystem::path path(capture_path);
-            const std::string filename = path.filename().string() +
-                ".splat-" + std::to_string(handle.value) + ".bin";
+            const std::string filename =
+                path.filename().string() + ".splat-" + std::to_string(handle.value) + ".bin";
             const std::size_t size = splat.splats_data->byte_length();
-            std::ofstream bytes(path.parent_path() / filename,
-                std::ios::binary | std::ios::trunc);
+            std::ofstream bytes(path.parent_path() / filename, std::ios::binary | std::ios::trunc);
             if (size != 0) {
                 bytes.write(reinterpret_cast<const char*>(splat.splats_data->data()),
-                    static_cast<std::streamsize>(size));
+                            static_cast<std::streamsize>(size));
             }
             bytes.close();
             if (!bytes) {
-                throw std::runtime_error("Unable to write retained splat data for '" + capture_path + "'.");
+                throw std::runtime_error("Unable to write retained splat data for '" +
+                                         capture_path + "'.");
             }
             json.field("byteLength", size);
             json.field("retainedDataFile", filename);
@@ -1264,36 +1144,29 @@ inline void write_splat_list(
  * either mesh draw list. Capture it at that same boundary so a splat-only
  * scene reports the indexed instanced draw and the exact UBO its pass writes.
  */
-inline void write_splat_draw_list(
-    JsonWriter& json,
-    const Scene& scene,
-    const Engine& engine,
-    // The frame's own factors, built once by the caller: the pin's splat
-    // UBO stores the view and the projection separately.
-    const std::array<float, 16>& view,
-    const std::array<float, 16>& projection,
-    // The eye a cloud carrying harmonics builds its view direction from.
-    [[maybe_unused]] const std::array<float, 4>& camera_position,
-    int width,
-    int height) {
+inline void
+write_splat_draw_list(JsonWriter& json, const Scene& scene, const Engine& engine,
+                      // The frame's own factors, built once by the caller: the pin's splat
+                      // UBO stores the view and the projection separately.
+                      const std::array<float, 16>& view, const std::array<float, 16>& projection,
+                      // The eye a cloud carrying harmonics builds its view direction from.
+                      [[maybe_unused]] const std::array<float, 4>& camera_position, int width,
+                      int height) {
     for (const SplatMeshHandle handle : scene.splat_meshes) {
-        if (handle.value >= engine.splat_meshes.size()) continue;
+        if (handle.value >= engine.splat_meshes.size())
+            continue;
         const SplatMeshRecord& splat = handle_at(engine.splat_meshes, handle);
-        if (splat.vertex_count == 0) continue;
+        if (splat.vertex_count == 0)
+            continue;
 
         upstream::SplatUniforms uniforms;
-        upstream::write_splat_uniforms(
-            uniforms,
-            upstream::build_splat_world(splat),
-            view,
-            projection,
-            static_cast<double>(width),
-            static_cast<double>(height),
-            splat.texture_width,
-            splat.texture_height
+        upstream::write_splat_uniforms(uniforms, upstream::build_splat_world(splat), view,
+                                       projection, static_cast<double>(width),
+                                       static_cast<double>(height), splat.texture_width,
+                                       splat.texture_height
 #if BBLITE_SPLAT_SH
-            ,
-            camera_position
+                                       ,
+                                       camera_position
 #endif
         );
 
@@ -1319,20 +1192,24 @@ inline void write_splat_draw_list(
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER (scene-frame writers)
 
-#if BBLITE_HAS_BILLBOARDS || \
-    (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
 // The sprite-family enums as names, and the two records both families
 // share — spelled once so the billboard and layer writers cannot label the
 // same descriptor differently.
 inline const char* sprite_blend_factor_name(SpriteBlendFactor factor) {
     switch (factor) {
-        case SpriteBlendFactor::zero: return "zero";
-        case SpriteBlendFactor::one: return "one";
-        case SpriteBlendFactor::src_alpha: return "src_alpha";
-        case SpriteBlendFactor::one_minus_src_alpha:
-            return "one_minus_src_alpha";
-        case SpriteBlendFactor::dst: return "dst";
-        case SpriteBlendFactor::dst_alpha: return "dst_alpha";
+    case SpriteBlendFactor::zero:
+        return "zero";
+    case SpriteBlendFactor::one:
+        return "one";
+    case SpriteBlendFactor::src_alpha:
+        return "src_alpha";
+    case SpriteBlendFactor::one_minus_src_alpha:
+        return "one_minus_src_alpha";
+    case SpriteBlendFactor::dst:
+        return "dst";
+    case SpriteBlendFactor::dst_alpha:
+        return "dst_alpha";
     }
     return "unknown";
 }
@@ -1342,10 +1219,8 @@ inline const char* billboard_depth_mode_name(BillboardDepthMode mode) {
 }
 
 /** A pinned blend descriptor as the pure data it is (blend-as-data). */
-inline void write_sprite_blend(
-    JsonWriter& json,
-    const char* name,
-    const SpriteBlendDescriptor& blend) {
+inline void write_sprite_blend(JsonWriter& json, const char* name,
+                               const SpriteBlendDescriptor& blend) {
     json.key(name);
     json.begin_object();
     json.field("enabled", blend.enabled);
@@ -1364,10 +1239,8 @@ inline void write_sprite_blend(
  * payload, exactly as the material texture slots report theirs — the
  * digest answers "same asset in the same slot?" without dumping pixels.
  */
-inline void write_sprite_atlas_reference(
-    JsonWriter& json,
-    const Engine& engine,
-    SpriteAtlasHandle atlas) {
+inline void write_sprite_atlas_reference(JsonWriter& json, const Engine& engine,
+                                         SpriteAtlasHandle atlas) {
     json.key("atlas");
     json.begin_object();
     if (atlas.value < engine.sprite_atlases.size()) {
@@ -1388,8 +1261,7 @@ inline void write_sprite_atlas_reference(
 // Billboards draw only inside a scene's frame (there is no standalone
 // billboard loop), so their writer needs the scene envelope's camera math
 // and rides both gates.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && \
-    BBLITE_HAS_BILLBOARDS
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_BILLBOARDS
 /**
  * The billboard renderables live beside the render plan rather than in
  * either mesh draw list, exactly as the splat cloud does. Capture them at
@@ -1409,25 +1281,22 @@ inline void write_sprite_atlas_reference(
  * time would read as a divergence on a correct scene. The params half it
  * carries is the `shaderParams` field beside the draw.
  */
-inline void write_billboard_draw_list(
-    JsonWriter& json,
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& view_projection) {
+inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, const Engine& engine,
+                                      const CameraRecord& camera,
+                                      const std::array<float, 16>& view_projection) {
     // The same view the frame builds once for the sort and the draw.
-    const std::array<float, 16> view = upstream::build_view_matrix(
-        upstream::camera_world_matrix(camera));
+    const std::array<float, 16> view =
+        upstream::build_view_matrix(upstream::camera_world_matrix(camera));
     for (const BillboardSystemHandle handle : scene.billboard_systems) {
-        if (handle.value >= engine.billboard_systems.size()) continue;
-        const BillboardSystemRecord& system =
-            handle_at(engine.billboard_systems, handle);
+        if (handle.value >= engine.billboard_systems.size())
+            continue;
+        const BillboardSystemRecord& system = handle_at(engine.billboard_systems, handle);
         // The pass's own gate: an invisible or empty system records no
         // draw, so it must not describe one here either.
-        if (!system.visible || system.count == 0) continue;
+        if (!system.visible || system.count == 0)
+            continue;
         const BillboardDrawPlan plan = billboard_draw_plan(system);
-        const bool cutout =
-            system.depth_mode == BillboardDepthMode::cutout;
+        const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
         json.begin_object();
         // The slot the depth mode gives it: cutout draws among the opaque
         // meshes so everything after sees its depth; transparent closes
@@ -1442,10 +1311,8 @@ inline void write_billboard_draw_list(
         json.field("billboardSystem", handle.value);
         json.field("vertexStem", plan.vertex_stem);
         json.field("fragmentStem", plan.fragment_stem);
-        json.field(
-            "orientation", plan.axis_locked ? "axisLocked" : "facing");
-        json.field(
-            "depthMode", billboard_depth_mode_name(system.depth_mode));
+        json.field("orientation", plan.axis_locked ? "axisLocked" : "facing");
+        json.field("depthMode", billboard_depth_mode_name(system.depth_mode));
         json.field("depthWrites", plan.cutout_writes_depth);
         // A transparent system stages its instances back to front for the
         // view; a cutout one uploads in logical insertion order.
@@ -1463,13 +1330,11 @@ inline void write_billboard_draw_list(
             write_sprite_blend(json, "addPassBlend", system.add_pass_blend);
         }
         write_sprite_atlas_reference(json, engine, system.atlas);
-        json.field(
-            "indexCount", upstream::billboard_index_data.size());
+        json.field("indexCount", upstream::billboard_index_data.size());
         json.field("vertexCount", 4u);
         json.field("instanceCount", system.count);
         json.field("capacity", system.capacity);
-        json.field(
-            "instanceFloatsPerSprite", system.instance_floats_per_sprite);
+        json.field("instanceFloatsPerSprite", system.instance_floats_per_sprite);
         json.key("uniforms");
         json.begin_array();
         {
@@ -1477,31 +1342,17 @@ inline void write_billboard_draw_list(
             // then view, pushed as one block by both backends
             // (`BillboardSceneUniforms`).
             std::array<float, 32> scene_block{};
-            std::copy(
-                view_projection.begin(),
-                view_projection.end(),
-                scene_block.begin());
+            std::copy(view_projection.begin(), view_projection.end(), scene_block.begin());
             std::copy(view.begin(), view.end(), scene_block.begin() + 16);
-            write_float_block(
-                json,
-                "vertex",
-                0,
-                "BillboardSceneUniforms",
-                scene_block.data(),
-                scene_block.size());
+            write_float_block(json, "vertex", 0, "BillboardSceneUniforms", scene_block.data(),
+                              scene_block.size());
             // The per-system block, from the same builder both backends
             // push — to the fragment stage always, and to the axis-locked
             // vertex stage too, which reads its lock axis from it.
-            std::array<float, upstream::billboard_system_ubo_bytes / 4>
-                system_ubo{};
+            std::array<float, upstream::billboard_system_ubo_bytes / 4> system_ubo{};
             upstream::build_billboard_system_ubo(system, system_ubo);
-            write_float_block(
-                json,
-                "fragment",
-                0,
-                "BillboardSystemUniforms",
-                system_ubo.data(),
-                system_ubo.size());
+            write_float_block(json, "fragment", 0, "BillboardSystemUniforms", system_ubo.data(),
+                              system_ubo.size());
         }
         json.end_array();
         json.end_object();
@@ -1522,19 +1373,12 @@ inline void write_billboard_draw_list(
  * The custom-shader fx block is skipped for the billboard writer's
  * reason: its time lane is frame-clock state; the params ride the layer.
  */
-inline void write_sprite_renderer_list(
-    JsonWriter& json,
-    const Engine& engine,
-    int width,
-    int height) {
-    for (std::size_t index = 0;
-         index < engine.sprite_renderers.size();
-         ++index) {
-        const SpriteRendererRecord& renderer =
-            engine.sprite_renderers[index];
+inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, int width,
+                                       int height) {
+    for (std::size_t index = 0; index < engine.sprite_renderers.size(); ++index) {
+        const SpriteRendererRecord& renderer = engine.sprite_renderers[index];
         bool registered = false;
-        for (const SpriteRendererHandle candidate :
-             engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle candidate : engine.registered_sprite_renderers) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;
@@ -1547,12 +1391,11 @@ inline void write_sprite_renderer_list(
         json.field("clearValue", renderer.clear_value);
         json.key("layers");
         json.begin_array();
-        for (const std::size_t slot :
-             sprite_layer_draw_order(engine, renderer)) {
+        for (const std::size_t slot : sprite_layer_draw_order(engine, renderer)) {
             const Sprite2DLayerHandle handle = renderer.layers[slot];
-            if (handle.value >= engine.sprite_layers.size()) continue;
-            const Sprite2DLayerRecord& layer =
-                handle_at(engine.sprite_layers, handle);
+            if (handle.value >= engine.sprite_layers.size())
+                continue;
+            const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
             json.begin_object();
             json.field("layer", handle.value);
             json.field("order", layer.order);
@@ -1562,13 +1405,10 @@ inline void write_sprite_renderer_list(
             json.field("opacity", layer.opacity);
             json.field("count", layer.count);
             json.field("capacity", layer.capacity);
-            json.field(
-                "instanceFloatsPerSprite",
-                layer.instance_floats_per_sprite);
+            json.field("instanceFloatsPerSprite", layer.instance_floats_per_sprite);
             json.field("uvScroll", layer.uv_scroll);
             json.field("customShader", layer.custom_shader != 0u);
-            json.field(
-                "customTextureCount", layer.custom_textures.size());
+            json.field("customTextureCount", layer.custom_textures.size());
             json.field("shaderParams", layer.shader_params);
             json.field("pivot", layer.pivot);
             json.key("view");
@@ -1589,18 +1429,9 @@ inline void write_sprite_renderer_list(
                 // fragment slot its own compiled stage kept, by both
                 // backends; one block either way.
                 std::array<float, 16> ubo{};
-                upstream::build_sprite_layer_ubo(
-                    layer,
-                    static_cast<float>(width),
-                    static_cast<float>(height),
-                    ubo);
-                write_float_block(
-                    json,
-                    "vertex",
-                    0,
-                    "SpriteLayerUniforms",
-                    ubo.data(),
-                    ubo.size());
+                upstream::build_sprite_layer_ubo(layer, static_cast<float>(width),
+                                                 static_cast<float>(height), ubo);
+                write_float_block(json, "vertex", 0, "SpriteLayerUniforms", ubo.data(), ubo.size());
             }
             json.end_array();
             json.end_object();
@@ -1629,22 +1460,17 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     json.begin_object();
     json.key("wrappers");
     json.begin_array();
-    for (std::size_t index = 0;
-         index < engine.effect_wrappers.size();
-         ++index) {
+    for (std::size_t index = 0; index < engine.effect_wrappers.size(); ++index) {
         const EffectWrapperRecord& wrapper = engine.effect_wrappers[index];
-        if (wrapper.variant >= upstream::effect_variants.size()) continue;
-        const upstream::EffectVariantEntry& entry =
-            upstream::effect_variants.at(wrapper.variant);
+        if (wrapper.variant >= upstream::effect_variants.size())
+            continue;
+        const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
         // The declared uniform block's size, from the same variant table
         // both passes size their push and their refusal with.
         std::uint32_t uniform_bytes = 0;
-        for (std::size_t binding = 0;
-             binding < entry.binding_count;
-             ++binding) {
+        for (std::size_t binding = 0; binding < entry.binding_count; ++binding) {
             const upstream::EffectVariantBinding& row =
-                upstream::effect_variant_bindings.at(
-                    entry.first_binding + binding);
+                upstream::effect_variant_bindings.at(entry.first_binding + binding);
             if (row.kind == upstream::EffectBindingKind::uniform) {
                 uniform_bytes = row.uniform_bytes;
             }
@@ -1677,13 +1503,8 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
         json.key("uniforms");
         json.begin_array();
         if (!wrapper.uniform_values.empty()) {
-            write_float_block(
-                json,
-                "fragment",
-                0,
-                "EffectUniforms",
-                wrapper.uniform_values.data(),
-                wrapper.uniform_values.size());
+            write_float_block(json, "fragment", 0, "EffectUniforms", wrapper.uniform_values.data(),
+                              wrapper.uniform_values.size());
         }
         json.end_array();
         json.end_object();
@@ -1694,14 +1515,10 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     // is for the sprite half.
     json.key("renderers");
     json.begin_array();
-    for (std::size_t index = 0;
-         index < engine.effect_renderers.size();
-         ++index) {
-        const EffectRendererRecord& renderer =
-            engine.effect_renderers[index];
+    for (std::size_t index = 0; index < engine.effect_renderers.size(); ++index) {
+        const EffectRendererRecord& renderer = engine.effect_renderers[index];
         bool registered = false;
-        for (const EffectRendererHandle candidate :
-             engine.registered_effect_renderers) {
+        for (const EffectRendererHandle candidate : engine.registered_effect_renderers) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;
@@ -1722,7 +1539,8 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     json.begin_array();
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
         const FrameTaskRecord& task = engine.frame_tasks[index];
-        if (task.kind != FrameTaskKind::effect) continue;
+        if (task.kind != FrameTaskKind::effect)
+            continue;
         json.begin_object();
         json.field("taskIndex", index);
         json.field("name", task.effect.name);
@@ -1731,8 +1549,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
         json.field("clear", task.effect.clear);
         json.field("clearColor", task.effect.clear_color);
         if (task.effect.target.value < engine.render_targets.size()) {
-            const RenderTargetRecord& target =
-                handle_at(engine.render_targets, task.effect.target);
+            const RenderTargetRecord& target = handle_at(engine.render_targets, task.effect.target);
             json.field("targetWidth", target.width);
             json.field("targetHeight", target.height);
             json.field("targetSamples", target.samples);
@@ -1752,14 +1569,17 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
     const auto words = [&](const char* name, const auto& values) {
         json.key(name);
         json.begin_array();
-        for (const float value : values) json.value(std::bit_cast<std::uint32_t>(value));
+        for (const float value : values)
+            json.value(std::bit_cast<std::uint32_t>(value));
         json.end_array();
     };
     json.begin_array();
     for (const TaskHandle handle : scene.tasks) {
-        if (handle.value >= engine.frame_tasks.size()) continue;
+        if (handle.value >= engine.frame_tasks.size())
+            continue;
         const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-        if (!task.scene_uniforms && !task.post_process.taa) continue;
+        if (!task.scene_uniforms && !task.post_process.taa)
+            continue;
         json.begin_object();
         json.field("taskIndex", handle.value);
         if (task.scene_uniforms) {
@@ -1792,12 +1612,14 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
             json.field("jitterScratch", state.jitter_scratch.data(), state.jitter_scratch.size());
             words("haltonWords", state.halton);
             words("jitterScratchWords", state.jitter_scratch);
-            if (!task.post_process.passes.empty() && !task.post_process.passes.front().params.empty()) {
+            if (!task.post_process.passes.empty() &&
+                !task.post_process.passes.front().params.empty()) {
                 json.field("blendFactor", task.post_process.passes.front().params.front());
             }
             json.key("sourceTasks");
             json.begin_array();
-            for (const TaskHandle source : task.post_process.source_tasks) json.value(source.value);
+            for (const TaskHandle source : task.post_process.source_tasks)
+                json.value(source.value);
             json.end_array();
         }
         json.end_object();
@@ -1816,36 +1638,47 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
  */
 #if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
 inline void write_gpu_capture_bytes(JsonWriter& json, const char* name,
-    const std::vector<std::uint8_t>& values) {
-    json.key(name); json.begin_array();
-    for (const auto value : values) json.value(static_cast<std::uint32_t>(value));
+                                    const std::vector<std::uint8_t>& values) {
+    json.key(name);
+    json.begin_array();
+    for (const auto value : values)
+        json.value(static_cast<std::uint32_t>(value));
     json.end_array();
 }
 
 inline void write_gpu_capture_resources(JsonWriter& json, const GpuUploadCapture& capture) {
-    json.key("resources"); json.begin_array();
+    json.key("resources");
+    json.begin_array();
     for (const auto& resource : capture.resources()) {
         json.begin_object();
         json.field("id", static_cast<std::size_t>(resource.id));
         json.field("role", resource.role);
         json.field("allocationBytes", resource.allocation_bytes);
-        json.field("width", resource.width); json.field("rows", resource.rows);
+        json.field("width", resource.width);
+        json.field("rows", resource.rows);
         json.field("destroyed", resource.destroyed);
         write_gpu_capture_bytes(json, "uploadedBytes", resource.uploaded_bytes);
-        json.key("writtenRanges"); json.begin_array();
+        json.key("writtenRanges");
+        json.begin_array();
         for (const auto& range : resource.written_ranges) {
-            json.begin_object(); json.field("offset", range.offset); json.field("bytes", range.bytes); json.end_object();
+            json.begin_object();
+            json.field("offset", range.offset);
+            json.field("bytes", range.bytes);
+            json.end_object();
         }
         json.end_array();
-        json.key("writes"); json.begin_array();
+        json.key("writes");
+        json.begin_array();
         for (const auto& write : resource.writes) {
             json.begin_object();
             json.field("sequence", static_cast<std::size_t>(write.sequence));
             json.field("frame", static_cast<std::size_t>(write.frame));
-            json.field("offset", write.offset); json.field("bytes", write.bytes);
+            json.field("offset", write.offset);
+            json.field("bytes", write.bytes);
             json.end_object();
         }
-        json.end_array(); json.end_object();
+        json.end_array();
+        json.end_object();
     }
     json.end_array();
 }
@@ -1853,45 +1686,68 @@ inline void write_gpu_capture_resources(JsonWriter& json, const GpuUploadCapture
 
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& capture) {
-    const auto constants = [&](const char* name, const std::vector<TextGpuConstantCapture>& values) {
-        json.key(name); json.begin_array();
+    const auto constants = [&](const char* name,
+                               const std::vector<TextGpuConstantCapture>& values) {
+        json.key(name);
+        json.begin_array();
         for (const auto& value : values) {
-            json.begin_object(); json.field("id", value.id); json.field("value", value.value); json.end_object();
+            json.begin_object();
+            json.field("id", value.id);
+            json.field("value", value.value);
+            json.end_object();
         }
         json.end_array();
     };
     json.begin_object();
     json.field("frame", static_cast<std::size_t>(capture.frame()));
     write_gpu_capture_resources(json, capture);
-    json.key("draws"); json.begin_array();
+    json.key("draws");
+    json.begin_array();
     for (const auto& draw : capture.draws()) {
         json.begin_object();
         json.field("pipeline", static_cast<std::size_t>(draw.pipeline));
         json.field("group", static_cast<std::size_t>(draw.group));
         json.field("quad", static_cast<std::size_t>(draw.quad));
         json.field("instances", static_cast<std::size_t>(draw.instances));
-        json.field("colorFormat", draw.color_format); json.field("depthFormat", draw.depth_format);
-        json.field("depthCompare", draw.depth_compare); json.field("depthWrite", draw.depth_write);
-        json.field("topology", draw.topology); json.field("cullMode", draw.cull_mode); json.field("frontFace", draw.front_face);
-        json.field("samples", draw.samples); json.field("sampleMask", draw.sample_mask);
-        json.field("blendEnabled", draw.blend_enabled); json.field("alphaToCoverage", draw.alpha_to_coverage);
-        json.field("colorSrcFactor", draw.color_src_factor); json.field("colorDstFactor", draw.color_dst_factor);
-        json.field("colorOperation", draw.color_operation); json.field("alphaSrcFactor", draw.alpha_src_factor);
-        json.field("alphaDstFactor", draw.alpha_dst_factor); json.field("alphaOperation", draw.alpha_operation);
-        constants("vertexConstants", draw.vertex_constants); constants("fragmentConstants", draw.fragment_constants);
-        json.key("bindings"); json.begin_array();
+        json.field("colorFormat", draw.color_format);
+        json.field("depthFormat", draw.depth_format);
+        json.field("depthCompare", draw.depth_compare);
+        json.field("depthWrite", draw.depth_write);
+        json.field("topology", draw.topology);
+        json.field("cullMode", draw.cull_mode);
+        json.field("frontFace", draw.front_face);
+        json.field("samples", draw.samples);
+        json.field("sampleMask", draw.sample_mask);
+        json.field("blendEnabled", draw.blend_enabled);
+        json.field("alphaToCoverage", draw.alpha_to_coverage);
+        json.field("colorSrcFactor", draw.color_src_factor);
+        json.field("colorDstFactor", draw.color_dst_factor);
+        json.field("colorOperation", draw.color_operation);
+        json.field("alphaSrcFactor", draw.alpha_src_factor);
+        json.field("alphaDstFactor", draw.alpha_dst_factor);
+        json.field("alphaOperation", draw.alpha_operation);
+        constants("vertexConstants", draw.vertex_constants);
+        constants("fragmentConstants", draw.fragment_constants);
+        json.key("bindings");
+        json.begin_array();
         for (const auto& binding : draw.bindings) {
-            json.begin_object(); json.field("binding", binding.binding); json.field("role", binding.role);
+            json.begin_object();
+            json.field("binding", binding.binding);
+            json.field("role", binding.role);
             json.field("resource", static_cast<std::size_t>(binding.resource));
-            json.field("view", static_cast<std::size_t>(binding.view)); json.end_object();
+            json.field("view", static_cast<std::size_t>(binding.view));
+            json.end_object();
         }
         json.end_array();
-        json.field("vertices", draw.vertices); json.field("instanceCount", draw.instance_count);
-        json.field("firstVertex", draw.first_vertex); json.field("firstInstance", draw.first_instance);
+        json.field("vertices", draw.vertices);
+        json.field("instanceCount", draw.instance_count);
+        json.field("firstVertex", draw.first_vertex);
+        json.field("firstInstance", draw.first_instance);
         write_gpu_capture_bytes(json, "pushedUniformBytes", draw.pushed_uniform_bytes);
         json.end_object();
     }
-    json.end_array(); json.end_object();
+    json.end_array();
+    json.end_object();
 }
 #endif
 
@@ -1900,67 +1756,82 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
     json.begin_object();
     json.field("frame", static_cast<std::size_t>(capture.frame()));
     write_gpu_capture_resources(json, capture);
-    json.key("pipelines"); json.begin_array();
+    json.key("pipelines");
+    json.begin_array();
     for (const auto& pipeline : capture.pipelines()) {
         json.begin_object();
         json.field("id", static_cast<std::size_t>(pipeline.id));
-        json.field("variant", pipeline.variant); json.field("geometryVariant", pipeline.geometry_variant);
-        json.field("colorTargetCount", pipeline.color_target_count); json.field("samples", pipeline.samples);
+        json.field("variant", pipeline.variant);
+        json.field("geometryVariant", pipeline.geometry_variant);
+        json.field("colorTargetCount", pipeline.color_target_count);
+        json.field("samples", pipeline.samples);
         json.field("usesLocalAttributes", pipeline.uses_local_attributes);
-        json.field("topology", pipeline.topology); json.field("cullMode", pipeline.cull_mode); json.field("frontFace", pipeline.front_face);
-        json.key("attributes"); json.begin_array();
+        json.field("topology", pipeline.topology);
+        json.field("cullMode", pipeline.cull_mode);
+        json.field("frontFace", pipeline.front_face);
+        json.key("attributes");
+        json.begin_array();
         for (const auto& attribute : pipeline.attributes) {
             json.begin_object();
-            json.field("name", attribute.name); json.field("format", attribute.format);
-            json.field("location", attribute.location); json.field("slot", attribute.slot);
-            json.field("offset", attribute.offset); json.field("stride", attribute.stride);
+            json.field("name", attribute.name);
+            json.field("format", attribute.format);
+            json.field("location", attribute.location);
+            json.field("slot", attribute.slot);
+            json.field("offset", attribute.offset);
+            json.field("stride", attribute.stride);
             json.end_object();
         }
-        json.end_array(); json.end_object();
+        json.end_array();
+        json.end_object();
     }
     json.end_array();
-    json.key("draws"); json.begin_array();
+    json.key("draws");
+    json.begin_array();
     for (const auto& draw : capture.draws()) {
         json.begin_object();
-        json.field("pipeline", static_cast<std::size_t>(draw.pipeline)); json.field("group", static_cast<std::size_t>(draw.group));
-        json.field("vertices", static_cast<std::size_t>(draw.vertices)); json.field("indices", static_cast<std::size_t>(draw.indices));
+        json.field("pipeline", static_cast<std::size_t>(draw.pipeline));
+        json.field("group", static_cast<std::size_t>(draw.group));
+        json.field("vertices", static_cast<std::size_t>(draw.vertices));
+        json.field("indices", static_cast<std::size_t>(draw.indices));
         json.field("meshUniform", static_cast<std::size_t>(draw.mesh_uniform));
-        json.field("mesh", draw.mesh); json.field("material", draw.material);
-        json.field("vertexOffset", draw.vertex_offset); json.field("indexOffset", draw.index_offset);
-        json.field("indexCount", draw.index_count); json.field("firstIndex", draw.first_index);
-        json.field("instanceCount", draw.instance_count); json.field("baseVertex", static_cast<int>(draw.base_vertex));
-        json.key("bindings"); json.begin_array();
+        json.field("mesh", draw.mesh);
+        json.field("material", draw.material);
+        json.field("vertexOffset", draw.vertex_offset);
+        json.field("indexOffset", draw.index_offset);
+        json.field("indexCount", draw.index_count);
+        json.field("firstIndex", draw.first_index);
+        json.field("instanceCount", draw.instance_count);
+        json.field("baseVertex", static_cast<int>(draw.base_vertex));
+        json.key("bindings");
+        json.begin_array();
         for (const auto& binding : draw.bindings) {
-            json.begin_object(); json.field("binding", binding.binding); json.field("role", binding.role);
-            json.field("resource", static_cast<std::size_t>(binding.resource)); json.field("view", static_cast<std::size_t>(binding.view));
+            json.begin_object();
+            json.field("binding", binding.binding);
+            json.field("role", binding.role);
+            json.field("resource", static_cast<std::size_t>(binding.resource));
+            json.field("view", static_cast<std::size_t>(binding.view));
             json.end_object();
         }
         json.end_array();
         write_gpu_capture_bytes(json, "pushedUniformBytes", draw.pushed_uniform_bytes);
         json.end_object();
     }
-    json.end_array(); json.end_object();
+    json.end_array();
+    json.end_object();
 }
 #endif
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-inline void write_render_capture(
-    const std::string& path,
-    const char* backend,
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const upstream::RenderPlan& render_plan,
-    const std::array<float, 16>& view_projection,
-    int width,
-    int height,
-    long frame,
-    [[maybe_unused]] TextGpuCapture* text_capture = nullptr,
-    [[maybe_unused]] NodeGpuCapture* node_capture = nullptr) {
+inline void write_render_capture(const std::string& path, const char* backend, const Scene& scene,
+                                 const Engine& engine, const CameraRecord& camera,
+                                 const upstream::RenderPlan& render_plan,
+                                 const std::array<float, 16>& view_projection, int width,
+                                 int height, long frame,
+                                 [[maybe_unused]] TextGpuCapture* text_capture = nullptr,
+                                 [[maybe_unused]] NodeGpuCapture* node_capture = nullptr) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        throw std::runtime_error(
-            "Unable to write the render capture to '" + path + "'.");
+        throw std::runtime_error("Unable to write the render capture to '" + path + "'.");
     }
     JsonWriter json(stream);
     json.begin_object();
@@ -2028,8 +1899,7 @@ inline void write_render_capture(
     json.field("orthoHalfHeight", camera.ortho_half_height);
     json.field("freeYaw", camera.free_yaw);
     json.field("freePitch", camera.free_pitch);
-    json.field(
-        "viewProjection", view_projection.data(), view_projection.size());
+    json.field("viewProjection", view_projection.data(), view_projection.size());
     json.end_object();
 
     json.key("environment");
@@ -2038,7 +1908,8 @@ inline void write_render_capture(
     json.key("lights");
     json.begin_array();
     for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size()) continue;
+        if (handle.value >= engine.lights.size())
+            continue;
         write_light(json, handle.value, handle_at(engine.lights, handle));
     }
     json.end_array();
@@ -2047,9 +1918,7 @@ inline void write_render_capture(
     json.key("shadowGenerators");
     json.begin_array();
     for_each_shadow_generator(
-        scene,
-        engine,
-        [&](ShadowGeneratorHandle handle, LightHandle light, std::size_t slot) {
+        scene, engine, [&](ShadowGeneratorHandle handle, LightHandle light, std::size_t slot) {
             write_shadow_generator(json, engine, handle, light, slot);
         });
     json.end_array();
@@ -2083,46 +1952,22 @@ inline void write_render_capture(
     // getEffectiveAspectRatio divides two JavaScript numbers, exactly as
     // the frame loops do before building the matrix passed in here.
     const double capture_aspect = upstream::effective_aspect_ratio(
-        camera,
-        static_cast<double>(width),
-        static_cast<double>(height));
-    const std::array<float, 16> frame_view = upstream::build_view_matrix(
-        upstream::camera_world_matrix(camera));
+        camera, static_cast<double>(width), static_cast<double>(height));
+    const std::array<float, 16> frame_view =
+        upstream::build_view_matrix(upstream::camera_world_matrix(camera));
     const std::array<float, 16> frame_projection =
         upstream::build_scene_projection(camera, capture_aspect);
     const std::array<float, 4> frame_camera_position =
         shader_camera_position(scene, engine, camera);
-    ShaderPassMatrices frame_pass_matrices{
-        view_projection.data(), &frame_view, &frame_projection};
+    ShaderPassMatrices frame_pass_matrices{view_projection.data(), &frame_view, &frame_projection};
     frame_pass_matrices.camera_position = &frame_camera_position;
-    write_draw_list(
-        json,
-        "opaque",
-        render_plan.draw_lists.opaque,
-        scene,
-        engine,
-        camera,
-        view_projection,
-        frame_pass_matrices);
-    write_draw_list(
-        json,
-        "transparent",
-        render_plan.draw_lists.transparent,
-        scene,
-        engine,
-        camera,
-        view_projection,
-        frame_pass_matrices);
+    write_draw_list(json, "opaque", render_plan.draw_lists.opaque, scene, engine, camera,
+                    view_projection, frame_pass_matrices);
+    write_draw_list(json, "transparent", render_plan.draw_lists.transparent, scene, engine, camera,
+                    view_projection, frame_pass_matrices);
 #if BBLITE_HAS_SPLATS
-    write_splat_draw_list(
-        json,
-        scene,
-        engine,
-        frame_view,
-        frame_projection,
-        frame_camera_position,
-        width,
-        height);
+    write_splat_draw_list(json, scene, engine, frame_view, frame_projection, frame_camera_position,
+                          width, height);
 #endif
 #if BBLITE_HAS_BILLBOARDS
     write_billboard_draw_list(json, scene, engine, camera, view_projection);
@@ -2133,8 +1978,7 @@ inline void write_render_capture(
     json.begin_array();
     if (scene.environment.has_skybox) {
         const upstream::SkyboxUniforms skybox =
-            upstream::build_skybox_uniforms(
-                scene.environment, scene.transmission_enabled);
+            upstream::build_skybox_uniforms(scene.environment, scene.transmission_enabled);
         write_uniform_block(json, "fragment", 0, "SkyboxUniforms", skybox);
     }
 #if BBLITE_SOLID_SKYBOX
@@ -2143,16 +1987,13 @@ inline void write_render_capture(
         // browser's own skybox buffer by size.
         const upstream::SolidSkyboxUniforms solid_skybox =
             upstream::build_solid_skybox_uniforms(scene);
-        write_uniform_block(
-            json, "fragment", 0, "SolidSkyboxUniforms", solid_skybox);
+        write_uniform_block(json, "fragment", 0, "SolidSkyboxUniforms", solid_skybox);
     }
 #endif
     if (scene.environment.has_ground) {
-        const upstream::BackgroundUniforms background =
-            upstream::build_background_uniforms(
-                scene.environment, camera, scene.transmission_enabled);
-        write_uniform_block(
-            json, "fragment", 0, "BackgroundUniforms", background);
+        const upstream::BackgroundUniforms background = upstream::build_background_uniforms(
+            scene.environment, camera, scene.transmission_enabled);
+        write_uniform_block(json, "fragment", 0, "BackgroundUniforms", background);
     }
     json.end_array();
 
@@ -2180,24 +2021,20 @@ inline void write_render_capture(
     json.begin_array();
     {
         std::vector<std::uint64_t> seen;
-        for (const upstream::PbrVariantSelector& selector :
-             upstream::pbr_variant_selectors) {
-            if (selector.material_index >= engine.materials.size()) continue;
+        for (const upstream::PbrVariantSelector& selector : upstream::pbr_variant_selectors) {
+            if (selector.material_index >= engine.materials.size())
+                continue;
             const std::uint64_t pair =
-                (static_cast<std::uint64_t>(selector.material_index) << 32) |
-                selector.variant;
+                (static_cast<std::uint64_t>(selector.material_index) << 32) | selector.variant;
             if (std::find(seen.begin(), seen.end(), pair) != seen.end()) {
                 continue;
             }
             seen.push_back(pair);
-            const upstream::PbrVariantEntry& entry =
-                upstream::pbr_variants[selector.variant];
+            const upstream::PbrVariantEntry& entry = upstream::pbr_variants[selector.variant];
             std::vector<float> block(entry.material_ubo_bytes / 4, 0.0f);
-            upstream::write_pbr_variant_material(
-                selector.variant,
-                engine.materials[selector.material_index],
-                block.data(),
-                entry.material_ubo_bytes);
+            upstream::write_pbr_variant_material(selector.variant,
+                                                 engine.materials[selector.material_index],
+                                                 block.data(), entry.material_ubo_bytes);
             json.begin_object();
             json.field("materialIndex", selector.material_index);
             json.field("variant", selector.variant);
@@ -2219,18 +2056,17 @@ inline void write_render_capture(
     {
         const auto dump_list = [&](const char* stage, const upstream::RenderDrawList& list) {
             for (const upstream::RenderDrawCommand& draw : list.commands) {
-                if (
-                    draw.item.material_kind !=
-                    upstream::RenderMaterialKind::pbr ||
+                if (draw.item.material_kind != upstream::RenderMaterialKind::pbr ||
                     draw.item.mesh.value >= engine.meshes.size()) {
                     continue;
                 }
                 const std::size_t variant = pinned_variant_for_draw(scene, engine, draw);
-                if (variant == npos) continue;
+                if (variant == npos)
+                    continue;
                 const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
                 const PinnedDrawConventions conventions = pinned_draw_conventions(variant, record);
-                const upstream::MeshUniforms block = pinned_draw_mesh_block(
-                    scene, engine, draw, variant, conventions);
+                const upstream::MeshUniforms block =
+                    pinned_draw_mesh_block(scene, engine, draw, variant, conventions);
                 json.begin_object();
                 json.field("meshIndex", draw.item.mesh.value);
                 json.field("stage", stage);
@@ -2240,16 +2076,12 @@ inline void write_render_capture(
                 json.field("lightCount", block.lc);
                 json.field("boneCount", record.bone_matrices.size());
                 if (!record.bone_matrices.empty()) {
-                    json.field(
-                        "bone0",
-                        record.bone_matrices[0].data(),
-                        record.bone_matrices[0].size());
+                    json.field("bone0", record.bone_matrices[0].data(),
+                               record.bone_matrices[0].size());
                 }
                 if (record.bone_matrices.size() > 1) {
-                    json.field(
-                        "bone1",
-                        record.bone_matrices[1].data(),
-                        record.bone_matrices[1].size());
+                    json.field("bone1", record.bone_matrices[1].data(),
+                               record.bone_matrices[1].size());
                 }
                 json.end_object();
             }
@@ -2260,24 +2092,26 @@ inline void write_render_capture(
     json.end_array();
 #endif
 
-
     json.end_object();
     stream << '\n';
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-    if (text_capture) text_capture->stop();
+    if (text_capture)
+        text_capture->stop();
 #endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (node_capture) node_capture->stop();
+    if (node_capture)
+        node_capture->stop();
 #endif
 }
 #endif // BBLITE_HAS_PBR_RENDERER (write_render_capture)
 
 // Compiled exactly where a standalone loop exists to call it — a build
 // with neither standalone renderer would hold an unreachable definition.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) || BBLITE_HAS_TEXT_RENDERER
+#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
+    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
+    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
+    BBLITE_HAS_TEXT_RENDERER
 /**
  * Write the frame of a scene with no scene renderer.
  *
@@ -2292,19 +2126,13 @@ inline void write_render_capture(
  * Called at the frame the screenshot gate names, exactly as the scene
  * loops write theirs, so the capture describes the presented image.
  */
-inline void write_standalone_render_capture(
-    const std::string& path,
-    const char* backend,
-    const Engine& engine,
-    int width,
-    int height,
-    long frame,
-    [[maybe_unused]] TextGpuCapture* text_capture) {
+inline void write_standalone_render_capture(const std::string& path, const char* backend,
+                                            const Engine& engine, int width, int height, long frame,
+                                            [[maybe_unused]] TextGpuCapture* text_capture) {
     (void)engine;
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        throw std::runtime_error(
-            "Unable to write the render capture to '" + path + "'.");
+        throw std::runtime_error("Unable to write the render capture to '" + path + "'.");
     }
     JsonWriter json(stream);
     json.begin_object();
@@ -2312,7 +2140,11 @@ inline void write_standalone_render_capture(
     json.field("buildStamp", bblite_build_stamp());
     json.field("frame", static_cast<int>(frame));
 #if BBLITE_HAS_TEXT
-    if(text_capture){json.key("textGpu");write_text_gpu_capture(json,*text_capture);text_capture->stop();}
+    if (text_capture) {
+        json.key("textGpu");
+        write_text_gpu_capture(json, *text_capture);
+        text_capture->stop();
+    }
 #endif
     json.key("viewport");
     json.begin_object();
@@ -2362,29 +2194,23 @@ inline void write_standalone_render_capture(
 // writer it calls — under the same standalone-renderer gate — so a TU
 // including only the shared header carries no undefined inline, and a
 // scene-only build compiles neither half.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) || BBLITE_HAS_TEXT_RENDERER
-inline void CaptureGate::maybe_write_standalone_render_capture(
-    const char* backend,
-    const Engine& engine,
-    std::uint32_t width,
-    std::uint32_t height,
-    long frame,
-    TextGpuCapture* text_capture) {
-    if (frame < options_->screenshot_frame ||
-        render_capture_saved ||
+#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
+    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
+    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
+    BBLITE_HAS_TEXT_RENDERER
+inline void CaptureGate::maybe_write_standalone_render_capture(const char* backend,
+                                                               const Engine& engine,
+                                                               std::uint32_t width,
+                                                               std::uint32_t height, long frame,
+                                                               TextGpuCapture* text_capture) {
+    if (frame < options_->screenshot_frame || render_capture_saved ||
         options_->render_capture_path.empty()) {
         return;
     }
-    write_standalone_render_capture(
-        options_->render_capture_path,
-        backend,
-        engine,
-        static_cast<int>(width),
-        static_cast<int>(height),
-        frame,text_capture);
+    write_standalone_render_capture(options_->render_capture_path, backend, engine,
+                                    static_cast<int>(width), static_cast<int>(height), frame,
+                                    text_capture);
     render_capture_saved = true;
 }
 #endif // standalone renderers (CaptureGate::maybe_write_standalone_render_capture)
@@ -2394,14 +2220,16 @@ inline void CaptureGate::maybe_write_standalone_render_capture(
 #else
 namespace bbl::pal {
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-inline void write_render_capture(
-    const std::string&, const char*, const Scene&, const Engine&, const CameraRecord&,
-    const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long,
-    TextGpuCapture* = nullptr, NodeGpuCapture* = nullptr) {}
+inline void write_render_capture(const std::string&, const char*, const Scene&, const Engine&,
+                                 const CameraRecord&, const upstream::RenderPlan&,
+                                 const std::array<float, 16>&, int, int, long,
+                                 TextGpuCapture* = nullptr, NodeGpuCapture* = nullptr) {}
 #endif
-#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
-inline void CaptureGate::maybe_write_standalone_render_capture(
-    const char*, const Engine&, std::uint32_t, std::uint32_t, long, TextGpuCapture*) {}
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER ||      \
+    BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
+inline void CaptureGate::maybe_write_standalone_render_capture(const char*, const Engine&,
+                                                               std::uint32_t, std::uint32_t, long,
+                                                               TextGpuCapture*) {}
 #endif
 } // namespace bbl::pal
 #endif // BBLITE_VISUAL_CAPTURE

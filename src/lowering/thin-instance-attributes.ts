@@ -95,9 +95,7 @@ function pinnedInstanceAttributes(
 }
 
 /** The generated rows both backends read the layout from. */
-export function pinnedInstanceAttributesCpp(
-    context: LoweringContext,
-): string {
+export function pinnedInstanceAttributesCpp(context: LoweringContext): string {
     const rows = pinnedInstanceAttributes(context);
     const groups = [...new Set(rows.map((row) => row.bufferGroup))];
     return `// ${context.provenance(module, factory)}
@@ -115,15 +113,13 @@ struct PinnedInstanceAttribute {
 
 inline constexpr std::array<PinnedInstanceAttribute, ${rows.length}>
     pinned_instance_attributes{{
-${
-        rows
-            .map(
-                (row) =>
-                    `        {"${row.name}", "${row.bufferGroup}", ` +
-                    `${row.arrayStride}u, ${row.offset}u},`,
-            )
-            .join("\n")
-    }
+${rows
+    .map(
+        (row) =>
+            `        {"${row.name}", "${row.bufferGroup}", ` +
+            `${row.arrayStride}u, ${row.offset}u},`,
+    )
+    .join("\n")}
     }};
 
 /** The declared row for one attribute name, or null. */

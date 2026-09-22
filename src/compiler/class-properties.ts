@@ -4,11 +4,19 @@ import ts from "typescript";
 export function classInstanceProperties(
     declaration: ts.ClassDeclaration,
 ): (ts.PropertyDeclaration | ts.ParameterDeclaration)[] {
-    return declaration.members.flatMap<ts.PropertyDeclaration | ts.ParameterDeclaration>(member => {
-        if (ts.isPropertyDeclaration(member) &&
-            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) === 0) return [member];
+    return declaration.members.flatMap<
+        ts.PropertyDeclaration | ts.ParameterDeclaration
+    >((member) => {
+        if (
+            ts.isPropertyDeclaration(member) &&
+            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) ===
+                0
+        )
+            return [member];
         if (ts.isConstructorDeclaration(member))
-            return member.parameters.filter(parameter => ts.isParameterPropertyDeclaration(parameter, member));
+            return member.parameters.filter((parameter) =>
+                ts.isParameterPropertyDeclaration(parameter, member),
+            );
         return [];
     });
 }

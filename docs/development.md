@@ -2,7 +2,7 @@
 
 ## Setup
 
-Requires Node.js 22.12+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU and WebGPU-capable Chromium.
+Requires Node.js 22.13+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU and WebGPU-capable Chromium.
 Windows uses clang-cl/MSVC for development and MSVC for shipping; Linux/macOS default to Clang.
 
 ```powershell
@@ -207,12 +207,52 @@ Match source queries, reference time/frame and canvas size. New scenes need full
 Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
 `tools/create-status-preview.mjs`; ICU changes require `tools/generate-emoji-presentation.mjs`.
 
+## Linting and formatting
+
+`npm ci` installs pinned ESLint/typescript-eslint and Prettier. Native checks require LLVM 22's
+clang-tidy and clang-format, discovered on PATH or in Visual Studio. `CLANG_TIDY` and `CLANG_FORMAT`
+override their executable paths; Unix versioned names such as `clang-tidy-22` are supported.
+
+```powershell
+npm run lint:ts
+npm run format
+npm run format:check
+npm run scene -- build scene1 --backend both
+npm run lint -- scene1
+```
+
+ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
+`npm run lint:ts -- --fix` applies safe fixes. Prettier leaves embedded source strings unchanged.
+clang-format formats maintained native sources and C++ test fixtures without sorting includes.
+Corpus, example scenes, references, source pins, vendored code and generated output are excluded.
+
+`lint:cpp` accepts scene IDs, Ninja build directories, or `all` (the full scene/demo registry).
+`--backend sdl_gpu|dawn|both` selects registered build directories; `--file <source>` and `--jobs <count>`
+bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags and includes and fails
+on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
+Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
+
+By default, native lint checks handwritten translation units and headers. `--generated` includes the
+build's emitted C++ and cached generated headers without changing their bytes:
+
+```powershell
+npm run lint:cpp -- all --generated --backend both
+```
+
+Generate and build the selected scenes first. A build covers only its reached features and platform;
+use both backends and the affected subsystem configurations. Fix generated-code defects in the
+compiler, not its output. Generated analysis is opt-in and uses the same configured checks as maintained
+sources. Suggested fixes are never applied to generated files.
+
 ## Validation
 
 Use focused checks per unit. Run the full checks below at integration milestones or on explicit request;
 do not repeat them after individual fixes:
 
 ```powershell
+npm run lint:ts
+npm run format:check
+npm run lint:cpp -- <representative-native-build-directory>
 npm run simplify:verify
 npm test
 npm run sweep

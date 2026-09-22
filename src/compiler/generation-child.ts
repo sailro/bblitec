@@ -29,20 +29,14 @@ interface GenerationChildOptions {
 }
 
 /** Run the script and return its trimmed stdout, or throw naming `label`. */
-export function runGenerationChild(
-    options: GenerationChildOptions,
-): string {
+export function runGenerationChild(options: GenerationChildOptions): string {
     const child = spawnSync(
         process.execPath,
         ["--input-type=module", "-e", options.script],
         {
             cwd: process.cwd(),
-            ...(options.env
-                ? { env: { ...process.env, ...options.env } }
-                : {}),
-            ...(options.input === undefined
-                ? {}
-                : { input: options.input }),
+            ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+            ...(options.input === undefined ? {} : { input: options.input }),
             encoding: "utf8",
             maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
         },

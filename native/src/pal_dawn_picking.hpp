@@ -51,9 +51,8 @@ struct alignas(256) DawnPickMeshUniforms {
     std::uint32_t excluded_thin_instance_start = 0;
     std::uint32_t excluded_thin_instance_count = 0;
 };
-static_assert(
-    sizeof(DawnPickMeshUniforms) == 256,
-    "a pick candidate's block is one dynamic-offset stride");
+static_assert(sizeof(DawnPickMeshUniforms) == 256,
+              "a pick candidate's block is one dynamic-offset stride");
 
 /** The one-pixel target set and the buffer its id and depth are mapped from. */
 struct DawnPickTargets {
@@ -73,66 +72,59 @@ struct DawnPickTargets {
 };
 
 inline void release_dawn_pick_targets(DawnPickTargets& targets) {
-    for (WGPUTextureView* view :
-         {&targets.color_view,
-          &targets.depth_color_view,
+    for (WGPUTextureView* view : {&targets.color_view, &targets.depth_color_view,
 #if BBLITE_HAS_DETAILED_PICKING
-          &targets.detail_view,
+                                  &targets.detail_view,
 #endif
-          &targets.depth_view}) {
-        if (*view) wgpuTextureViewRelease(*view);
+                                  &targets.depth_view}) {
+        if (*view)
+            wgpuTextureViewRelease(*view);
         *view = nullptr;
     }
-    for (WGPUTexture* texture :
-         {&targets.color,
-          &targets.depth_color,
+    for (WGPUTexture* texture : {&targets.color, &targets.depth_color,
 #if BBLITE_HAS_DETAILED_PICKING
-          &targets.detail,
+                                 &targets.detail,
 #endif
-          &targets.depth}) {
-        if (*texture) wgpuTextureRelease(*texture);
+                                 &targets.depth}) {
+        if (*texture)
+            wgpuTextureRelease(*texture);
         *texture = nullptr;
     }
-    if (targets.staging) wgpuBufferRelease(targets.staging);
+    if (targets.staging)
+        wgpuBufferRelease(targets.staging);
     targets.staging = nullptr;
 }
 
-inline void ensure_dawn_pick_targets(
-    WGPUDevice device,
-    DawnPickTargets& targets) {
-    if (targets.color) return;
-    const auto attachment =
-        [&](WGPUTextureFormat format,
-            WGPUTextureUsage extra) -> WGPUTexture {
+inline void ensure_dawn_pick_targets(WGPUDevice device, DawnPickTargets& targets) {
+    if (targets.color)
+        return;
+    const auto attachment = [&](WGPUTextureFormat format, WGPUTextureUsage extra) -> WGPUTexture {
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.dimension = WGPUTextureDimension_2D;
         descriptor.format = format;
         descriptor.usage = WGPUTextureUsage_RenderAttachment | extra;
         descriptor.size = WGPUExtent3D{1, 1, 1};
         DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
-        if (!texture) dawn_error("pick attachment");
+        if (!texture)
+            dawn_error("pick attachment");
         return texture.release();
     };
     const auto view = [](WGPUTexture texture) -> WGPUTextureView {
-        WGPUTextureViewDescriptor descriptor =
-            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        WGPUTextureViewDescriptor descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         DawnTextureView created{create_dawn_texture_view(texture, &descriptor)};
-        if (!created) dawn_error("pick attachment view");
+        if (!created)
+            dawn_error("pick attachment view");
         return created.release();
     };
-    targets.color = attachment(
-        WGPUTextureFormat_RGBA8Unorm, WGPUTextureUsage_CopySrc);
+    targets.color = attachment(WGPUTextureFormat_RGBA8Unorm, WGPUTextureUsage_CopySrc);
     targets.color_view = view(targets.color);
-    targets.depth_color = attachment(
-        WGPUTextureFormat_R32Float, WGPUTextureUsage_CopySrc);
+    targets.depth_color = attachment(WGPUTextureFormat_R32Float, WGPUTextureUsage_CopySrc);
     targets.depth_color_view = view(targets.depth_color);
 #if BBLITE_HAS_DETAILED_PICKING
-    targets.detail = attachment(
-        WGPUTextureFormat_RGBA32Uint, WGPUTextureUsage_CopySrc);
+    targets.detail = attachment(WGPUTextureFormat_RGBA32Uint, WGPUTextureUsage_CopySrc);
     targets.detail_view = view(targets.detail);
 #endif
-    targets.depth =
-        attachment(WGPUTextureFormat_Depth24Plus, WGPUTextureUsage_None);
+    targets.depth = attachment(WGPUTextureFormat_Depth24Plus, WGPUTextureUsage_None);
     targets.depth_view = view(targets.depth);
 
     WGPUBufferDescriptor staging = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -142,46 +134,44 @@ inline void ensure_dawn_pick_targets(
     // truncates silently rather than failing.
     staging.size = pick_staging_bytes;
     targets.staging = wgpuDeviceCreateBuffer(device, &staging);
-    if (!targets.staging) dawn_error("pick staging buffer");
+    if (!targets.staging)
+        dawn_error("pick staging buffer");
 }
 
 /** The mesh pass's two groups, in the pin's own order. */
-inline WGPUBindGroupLayout create_dawn_pick_scene_layout(
-    WGPUDevice device) {
+inline WGPUBindGroupLayout create_dawn_pick_scene_layout(WGPUDevice device) {
     WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entry.binding = 0;
     entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entry.buffer.type = WGPUBufferBindingType_Uniform;
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = 1;
     descriptor.entries = &entry;
     DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout) dawn_error("pick scene bind group layout");
+    if (!layout)
+        dawn_error("pick scene bind group layout");
     return layout.release();
 }
 
-inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(
-    WGPUDevice device) {
+inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(WGPUDevice device) {
     WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entry.binding = 0;
     entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entry.buffer.type = WGPUBufferBindingType_Uniform;
     entry.buffer.hasDynamicOffset = true;
     entry.buffer.minBindingSize = sizeof(DawnPickMeshUniforms);
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = 1;
     descriptor.entries = &entry;
     DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout) dawn_error("pick mesh bind group layout");
+    if (!layout)
+        dawn_error("pick mesh bind group layout");
     return layout.release();
 }
 
 #if BBLITE_GPU_INSTANCING
 /** The advanced thin arm adds the instance-matrix storage binding. */
-inline WGPUBindGroupLayout create_dawn_pick_thin_layout(
-    WGPUDevice device) {
+inline WGPUBindGroupLayout create_dawn_pick_thin_layout(WGPUDevice device) {
     std::array<WGPUBindGroupLayoutEntry, 2> entries{};
     for (WGPUBindGroupLayoutEntry& entry : entries) {
         entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -195,12 +185,12 @@ inline WGPUBindGroupLayout create_dawn_pick_thin_layout(
     entries[1].visibility = WGPUShaderStage_Vertex;
     entries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
     entries[1].buffer.minBindingSize = sizeof(std::array<float, 16>);
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
     DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout) dawn_error("pick thin bind group layout");
+    if (!layout)
+        dawn_error("pick thin bind group layout");
     return layout.release();
 }
 #endif
@@ -211,8 +201,7 @@ inline WGPUBindGroupLayout create_dawn_pick_thin_layout(
  * and rest position where this build draws one. The list is filled whole
  * and each pipeline states how many of it it binds.
  */
-inline void fill_dawn_pick_targets(
-    std::array<WGPUColorTargetState, pick_color_targets>& targets) {
+inline void fill_dawn_pick_targets(std::array<WGPUColorTargetState, pick_color_targets>& targets) {
     for (WGPUColorTargetState& target : targets) {
         target = WGPU_COLOR_TARGET_STATE_INIT;
         target.writeMask = WGPUColorWriteMask_All;
@@ -238,10 +227,8 @@ inline void fill_dawn_pick_targets(
 class DawnBillboardPickContributor {
 public:
     DawnBillboardPickContributor() = default;
-    DawnBillboardPickContributor(
-        const DawnBillboardPickContributor&) = delete;
-    DawnBillboardPickContributor& operator=(
-        const DawnBillboardPickContributor&) = delete;
+    DawnBillboardPickContributor(const DawnBillboardPickContributor&) = delete;
+    DawnBillboardPickContributor& operator=(const DawnBillboardPickContributor&) = delete;
     ~DawnBillboardPickContributor() { release(); }
 
     /**
@@ -250,85 +237,52 @@ public:
      * drawing system needs. The pipeline is built here too, so an open
      * pass never carries a WGSL parse and a PSO compile.
      */
-    void prepare(
-        WGPUDevice device,
-        WGPUQueue queue,
-        WGPUBindGroupLayout scene_layout,
-        const Engine& engine,
-        const Scene& scene,
-        const std::array<float, 16>& view,
-        std::vector<PickRange>& ranges,
-        std::uint32_t& next_id) {
-        if (device_ && device_ != device) release();
+    void prepare(WGPUDevice device, WGPUQueue queue, WGPUBindGroupLayout scene_layout,
+                 const Engine& engine, const Scene& scene, const std::array<float, 16>& view,
+                 std::vector<PickRange>& ranges, std::uint32_t& next_id) {
+        if (device_ && device_ != device)
+            release();
         device_ = device;
         queue_ = queue;
         scene_layout_ = scene_layout;
-        collect_pick_billboard_candidates(
-            engine, scene, ranges, next_id, draws_);
+        collect_pick_billboard_candidates(engine, scene, ranges, next_id, draws_);
         systems_.resize(scene.billboard_systems.size());
         for (const PickBillboardCandidate& candidate : draws_) {
             ensure_indices();
             ensure_pipeline(candidate.orientation);
             SystemResources& resources = systems_[candidate.system_index];
             const BillboardSystemRecord& system =
-                engine.billboard_systems[
-                    scene.billboard_systems[candidate.system_index].value];
+                engine.billboard_systems[scene.billboard_systems[candidate.system_index].value];
             ensure_system(resources, system);
             // The system's own rows in LOGICAL order, so
             // `pickId - baseId` is the sprite's slot; the visible pass
             // uploads the same rows sorted back to front. Ungated as the
             // pin leaves it: `writeBuffer` is a staged copy with no
             // submit, which is the SDL twin's whole reason for a stamp.
-            wgpuQueueWriteBuffer(
-                queue_,
-                resources.instances,
-                0,
-                system.instance_data.data(),
-                static_cast<std::size_t>(candidate.count) *
-                    upstream::billboard_instance_stride_bytes);
+            wgpuQueueWriteBuffer(queue_, resources.instances, 0, system.instance_data.data(),
+                                 static_cast<std::size_t>(candidate.count) *
+                                     upstream::billboard_instance_stride_bytes);
             const BillboardPickUniforms uniforms =
-                build_billboard_pick_uniforms(
-                    view, candidate.base_id, 0.0f, candidate.axis);
-            wgpuQueueWriteBuffer(
-                queue_,
-                resources.uniforms,
-                0,
-                &uniforms,
-                sizeof(uniforms));
+                build_billboard_pick_uniforms(view, candidate.base_id, 0.0f, candidate.axis);
+            wgpuQueueWriteBuffer(queue_, resources.uniforms, 0, &uniforms, sizeof(uniforms));
         }
     }
 
     /** The draws, inside the pass the picker already opened. */
-    void record(
-        WGPURenderPassEncoder pass,
-        WGPUBindGroup scene_group) {
+    void record(WGPURenderPassEncoder pass, WGPUBindGroup scene_group) {
         for (const PickBillboardCandidate& draw : draws_) {
-            wgpuRenderPassEncoderSetPipeline(
-                pass, ensure_pipeline(draw.orientation));
+            wgpuRenderPassEncoderSetPipeline(pass, ensure_pipeline(draw.orientation));
             // The pin's contributor rebinds group 0 at the start of its
             // draw, because a prior contributor may have rebound it.
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 0, scene_group, 0, nullptr);
-            const SystemResources& resources =
-                systems_[draw.system_index];
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 1, resources.group, 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 0, resources.instances, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(
-                pass,
-                indices_,
-                WGPUIndexFormat_Uint16,
-                0,
-                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, scene_group, 0, nullptr);
+            const SystemResources& resources = systems_[draw.system_index];
+            wgpuRenderPassEncoderSetBindGroup(pass, 1, resources.group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, resources.instances, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(pass, indices_, WGPUIndexFormat_Uint16, 0,
+                                                WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderDrawIndexed(
-                pass,
-                static_cast<std::uint32_t>(
-                    upstream::billboard_index_data.size()),
-                draw.count,
-                0,
-                0,
-                0);
+                pass, static_cast<std::uint32_t>(upstream::billboard_index_data.size()), draw.count,
+                0, 0, 0);
         }
     }
 
@@ -340,19 +294,17 @@ private:
         std::uint32_t capacity = 0;
     };
     WGPUBindGroupLayout ensure_system_layout() {
-        if (system_layout_) return system_layout_;
+        if (system_layout_)
+            return system_layout_;
         WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         entry.binding = 0;
-        entry.visibility =
-            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         entry.buffer.type = WGPUBufferBindingType_Uniform;
         entry.buffer.minBindingSize = sizeof(BillboardPickUniforms);
-        WGPUBindGroupLayoutDescriptor descriptor =
-            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         descriptor.entryCount = 1;
         descriptor.entries = &entry;
-        system_layout_ =
-            wgpuDeviceCreateBindGroupLayout(device_, &descriptor);
+        system_layout_ = wgpuDeviceCreateBindGroupLayout(device_, &descriptor);
         if (!system_layout_) {
             dawn_error("billboard pick bind group layout");
         }
@@ -360,33 +312,24 @@ private:
     }
 
     void ensure_indices() {
-        if (indices_) return;
+        if (indices_)
+            return;
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.usage =
-            WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
-        descriptor.size =
-            sizeof(std::uint16_t) *
-            upstream::billboard_index_data.size();
+        descriptor.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
+        descriptor.size = sizeof(std::uint16_t) * upstream::billboard_index_data.size();
         indices_ = wgpuDeviceCreateBuffer(device_, &descriptor);
-        if (!indices_) dawn_error("billboard pick index buffer");
-        wgpuQueueWriteBuffer(
-            queue_,
-            indices_,
-            0,
-            upstream::billboard_index_data.data(),
-            static_cast<std::size_t>(descriptor.size));
+        if (!indices_)
+            dawn_error("billboard pick index buffer");
+        wgpuQueueWriteBuffer(queue_, indices_, 0, upstream::billboard_index_data.data(),
+                             static_cast<std::size_t>(descriptor.size));
     }
 
-    void ensure_system(
-        SystemResources& resources,
-        const BillboardSystemRecord& system) {
+    void ensure_system(SystemResources& resources, const BillboardSystemRecord& system) {
         if (!resources.uniforms) {
             WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-            descriptor.usage =
-                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
             descriptor.size = sizeof(BillboardPickUniforms);
-            resources.uniforms =
-                wgpuDeviceCreateBuffer(device_, &descriptor);
+            resources.uniforms = wgpuDeviceCreateBuffer(device_, &descriptor);
             if (!resources.uniforms) {
                 dawn_error("billboard pick uniform buffer");
             }
@@ -398,23 +341,21 @@ private:
             group.layout = ensure_system_layout();
             group.entryCount = 1;
             group.entries = &entry;
-            resources.group =
-                wgpuDeviceCreateBindGroup(device_, &group);
+            resources.group = wgpuDeviceCreateBindGroup(device_, &group);
             if (!resources.group) {
                 dawn_error("billboard pick bind group");
             }
         }
-        if (system.capacity <= resources.capacity) return;
-        if (resources.instances) wgpuBufferRelease(resources.instances);
+        if (system.capacity <= resources.capacity)
+            return;
+        if (resources.instances)
+            wgpuBufferRelease(resources.instances);
         resources.capacity = system.capacity;
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.usage =
-            WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
-        descriptor.size =
-            static_cast<std::uint64_t>(resources.capacity) *
-            upstream::billboard_instance_stride_bytes;
-        resources.instances =
-            wgpuDeviceCreateBuffer(device_, &descriptor);
+        descriptor.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+        descriptor.size = static_cast<std::uint64_t>(resources.capacity) *
+                          upstream::billboard_instance_stride_bytes;
+        resources.instances = wgpuDeviceCreateBuffer(device_, &descriptor);
         if (!resources.instances) {
             dawn_error("billboard pick instance buffer");
         }
@@ -426,42 +367,33 @@ private:
      * composes only the first arm of the other two.
      */
     WGPURenderPipeline ensure_pipeline(BillboardOrientation orientation) {
-        const std::size_t slot =
-            orientation == BillboardOrientation::axis_locked ? 1u : 0u;
-        if (pipelines_[slot]) return pipelines_[slot];
-        DawnShaderModule vertex{load_wgsl_module(
-            device_, billboard_pick_vertex_stem(orientation))};
+        const std::size_t slot = orientation == BillboardOrientation::axis_locked ? 1u : 0u;
+        if (pipelines_[slot])
+            return pipelines_[slot];
+        DawnShaderModule vertex{load_wgsl_module(device_, billboard_pick_vertex_stem(orientation))};
         DawnShaderModule fragment{load_wgsl_module(device_, billboard_pick_fragment_stem())};
 
-        const std::array<WGPUBindGroupLayout, 2> groups{
-            scene_layout_, ensure_system_layout()};
-        WGPUPipelineLayoutDescriptor layout_descriptor =
-            WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+        const std::array<WGPUBindGroupLayout, 2> groups{scene_layout_, ensure_system_layout()};
+        WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
         layout_descriptor.bindGroupLayoutCount = groups.size();
         layout_descriptor.bindGroupLayouts = groups.data();
-        DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device_, &layout_descriptor)};
+        DawnPipelineLayout pipeline_layout{
+            wgpuDeviceCreatePipelineLayout(device_, &layout_descriptor)};
         if (!pipeline_layout) {
             dawn_error("billboard pick pipeline layout");
         }
 
-        std::array<WGPUVertexAttribute, billboard_pick_attributes>
-            attributes{};
+        std::array<WGPUVertexAttribute, billboard_pick_attributes> attributes{};
         for (std::size_t index = 0; index < attributes.size(); ++index) {
             const upstream::BillboardInstanceAttribute& row =
                 upstream::billboard_instance_attributes[index];
-            attributes[index] = WGPUVertexAttribute{
-                nullptr,
-                dawn_billboard_format(row.float_count),
-                row.byte_offset,
-                row.shader_location};
+            attributes[index] = WGPUVertexAttribute{nullptr, dawn_billboard_format(row.float_count),
+                                                    row.byte_offset, row.shader_location};
         }
-        WGPUVertexBufferLayout instance_layout =
-            WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+        WGPUVertexBufferLayout instance_layout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
         instance_layout.stepMode = WGPUVertexStepMode_Instance;
-        instance_layout.arrayStride =
-            upstream::billboard_instance_stride_bytes;
-        instance_layout.attributeCount =
-            static_cast<std::uint32_t>(attributes.size());
+        instance_layout.arrayStride = upstream::billboard_instance_stride_bytes;
+        instance_layout.attributeCount = static_cast<std::uint32_t>(attributes.size());
         instance_layout.attributes = attributes.data();
 
         std::array<WGPUColorTargetState, pick_color_targets> targets{};
@@ -481,22 +413,19 @@ private:
         depth.depthCompare = WGPUCompareFunction_Greater;
         depth.depthWriteEnabled = WGPUOptionalBool_True;
 
-        WGPURenderPipelineDescriptor descriptor =
-            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
         descriptor.layout = pipeline_layout;
         descriptor.vertex.module = vertex;
         descriptor.vertex.entryPoint = string_view("vs");
         descriptor.vertex.bufferCount = 1;
         descriptor.vertex.buffers = &instance_layout;
         descriptor.fragment = &fragment_state;
-        descriptor.primitive.topology =
-            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.cullMode = WGPUCullMode_None;
         descriptor.depthStencil = &depth;
         descriptor.multisample.count = 1;
 
-        pipelines_[slot] =
-            wgpuDeviceCreateRenderPipeline(device_, &descriptor);
+        pipelines_[slot] = wgpuDeviceCreateRenderPipeline(device_, &descriptor);
         pipeline_layout.reset();
         vertex.reset();
         fragment.reset();
@@ -508,8 +437,10 @@ private:
 
     void release() {
         for (SystemResources& resources : systems_) {
-            if (resources.group) wgpuBindGroupRelease(resources.group);
-            if (resources.uniforms) wgpuBufferRelease(resources.uniforms);
+            if (resources.group)
+                wgpuBindGroupRelease(resources.group);
+            if (resources.uniforms)
+                wgpuBufferRelease(resources.uniforms);
             if (resources.instances) {
                 wgpuBufferRelease(resources.instances);
             }
@@ -517,10 +448,12 @@ private:
         }
         systems_.clear();
         draws_.clear();
-        if (indices_) wgpuBufferRelease(indices_);
+        if (indices_)
+            wgpuBufferRelease(indices_);
         indices_ = nullptr;
         for (WGPURenderPipeline& pipeline : pipelines_) {
-            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+            if (pipeline)
+                wgpuRenderPipelineRelease(pipeline);
             pipeline = nullptr;
         }
         if (system_layout_) {

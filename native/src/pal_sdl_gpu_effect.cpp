@@ -43,14 +43,18 @@ class SdlEffectRun : public FrameSession {
     std::vector<EffectPass> passes;
     SdlGpuCommand command{nullptr};
     bool capture_run = false, capture_frame = false;
+
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
     explicit SdlEffectRun(Engine& target) : FrameSession(target) {}
     ~SdlEffectRun() {
         command.reset();
-        for (auto& pass : passes) release_effect_pass(device, pass);
-        if (resolve) SDL_ReleaseGPUTexture(device, resolve);
-        if (color) SDL_ReleaseGPUTexture(device, color);
+        for (auto& pass : passes)
+            release_effect_pass(device, pass);
+        if (resolve)
+            SDL_ReleaseGPUTexture(device, resolve);
+        if (color)
+            SDL_ReleaseGPUTexture(device, color);
         gpu.release();
     }
     void setup() {
@@ -68,42 +72,33 @@ public:
         // the generated read of the pin's own surface declaration
         // (`msaaSamples === 1 ? 1 : 4`), not a re-typed 4.
         samples = frame_options.single_sample
-            ? 1u
-            : upstream::preferred_sample_count(engine.options.msaa_samples);
+                      ? 1u
+                      : upstream::preferred_sample_count(engine.options.msaa_samples);
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.
-        for (const EffectRendererHandle& handle :
-             engine.registered_effect_renderers) {
-            const EffectRendererRecord& record =
-                handle_at(engine.effect_renderers, handle);
-            passes.push_back(create_effect_pass(
-                device,
-                engine,
-                record.effect,
-                swapchain_format,
-                samples));
+        for (const EffectRendererHandle& handle : engine.registered_effect_renderers) {
+            const EffectRendererRecord& record = handle_at(engine.effect_renderers, handle);
+            passes.push_back(
+                create_effect_pass(device, engine, record.effect, swapchain_format, samples));
         }
         capture_run = captures.requested();
     }
     FramePreparation prepare() {
-        poll_platform_events(
-            engine, running, frame_options.test_pass);
+        poll_platform_events(engine, running, frame_options.test_pass);
         input_replay.dispatch(frame, window, engine);
         sync_engine_canvas_size(window, engine);
         return FramePreparation::ready;
     }
     FramePreparation update() {
-        (void)advance_frame(
-            engine,
-            frame_clock,
-            frame_options.frame_delta_ms);
+        (void)advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
         begin_measurement();
         return FramePreparation::ready;
     }
     bool acquire() {
         command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(device)};
-        if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+        if (!command)
+            gpu_error("SDL_AcquireGPUCommandBuffer");
         swapchain = nullptr;
         width = 0;
         height = 0;
@@ -119,12 +114,9 @@ public:
         return true;
     }
     void synchronize() {
-        capture_frame =
-            frame >= frame_options.screenshot_frame &&
-            !captures.screenshot_saved &&
-            !frame_options.screenshot_path.empty();
-        captures.maybe_write_standalone_render_capture(
-            "sdl_gpu", engine, width, height, frame);
+        capture_frame = frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
+                        !frame_options.screenshot_path.empty();
+        captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
 
         // Offscreen textures exist only where a lane needs one: the
         // sampleable resolve target for a capture run's readback, the
@@ -132,15 +124,16 @@ public:
         // multisampled. The multisampled target resolves into the
         // frame's destination, which is the pin's own arm.
         if (color_width != width || color_height != height) {
-            if (color) SDL_ReleaseGPUTexture(device, color);
-            if (resolve) SDL_ReleaseGPUTexture(device, resolve);
+            if (color)
+                SDL_ReleaseGPUTexture(device, color);
+            if (resolve)
+                SDL_ReleaseGPUTexture(device, resolve);
             color = nullptr;
             resolve = nullptr;
             SDL_GPUTextureCreateInfo info{};
             info.type = SDL_GPU_TEXTURETYPE_2D;
             info.format = swapchain_format;
-            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
             info.width = width;
             info.height = height;
             info.layer_count_or_depth = 1;
@@ -157,28 +150,24 @@ public:
                 msaa.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
                 msaa.sample_count = gpu_sample_count_from(samples);
                 color = SDL_CreateGPUTexture(device, &msaa);
-                if (!color) gpu_error("SDL_CreateGPUTexture effect color");
+                if (!color)
+                    gpu_error("SDL_CreateGPUTexture effect color");
             }
             color_width = width;
             color_height = height;
         }
     }
     void encode() {
-        const auto& first = handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
+        const auto& first =
+            handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
         // Where this frame's single-sample pixels land: the readback
         // texture on a capture run, the swapchain itself otherwise.
-        SDL_GPUTexture* const destination =
-            capture_run ? resolve : swapchain;
+        SDL_GPUTexture* const destination = capture_run ? resolve : swapchain;
         SDL_GPUColorTargetInfo color_target{};
         color_target.texture = samples > 1 ? color : destination;
-        color_target.clear_color = SDL_FColor{
-            first.clear_color.r,
-            first.clear_color.g,
-            first.clear_color.b,
-            first.clear_color.a};
-        color_target.load_op = first.clear
-            ? SDL_GPU_LOADOP_CLEAR
-            : SDL_GPU_LOADOP_LOAD;
+        color_target.clear_color = SDL_FColor{first.clear_color.r, first.clear_color.g,
+                                              first.clear_color.b, first.clear_color.a};
+        color_target.load_op = first.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
         if (samples > 1) {
             color_target.store_op = SDL_GPU_STOREOP_RESOLVE;
             color_target.resolve_texture = destination;
@@ -188,24 +177,15 @@ public:
         SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
         for (std::size_t index = 0; index < passes.size(); ++index) {
             const EffectRendererRecord& record =
-                engine.effect_renderers
-                    [engine.registered_effect_renderers[index].value];
-            record_effect_pass(
-                command,
-                render_pass,
-                engine,
-                passes[index],
-                record.effect);
+                engine.effect_renderers[engine.registered_effect_renderers[index].value];
+            record_effect_pass(command, render_pass, engine, passes[index], record.effect);
         }
         render_pass.end();
 
         if (capture_run) {
             SDL_GPUBlitInfo blit{};
-            blit.source =
-                SDL_GPUBlitRegion{resolve, 0, 0, 0, 0, width, height};
-            blit.destination =
-                SDL_GPUBlitRegion{
-                    swapchain, 0, 0, 0, 0, width, height};
+            blit.source = SDL_GPUBlitRegion{resolve, 0, 0, 0, 0, width, height};
+            blit.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
             blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
             blit.flip_mode = SDL_FLIP_NONE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
@@ -214,14 +194,8 @@ public:
     }
     void present() {
         if (capture_frame) {
-            save_texture_png(
-                device,
-                command,
-                resolve,
-                swapchain_format,
-                width,
-                height,
-                frame_options.screenshot_path);
+            save_texture_png(device, command, resolve, swapchain_format, width, height,
+                             frame_options.screenshot_path);
             captures.screenshot_saved = true;
         } else if (!command.submit()) {
             gpu_error("SDL_SubmitGPUCommandBuffer effect");
@@ -234,7 +208,8 @@ public:
 bool run_effect_gpu_engine(Engine& engine) {
     SdlEffectRun renderer(engine);
     renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {}
+    while (conduct_frame(renderer) != FrameOutcome::stopped) {
+    }
     renderer.report();
     return true;
 }

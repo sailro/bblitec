@@ -11,30 +11,323 @@ import {
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes
-            .filter(({ sourceOrigin }) =>
-                sourceOrigin !== "babylon-lite-application",
+            .filter(
+                ({ sourceOrigin }) =>
+                    sourceOrigin !== "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["primitives", "scene1", "scene3", "scene6", "scene14", "scene24", "scene28", "scene29", "scene31", "scene33", "scene35", "scene231", "scene216", "scene150", "scene178", "scene210", "scene212", "scene243", "scene246", "scene247", "scene252", "scene254", "scene255", "scene258", "scene259", "scene265", "scene2", "scene7", "scene8", "scene5", "scene10", "scene12", "scene13", "scene32", "scene159", "scene160", "scene161", "scene162", "scene165", "scene163", "scene164", "audit-shader-frame-graph", "regression-runtime-sweep", "regression-sprite-layer-arms", "regression-instanced-ground", "regression-morph-ground", "regression-light-setters", "regression-property-animation-paths", "regression-mesh-flags", "regression-physics-aggregate-options", "regression-physics-floating-origin", "regression-material-falloff", "regression-compiler-state", "scene168", "scene176", "scene213", "scene151", "scene154", "scene152", "scene153", "scene157", "scene158", "scene155", "scene156", "scene240", "scene241", "scene250", "scene170", "regression-nav-crowd", "scene171", "scene172", "scene173", "regression-nav-obstacles", "scene174", "scene175", "regression-track-clamp", "scene110", "scene120", "scene121", "scene122", "scene123", "scene124", "scene125", "scene126", "scene127", "scene128", "scene129", "scene113", "scene114", "scene115", "scene116", "scene117", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene267", "scene268", "scene269", "scene270", "scene30", "scene256", "scene260", "scene34", "scene9", "scene242", "scene23", "scene40", "scene179", "scene166", "scene100", "scene101", "scene104", "scene105", "scene102", "scene103", "scene290", "scene106", "scene46", "scene47", "scene48", "scene49", "scene272", "scene273", "scene274", "scene244", "scene37", "scene253", "scene16", "scene44", "scene41", "scene42", "scene45", "scene43", "scene38", "scene39", "scene21", "scene19", "scene15", "scene50", "scene51", "scene52", "scene53", "scene56", "scene57", "scene92", "scene93", "scene94", "scene95", "scene96", "scene97", "scene54", "scene55", "scene98", "scene99", "scene177", "scene26", "scene27", "scene142", "scene143", "scene261", "scene180", "scene181", "scene275", "scene147", "scene11", "scene148", "scene149", "scene58", "scene59", "scene60", "scene64", "scene61", "scene77", "scene78", "scene79", "scene80", "scene82", "scene83", "scene85", "scene86", "scene88", "scene89", "scene63", "scene67", "scene68", "scene69", "scene70", "scene71", "scene84", "scene62", "scene81", "scene87", "scene74", "scene75", "scene76", "scene262", "scene263", "scene264", "scene276", "scene277", "scene280", "scene281", "scene283", "scene284", "scene278", "scene279", "scene300", "scene301", "scene302", "scene73", "scene303", "scene304", "scene187", "scene305", "scene282", "scene218", "scene219", "scene220", "scene221", "scene222", "scene223", "scene224", "scene225", "scene211", "scene229", "scene25", "scene36", "scene251", "scene18", "scene4", "scene203", "scene205", "scene204", "scene206", "scene207", "scene200", "scene201", "scene202", "scene209", "scene65", "scene141", "scene22", "regression-gltf-sparse", "regression-gltf-uv-sets", "regression-gltf-topology", "regression-gltf-step-animation", "scene144", "scene217", "scene17", "scene20", "scene66", "scene140", "scene72", "scene271", "scene186", "scene227", "scene228", "scene226", "scene90", "scene91", "scene214", "scene215", "scene118", "scene111", "scene112", "scene167", "regression-timer-callback-cells"]
+        [
+            "primitives",
+            "scene1",
+            "scene3",
+            "scene6",
+            "scene14",
+            "scene24",
+            "scene28",
+            "scene29",
+            "scene31",
+            "scene33",
+            "scene35",
+            "scene231",
+            "scene216",
+            "scene150",
+            "scene178",
+            "scene210",
+            "scene212",
+            "scene243",
+            "scene246",
+            "scene247",
+            "scene252",
+            "scene254",
+            "scene255",
+            "scene258",
+            "scene259",
+            "scene265",
+            "scene2",
+            "scene7",
+            "scene8",
+            "scene5",
+            "scene10",
+            "scene12",
+            "scene13",
+            "scene32",
+            "scene159",
+            "scene160",
+            "scene161",
+            "scene162",
+            "scene165",
+            "scene163",
+            "scene164",
+            "audit-shader-frame-graph",
+            "regression-runtime-sweep",
+            "regression-sprite-layer-arms",
+            "regression-instanced-ground",
+            "regression-morph-ground",
+            "regression-light-setters",
+            "regression-property-animation-paths",
+            "regression-mesh-flags",
+            "regression-physics-aggregate-options",
+            "regression-physics-floating-origin",
+            "regression-material-falloff",
+            "regression-compiler-state",
+            "scene168",
+            "scene176",
+            "scene213",
+            "scene151",
+            "scene154",
+            "scene152",
+            "scene153",
+            "scene157",
+            "scene158",
+            "scene155",
+            "scene156",
+            "scene240",
+            "scene241",
+            "scene250",
+            "scene170",
+            "regression-nav-crowd",
+            "scene171",
+            "scene172",
+            "scene173",
+            "regression-nav-obstacles",
+            "scene174",
+            "scene175",
+            "regression-track-clamp",
+            "scene110",
+            "scene120",
+            "scene121",
+            "scene122",
+            "scene123",
+            "scene124",
+            "scene125",
+            "scene126",
+            "scene127",
+            "scene128",
+            "scene129",
+            "scene113",
+            "scene114",
+            "scene115",
+            "scene116",
+            "scene117",
+            "scene145",
+            "scene146",
+            "scene248",
+            "scene245",
+            "scene249",
+            "scene257",
+            "scene266",
+            "scene267",
+            "scene268",
+            "scene269",
+            "scene270",
+            "scene30",
+            "scene256",
+            "scene260",
+            "scene34",
+            "scene9",
+            "scene242",
+            "scene23",
+            "scene40",
+            "scene179",
+            "scene166",
+            "scene100",
+            "scene101",
+            "scene104",
+            "scene105",
+            "scene102",
+            "scene103",
+            "scene290",
+            "scene106",
+            "scene46",
+            "scene47",
+            "scene48",
+            "scene49",
+            "scene272",
+            "scene273",
+            "scene274",
+            "scene244",
+            "scene37",
+            "scene253",
+            "scene16",
+            "scene44",
+            "scene41",
+            "scene42",
+            "scene45",
+            "scene43",
+            "scene38",
+            "scene39",
+            "scene21",
+            "scene19",
+            "scene15",
+            "scene50",
+            "scene51",
+            "scene52",
+            "scene53",
+            "scene56",
+            "scene57",
+            "scene92",
+            "scene93",
+            "scene94",
+            "scene95",
+            "scene96",
+            "scene97",
+            "scene54",
+            "scene55",
+            "scene98",
+            "scene99",
+            "scene177",
+            "scene26",
+            "scene27",
+            "scene142",
+            "scene143",
+            "scene261",
+            "scene180",
+            "scene181",
+            "scene275",
+            "scene147",
+            "scene11",
+            "scene148",
+            "scene149",
+            "scene58",
+            "scene59",
+            "scene60",
+            "scene64",
+            "scene61",
+            "scene77",
+            "scene78",
+            "scene79",
+            "scene80",
+            "scene82",
+            "scene83",
+            "scene85",
+            "scene86",
+            "scene88",
+            "scene89",
+            "scene63",
+            "scene67",
+            "scene68",
+            "scene69",
+            "scene70",
+            "scene71",
+            "scene84",
+            "scene62",
+            "scene81",
+            "scene87",
+            "scene74",
+            "scene75",
+            "scene76",
+            "scene262",
+            "scene263",
+            "scene264",
+            "scene276",
+            "scene277",
+            "scene280",
+            "scene281",
+            "scene283",
+            "scene284",
+            "scene278",
+            "scene279",
+            "scene300",
+            "scene301",
+            "scene302",
+            "scene73",
+            "scene303",
+            "scene304",
+            "scene187",
+            "scene305",
+            "scene282",
+            "scene218",
+            "scene219",
+            "scene220",
+            "scene221",
+            "scene222",
+            "scene223",
+            "scene224",
+            "scene225",
+            "scene211",
+            "scene229",
+            "scene25",
+            "scene36",
+            "scene251",
+            "scene18",
+            "scene4",
+            "scene203",
+            "scene205",
+            "scene204",
+            "scene206",
+            "scene207",
+            "scene200",
+            "scene201",
+            "scene202",
+            "scene209",
+            "scene65",
+            "scene141",
+            "scene22",
+            "regression-gltf-sparse",
+            "regression-gltf-uv-sets",
+            "regression-gltf-topology",
+            "regression-gltf-step-animation",
+            "scene144",
+            "scene217",
+            "scene17",
+            "scene20",
+            "scene66",
+            "scene140",
+            "scene72",
+            "scene271",
+            "scene186",
+            "scene227",
+            "scene228",
+            "scene226",
+            "scene90",
+            "scene91",
+            "scene214",
+            "scene215",
+            "scene118",
+            "scene111",
+            "scene112",
+            "scene167",
+            "regression-timer-callback-cells",
+        ],
     );
     assert.deepEqual(
         scenes
-            .filter(({ sourceOrigin }) =>
-                sourceOrigin === "babylon-lite-application",
+            .filter(
+                ({ sourceOrigin }) =>
+                    sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["offscreen", "tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "antigravity-racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft", "screen-space-effects", "npe-sprite2d", "mosquito-amber", "calculator"],
+        [
+            "offscreen",
+            "tetris",
+            "doom",
+            "quake",
+            "torus-states",
+            "platformer",
+            "break-meshes",
+            "racer",
+            "antigravity-racer",
+            "littlest-tokyo",
+            "bath-day",
+            "freeciv",
+            "sandblox",
+            "minecraft",
+            "screen-space-effects",
+            "npe-sprite2d",
+            "mosquito-amber",
+            "calculator",
+        ],
     );
-    assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
+    assert.equal(
+        new Set(scenes.map(({ output }) => output)).size,
+        scenes.length,
+    );
     // Entries carry only what is theirs; every path a scene id implies is
     // derived, so the registry cannot restate one of them incorrectly.
     for (const scene of scenes) {
         if (scene.id === "primitives") continue;
         assert.equal(scene.output, `generated/${scene.id}`);
-        assert.equal(
-            scene.buildDirectory,
-            `native/build-${scene.id}-release`,
-        );
+        assert.equal(scene.buildDirectory, `native/build-${scene.id}-release`);
         if (!scene.parity) continue;
         assert.equal(
             scene.parity.reference.path,
@@ -46,14 +339,8 @@ test("registers unique generated scene targets", () => {
         );
     }
     // An entry that needs a different target still gets it.
-    assert.equal(
-        getScene("primitives").buildDirectory,
-        "native/build-sdl",
-    );
-    assert.equal(
-        getScene("primitives").output,
-        "generated/primitives",
-    );
+    assert.equal(getScene("primitives").buildDirectory, "native/build-sdl");
+    assert.equal(getScene("primitives").output, "generated/primitives");
     assert.equal(getScene("scene10").parity?.reference.kind, "source");
     assert.equal(getScene("scene2").parity?.maxFullMad, 0.01);
     assert.equal(getScene("scene163").parity?.maxFullMad, 0.001);
@@ -122,8 +409,7 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("freeciv").parity?.maxForegroundMad, 0.5);
     assert.equal(getScene("freeciv").parity?.dawnThresholds, undefined);
     assert.equal(
-        getScene("freeciv").parity?.nativeEnvironment
-            ?.BBLITE_SCREENSHOT_FRAME,
+        getScene("freeciv").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
     assert.equal(getScene("sandblox").parity?.referenceFrame, 180);
@@ -144,8 +430,7 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(getScene("bath-day").parity?.referenceFrame, 180);
     assert.equal(
-        getScene("bath-day").parity?.nativeEnvironment
-            ?.BBLITE_SCREENSHOT_FRAME,
+        getScene("bath-day").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
     assert.equal(getScene("bath-day").parity?.maxFullMad, 0.2);
@@ -194,8 +479,7 @@ test("spells the measured pose once: the native seek derives from referenceTimeS
     for (const scene of scenes) {
         const pose = scene.parity?.referenceTimeSeconds;
         const seek =
-            scene.parity?.nativeEnvironment
-                ?.BBLITE_ANIMATION_SEEK_SECONDS;
+            scene.parity?.nativeEnvironment?.BBLITE_ANIMATION_SEEK_SECONDS;
         if (pose === undefined) {
             assert.equal(
                 seek,
@@ -268,25 +552,20 @@ test("rejects ad-hoc sources that collide with registered scene ids", () => {
 
 test("requires explicit recapture for missing curated references", () => {
     const scene = getScene("scene10");
-    const missing = resolve(
-        ".cache",
-        "missing-curated-reference.png",
-    );
+    const missing = resolve(".cache", "missing-curated-reference.png");
     assert.throws(
         () => validateReferenceCapture(scene, missing, false),
         /Curated reference is missing/,
     );
-    assert.doesNotThrow(
-        () => validateReferenceCapture(scene, missing, true),
-    );
+    assert.doesNotThrow(() => validateReferenceCapture(scene, missing, true));
 
     const source = ".cache/reference-policy-adhoc.ts";
     mkdirSync(".cache", { recursive: true });
     writeFileSync(source, "export {};\n");
     try {
         const adHoc = resolveScene(source);
-        assert.doesNotThrow(
-            () => validateReferenceCapture(adHoc, missing, false),
+        assert.doesNotThrow(() =>
+            validateReferenceCapture(adHoc, missing, false),
         );
     } finally {
         rmSync(source, { force: true });
@@ -299,12 +578,23 @@ test("keeps package scene commands registry-driven", () => {
     };
     const scriptNames = Object.keys(packageJson.scripts);
     assert.deepEqual(
-        scriptNames.filter((name) => /^(?:compile|parity):scene\d+$/.test(name)),
+        scriptNames.filter((name) =>
+            /^(?:compile|parity):scene\d+$/.test(name),
+        ),
         [],
     );
-    assert.equal(packageJson.scripts["scenes:compile"], "npm run scene -- compile all");
-    assert.equal(packageJson.scripts["scenes:build"], "npm run scene -- build all");
-    assert.equal(packageJson.scripts["scenes:process"], "npm run scene -- process all");
+    assert.equal(
+        packageJson.scripts["scenes:compile"],
+        "npm run scene -- compile all",
+    );
+    assert.equal(
+        packageJson.scripts["scenes:build"],
+        "npm run scene -- build all",
+    );
+    assert.equal(
+        packageJson.scripts["scenes:process"],
+        "npm run scene -- process all",
+    );
     assert.equal(packageJson.scripts.doctor, "npm run scene -- doctor");
     assert.equal(packageJson.scripts["dev:setup"], "npm run scene -- setup");
     assert.equal(packageJson.scripts.sweep, "npm run scene -- validate all");

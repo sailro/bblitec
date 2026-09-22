@@ -1,24 +1,37 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {copyFileSync, existsSync, mkdirSync, writeFileSync} from "node:fs";
-import {dirname, join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("direct audio contexts preserve owned aliases and lifecycle promises", t => {
+test("direct audio contexts preserve owned aliases and lifecycle promises", (t) => {
     const output = resolve("artifacts/audio-context-check");
-    mkdirSync(output, {recursive:true});
+    mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "worker.ts"), "self.close();");
-    const wave=Buffer.alloc(44+1024*2);
-    wave.write("RIFF"); wave.writeUInt32LE(wave.length-8,4); wave.write("WAVEfmt ",8);
-    wave.writeUInt32LE(16,16); wave.writeUInt16LE(1,20); wave.writeUInt16LE(1,22);
-    wave.writeUInt32LE(48000,24); wave.writeUInt32LE(96000,28);
-    wave.writeUInt16LE(2,32); wave.writeUInt16LE(16,34); wave.write("data",36);
-    wave.writeUInt32LE(wave.length-44,40);
-    for(let frame=0;frame<1024;frame++) wave.writeInt16LE(8192,44+frame*2);
-    writeFileSync(join(output,"tone.wav"),wave);
-    const result = compileSource(`
+    const wave = Buffer.alloc(44 + 1024 * 2);
+    wave.write("RIFF");
+    wave.writeUInt32LE(wave.length - 8, 4);
+    wave.write("WAVEfmt ", 8);
+    wave.writeUInt32LE(16, 16);
+    wave.writeUInt16LE(1, 20);
+    wave.writeUInt16LE(1, 22);
+    wave.writeUInt32LE(48000, 24);
+    wave.writeUInt32LE(96000, 28);
+    wave.writeUInt16LE(2, 32);
+    wave.writeUInt16LE(16, 34);
+    wave.write("data", 36);
+    wave.writeUInt32LE(wave.length - 44, 40);
+    for (let frame = 0; frame < 1024; frame++)
+        wave.writeInt16LE(8192, 44 + frame * 2);
+    writeFileSync(join(output, "tone.wav"), wave);
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         function create(): {context: AudioContext} { return {context: new AudioContext()}; }
@@ -128,28 +141,64 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             globalThis.close();
         }
         void exercise();
-    `, {fileName:join(output, "entry.ts")});
-    for(const asset of result.manifest.assets) {
-        const destination=join(output,asset.output);
-        mkdirSync(dirname(destination),{recursive:true});
-        copyFileSync(resolve(output,asset.source),destination);
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    for (const asset of result.manifest.assets) {
+        const destination = join(output, asset.output);
+        mkdirSync(dirname(destination), { recursive: true });
+        copyFileSync(resolve(output, asset.source), destination);
     }
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools();
     const labsound = resolve("artifacts/tools/labsound");
     if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
-        t.skip("The native compiler and pinned LabSound library are required."); return;
+        t.skip("The native compiler and pinned LabSound library are required.");
+        return;
     }
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
-        `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
-        `/external:I${join(nativeFixtureVcpkgRoot,"include")}`, `/external:I${join(labsound,"include")}`, "/external:W0",
-        "test/fixtures/audio-context-check.cpp", "test/fixtures/packaged-fetch-check.cpp", "/link", "/OPT:REF",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot,"lib")}`, `/LIBPATH:${join(labsound,"lib")}`,
-        "LabSound.lib", "libnyquist.lib", "SDL3.lib"]);
-    assert.equal(execFileSync(executable, {cwd:output,encoding:"utf8", timeout:30000,
-        env:{...tools.environment, SDL_AUDIODRIVER:"dummy", BBLITE_AUDIO_CAPTURE:"",
-            PATH:`${join(nativeFixtureVcpkgRoot,"bin")};${tools.environment.PATH ?? ""}`}}), "");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        "/Gy",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/src",
+        "/I",
+        "native/include",
+        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+        `/external:I${join(labsound, "include")}`,
+        "/external:W0",
+        "test/fixtures/audio-context-check.cpp",
+        "test/fixtures/packaged-fetch-check.cpp",
+        "/link",
+        "/OPT:REF",
+        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
+        `/LIBPATH:${join(labsound, "lib")}`,
+        "LabSound.lib",
+        "libnyquist.lib",
+        "SDL3.lib",
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            cwd: output,
+            encoding: "utf8",
+            timeout: 30000,
+            env: {
+                ...tools.environment,
+                SDL_AUDIODRIVER: "dummy",
+                BBLITE_AUDIO_CAPTURE: "",
+                PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}`,
+            },
+        }),
+        "",
+    );
 });
 
 test("audio capability guards and constructor boundaries", () => {
@@ -159,11 +208,37 @@ test("audio capability guards and constructor boundaries", () => {
         if (typeof prototype?.setSinkId === "function") throw new Error("unavailable sink");
         if (typeof prototype?.createMediaStreamDestination === "function") throw new Error("unavailable recording");
     `);
-    assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("unavailable sink"\)/);
-    assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("(?:constructor capability|unavailable recording)"\)/);
-    assert.throws(() => compileSource("const context = new AudioContext(); context.createMediaStreamDestination();"), /native recording streams are unavailable/);
-    assert.throws(() => compileSource("const context = new AudioContext({sampleRate: 44100});"), /constructor options/);
-    assert.throws(() => compileSource("const context = new AudioContext(); context.resume();"), /asynchronous application realm/);
-    const shadowed = compileSource("class AudioContext { value = 7; } const context = new AudioContext(); if (context.value !== 7) throw new Error('local');");
+    assert.doesNotMatch(
+        guarded.cpp,
+        /throw std::runtime_error\("unavailable sink"\)/,
+    );
+    assert.doesNotMatch(
+        guarded.cpp,
+        /throw std::runtime_error\("(?:constructor capability|unavailable recording)"\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "const context = new AudioContext(); context.createMediaStreamDestination();",
+            ),
+        /native recording streams are unavailable/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "const context = new AudioContext({sampleRate: 44100});",
+            ),
+        /constructor options/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "const context = new AudioContext(); context.resume();",
+            ),
+        /asynchronous application realm/,
+    );
+    const shadowed = compileSource(
+        "class AudioContext { value = 7; } const context = new AudioContext(); if (context.value !== 7) throw new Error('local');",
+    );
     assert.doesNotMatch(shadowed.cpp, /audio_create_context/);
 });

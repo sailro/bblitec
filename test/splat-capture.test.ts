@@ -3,27 +3,45 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SplatLowerer } from "../src/lowering/splat-lowerer.js";
+import { jsonNumbers, jsonRecords, jsonString } from "./json.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
-for (const shDegree of [0, 1]) test(`splat draw capture uses live cloud counts and frame uniforms (SH ${shDegree})`, { skip: !nativeTools }, () => {
-    const output = resolve(`artifacts/splat-draw-capture-${shDegree}`);
-    const headers = join(output, "bblite/upstream");
-    mkdirSync(headers, { recursive: true });
-    const lowerer = new SplatLowerer(new LoweringContext(), shDegree);
-    const sort = lowerer.lowerSort();
-    writeFileSync(join(headers, "splat_geometry.hpp"), lowerer.lowerGeometry().header!);
-    writeFileSync(join(headers, "splat_sort.hpp"), sort.header!);
-    writeFileSync(join(output, "sort.cpp"), sort.source);
-    const capture = readFileSync("native/src/pal_render_capture.hpp", "utf8").replaceAll("\r\n", "\n");
-    const writerStart = capture.indexOf("class JsonWriter {");
-    const writerEnd = capture.indexOf("\n};", writerStart) + 3;
-    assert.ok(writerStart >= 0 && writerEnd > writerStart);
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+for (const shDegree of [0, 1])
+    test(
+        `splat draw capture uses live cloud counts and frame uniforms (SH ${shDegree})`,
+        { skip: !nativeTools },
+        () => {
+            const output = resolve(`artifacts/splat-draw-capture-${shDegree}`);
+            const headers = join(output, "bblite/upstream");
+            mkdirSync(headers, { recursive: true });
+            const lowerer = new SplatLowerer(new LoweringContext(), shDegree);
+            const sort = lowerer.lowerSort();
+            writeFileSync(
+                join(headers, "splat_geometry.hpp"),
+                lowerer.lowerGeometry().header,
+            );
+            writeFileSync(join(headers, "splat_sort.hpp"), sort.header);
+            writeFileSync(join(output, "sort.cpp"), sort.source);
+            const capture = readFileSync(
+                "native/src/pal_render_capture.hpp",
+                "utf8",
+            ).replaceAll("\r\n", "\n");
+            const writerStart = capture.indexOf("class JsonWriter {");
+            const writerEnd = capture.indexOf("\n};", writerStart) + 3;
+            assert.ok(writerStart >= 0 && writerEnd > writerStart);
+            const source = join(output, "check.cpp"),
+                executable = join(output, "check.exe");
+            writeFileSync(
+                source,
+                `#include <bblite/runtime.hpp>
 #include <bblite/upstream/splat_sort.hpp>
 #include <cassert>
 #include <cmath>
@@ -56,43 +74,95 @@ int main(int argc, char** argv) {
     bbl::pal::write_splat_draw_list(json, scene, engine, view, projection, eye, 640, 360);
     json.end_array();
 }
-`);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/DBBLITE_SPLAT_SH=${shDegree}`, "/I", "native/include", "/I", output,
-        `/Fo:${output}\\`, `/Fe:${executable}`, source, join(output, "sort.cpp")]);
-    const path = join(output, "capture.json");
-    execFileSync(executable, [path], { stdio: "pipe" });
-    const rows = JSON.parse(readFileSync(path, "utf8"));
-    assert.deepEqual(rows.map((row: { splat: number; instanceCount: number }) => [row.splat, row.instanceCount]), [[2, 2], [1, 7]]);
-    for (const row of rows) {
-        assert.equal(row.stage, "transparent");
-        assert.equal(row.pipeline, "splat");
-        assert.equal(row.indexCount, 6);
-        assert.equal(row.vertexCount, 4);
-        assert.equal(row.uniforms.length, 1);
-        const uniform = row.uniforms[0];
-        assert.equal(uniform.stage, "vertex");
-        assert.equal(uniform.slot, 0);
-        assert.equal(uniform.type, "SplatUniforms");
-        assert.deepEqual(uniform.floats.slice(16, 32), Array.from({ length: 16 }, (_, i) => i + 1));
-        assert.deepEqual(uniform.floats.slice(32, 48), Array.from({ length: 16 }, (_, i) => i + 20));
-        assert.deepEqual(uniform.floats.slice(48, 50), [640, 360]);
-        assert.deepEqual(uniform.floats.slice(52, 54), row.splat === 1 ? [8, 4] : [4, 2]);
-        if (shDegree) assert.deepEqual(uniform.floats.slice(56, 59), [7, 8, 9]);
-    }
-    assert.deepEqual(rows[1].uniforms[0].floats.slice(12, 15), [3, 4, 5]);
-});
-test("splat capture preserves complete current byte storage and reports write failures", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/splat-capture-check");
-    mkdirSync(output, { recursive: true });
-    const capture = readFileSync("native/src/pal_render_capture.hpp", "utf8").replaceAll("\r\n", "\n");
-    const writerStart = capture.indexOf("class JsonWriter {");
-    const writerEnd = capture.indexOf("\n};", writerStart) + 3;
-    const splatStart = capture.indexOf("inline void write_splat_list(");
-    const splatEnd = capture.indexOf("\n}\n", splatStart) + 3;
-    assert(writerStart >= 0 && writerEnd > writerStart && splatStart >= 0 && splatEnd > splatStart);
-    const source = join(output, "check.cpp");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+`,
+            );
+            runNativeFixtureCompiler(nativeTools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/EHsc",
+                "/MD",
+                `/DBBLITE_SPLAT_SH=${shDegree}`,
+                "/I",
+                "native/include",
+                "/I",
+                output,
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                source,
+                join(output, "sort.cpp"),
+            ]);
+            const path = join(output, "capture.json");
+            execFileSync(executable, [path], { stdio: "pipe" });
+            const rows = jsonRecords(JSON.parse(readFileSync(path, "utf8")));
+            assert.deepEqual(
+                rows.map((row) => [row.splat, row.instanceCount]),
+                [
+                    [2, 2],
+                    [1, 7],
+                ],
+            );
+            for (const row of rows) {
+                assert.equal(row.stage, "transparent");
+                assert.equal(row.pipeline, "splat");
+                assert.equal(row.indexCount, 6);
+                assert.equal(row.vertexCount, 4);
+                const uniforms = jsonRecords(row.uniforms);
+                assert.equal(uniforms.length, 1);
+                const uniform = uniforms[0]!;
+                const floats = jsonNumbers(uniform.floats);
+                assert.equal(uniform.stage, "vertex");
+                assert.equal(uniform.slot, 0);
+                assert.equal(uniform.type, "SplatUniforms");
+                assert.deepEqual(
+                    floats.slice(16, 32),
+                    Array.from({ length: 16 }, (_, i) => i + 1),
+                );
+                assert.deepEqual(
+                    floats.slice(32, 48),
+                    Array.from({ length: 16 }, (_, i) => i + 20),
+                );
+                assert.deepEqual(floats.slice(48, 50), [640, 360]);
+                assert.deepEqual(
+                    floats.slice(52, 54),
+                    row.splat === 1 ? [8, 4] : [4, 2],
+                );
+                if (shDegree) assert.deepEqual(floats.slice(56, 59), [7, 8, 9]);
+            }
+            assert.deepEqual(
+                jsonNumbers(jsonRecords(rows[1]!.uniforms)[0]!.floats).slice(
+                    12,
+                    15,
+                ),
+                [3, 4, 5],
+            );
+        },
+    );
+test(
+    "splat capture preserves complete current byte storage and reports write failures",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/splat-capture-check");
+        mkdirSync(output, { recursive: true });
+        const capture = readFileSync(
+            "native/src/pal_render_capture.hpp",
+            "utf8",
+        ).replaceAll("\r\n", "\n");
+        const writerStart = capture.indexOf("class JsonWriter {");
+        const writerEnd = capture.indexOf("\n};", writerStart) + 3;
+        const splatStart = capture.indexOf("inline void write_splat_list(");
+        const splatEnd = capture.indexOf("\n}\n", splatStart) + 3;
+        assert(
+            writerStart >= 0 &&
+                writerEnd > writerStart &&
+                splatStart >= 0 &&
+                splatEnd > splatStart,
+        );
+        const source = join(output, "check.cpp");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
 #include <cmath>
@@ -138,18 +208,56 @@ int main(int argc, char** argv) {
     assert(retained.data_version == 7 && owner[1] == -2.0f);
     std::cout << "splat-capture: ok";
 }
-`);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, source]);
-    assert.match(execFileSync(executable, [output], { encoding: "utf8" }), /splat-capture: ok/);
-    const records = JSON.parse(readFileSync(join(output, "capture.json"), "utf8"));
-    assert.equal(records.length, 3);
-    assert.equal(records[0].retainedDataFile, undefined);
-    assert.equal(existsSync(join(output, "capture.json.splat-0.bin")), false);
-    assert.deepEqual(records[1], { index: 1, name: "", vertexCount: 2, dataVersion: 7,
-        boundMin: [-1, -2, -3], boundMax: [1, 2, 3], byteLength: 16, retainedDataFile: "capture.json.splat-1.bin" });
-    const bytes = readFileSync(join(output, records[1].retainedDataFile));
-    assert.deepEqual([...new Float32Array(bytes.buffer, bytes.byteOffset, 4)], [1, -2, 3, 4]);
-    assert.equal(readFileSync(join(output, records[2].retainedDataFile)).length, 0);
-});
+`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/I",
+            "native/include",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        assert.match(
+            execFileSync(executable, [output], { encoding: "utf8" }),
+            /splat-capture: ok/,
+        );
+        const records = jsonRecords(
+            JSON.parse(readFileSync(join(output, "capture.json"), "utf8")),
+        );
+        assert.equal(records.length, 3);
+        assert.equal(records[0]!.retainedDataFile, undefined);
+        assert.equal(
+            existsSync(join(output, "capture.json.splat-0.bin")),
+            false,
+        );
+        assert.deepEqual(records[1], {
+            index: 1,
+            name: "",
+            vertexCount: 2,
+            dataVersion: 7,
+            boundMin: [-1, -2, -3],
+            boundMax: [1, 2, 3],
+            byteLength: 16,
+            retainedDataFile: "capture.json.splat-1.bin",
+        });
+        const bytes = readFileSync(
+            join(output, jsonString(records[1].retainedDataFile)),
+        );
+        assert.deepEqual(
+            [...new Float32Array(bytes.buffer, bytes.byteOffset, 4)],
+            [1, -2, 3, 4],
+        );
+        assert.equal(
+            readFileSync(join(output, jsonString(records[2]!.retainedDataFile)))
+                .length,
+            0,
+        );
+    },
+);

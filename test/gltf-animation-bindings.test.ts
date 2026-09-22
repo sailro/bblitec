@@ -1,79 +1,219 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
-import {BinaryBuilder} from "../src/glb-binary-builder.js";
-import {asRecords, type JsonObject} from "../src/gltf-document.js";
-import {gltfMeshPlan, packageGltfMeshPlan, packagedGltfMeshPlan} from "../src/gltf-mesh-plan.js";
-import {readAnimationBindings} from "../src/gltf-animation-bindings.js";
-import {LoweringContext} from "../src/lowering/context.js";
-import {GltfLowerer} from "../src/lowering/gltf/loader.js";
-import {gltfAnimationBindingsCpp} from "../src/lowering/gltf/animation-bindings.js";
-import {gltfAnimationPoseStorageCpp} from "../src/lowering/gltf/animation-pose-storage.js";
-import {doctoredContext} from "./doctored-store.js";
-import {readPackedGltfAttribute} from "./gltf-mesh-fixture.js";
-import {cppFunction, cppRecord, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { BinaryBuilder } from "../src/glb-binary-builder.js";
+import { asRecords, type JsonObject } from "../src/gltf-document.js";
+import {
+    gltfMeshPlan,
+    packageGltfMeshPlan,
+    packagedGltfMeshPlan,
+} from "../src/gltf-mesh-plan.js";
+import { readAnimationBindings } from "../src/gltf-animation-bindings.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { GltfLowerer } from "../src/lowering/gltf/loader.js";
+import { gltfAnimationBindingsCpp } from "../src/lowering/gltf/animation-bindings.js";
+import { gltfAnimationPoseStorageCpp } from "../src/lowering/gltf/animation-pose-storage.js";
+import { doctoredContext } from "./doctored-store.js";
+import { readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    cppSection,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const module = "src/loader-gltf/gltf-animation.ts";
 
 function fixture(firstMorph = false, bothSkinned = false) {
     const binary = new BinaryBuilder(Buffer.alloc(0));
-    const accessors: JsonObject[] = [], bufferViews: JsonObject[] = [];
-    const append = (data: Float32Array | Uint8Array, type: string, components: number): number => {
-        bufferViews.push({buffer: 0, byteOffset: binary.append(data), byteLength: data.byteLength});
-        accessors.push({bufferView: bufferViews.length - 1, componentType: data instanceof Float32Array ? 5126 : 5121,
-            count: data.length / components, type});
+    const accessors: JsonObject[] = [],
+        bufferViews: JsonObject[] = [];
+    const append = (
+        data: Float32Array | Uint8Array,
+        type: string,
+        components: number,
+    ): number => {
+        bufferViews.push({
+            buffer: 0,
+            byteOffset: binary.append(data),
+            byteLength: data.byteLength,
+        });
+        accessors.push({
+            bufferView: bufferViews.length - 1,
+            componentType: data instanceof Float32Array ? 5126 : 5121,
+            count: data.length / components,
+            type,
+        });
         return accessors.length - 1;
     };
-    const position = append(new Float32Array([0,0,0, 1,0,0, 0,1,0]), "VEC3", 3);
+    const position = append(
+        new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        "VEC3",
+        3,
+    );
     const joints = append(new Uint8Array(12), "VEC4", 4);
-    const weights = append(new Float32Array([1,0,0,0, 1,0,0,0, 1,0,0,0]), "VEC4", 4);
-    const delta = append(new Float32Array([0,0,1, 0,0,1, 0,0,1]), "VEC3", 3);
-    const primitive = (skin: boolean, morph: boolean) => ({attributes: {POSITION: position,
-        ...(skin ? {JOINTS_0: joints, WEIGHTS_0: weights} : {})}, ...(morph ? {targets: [{POSITION: delta}]} : {})});
-    const document: JsonObject = {asset: {version: "2.0"}, buffers: [{byteLength: binary.byteLength}], accessors, bufferViews,
-        meshes: [{primitives: [primitive(true, false)]},
-            {primitives: bothSkinned ? [primitive(true, true)] : [primitive(false, firstMorph), primitive(false, true)], weights: [.375]}],
-        nodes: [{children: [1, 3], translation: [1.123456789, 2, 3]}, {mesh: 0, skin: 0, translation: [4, 5, 6]}, {},
-            {mesh: 1, ...(bothSkinned ? {skin: 0} : {}), translation: [7, 8, 9]}],
-        skins: [{joints: [2]}], animations: [{channels: [], samplers: []}], scenes: [{nodes: [0, 2]}]};
+    const weights = append(
+        new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+        "VEC4",
+        4,
+    );
+    const delta = append(
+        new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        "VEC3",
+        3,
+    );
+    const primitive = (skin: boolean, morph: boolean) => ({
+        attributes: {
+            POSITION: position,
+            ...(skin ? { JOINTS_0: joints, WEIGHTS_0: weights } : {}),
+        },
+        ...(morph ? { targets: [{ POSITION: delta }] } : {}),
+    });
+    const document: JsonObject = {
+        asset: { version: "2.0" },
+        buffers: [{ byteLength: binary.byteLength }],
+        accessors,
+        bufferViews,
+        meshes: [
+            { primitives: [primitive(true, false)] },
+            {
+                primitives: bothSkinned
+                    ? [primitive(true, true)]
+                    : [primitive(false, firstMorph), primitive(false, true)],
+                weights: [0.375],
+            },
+        ],
+        nodes: [
+            { children: [1, 3], translation: [1.123456789, 2, 3] },
+            { mesh: 0, skin: 0, translation: [4, 5, 6] },
+            {},
+            {
+                mesh: 1,
+                ...(bothSkinned ? { skin: 0 } : {}),
+                translation: [7, 8, 9],
+            },
+        ],
+        skins: [{ joints: [2] }],
+        animations: [{ channels: [], samplers: [] }],
+        scenes: [{ nodes: [0, 2] }],
+    };
     const bytes = binary.build();
-    return {document, bin: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)};
+    return {
+        document,
+        bin: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    };
 }
 
 test("source binding guards and ancestor exclusions follow actual constructed resources", async () => {
     const input = fixture();
-    const plan = (await gltfMeshPlan(input.document, input.bin)).animationBindings!;
-    assert.deepEqual(plan.nodeMeshes, [{node: 1, meshes: [0]}, {node: 3, meshes: [1, 2]}]);
-    assert.deepEqual(plan.skeletons.map(binding => ({meshes: binding.meshes, joints: binding.joints})), [{meshes: [0], joints: [2]}]);
-    assert.deepEqual(plan.morphs, [], "a later morphed primitive does not pass the source first-primitive guard");
+    const plan = (await gltfMeshPlan(input.document, input.bin))
+        .animationBindings!;
+    assert.deepEqual(plan.nodeMeshes, [
+        { node: 1, meshes: [0] },
+        { node: 3, meshes: [1, 2] },
+    ]);
+    assert.deepEqual(
+        plan.skeletons.map((binding) => ({
+            meshes: binding.meshes,
+            joints: binding.joints,
+        })),
+        [{ meshes: [0], joints: [2] }],
+    );
+    assert.deepEqual(
+        plan.morphs,
+        [],
+        "a later morphed primitive does not pass the source first-primitive guard",
+    );
     assert.deepEqual(plan.excludedNodes, [2, 1, 0]);
     assert.deepEqual(plan.nodeTargets, [0, 1, 2, 3]);
-    const altered = (await gltfMeshPlan(input.document, input.bin, doctoredContext(module,
-        "gltfMesh.primitives?.[0]?.targets?.length", "gltfMesh.primitives?.[1]?.targets?.length"))).animationBindings!;
-    assert.deepEqual(altered.morphs, [{meshes: [2], node: 3, count: 1}]);
-    const exclusions = (await gltfMeshPlan(input.document, input.bin, doctoredContext(module,
-        "p = findParent(parentMap, p);", "p = -1;"))).animationBindings!;
+    const altered = (
+        await gltfMeshPlan(
+            input.document,
+            input.bin,
+            doctoredContext(
+                module,
+                "gltfMesh.primitives?.[0]?.targets?.length",
+                "gltfMesh.primitives?.[1]?.targets?.length",
+            ),
+        )
+    ).animationBindings!;
+    assert.deepEqual(altered.morphs, [{ meshes: [2], node: 3, count: 1 }]);
+    const exclusions = (
+        await gltfMeshPlan(
+            input.document,
+            input.bin,
+            doctoredContext(module, "p = findParent(parentMap, p);", "p = -1;"),
+        )
+    ).animationBindings!;
     assert.deepEqual(exclusions.excludedNodes, [2, 1]);
-    const absent = (await gltfMeshPlan({...input.document, animations: []}, input.bin)).animationBindings;
-    assert.equal(absent, null, "feature discovery omits target construction for static assets");
+    const absent = (
+        await gltfMeshPlan({ ...input.document, animations: [] }, input.bin)
+    ).animationBindings;
+    assert.equal(
+        absent,
+        null,
+        "feature discovery omits target construction for static assets",
+    );
 });
 
 test("source replay ordinals resolve runtime identities independently of their original glTF nodes", async () => {
     const input = fixture(true, true);
-    const original = (await gltfMeshPlan(input.document, input.bin)).animationBindings!;
-    const changed = (await gltfMeshPlan(input.document, input.bin, doctoredContext(module,
-        "const mesh = meshes[mi];", "const mesh = meshes[meshes.length - 1 - mi];"))).animationBindings!;
+    const original = (await gltfMeshPlan(input.document, input.bin))
+        .animationBindings!;
+    const changed = (
+        await gltfMeshPlan(
+            input.document,
+            input.bin,
+            doctoredContext(
+                module,
+                "const mesh = meshes[mi];",
+                "const mesh = meshes[meshes.length - 1 - mi];",
+            ),
+        )
+    ).animationBindings!;
     assert.deepEqual(changed.nodeMeshes, original.nodeMeshes);
-    assert.deepEqual(original.skeletons.map(binding => binding.meshes), [[0], [1]]);
-    assert.deepEqual(changed.skeletons.map(binding => binding.meshes), [[1], [0]]);
+    assert.deepEqual(
+        original.skeletons.map((binding) => binding.meshes),
+        [[0], [1]],
+    );
+    assert.deepEqual(
+        changed.skeletons.map((binding) => binding.meshes),
+        [[1], [0]],
+    );
     for (const [needle, replacement, error] of [
-        ["runtimeSkeleton: skeleton,", "runtimeSkeleton: {...skeleton},", /skeleton identity/],
-        ["runtimeMorphTargets: morphTargets,", "runtimeMorphTargets: {...morphTargets},", /morph identity/],
-        ["boneMatrices: skeleton.boneMatrices,", "boneMatrices: skeleton.boneMatrices.slice(),", /skeleton identity/],
-        ["weights: morphTargets.weights,", "weights: morphTargets.weights.slice(),", /morph identity/],
-    ] as const) await assert.rejects(gltfMeshPlan(input.document, input.bin, doctoredContext(module, needle, replacement)), error);
+        [
+            "runtimeSkeleton: skeleton,",
+            "runtimeSkeleton: {...skeleton},",
+            /skeleton identity/,
+        ],
+        [
+            "runtimeMorphTargets: morphTargets,",
+            "runtimeMorphTargets: {...morphTargets},",
+            /morph identity/,
+        ],
+        [
+            "boneMatrices: skeleton.boneMatrices,",
+            "boneMatrices: skeleton.boneMatrices.slice(),",
+            /skeleton identity/,
+        ],
+        [
+            "weights: morphTargets.weights,",
+            "weights: morphTargets.weights.slice(),",
+            /morph identity/,
+        ],
+    ] as const)
+        await assert.rejects(
+            gltfMeshPlan(
+                input.document,
+                input.bin,
+                doctoredContext(module, needle, replacement),
+            ),
+            error,
+        );
 });
 
 test("packaged binding matrices preserve source Float32 products and refuse invalid receipt references", async () => {
@@ -81,41 +221,125 @@ test("packaged binding matrices preserve source Float32 products and refuse inva
     const bytes = await packageGltfMeshPlan(input.document, input.bin);
     const plan = packagedGltfMeshPlan(input.document).animationBindings!;
     assert.equal(plan.skeletons.length, 2);
-    assert.deepEqual(readPackedGltfAttribute(input.document, bytes, plan.skeletons[0]!.inverseBindMatrices),
-        [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
-    const translated = readPackedGltfAttribute(input.document, bytes, plan.skeletons[0]!.invMeshWorld);
+    assert.deepEqual(
+        readPackedGltfAttribute(
+            input.document,
+            bytes,
+            plan.skeletons[0]!.inverseBindMatrices,
+        ),
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    );
+    const translated = readPackedGltfAttribute(
+        input.document,
+        bytes,
+        plan.skeletons[0]!.invMeshWorld,
+    );
     assert.equal(translated[12], -Math.fround(Math.fround(1.123456789) + 4));
     const changed = fixture(true, true);
-    const changedBytes = await packageGltfMeshPlan(changed.document, changed.bin, doctoredContext(module,
-        "const invMeshWorld = invertMat4(meshWorldMatrix) ?? createIdentityMat4();", "const invMeshWorld = createIdentityMat4();"));
-    const changedPlan = packagedGltfMeshPlan(changed.document).animationBindings!;
-    assert.equal(readPackedGltfAttribute(changed.document, changedBytes, changedPlan.skeletons[0]!.invMeshWorld)[12], 0);
-    assert.throws(() => readAnimationBindings({...plan, nodeTargets: [99]}, 2, 4, 100), /animation targets/);
-    assert.throws(() => readAnimationBindings({...plan, skeletons: [{...plan.skeletons[0], meshes: [99]}]}, 2, 4, 100), /skeleton binding/);
+    const changedBytes = await packageGltfMeshPlan(
+        changed.document,
+        changed.bin,
+        doctoredContext(
+            module,
+            "const invMeshWorld = invertMat4(meshWorldMatrix) ?? createIdentityMat4();",
+            "const invMeshWorld = createIdentityMat4();",
+        ),
+    );
+    const changedPlan = packagedGltfMeshPlan(
+        changed.document,
+    ).animationBindings!;
+    assert.equal(
+        readPackedGltfAttribute(
+            changed.document,
+            changedBytes,
+            changedPlan.skeletons[0]!.invMeshWorld,
+        )[12],
+        0,
+    );
+    assert.throws(
+        () => readAnimationBindings({ ...plan, nodeTargets: [99] }, 2, 4, 100),
+        /animation targets/,
+    );
+    assert.throws(
+        () =>
+            readAnimationBindings(
+                {
+                    ...plan,
+                    skeletons: [{ ...plan.skeletons[0], meshes: [99] }],
+                },
+                2,
+                4,
+                100,
+            ),
+        /skeleton binding/,
+    );
 });
 
-test("native binding transport keeps source targets, exclusions and matrix bits", async t => {
-    const native = optionalNativeFixtureTools(); if (!native) return t.skip("Native fixture tools unavailable");
+test("native binding transport keeps source targets, exclusions and matrix bits", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) return t.skip("Native fixture tools unavailable");
     const cases = [];
-    for (const context of [new LoweringContext(), doctoredContext(module,
-        "const mesh = meshes[mi];", "const mesh = meshes[meshes.length - 1 - mi];"),
-        doctoredContext(module, "const skeleton = mesh?.skeleton;", "const skeleton = undefined;")]) {
-        const input = fixture(true, true), bytes = await packageGltfMeshPlan(input.document, input.bin, context);
-        const meshPlan = packagedGltfMeshPlan(input.document), plan = meshPlan.animationBindings!;
+    for (const context of [
+        new LoweringContext(),
+        doctoredContext(
+            module,
+            "const mesh = meshes[mi];",
+            "const mesh = meshes[meshes.length - 1 - mi];",
+        ),
+        doctoredContext(
+            module,
+            "const skeleton = mesh?.skeleton;",
+            "const skeleton = undefined;",
+        ),
+    ]) {
+        const input = fixture(true, true),
+            bytes = await packageGltfMeshPlan(
+                input.document,
+                input.bin,
+                context,
+            );
+        const meshPlan = packagedGltfMeshPlan(input.document),
+            plan = meshPlan.animationBindings!;
         const accessorBits: Record<number, number[]> = {};
-        const palettes = meshPlan.meshes.flatMap(mesh => mesh.skin ? [mesh.skin.matrices] : []);
-        for (const index of [...plan.skeletons.flatMap(binding => [binding.inverseBindMatrices, binding.invMeshWorld]), ...palettes]) {
-            const floats = Float32Array.from(readPackedGltfAttribute(input.document, bytes, index));
+        const palettes = meshPlan.meshes.flatMap((mesh) =>
+            mesh.skin ? [mesh.skin.matrices] : [],
+        );
+        for (const index of [
+            ...plan.skeletons.flatMap((binding) => [
+                binding.inverseBindMatrices,
+                binding.invMeshWorld,
+            ]),
+            ...palettes,
+        ]) {
+            const floats = Float32Array.from(
+                readPackedGltfAttribute(input.document, bytes, index),
+            );
             accessorBits[index] = [...new Uint32Array(floats.buffer)];
         }
-        cases.push({plan, accessorBits, meshes: meshPlan.meshes, meshCount: meshPlan.meshes.length, nodeCount: asRecords(input.document.nodes).length});
+        cases.push({
+            plan,
+            accessorBits,
+            meshes: meshPlan.meshes,
+            meshCount: meshPlan.meshes.length,
+            nodeCount: asRecords(input.document.nodes).length,
+        });
     }
-    const directory = resolve("artifacts/test-gltf-animation-bindings"); mkdirSync(directory, {recursive: true});
+    const directory = resolve("artifacts/test-gltf-animation-bindings");
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
-    const loader = new GltfLowerer(new LoweringContext()).lowerLoaderAdapter({pinnedSkeletonPalette: true}).source;
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    const consume = cppSection(loader, "        for(std::size_t index=0;index<animation_bindings.skeletons.size();", "        for(const auto& value:required(source_animation.as_object(),\"nodeNames\")");
-    writeFileSync(file, `#include <bblite/ts_runtime.hpp>
+    const loader = new GltfLowerer(new LoweringContext()).lowerLoaderAdapter({
+        pinnedSkeletonPalette: true,
+    }).source;
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    const consume = cppSection(
+        loader,
+        "        for(std::size_t index=0;index<animation_bindings.skeletons.size();",
+        '        for(const auto& value:required(source_animation.as_object(),"nodeNames")',
+    );
+    writeFileSync(
+        file,
+        `#include <bblite/ts_runtime.hpp>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -126,7 +350,7 @@ namespace ts = bbl::ts;
 namespace js = bbl::js;
 using Matrix = std::array<float, 16>;
 using JsonObject = ts::JsonValue::Object;
-${["const ts::JsonValue& required(", "std::size_t unsigned_value("].map(signature => cppFunction(loader, signature)).join("\n")}
+${["const ts::JsonValue& required(", "std::size_t unsigned_value("].map((signature) => cppFunction(loader, signature)).join("\n")}
 ${gltfAnimationBindingsCpp()}
 ${gltfAnimationPoseStorageCpp().split("template<class ReadFloats,class BindPointer>")[0]}
 ${cppRecord(loader, "struct AnimatedMeshBinding {")}
@@ -189,8 +413,27 @@ ${consume}
     }
 }
 int main() { nlohmann::json cases; std::ifstream("cases.json") >> cases; for (const auto& input : cases) check(input); }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });

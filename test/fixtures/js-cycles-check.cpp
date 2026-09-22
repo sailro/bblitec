@@ -32,12 +32,18 @@ struct Link {
 struct BorrowedTuple {
     Ref<BorrowedTuple> self;
     std::tuple<LinkRef&> borrowed;
-    void gc_trace(const TraceVisitor& visitor) const { visitor(self); visitor(borrowed); }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(self);
+        visitor(borrowed);
+    }
 };
 struct BorrowedList {
     Ref<BorrowedList> self;
     std::initializer_list<LinkRef> borrowed;
-    void gc_trace(const TraceVisitor& visitor) const { visitor(self); visitor(borrowed); }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(self);
+        visitor(borrowed);
+    }
 };
 
 struct NonFunctionUnaryPlus {
@@ -50,7 +56,9 @@ struct ObservableEmptyInvoker {
     ObservableEmptyInvoker() { ++constructions; }
     ~ObservableEmptyInvoker() { ++destructions; }
     using Function = int (*)(std::tuple<int>&);
-    Function operator+() const { return +[](std::tuple<int>& environment) { return ++std::get<0>(environment); }; }
+    Function operator+() const {
+        return +[](std::tuple<int>& environment) { return ++std::get<0>(environment); };
+    }
     int operator()(std::tuple<int>& environment) const { return ++std::get<0>(environment); }
 };
 
@@ -74,7 +82,11 @@ void typed_closure_call_contracts() {
     });
     static_assert(!noexcept(throwing.invoke(throwing.environment)));
     bool caught = false;
-    try { throwing(); } catch (const std::runtime_error& error) { caught = std::string(error.what()) == "closure exception"; }
+    try {
+        throwing();
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "closure exception";
+    }
     assert(caught && std::get<0>(throwing.environment) == 1);
 
     static_assert(std::is_empty_v<ObservableEmptyInvoker>);
@@ -84,7 +96,7 @@ void typed_closure_call_contracts() {
     const int destructions = ObservableEmptyInvoker::destructions;
     assert(observable() == 21 && observable() == 22);
     assert(ObservableEmptyInvoker::constructions == constructions &&
-        ObservableEmptyInvoker::destructions == destructions);
+           ObservableEmptyInvoker::destructions == destructions);
 }
 
 void typed_closure_identity() {
@@ -153,13 +165,55 @@ void typed_closure_replaced_capture_cycles() {
     assert(managed_node_count() == baseline);
 }
 
+void retained_argument_lifetimes() {
+    const auto baseline = managed_node_count();
+    auto source = make_ref<Link>();
+    const auto identity = source.weak_identity();
+    const auto observe = [](LinkRef argument) {
+        assert(argument);
+        assert(collect_cycles() == 0);
+    };
+    for (int iteration = 0; iteration < 1000; ++iteration) {
+        {
+            const auto snapshot = source;
+            observe(snapshot);
+        }
+        observe(source);
+        assert(!identity.expired() && Link::live == 1);
+        auto transient = make_ref<Link>();
+        transient.reset();
+        auto next = make_gc_shared<int>(iteration);
+        assert(*next == iteration && Link::live == 1);
+    }
+    source.reset();
+    assert(identity.expired() && Link::live == 0);
+    assert(managed_node_count() == baseline);
+}
+
 int main() {
     const auto baseline = managed_node_count();
+    const LinkRef absent;
+    assert(!absent && absent.get() == nullptr);
+    for (const bool member : {false, true}) {
+        bool refused = false;
+        try {
+            if (member)
+                (void)absent.operator->();
+            else
+                (void)*absent;
+        } catch (const std::runtime_error& error) {
+            refused = std::string(error.what()) == "Cannot access a nullish object.";
+        }
+        assert(refused);
+    }
     typed_closure_identity();
     typed_closure_call_contracts();
     typed_closure_replaced_capture_cycles();
+    retained_argument_lifetimes();
     assert(managed_node_count() == baseline);
-    { auto plain = make_ref<Link>(); }
+    {
+        auto plain = make_ref<Link>();
+    }
     assert(Link::live == 0 && managed_node_count() == baseline);
     for (int iteration = 0; iteration < 100; ++iteration) {
         auto a = make_ref<Link>();
@@ -254,12 +308,10 @@ int main() {
     {
         bbl::Scene scene;
         auto record = make_ref<Link>();
-        record->callback = make_closure(std::tuple{scene}, [](auto& captures) {
-            std::get<0>(captures).before_render.clear();
-        });
-        scene.before_render.push_back(make_closure(std::tuple{record}, [](auto& captures, float) {
-            std::get<0>(captures)->callback();
-        }));
+        record->callback = make_closure(
+            std::tuple{scene}, [](auto& captures) { std::get<0>(captures).before_render.clear(); });
+        scene.before_render.push_back(make_closure(
+            std::tuple{record}, [](auto& captures, float) { std::get<0>(captures)->callback(); }));
         const auto snapshot = scene.before_render;
         record.reset();
         assert(collect_cycles() == 0);
@@ -271,7 +323,8 @@ int main() {
         bbl::Scene scene;
         scene.before_render.push_back(make_closure(std::tuple{scene}, [](auto&, float) {}));
     }
-    for (int frame = 0; frame < 60; ++frame) collect_at_frame_boundary();
+    for (int frame = 0; frame < 60; ++frame)
+        collect_at_frame_boundary();
     assert(managed_node_count() == baseline);
     {
         auto manager = make_gc_shared<bbl::PropertyAnimationManagerRecord>();

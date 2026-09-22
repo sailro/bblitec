@@ -7,10 +7,15 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-Engine& window_document_engine() { static Engine document; return document; }
+Engine& window_document_engine() {
+    static Engine document;
+    return document;
+}
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
@@ -18,7 +23,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     loop.run([&] { initialize(realm); });
     return 0;
 }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -73,8 +78,10 @@ int main() {
         assert(inner_raw->GetParentNode() == runtime.document_body);
         const auto first = ui_create_element(engine, "style");
         const auto last = ui_create_element(engine, "style");
-        ui_add_style_rule(engine, first, UiStyleSelectorKind::TagChildClass, "direct", {}, "html", false, -1, "height:13px");
-        ui_add_style_rule(engine, last, UiStyleSelectorKind::TagChildClass, "direct", {}, "html", false, -1, "height:17px");
+        ui_add_style_rule(engine, first, UiStyleSelectorKind::TagChildClass, "direct", {}, "html",
+                          false, -1, "height:13px");
+        ui_add_style_rule(engine, last, UiStyleSelectorKind::TagChildClass, "direct", {}, "html",
+                          false, -1, "height:17px");
         ui_append_child(engine, head, first);
         ui_append_child(engine, head, last);
         pal::update_ui_rml_runtime(runtime, 640, 480);

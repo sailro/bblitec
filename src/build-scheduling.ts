@@ -13,17 +13,38 @@ import { readCacheConfiguration } from "./build-stamp.js";
  */
 export function ninjaBuildCostMs(contents: string): number | undefined {
     const lines = contents.split(/\r?\n/);
-    if (!/^# ninja log v[567]$/.test(lines.shift() ?? "") || lines.pop() !== "") return undefined;
-    const latest = new Map<string, { start: number; end: number; hash: string }>();
+    if (!/^# ninja log v[567]$/.test(lines.shift() ?? "") || lines.pop() !== "")
+        return undefined;
+    const latest = new Map<
+        string,
+        { start: number; end: number; hash: string }
+    >();
     for (const line of lines) {
         const fields = line.split("\t");
         if (fields.length !== 5) return undefined;
-        const [startText, endText, mtime, output, hash] = fields as [string, string, string, string, string];
-        if (!/^\d+$/.test(startText) || !/^\d+$/.test(endText) ||
-            !/^-?\d+$/.test(mtime) || !output || !/^[\da-f]{1,16}$/i.test(hash)) return undefined;
+        const [startText, endText, mtime, output, hash] = fields as [
+            string,
+            string,
+            string,
+            string,
+            string,
+        ];
+        if (
+            !/^\d+$/.test(startText) ||
+            !/^\d+$/.test(endText) ||
+            !/^-?\d+$/.test(mtime) ||
+            !output ||
+            !/^[\da-f]{1,16}$/i.test(hash)
+        )
+            return undefined;
         const start = Number(startText);
         const end = Number(endText);
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start) return undefined;
+        if (
+            !Number.isSafeInteger(start) ||
+            !Number.isSafeInteger(end) ||
+            end < start
+        )
+            return undefined;
         latest.set(output, { start, end, hash: hash.toLowerCase() });
     }
     if (latest.size === 0) return undefined;
@@ -40,11 +61,20 @@ export function ninjaBuildCostMs(contents: string): number | undefined {
 }
 
 /** Ignore stale Ninja history when the current or requested generator differs. */
-export function historicalBuildCostMs(buildDirectory: string, generator: string): number | undefined {
+export function historicalBuildCostMs(
+    buildDirectory: string,
+    generator: string,
+): number | undefined {
     if (generator !== "Ninja") return undefined;
     try {
-        if (readCacheConfiguration(buildDirectory)?.CMAKE_GENERATOR !== generator) return undefined;
-        return ninjaBuildCostMs(readFileSync(join(buildDirectory, ".ninja_log"), "utf8"));
+        if (
+            readCacheConfiguration(buildDirectory)?.CMAKE_GENERATOR !==
+            generator
+        )
+            return undefined;
+        return ninjaBuildCostMs(
+            readFileSync(join(buildDirectory, ".ninja_log"), "utf8"),
+        );
     } catch {
         // Missing/unreadable disposable history must not prevent a real build.
         return undefined;
@@ -60,14 +90,24 @@ export function orderByHistoricalCost<T>(
     items: readonly T[],
     costOf: (item: T) => number | undefined,
 ): T[] {
-    return items.map((item, index) => {
-        const value = costOf(item);
-        const cost = value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
-        return { item, index, cost };
-    }).sort((left, right) => {
-        if (left.cost === undefined || right.cost === undefined) {
-            return left.cost === right.cost ? left.index - right.index : left.cost === undefined ? -1 : 1;
-        }
-        return right.cost - left.cost || left.index - right.index;
-    }).map(({ item }) => item);
+    return items
+        .map((item, index) => {
+            const value = costOf(item);
+            const cost =
+                value !== undefined && Number.isFinite(value) && value >= 0
+                    ? value
+                    : undefined;
+            return { item, index, cost };
+        })
+        .sort((left, right) => {
+            if (left.cost === undefined || right.cost === undefined) {
+                return left.cost === right.cost
+                    ? left.index - right.index
+                    : left.cost === undefined
+                      ? -1
+                      : 1;
+            }
+            return right.cost - left.cost || left.index - right.index;
+        })
+        .map(({ item }) => item);
 }

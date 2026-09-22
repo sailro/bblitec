@@ -32,157 +32,82 @@ UiElementHandle ui_create_text_node(Engine& engine, std::string text);
 // An invalid parent denotes the document root.
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text);
 js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id);
-UiElementHandle ui_get_element_by_id(
-    Engine& engine,
-    std::string_view id);
+UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id);
 enum class UiQueryMode { All, First, Closest, Matches };
-js::Array<UiElementHandle> ui_query_elements(Engine& engine, UiElementHandle root,
-    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode = UiQueryMode::All);
-js::Nullable<UiElementHandle> ui_query_element(Engine& engine, UiElementHandle root,
-    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode = UiQueryMode::First);
+js::Array<UiElementHandle>
+ui_query_elements(Engine& engine, UiElementHandle root,
+                  const std::vector<std::vector<UiSelectorStep>>& selectors,
+                  UiQueryMode mode = UiQueryMode::All);
+js::Nullable<UiElementHandle>
+ui_query_element(Engine& engine, UiElementHandle root,
+                 const std::vector<std::vector<UiSelectorStep>>& selectors,
+                 UiQueryMode mode = UiQueryMode::First);
 bool ui_matches_element(Engine& engine, UiElementHandle element,
-    const std::vector<std::vector<UiSelectorStep>>& selectors);
+                        const std::vector<std::vector<UiSelectorStep>>& selectors);
 std::string ui_get_form_value(Engine& engine, UiElementHandle element);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
-UiClientRect ui_get_client_rect(
-    Engine& engine,
-    UiElementHandle element);
-void ui_set_text(
-    Engine& engine,
-    UiElementHandle element,
-    std::string text);
-void ui_set_inner_rml(
-    Engine& engine,
-    UiElementHandle element,
-    std::string markup);
-UiElementHandle ui_query_markup(
-    Engine& engine,
-    UiElementHandle owner,
-    std::uint32_t node_id,
-    std::string_view tag);
-std::string ui_get_attribute(
-    Engine& engine,
-    UiElementHandle element,
-    std::string_view name);
+UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
+void ui_set_text(Engine& engine, UiElementHandle element, std::string text);
+void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup);
+UiElementHandle ui_query_markup(Engine& engine, UiElementHandle owner, std::uint32_t node_id,
+                                std::string_view tag);
+std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name);
-void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name, bool present);
+void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name,
+                              bool present);
 std::string ui_escape_rml(std::string_view text);
-void ui_set_attribute(
-    Engine& engine,
-    UiElementHandle element,
-    std::string name,
-    std::string value);
-void ui_set_style_property(
-    Engine& engine,
-    UiElementHandle element,
-    std::string name,
-    std::string value);
-std::string ui_get_style_property(
-    Engine& engine,
-    UiElementHandle element,
-    std::string_view name);
-std::string ui_remove_style_property(Engine& engine, UiElementHandle element, std::string_view name);
-void ui_toggle_class(
-    Engine& engine,
-    UiElementHandle element,
-    std::string name,
-    bool enabled);
-void ui_add_class_style(
-    Engine& engine,
-    UiElementHandle stylesheet,
-    std::string class_name,
-    std::string style);
-void ui_clear_style_rules(
-    Engine& engine,
-    UiElementHandle stylesheet);
-void ui_add_id_style(
-    Engine& engine,
-    UiElementHandle stylesheet,
-    std::string id,
-    std::string style);
-void ui_add_style_rule(
-    Engine& engine,
-    UiElementHandle stylesheet,
-    UiStyleSelectorKind selector,
-    std::string primary,
-    std::string secondary,
-    std::string tag,
-    bool hover,
-    double max_width,
-    std::string style,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None,
-    bool focus_visible = false,
-    bool active = false,
-    UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {},
-    UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt,
-    UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0);
-void ui_add_host_style_rule(
-    Engine& engine,
-    UiStyleSelectorKind selector,
-    std::string primary,
-    std::string secondary,
-    std::string tag,
-    bool hover,
-    double max_width,
-    std::string style,
-    bool focus_visible = false,
-    bool active = false,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None,
-    UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {},
-    UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt,
-    UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0);
-js::Array<UiElementHandle> ui_query_class(
-    Engine& engine,
-    UiElementHandle root,
-    std::string_view class_name);
-UiElementHandle ui_append_child(
-    Engine& engine,
-    UiElementHandle parent,
-    UiElementHandle child);
-UiElementHandle ui_append_to_root(
-    Engine& engine,
-    UiElementHandle child);
+void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name, std::string value);
+void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
+                           std::string value);
+std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name);
+std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
+                                     std::string_view name);
+void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled);
+void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string class_name,
+                        std::string style);
+void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet);
+void ui_add_id_style(Engine& engine, UiElementHandle stylesheet, std::string id, std::string style);
+void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleSelectorKind selector,
+                       std::string primary, std::string secondary, std::string tag, bool hover,
+                       double max_width, std::string style,
+                       UiScrollbarPart scrollbar = UiScrollbarPart::None,
+                       bool focus_visible = false, bool active = false,
+                       UiMotionPreference motion = UiMotionPreference::Any,
+                       std::vector<UiSelectorStep> sequence = {},
+                       UiGeneratedPart generated = UiGeneratedPart::None,
+                       std::optional<UiGeneratedContent> content = std::nullopt,
+                       UiRangePart range = UiRangePart::None, double container_max_width = -1.0);
+void ui_add_host_style_rule(Engine& engine, UiStyleSelectorKind selector, std::string primary,
+                            std::string secondary, std::string tag, bool hover, double max_width,
+                            std::string style, bool focus_visible = false, bool active = false,
+                            UiScrollbarPart scrollbar = UiScrollbarPart::None,
+                            UiMotionPreference motion = UiMotionPreference::Any,
+                            std::vector<UiSelectorStep> sequence = {},
+                            UiGeneratedPart generated = UiGeneratedPart::None,
+                            std::optional<UiGeneratedContent> content = std::nullopt,
+                            UiRangePart range = UiRangePart::None,
+                            double container_max_width = -1.0);
+js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
+                                          std::string_view class_name);
+UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
+UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child);
 void ui_replace_children(Engine& engine, UiElementHandle parent);
 void ui_remove(Engine& engine, UiElementHandle element);
-void ui_on_click(
-    Engine& engine,
-    UiElementHandle element,
-    std::function<void()> callback);
+void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> callback);
 /** Programmatic HTMLElement.click(), including reached default actions. */
 void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 UiElementHandle ui_active_element(Engine& engine);
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
-void ui_set_download_url(
-    Engine& engine,
-    UiElementHandle element,
-    ObjectUrlHandle url);
-void ui_set_download_name(
-    Engine& engine,
-    UiElementHandle element,
-    std::string name);
+void ui_set_download_url(Engine& engine, UiElementHandle element, ObjectUrlHandle url);
+void ui_set_download_name(Engine& engine, UiElementHandle element, std::string name);
 void ui_set_file_input(Engine& engine, UiElementHandle element);
-void ui_set_file_accept(
-    Engine& engine,
-    UiElementHandle element,
-    std::string accept);
-void ui_on_file_change(
-    Engine& engine,
-    UiElementHandle element,
-    std::function<void()> callback);
+void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string accept);
+void ui_on_file_change(Engine& engine, UiElementHandle element, std::function<void()> callback);
 #endif
-void ui_on_event(
-    Engine& engine,
-    UiElementHandle element,
-    std::string event,
-    std::function<void(const PlatformMouseEvent&)> callback);
+void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
+                 std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
 UiElementHandle ui_primary_canvas(Engine&);
@@ -207,32 +132,15 @@ void ui_canvas_arc(Engine&, UiElementHandle, double, double, double, double, dou
 void ui_canvas_fill(Engine&, UiElementHandle);
 void ui_canvas_stroke(Engine&, UiElementHandle);
 void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
-void ui_canvas_put_image_data(
-    Engine&,
-    UiElementHandle,
-    const js::U8Array&,
-    double,
-    double,
-    double,
-    double);
-void ui_canvas_draw_image(
-    Engine&,
-    UiElementHandle,
-    UiElementHandle,
-    double,
-    double,
-    double,
-    double);
+void ui_canvas_put_image_data(Engine&, UiElementHandle, const js::U8Array&, double, double, double,
+                              double);
+void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double, double,
+                          double);
 void ui_canvas_set_font(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_text_baseline(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_shadow_color(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_shadow_blur(Engine&, UiElementHandle, double);
-void ui_canvas_fill_text(
-    Engine&,
-    UiElementHandle,
-    std::string,
-    double,
-    double);
+void ui_canvas_fill_text(Engine&, UiElementHandle, std::string, double, double);
 
 namespace pal {
 
@@ -309,15 +217,9 @@ struct UiBackdrop {
     std::uint32_t kernel_index_count = 0;
     std::uint32_t composite_index_count = 0;
 
-    std::uint32_t horizontal_index() const {
-        return sample_index + sample_index_count;
-    }
-    std::uint32_t vertical_index() const {
-        return horizontal_index() + kernel_index_count;
-    }
-    std::uint32_t composite_index() const {
-        return vertical_index() + kernel_index_count;
-    }
+    std::uint32_t horizontal_index() const { return sample_index + sample_index_count; }
+    std::uint32_t vertical_index() const { return horizontal_index() + kernel_index_count; }
+    std::uint32_t composite_index() const { return vertical_index() + kernel_index_count; }
 };
 
 /**
@@ -347,45 +249,39 @@ struct UiRenderFrame {
 
 /** SDL swapchain textures cannot be sampled or copied for backdrop effects. */
 inline bool ui_frame_reads_target(const UiRenderFrame& frame) {
-    if (!frame.backdrops.empty()) return true;
-    for (const auto& composite : frame.composites) if (composite.source == 0) return true;
+    if (!frame.backdrops.empty())
+        return true;
+    for (const auto& composite : frame.composites)
+        if (composite.source == 0)
+            return true;
     return false;
 }
 
-inline void append_ui_quad(
-    UiRenderFrame& frame,
-    float left,
-    float top,
-    float right,
-    float bottom,
-    std::uint8_t color) {
-    const std::uint32_t base =
-        static_cast<std::uint32_t>(frame.vertices.size());
-    frame.vertices.insert(
-        frame.vertices.end(),
-        {
-            UiRenderVertex{left, top, color, color, color, 255, 0, 0},
-            UiRenderVertex{right, top, color, color, color, 255, 1, 0},
-            UiRenderVertex{right, bottom, color, color, color, 255, 1, 1},
-            UiRenderVertex{left, bottom, color, color, color, 255, 0, 1},
-        });
-    frame.indices.insert(
-        frame.indices.end(),
-        {
-            base,
-            base + 1,
-            base + 2,
-            base,
-            base + 2,
-            base + 3,
-        });
+inline void append_ui_quad(UiRenderFrame& frame, float left, float top, float right, float bottom,
+                           std::uint8_t color) {
+    const std::uint32_t base = static_cast<std::uint32_t>(frame.vertices.size());
+    frame.vertices.insert(frame.vertices.end(),
+                          {
+                              UiRenderVertex{left, top, color, color, color, 255, 0, 0},
+                              UiRenderVertex{right, top, color, color, color, 255, 1, 0},
+                              UiRenderVertex{right, bottom, color, color, color, 255, 1, 1},
+                              UiRenderVertex{left, bottom, color, color, color, 255, 0, 1},
+                          });
+    frame.indices.insert(frame.indices.end(), {
+                                                  base,
+                                                  base + 1,
+                                                  base + 2,
+                                                  base,
+                                                  base + 2,
+                                                  base + 3,
+                                              });
 }
 
 /** Browser host chrome for a programmatically focused render canvas. */
 inline void append_canvas_focus_outline(UiRenderFrame& frame) {
-    if (frame.width < 2u || frame.height < 2u) return;
-    const std::uint32_t first_index =
-        static_cast<std::uint32_t>(frame.indices.size());
+    if (frame.width < 2u || frame.height < 2u)
+        return;
+    const std::uint32_t first_index = static_cast<std::uint32_t>(frame.indices.size());
     frame.vertices.reserve(frame.vertices.size() + 16u);
     frame.indices.reserve(frame.indices.size() + 24u);
     const float width = static_cast<float>(frame.width);
@@ -394,49 +290,29 @@ inline void append_canvas_focus_outline(UiRenderFrame& frame) {
     append_ui_quad(frame, 0, height - 1, width, height, 16);
     append_ui_quad(frame, 0, 1, 1, height - 1, 16);
     append_ui_quad(frame, width - 1, 1, width, height - 1, 16);
-    frame.draws.push_back(UiRenderDraw{
-        first_index,
-        static_cast<std::uint32_t>(frame.indices.size()) - first_index,
-        0,
-        0,
-        0,
-        frame.width,
-        frame.height,
-        false});
+    frame.draws.push_back(
+        UiRenderDraw{first_index, static_cast<std::uint32_t>(frame.indices.size()) - first_index, 0,
+                     0, 0, frame.width, frame.height, false});
 }
 
-inline bool ui_frame_uses_texture(
-    const UiRenderFrame& frame,
-    std::uint64_t id) {
-    return std::any_of(
-        frame.textures.begin(),
-        frame.textures.end(),
-        [id](const UiRenderTexture& texture) {
-            return texture.id == id;
-        });
+inline bool ui_frame_uses_texture(const UiRenderFrame& frame, std::uint64_t id) {
+    return std::any_of(frame.textures.begin(), frame.textures.end(),
+                       [id](const UiRenderTexture& texture) { return texture.id == id; });
 }
 
 /** Opaque RmlUi projection of an engine's retained UI tree. */
 struct UiRmlRuntime;
 
-UiRmlRuntime* create_ui_rml_runtime(
-    Engine& engine,
-    SDL_Window* window,
-    std::uint32_t width,
-    std::uint32_t height);
+UiRmlRuntime* create_ui_rml_runtime(Engine& engine, SDL_Window* window, std::uint32_t width,
+                                    std::uint32_t height);
 void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept;
 
 /** Returns true when the event should continue to the canvas/scene. */
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event);
-void update_ui_rml_runtime(
-    UiRmlRuntime& runtime,
-    std::uint32_t width,
-    std::uint32_t height);
+void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height);
 /** Record RmlUi output; the active GPU renderer consumes the returned frame. */
-const UiRenderFrame& record_ui_rml_frame(
-    UiRmlRuntime& runtime,
-    std::uint32_t width,
-    std::uint32_t height);
+const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t width,
+                                         std::uint32_t height);
 
 } // namespace pal
 } // namespace bbl

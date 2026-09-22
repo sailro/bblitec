@@ -4,11 +4,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("two-callback Promise.then selects the original outcome and adopts returned promises", t => {
+test("two-callback Promise.then selects the original outcome and adopts returned promises", (t) => {
     const directory = resolve("artifacts/promise-reactions");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -55,13 +58,42 @@ test("two-callback Promise.then selects the original outcome and adopts returned
         synchronous = false;
     `;
     const fileName = join(directory, "entry.ts");
-    const result = compileSource(source, {fileName});
-    assert.throws(() => compileSource(source.replace("() => 29", '() => "different"'), {fileName}), /same admitted result type/);
+    const result = compileSource(source, { fileName });
+    assert.throws(
+        () =>
+            compileSource(source.replace("() => 29", '() => "different"'), {
+                fileName,
+            }),
+        /same admitted result type/,
+    );
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/DBBLITE_WORKERS=1",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });

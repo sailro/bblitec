@@ -80,10 +80,12 @@ function pbrMaterialView(
  * recording rules live here.
  */
 export class SceneMaterialRecorder {
-    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = emissionArray([]);
-    public readonly standardMaterialPlugins: MaterialPluginManifest[][] = emissionArray([]);
-    public readonly standardMaterialPluginInputs:
-        PinnedStandardMaterialInput[][] = emissionArray([]);
+    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] =
+        emissionArray([]);
+    public readonly standardMaterialPlugins: MaterialPluginManifest[][] =
+        emissionArray([]);
+    public readonly standardMaterialPluginInputs: PinnedStandardMaterialInput[][] =
+        emissionArray([]);
     private readonly pluginIndexByKey = new EmissionMap<string, number>();
     private sceneMaterialCount = 0;
 
@@ -121,8 +123,7 @@ export class SceneMaterialRecorder {
         const existing = this.pluginIndexByKey.get(key);
         if (existing !== undefined) {
             material.pluginIndex = existing;
-            const inputs =
-                this.standardMaterialPluginInputs[existing - 1]!;
+            const inputs = this.standardMaterialPluginInputs[existing - 1]!;
             if (!inputs.includes(material)) inputs.push(material);
             return existing;
         }
@@ -147,9 +148,7 @@ export class SceneMaterialRecorder {
         index: number | undefined,
     ): ScenePbrMaterialManifest {
         const material =
-            index === undefined
-                ? undefined
-                : this.scenePbrMaterials[index];
+            index === undefined ? undefined : this.scenePbrMaterials[index];
         if (!material) {
             throw new Error(
                 `${setter} names no scene-code PBR material; only a value ` +
@@ -167,9 +166,7 @@ export class SceneMaterialRecorder {
      * appends in creation order. Returns the new entry's index, which is
      * the view's own compile-time identity.
      */
-    public recordScenePbrNoColorView(
-        sourceIndex: number | undefined,
-    ): number {
+    public recordScenePbrNoColorView(sourceIndex: number | undefined): number {
         const source = this.sceneMaterialForSetter(
             "createPbrNoColorMaterialView",
             sourceIndex,
@@ -198,14 +195,16 @@ export class SceneMaterialRecorder {
     }
 
     public recordScenePbrGammaAlbedo(index: number | undefined): void {
-        this.sceneMaterialForSetter(
-            "setPbrGammaAlbedo",
-            index,
-        ).gammaAlbedo = true;
+        this.sceneMaterialForSetter("setPbrGammaAlbedo", index).gammaAlbedo =
+            true;
     }
 
-    public recordScenePbrShadowOnly(index: number | undefined, options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>): void {
-        this.sceneMaterialForSetter("setShadowOnly", index).shadowOnly = options;
+    public recordScenePbrShadowOnly(
+        index: number | undefined,
+        options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
+    ): void {
+        this.sceneMaterialForSetter("setShadowOnly", index).shadowOnly =
+            options;
     }
 
     public recordScenePbrSheen(
@@ -219,20 +218,15 @@ export class SceneMaterialRecorder {
         clearCoat: ScenePbrClearCoatManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrClearCoat",
-            index,
-        ).clearCoat = clearCoat;
+        this.sceneMaterialForSetter("setPbrClearCoat", index).clearCoat =
+            clearCoat;
     }
 
     public recordScenePbrEmissive(
         color: readonly [number, number, number] | undefined,
         index: number | undefined,
     ): void {
-        const material = this.sceneMaterialForSetter(
-            "setPbrEmissive",
-            index,
-        );
+        const material = this.sceneMaterialForSetter("setPbrEmissive", index);
         material.hasEmissiveColor = true;
         if (color) material.emissiveColor = color;
     }
@@ -241,40 +235,32 @@ export class SceneMaterialRecorder {
         iridescence: ScenePbrIridescenceManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrIridescence",
-            index,
-        ).iridescence = iridescence;
+        this.sceneMaterialForSetter("setPbrIridescence", index).iridescence =
+            iridescence;
     }
 
     public recordScenePbrLightmap(
         lightmap: ScenePbrLightmapManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrLightmap",
-            index,
-        ).lightmap = lightmap;
+        this.sceneMaterialForSetter("setPbrLightmap", index).lightmap =
+            lightmap;
     }
 
     public recordScenePbrSubsurface(
         subsurface: ScenePbrSubsurfaceManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrSubsurface",
-            index,
-        ).subsurface = subsurface;
+        this.sceneMaterialForSetter("setPbrSubsurface", index).subsurface =
+            subsurface;
     }
 
     public recordScenePbrAnisotropy(
         anisotropy: ScenePbrAnisotropyManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrAnisotropy",
-            index,
-        ).anisotropy = anisotropy;
+        this.sceneMaterialForSetter("setPbrAnisotropy", index).anisotropy =
+            anisotropy;
     }
 
     public recordScenePbrMetallicReflectance(
@@ -295,23 +281,23 @@ export class SceneMaterialRecorder {
                 previous?.hasReflectanceTexture === true ||
                 reflectance.hasReflectanceTexture,
             ...(reflectance.hasColor
-                ? (reflectance.color
+                ? reflectance.color
                     ? { color: reflectance.color }
-                    : {})
+                    : {}
                 : previous?.color
-                    ? { color: previous.color }
-                    : {}),
+                  ? { color: previous.color }
+                  : {}),
             ...(reflectance.useOnlyMetallicFromTexture !== undefined
                 ? {
-                    useOnlyMetallicFromTexture:
-                        reflectance.useOnlyMetallicFromTexture,
-                }
+                      useOnlyMetallicFromTexture:
+                          reflectance.useOnlyMetallicFromTexture,
+                  }
                 : previous?.useOnlyMetallicFromTexture !== undefined
-                    ? {
+                  ? {
                         useOnlyMetallicFromTexture:
                             previous.useOnlyMetallicFromTexture,
                     }
-                    : {}),
+                  : {}),
         };
     }
 }

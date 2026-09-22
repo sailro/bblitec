@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
-import {spawnSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {runInNewContext} from "node:vm";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("async methods preserve activation timing, receivers and conditional evaluation",async t=>{
-    const directory=resolve("artifacts/async-methods");mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const body=`(async()=>{
+test("async methods preserve activation timing, receivers and conditional evaluation", async (t) => {
+    const directory = resolve("artifacts/async-methods");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const body = `(async()=>{
         const order:string[]=[];
         function create(initial:number){return {
             value:initial,
@@ -48,20 +52,70 @@ test("async methods preserve activation timing, receivers and conditional evalua
         class Counter{value=0;async add(left:number,right:number){await Promise.resolve();this.value+=left+right;return this.value;}}
         const counter=new Counter();let input=3;const result=counter.add(input,input++);input=100;
         if(await result!==6||counter.value!==6)throw new Error("class argument snapshots");
+        class StoredCounter {
+            constructor(public value:number) {}
+            read():number {return this.value;}
+        }
+        const storedCounters:StoredCounter[]=[new StoredCounter(7)];
+        async function readStored():Promise<number> {
+            const value=storedCounters[0]!.read();
+            await Promise.resolve();
+            return value;
+        }
+        const earlier=readStored(),later=readStored();
+        if(await earlier!==7||await later!==7)
+            throw new Error("overlapping computed receiver lifetimes");
         globalThis.close();
     })();`;
-    let closed=false;
-    await runInNewContext(ts.transpile(body,{target:ts.ScriptTarget.ES2022}),{close:()=>{closed=true;}});
-    assert.equal(closed,true,"JavaScript oracle completed");
-    const prefix='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
-    const result=compileSource(prefix+body,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,`#define main generated_main\n${result.cpp}\n#undef main\n`+
-        `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();`+
-        `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("async method ownership leak");return result;}\n`);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    const execution=spawnSync(exe,{encoding:"utf8",timeout:10000});
-    assert.equal(execution.stdout,"");assert.equal(execution.stderr,"");assert.ifError(execution.error);assert.equal(execution.status,0);
+    let closed = false;
+    await runInNewContext(
+        ts.transpile(body, { target: ts.ScriptTarget.ES2022 }),
+        {
+            close: () => {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true, "JavaScript oracle completed");
+    const prefix =
+        'const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
+    const result = compileSource(prefix + body, {
+        fileName: join(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#define main generated_main\n${result.cpp}\n#undef main\n` +
+            `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
+            `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("async method ownership leak");return result;}\n`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    const execution = spawnSync(exe, {
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+    });
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
+    assert.ifError(execution.error);
+    assert.equal(execution.status, 0);
 });

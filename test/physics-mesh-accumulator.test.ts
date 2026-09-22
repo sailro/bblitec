@@ -10,84 +10,206 @@ import { lowerPhysicsMesh } from "../src/lowering/physics-mesh-lowerer.js";
 import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const store = new UpstreamSourceStore();
 const module = "src/physics/havok.ts";
 test("physics mesh source contracts reject traversal, defaults, buffer and index drift", () => {
     const source = store.getSource(module);
     for (const [before, after] of [
-        ["this._collectIndices = collectIndices;", "this._collectIndices = true;"],
-        ["private readonly _vertices: number[] = [];", "private readonly _vertices: number[] = [1];"],
-        ["invertMat4(root.worldMatrix as Mat4)", "invertMat4(root.localMatrix as Mat4)"],
-        ["multiplyMat4(rootScale, invRoot)", "multiplyMat4(invRoot, rootScale)"],
+        [
+            "this._collectIndices = collectIndices;",
+            "this._collectIndices = true;",
+        ],
+        [
+            "private readonly _vertices: number[] = [];",
+            "private readonly _vertices: number[] = [1];",
+        ],
+        [
+            "invertMat4(root.worldMatrix as Mat4)",
+            "invertMat4(root.localMatrix as Mat4)",
+        ],
+        [
+            "multiplyMat4(rootScale, invRoot)",
+            "multiplyMat4(invRoot, rootScale)",
+        ],
         ["if (includeChildren)", "if (!includeChildren)"],
-        ["this._addNodeMesh(node, rootToBody);", "this._addNodeMesh(node, rootToBody); this._vertices.push(1);"],
-        ["multiplyMat4(rootToBody, node.worldMatrix as Mat4)", "multiplyMat4(rootToBody, node.localMatrix as Mat4)"],
+        [
+            "this._addNodeMesh(node, rootToBody);",
+            "this._addNodeMesh(node, rootToBody); this._vertices.push(1);",
+        ],
+        [
+            "multiplyMat4(rootToBody, node.worldMatrix as Mat4)",
+            "multiplyMat4(rootToBody, node.localMatrix as Mat4)",
+        ],
         ["this._vertices.length / 3", "this._vertices.length / 2"],
         ["this._indices.push(c, b, a)", "this._indices.push(a, b, c)"],
-        ["new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)", "new Float64Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)"],
-        ["new Int32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices)", "new Int16Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices)"],
+        [
+            "new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)",
+            "new Float64Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)",
+        ],
+        [
+            "new Int32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices)",
+            "new Int16Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices)",
+        ],
         ["hknp._free(buffer.offset);", "hknp._free(buffer.numObjects);"],
     ]) {
         assert(source.includes(before!));
         class Changed extends LoweringContext {
             override sourceFile(path: string): ts.SourceFile {
-                return path === module ? ts.createSourceFile(path, source.replace(before!, after!), ts.ScriptTarget.Latest, true) : super.sourceFile(path);
+                return path === module
+                    ? ts.createSourceFile(
+                          path,
+                          source.replace(before!, after!),
+                          ts.ScriptTarget.Latest,
+                          true,
+                      )
+                    : super.sourceFile(path);
             }
         }
-        assert.throws(() => lowerPhysicsMesh(new Changed(store)), /changed|exactly|Expected/);
+        assert.throws(
+            () => lowerPhysicsMesh(new Changed(store)),
+            /changed|exactly|Expected/,
+        );
     }
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("physics mesh PAL arrays match pinned mixed hierarchy, traversal order and float32 boundaries", { skip: !tools }, async () => {
-    interface Node {
-        worldMatrix: Float32Array;
-        scaling: { x: number; y: number; z: number };
-        children: Node[];
-        _gpu?: object;
-        _cpuPositions?: Float32Array;
-        _cpuIndices?: Uint32Array;
-    }
-    interface Heap { HEAPU8: Uint8Array; _malloc(bytes: number): number }
-    interface BufferSpan { offset: number; numObjects: number }
-    interface Accumulator {
-        addNodeMeshes(node: Node, includeChildren: boolean): void;
-        getVertices(heap: Heap): BufferSpan;
-        getTriangles(heap: Heap): BufferSpan;
-    }
-    const { MeshAccumulator } = await importPinnedModuleWithExports<{
-        MeshAccumulator: new (collectIndices: boolean) => Accumulator;
-    }>("physics/havok.js", ["MeshAccumulator"]);
-    const matrix = (sx: number, sy: number, sz: number, angle: number, x: number, y: number, z: number) => new Float32Array([
-        Math.cos(angle) * sx, Math.sin(angle) * sx, 0, 0, -Math.sin(angle) * sy, Math.cos(angle) * sy, 0, 0,
-        0, 0, sz, 0, x, y, z, 1,
-    ]);
-    const worlds = [matrix(2, -3, 4, .43, 12.13, -7.27, 4.29), matrix(1, 2, 3, -.37, 8.17, 6.21, -3.33),
-        matrix(-1, 1, 2, .91, -9.11, .71, 2.17), matrix(2, .5, -3, -.19, 5.31, -2.73, 9.97)];
-    const vertices = new Float32Array([.17, .29, .43, 1.13, .59, -.61, .79, 1.83, .97]);
-    const indices = new Uint32Array([0, 1, 2]);
-    const root: Node = { worldMatrix: worlds[0]!, scaling: { x: 2, y: -3, z: 4 }, children: [] };
-    const meshes = worlds.slice(1).map(worldMatrix => ({ _gpu: {}, _cpuPositions: vertices, _cpuIndices: indices, worldMatrix, children: [] as Node[], scaling: { x: 1, y: 1, z: 1 } }));
-    // Traversal membership deliberately differs from transform ancestry.
-    const branch = { worldMatrix: matrix(1, 1, 1, 0, 100, 200, 300), scaling: { x: 1, y: 1, z: 1 }, children: [meshes[1]!] };
-    root.children = [meshes[0]!, branch]; meshes[0]!.children.push(meshes[2]!);
-    const expected: { positions: number[]; indices: number[] }[] = [];
-    for (const [node, children, collect] of [[root, true, true], [root, true, false], [meshes[0]!, false, true], [meshes[0]!, true, true]] as const) {
-        const accumulator = new MeshAccumulator(collect);
-        accumulator.addNodeMeshes(node, children);
-        const HEAPU8 = new Uint8Array(4096); let cursor = 0;
-        const hknp = { HEAPU8, _malloc(bytes: number) { const offset = cursor; cursor += bytes; return offset; } };
-        const p = accumulator.getVertices(hknp), i = accumulator.getTriangles(hknp);
-        expected.push({ positions: [...new Float32Array(HEAPU8.buffer, p.offset, p.numObjects)], indices: [...new Int32Array(HEAPU8.buffer, i.offset, i.numObjects)] });
-    }
-    const output = resolve("artifacts/physics-mesh-accumulator"); mkdirSync(output, { recursive: true });
-    emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world"]);
-    const lowered = lowerPhysicsMesh(new LoweringContext());
-    const cppArray = (values: Iterable<number>) => `{${[...values].map(float32Literal).join(",")}}`;
-    const path = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(path, `#include <bblite/upstream/physics.hpp>
+test(
+    "physics mesh PAL arrays match pinned mixed hierarchy, traversal order and float32 boundaries",
+    { skip: !tools },
+    async () => {
+        interface Node {
+            worldMatrix: Float32Array;
+            scaling: { x: number; y: number; z: number };
+            children: Node[];
+            _gpu?: object;
+            _cpuPositions?: Float32Array;
+            _cpuIndices?: Uint32Array;
+        }
+        interface Heap {
+            HEAPU8: Uint8Array;
+            _malloc(bytes: number): number;
+        }
+        interface BufferSpan {
+            offset: number;
+            numObjects: number;
+        }
+        interface Accumulator {
+            addNodeMeshes(node: Node, includeChildren: boolean): void;
+            getVertices(heap: Heap): BufferSpan;
+            getTriangles(heap: Heap): BufferSpan;
+        }
+        const { MeshAccumulator } = await importPinnedModuleWithExports<{
+            MeshAccumulator: new (collectIndices: boolean) => Accumulator;
+        }>("physics/havok.js", ["MeshAccumulator"]);
+        const matrix = (
+            sx: number,
+            sy: number,
+            sz: number,
+            angle: number,
+            x: number,
+            y: number,
+            z: number,
+        ) =>
+            new Float32Array([
+                Math.cos(angle) * sx,
+                Math.sin(angle) * sx,
+                0,
+                0,
+                -Math.sin(angle) * sy,
+                Math.cos(angle) * sy,
+                0,
+                0,
+                0,
+                0,
+                sz,
+                0,
+                x,
+                y,
+                z,
+                1,
+            ]);
+        const worlds = [
+            matrix(2, -3, 4, 0.43, 12.13, -7.27, 4.29),
+            matrix(1, 2, 3, -0.37, 8.17, 6.21, -3.33),
+            matrix(-1, 1, 2, 0.91, -9.11, 0.71, 2.17),
+            matrix(2, 0.5, -3, -0.19, 5.31, -2.73, 9.97),
+        ];
+        const vertices = new Float32Array([
+            0.17, 0.29, 0.43, 1.13, 0.59, -0.61, 0.79, 1.83, 0.97,
+        ]);
+        const indices = new Uint32Array([0, 1, 2]);
+        const root: Node = {
+            worldMatrix: worlds[0]!,
+            scaling: { x: 2, y: -3, z: 4 },
+            children: [],
+        };
+        const meshes = worlds.slice(1).map((worldMatrix) => ({
+            _gpu: {},
+            _cpuPositions: vertices,
+            _cpuIndices: indices,
+            worldMatrix,
+            children: [] as Node[],
+            scaling: { x: 1, y: 1, z: 1 },
+        }));
+        // Traversal membership deliberately differs from transform ancestry.
+        const branch = {
+            worldMatrix: matrix(1, 1, 1, 0, 100, 200, 300),
+            scaling: { x: 1, y: 1, z: 1 },
+            children: [meshes[1]!],
+        };
+        root.children = [meshes[0]!, branch];
+        meshes[0]!.children.push(meshes[2]!);
+        const expected: { positions: number[]; indices: number[] }[] = [];
+        for (const [node, children, collect] of [
+            [root, true, true],
+            [root, true, false],
+            [meshes[0]!, false, true],
+            [meshes[0]!, true, true],
+        ] as const) {
+            const accumulator = new MeshAccumulator(collect);
+            accumulator.addNodeMeshes(node, children);
+            const HEAPU8 = new Uint8Array(4096);
+            let cursor = 0;
+            const hknp = {
+                HEAPU8,
+                _malloc(bytes: number) {
+                    const offset = cursor;
+                    cursor += bytes;
+                    return offset;
+                },
+            };
+            const p = accumulator.getVertices(hknp),
+                i = accumulator.getTriangles(hknp);
+            expected.push({
+                positions: [
+                    ...new Float32Array(HEAPU8.buffer, p.offset, p.numObjects),
+                ],
+                indices: [
+                    ...new Int32Array(HEAPU8.buffer, i.offset, i.numObjects),
+                ],
+            });
+        }
+        const output = resolve("artifacts/physics-mesh-accumulator");
+        mkdirSync(output, { recursive: true });
+        emitUpstreamGenerated(output, [
+            "core",
+            "camera:free",
+            "renderer:scene",
+            "physics:world",
+        ]);
+        const lowered = lowerPhysicsMesh(new LoweringContext());
+        const cppArray = (values: Iterable<number>) =>
+            `{${[...values].map(float32Literal).join(",")}}`;
+        const path = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            path,
+            `#include <bblite/upstream/physics.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <cassert>
 #include <iostream>
@@ -136,10 +258,35 @@ int main() {
     engine.geometries[0].indices.clear();refuse([&]{run(physics_node(MeshHandle{0}),false,true);},"without triangle");
     engine.geometries[0].vertex_space=VertexSpace::world;refuse([&]{run(physics_node(MeshHandle{0}),false,false);},"source-local geometry");
 }
-`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${output}\\`, `/Fe:${executable}`,
-        "/I", "native/include", "/I", join(output, "upstream/include"), path]);
-    const actual = execFileSync(executable, { encoding: "utf8" }).trim().split("\n").map(line => JSON.parse(line));
-    assert.deepEqual(actual, expected);
-    writeFileSync(join(output, "report.json"), JSON.stringify({ cases: expected.length, maximumError: 0, expected, actual }, null, 2));
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            join(output, "upstream/include"),
+            path,
+        ]);
+        const actual = execFileSync(executable, { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .map((line): unknown => JSON.parse(line));
+        assert.deepEqual(actual, expected);
+        writeFileSync(
+            join(output, "report.json"),
+            JSON.stringify(
+                { cases: expected.length, maximumError: 0, expected, actual },
+                null,
+                2,
+            ),
+        );
+    },
+);

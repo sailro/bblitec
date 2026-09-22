@@ -4,7 +4,7 @@
 
 namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl::pal;
@@ -61,7 +61,8 @@ int main() {
         assert(initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
         assert(acquire_run_window(options, flags));
         throw std::runtime_error("simulated device initialization failure");
-    } catch (const std::runtime_error&) {}
+    } catch (const std::runtime_error&) {
+    }
     assert(!active_window_run && SDL_WasInit(SDL_INIT_VIDEO) == 0);
     // Direct backend entry points retain their independent cleanup behavior.
     assert(initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS));

@@ -17,9 +17,9 @@ namespace bbl::pal {
 
 inline bool runtime_trace_enabled() {
     static const bool enabled = [] {
-        const std::string text =
-            environment_variable("BBLITE_RUNTIME_TRACE");
-        if (text.empty()) return false;
+        const std::string text = environment_variable("BBLITE_RUNTIME_TRACE");
+        if (text.empty())
+            return false;
         return text != "0" && text != "false" && text != "off";
     }();
     return enabled;
@@ -27,25 +27,20 @@ inline bool runtime_trace_enabled() {
 
 inline long runtime_trace_interval() {
     static const long interval = [] {
-        const std::string text =
-            environment_variable("BBLITE_RUNTIME_TRACE_INTERVAL");
-        if (text.empty()) return 60L;
+        const std::string text = environment_variable("BBLITE_RUNTIME_TRACE_INTERVAL");
+        if (text.empty())
+            return 60L;
         const long parsed = std::strtol(text.c_str(), nullptr, 10);
         return std::max(1L, parsed);
     }();
     return interval;
 }
 
-inline void trace_keyboard_event(
-    std::string_view code,
-    bool down,
-    bool repeat) {
-    if (!runtime_trace_enabled()) return;
-    std::cerr
-        << "[bblite trace] input keyboard code=" << code
-        << " state=" << (down ? "down" : "up")
-        << " repeat=" << (repeat ? 1 : 0)
-        << '\n';
+inline void trace_keyboard_event(std::string_view code, bool down, bool repeat) {
+    if (!runtime_trace_enabled())
+        return;
+    std::cerr << "[bblite trace] input keyboard code=" << code
+              << " state=" << (down ? "down" : "up") << " repeat=" << (repeat ? 1 : 0) << '\n';
 }
 
 struct CameraTraceState {
@@ -56,34 +51,25 @@ struct CameraTraceState {
     Vec3d target{};
 };
 
-inline void trace_camera_state(
-    const CameraRecord& camera,
-    CameraTraceState& state,
-    long frame) {
-    if (!runtime_trace_enabled()) return;
+inline void trace_camera_state(const CameraRecord& camera, CameraTraceState& state, long frame) {
+    if (!runtime_trace_enabled())
+        return;
     constexpr double epsilon = 1e-7;
-    const bool changed =
-        !state.initialized ||
-        std::abs(camera.alpha - state.alpha) > epsilon ||
-        std::abs(camera.beta - state.beta) > epsilon ||
-        std::abs(camera.radius - state.radius) > epsilon ||
-        std::abs(camera.target.x - state.target.x) > epsilon ||
-        std::abs(camera.target.y - state.target.y) > epsilon ||
-        std::abs(camera.target.z - state.target.z) > epsilon;
-    if (!changed) return;
-    std::cerr
-        << "[bblite trace] camera frame=" << frame
-        << " kind="
-        << (camera.kind == CameraKind::free
-                ? "free"
-                : camera.kind == CameraKind::geospatial
-                      ? "geospatial"
-                      : "arc-rotate")
-        << " alpha=" << camera.alpha
-        << " beta=" << camera.beta
-        << " radius=" << camera.radius
-        << " target=(" << camera.target.x << ','
-        << camera.target.y << ',' << camera.target.z << ")\n";
+    const bool changed = !state.initialized || std::abs(camera.alpha - state.alpha) > epsilon ||
+                         std::abs(camera.beta - state.beta) > epsilon ||
+                         std::abs(camera.radius - state.radius) > epsilon ||
+                         std::abs(camera.target.x - state.target.x) > epsilon ||
+                         std::abs(camera.target.y - state.target.y) > epsilon ||
+                         std::abs(camera.target.z - state.target.z) > epsilon;
+    if (!changed)
+        return;
+    std::cerr << "[bblite trace] camera frame=" << frame << " kind="
+              << (camera.kind == CameraKind::free         ? "free"
+                  : camera.kind == CameraKind::geospatial ? "geospatial"
+                                                          : "arc-rotate")
+              << " alpha=" << camera.alpha << " beta=" << camera.beta << " radius=" << camera.radius
+              << " target=(" << camera.target.x << ',' << camera.target.y << ',' << camera.target.z
+              << ")\n";
     state.initialized = true;
     state.alpha = camera.alpha;
     state.beta = camera.beta;
@@ -91,31 +77,22 @@ inline void trace_camera_state(
     state.target = camera.target;
 }
 
-inline void trace_scene_topology(
-    const Scene& scene,
-    const Engine& engine,
-    std::size_t previous_items,
-    std::size_t current_items,
-    std::size_t shader_items,
-    std::size_t shader_geometry_cache,
-    std::size_t shader_material_cache,
-    long frame) {
-    if (!runtime_trace_enabled()) return;
-    std::cerr
-        << "[bblite trace] topology frame=" << frame
-        << " version=" << scene.render_topology_version
-        << " scene-meshes=" << scene.meshes.size()
-        << " render-items=" << previous_items << "->" << current_items
-        << " shader-items=" << shader_items
-        << " shader-geometries=" << shader_geometry_cache
-        << " shader-materials=" << shader_material_cache;
+inline void trace_scene_topology(const Scene& scene, const Engine& engine,
+                                 std::size_t previous_items, std::size_t current_items,
+                                 std::size_t shader_items, std::size_t shader_geometry_cache,
+                                 std::size_t shader_material_cache, long frame) {
+    if (!runtime_trace_enabled())
+        return;
+    std::cerr << "[bblite trace] topology frame=" << frame
+              << " version=" << scene.render_topology_version
+              << " scene-meshes=" << scene.meshes.size() << " render-items=" << previous_items
+              << "->" << current_items << " shader-items=" << shader_items
+              << " shader-geometries=" << shader_geometry_cache
+              << " shader-materials=" << shader_material_cache;
     if (!scene.meshes.empty()) {
         const MeshHandle handle = scene.meshes.back();
         if (handle.value < engine.meshes.size()) {
-            std::cerr
-                << " last-mesh=\""
-                << handle_at(engine.meshes, handle).name
-                << '\"';
+            std::cerr << " last-mesh=\"" << handle_at(engine.meshes, handle).name << '\"';
         }
     }
     std::cerr << '\n';
@@ -132,55 +109,46 @@ inline void trace_scene_topology(
  * on SDL_GPU and Dawn. The first few frames and then one frame per second are
  * enough to show whether callbacks are advancing without flooding stderr.
  */
-inline void trace_dynamic_frame(
-    const Engine& engine,
-    double delta_ms,
-    long frame) {
-    if (!runtime_trace_enabled()) return;
-    if (
-        frame > 5 &&
-        frame % runtime_trace_interval() != 0) return;
+inline void trace_dynamic_frame(const Engine& engine, double delta_ms, long frame) {
+    if (!runtime_trace_enabled())
+        return;
+    if (frame > 5 && frame % runtime_trace_interval() != 0)
+        return;
 
-    std::cerr
-        << "[bblite trace] dynamic frame=" << frame
-        << " delta-ms=" << delta_ms;
+    std::cerr << "[bblite trace] dynamic frame=" << frame << " delta-ms=" << delta_ms;
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-    std::cerr
-        << " billboard-systems=" << engine.billboard_systems.size();
-    for (std::size_t index = 0;
-         index < engine.billboard_systems.size();
-         ++index) {
-        const BillboardSystemRecord& system =
-            engine.billboard_systems[index];
-        const std::size_t active = std::min(
-            system.instance_data.size(),
-            static_cast<std::size_t>(system.count) *
-                system.instance_floats_per_sprite);
+    std::cerr << " billboard-systems=" << engine.billboard_systems.size();
+    for (std::size_t index = 0; index < engine.billboard_systems.size(); ++index) {
+        const BillboardSystemRecord& system = engine.billboard_systems[index];
+        const std::size_t active =
+            std::min(system.instance_data.size(),
+                     static_cast<std::size_t>(system.count) * system.instance_floats_per_sprite);
         double checksum = 0.0;
         for (std::size_t lane = 0; lane < active; ++lane) {
             checksum += static_cast<double>(system.instance_data[lane]) *
-                static_cast<double>((lane % 17u) + 1u);
+                        static_cast<double>((lane % 17u) + 1u);
         }
-        std::cerr
-            << " system[" << index << "]={count=" << system.count
-            << ",instance-version=" << system.instance_version
-            << ",checksum=" << checksum << '}';
+        std::cerr << " system[" << index << "]={count=" << system.count
+                  << ",instance-version=" << system.instance_version << ",checksum=" << checksum
+                  << '}';
     }
 #else
     std::cerr << " billboard-systems=0";
 #endif
     for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
         const auto& buffer = engine.storage_buffers[index];
-        if (buffer.disposed) continue;
+        if (buffer.disposed)
+            continue;
         std::cerr << " storage[" << index << "]={label=" << buffer.label
-            << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
+                  << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
     }
 #if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     for (const auto& drag : engine.edit_gizmos) {
-        if (!drag.dragging || drag.attached_node.value >= engine.meshes.size()) continue;
+        if (!drag.dragging || drag.attached_node.value >= engine.meshes.size())
+            continue;
         const auto& node = handle_at(engine.meshes, drag.attached_node);
-        std::cerr << " drag={node=" << node.name << ",position=("
-            << node.position.x << ',' << node.position.y << ',' << node.position.z << ")}";
+        std::cerr << " drag={node=" << node.name << ",position=(" << node.position.x << ','
+                  << node.position.y << ',' << node.position.z << ")}";
     }
 #endif
     std::cerr << '\n';

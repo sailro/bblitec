@@ -1,3 +1,4 @@
+import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,15 +14,29 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
-import { composeDefaultTextPipelines, textPipelineHeader } from "../src/pinned-text-pipeline-cpp.js";
+import {
+    composeDefaultTextPipelines,
+    textPipelineHeader,
+} from "../src/pinned-text-pipeline-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const directory = resolve("artifacts/test-text-entities");
 mkdirSync(directory, { recursive: true });
 const fileName = resolve(directory, "source.ts");
-writeFileSync(resolve(directory, "Roboto-Regular.ttf"), readAssetBytesSync(resolveBundledAsset("/fonts/Roboto-Regular.ttf"), fileName));
-const source = (body: string) => `import { createEngine,loadFont,createDefaultTextData,createTextRenderable,
+writeFileSync(
+    resolve(directory, "Roboto-Regular.ttf"),
+    readAssetBytesSync(
+        resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+        fileName,
+    ),
+);
+const source = (
+    body: string,
+) => `import { createEngine,loadFont,createDefaultTextData,createTextRenderable,
     disposeTextRenderable,disposeDefaultTextData,addTextRenderable,createSceneContext,setAlphaToCoverage,getAlphaToCoverage,
     createFreeCamera,attachFreeControl,onBeforeRender,registerScene,disposeScene,unregisterScene,rebuildSceneRenderables,
     createTextLayer,createTextRenderer,registerTextRenderer,updateTextData,createStandardMaterial,
@@ -32,7 +47,10 @@ const setup = `const data=createDefaultTextData(font,18,"Hi");const r=createText
 
 test("text entity aliases, helpers, containers and escaped callbacks preserve native identity and setter order", async (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable"); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable");
+        return;
+    }
     const body = `${setup}
         const other=createTextRenderable(data);
         const dataAlias=data;
@@ -99,35 +117,98 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
         disposeDefaultTextData(data);
         if(r._data!==dataAlias||data.width!==separate.width)throw new Error("data disposal identity");
     `;
-    const { createFontFromBuffer } = await importPinnedModule<{createFontFromBuffer(bytes:ArrayBuffer):unknown}>("text/font.js");
-    const textData = await importPinnedModule<Record<string, unknown>>("text/default-text-data.js");
-    const renderable = await importPinnedModule<Record<string, unknown>>("text/text-renderable.js");
-    const coverage = await importPinnedModule<Record<string, unknown>>("render/alpha-to-coverage.js");
-    const standalone = await importPinnedModule<Record<string, unknown>>("text/text-renderer.js");
-    const font = createFontFromBuffer(Uint8Array.from(readAssetBytesSync(resolveBundledAsset("/fonts/Roboto-Regular.ttf"), fileName)).buffer);
-    const js = ts.transpileModule(source(body).replace(/^import[\s\S]*?from "@babylonjs\/lite";/, "") + "\nreturn main();", {
-        compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-    await new Function("createEngine", "loadFont", "createDefaultTextData", "createTextRenderable", "disposeTextRenderable", "disposeDefaultTextData", "setAlphaToCoverage", "getAlphaToCoverage", "createTextLayer", js)(
-        async () => ({}), async () => font, textData.createDefaultTextData, renderable.createTextRenderable,
-        renderable.disposeTextRenderable, textData.disposeDefaultTextData, coverage.setAlphaToCoverage, coverage.getAlphaToCoverage, standalone.createTextLayer);
+    const { createFontFromBuffer } = await importPinnedModule<{
+        createFontFromBuffer(this: void, bytes: ArrayBuffer): unknown;
+    }>("text/font.js");
+    const textData = await importPinnedModule<Record<string, unknown>>(
+        "text/default-text-data.js",
+    );
+    const renderable = await importPinnedModule<Record<string, unknown>>(
+        "text/text-renderable.js",
+    );
+    const coverage = await importPinnedModule<Record<string, unknown>>(
+        "render/alpha-to-coverage.js",
+    );
+    const standalone = await importPinnedModule<Record<string, unknown>>(
+        "text/text-renderer.js",
+    );
+    const font = createFontFromBuffer(
+        Uint8Array.from(
+            readAssetBytesSync(
+                resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+                fileName,
+            ),
+        ).buffer,
+    );
+    const js = ts.transpileModule(
+        source(body).replace(/^import[\s\S]*?from "@babylonjs\/lite";/, "") +
+            "\nreturn main();",
+        {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        },
+    ).outputText;
+    await createJavaScriptFunction(
+        "createEngine",
+        "loadFont",
+        "createDefaultTextData",
+        "createTextRenderable",
+        "disposeTextRenderable",
+        "disposeDefaultTextData",
+        "setAlphaToCoverage",
+        "getAlphaToCoverage",
+        "createTextLayer",
+        js,
+    )(
+        async () => ({}),
+        async () => font,
+        textData.createDefaultTextData,
+        renderable.createTextRenderable,
+        renderable.disposeTextRenderable,
+        textData.disposeDefaultTextData,
+        coverage.setAlphaToCoverage,
+        coverage.getAlphaToCoverage,
+        standalone.createTextLayer,
+    );
     const result = compile(body);
     writeFileSync(resolve(directory, "program.hpp"), result.cpp);
     const include = resolve(directory, "bblite");
     mkdirSync(resolve(include, "upstream"), { recursive: true });
     const lowerer = new TextLowerer(new LoweringContext());
     writeFileSync(resolve(include, "upstream_text.hpp"), lowerer.header());
-    writeFileSync(resolve(include, "upstream_text_gpu.hpp"), new TextGpuLowerer(new LoweringContext()).header());
-    writeFileSync(resolve(include, "upstream_text_renderer.hpp"), new TextRendererLowerer(new LoweringContext()).header());
-    writeFileSync(resolve(include, "upstream/text_data.hpp"), "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl {TextData create_compiled_text_data(std::uint32_t);}\n");
+    writeFileSync(
+        resolve(include, "upstream_text_gpu.hpp"),
+        new TextGpuLowerer(new LoweringContext()).header(),
+    );
+    writeFileSync(
+        resolve(include, "upstream_text_renderer.hpp"),
+        new TextRendererLowerer(new LoweringContext()).header(),
+    );
+    writeFileSync(
+        resolve(include, "upstream/text_data.hpp"),
+        "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl {TextData create_compiled_text_data(std::uint32_t);}\n",
+    );
     const pipelines = await composeDefaultTextPipelines();
-    writeFileSync(resolve(include, "upstream_text_pipeline.hpp"), textPipelineHeader(pipelines));
+    writeFileSync(
+        resolve(include, "upstream_text_pipeline.hpp"),
+        textPipelineHeader(pipelines),
+    );
     for (const asset of result.manifest.assets) {
         const data = result.assetPayloads?.get(asset.source);
-        if (data?.startsWith("data:")) writeFileSync(resolve(directory, asset.output), parseDataUrl(data)!.bytes);
+        if (data?.startsWith("data:"))
+            writeFileSync(
+                resolve(directory, asset.output),
+                parseDataUrl(data)!.bytes,
+            );
     }
-    const constructor = result.manifest.textData!.map((row) => `case ${row.id}:return ${lowerer.dataExpression(row, (blob) => `read_bytes(${stringLiteral(blob.assetOutput)})`)};`).join("\n");
-    writeFileSync(resolve(directory, "check.cpp"), `#include <fstream>
+    const constructor = result.manifest
+        .textData!.map(
+            (row) =>
+                `case ${row.id}:return ${lowerer.dataExpression(row, (blob) => `read_bytes(${stringLiteral(blob.assetOutput)})`)};`,
+        )
+        .join("\n");
+    writeFileSync(
+        resolve(directory, "check.cpp"),
+        `#include <fstream>
 #include <iterator>
 #include <bblite/upstream_text_pipeline.hpp>
 #define main generated_main
@@ -137,10 +218,24 @@ static std::vector<std::uint8_t> read_bytes(const char* path) {std::ifstream fil
 namespace bbl {Engine create_engine(EngineOptions){return {};}
 TextData create_compiled_text_data(std::uint32_t index){switch(index){${constructor}default:throw std::out_of_range("data");}}}
 int main(){if(bbl::upstream::text_pipeline_rows.size()!=5)return 2;return generated_main();}
-`);
+`,
+    );
     const executable = resolve(directory, "check.exe");
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/fp:strict", "/MD", "/O2",
-        `/I${resolve("native/include")}`, `/I${directory}`, resolve(directory, "check.cpp"), `/Fo${resolve(directory, "check.obj")}`, `/Fe${executable}`]);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/fp:strict",
+        "/MD",
+        "/O2",
+        `/I${resolve("native/include")}`,
+        `/I${directory}`,
+        resolve(directory, "check.cpp"),
+        `/Fo${resolve(directory, "check.obj")}`,
+        `/Fe${executable}`,
+    ]);
     execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });
 
@@ -149,43 +244,122 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
         [`${setup} r.position={x:1,y:2,z:3};`, /read-only|replacement/],
         [`${setup} const p=r.position;p["x"]=2;`, /Computed text property/],
         [`${setup} Object.assign(r,{opacity:.5});`, /Reflective text property/],
-        [`${setup} const p=Math.random()>.5?r.position:r.scaling;p.x=2;`, /Conditional text transform/],
+        [
+            `${setup} const p=Math.random()>.5?r.position:r.scaling;p.x=2;`,
+            /Conditional text transform/,
+        ],
         [`${setup} r._data=data;`, /read-only|replacement/],
         [`${setup} data.width=4;`, /read-only|replacement/],
-        [`${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);const alias=r;setAlphaToCoverage(alias,true);`, /before text attachment/],
-        [`${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.ignoreDepth=true;`, /before text attachment/],
-        [`${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.order=4;`, /before text attachment/],
-        [`${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);disposeTextRenderable(r);`, /before text attachment/],
-        [`${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>disposeDefaultTextData(data));`, /before text attachment/],
-        [`${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>addTextRenderable(scene,r));`, /definite initialization/],
-        [`${setup} const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});camera.target.x=2;`, /static camera/],
-        [`${setup} const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const scene=createSceneContext(engine);attachFreeControl(camera,scene);`, /static camera/],
-        [`${setup} const scene=createSceneContext(engine);const first=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const second=createFreeCamera({x:0,y:0,z:-20},{x:0,y:0,z:0});scene.camera=first;onBeforeRender(scene,()=>{scene.camera=second;});`, /static camera/],
-        [`const scene=createSceneContext(engine);const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const alias=scene;function replace(){alias.camera=camera;}onBeforeRender(scene,()=>replace());${setup}`, /static camera/],
-        [`${setup} const first=createSceneContext(engine);const second=createSceneContext(engine);await registerScene(first);await registerScene(second);`, /one registered scene/],
-        [`${setup} const scene=createSceneContext(engine);disposeScene(scene);`, /binding topology/],
-        [`${setup} const scene=createSceneContext(engine);unregisterScene(scene);`, /binding topology/],
-        [`${setup} const scene=createSceneContext(engine);rebuildSceneRenderables(scene);`, /binding topology/],
-        [`${setup} const scene=createSceneContext(engine,{defaultRenderTask:false});addTextRenderable(scene,r);await registerScene(scene);`, /default scene render task/],
-        [`const scene=createSceneContext(engine,{defaultRenderTask:false});${setup}addTextRenderable(scene,r);await registerScene(scene);`, /default scene render task/],
-        [`${setup} createTextLayer(data,{positionPx:{x:1}});`, /x and y components/],
-        [`${setup} const layer=createTextLayer(data);layer.data=data;`, /read-only|replacement/],
-        [`${setup} const layer=createTextLayer(data);layer.positionPx={x:1,y:2};`, /read-only|replacement/],
-        [`${setup} createTextRenderer(engine,{clear:true});`, /requires a layer array/],
-        [`${setup} updateTextData(data,{update:"reset"});`, /require replaceRun/],
-        [`${setup} const previous=data.runs[0]!;updateTextData(data,{update:"replaceRun",previous:previous,run:{...previous}});`, /spread followed by defaultColor/],
-    ] as const) assert.throws(() => compile(body), diagnostic);
+        [
+            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);const alias=r;setAlphaToCoverage(alias,true);`,
+            /before text attachment/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.ignoreDepth=true;`,
+            /before text attachment/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.order=4;`,
+            /before text attachment/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);disposeTextRenderable(r);`,
+            /before text attachment/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>disposeDefaultTextData(data));`,
+            /before text attachment/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>addTextRenderable(scene,r));`,
+            /definite initialization/,
+        ],
+        [
+            `${setup} const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});camera.target.x=2;`,
+            /static camera/,
+        ],
+        [
+            `${setup} const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const scene=createSceneContext(engine);attachFreeControl(camera,scene);`,
+            /static camera/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);const first=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const second=createFreeCamera({x:0,y:0,z:-20},{x:0,y:0,z:0});scene.camera=first;onBeforeRender(scene,()=>{scene.camera=second;});`,
+            /static camera/,
+        ],
+        [
+            `const scene=createSceneContext(engine);const camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});const alias=scene;function replace(){alias.camera=camera;}onBeforeRender(scene,()=>replace());${setup}`,
+            /static camera/,
+        ],
+        [
+            `${setup} const first=createSceneContext(engine);const second=createSceneContext(engine);await registerScene(first);await registerScene(second);`,
+            /one registered scene/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);disposeScene(scene);`,
+            /binding topology/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);unregisterScene(scene);`,
+            /binding topology/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine);rebuildSceneRenderables(scene);`,
+            /binding topology/,
+        ],
+        [
+            `${setup} const scene=createSceneContext(engine,{defaultRenderTask:false});addTextRenderable(scene,r);await registerScene(scene);`,
+            /default scene render task/,
+        ],
+        [
+            `const scene=createSceneContext(engine,{defaultRenderTask:false});${setup}addTextRenderable(scene,r);await registerScene(scene);`,
+            /default scene render task/,
+        ],
+        [
+            `${setup} createTextLayer(data,{positionPx:{x:1}});`,
+            /x and y components/,
+        ],
+        [
+            `${setup} const layer=createTextLayer(data);layer.data=data;`,
+            /read-only|replacement/,
+        ],
+        [
+            `${setup} const layer=createTextLayer(data);layer.positionPx={x:1,y:2};`,
+            /read-only|replacement/,
+        ],
+        [
+            `${setup} createTextRenderer(engine,{clear:true});`,
+            /requires a layer array/,
+        ],
+        [
+            `${setup} updateTextData(data,{update:"reset"});`,
+            /require replaceRun/,
+        ],
+        [
+            `${setup} const previous=data.runs[0]!;updateTextData(data,{update:"replaceRun",previous:previous,run:{...previous}});`,
+            /spread followed by defaultColor/,
+        ],
+    ] as const)
+        assert.throws(() => compile(body), diagnostic);
 });
 
 test("text projection leaves draw admission to attached scene records", () => {
     const input = resolve(directory, "unattached.ts");
-    writeFileSync(input, source(`${setup} createStandardMaterial();
+    writeFileSync(
+        input,
+        source(`${setup} createStandardMaterial();
         const scene=createSceneContext(engine);
         scene.camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});
-        addTextRenderable(scene,r);await registerScene(scene);`));
+        addTextRenderable(scene,r);await registerScene(scene);`),
+    );
     const output = resolve(directory, "unattached");
-    execFileSync(process.execPath, ["dist/src/cli.js", input, "--out", output], {stdio:"pipe"});
-    const manifest = JSON.parse(readFileSync(resolve(output, "manifest.json"), "utf8")) as {features:string[]};
+    execFileSync(
+        process.execPath,
+        ["dist/src/cli.js", input, "--out", output],
+        { stdio: "pipe" },
+    );
+    const manifest = JSON.parse(
+        readFileSync(resolve(output, "manifest.json"), "utf8"),
+    ) as { features: string[] };
     assert.ok(manifest.features.includes("text:renderable"));
     assert.ok(manifest.features.includes("material:standard"));
 });
@@ -193,44 +367,136 @@ test("text projection leaves draw admission to attached scene records", () => {
 test("text owner classification preserves existing splat components and imported root bulk transforms", () => {
     for (const id of [125, 269]) {
         const sourcePath = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
-        const result = compileSource(readFileSync(sourcePath, "utf8"), { fileName: sourcePath });
-        assert.ok(!result.manifest.features.some((feature) => feature.startsWith("text:")));
-        assert.match(result.cpp, id === 125 ? /\.position\.y = 1\.7f/ : /set_asset_root_position\(/);
+        const result = compileSource(readFileSync(sourcePath, "utf8"), {
+            fileName: sourcePath,
+        });
+        assert.ok(
+            !result.manifest.features.some((feature) =>
+                feature.startsWith("text:"),
+            ),
+        );
+        assert.match(
+            result.cpp,
+            id === 125 ? /\.position\.y = 1\.7f/ : /set_asset_root_position\(/,
+        );
     }
 });
 
 test("exact text source projects unchanged shaders, observed descriptors and compilable native declarations", async (t) => {
     const output = resolve(directory, "exact");
-    execFileSync(process.execPath, ["dist/src/cli.js", "corpus/babylon-lite/lab/lite/src/lite/scene275.ts", "--out", output], {stdio:"pipe"});
+    execFileSync(
+        process.execPath,
+        [
+            "dist/src/cli.js",
+            "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",
+            "--out",
+            output,
+        ],
+        { stdio: "pipe" },
+    );
     const pipelines = await composeDefaultTextPipelines();
-    const composition = JSON.parse(readFileSync(resolve(output, "upstream/shaders/composition.json"), "utf8")) as {
-        modules: Array<{ output:string;entryPoint:string;pinnedBindings:boolean;constants?:unknown }>;
+    const composition = JSON.parse(
+        readFileSync(
+            resolve(output, "upstream/shaders/composition.json"),
+            "utf8",
+        ),
+    ) as {
+        modules: Array<{
+            output: string;
+            entryPoint: string;
+            pinnedBindings: boolean;
+            constants?: unknown;
+        }>;
     };
-    for (const [index, pipeline] of pipelines.entries()) for (const stage of ["vertex", "fragment"] as const) {
-        const path = `upstream/shaders/text-${index}.${stage === "vertex" ? "vert" : "frag"}.native.wgsl`;
-        const module = composition.modules.find((row) => row.output === path)!;
-        assert.ok(module);
-        assert.equal(readFileSync(resolve(output, path), "utf8"), pipeline.descriptor[stage].module.code);
-        assert.equal(module.entryPoint, pipeline.descriptor[stage].entryPoint);
-        assert.equal(module.pinnedBindings, true);
-        assert.deepEqual(module.constants, stage === "vertex" ? pipeline.vertexConstants : pipeline.fragmentConstants);
-    }
-    assert.match(readFileSync(resolve(output, "upstream/include/bblite/upstream/camera_change_key.hpp"), "utf8"), /scene_camera_change_key/);
-    assert.ok(readFileSync(resolve(output, "upstream/include/bblite/upstream_text_gpu.hpp"), "utf8").includes("ensure_text_gpu"));
-    const dataSource = readFileSync(resolve(output, "upstream/src/text_data.cpp"), "utf8");
-    const payloadReads = [...dataSource.matchAll(/bbl::pal::read_binary_file\(([^\n]+?)\)/g)];
+    for (const [index, pipeline] of pipelines.entries())
+        for (const stage of ["vertex", "fragment"] as const) {
+            const path = `upstream/shaders/text-${index}.${stage === "vertex" ? "vert" : "frag"}.native.wgsl`;
+            const module = composition.modules.find(
+                (row) => row.output === path,
+            )!;
+            assert.ok(module);
+            assert.equal(
+                readFileSync(resolve(output, path), "utf8"),
+                pipeline.descriptor[stage].module.code,
+            );
+            assert.equal(
+                module.entryPoint,
+                pipeline.descriptor[stage].entryPoint,
+            );
+            assert.equal(module.pinnedBindings, true);
+            assert.deepEqual(
+                module.constants,
+                stage === "vertex"
+                    ? pipeline.vertexConstants
+                    : pipeline.fragmentConstants,
+            );
+        }
+    assert.match(
+        readFileSync(
+            resolve(
+                output,
+                "upstream/include/bblite/upstream/camera_change_key.hpp",
+            ),
+            "utf8",
+        ),
+        /scene_camera_change_key/,
+    );
+    assert.ok(
+        readFileSync(
+            resolve(output, "upstream/include/bblite/upstream_text_gpu.hpp"),
+            "utf8",
+        ).includes("ensure_text_gpu"),
+    );
+    const dataSource = readFileSync(
+        resolve(output, "upstream/src/text_data.cpp"),
+        "utf8",
+    );
+    const payloadReads = [
+        ...dataSource.matchAll(/bbl::pal::read_binary_file\(([^\n]+?)\)/g),
+    ];
     assert.ok(payloadReads.length > 0);
-    assert.ok(payloadReads.every((match) => match[1]!.startsWith("bbl::asset_path(")), "Every text payload resolves under the executable assets directory");
+    assert.ok(
+        payloadReads.every((match) => match[1]!.startsWith("bbl::asset_path(")),
+        "Every text payload resolves under the executable assets directory",
+    );
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable"); return; }
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/c", "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`, `/I${resolve(output, "upstream/include")}`, `/Fo${output}\\`,
-        resolve(output, "main.cpp"), resolve(output, "upstream/src/text_data.cpp")]);
-    const typeOnly = compileSource(`import {createEngine,type TextData,type TextRenderable} from "@babylonjs/lite";
+    if (!native) {
+        t.skip("Native fixture compiler unavailable");
+        return;
+    }
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/c",
+        "/DBBLITE_HAS_TEXT=1",
+        `/I${resolve("native/include")}`,
+        `/I${resolve(output, "upstream/include")}`,
+        `/Fo${output}\\`,
+        resolve(output, "main.cpp"),
+        resolve(output, "upstream/src/text_data.cpp"),
+    ]);
+    const typeOnly =
+        compileSource(`import {createEngine,type TextData,type TextRenderable} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const data:TextData[]=[];const entities:TextRenderable[]=[];
         if(data.length!==entities.length)throw new Error("empty");}`);
-    assert.ok(!typeOnly.manifest.features.some((feature) => feature.startsWith("text:")));
+    assert.ok(
+        !typeOnly.manifest.features.some((feature) =>
+            feature.startsWith("text:"),
+        ),
+    );
     writeFileSync(resolve(directory, "type-only.cpp"), typeOnly.cpp);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/c", `/I${resolve("native/include")}`,
-        resolve(directory, "type-only.cpp"), `/Fo${resolve(directory, "type-only.obj")}`]);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/c",
+        `/I${resolve("native/include")}`,
+        resolve(directory, "type-only.cpp"),
+        `/Fo${resolve(directory, "type-only.obj")}`,
+    ]);
 });

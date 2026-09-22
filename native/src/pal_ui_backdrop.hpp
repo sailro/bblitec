@@ -8,15 +8,17 @@
 
 namespace bbl::pal {
 
-template<class Pair, class Snapshot, class Blur>
-void sync_ui_backdrop_targets(Pair& pair, const UiBackdrop& backdrop, bool has_snapshot, bool has_blur,
-    Snapshot&& snapshot, Blur&& blur) {
-    if (!has_snapshot || pair.source_width != backdrop.width || pair.source_height != backdrop.height) {
+template <class Pair, class Snapshot, class Blur>
+void sync_ui_backdrop_targets(Pair& pair, const UiBackdrop& backdrop, bool has_snapshot,
+                              bool has_blur, Snapshot&& snapshot, Blur&& blur) {
+    if (!has_snapshot || pair.source_width != backdrop.width ||
+        pair.source_height != backdrop.height) {
         snapshot(backdrop.width, backdrop.height);
         pair.source_width = backdrop.width;
         pair.source_height = backdrop.height;
     }
-    if (!has_blur || pair.blur_width != backdrop.blur_width || pair.blur_height != backdrop.blur_height) {
+    if (!has_blur || pair.blur_width != backdrop.blur_width ||
+        pair.blur_height != backdrop.blur_height) {
         blur(backdrop.blur_width, backdrop.blur_height);
         pair.blur_width = backdrop.blur_width;
         pair.blur_height = backdrop.blur_height;
@@ -30,10 +32,13 @@ struct UiBackdropDraw {
 };
 inline std::array<UiBackdropDraw, 4> ui_backdrop_draw_plan(const UiBackdrop& backdrop) {
     using Surface = UiBackdropSurface;
-    return {{{Surface::first, Surface::snapshot, backdrop.sample_index, UiBackdrop::sample_index_count},
-        {Surface::second, Surface::first, backdrop.horizontal_index(), backdrop.kernel_index_count},
-        {Surface::first, Surface::second, backdrop.vertical_index(), backdrop.kernel_index_count},
-        {Surface::target, Surface::first, backdrop.composite_index(), backdrop.composite_index_count}}};
+    return {
+        {{Surface::first, Surface::snapshot, backdrop.sample_index, UiBackdrop::sample_index_count},
+         {Surface::second, Surface::first, backdrop.horizontal_index(),
+          backdrop.kernel_index_count},
+         {Surface::first, Surface::second, backdrop.vertical_index(), backdrop.kernel_index_count},
+         {Surface::target, Surface::first, backdrop.composite_index(),
+          backdrop.composite_index_count}}};
 }
 
 using UiClipPoint = std::array<float, 2>;
@@ -45,9 +50,10 @@ inline float ui_clip_side(UiClipPoint a, UiClipPoint b, UiClipPoint p) {
 
 /** Clip one convex polygon against an oriented half-plane. */
 inline std::vector<UiClipPoint> clip_ui_polygon(const std::vector<UiClipPoint>& polygon,
-    UiClipPoint a, UiClipPoint b, float sign) {
+                                                UiClipPoint a, UiClipPoint b, float sign) {
     std::vector<UiClipPoint> result;
-    if (polygon.empty()) return result;
+    if (polygon.empty())
+        return result;
     auto previous = polygon.back();
     float previous_side = sign * ui_clip_side(a, b, previous);
     for (const auto point : polygon) {
@@ -55,19 +61,23 @@ inline std::vector<UiClipPoint> clip_ui_polygon(const std::vector<UiClipPoint>& 
         if ((side >= 0) != (previous_side >= 0)) {
             const float amount = previous_side / (previous_side - side);
             result.push_back({previous[0] + amount * (point[0] - previous[0]),
-                previous[1] + amount * (point[1] - previous[1])});
+                              previous[1] + amount * (point[1] - previous[1])});
         }
-        if (side >= 0) result.push_back(point);
-        previous = point; previous_side = side;
+        if (side >= 0)
+            result.push_back(point);
+        previous = point;
+        previous_side = side;
     }
     return result;
 }
 
-inline void triangulate_ui_polygon(std::vector<UiClipTriangle>& result, const std::vector<UiClipPoint>& polygon) {
+inline void triangulate_ui_polygon(std::vector<UiClipTriangle>& result,
+                                   const std::vector<UiClipPoint>& polygon) {
     for (std::size_t i = 2; i < polygon.size(); ++i) {
         const auto a = polygon[0], b = polygon[i - 1], c = polygon[i];
-        const float longest = std::max({std::hypot(a[0] - b[0], a[1] - b[1]),
-            std::hypot(a[0] - c[0], a[1] - c[1]), std::hypot(b[0] - c[0], b[1] - c[1])});
+        const float longest =
+            std::max({std::hypot(a[0] - b[0], a[1] - b[1]), std::hypot(a[0] - c[0], a[1] - c[1]),
+                      std::hypot(b[0] - c[0], b[1] - c[1])});
         // Subtracting adjacent mask triangles can leave a roundoff sliver on
         // their shared edge. It has no pixel coverage but may hit an exact
         // sample location unless rejected by a distance-based tolerance.
@@ -77,33 +87,37 @@ inline void triangulate_ui_polygon(std::vector<UiClipTriangle>& result, const st
 }
 
 /** Intersect triangulated masks without assuming a particular DOM box shape. */
-inline std::vector<UiClipTriangle> intersect_ui_masks(
-    const std::vector<UiClipTriangle>& left, const std::vector<UiClipTriangle>& right) {
+inline std::vector<UiClipTriangle> intersect_ui_masks(const std::vector<UiClipTriangle>& left,
+                                                      const std::vector<UiClipTriangle>& right) {
     std::vector<UiClipTriangle> result;
-    for (const auto& a : left) for (const auto& b : right) {
-        const float orientation = ui_clip_side(b[0], b[1], b[2]);
-        if (std::abs(orientation) < 1e-6f) continue;
-        const float sign = orientation > 0 ? 1.f : -1.f;
-        std::vector<UiClipPoint> polygon(a.begin(), a.end());
-        for (std::size_t edge = 0; edge < 3 && !polygon.empty(); ++edge)
-            polygon = clip_ui_polygon(polygon, b[edge], b[(edge + 1) % 3], sign);
-        triangulate_ui_polygon(result, polygon);
-    }
+    for (const auto& a : left)
+        for (const auto& b : right) {
+            const float orientation = ui_clip_side(b[0], b[1], b[2]);
+            if (std::abs(orientation) < 1e-6f)
+                continue;
+            const float sign = orientation > 0 ? 1.f : -1.f;
+            std::vector<UiClipPoint> polygon(a.begin(), a.end());
+            for (std::size_t edge = 0; edge < 3 && !polygon.empty(); ++edge)
+                polygon = clip_ui_polygon(polygon, b[edge], b[(edge + 1) % 3], sign);
+            triangulate_ui_polygon(result, polygon);
+        }
     return result;
 }
 
 /** Subtract each mask triangle, retaining disjoint outside pieces at each edge. */
-inline std::vector<UiClipTriangle> subtract_ui_masks(
-    std::vector<UiClipTriangle> left, const std::vector<UiClipTriangle>& right) {
+inline std::vector<UiClipTriangle> subtract_ui_masks(std::vector<UiClipTriangle> left,
+                                                     const std::vector<UiClipTriangle>& right) {
     for (const auto& b : right) {
         const float orientation = ui_clip_side(b[0], b[1], b[2]);
-        if (std::abs(orientation) < 1e-6f) continue;
+        if (std::abs(orientation) < 1e-6f)
+            continue;
         const float sign = orientation > 0 ? 1.f : -1.f;
         std::vector<UiClipTriangle> remaining;
         for (const auto& a : left) {
             std::vector<UiClipPoint> inside(a.begin(), a.end());
             for (std::size_t edge = 0; edge < 3 && !inside.empty(); ++edge) {
-                triangulate_ui_polygon(remaining, clip_ui_polygon(inside, b[edge], b[(edge + 1) % 3], -sign));
+                triangulate_ui_polygon(remaining,
+                                       clip_ui_polygon(inside, b[edge], b[(edge + 1) % 3], -sign));
                 inside = clip_ui_polygon(inside, b[edge], b[(edge + 1) % 3], sign);
             }
         }
@@ -113,22 +127,35 @@ inline std::vector<UiClipTriangle> subtract_ui_masks(
 }
 
 /** Preserve attributes when a recorded draw is clipped to the same mask as composites. */
-inline void clip_ui_geometry(UiRenderFrame& frame, std::uint32_t first_vertex, std::uint32_t first_index, const std::vector<UiClipTriangle>& mask) {
+inline void clip_ui_geometry(UiRenderFrame& frame, std::uint32_t first_vertex,
+                             std::uint32_t first_index, const std::vector<UiClipTriangle>& mask) {
     std::vector<UiRenderVertex> vertices;
     for (std::size_t i = first_index; i + 2 < frame.indices.size(); i += 3) {
-        const std::array source{frame.vertices.at(frame.indices[i]), frame.vertices.at(frame.indices[i + 1]), frame.vertices.at(frame.indices[i + 2])};
-        const UiClipTriangle triangle{{{source[0].x, source[0].y}, {source[1].x, source[1].y}, {source[2].x, source[2].y}}};
+        const std::array source{frame.vertices.at(frame.indices[i]),
+                                frame.vertices.at(frame.indices[i + 1]),
+                                frame.vertices.at(frame.indices[i + 2])};
+        const UiClipTriangle triangle{
+            {{source[0].x, source[0].y}, {source[1].x, source[1].y}, {source[2].x, source[2].y}}};
         const float area = ui_clip_side(triangle[0], triangle[1], triangle[2]);
-        if (std::abs(area) < 1e-6f) continue;
-        for (const auto& clipped : intersect_ui_masks({triangle}, mask)) for (const auto point : clipped) {
-            const float a = ui_clip_side(triangle[1], triangle[2], point) / area;
-            const float b = ui_clip_side(triangle[2], triangle[0], point) / area;
-            const float c = 1 - a - b;
-            const auto number = [&](auto field) { return a * (source[0].*field) + b * (source[1].*field) + c * (source[2].*field); };
-            const auto color = [&](auto field) { return static_cast<std::uint8_t>(std::clamp(std::lround(number(field)), 0l, 255l)); };
-            vertices.push_back({point[0], point[1], color(&UiRenderVertex::red), color(&UiRenderVertex::green),
-                color(&UiRenderVertex::blue), color(&UiRenderVertex::alpha), number(&UiRenderVertex::u), number(&UiRenderVertex::v)});
-        }
+        if (std::abs(area) < 1e-6f)
+            continue;
+        for (const auto& clipped : intersect_ui_masks({triangle}, mask))
+            for (const auto point : clipped) {
+                const float a = ui_clip_side(triangle[1], triangle[2], point) / area;
+                const float b = ui_clip_side(triangle[2], triangle[0], point) / area;
+                const float c = 1 - a - b;
+                const auto number = [&](auto field) {
+                    return a * (source[0].*field) + b * (source[1].*field) + c * (source[2].*field);
+                };
+                const auto color = [&](auto field) {
+                    return static_cast<std::uint8_t>(
+                        std::clamp(std::lround(number(field)), 0l, 255l));
+                };
+                vertices.push_back({point[0], point[1], color(&UiRenderVertex::red),
+                                    color(&UiRenderVertex::green), color(&UiRenderVertex::blue),
+                                    color(&UiRenderVertex::alpha), number(&UiRenderVertex::u),
+                                    number(&UiRenderVertex::v)});
+            }
     }
     frame.vertices.resize(first_vertex);
     frame.indices.resize(first_index);
@@ -177,16 +204,17 @@ inline UiBlurKernel make_ui_blur_kernel(float sigma) {
  * constant colors and avoiding a separate shader dialect in either backend.
  * Like RmlUi's GL3 renderer, reduce the working resolution for large sigma.
  */
-inline void append_ui_backdrop_geometry(
-    UiRenderFrame& frame, UiBackdrop& backdrop, const UiBlurKernel& kernel,
-    const std::vector<UiClipTriangle>& mask) {
-    backdrop.blur_width = std::max(1u, static_cast<std::uint32_t>(
-        std::ceil(backdrop.width / kernel.reduction)));
-    backdrop.blur_height = std::max(1u, static_cast<std::uint32_t>(
-        std::ceil(backdrop.height / kernel.reduction)));
+inline void append_ui_backdrop_geometry(UiRenderFrame& frame, UiBackdrop& backdrop,
+                                        const UiBlurKernel& kernel,
+                                        const std::vector<UiClipTriangle>& mask) {
+    backdrop.blur_width =
+        std::max(1u, static_cast<std::uint32_t>(std::ceil(backdrop.width / kernel.reduction)));
+    backdrop.blur_height =
+        std::max(1u, static_cast<std::uint32_t>(std::ceil(backdrop.height / kernel.reduction)));
     const auto quad = [&](float u0, float v0, float u1, float v1, std::uint8_t weight) {
         const auto first = frame.vertices.size();
-        append_ui_quad(frame, 0, 0, static_cast<float>(frame.width), static_cast<float>(frame.height), weight);
+        append_ui_quad(frame, 0, 0, static_cast<float>(frame.width),
+                       static_cast<float>(frame.height), weight);
         const std::array<std::array<float, 2>, 4> uv{{{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}};
         for (std::size_t i = 0; i < 4; ++i) {
             auto& vertex = frame.vertices[first + i];
@@ -201,23 +229,24 @@ inline void append_ui_backdrop_geometry(
         const auto first = static_cast<std::uint32_t>(frame.indices.size());
         for (int i = -kernel.radius; i <= kernel.radius; ++i) {
             const int weight = kernel.taps[std::abs(i)];
-            if (weight <= 0) continue;
+            if (weight <= 0)
+                continue;
             const float u = axis == 0 ? float(i) / backdrop.blur_width : 0;
             const float v = axis == 1 ? float(i) / backdrop.blur_height : 0;
             quad(u, v, 1 + u, 1 + v, static_cast<std::uint8_t>(weight));
         }
         if (axis == 0) {
-            backdrop.kernel_index_count =
-                static_cast<std::uint32_t>(frame.indices.size()) - first;
+            backdrop.kernel_index_count = static_cast<std::uint32_t>(frame.indices.size()) - first;
         }
     }
-    const auto composite_index =
-        static_cast<std::uint32_t>(frame.indices.size());
-    for (const auto& triangle : mask) for (const auto& point : triangle) {
-        frame.indices.push_back(static_cast<std::uint32_t>(frame.vertices.size()));
-        frame.vertices.push_back(UiRenderVertex{point[0], point[1], 255, 255, 255, 255,
-            (point[0] - backdrop.left) / backdrop.width, (point[1] - backdrop.top) / backdrop.height});
-    }
+    const auto composite_index = static_cast<std::uint32_t>(frame.indices.size());
+    for (const auto& triangle : mask)
+        for (const auto& point : triangle) {
+            frame.indices.push_back(static_cast<std::uint32_t>(frame.vertices.size()));
+            frame.vertices.push_back(UiRenderVertex{point[0], point[1], 255, 255, 255, 255,
+                                                    (point[0] - backdrop.left) / backdrop.width,
+                                                    (point[1] - backdrop.top) / backdrop.height});
+        }
     backdrop.composite_index_count =
         static_cast<std::uint32_t>(frame.indices.size()) - composite_index;
 }

@@ -77,14 +77,8 @@ test("flagNumber rejects a value that does not parse", () => {
 });
 
 test("canonicalizes backend values, accepting 'gpu' for sdl_gpu", () => {
-    assert.equal(
-        canonicalBackend("gpu", "capture"),
-        "sdl_gpu",
-    );
-    assert.equal(
-        canonicalBackend("dawn", "capture"),
-        "dawn",
-    );
+    assert.equal(canonicalBackend("gpu", "capture"), "sdl_gpu");
+    assert.equal(canonicalBackend("dawn", "capture"), "dawn");
     assert.throws(
         () => canonicalBackend("vulkan", "capture"),
         /--backend must be sdl_gpu\|dawn \(got 'vulkan'\)/,
@@ -103,26 +97,14 @@ test("resolves the backend from the flag, the ambient variable, then the default
     const previous = process.env.BBLITE_GPU_BACKEND;
     try {
         delete process.env.BBLITE_GPU_BACKEND;
-        assert.equal(
-            resolveBackend(undefined, "diff"),
-            "sdl_gpu",
-        );
+        assert.equal(resolveBackend(undefined, "diff"), "sdl_gpu");
         // The ambient variable is the fallback — the case that used to
         // silently measure sdl_gpu under BBLITE_GPU_BACKEND=dawn.
         process.env.BBLITE_GPU_BACKEND = "dawn";
-        assert.equal(
-            resolveBackend(undefined, "diff"),
-            "dawn",
-        );
+        assert.equal(resolveBackend(undefined, "diff"), "dawn");
         // An explicit flag wins over the ambient variable.
-        assert.equal(
-            resolveBackend("sdl_gpu", "diff"),
-            "sdl_gpu",
-        );
-        assert.equal(
-            resolveBackend("gpu", "diff"),
-            "sdl_gpu",
-        );
+        assert.equal(resolveBackend("sdl_gpu", "diff"), "sdl_gpu");
+        assert.equal(resolveBackend("gpu", "diff"), "sdl_gpu");
     } finally {
         if (previous === undefined) {
             delete process.env.BBLITE_GPU_BACKEND;
@@ -173,11 +155,7 @@ test("refuses --differential with --recapture-reference, naming the two-step wor
     // Silently dropping the companion measured a stale golden with full
     // confidence; the error names the order that works.
     assert.throws(
-        () =>
-            parseParityArguments([
-                "--differential",
-                "--recapture-reference",
-            ]),
+        () => parseParityArguments(["--differential", "--recapture-reference"]),
         /--recapture-reference.*then run 'scene -- parity <id> --differential'/s,
     );
 });
@@ -188,12 +166,9 @@ test("refuses --differential with any companion it would drop", () => {
         /--differential measures both GPU backends.*--seek/,
     );
     assert.throws(
-        () =>
-            parseParityArguments(["--differential", "--backend", "dawn"]),
+        () => parseParityArguments(["--differential", "--backend", "dawn"]),
         /--differential measures both GPU backends.*--backend/,
     );
     // --gpu-debug is the one companion the differential carries.
-    assert.ok(
-        parseParityArguments(["--differential", "--gpu-debug"]).gpuDebug,
-    );
+    assert.ok(parseParityArguments(["--differential", "--gpu-debug"]).gpuDebug);
 });

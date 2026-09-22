@@ -39,8 +39,7 @@ enum class PropertyAnimationTargetKind {
 };
 
 struct PropertyAnimationTarget {
-    PropertyAnimationTargetKind kind =
-        PropertyAnimationTargetKind::mesh;
+    PropertyAnimationTargetKind kind = PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
     js::Callback<void(float)> write_scalar;
     // A plain-data writer retains this owner through its managed closure.
@@ -62,10 +61,8 @@ struct PropertyAnimationKey {
 
 struct PropertyAnimationTrack {
     PropertyAnimationPath path = PropertyAnimationPath::position;
-    PropertyAnimationComponent component =
-        PropertyAnimationComponent::whole_lane;
-    PropertyAnimationInterpolation interpolation =
-        PropertyAnimationInterpolation::linear;
+    PropertyAnimationComponent component = PropertyAnimationComponent::whole_lane;
+    PropertyAnimationInterpolation interpolation = PropertyAnimationInterpolation::linear;
     /**
      * `createPropertyAnimationClip`'s own rotation-channel derivation,
      * which is what `evaluateSampler` slerps on — the path decides it
@@ -98,8 +95,7 @@ struct PropertyAnimationGroupRecord {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
 };
 
-using PropertyAnimationGroup =
-    std::shared_ptr<PropertyAnimationGroupRecord>;
+using PropertyAnimationGroup = std::shared_ptr<PropertyAnimationGroupRecord>;
 
 /** A property or glTF group whose public weight a fade job updates. */
 enum class AnimationWeightFadeTargetKind {
@@ -108,21 +104,18 @@ enum class AnimationWeightFadeTargetKind {
 };
 
 struct AnimationWeightFadeTarget {
-    AnimationWeightFadeTargetKind kind =
-        AnimationWeightFadeTargetKind::property;
+    AnimationWeightFadeTargetKind kind = AnimationWeightFadeTargetKind::property;
     PropertyAnimationGroup property_group;
     AnimationGroupHandle gltf_group{};
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(property_group); }
 
-    static AnimationWeightFadeTarget from_property(
-        PropertyAnimationGroup group) {
+    static AnimationWeightFadeTarget from_property(PropertyAnimationGroup group) {
         AnimationWeightFadeTarget target;
         target.property_group = std::move(group);
         return target;
     }
 
-    static AnimationWeightFadeTarget from_gltf(
-        AnimationGroupHandle group) {
+    static AnimationWeightFadeTarget from_gltf(AnimationGroupHandle group) {
         AnimationWeightFadeTarget target;
         target.kind = AnimationWeightFadeTargetKind::gltf;
         target.gltf_group = group;
@@ -158,18 +151,15 @@ struct PropertyAnimationWeightFade {
  */
 struct PropertyAnimationBucket {
     PropertyAnimationTarget target{};
-    PropertyAnimationPath property =
-        PropertyAnimationPath::position;
-    PropertyAnimationComponent component =
-        PropertyAnimationComponent::whole_lane;
+    PropertyAnimationPath property = PropertyAnimationPath::position;
+    PropertyAnimationComponent component = PropertyAnimationComponent::whole_lane;
     std::array<float, 4> values{};
     /** The track's own rotation-channel flag, as the pin's bucket keeps it. */
     bool quaternion = false;
     bool contested = false;
     bool active = false;
     bool has_reference = false;
-    std::array<float, 4> reference{
-        0.0f, 0.0f, 0.0f, 1.0f};
+    std::array<float, 4> reference{0.0f, 0.0f, 0.0f, 1.0f};
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
 };
 
@@ -185,10 +175,8 @@ enum class AnimationCategoryHandler {
 };
 
 struct Engine;
-using AnimationManagerPreUpdate = std::function<void(
-    Engine&,
-    PropertyAnimationManagerRecord&,
-    float)>;
+using AnimationManagerPreUpdate =
+    std::function<void(Engine&, PropertyAnimationManagerRecord&, float)>;
 
 struct PropertyAnimationManagerRecord {
     /** The engine inferred from the first attached group or scene. */
@@ -216,8 +204,7 @@ struct PropertyAnimationManagerRecord {
     js::Callback<void(double)> on_update;
     std::size_t animation_frame_request = 0;
     /** Installed by `enablePropertyAnimationBlending` / `enableAnimationBlending`. */
-    AnimationCategoryHandler category_handler =
-        AnimationCategoryHandler::none;
+    AnimationCategoryHandler category_handler = AnimationCategoryHandler::none;
     /** The mixers' per-manager scratch, upstream's `scratchByManager`. */
     std::vector<PropertyAnimationBucket> buckets;
     std::shared_ptr<GltfWeightedAnimationRuntimeState> source_gltf_animation;
@@ -230,8 +217,7 @@ struct PropertyAnimationManagerRecord {
     }
 };
 
-using PropertyAnimationManager =
-    std::shared_ptr<PropertyAnimationManagerRecord>;
+using PropertyAnimationManager = std::shared_ptr<PropertyAnimationManagerRecord>;
 
 struct PropertyAnimationManagerOptions {
     double fixed_delta_ms = 0.0;

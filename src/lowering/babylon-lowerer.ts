@@ -23,15 +23,11 @@ export class BabylonLowerer {
     ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
         const symbolName = "loadBabylon";
-        const { declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        for (const call of [
-            "createStandardMaterial",
-            "parseBabylonCamera",
-        ]) {
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        for (const call of ["createStandardMaterial", "parseBabylonCamera"]) {
             if (!this.context.hasCall(declaration, call)) {
                 this.context.contractError(
                     declaration,
@@ -64,15 +60,11 @@ export class BabylonLowerer {
                     ts.isPropertyAssignment(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === "entities" &&
-                    ts.isArrayLiteralExpression(
-                        node.initializer,
-                    ) &&
+                    ts.isArrayLiteralExpression(node.initializer) &&
                     node.initializer.elements.some(
                         (element) =>
                             ts.isSpreadElement(element) &&
-                            ts.isIdentifier(
-                                element.expression,
-                            ) &&
+                            ts.isIdentifier(element.expression) &&
                             element.expression.text === name,
                     ),
             );
@@ -84,7 +76,9 @@ export class BabylonLowerer {
                 );
             }
         }
-        const upload = loadTexture2DUploadCpp({}, message => this.context.contractError(declaration, message));
+        const upload = loadTexture2DUploadCpp({}, (message) =>
+            this.context.contractError(declaration, message),
+        );
         return {
             modulePath,
             symbolName,
@@ -92,14 +86,25 @@ export class BabylonLowerer {
             source: babylonLoaderCpp(
                 this.context.provenance(modulePath, symbolName),
                 lowerBabylonCamera(this.context),
-                { bakeLocalMatrix: this.lowerLocalMatrixBake(), materialProperties: lowerBabylonMaterialProperties(this.context),
-                    textureSlots: lowerBabylonTextureSlots(this.context), cubeTexture: lowerBabylonCubeTexture(this.context),
+                {
+                    bakeLocalMatrix: this.lowerLocalMatrixBake(),
+                    materialProperties: lowerBabylonMaterialProperties(
+                        this.context,
+                    ),
+                    textureSlots: lowerBabylonTextureSlots(this.context),
+                    cubeTexture: lowerBabylonCubeTexture(this.context),
                     submeshDefaults: lowerBabylonSubmeshDefaults(this.context),
                     hierarchy: lowerBabylonHierarchy(this.context),
-                    meshConstruction: lowerBabylonMeshConstruction(this.context),
-                    sceneData: lowerBabylonSceneData(this.context, lightMeshLists),
+                    meshConstruction: lowerBabylonMeshConstruction(
+                        this.context,
+                    ),
+                    sceneData: lowerBabylonSceneData(
+                        this.context,
+                        lightMeshLists,
+                    ),
                     materialMaps: lowerBabylonMaterialMaps(this.context),
-                    fileTextureLoad: `load_file_texture(engine, path, ${upload.sampler}, ${upload.invertY}, ${upload.srgb}, ${upload.premultiplyAlpha})` },
+                    fileTextureLoad: `load_file_texture(engine, path, ${upload.sampler}, ${upload.invertY}, ${upload.srgb}, ${upload.premultiplyAlpha})`,
+                },
                 lightMeshLists,
                 meshClones,
             ),
@@ -135,5 +140,4 @@ export class BabylonLowerer {
             },
         );
     }
-
 }

@@ -8,7 +8,10 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { PostProcessLowerer } from "../src/lowering/post-process-lowerer.js";
 import { composeComposite } from "../src/pinned-post-process.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const prefix = `
 import { createEngine, createSceneContext, createRenderTarget, createRenderTask,
@@ -28,51 +31,111 @@ test("TAA descriptors preserve task aliases and refuse missing or non-render sou
         const taa = ${create("alias")};
         const output = taa.outputTexture;
     `);
-    assert.deepEqual(result.manifest.postProcessComposites[0]?.options, { factor: 0.125, samples: 8 });
+    assert.deepEqual(result.manifest.postProcessComposites[0]?.options, {
+        factor: 0.125,
+        samples: 8,
+    });
     assert.match(result.cpp, /PostProcessCompositeInputs\{[^\n]*\{v_alias\}\}/);
     assert.match(result.cpp, /\.post_process\.output_target/);
     assert.doesNotMatch(result.cpp, /passes\.back\(\)\.output_target/);
-    assert.throws(() => compileSource(`${prefix} const taa = ${create().replace("sourceRenderTask: sourceTask,", "")};`), /requires 'sourceRenderTask'/);
-    assert.throws(() => compileSource(`${prefix}
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix} const taa = ${create().replace("sourceRenderTask: sourceTask,", "")};`,
+            ),
+        /requires 'sourceRenderTask'/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${prefix}
         const effect = createBlackAndWhitePostProcessTask({ sourceTexture: source }, engine, scene);
         const taa = ${create("effect")};
-    `), /requires a proven scene render task/);
-    assert.throws(() => compileSource(`${prefix} const taa = ${create("source")};`), /Expected task/);
-    assert.throws(() => compileSource(`${prefix}
+    `),
+        /requires a proven scene render task/,
+    );
+    assert.throws(
+        () => compileSource(`${prefix} const taa = ${create("source")};`),
+        /Expected task/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${prefix}
         let mutable = sourceTask;
         mutable = createBlackAndWhitePostProcessTask({ sourceTexture: source }, engine, scene);
         const taa = ${create("mutable")};
-    `), /Assignment operator '=' is not supported for task/);
+    `),
+        /Assignment operator '=' is not supported for task/,
+    );
     // Public factor does not name the private live factor slot. It must not
     // be mistaken for a supported composite setter before execute is lowered.
-    assert.throws(() => compileSource(`${prefix} const taa = ${create()}; taa.factor = 0.5;`), /setter on a composite/);
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix} const taa = ${create()}; taa.factor = 0.5;`,
+            ),
+        /setter on a composite/,
+    );
 });
 
 test("TAA observes presentation identity separately from history order and retains UBO transport", async () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene261.ts";
-    const result = compileSource(readFileSync(resolve(fileName), "utf8"), { fileName });
+    const result = compileSource(readFileSync(resolve(fileName), "utf8"), {
+        fileName,
+    });
     const manifest = result.manifest.postProcessComposites[0]!;
     assert.equal(manifest.intrinsic, "createTaaPostProcessTask");
     assert.deepEqual(manifest.options, { factor: 0.05, samples: 8 });
     assert.ok(result.manifest.features.includes("renderer:post-process"));
     for (const hasTarget of [true, false]) {
         const composite = await composeComposite({ ...manifest, hasTarget });
-        assert.deepEqual(composite.taa, { factor: 0.05, disableOnCameraMove: true, samples: 8 });
+        assert.deepEqual(composite.taa, {
+            factor: 0.05,
+            disableOnCameraMove: true,
+            samples: 8,
+        });
         assert.equal(composite.outputPass, 1);
-        assert.deepEqual(composite.passes.map((pass) => pass.name), [
-            "bblitec-composite-blend", "bblitec-composite-present", "bblitec-composite-history-update",
-        ]);
-        assert.deepEqual(composite.intermediates.map((target) => [target.format, target.widthRatio, target.heightRatio]), [
-            ["rgba16float", 1, 1], ["rgba16float", 1, 1],
-        ]);
-        assert.deepEqual(composite.passes.map((pass) => pass.target), [
-            { kind: "intermediate", index: 1 },
-            { kind: "input", option: hasTarget ? "targetTexture" : "swapchain" },
+        assert.deepEqual(
+            composite.passes.map((pass) => pass.name),
+            [
+                "bblitec-composite-blend",
+                "bblitec-composite-present",
+                "bblitec-composite-history-update",
+            ],
+        );
+        assert.deepEqual(
+            composite.intermediates.map((target) => [
+                target.format,
+                target.widthRatio,
+                target.heightRatio,
+            ]),
+            [
+                ["rgba16float", 1, 1],
+                ["rgba16float", 1, 1],
+            ],
+        );
+        assert.deepEqual(
+            composite.passes.map((pass) => pass.target),
+            [
+                { kind: "intermediate", index: 1 },
+                {
+                    kind: "input",
+                    option: hasTarget ? "targetTexture" : "swapchain",
+                },
+                { kind: "intermediate", index: 0 },
+            ],
+        );
+        assert.deepEqual(
+            composite.passes.map((pass) => pass.params),
+            [[1], [], []],
+        );
+        assert.deepEqual(composite.passes[0]?.extraTextures, [
             { kind: "intermediate", index: 0 },
         ]);
-        assert.deepEqual(composite.passes.map((pass) => pass.params), [[1], [], []]);
-        assert.deepEqual(composite.passes[0]?.extraTextures, [{ kind: "intermediate", index: 0 }]);
-        const native = new PostProcessLowerer(new LoweringContext(), [], [composite]).lowerTaskRecords();
+        const native = new PostProcessLowerer(
+            new LoweringContext(),
+            [],
+            [composite],
+        ).lowerTaskRecords();
         assert.match(native.source, /create_taa_post_process_state/);
         assert.match(native.source, /initialize_taa_jitter/);
         assert.match(native.source, /options.output_pass = 1u/);
@@ -80,17 +143,35 @@ test("TAA observes presentation identity separately from history order and retai
 });
 
 test("existing composites retain their observed final output with and without a target", async () => {
-    for (const intrinsic of ["createBloomPostProcessTask", "createDepthOfFieldPostProcessTask", "createSmaaPostProcessTask"]) {
+    for (const intrinsic of [
+        "createBloomPostProcessTask",
+        "createDepthOfFieldPostProcessTask",
+        "createSmaaPostProcessTask",
+    ]) {
         for (const hasTarget of [true, false]) {
-            const composite = await composeComposite({ intrinsic, hasTarget, options: {} });
+            const composite = await composeComposite({
+                intrinsic,
+                hasTarget,
+                options: {},
+            });
             assert.equal(composite.outputPass, composite.passes.length - 1);
-            const native = new PostProcessLowerer(new LoweringContext(), [], [composite]).lowerTaskRecords();
-            assert.ok(native.source.includes(`options.output_pass = ${composite.outputPass}u;`));
+            const native = new PostProcessLowerer(
+                new LoweringContext(),
+                [],
+                [composite],
+            ).lowerTaskRecords();
+            assert.ok(
+                native.source.includes(
+                    `options.output_pass = ${composite.outputPass}u;`,
+                ),
+            );
         }
     }
 });
 
-interface PinTarget { _descriptor: { size: { width: number; height: number }; format: string } }
+interface PinTarget {
+    _descriptor: { size: { width: number; height: number }; format: string };
+}
 interface PinTask {
     outputTexture: PinTarget;
     factor: number;
@@ -111,15 +192,33 @@ function definition(source: string, signature: string): string {
 
 test("pinned private-factor writes and native facade identities stay live", async (t) => {
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const pin = await importPinnedModule<{
-        createTaaPostProcessTask(config: object, engine: object, scene: object): PinTask;
+        createTaaPostProcessTask(
+            this: void,
+            config: object,
+            engine: object,
+            scene: object,
+        ): PinTask;
     }>("post-process/taa.js");
-    const source: PinTarget = { _descriptor: { size: { width: 64, height: 32 }, format: "rgba16float" } };
+    const source: PinTarget = {
+        _descriptor: { size: { width: 64, height: 32 }, format: "rgba16float" },
+    };
     const target: PinTarget = { _descriptor: { ...source._descriptor } };
     const sourceTask = { scene: { camera: null } };
-    const task = pin.createTaaPostProcessTask({ sourceTexture: source, sourceRenderTask: sourceTask,
-        targetTexture: target, factor: 0.125 }, { scRT: target }, {});
+    const task = pin.createTaaPostProcessTask(
+        {
+            sourceTexture: source,
+            sourceRenderTask: sourceTask,
+            targetTexture: target,
+            factor: 0.125,
+        },
+        { scRT: target },
+        {},
+    );
     assert.equal(task._sourceRenderTask, sourceTask);
     assert.equal(task.outputTexture, target);
     assert.equal(task.outputTexture, task._present.outputTexture);
@@ -140,13 +239,19 @@ test("pinned private-factor writes and native facade identities stay live", asyn
     });
     // Internal effect rows are only usable by the pinned composite; this
     // direct lowerer fixture exercises its writer without admitting TAA.
-    const lowered = new PostProcessLowerer(new LoweringContext(), [{
-        intrinsic: "createTaaBlendPostProcessTask", shaderIndex: 0, options: {},
-    }]).lowerTaskRecords();
+    const lowered = new PostProcessLowerer(new LoweringContext(), [
+        {
+            intrinsic: "createTaaBlendPostProcessTask",
+            shaderIndex: 0,
+            options: {},
+        },
+    ]).lowerTaskRecords();
     const output = resolve("artifacts/temporal-post-process-contracts");
     mkdirSync(output, { recursive: true });
     const sourcePath = join(output, "check.cpp");
-    writeFileSync(sourcePath, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        sourcePath,
+        `#include <bblite/runtime.hpp>
 #include <bit>
 #include <cassert>
 namespace bbl {
@@ -182,7 +287,7 @@ int main() {
     assert(record.source_tasks[0].value == 7);
     auto& pass = record.passes[0];
     pass.shader_index = 0; pass.params = {1.0}; pass.uniforms_dirty = false;
-    const double values[] = {${values.map((value) => Object.is(value, -0) ? "-0.0" : String(value)).join(", ")}};
+    const double values[] = {${values.map((value) => (Object.is(value, -0) ? "-0.0" : String(value))).join(", ")}};
     const std::uint32_t expected[] = {${bits.map((value) => `${value}u`).join(", ")}};
     for (std::size_t index = 0; index < std::size(values); ++index) {
         pass.params[0] = values[index];
@@ -196,9 +301,21 @@ int main() {
         pass.uniforms_dirty = false;
     }
 }
-`);
+`,
+    );
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", sourcePath]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        sourcePath,
+    ]);
     execFileSync(executable);
 });

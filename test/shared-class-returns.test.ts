@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     import { createEngine, createBox, type Mesh } from "@babylonjs/lite";
@@ -58,16 +61,24 @@ test("eligible class-returning helpers and methods share bodies across callback 
         assert.equal(result.cpp.split(marker).length - 1, 1, marker);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 2);
     assert.equal(result.manifest.sceneMeshes.length, 7);
-    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
+    assert.ok(
+        result.manifest.sceneMeshes.every((mesh) => !mesh.runtimeInstances),
+    );
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("shared class returns keep independent handles, fields, identity and nullable presence", { skip: !tools }, () => {
-    const output = resolve("artifacts/shared-class-returns");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `
+test(
+    "shared class returns keep independent handles, fields, identity and nullable presence",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/shared-class-returns");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -83,8 +94,24 @@ test("shared class returns keep independent handles, fields, identity and nullab
             void mark_mesh_dirty(Engine&, MeshHandle) {}
         }
         int main() { assert(generated_main() == 0); assert(constructions == 7); }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native/include", file]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

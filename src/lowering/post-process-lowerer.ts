@@ -12,10 +12,7 @@ import {
     type ComposedComposite,
     type CompositeTextureRef,
 } from "../pinned-post-process.js";
-import {
-    doubleLiteral as dvalue,
-    stringLiteral,
-} from "../cpp-literals.js";
+import { doubleLiteral as dvalue, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { blendSide, nativeBlendFactor } from "./pinned-blend-table.js";
 import {
@@ -25,10 +22,7 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
-import {
-    refuseGeneration,
-    type FeatureSites,
-} from "../generation-refusal.js";
+import { refuseGeneration, type FeatureSites } from "../generation-refusal.js";
 
 /** The feature every post-process refusal is keyed on. */
 const POST_PROCESS_FEATURE = "renderer:post-process";
@@ -63,8 +57,10 @@ export class PostProcessLowerer {
          * reads that task's live fields -- keyed by stage index. They join
          * the emitted switch beside the effects declared here.
          */
-        private readonly externalWriters: ReadonlyMap<number, string> =
-            new Map(),
+        private readonly externalWriters: ReadonlyMap<
+            number,
+            string
+        > = new Map(),
     ) {
         this.passes = postProcessPassOrder(tasks, composites);
     }
@@ -104,9 +100,7 @@ export class PostProcessLowerer {
 
     /** The effects this scene reached, in the pin's own declaration order. */
     private reachedEffects(): PostProcessEffect[] {
-        const reached = new Set(
-            this.passes.map((pass) => pass.intrinsic),
-        );
+        const reached = new Set(this.passes.map((pass) => pass.intrinsic));
         return POST_PROCESS_EFFECTS.filter((effect) =>
             reached.has(effect.intrinsic),
         );
@@ -117,11 +111,10 @@ export class PostProcessLowerer {
      * does, anchored where the pin decides it.
      */
     private assertTaskContracts(): void {
-        const { declaration: createTask } =
-            this.context.functionDeclaration(
-                TASK_MODULE,
-                "createPostProcessTask",
-            );
+        const { declaration: createTask } = this.context.functionDeclaration(
+            TASK_MODULE,
+            "createPostProcessTask",
+        );
         // The pass draws three vertices with no vertex buffer: the emitted
         // PAL draw is that call, so it is pinned here.
         if (
@@ -183,21 +176,17 @@ export class PostProcessLowerer {
 
         // The viewport rectangle. It is NOT the copy task's: the far edges
         // round up here and down there, so the two cannot share a resolver.
-        const { declaration: applyViewport } =
-            this.context.functionDeclaration(
-                TASK_MODULE,
-                "applyViewport",
-            );
+        const { declaration: applyViewport } = this.context.functionDeclaration(
+            TASK_MODULE,
+            "applyViewport",
+        );
         for (const [name, expected] of [
             ["x", "Math.floor(viewport.x * rt._width)"],
             [
                 "y",
                 "Math.floor((1 - viewport.y - viewport.height) * rt._height)",
             ],
-            [
-                "w",
-                "Math.ceil((viewport.x + viewport.width) * rt._width) - x",
-            ],
+            ["w", "Math.ceil((viewport.x + viewport.width) * rt._width) - x"],
             ["h", "Math.ceil((1 - viewport.y) * rt._height) - y"],
         ] as const) {
             this.context.assertExpressionShape(
@@ -223,18 +212,17 @@ export class PostProcessLowerer {
 
         // The uniform block's size is rounded to sixteen bytes, and its
         // binding follows the extra textures.
-        const { declaration: align16 } =
-            this.context.functionDeclaration(TASK_MODULE, "align16");
+        const { declaration: align16 } = this.context.functionDeclaration(
+            TASK_MODULE,
+            "align16",
+        );
         this.assertSingleReturn(
             align16,
             "Math.ceil(value / 16) * 16",
             "Post-process uniform alignment",
         );
         const { declaration: uniformBinding } =
-            this.context.functionDeclaration(
-                TASK_MODULE,
-                "getUniformBinding",
-            );
+            this.context.functionDeclaration(TASK_MODULE, "getUniformBinding");
         this.assertSingleReturn(
             uniformBinding,
             "task._shader.uniformBinding ?? 2 + (task._shader.extraTextures?.length ?? 0)",
@@ -244,11 +232,10 @@ export class PostProcessLowerer {
         // The bind group the emitted pass fills: the sampler, the source
         // view, then the effect's extra views, then the uniform block at the
         // binding above. Both PALs bind in exactly this order.
-        const { declaration: gpuState } =
-            this.context.functionDeclaration(
-                TASK_MODULE,
-                "createPostProcessGpuState",
-            );
+        const { declaration: gpuState } = this.context.functionDeclaration(
+            TASK_MODULE,
+            "createPostProcessGpuState",
+        );
         const bindings = this.context
             .findNodes(
                 gpuState,
@@ -261,15 +248,8 @@ export class PostProcessLowerer {
                                 "binding",
                     ),
             )
-            .map((entry) =>
-                this.context.propertyInitializer(entry, "binding"),
-            );
-        const expectedBindings = [
-            "0",
-            "1",
-            "getUniformBinding(task)",
-            "2 + i",
-        ];
+            .map((entry) => this.context.propertyInitializer(entry, "binding"));
+        const expectedBindings = ["0", "1", "getUniformBinding(task)", "2 + i"];
         if (bindings.length !== expectedBindings.length) {
             this.context.contractError(
                 gpuState,
@@ -298,10 +278,7 @@ export class PostProcessLowerer {
      */
     private readBlendModes(): Map<number, readonly string[]> {
         const { declaration: alphaModeToBlend } =
-            this.context.functionDeclaration(
-                TASK_MODULE,
-                "alphaModeToBlend",
-            );
+            this.context.functionDeclaration(TASK_MODULE, "alphaModeToBlend");
         const modes = new Map<number, readonly string[]>();
         for (const clause of this.context.findNodes(
             alphaModeToBlend,
@@ -350,8 +327,7 @@ export class PostProcessLowerer {
     ): void {
         const returns = this.context.findNodes(
             declaration,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node),
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
         );
         if (returns.length !== 1 || !returns[0]!.expression) {
             this.context.contractError(
@@ -360,7 +336,7 @@ export class PostProcessLowerer {
             );
         }
         this.context.assertExpressionShape(
-            returns[0]!.expression!,
+            returns[0]!.expression,
             expected,
             label,
         );
@@ -458,9 +434,11 @@ export class PostProcessLowerer {
             if (slot.owner === "task") {
                 this.expectDefault(
                     this.context.propertyInitializer(
-                        this.context.objectInitializer(declaration, "task"), slot.path,
+                        this.context.objectInitializer(declaration, "task"),
+                        slot.path,
                     ),
-                    slot.fallback, file,
+                    slot.fallback,
+                    file,
                     { intrinsic: effect.intrinsic, option: slot.path },
                 );
                 continue;
@@ -531,8 +509,13 @@ export class PostProcessLowerer {
     }
 
     private header(): string {
-        const lifecycleHeaders = new Set(this.composites.filter((composite) => composite.taa !== undefined)
-            .map((composite) => new TaaPostProcessLowerer(this.context, composite).header()));
+        const lifecycleHeaders = new Set(
+            this.composites
+                .filter((composite) => composite.taa !== undefined)
+                .map((composite) =>
+                    new TaaPostProcessLowerer(this.context, composite).header(),
+                ),
+        );
         if (lifecycleHeaders.size > 1) {
             refuseGeneration(
                 POST_PROCESS_FEATURE,
@@ -540,7 +523,9 @@ export class PostProcessLowerer {
                 this.featureSites,
             );
         }
-        const sceneUbo = lifecycleHeaders.size ? new SceneUboLowerer(this.context) : undefined;
+        const sceneUbo = lifecycleHeaders.size
+            ? new SceneUboLowerer(this.context)
+            : undefined;
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -918,14 +903,18 @@ ${passes.join(",\n")},
     };
     options.output_pass = ${composite.outputPass}u;
     options.source_tasks = std::move(inputs.source_tasks);
-${composite.taa ? `    options.taa = std::make_shared<TaaPostProcessState>(
+${
+    composite.taa
+        ? `    options.taa = std::make_shared<TaaPostProcessState>(
         upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));
     upstream::initialize_taa_jitter(*options.taa, ${dvalue(composite.taa.samples)});
     FrameTaskRecord& source = engine.frame_tasks.at(options.source_tasks.at(0).value);
     if (source.kind != FrameTaskKind::render || !source.source_scene) {
         throw std::runtime_error("TAA source must retain its original render-task scene.");
     }
-    if (!source.scene_uniforms) source.scene_uniforms = upstream::create_persistent_scene_uniforms();\n` : ""}    return create_post_process_task(engine, std::move(options));
+    if (!source.scene_uniforms) source.scene_uniforms = upstream::create_persistent_scene_uniforms();\n`
+        : ""
+}    return create_post_process_task(engine, std::move(options));
 }`;
     }
 
@@ -1004,10 +993,7 @@ ${body}
                 ts.isCallExpression(node) &&
                 node.arguments.length > 0 &&
                 ts.isObjectLiteralExpression(node.arguments[0]!) &&
-                passNameEndsWith(
-                    node.arguments[0] as ts.ObjectLiteralExpression,
-                    suffix,
-                ),
+                passNameEndsWith(node.arguments[0], suffix),
         );
         if (calls.length !== 1) {
             this.context.contractError(

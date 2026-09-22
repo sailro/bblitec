@@ -1,100 +1,255 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import {LoweringContext} from "../src/lowering/context.js";
-import {gltfAnimationPointerRuntimeCpp} from "../src/lowering/gltf/animation-pointer-runtime.js";
-import {lowerGltfAnimationPointerWriters} from "../src/lowering/gltf/animation-pointer-writers.js";
-import {gltfAnimationPointerOwnersCpp} from "../src/lowering/gltf/animation-pointer-owners.js";
-import {gltfMaterialValueRuntime} from "../src/lowering/gltf/material-value-runtime.js";
-import {gltfMaterialProjection} from "../src/lowering/gltf/material-projection.js";
-import {lowerGltfMaterialProperties} from "../src/lowering/gltf/material-properties.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {recordAnimationMaterialState, readAnimationMaterialState} from "../src/gltf-animation-material-state.js";
-import {LightLowerer} from "../src/lowering/light-lowerer.js";
-import {cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { gltfAnimationPointerRuntimeCpp } from "../src/lowering/gltf/animation-pointer-runtime.js";
+import { lowerGltfAnimationPointerWriters } from "../src/lowering/gltf/animation-pointer-writers.js";
+import { gltfAnimationPointerOwnersCpp } from "../src/lowering/gltf/animation-pointer-owners.js";
+import { gltfMaterialValueRuntime } from "../src/lowering/gltf/material-value-runtime.js";
+import { gltfMaterialProjection } from "../src/lowering/gltf/material-projection.js";
+import { lowerGltfMaterialProperties } from "../src/lowering/gltf/material-properties.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    recordAnimationMaterialState,
+    readAnimationMaterialState,
+} from "../src/gltf-animation-material-state.js";
+import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("material initialization patches retain source clones and exact numeric values", () => {
-    const texture = {uScale: 1, nested: {unchanged: true}}, material: Record<string, unknown> = {texture, scalar: 0};
+    const texture = { uScale: 1, nested: { unchanged: true } },
+        material: Record<string, unknown> = { texture, scalar: 0 };
     const read = recordAnimationMaterialState([material]);
-    material.texture = {...texture, _animPriv: true}; material.scalar = -0; material.other = {value: Infinity};
+    material.texture = { ...texture, _animPriv: true };
+    material.scalar = -0;
+    material.other = { value: Infinity };
     const state = read();
-    assert.deepEqual(state, [{index: 0, patches: [
-        {path: ["texture"], operation: "clone"}, {path: ["texture", "_animPriv"], operation: "set", value: {kind: "literal", value: true}},
-        {path: ["scalar"], operation: "set", value: {kind: "number", value: "-0"}},
-        {path: ["other"], operation: "set", value: {kind: "object", fields: {value: {kind: "number", value: "Infinity"}}}},
-    ]}]);
-    assert.deepEqual(readAnimationMaterialState(JSON.parse(JSON.stringify(state)), 1), state);
-    assert.throws(() => readAnimationMaterialState(state, 0), /Invalid packaged/);
+    assert.deepEqual(state, [
+        {
+            index: 0,
+            patches: [
+                { path: ["texture"], operation: "clone" },
+                {
+                    path: ["texture", "_animPriv"],
+                    operation: "set",
+                    value: { kind: "literal", value: true },
+                },
+                {
+                    path: ["scalar"],
+                    operation: "set",
+                    value: { kind: "number", value: "-0" },
+                },
+                {
+                    path: ["other"],
+                    operation: "set",
+                    value: {
+                        kind: "object",
+                        fields: {
+                            value: { kind: "number", value: "Infinity" },
+                        },
+                    },
+                },
+            ],
+        },
+    ]);
+    assert.deepEqual(
+        readAnimationMaterialState(JSON.parse(JSON.stringify(state)), 1),
+        state,
+    );
+    assert.throws(
+        () => readAnimationMaterialState(state, 0),
+        /Invalid packaged/,
+    );
 });
 
-test("bound source writers retain aliases and refresh independent native material and light writes", async t => {
-    const native = optionalNativeFixtureTools(); if (!native) return t.skip("Native fixture tools unavailable");
-    const context = new LoweringContext(), lowered = lowerGltfAnimationPointerWriters(context);
-    const iorDeclaration = context.functionDeclaration("src/loader-gltf/animation-pointer-ext.ts", "iorToF0Factor").declaration;
-    const iorFactor = new Function("exports", transpileCommonJs(`${iorDeclaration.getText()}\nreturn iorToF0Factor;`, "ior.ts"))({}) as (value: number) => number;
-    const materialContexts = [context, doctoredContext("src/loader-gltf/animation-pointer-basecolor.ts",
-        "mat._baseColorFactor = [1, 1, 1, 1];", "mat._baseColorFactor = [0.5, 0.5, 0.5, 0.5];")];
-    const materialLowerings = materialContexts.map(context => lowerGltfMaterialProperties(context));
+test("bound source writers retain aliases and refresh independent native material and light writes", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) return t.skip("Native fixture tools unavailable");
+    const context = new LoweringContext(),
+        lowered = lowerGltfAnimationPointerWriters(context);
+    const iorDeclaration = context.functionDeclaration(
+        "src/loader-gltf/animation-pointer-ext.ts",
+        "iorToF0Factor",
+    ).declaration;
+    const iorFactor = createJavaScriptFunction(
+        "exports",
+        transpileCommonJs(
+            `${iorDeclaration.getText()}\nreturn iorToF0Factor;`,
+            "ior.ts",
+        ),
+    )({}) as (value: number) => number;
+    const materialContexts = [
+        context,
+        doctoredContext(
+            "src/loader-gltf/animation-pointer-basecolor.ts",
+            "mat._baseColorFactor = [1, 1, 1, 1];",
+            "mat._baseColorFactor = [0.5, 0.5, 0.5, 0.5];",
+        ),
+    ];
+    const materialLowerings = materialContexts.map((context) =>
+        lowerGltfMaterialProperties(context),
+    );
     const whiteCases = [];
-    for (const [version, context] of materialContexts.entries()) for (const present of [false, true])
-        for (const image of [false, true]) for (const selected of [false, true]) for (const module of [false, true]) {
-            const input = {_baseColorFactor: [.2, .4, .6, .8], ...(present ? {_rawMatDef: {}} : {}), _baseColorImage: image ? {} : null};
-            const definitions = new WeakSet<object>(); if (selected && input._rawMatDef) definitions.add(input._rawMatDef);
-            const definition = context.functionDeclaration("src/loader-gltf/animation-pointer-basecolor.ts", "whiteFallback").declaration;
-            const white = new Function("exports", "_animBaseColorDefs", transpileCommonJs(`${definition.getText()}\nreturn whiteFallback;`, "white.ts"))({}, definitions);
-            const feature = context.sourceFile("src/loader-gltf/gltf-feature-animation-pointer.ts");
-            const methods = context.findNodes(feature, (node): node is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(node) && node.name.getText() === "applyMaterial");
-            const apply = new Function("mat", "_baseColorMod", transpileCommonJs(`return (async () => ${methods[0]!.body!.getText()})();`, "apply.ts"));
-            const result = await apply(input, module ? {whiteFallback: white} : null);
-            whiteCases.push({version, present, image, selected, module, factor: input._baseColorFactor, returned: result?.baseColorFactor ?? null});
-        }
-    const writer = (body: string) => lowered.writers.find(writer => writer.declaration.body.getText().includes(body))!.site;
-    const closure = (site: string, values: Record<string, unknown>) => ({kind: "closure", site, values});
-    const mat = {kind: "material", index: 0, path: []};
+    for (const [version, context] of materialContexts.entries())
+        for (const present of [false, true])
+            for (const image of [false, true])
+                for (const selected of [false, true])
+                    for (const module of [false, true]) {
+                        const input = {
+                            _baseColorFactor: [0.2, 0.4, 0.6, 0.8],
+                            ...(present ? { _rawMatDef: {} } : {}),
+                            _baseColorImage: image ? {} : null,
+                        };
+                        const definitions = new WeakSet<object>();
+                        if (selected && input._rawMatDef)
+                            definitions.add(input._rawMatDef);
+                        const definition = context.functionDeclaration(
+                            "src/loader-gltf/animation-pointer-basecolor.ts",
+                            "whiteFallback",
+                        ).declaration;
+                        const white = createJavaScriptFunction(
+                            "exports",
+                            "_animBaseColorDefs",
+                            transpileCommonJs(
+                                `${definition.getText()}\nreturn whiteFallback;`,
+                                "white.ts",
+                            ),
+                        )({}, definitions);
+                        const feature = context.sourceFile(
+                            "src/loader-gltf/gltf-feature-animation-pointer.ts",
+                        );
+                        const methods = context.findNodes(
+                            feature,
+                            (node): node is ts.MethodDeclaration =>
+                                ts.isMethodDeclaration(node) &&
+                                node.name.getText() === "applyMaterial",
+                        );
+                        const apply = createJavaScriptFunction(
+                            "mat",
+                            "_baseColorMod",
+                            transpileCommonJs(
+                                `return (async () => ${methods[0]!.body!.getText()})();`,
+                                "apply.ts",
+                            ),
+                        );
+                        const result = (await apply(
+                            input,
+                            module ? { whiteFallback: white } : null,
+                        )) as { baseColorFactor?: unknown } | null | undefined;
+                        whiteCases.push({
+                            version,
+                            present,
+                            image,
+                            selected,
+                            module,
+                            factor: input._baseColorFactor,
+                            returned: result?.baseColorFactor ?? null,
+                        });
+                    }
+    const writer = (body: string) =>
+        lowered.writers.find((writer) =>
+            writer.declaration.body.getText().includes(body),
+        )!.site;
+    const closure = (site: string, values: Record<string, unknown>) => ({
+        kind: "closure",
+        site,
+        values,
+    });
+    const mat = { kind: "material", index: 0, path: [] };
     const textureOwners = [
-        {path: ["ormTexture"], field: "orm"},
-        {path: ["occlusionTexture"], field: "occlusion"},
-        {path: ["_anisotropy", "texture"], field: "anisotropy"},
-        {path: ["_subsurface", "translucency", "colorTexture"], field: "translucency_color"},
-        {path: ["_subsurface", "translucency", "intensityTexture"], field: "translucency_intensity"},
-        {path: ["_metallicReflectanceTexture"], field: "metallic_reflectance"},
-        {path: ["_reflectanceTexture"], field: "reflectance"},
+        { path: ["ormTexture"], field: "orm" },
+        { path: ["occlusionTexture"], field: "occlusion" },
+        { path: ["_anisotropy", "texture"], field: "anisotropy" },
+        {
+            path: ["_subsurface", "translucency", "colorTexture"],
+            field: "translucency_color",
+        },
+        {
+            path: ["_subsurface", "translucency", "intensityTexture"],
+            field: "translucency_intensity",
+        },
+        {
+            path: ["_metallicReflectanceTexture"],
+            field: "metallic_reflectance",
+        },
+        { path: ["_reflectanceTexture"], field: "reflectance" },
     ];
     const captures = {
-        base: closure(writer("mat.baseColorFactor![0]"), {mat}),
-        roughness: closure(writer("mat.roughnessFactor ="), {mat}),
-        uv: closure(writer("tex.uAng ="), {mat, tex: {...mat, path: ["ormTexture"]}}),
-        transmission: closure(writer("refr.intensity ="), {mat, refr: {...mat, path: ["_subsurface", "refraction"]}}),
-        ior: closure(writer("mat._metallicF0Factor ="), {mat}),
-        thickness: closure(writer("ss.thickness.max ="), {mat,
-            m: {kind: "array", values: ["pointer", "0", "thicknessFactor"].map(value => ({kind: "literal", value}))}}),
+        base: closure(writer("mat.baseColorFactor![0]"), { mat }),
+        roughness: closure(writer("mat.roughnessFactor ="), { mat }),
+        uv: closure(writer("tex.uAng ="), {
+            mat,
+            tex: { ...mat, path: ["ormTexture"] },
+        }),
+        transmission: closure(writer("refr.intensity ="), {
+            mat,
+            refr: { ...mat, path: ["_subsurface", "refraction"] },
+        }),
+        ior: closure(writer("mat._metallicF0Factor ="), { mat }),
+        thickness: closure(writer("ss.thickness.max ="), {
+            mat,
+            m: {
+                kind: "array",
+                values: ["pointer", "0", "thicknessFactor"].map((value) => ({
+                    kind: "literal",
+                    value,
+                })),
+            },
+        }),
         light: closure(writer('field === "color"'), {
-            field: {kind: "literal", value: "spot/outerConeAngle"},
-            getLight: closure(lowered.writers.find(writer => writer.kind === "lookup")!.site,
-                {ctx: {kind: "context"}, lightIdx: {kind: "literal", value: 0}}),
+            field: { kind: "literal", value: "spot/outerConeAngle" },
+            getLight: closure(
+                lowered.writers.find((writer) => writer.kind === "lookup")!
+                    .site,
+                {
+                    ctx: { kind: "context" },
+                    lightIdx: { kind: "literal", value: 0 },
+                },
+            ),
         }),
     };
-    const directory = resolve("artifacts/test-gltf-animation-pointer-runtime"); mkdirSync(directory, {recursive: true});
-    writeFileSync(resolve(directory, "cases.json"), JSON.stringify({...captures, whiteCases,
-        textureOwners: textureOwners.map(({path}) => closure(writer("tex.uScale ="),
-            {mat, tex: {...mat, path}, isScale: {kind: "literal", value: false}})),
-    }));
+    const directory = resolve("artifacts/test-gltf-animation-pointer-runtime");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        resolve(directory, "cases.json"),
+        JSON.stringify({
+            ...captures,
+            whiteCases,
+            textureOwners: textureOwners.map(({ path }) =>
+                closure(writer("tex.uScale ="), {
+                    mat,
+                    tex: { ...mat, path },
+                    isScale: { kind: "literal", value: false },
+                }),
+            ),
+        }),
+    );
     const projection = gltfMaterialProjection(true);
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
     const spot = new LightLowerer(context).lowerSpotFactory().source;
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bit>
 #include <cassert>
 #include <fstream>
 namespace bbl {
-const ts::JsonValue* optional(const ts::JsonValue::Object& value, const std::string& key) {
+const ts::JsonValue* optional(const ts::JsonValue::Object& value, std::string_view key) {
     const auto found = value.find(key); return found == value.end() ? nullptr : &found->second;
 }
 std::size_t gltf_checked_index(double value) {
@@ -111,16 +266,26 @@ struct GltfMaterialTexture {
 };
 using GltfMaterialImage = std::shared_ptr<int>;
 ${gltfMaterialValueRuntime}
-${["void gltf_pbr_number(", "void gltf_pbr_color(", "void gltf_pbr_transform("].map(signature => cppFunction(projection, signature)).join("\n")}
+${["void gltf_pbr_number(", "void gltf_pbr_color(", "void gltf_pbr_transform("].map((signature) => cppFunction(projection, signature)).join("\n")}
 ${gltfAnimationPointerOwnersCpp}
 ${lowered.source}
 ${gltfAnimationPointerRuntimeCpp()}
 ${cppFunction(spot, "void refresh_spot_light_cone(")}
 struct GltfPbrContext { bool base_color_definition = false, base_color_module = false; };
-${materialLowerings.map((lowered, index) => `namespace white_${index} {
-${[lowered.functions.find(target => target.name === "whiteFallback")!, lowered.features.find(feature => feature.handler.module.endsWith("/gltf-feature-animation-pointer.ts"))!.handler]
-        .map(target => cppFunction(lowered.source, `GltfPbrValue ${target.cpp}(`)).join("\n")}
-}`).join("\n")}
+${materialLowerings
+    .map(
+        (lowered, index) => `namespace white_${index} {
+${[
+    lowered.functions.find((target) => target.name === "whiteFallback")!,
+    lowered.features.find((feature) =>
+        feature.handler.module.endsWith("/gltf-feature-animation-pointer.ts"),
+    )!.handler,
+]
+    .map((target) => cppFunction(lowered.source, `GltfPbrValue ${target.cpp}(`))
+    .join("\n")}
+}`,
+    )
+    .join("\n")}
 }
 int main(int argc, char** argv) {
     assert(argc == 2); using namespace bbl;
@@ -140,14 +305,21 @@ int main(int argc, char** argv) {
         if (!result.nullish()) for (std::size_t index = 0; index < 4; ++index)
             assert(result.get("baseColorFactor").at(static_cast<double>(index)).number() == fields.at("returned").as_array()[index].as_number());
     }
-    ${textureOwners.map(({path, field}, index) => `{
+    ${textureOwners
+        .map(
+            ({ path, field }, index) => `{
         Engine owner_engine; owner_engine.materials.resize(2);
         auto& material = owner_engine.materials[0];
         material.${field}_transform.u_offset = 11; material.${field}_transform.v_offset = 12;
         auto props = GltfPbrValue::object(), owner = props;
-        ${path.slice(0, -1).map(key => `{
+        ${path
+            .slice(0, -1)
+            .map(
+                (key) => `{
             auto child = GltfPbrValue::object(); owner.set(${JSON.stringify(key)}, child); owner = child;
-        }`).join("\n")}
+        }`,
+            )
+            .join("\n")}
         auto shared_texture = GltfPbrValue{GltfMaterialTexture{}};
         shared_texture.set("uOffset", GltfPbrValue{11.0}); shared_texture.set("vOffset", GltfPbrValue{12.0});
         const auto private_texture = shared_texture.clone();
@@ -159,12 +331,18 @@ int main(int argc, char** argv) {
         assert(material.${field}_transform.u_offset == .25f && material.${field}_transform.v_offset == .75f);
         assert(private_texture.get("uOffset").number() == .25 && shared_texture.get("uOffset").number() == 11);
         assert(owner_engine.materials[1].${field}_transform.u_offset == 0);
-        ${field === "orm" || field === "occlusion" ? `++material.${field}_texture_generation;
+        ${
+            field === "orm" || field === "occlusion"
+                ? `++material.${field}_texture_generation;
         material.${field}_transform.u_offset = 21; material.${field}_transform.v_offset = 22;
         animate(std::vector<float>{.5f, 1.25f}, 0.0);
         assert(material.${field}_transform.u_offset == 21 && material.${field}_transform.v_offset == 22);
-        assert(private_texture.get("uOffset").number() == .5 && private_texture.get("vOffset").number() == 1.25);` : ""}
-    }`).join("\n")}
+        assert(private_texture.get("uOffset").number() == .5 && private_texture.get("vOffset").number() == 1.25);`
+                : ""
+        }
+    }`,
+        )
+        .join("\n")}
     Engine engine; engine.materials.resize(2); engine.lights.resize(1);
     auto& material = engine.materials[0];
     material.source_base_color_factor = std::make_shared<std::vector<double>>(std::initializer_list<double>{.1, .2, .3, .4});
@@ -193,10 +371,16 @@ int main(int argc, char** argv) {
     assert(material.transmission_factor == .375f && material.source_refraction_intensity == .375 && material.source_transmissive);
     assert(engine.materials[1].transmission_factor == 0.0f);
     auto animateIor = gltf_bind_animation_pointer(runtime, cases.as_object().at("ior"));
-    ${[1, 1.2, 1.5, 2, 3].map(sample => `animateIor(std::vector<float>{static_cast<float>(${context.doubleLiteral(sample)})}, 0.0);
+    ${[1, 1.2, 1.5, 2, 3]
+        .map(
+            (
+                sample,
+            ) => `animateIor(std::vector<float>{static_cast<float>(${context.doubleLiteral(sample)})}, 0.0);
     assert(material.index_of_refraction == static_cast<float>(${context.doubleLiteral(sample)}));
     assert(material.metallic_f0_factor == static_cast<float>(${context.doubleLiteral(iorFactor(Math.fround(sample)))}));
-    assert(material.specular_weight == 1.0f);`).join("\n")}
+    assert(material.specular_weight == 1.0f);`,
+        )
+        .join("\n")}
     auto animateThickness = gltf_bind_animation_pointer(runtime, cases.as_object().at("thickness"));
     animateThickness(std::vector<float>{.25f}, 0.0);
     assert(material.thickness == .25f && material.use_thickness_as_depth);
@@ -224,8 +408,26 @@ int main(int argc, char** argv) {
     std::weak_ptr<GltfAnimationPointerRuntime> lifetime = runtime;
     base = {}; transmission = {}; uv = {}; animateIor = {}; animateThickness = {}; animateLight = {}; runtime.reset(); assert(lifetime.expired());
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    execFileSync(executable, [resolve(directory, "cases.json")], {stdio: "pipe"});
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    execFileSync(executable, [resolve(directory, "cases.json")], {
+        stdio: "pipe",
+    });
 });

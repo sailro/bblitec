@@ -4,16 +4,20 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 for (const mode of ["window", "window-with-engine", "scene"] as const) {
-    test(`stored DOM handles preserve their document owner in ${mode}`, t => {
+    test(`stored DOM handles preserve their document owner in ${mode}`, (t) => {
         const window = mode !== "scene";
         const engine = mode !== "window";
         const directory = resolve(`artifacts/ui-stored-handles-${mode}`);
-        mkdirSync(directory, {recursive:true});
+        mkdirSync(directory, { recursive: true });
         writeFileSync(join(directory, "worker.ts"), "self.close();");
-        const result = compileSource(`
+        const result = compileSource(
+            `
             ${engine ? 'import {createEngine} from "@babylonjs/lite";' : ""}
             ${window ? 'const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"}); worker.terminate();' : ""}
             ${window && engine ? "async function run(): Promise<void> {" : ""}
@@ -31,22 +35,38 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
             const labels: HTMLElement[] = [label];
             function rename(element: HTMLElement): void { element.textContent = "array"; }
             rename(labels[0]!);
-            ${window ? 'globalThis.close();' : ""}
+            ${window ? "globalThis.close();" : ""}
             ${window && engine ? "} void run();" : ""}
-        `, {fileName:join(directory, "entry.ts")});
+        `,
+            { fileName: join(directory, "entry.ts") },
+        );
         if (window) {
-            const writes = result.cpp.split("\n").filter(line => line.includes("bbl::ui_set_text("));
+            const writes = result.cpp
+                .split("\n")
+                .filter((line) => line.includes("bbl::ui_set_text("));
             assert.equal(writes.length, 3);
-            assert.ok(writes.every(line => line.includes("bbl::ui_set_text(bbl::pal::window_document_engine(),")));
+            assert.ok(
+                writes.every((line) =>
+                    line.includes(
+                        "bbl::ui_set_text(bbl::pal::window_document_engine(),",
+                    ),
+                ),
+            );
         }
         // The CPU fixture exercises Window and scene ownership independently.
         // The combined case checks selection with a rendering engine in scope.
         if (window && engine) return;
         const tools = optionalNativeFixtureTools(false);
-        if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
         writeFileSync(join(directory, "program.hpp"), result.cpp);
-        const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-        writeFileSync(cpp, `
+        const cpp = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(
+            cpp,
+            `
             #define main generated_main
             #include "program.hpp"
             #undef main
@@ -69,7 +89,9 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
                     ++writes;
                 }
             }
-            ${window ? `namespace bbl::pal {
+            ${
+                window
+                    ? `namespace bbl::pal {
                 Engine& window_document_engine() { static Engine host; return host; }
                 int run_window_application(WorkerEntry initialize, EngineOptions) {
                     const js::RealmScope scope;
@@ -78,12 +100,36 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
                     loop.run([&] { initialize(realm); });
                     return 0;
                 }
-            }` : ""}
+            }`
+                    : ""
+            }
             int main() { const int result = generated_main(); assert(bbl::writes == 3); return result; }
-        `);
-        runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-            "/DBBLITE_HAS_UI=1", ...(window ? ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"] : []),
-            "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-        assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+        `,
+        );
+        runNativeFixtureCompiler(tools, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/DBBLITE_HAS_UI=1",
+            ...(window
+                ? ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"]
+                : []),
+            "/I",
+            "native/include",
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            cpp,
+        ]);
+        assert.equal(
+            execFileSync(executable, {
+                encoding: "utf8",
+                timeout: 10000,
+                stdio: "pipe",
+            }),
+            "",
+        );
     });
 }

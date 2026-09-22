@@ -4,19 +4,48 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { developmentTriplet } from "../src/build-options.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("native numeric strings, concatenation and JSON match JavaScript across binary64 values", t => {
+test("native numeric strings, concatenation and JSON match JavaScript across binary64 values", (t) => {
     const tools = optionalNativeFixtureTools();
-    const unixCompiler = process.platform !== "win32" ? discoverDevelopmentTools().cxx : undefined;
-    if (!tools && !unixCompiler) { t.skip("Native fixture compiler unavailable."); return; }
+    const unixCompiler =
+        process.platform !== "win32"
+            ? discoverDevelopmentTools().cxx
+            : undefined;
+    if (!tools && !unixCompiler) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/number-format-check");
     mkdirSync(directory, { recursive: true });
     const bits = new DataView(new ArrayBuffer(8));
     const samples = new Set<bigint>();
-    for (const value of [0, -0, NaN, Infinity, -Infinity, Number.MIN_VALUE, Number.MAX_VALUE,
-        Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 2147483648, -2147483649,
-        1e-7, 1e-6, 1e-5, 1e20, 1e21, 1e22, 1000000000000000100, .1, Math.PI]) {
+    for (const value of [
+        0,
+        -0,
+        NaN,
+        Infinity,
+        -Infinity,
+        Number.MIN_VALUE,
+        Number.MAX_VALUE,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+        2147483648,
+        -2147483649,
+        1e-7,
+        1e-6,
+        1e-5,
+        1e20,
+        1e21,
+        1e22,
+        1000000000000000100,
+        0.1,
+        Math.PI,
+    ]) {
         bits.setFloat64(0, value);
         const raw = bits.getBigUint64(0);
         samples.add(raw);
@@ -28,26 +57,62 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
     }
     let random = 0x84222325cbf29cen;
     for (let index = 0; index < 8192; ++index) {
-        random = BigInt.asUintN(64, random * 6364136223846793005n + 1442695040888963407n);
+        random = BigInt.asUintN(
+            64,
+            random * 6364136223846793005n + 1442695040888963407n,
+        );
         samples.add(random);
     }
-    const cases = [...samples].map(raw => {
+    const cases = [...samples].map((raw) => {
         bits.setBigUint64(0, raw);
         const value = bits.getFloat64(0);
         return `${raw.toString(16)}\t${String(value)}\t${JSON.stringify(value)}`;
     });
-    const input = join(directory, "cases.tsv"), executable = join(directory, "check.exe");
+    const input = join(directory, "cases.tsv"),
+        executable = join(directory, "check.exe");
     writeFileSync(input, cases.join("\n") + "\n");
     if (tools) {
-        runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-            "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"),
-            `/Fo:${directory}/`, `/Fe:${executable}`, "test/fixtures/number-format-check.cpp"]);
+        runNativeFixtureCompiler(tools, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            "/I",
+            "native/include",
+            "/I",
+            join(nativeFixtureVcpkgRoot, "include"),
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            "test/fixtures/number-format-check.cpp",
+        ]);
     } else {
-        const dependencies = resolve("artifacts/vcpkg-installed/development-full", developmentTriplet());
-        execFileSync(unixCompiler!, ["-std=c++20", "-Wall", "-Wextra", "-Werror",
-            "-I", "native/include", "-I", join(dependencies, "include"),
-            "test/fixtures/number-format-check.cpp", "-o", executable,
-            ...(process.platform === "darwin" ? [join(dependencies, "lib/libboost_charconv.a")] : [])], { stdio: "pipe" });
+        const dependencies = resolve(
+            "artifacts/vcpkg-installed/development-full",
+            developmentTriplet(),
+        );
+        execFileSync(
+            unixCompiler!,
+            [
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                "native/include",
+                "-I",
+                join(dependencies, "include"),
+                "test/fixtures/number-format-check.cpp",
+                "-o",
+                executable,
+                ...(process.platform === "darwin"
+                    ? [join(dependencies, "lib/libboost_charconv.a")]
+                    : []),
+            ],
+            { stdio: "pipe" },
+        );
     }
     execFileSync(executable, [input], { stdio: "pipe" });
 });

@@ -85,9 +85,10 @@ export async function pinnedSplatFragment(
                 `${Object.keys(gsFragmentModules).join(", ")}.`,
         );
     }
-    const module = await importPinnedModule<
-        Record<string, SplatShaderFragment>
-    >(modulePath);
+    const module =
+        await importPinnedModule<Record<string, SplatShaderFragment>>(
+            modulePath,
+        );
     const record = module[importedName];
     if (!record) {
         throw new Error(
@@ -167,7 +168,10 @@ export async function composeSplatShModule(
     }>(splatShPipelineModule, ["buildShShaderSource", "SH_TEXTURE_COUNT"]);
     if (
         typeof module.buildShShaderSource !== "function" ||
-        !Array.isArray(module.SH_TEXTURE_COUNT)
+        !Array.isArray(module.SH_TEXTURE_COUNT) ||
+        !module.SH_TEXTURE_COUNT.every(
+            (count: unknown): count is number => typeof count === "number",
+        )
     ) {
         throw new Error(
             `The pinned module ${splatShPipelineModule} no longer declares ` +

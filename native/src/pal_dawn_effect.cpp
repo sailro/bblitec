@@ -46,7 +46,8 @@ class DawnEffectRun : public FrameSession {
         msaa_texture.reset();
         msaa_view = nullptr;
         msaa_texture = nullptr;
-        if (samples == 1) return;
+        if (samples == 1)
+            return;
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.usage = WGPUTextureUsage_RenderAttachment;
         descriptor.size = {width, height, 1};
@@ -58,6 +59,7 @@ class DawnEffectRun : public FrameSession {
         }
         msaa_view = create_dawn_texture_view(msaa_texture, nullptr);
     }
+
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
     explicit DawnEffectRun(Engine& target) : FrameSession(target) {}
@@ -65,7 +67,8 @@ public:
         encoder.reset();
         surface_view.reset();
         surface.reset();
-        for (auto& pass : passes) release_dawn_effect_pass(pass);
+        for (auto& pass : passes)
+            release_dawn_effect_pass(pass);
         msaa_view.reset();
         msaa_texture.reset();
         state.release();
@@ -90,28 +93,21 @@ public:
         // of the pin's own surface declaration (`msaaSamples === 1 ? 1 :
         // 4`), not a re-typed 4.
         samples = frame_options.single_sample
-            ? 1u
-            : upstream::preferred_sample_count(engine.options.msaa_samples);
+                      ? 1u
+                      : upstream::preferred_sample_count(engine.options.msaa_samples);
 
         recreate_msaa_target();
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.
-        for (const EffectRendererHandle& handle :
-             engine.registered_effect_renderers) {
-            const EffectRendererRecord& record =
-                handle_at(engine.effect_renderers, handle);
-            passes.push_back(create_dawn_effect_pass(
-                state,
-                engine,
-                record.effect,
-                state.surface_format,
-                samples));
+        for (const EffectRendererHandle& handle : engine.registered_effect_renderers) {
+            const EffectRendererRecord& record = handle_at(engine.effect_renderers, handle);
+            passes.push_back(create_dawn_effect_pass(state, engine, record.effect,
+                                                     state.surface_format, samples));
         }
     }
     FramePreparation prepare() {
-        poll_platform_events(
-            engine, running, frame_options.test_pass);
+        poll_platform_events(engine, running, frame_options.test_pass);
         input_replay.dispatch(frame, state.window, engine);
         sync_engine_canvas_size(state.window, engine);
         if (resize_dawn_surface(state, engine.options)) {
@@ -119,19 +115,18 @@ public:
             height = state.surface_height;
             recreate_msaa_target();
         }
-        if (!state.surface) return FramePreparation::skip;
+        if (!state.surface)
+            return FramePreparation::skip;
         return FramePreparation::ready;
     }
     FramePreparation update() {
-        (void)advance_frame(
-            engine,
-            frame_clock,
-            frame_options.frame_delta_ms);
+        (void)advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
         begin_measurement();
         return FramePreparation::ready;
     }
     bool acquire() {
-        if (!acquire_dawn_surface_texture(state, surface_texture)) return false;
+        if (!acquire_dawn_surface_texture(state, surface_texture))
+            return false;
         surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
         return true;
@@ -141,32 +136,23 @@ public:
         // loop's order.
         for (std::size_t index = 0; index < passes.size(); ++index) {
             const EffectRendererRecord& record =
-                engine.effect_renderers
-                    [engine.registered_effect_renderers[index].value];
-            upload_dawn_effect_pass(
-                state.queue,
-                engine,
-                passes[index],
-                record.effect);
+                engine.effect_renderers[engine.registered_effect_renderers[index].value];
+            upload_dawn_effect_pass(state.queue, engine, passes[index], record.effect);
         }
     }
     void encode() {
-        const auto& first = handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
+        const auto& first =
+            handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
-        WGPURenderPassColorAttachment color_attachment =
-            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         color_attachment.view = samples > 1 ? msaa_view : surface_view;
-        if (samples > 1) color_attachment.resolveTarget = surface_view;
-        color_attachment.loadOp =
-            first.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
+        if (samples > 1)
+            color_attachment.resolveTarget = surface_view;
+        color_attachment.loadOp = first.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
         color_attachment.storeOp = WGPUStoreOp_Store;
-        color_attachment.clearValue = WGPUColor{
-            first.clear_color.r,
-            first.clear_color.g,
-            first.clear_color.b,
-            first.clear_color.a};
-        WGPURenderPassDescriptor pass_descriptor =
-            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        color_attachment.clearValue = WGPUColor{first.clear_color.r, first.clear_color.g,
+                                                first.clear_color.b, first.clear_color.a};
+        WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         pass_descriptor.colorAttachmentCount = 1;
         pass_descriptor.colorAttachments = &color_attachment;
         DawnRenderPass render_pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
@@ -177,20 +163,14 @@ public:
         render_pass.reset();
     }
     void present() {
-        const bool capture_frame =
-            frame >= frame_options.screenshot_frame &&
-            !captures.screenshot_saved &&
-            !frame_options.screenshot_path.empty();
-        captures.maybe_write_standalone_render_capture(
-            "dawn", engine, width, height, frame);
+        const bool capture_frame = frame >= frame_options.screenshot_frame &&
+                                   !captures.screenshot_saved &&
+                                   !frame_options.screenshot_path.empty();
+        captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame);
         DawnSurfaceCapture capture{};
         if (capture_frame) {
-            capture = begin_dawn_surface_capture(
-                state.device,
-                encoder,
-                surface_texture.texture,
-                width,
-                height);
+            capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,
+                                                 width, height);
         }
 
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
@@ -199,12 +179,8 @@ public:
         encoder.reset();
 
         if (capture_frame) {
-            finish_dawn_surface_capture(
-                state,
-                capture,
-                width,
-                height,
-                frame_options.screenshot_path);
+            finish_dawn_surface_capture(state, capture, width, height,
+                                        frame_options.screenshot_path);
             captures.screenshot_saved = true;
         }
         capture.readback.reset();
@@ -223,7 +199,8 @@ public:
 bool run_effect_dawn_engine(Engine& engine) {
     DawnEffectRun renderer(engine);
     renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {}
+    while (conduct_frame(renderer) != FrameOutcome::stopped) {
+    }
     renderer.report();
     return true;
 }

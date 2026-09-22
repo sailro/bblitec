@@ -24,10 +24,16 @@ test("primary canvas readback retains its handshake without enabling device reco
     assert.ok(!result.manifest.features.includes("engine:device-recovery"));
     assert.match(result.cpp, /set_canvas_dataset\([^\n]+"ready", "false"/);
     assert.match(result.cpp, /canvas_dataset\([^\n]+"phase"/);
-    assert.match(result.cpp, /defer_capture_until\([^\n]+canvas_dataset\([^\n]+"ready"/);
+    assert.match(
+        result.cpp,
+        /defer_capture_until\([^\n]+canvas_dataset\([^\n]+"ready"/,
+    );
 });
 
 test("write-only dataset instrumentation retains the browser erasure boundary", () => {
     const result = compileDataset('canvas.dataset.label = "diagnostic";');
-    assert.doesNotMatch(result.cpp, /(?:set_canvas_dataset|defer_capture_until)/);
+    assert.doesNotMatch(
+        result.cpp,
+        /(?:set_canvas_dataset|defer_capture_until)/,
+    );
 });

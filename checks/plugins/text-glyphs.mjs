@@ -12,13 +12,22 @@
 //            uniform?: true  (180: compare the text-layer uniform bytes and sample state) }
 import assert from "node:assert/strict";
 import { compareImages, compareRegion } from "../../dist/src/parity.js";
-import { assertObservationProvenance, loadPng, observedImage, observedStep, readManifest, requireObservations } from "./support.mjs";
+import {
+    assertObservationProvenance,
+    loadPng,
+    observedImage,
+    observedStep,
+    readManifest,
+    requireObservations,
+} from "./support.mjs";
 
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const manifest = readManifest(context);
-    const ids = new Map(manifest.textData[0].live.glyphSlots.map((slot, id) => [slot, id]));
+    const ids = new Map(
+        manifest.textData[0].live.glyphSlots.map((slot, id) => [slot, id]),
+    );
     const { background, gates } = context.options;
     const details = {};
     for (const backend of context.backends) {
@@ -27,17 +36,38 @@ export function check(context) {
             const step = observedStep(observations, phase.id);
             const state = step.state;
             const gpu = phase.capture.textGpu;
-            assert.deepEqual(phase.capture.viewport, state.viewport, `${where}: viewport`);
+            assert.deepEqual(
+                phase.capture.viewport,
+                state.viewport,
+                `${where}: viewport`,
+            );
             if (state.camera !== undefined) {
                 for (const key of ["alpha", "beta", "radius"]) {
-                    assert(Math.abs(phase.capture.camera[key] - state.camera[key]) < 1e-8, `${where}: camera ${key}: ${phase.capture.camera[key]} vs ${state.camera[key]}`);
+                    assert(
+                        Math.abs(
+                            phase.capture.camera[key] - state.camera[key],
+                        ) < 1e-8,
+                        `${where}: camera ${key}: ${phase.capture.camera[key]} vs ${state.camera[key]}`,
+                    );
                 }
             }
-            if (state.position !== undefined && state.width !== undefined && (phase.id === "edit" || phase.id === "empty" || phase.id === "regrow")) {
+            if (
+                state.position !== undefined &&
+                state.width !== undefined &&
+                (phase.id === "edit" ||
+                    phase.id === "empty" ||
+                    phase.id === "regrow")
+            ) {
                 // `===`, not Object.is: an empty text centres at -0, which the
                 // observation's JSON carries as 0.
-                assert.ok(state.position.x === -state.width * 0.01 * 0.5, `${where}: the browser text is centred (x ${state.position.x}, width ${state.width})`);
-                assert.ok(state.position.y === state.height * 0.01 * 0.5, `${where}: the browser text is centred (y ${state.position.y}, height ${state.height})`);
+                assert.ok(
+                    state.position.x === -state.width * 0.01 * 0.5,
+                    `${where}: the browser text is centred (x ${state.position.x}, width ${state.width})`,
+                );
+                assert.ok(
+                    state.position.y === state.height * 0.01 * 0.5,
+                    `${where}: the browser text is centred (y ${state.position.y}, height ${state.height})`,
+                );
             }
             const draw = gpu.draws[0];
             const expectedLive = state.instances.filter(Boolean);
@@ -45,38 +75,105 @@ export function check(context) {
             if (draw) {
                 if (context.options.uniform) {
                     assert.equal(draw.samples, 1, `${where}: samples`);
-                    assert.equal(draw.depthFormat, "", `${where}: depth format`);
+                    assert.equal(
+                        draw.depthFormat,
+                        "",
+                        `${where}: depth format`,
+                    );
                 }
-                const resource = gpu.resources.find((row) => row.id === draw.instances);
-                assert(resource && !resource.destroyed, `${where}: instance buffer`);
+                const resource = gpu.resources.find(
+                    (row) => row.id === draw.instances,
+                );
+                assert(
+                    resource && !resource.destroyed,
+                    `${where}: instance buffer`,
+                );
                 const bytes = Buffer.from(resource.uploadedBytes);
                 for (let i = 0; i < draw.instanceCount; i++) {
                     const slot = draw.firstInstance + i;
                     const word = bytes.readUInt32LE(slot * 12 + 8);
-                    if (word !== 0xffffffff) actual.push([ids.get(word & 0xffff), bytes.readFloatLE(slot * 12), bytes.readFloatLE(slot * 12 + 4), word >>> 16]);
+                    if (word !== 0xffffffff)
+                        actual.push([
+                            ids.get(word & 0xffff),
+                            bytes.readFloatLE(slot * 12),
+                            bytes.readFloatLE(slot * 12 + 4),
+                            word >>> 16,
+                        ]);
                 }
-                const palette = Buffer.from(gpu.resources.find((row) => row.role === "styles" && !row.destroyed).uploadedBytes);
-                assert.deepEqual(Array.from({ length: state.styles.length }, (_, i) => palette.readFloatLE(i * 4)), state.styles, `${where}: style palette`);
+                const palette = Buffer.from(
+                    gpu.resources.find(
+                        (row) => row.role === "styles" && !row.destroyed,
+                    ).uploadedBytes,
+                );
+                assert.deepEqual(
+                    Array.from({ length: state.styles.length }, (_, i) =>
+                        palette.readFloatLE(i * 4),
+                    ),
+                    state.styles,
+                    `${where}: style palette`,
+                );
                 if (context.options.uniform) {
-                    const uniformId = draw.bindings.find((binding) => binding.role === "uniform").resource;
-                    assert.deepEqual(gpu.resources.find((row) => row.id === uniformId).uploadedBytes, state.uniform, `${where}: source uniform writes`);
+                    const uniformId = draw.bindings.find(
+                        (binding) => binding.role === "uniform",
+                    ).resource;
+                    assert.deepEqual(
+                        gpu.resources.find((row) => row.id === uniformId)
+                            .uploadedBytes,
+                        state.uniform,
+                        `${where}: source uniform writes`,
+                    );
                 }
             }
-            assert.deepEqual(actual, expectedLive, `${where}: glyph placements`);
+            assert.deepEqual(
+                actual,
+                expectedLive,
+                `${where}: glyph placements`,
+            );
             const reference = observedImage(context, step.image);
             const full = compareImages(phase.image, reference);
-            const foreground = compareRegion(phase.image, reference, background, 30);
+            const foreground = compareRegion(
+                phase.image,
+                reference,
+                background,
+                30,
+            );
             const gate = gates[phase.id] ?? gates.default;
-            assert(full.mad < gate.full && foreground.mad < gate.foreground, `${where}: canvas full ${full.mad} / foreground ${foreground.mad} (gates ${gate.full} / ${gate.foreground})`);
+            assert(
+                full.mad < gate.full && foreground.mad < gate.foreground,
+                `${where}: canvas full ${full.mad} / foreground ${foreground.mad} (gates ${gate.full} / ${gate.foreground})`,
+            );
             const native = loadPng(phase.image);
-            assert.equal(native.width, state.viewport.width, `${where}: image width`);
-            if (context.options.textareaColumn !== undefined && phase.id === "textarea-resize") {
+            assert.equal(
+                native.width,
+                state.viewport.width,
+                `${where}: image width`,
+            );
+            if (
+                context.options.textareaColumn !== undefined &&
+                phase.id === "textarea-resize"
+            ) {
                 const column = context.options.textareaColumn;
-                const rows = Array.from({ length: context.options.textareaRows }, (_, y) => y).filter((y) =>
-                    background.some((color, c) => native.data[(y * native.width + column) * 4 + c] !== color));
-                assert.equal(rows.at(-1) - rows[0] + 1, state.form.height, `${where}: native textarea resize height`);
+                const rows = Array.from(
+                    { length: context.options.textareaRows },
+                    (_, y) => y,
+                ).filter((y) =>
+                    background.some(
+                        (color, c) =>
+                            native.data[(y * native.width + column) * 4 + c] !==
+                            color,
+                    ),
+                );
+                assert.equal(
+                    rows.at(-1) - rows[0] + 1,
+                    state.form.height,
+                    `${where}: native textarea resize height`,
+                );
             }
-            details[where] = { glyphs: actual.length, fullMad: full.mad, foregroundMad: foreground.mad };
+            details[where] = {
+                glyphs: actual.length,
+                fullMad: full.mad,
+                foregroundMad: foreground.mad,
+            };
         }
     }
     return { details };

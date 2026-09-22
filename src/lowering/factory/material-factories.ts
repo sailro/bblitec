@@ -6,8 +6,8 @@ import {
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 import { assertAsyncSceneBuilder } from "../scene-deferred.js";
-import {lowerPbrGammaAlbedo} from "../pbr-scene-hooks.js";
-import {materialGroupIdentity} from "../material-group-identity.js";
+import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
+import { materialGroupIdentity } from "../material-group-identity.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -81,7 +81,6 @@ export interface StandardMaterialSetters {
     pluginTextures: boolean;
 }
 
-
 /**
  * The material/texture half of the factory unit, completing the class:
  * node, shader, PBR, grid and Standard material factories plus the
@@ -89,7 +88,13 @@ export interface StandardMaterialSetters {
  */
 export class FactoryLowerer extends MeshBuilderLowerer {
     public lowerNodeMaterialFactory(): LoweredSource {
-        assertAsyncSceneBuilder(this.context, this.context.functionDeclaration("src/scene/scene-core.ts", "addToScene").declaration);
+        assertAsyncSceneBuilder(
+            this.context,
+            this.context.functionDeclaration(
+                "src/scene/scene-core.ts",
+                "addToScene",
+            ).declaration,
+        );
         const modulePath = "src/material/node/node-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -112,7 +117,8 @@ export class FactoryLowerer extends MeshBuilderLowerer {
             "NodeMaterial mesh group builder",
         );
         for (const [property, variable] of [
-            ["inputs", "inputs"], ["_textureSlots", "textureSlots"],
+            ["inputs", "inputs"],
+            ["_textureSlots", "textureSlots"],
         ]) {
             this.context.assertExpressionShape(
                 this.context.propertyInitializer(material, property!),
@@ -124,12 +130,10 @@ export class FactoryLowerer extends MeshBuilderLowerer {
             modulePath,
             symbolName: "parseNodeMaterialFromSnippet",
             header: "",
-            source: `// ${
-                this.context.provenance(
-                    modulePath,
-                    "parseNodeMaterialFromSnippet",
-                )
-            }
+            source: `// ${this.context.provenance(
+                modulePath,
+                "parseNodeMaterialFromSnippet",
+            )}
 #include <bblite/node_material.hpp>
 #include <bblite/upstream/node_variants.hpp>
 
@@ -300,50 +304,41 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 
     public lowerShaderMaterialFactory(): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
-        const { declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                "createShaderMaterial",
-            );
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
+            "createShaderMaterial",
+        );
         const isNullishDefault = (
             expression: ts.Expression,
             leftPath: string,
             fallback: (value: ts.Expression) => boolean,
         ): boolean => {
-            const unwrapped =
-                this.context.unwrapExpression(expression);
+            const unwrapped = this.context.unwrapExpression(expression);
             return (
                 ts.isBinaryExpression(unwrapped) &&
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.QuestionQuestionToken &&
-                this.context
-                    .propertyPath(unwrapped.left)
-                    ?.join(".") === leftPath &&
+                this.context.propertyPath(unwrapped.left)?.join(".") ===
+                    leftPath &&
                 fallback(unwrapped.right)
             );
         };
-        const needAlphaBlending =
-            this.context.variableInitializer(
-                declaration,
-                "needAlphaBlending",
-            );
+        const needAlphaBlending = this.context.variableInitializer(
+            declaration,
+            "needAlphaBlending",
+        );
         if (
             !isNullishDefault(
                 needAlphaBlending,
                 "options.needAlphaBlending",
                 (fallback) =>
                     ts.isPrefixUnaryExpression(fallback) &&
-                    fallback.operator ===
-                        ts.SyntaxKind.ExclamationToken &&
-                    ts.isPrefixUnaryExpression(
-                        fallback.operand,
-                    ) &&
+                    fallback.operator === ts.SyntaxKind.ExclamationToken &&
+                    ts.isPrefixUnaryExpression(fallback.operand) &&
                     fallback.operand.operator ===
                         ts.SyntaxKind.ExclamationToken &&
                     this.context
-                        .propertyPath(
-                            fallback.operand.operand,
-                        )
+                        .propertyPath(fallback.operand.operand)
                         ?.join(".") === "options.blend",
             )
         ) {
@@ -358,8 +353,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
                 property: "needAlphaTesting",
                 path: "options.needAlphaTesting",
                 fallback: (value: ts.Expression): boolean =>
-                    value.kind ===
-                    ts.SyntaxKind.FalseKeyword,
+                    value.kind === ts.SyntaxKind.FalseKeyword,
             },
             {
                 property: "backFaceCulling",
@@ -372,24 +366,17 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
                 path: "options.depthWrite",
                 fallback: (value: ts.Expression): boolean =>
                     ts.isPrefixUnaryExpression(value) &&
-                    value.operator ===
-                        ts.SyntaxKind.ExclamationToken &&
+                    value.operator === ts.SyntaxKind.ExclamationToken &&
                     ts.isIdentifier(value.operand) &&
-                    value.operand.text ===
-                        "needAlphaBlending",
+                    value.operand.text === "needAlphaBlending",
             },
         ]) {
-            const expression =
-                this.context.propertyInitializer(
-                    returned,
-                    contract.property,
-                );
+            const expression = this.context.propertyInitializer(
+                returned,
+                contract.property,
+            );
             if (
-                !isNullishDefault(
-                    expression,
-                    contract.path,
-                    contract.fallback,
-                )
+                !isNullishDefault(expression, contract.path, contract.fallback)
             ) {
                 this.context.contractError(
                     expression,
@@ -631,11 +618,10 @@ void set_alpha_to_coverage(
      */
     public lowerPixelsTextureFactory(): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
-        const { declaration } =
-            this.context.functionDeclaration(
-                module,
-                "createTexture2DFromPixels",
-            );
+        const { declaration } = this.context.functionDeclaration(
+            module,
+            "createTexture2DFromPixels",
+        );
         // The sampler the pin settles when the caller overrides nothing,
         // which is every reached call. Each field is checked as the pin
         // writes it and then emitted through the shared name-to-enumerator
@@ -693,10 +679,7 @@ void set_alpha_to_coverage(
         // The byte count the pin requires, which the baked buffer has to
         // meet for the same reason it does upstream.
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "expected",
-            ),
+            this.context.variableInitializer(declaration, "expected"),
             "width * height * 4",
             "createTexture2DFromPixels expected byte count",
         );
@@ -829,21 +812,15 @@ void update_pixels_texture(
             createSolidTexture,
             (node) =>
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
-                ts.isIdentifier(
-                    node.expression.expression,
-                ) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                ts.isIdentifier(node.expression.expression) &&
                 node.expression.expression.text === "Math" &&
                 node.expression.name.text === "round" &&
                 node.arguments.length === 1 &&
                 ts.isBinaryExpression(node.arguments[0]!) &&
                 node.arguments[0].operatorToken.kind ===
                     ts.SyntaxKind.AsteriskToken &&
-                ts.isNumericLiteral(
-                    node.arguments[0].right,
-                ) &&
+                ts.isNumericLiteral(node.arguments[0].right) &&
                 Number(node.arguments[0].right.text) === 255,
         );
         if (quantizedChannels !== 4) {
@@ -857,8 +834,7 @@ void update_pixels_texture(
                 createSolidTexture,
                 (node) =>
                     ts.isPropertyAssignment(node) &&
-                    this.context.propertyName(node.name) ===
-                        "format" &&
+                    this.context.propertyName(node.name) === "format" &&
                     ts.isStringLiteral(node.initializer) &&
                     node.initializer.text === "rgba8unorm",
             )
@@ -1056,14 +1032,12 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
                     declaration,
                     (node): node is ts.BinaryExpression =>
                         ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken,
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
                 )
                 .filter(
                     (node) =>
-                        this.context
-                            .propertyPath(node.left)
-                            ?.join(".") === target,
+                        this.context.propertyPath(node.left)?.join(".") ===
+                        target,
                 );
             if (stamps.length !== 1) {
                 this.context.contractError(
@@ -1074,14 +1048,13 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
             this.context.assertExpressionShape(stamps[0]!, stamp, symbol);
         }
         const { declaration: createPbrMaterial } =
-            this.context.functionDeclaration(
-                pbrModule,
-                "createPbrMaterial",
-            );
-        const returned =
-            this.context.returnObject(createPbrMaterial);
-        this.context.assertExpressionShape(this.context.propertyInitializer(returned, "_buildGroup"),
-            "getPbrGroupBuilder()", "PBR material group builder");
+            this.context.functionDeclaration(pbrModule, "createPbrMaterial");
+        const returned = this.context.returnObject(createPbrMaterial);
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(returned, "_buildGroup"),
+            "getPbrGroupBuilder()",
+            "PBR material group builder",
+        );
         if (
             !returned.properties.some(
                 (property) =>
@@ -1099,10 +1072,7 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
             returned,
             "_uboVersion",
         );
-        if (
-            !ts.isNumericLiteral(uboVersion) ||
-            Number(uboVersion.text) !== 0
-        ) {
+        if (!ts.isNumericLiteral(uboVersion) || Number(uboVersion.text) !== 0) {
             this.context.contractError(
                 uboVersion,
                 "Expected initial PBR UBO version 0.",
@@ -1110,7 +1080,8 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         }
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface",
+            symbolName:
+                "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface",
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -1413,53 +1384,30 @@ MaterialHandle create_pbr_material(
 
     public lowerGridMaterialFactory(): LoweredSource {
         const modulePath = "src/material/grid/grid-material.ts";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                "createGridMaterial",
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            "createGridMaterial",
+        );
         for (const [name, path, expected] of [
-            [
-                "mainColor",
-                "options.mainColor",
-                [0, 0, 0],
-            ],
-            [
-                "lineColor",
-                "options.lineColor",
-                [0, 0.5, 0.5],
-            ],
+            ["mainColor", "options.mainColor", [0, 0, 0]],
+            ["lineColor", "options.lineColor", [0, 0.5, 0.5]],
         ] as const) {
-            const initializer =
-                this.context.unwrapExpression(
-                    this.context.variableInitializer(
-                        declaration,
-                        name,
-                    ),
-                );
+            const initializer = this.context.unwrapExpression(
+                this.context.variableInitializer(declaration, name),
+            );
             if (
                 !ts.isBinaryExpression(initializer) ||
                 initializer.operatorToken.kind !==
                     ts.SyntaxKind.QuestionQuestionToken ||
-                this.context
-                    .propertyPath(initializer.left)
-                    ?.join(".") !== path
+                this.context.propertyPath(initializer.left)?.join(".") !== path
             ) {
                 this.context.contractError(
                     initializer,
                     `Unexpected '${name}' default expression.`,
                 );
             }
-            const values = this.context.numericTuple(
-                initializer.right,
-                file,
-            );
-            if (
-                values.some(
-                    (value, index) =>
-                        value !== expected[index],
-                )
-            ) {
+            const values = this.context.numericTuple(initializer.right, file);
+            if (values.some((value, index) => value !== expected[index])) {
                 this.context.contractError(
                     initializer.right,
                     `Unexpected '${name}' default value.`,
@@ -1467,23 +1415,16 @@ MaterialHandle create_pbr_material(
             }
         }
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                declaration,
-                "gridControl",
-            ),
+            this.context.variableInitializer(declaration, "gridControl"),
             "[gridRatio, Math.round(majorUnitFrequency), minorUnitVisibility, opacity]",
             "GridMaterial control vector",
         );
         const transparent = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                declaration,
-                "transparent",
-            ),
+            this.context.variableInitializer(declaration, "transparent"),
         );
         if (
             !ts.isBinaryExpression(transparent) ||
-            transparent.operatorToken.kind !==
-                ts.SyntaxKind.LessThanToken ||
+            transparent.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
             !ts.isIdentifier(transparent.left) ||
             transparent.left.text !== "opacity" ||
             !ts.isNumericLiteral(transparent.right) ||
@@ -1494,20 +1435,17 @@ MaterialHandle create_pbr_material(
                 "Expected opacity below one to select transparency.",
             );
         }
-        const shaderOptions =
-            this.context.callObjectArgument(
-                declaration,
-                "createShaderMaterial",
-            );
-        const alphaBlending =
-            this.context.propertyInitializer(
-                shaderOptions,
-                "needAlphaBlending",
-            );
+        const shaderOptions = this.context.callObjectArgument(
+            declaration,
+            "createShaderMaterial",
+        );
+        const alphaBlending = this.context.propertyInitializer(
+            shaderOptions,
+            "needAlphaBlending",
+        );
         if (
             !ts.isBinaryExpression(alphaBlending) ||
-            alphaBlending.operatorToken.kind !==
-                ts.SyntaxKind.BarBarToken ||
+            alphaBlending.operatorToken.kind !== ts.SyntaxKind.BarBarToken ||
             !ts.isIdentifier(alphaBlending.left) ||
             alphaBlending.left.text !== "transparent" ||
             !ts.isIdentifier(alphaBlending.right) ||
@@ -1518,11 +1456,10 @@ MaterialHandle create_pbr_material(
                 "Expected opacity state to control alpha blending.",
             );
         }
-        const backFaceCulling =
-            this.context.propertyInitializer(
-                shaderOptions,
-                "backFaceCulling",
-            );
+        const backFaceCulling = this.context.propertyInitializer(
+            shaderOptions,
+            "backFaceCulling",
+        );
         if (
             !ts.isIdentifier(backFaceCulling) ||
             backFaceCulling.text !== "backFaceCulling"
@@ -1611,9 +1548,16 @@ MaterialHandle create_grid_material(
         // enabler to a module that contains neither.
         const materialModule = "src/material/standard/standard-material.ts";
         if (lightmapFile) {
-            const declaration = this.context.functionDeclaration("src/material/standard/set-std-lightmap.ts", "setStandardLightmapTexture").declaration;
-            this.context.assertStatementShapes(declaration, declaration.body!.statements,
-                "mat._lightmapTexture = texture; _registerStdExt(stdLightmapExt);", "Standard lightmap setter and extension registration");
+            const declaration = this.context.functionDeclaration(
+                "src/material/standard/set-std-lightmap.ts",
+                "setStandardLightmapTexture",
+            ).declaration;
+            this.context.assertStatementShapes(
+                declaration,
+                declaration.body!.statements,
+                "mat._lightmapTexture = texture; _registerStdExt(stdLightmapExt);",
+                "Standard lightmap setter and extension registration",
+            );
         }
         if (uvTransform) {
             // The pin's enabler is a mark plus a lazy module preload; the
@@ -1648,15 +1592,11 @@ MaterialHandle create_grid_material(
                 ...(pixels ? ["material.diffuseTexture#pixels"] : []),
                 ...(solid ? ["material.diffuseTexture#solid"] : []),
                 ...(diffuseFile ? ["material.diffuseTexture#file"] : []),
-                ...(emissiveFile
-                    ? ["setStandardEmissiveTexture#file"]
-                    : []),
+                ...(emissiveFile ? ["setStandardEmissiveTexture#file"] : []),
                 ...(lightmapFile ? ["setStandardLightmapTexture"] : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
                 ...(plugins ? ["material.plugins"] : []),
-                ...(pluginTextures
-                    ? ["material.plugins#bindTextures"]
-                    : []),
+                ...(pluginTextures ? ["material.plugins#bindTextures"] : []),
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
@@ -1668,36 +1608,32 @@ MaterialHandle create_grid_material(
                         : []),
                     ...(emissive
                         ? [
-                            "src/material/standard/set-std-emissive.ts" +
-                            "#setStandardEmissiveTexture",
-                        ]
+                              "src/material/standard/set-std-emissive.ts" +
+                                  "#setStandardEmissiveTexture",
+                          ]
                         : []),
-                    ...(pixels
-                        ? ["src/texture/pixels-texture.ts"]
-                        : []),
-                    ...(solid
-                        ? ["src/texture/solid-texture.ts"]
-                        : []),
+                    ...(pixels ? ["src/texture/pixels-texture.ts"] : []),
+                    ...(solid ? ["src/texture/solid-texture.ts"] : []),
                     ...(diffuseFile || emissiveFile
                         ? ["src/texture/texture-2d.ts"]
                         : []),
                     ...(uvTransform
                         ? [
-                            "src/material/enable-material-uv-transform.ts" +
-                            "#enableMaterialUvTransform",
-                        ]
+                              "src/material/enable-material-uv-transform.ts" +
+                                  "#enableMaterialUvTransform",
+                          ]
                         : []),
                     ...(plugins
                         ? [
-                            "src/material/plugin/std-plugin-bridge.ts" +
-                            "#registerStdPlugins",
-                        ]
+                              "src/material/plugin/std-plugin-bridge.ts" +
+                                  "#registerStdPlugins",
+                          ]
                         : []),
                     ...(pluginTextures
                         ? [
-                            "src/material/plugin/plugin-bridge-shared.ts" +
-                            "#bindPluginTextures",
-                        ]
+                              "src/material/plugin/plugin-bridge-shared.ts" +
+                                  "#bindPluginTextures",
+                          ]
                         : []),
                 ].join(" and "),
             )}
@@ -1719,7 +1655,9 @@ MaterialRecord& standard_slot_material(
 }
 
 } // namespace
-${diffuse || pixels || solid || diffuseFile ? `
+${
+    diffuse || pixels || solid || diffuseFile
+        ? `
 // Upstream diffuseTexture is ONE field, and every write to it replaces
 // whatever was there. The record splits it into two representations -- a
 // render-target reference behind has_diffuse_render_texture, and the
@@ -1739,7 +1677,11 @@ TextureData& take_standard_diffuse_slot(
     record.source_albedo_texture.reset();
     return record.base_color_texture;
 }
-` : ""}${solid ? solidTextureDataFunction : ""}${diffuse ? `
+`
+        : ""
+}${solid ? solidTextureDataFunction : ""}${
+                diffuse
+                    ? `
 // The plain material.diffuseTexture write, for the one source the reached
 // slice gives it: a colour render target.
 //
@@ -1759,7 +1701,11 @@ void set_standard_diffuse_render_texture(
     // belongs to.
     record.has_diffuse_render_texture = true;
 }
-` : ""}${emissive ? `
+`
+                    : ""
+            }${
+                emissive
+                    ? `
 // The pinned setter stores the texture and registers the emissive
 // extension; registration is a bundling concern with no native
 // counterpart, because generation composes against every Standard
@@ -1772,7 +1718,11 @@ void set_standard_emissive_texture(
     record.emissive_render_texture = texture;
     record.has_emissive_render_texture = true;
 }
-` : ""}${pixels ? `
+`
+                    : ""
+            }${
+                pixels
+                    ? `
 // The same slot, filled by a createTexture2DFromPixels texture. Upstream
 // has one Texture2D whatever built it and the assignment is a plain field
 // write, so the record takes the texels, the sampler, and the texture-object
@@ -1793,7 +1743,11 @@ void set_standard_diffuse_pixels_texture(
     standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
     standard_slot_material(engine, material).source_albedo_texture = texture;
 }
-` : ""}${solid ? `
+`
+                    : ""
+            }${
+                solid
+                    ? `
 // The same slot, filled by a createSolidTexture2D texture -- the fourth
 // source it takes. That factory is the pin's own one-texel Texture2D: it
 // rounds the four channels into a 1x1 rgba8unorm texture and samples it
@@ -1811,7 +1765,11 @@ void set_standard_diffuse_solid_texture(
         solid_texture_data(texture);
     standard_slot_material(engine, material).source_albedo_texture = retained_solid_texture(texture);
 }
-` : ""}${diffuseFile ? `
+`
+                    : ""
+            }${
+                diffuseFile
+                    ? `
 // The same slot, filled by a loaded image -- the third source it takes, and
 // the one the .babylon loader already fills for a material it builds. The
 // texture object travels whole because the pin has one Texture2D whatever
@@ -1826,7 +1784,11 @@ void set_standard_diffuse_file_texture(
     standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
     standard_slot_material(engine, material).source_albedo_texture = texture;
 }
-` : ""}${emissiveFile ? `
+`
+                    : ""
+            }${
+                emissiveFile
+                    ? `
 // setStandardEmissiveTexture over a loaded image. The render-texture arm
 // beside it writes its own pair because a render target is bound as a view
 // rather than uploaded; an image fills the record slot the .babylon loader
@@ -1839,7 +1801,11 @@ void set_standard_emissive_file_texture(
     const FileTexture& texture) {
     standard_slot_material(engine, material).emissive_texture = texture.data;
 }
-` : ""}${lightmapFile ? `
+`
+                    : ""
+            }${
+                lightmapFile
+                    ? `
 // set-std-lightmap.ts: the file texture retains its upload, sampler,
 // transform and encoding. Generation performs the extension registration.
 void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, const FileTexture& texture) {
@@ -1848,7 +1814,11 @@ void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, cons
     record.lightmap_texture = texture.data;
     record.lightmap_texture_srgb = texture.srgb;
 }
-` : ""}${uvTransform ? `
+`
+                    : ""
+            }${
+                uvTransform
+                    ? `
 // src/material/enable-material-uv-transform.ts enableMaterialUvTransform
 //
 // Upstream this marks the material and preloads the extension's fragment
@@ -1861,7 +1831,11 @@ void enable_material_uv_transform(
     MaterialHandle material) {
     standard_slot_material(engine, material).has_uv_transform = true;
 }
-` : ""}${plugins ? `
+`
+                    : ""
+            }${
+                plugins
+                    ? `
 // src/material/plugin/std-plugin-bridge.ts registerStdPlugins
 //
 // Upstream this walks the scene's meshes and pre-bakes a per-signature
@@ -1882,7 +1856,11 @@ void set_material_plugins(
     // bridge reads, so the textures the previous list bound go with it.
     record.plugin_textures.clear();
 }
-` : ""}${pluginTextures ? `
+`
+                    : ""
+            }${
+                pluginTextures
+                    ? `
 // src/material/plugin/plugin-bridge-shared.ts bindPluginTextures
 //
 // One texture a plugin's bindTextures pushed, appended in that order --
@@ -1916,7 +1894,9 @@ void add_material_plugin_file_texture(
     standard_slot_material(engine, material).plugin_textures.push_back(
         MaterialPluginTexture{texture.data, texture.srgb});
 }
-` : ""}
+`
+                    : ""
+            }
 } // namespace bbl
 `,
         };
@@ -1925,18 +1905,31 @@ void add_material_plugin_file_texture(
     public lowerStandardMaterialFactory(): LoweredSource {
         const modulePath = "src/material/standard/create-standard-material.ts";
         const symbolName = "createStandardMaterial";
-        const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const returnStatement = declaration.body!.statements.find(
             (statement): statement is ts.ReturnStatement =>
-                ts.isReturnStatement(statement) && statement.expression !== undefined,
+                ts.isReturnStatement(statement) &&
+                statement.expression !== undefined,
         );
-        if (!returnStatement?.expression) throw new Error("Upstream standard material return was not found.");
+        if (!returnStatement?.expression)
+            throw new Error("Upstream standard material return was not found.");
         let object = returnStatement.expression;
-        while (ts.isAsExpression(object) || ts.isParenthesizedExpression(object)) object = object.expression;
-        if (!ts.isObjectLiteralExpression(object)) throw new Error("Upstream standard material defaults changed.");
+        while (
+            ts.isAsExpression(object) ||
+            ts.isParenthesizedExpression(object)
+        )
+            object = object.expression;
+        if (!ts.isObjectLiteralExpression(object))
+            throw new Error("Upstream standard material defaults changed.");
         const tuple = (name: string): string =>
             this.context.cppColor3(
-                this.context.numericTuple(this.context.propertyInitializer(object, name), file),
+                this.context.numericTuple(
+                    this.context.propertyInitializer(object, name),
+                    file,
+                ),
             );
         const scalar = (name: string): string =>
             this.context.floatLiteral(
@@ -1969,8 +1962,18 @@ MaterialHandle create_standard_material(Engine& engine) {
     material.lightmap_level = ${scalar("lightmapLevel")};
     material.lightmap_coord_index = ${scalar("lightmapCoordIndex")};
     material.lightmap_shadowmap = ${(() => {
-        const value = this.context.propertyInitializer(object, "useLightmapAsShadowmap");
-        if (value.kind !== ts.SyntaxKind.TrueKeyword && value.kind !== ts.SyntaxKind.FalseKeyword) return this.context.contractError(value, "Standard lightmap blend default must be boolean.");
+        const value = this.context.propertyInitializer(
+            object,
+            "useLightmapAsShadowmap",
+        );
+        if (
+            value.kind !== ts.SyntaxKind.TrueKeyword &&
+            value.kind !== ts.SyntaxKind.FalseKeyword
+        )
+            return this.context.contractError(
+                value,
+                "Standard lightmap blend default must be boolean.",
+            );
         return value.kind === ts.SyntaxKind.TrueKeyword;
     })()};
     // MaterialRecord's own default is the glTF MASK cutoff, which the
@@ -2005,31 +2008,27 @@ MaterialHandle create_standard_material(Engine& engine) {
                 "createStandardNoColorMaterialView",
                 "NO_COLOR_OUTPUT",
             ],
-            [
-                pbrModule,
-                "createPbrNoColorMaterialView",
-                "PBR2_NO_COLOR_OUTPUT",
-            ],
+            [pbrModule, "createPbrNoColorMaterialView", "PBR2_NO_COLOR_OUTPUT"],
             ...(esmShadows
-                ? ([[
-                    esmModule,
-                    "createStandardEsmShadowMaterialView",
-                    "ESM_SHADOW_OUTPUT",
-                ]] as const)
+                ? ([
+                      [
+                          esmModule,
+                          "createStandardEsmShadowMaterialView",
+                          "ESM_SHADOW_OUTPUT",
+                      ],
+                  ] as const)
                 : []),
         ] as const) {
-            const { declaration } =
-                this.context.functionDeclaration(
-                    modulePath,
-                    functionName,
-                );
+            const { declaration } = this.context.functionDeclaration(
+                modulePath,
+                functionName,
+            );
             if (
                 !this.context.hasNode(
                     declaration,
                     (node) =>
                         ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.BarToken &&
+                        node.operatorToken.kind === ts.SyntaxKind.BarToken &&
                         ts.isIdentifier(node.right) &&
                         node.right.text === flag,
                 )
@@ -2041,21 +2040,14 @@ MaterialHandle create_standard_material(Engine& engine) {
             }
         }
         const { declaration: createMaterialView } =
-            this.context.functionDeclaration(
-                viewModule,
-                "createMaterialView",
-            );
+            this.context.functionDeclaration(viewModule, "createMaterialView");
         if (
             !this.context.hasNode(
                 createMaterialView,
                 (node) =>
                     ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
-                    ts.isIdentifier(
-                        node.expression.expression,
-                    ) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    ts.isIdentifier(node.expression.expression) &&
                     node.expression.expression.text === "Object" &&
                     node.expression.name.text === "create" &&
                     node.arguments.length >= 1 &&
@@ -2078,12 +2070,9 @@ MaterialHandle create_standard_material(Engine& engine) {
                 markMaterialUboDirty,
                 (node) =>
                     ts.isPostfixUnaryExpression(node) &&
-                    node.operator ===
-                        ts.SyntaxKind.PlusPlusToken &&
+                    node.operator === ts.SyntaxKind.PlusPlusToken &&
                     ts.isPropertyAccessExpression(node.operand) &&
-                    ts.isIdentifier(
-                        node.operand.expression,
-                    ) &&
+                    ts.isIdentifier(node.operand.expression) &&
                     node.operand.expression.text === "source" &&
                     node.operand.name.text === "_uboVersion",
             )
@@ -2099,14 +2088,10 @@ MaterialHandle create_standard_material(Engine& engine) {
                 "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty" +
                 (esmShadows
                     ? ",createStandardEsmShadowMaterialView," +
-                        "createPbrEsmShadowMaterialView"
+                      "createPbrEsmShadowMaterialView"
                     : "") +
-                (nodeEsmCasters
-                    ? ",createNodeEsmShadowMaterialView"
-                    : "") +
-                (nodeCasters
-                    ? ",createNodeNoColorMaterialView"
-                    : ""),
+                (nodeEsmCasters ? ",createNodeEsmShadowMaterialView" : "") +
+                (nodeCasters ? ",createNodeNoColorMaterialView" : ""),
             header: "",
             source: `// ${this.context.provenance(
                 viewModule,
@@ -2156,7 +2141,10 @@ MaterialHandle create_pbr_no_color_material_view(
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false);
 }
-${!nodeCasters ? "" : `
+${
+    !nodeCasters
+        ? ""
+        : `
 MaterialHandle create_node_no_color_material_view(
     Engine& engine,
     MaterialHandle source) {
@@ -2178,8 +2166,12 @@ MaterialHandle create_node_no_color_material_view(
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
-`}
-${!esmShadows ? "" : `
+`
+}
+${
+    !esmShadows
+        ? ""
+        : `
 // The ESM caster's view, one body for all three families. Same inheritance
 // as the no-colour view above, a different pass bit: each family's own
 // \`create*EsmShadowMaterialView\` clears the blend flag and ORs its ESM
@@ -2247,7 +2239,11 @@ MaterialHandle create_pbr_esm_shadow_material_view(
         generator,
         EsmShadowFamily::pbr);
 }
-`}${!nodeEsmCasters ? "" : `
+`
+}${
+                !nodeEsmCasters
+                    ? ""
+                    : `
 // The node family's own wrapper. Its view rides the same variant row the
 // receiver does -- the module the ESM bit selects was compiled beside it --
 // so nothing here names a second variant.
@@ -2261,7 +2257,8 @@ MaterialHandle create_node_esm_shadow_material_view(
         generator,
         EsmShadowFamily::node);
 }
-`}
+`
+            }
 
 void mark_material_ubo_dirty(
     Engine& engine,

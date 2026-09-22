@@ -78,8 +78,7 @@ inline constexpr std::size_t splat_float_payload_count =
     std::tuple_size_v<decltype(upstream::splat_texture_payloads(
         std::declval<const SplatMeshRecord&>()))>;
 inline constexpr std::size_t splat_texture_count =
-    splat_float_payload_count +
-    static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
+    splat_float_payload_count + static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
 
 inline constexpr std::size_t dawn_splat_first_texture_binding = 2u;
 inline constexpr std::size_t dawn_splat_binding_count =
@@ -115,26 +114,20 @@ struct DawnSplatPassResources {
     std::array<float, 4> depth_transform{};
 };
 inline void release_dawn_splat_pass_resources(WGPUDevice, DawnSplatPassResources&) noexcept;
-using DawnSplatPass = OwnedGpuRecord<DawnSplatPassResources, std::remove_pointer_t<WGPUDevice>, release_dawn_splat_pass_resources>;
-
+using DawnSplatPass = OwnedGpuRecord<DawnSplatPassResources, std::remove_pointer_t<WGPUDevice>,
+                                     release_dawn_splat_pass_resources>;
 
 /** Queue the pin's complete 16-byte texels into an existing data texture. */
-inline void write_dawn_splat_texture(
-    WGPUQueue queue,
-    WGPUTexture texture,
-    const void* texels,
-    std::size_t byte_size,
-    std::uint32_t width,
-    std::uint32_t height) {
-    WGPUTexelCopyTextureInfo destination =
-        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+inline void write_dawn_splat_texture(WGPUQueue queue, WGPUTexture texture, const void* texels,
+                                     std::size_t byte_size, std::uint32_t width,
+                                     std::uint32_t height) {
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     destination.texture = texture;
     WGPUTexelCopyBufferLayout layout{};
     layout.bytesPerRow = width * 4u * 4u;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(
-        queue, &destination, texels, byte_size, &layout, &size);
+    wgpuQueueWriteTexture(queue, &destination, texels, byte_size, &layout, &size);
 }
 
 /**
@@ -144,22 +137,17 @@ inline void write_dawn_splat_texture(
  * samples, four packed unsigned words for one it `textureLoad`s -- so the
  * row pitch is the same and only the format differs.
  */
-inline WGPUTexture upload_dawn_splat_texture(
-    WGPUDevice device,
-    WGPUQueue queue,
-    const void* texels,
-    std::size_t byte_size,
-    WGPUTextureFormat format,
-    std::uint32_t width,
-    std::uint32_t height) {
+inline WGPUTexture upload_dawn_splat_texture(WGPUDevice device, WGPUQueue queue, const void* texels,
+                                             std::size_t byte_size, WGPUTextureFormat format,
+                                             std::uint32_t width, std::uint32_t height) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.dimension = WGPUTextureDimension_2D;
     descriptor.format = format;
-    descriptor.usage =
-        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = WGPUExtent3D{width, height, 1};
     DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
-    if (!texture) dawn_error("wgpuDeviceCreateTexture splat data");
+    if (!texture)
+        dawn_error("wgpuDeviceCreateTexture splat data");
     write_dawn_splat_texture(queue, texture, texels, byte_size, width, height);
     return texture.release();
 }
@@ -182,26 +170,22 @@ inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
         entries[index].binding = static_cast<std::uint32_t>(index);
         entries[index].visibility = WGPUShaderStage_Vertex;
     }
-    entries[0].visibility =
-        WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[1].sampler.type = WGPUSamplerBindingType_NonFiltering;
-    for (std::size_t index = dawn_splat_first_texture_binding;
-         index < entries.size();
-         ++index) {
+    for (std::size_t index = dawn_splat_first_texture_binding; index < entries.size(); ++index) {
         entries[index].texture.sampleType =
-            index < dawn_splat_first_texture_binding +
-                        splat_float_payload_count
+            index < dawn_splat_first_texture_binding + splat_float_payload_count
                 ? WGPUTextureSampleType_UnfilterableFloat
                 : WGPUTextureSampleType_Uint;
         entries[index].texture.viewDimension = WGPUTextureViewDimension_2D;
     }
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
     DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout) dawn_error("splat bind group layout");
+    if (!layout)
+        dawn_error("splat bind group layout");
     return layout.release();
 }
 
@@ -222,25 +206,20 @@ inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
  * rebinds group 0 per draw — and a splat-only scene compiles no material
  * family and so builds no scene layout at all.
  */
-inline WGPURenderPipeline create_dawn_splat_pipeline(
-    WGPUDevice device,
-    WGPUBindGroupLayout frame_layout,
-    WGPUBindGroupLayout splat_layout,
-    WGPUTextureFormat color_format,
-    WGPUTextureFormat depth_format,
-    std::uint32_t samples) {
+inline WGPURenderPipeline
+create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
+                           WGPUBindGroupLayout splat_layout, WGPUTextureFormat color_format,
+                           WGPUTextureFormat depth_format, std::uint32_t samples) {
     DawnShaderModule vertex{load_wgsl_module(device, "splat.vert")};
     DawnShaderModule fragment{load_wgsl_module(device, "splat.frag")};
 
-    const std::array<WGPUBindGroupLayout, 2> groups{
-        frame_layout, splat_layout};
-    WGPUPipelineLayoutDescriptor layout_descriptor =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    const std::array<WGPUBindGroupLayout, 2> groups{frame_layout, splat_layout};
+    WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout_descriptor.bindGroupLayoutCount = groups.size();
     layout_descriptor.bindGroupLayouts = groups.data();
-    DawnPipelineLayout pipeline_layout{
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
-    if (!pipeline_layout) dawn_error("splat pipeline layout");
+    DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
+    if (!pipeline_layout)
+        dawn_error("splat pipeline layout");
 
     // Two streams, as the pinned descriptor declares them: the unit quad per
     // vertex, and the sorted splat index per instance.
@@ -264,8 +243,7 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     order_layout.attributeCount = 1;
     order_layout.attributes = &index;
 
-    const std::array<WGPUVertexBufferLayout, 2> buffers{
-        quad_layout, order_layout};
+    const std::array<WGPUVertexBufferLayout, 2> buffers{quad_layout, order_layout};
 
     // ALPHA_COMBINE is exactly the shared `transparent_blend` tuple; only
     // this API's enum residue is local.
@@ -289,8 +267,7 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     depth.depthCompare = dawn_depth_compare(upstream::pinned_depth_compare);
     depth.depthWriteEnabled = WGPUOptionalBool_False;
 
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline_layout;
     descriptor.vertex.module = vertex;
     descriptor.vertex.entryPoint = string_view("vs");
@@ -303,58 +280,44 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     descriptor.multisample.count = samples;
 
     DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
-    if (!pipeline) dawn_error("splat render pipeline");
+    if (!pipeline)
+        dawn_error("splat render pipeline");
     return pipeline.release();
 }
 
 /** The resources one cloud owns for its lifetime. */
-inline DawnSplatPass create_dawn_splat_pass(
-    WGPUDevice device,
-    WGPUQueue queue,
-    WGPUTextureFormat color_format,
-    WGPUTextureFormat depth_format,
-    std::uint32_t samples,
-    // Mutable for the same reason the SDL twin is: pass creation uploads
-    // the SH payloads and then releases them.
-    Engine& engine,
-    SplatMeshHandle handle) {
+inline DawnSplatPass
+create_dawn_splat_pass(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat color_format,
+                       WGPUTextureFormat depth_format, std::uint32_t samples,
+                       // Mutable for the same reason the SDL twin is: pass creation uploads
+                       // the SH payloads and then releases them.
+                       Engine& engine, SplatMeshHandle handle) {
     SplatMeshRecord& record = handle_at(engine.splat_meshes, handle);
     DawnSplatPass pass{device};
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
 
     pass.layout = create_dawn_splat_layout(device);
-    WGPUBindGroupLayoutDescriptor frame_layout =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    pass.frame_layout =
-        wgpuDeviceCreateBindGroupLayout(device, &frame_layout);
-    if (!pass.frame_layout) dawn_error("splat frame bind group layout");
-    pass.pipeline = create_dawn_splat_pipeline(
-        device,
-        pass.frame_layout,
-        pass.layout,
-        color_format,
-        depth_format,
-        samples);
+    WGPUBindGroupLayoutDescriptor frame_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    pass.frame_layout = wgpuDeviceCreateBindGroupLayout(device, &frame_layout);
+    if (!pass.frame_layout)
+        dawn_error("splat frame bind group layout");
+    pass.pipeline = create_dawn_splat_pipeline(device, pass.frame_layout, pass.layout, color_format,
+                                               depth_format, samples);
 
     // The payload order {centers, cov_a, cov_b, colors} is the pin's,
     // published by the generated splat unit both backends consume.
     const auto payloads = upstream::splat_texture_payloads(record);
     const auto view_of = [&](std::size_t slot) {
         WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        pass.views[slot] =
-            create_dawn_texture_view(pass.textures[slot], &view);
-        if (!pass.views[slot]) dawn_error("splat data texture view");
+        pass.views[slot] = create_dawn_texture_view(pass.textures[slot], &view);
+        if (!pass.views[slot])
+            dawn_error("splat data texture view");
     };
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
         pass.textures[slot] = upload_dawn_splat_texture(
-            device,
-            queue,
-            payloads[slot]->data(),
-            payloads[slot]->size() * sizeof(float),
-            WGPUTextureFormat_RGBA32Float,
-            record.texture_width,
-            record.texture_height);
+            device, queue, payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
+            WGPUTextureFormat_RGBA32Float, record.texture_width, record.texture_height);
         view_of(slot);
     }
 #if BBLITE_SPLAT_SH
@@ -367,13 +330,8 @@ inline DawnSplatPass create_dawn_splat_pass(
     for (std::size_t index = 0; index < record.sh_textures.size(); ++index) {
         const std::size_t slot = payloads.size() + index;
         pass.textures[slot] = upload_dawn_splat_texture(
-            device,
-            queue,
-            record.sh_textures[index].data(),
-            record.sh_textures[index].size(),
-            WGPUTextureFormat_RGBA32Uint,
-            record.texture_width,
-            record.texture_height);
+            device, queue, record.sh_textures[index].data(), record.sh_textures[index].size(),
+            WGPUTextureFormat_RGBA32Uint, record.texture_width, record.texture_height);
         view_of(slot);
     }
     // Released once the GPU owns the bytes. The neighbouring `splats_data` field
@@ -390,41 +348,30 @@ inline DawnSplatPass create_dawn_splat_pass(
 
     // The pin's nearest/clamp data sampler, emitted as data beside the
     // quad; the layout above declares the pair non-filtering.
-    pass.sampler =
-        create_texture_sampler(device, upstream::splat_data_sampler);
+    pass.sampler = create_texture_sampler(device, upstream::splat_data_sampler);
 
     // The pin's own quad and indices, emitted as data from
     // gaussian-splatting-mesh.ts: the [-2, 2] half-extent is the domain
     // of the fragment's `exp(-dot(k, k))` kernel, so it travels from the
     // pin rather than being re-typed here.
-    const auto buffer = [&](WGPUBufferUsage usage,
-                            const void* data,
-                            std::uint64_t bytes) {
+    const auto buffer = [&](WGPUBufferUsage usage, const void* data, std::uint64_t bytes) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.usage = usage | WGPUBufferUsage_CopyDst;
         descriptor.size = (bytes + 3ull) & ~3ull;
         DawnBuffer created{wgpuDeviceCreateBuffer(device, &descriptor)};
-        if (!created) dawn_error("splat buffer");
-        if (data) wgpuQueueWriteBuffer(queue, created, 0, data, bytes);
+        if (!created)
+            dawn_error("splat buffer");
+        if (data)
+            wgpuQueueWriteBuffer(queue, created, 0, data, bytes);
         return created.release();
     };
-    pass.quad = buffer(
-        WGPUBufferUsage_Vertex,
-        upstream::splat_quad_vertices.data(),
-        upstream::splat_quad_vertices.size() * sizeof(float));
-    pass.indices = buffer(
-        WGPUBufferUsage_Index,
-        upstream::splat_quad_indices.data(),
-        upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
-    pass.order = buffer(
-        WGPUBufferUsage_Vertex,
-        nullptr,
-        static_cast<std::uint64_t>(record.vertex_count) * 4ull);
-    pass.uniforms =
-        buffer(
-            WGPUBufferUsage_Uniform,
-            nullptr,
-            sizeof(upstream::SplatUniforms));
+    pass.quad = buffer(WGPUBufferUsage_Vertex, upstream::splat_quad_vertices.data(),
+                       upstream::splat_quad_vertices.size() * sizeof(float));
+    pass.indices = buffer(WGPUBufferUsage_Index, upstream::splat_quad_indices.data(),
+                          upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
+    pass.order = buffer(WGPUBufferUsage_Vertex, nullptr,
+                        static_cast<std::uint64_t>(record.vertex_count) * 4ull);
+    pass.uniforms = buffer(WGPUBufferUsage_Uniform, nullptr, sizeof(upstream::SplatUniforms));
 
     std::array<WGPUBindGroupEntry, dawn_splat_binding_count> entries{};
     for (std::size_t index = 0; index < entries.size(); ++index) {
@@ -435,18 +382,17 @@ inline DawnSplatPass create_dawn_splat_pass(
     entries[0].size = sizeof(upstream::SplatUniforms);
     entries[1].sampler = pass.sampler;
     for (std::size_t slot = 0; slot < pass.views.size(); ++slot) {
-        entries[slot + dawn_splat_first_texture_binding].textureView =
-            pass.views[slot];
+        entries[slot + dawn_splat_first_texture_binding].textureView = pass.views[slot];
     }
     WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     group.layout = pass.layout;
     group.entryCount = entries.size();
     group.entries = entries.data();
     pass.group = wgpuDeviceCreateBindGroup(device, &group);
-    if (!pass.group) dawn_error("splat bind group");
+    if (!pass.group)
+        dawn_error("splat bind group");
 
-    pass.scratch = upstream::create_splat_sort_scratch(
-        static_cast<double>(record.vertex_count));
+    pass.scratch = upstream::create_splat_sort_scratch(static_cast<double>(record.vertex_count));
     pass.cpu_order.assign(record.vertex_count, 0u);
     pass.order_floats.assign(record.vertex_count, 0.0f);
     pass.data_version = record.data_version;
@@ -455,16 +401,15 @@ inline DawnSplatPass create_dawn_splat_pass(
 
 /** Publish changed float payloads without replacing views, bindings or SH.
  * Picking calls this without the frame-owned depth sort. */
-inline void sync_dawn_splat_data(
-    WGPUQueue queue,
-    const SplatMeshRecord& record,
-    DawnSplatPass& pass) {
-    if (pass.data_version == record.data_version) return;
+inline void sync_dawn_splat_data(WGPUQueue queue, const SplatMeshRecord& record,
+                                 DawnSplatPass& pass) {
+    if (pass.data_version == record.data_version)
+        return;
     const auto payloads = upstream::splat_texture_payloads(record);
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
-        write_dawn_splat_texture(queue, pass.textures[slot],
-            payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
-            record.texture_width, record.texture_height);
+        write_dawn_splat_texture(queue, pass.textures[slot], payloads[slot]->data(),
+                                 payloads[slot]->size() * sizeof(float), record.texture_width,
+                                 record.texture_height);
     }
     pass.depth_transform.fill(0.0f);
     pass.data_version = record.data_version;
@@ -479,29 +424,22 @@ inline void sync_dawn_splat_data(
  * epsilon; the first frame always sorts, because the pin's stored transform
  * starts at zero and a cloud in front of the camera cannot be.
  */
-inline void upload_dawn_splat_pass(
-    WGPUQueue queue,
-    const Engine& engine,
-    DawnSplatPass& pass,
-    const std::array<float, 16>& view,
-    const std::array<float, 16>& projection,
-    // `getCameraPosition` is the camera world matrix's own translation, in
-    // absolute space -- which is what the shared helper returns, because a
-    // floating-origin scene reaching a splat refuses at generation.
-    [[maybe_unused]] const std::array<float, 4>& camera_position,
-    double width,
-    double height) {
+inline void
+upload_dawn_splat_pass(WGPUQueue queue, const Engine& engine, DawnSplatPass& pass,
+                       const std::array<float, 16>& view, const std::array<float, 16>& projection,
+                       // `getCameraPosition` is the camera world matrix's own translation, in
+                       // absolute space -- which is what the shared helper returns, because a
+                       // floating-origin scene reaching a splat refuses at generation.
+                       [[maybe_unused]] const std::array<float, 4>& camera_position, double width,
+                       double height) {
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_dawn_splat_data(queue, record, pass);
     const std::array<float, 16> world = upstream::build_splat_world(record);
 
     if (upstream::splat_sort_dirty(world, view, pass.depth_transform)) {
-        upstream::sort_splats_back_to_front(
-            record.positions,
-            static_cast<double>(record.vertex_count),
-            pass.depth_transform,
-            pass.cpu_order,
-            pass.scratch);
+        upstream::sort_splats_back_to_front(record.positions,
+                                            static_cast<double>(record.vertex_count),
+                                            pass.depth_transform, pass.cpu_order, pass.scratch);
         // The stage reads the index as a float attribute, which is what the
         // pin's `Float32Array` order buffer gives it. Filled in place: a
         // fresh vector here would allocate and zero 1.3 MB per re-sort, and
@@ -509,77 +447,62 @@ inline void upload_dawn_splat_pass(
         for (std::size_t i = 0; i < pass.cpu_order.size(); ++i) {
             pass.order_floats[i] = static_cast<float>(pass.cpu_order[i]);
         }
-        wgpuQueueWriteBuffer(
-            queue,
-            pass.order,
-            0,
-            pass.order_floats.data(),
-            pass.order_floats.size() * sizeof(float));
+        wgpuQueueWriteBuffer(queue, pass.order, 0, pass.order_floats.data(),
+                             pass.order_floats.size() * sizeof(float));
     }
 
     upstream::SplatUniforms uniforms;
-    upstream::write_splat_uniforms(
-        uniforms,
-        world,
-        view,
-        projection,
-        width,
-        height,
-        record.texture_width,
-        record.texture_height
+    upstream::write_splat_uniforms(uniforms, world, view, projection, width, height,
+                                   record.texture_width, record.texture_height
 #if BBLITE_SPLAT_SH
-        ,
-        camera_position
+                                   ,
+                                   camera_position
 #endif
     );
-    wgpuQueueWriteBuffer(
-        queue, pass.uniforms, 0, &uniforms, sizeof(uniforms));
+    wgpuQueueWriteBuffer(queue, pass.uniforms, 0, &uniforms, sizeof(uniforms));
 }
 
 /** Binds and draws into a pass the caller opened. */
-inline void record_dawn_splat_pass(
-    WGPURenderPassEncoder encoder,
-    const DawnSplatPass& pass) {
-    if (pass.vertex_count == 0) return;
+inline void record_dawn_splat_pass(WGPURenderPassEncoder encoder, const DawnSplatPass& pass) {
+    if (pass.vertex_count == 0)
+        return;
     wgpuRenderPassEncoderSetPipeline(encoder, pass.pipeline);
     wgpuRenderPassEncoderSetBindGroup(encoder, 1, pass.group, 0, nullptr);
-    wgpuRenderPassEncoderSetVertexBuffer(
-        encoder, 0, pass.quad, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetVertexBuffer(
-        encoder, 1, pass.order, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(
-        encoder,
-        pass.indices,
-        WGPUIndexFormat_Uint16,
-        0,
-        WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetVertexBuffer(encoder, 0, pass.quad, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetVertexBuffer(encoder, 1, pass.order, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(encoder, pass.indices, WGPUIndexFormat_Uint16, 0,
+                                        WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderDrawIndexed(
-        encoder,
-        static_cast<std::uint32_t>(upstream::splat_quad_indices.size()),
-        pass.vertex_count,
-        0,
-        0,
-        0);
+        encoder, static_cast<std::uint32_t>(upstream::splat_quad_indices.size()), pass.vertex_count,
+        0, 0, 0);
 }
 
-inline void release_dawn_splat_pass_resources([[maybe_unused]] WGPUDevice device, DawnSplatPassResources& pass) noexcept {
-    if (pass.frame_layout) wgpuBindGroupLayoutRelease(pass.frame_layout);
+inline void release_dawn_splat_pass_resources([[maybe_unused]] WGPUDevice device,
+                                              DawnSplatPassResources& pass) noexcept {
+    if (pass.frame_layout)
+        wgpuBindGroupLayoutRelease(pass.frame_layout);
     pass.frame_layout = nullptr;
-    if (pass.group) wgpuBindGroupRelease(pass.group);
-    if (pass.layout) wgpuBindGroupLayoutRelease(pass.layout);
-    if (pass.pipeline) wgpuRenderPipelineRelease(pass.pipeline);
-    if (pass.sampler) wgpuSamplerRelease(pass.sampler);
+    if (pass.group)
+        wgpuBindGroupRelease(pass.group);
+    if (pass.layout)
+        wgpuBindGroupLayoutRelease(pass.layout);
+    if (pass.pipeline)
+        wgpuRenderPipelineRelease(pass.pipeline);
+    if (pass.sampler)
+        wgpuSamplerRelease(pass.sampler);
     for (WGPUTextureView& view : pass.views) {
-        if (view) wgpuTextureViewRelease(view);
+        if (view)
+            wgpuTextureViewRelease(view);
         view = nullptr;
     }
     for (WGPUTexture& texture : pass.textures) {
-        if (texture) wgpuTextureRelease(texture);
+        if (texture)
+            wgpuTextureRelease(texture);
         texture = nullptr;
     }
-    for (WGPUBuffer* buffer :
-         {&pass.uniforms, &pass.quad, &pass.indices, &pass.order}) {
-        if (*buffer) wgpuBufferRelease(*buffer);
+    for (WGPUBuffer* buffer : {&pass.uniforms, &pass.quad, &pass.indices, &pass.order}) {
+        if (*buffer)
+            wgpuBufferRelease(*buffer);
         *buffer = nullptr;
     }
     pass.group = nullptr;

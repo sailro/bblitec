@@ -4,26 +4,56 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
-test("native glTF albedo hydration preserves associations, fallback objects and per-load lifetimes", { skip: !tools }, () => {
-    const template = readFileSync("src/lowering/templates/gltf-loader-cpp.ts", "utf8")
-        .replaceAll("${GLTF_SOURCE_ALBEDO_IDENTITIES}", GLTF_SOURCE_ALBEDO_IDENTITIES);
-    const start = template.indexOf("    const auto& source_albedo =");
-    const lambda = template.indexOf("    const auto retain_source_albedo =", start);
-    assert(start >= 0 && lambda > start);
-    // This template island is emitted verbatim. Exercise its real JSON guards,
-    // association map, producer adaptation and publication, without GPU work.
-    const hydrate = template.slice(start, lambda) + cppFunction(template.slice(lambda), "    const auto retain_source_albedo =") + ";";
-    assert(!hydrate.includes("${"));
-    const helpers = ["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value("]
-        .map(signature => cppFunction(template, signature)).join("\n");
-    const directory = resolve("artifacts/test-gltf-albedo-hydration");
-    mkdirSync(directory, { recursive: true });
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+test(
+    "native glTF albedo hydration preserves associations, fallback objects and per-load lifetimes",
+    { skip: !tools },
+    () => {
+        const template = readFileSync(
+            "src/lowering/templates/gltf-loader-cpp.ts",
+            "utf8",
+        ).replaceAll(
+            "${GLTF_SOURCE_ALBEDO_IDENTITIES}",
+            GLTF_SOURCE_ALBEDO_IDENTITIES,
+        );
+        const start = template.indexOf("    const auto& source_albedo =");
+        const lambda = template.indexOf(
+            "    const auto retain_source_albedo =",
+            start,
+        );
+        assert(start >= 0 && lambda > start);
+        // This template island is emitted verbatim. Exercise its real JSON guards,
+        // association map, producer adaptation and publication, without GPU work.
+        const hydrate =
+            template.slice(start, lambda) +
+            cppFunction(
+                template.slice(lambda),
+                "    const auto retain_source_albedo =",
+            ) +
+            ";";
+        assert(!hydrate.includes("${"));
+        const helpers = [
+            "const ts::JsonValue& required(",
+            "const ts::JsonValue* optional(",
+            "std::size_t unsigned_value(",
+        ]
+            .map((signature) => cppFunction(template, signature))
+            .join("\n");
+        const directory = resolve("artifacts/test-gltf-albedo-hydration");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <cassert>
 #include <cstdio>
@@ -82,8 +112,27 @@ int main() {
     assert((texture_bytes(fallback) == std::vector<std::uint8_t>{137,188,225,128}));
     std::puts("gltf-albedo-hydration: ok");
 }
-`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", "/fp:precise",
-        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
-    assert.match(execFileSync(executable, { encoding: "utf8" }), /gltf-albedo-hydration: ok/);
-});
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            "/fp:precise",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            join(nativeFixtureVcpkgRoot, "include"),
+            source,
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /gltf-albedo-hydration: ok/,
+        );
+    },
+);

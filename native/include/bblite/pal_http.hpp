@@ -11,7 +11,8 @@ struct HttpRequest {
     std::optional<std::string> body;
 };
 
-HttpResponseData perform_http_request(const std::string& url, HttpRequest request, std::stop_token stop);
+HttpResponseData perform_http_request(const std::string& url, HttpRequest request,
+                                      std::stop_token stop);
 
 inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request) {
     struct Completion final : CompletionEvent {
@@ -22,17 +23,26 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
     js::Promise<HttpResponse> result;
     auto& loop = EventLoop::current();
     auto job = std::make_shared<std::jthread>();
-    const auto id = loop.register_completion([result, job](std::unique_ptr<ExternalEvent> event) {
-        auto* completion = dynamic_cast<Completion*>(event.get());
-        if (!completion) throw std::logic_error("Incorrect HTTP completion payload.");
-        if (completion->error) result.reject(completion->error);
-        else result.resolve(js::make_ref<HttpResponseData>(std::move(completion->response)));
-    }, [job] { job->request_stop(); });
+    const auto id = loop.register_completion(
+        [result, job](std::unique_ptr<ExternalEvent> event) {
+            auto* completion = dynamic_cast<Completion*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect HTTP completion payload.");
+            if (completion->error)
+                result.reject(completion->error);
+            else
+                result.resolve(js::make_ref<HttpResponseData>(std::move(completion->response)));
+        },
+        [job] { job->request_stop(); });
     try {
-        *job = std::jthread([inbox = loop.inbox(), id, url = std::move(url), request = std::move(request)](std::stop_token stop) mutable {
+        *job = std::jthread([inbox = loop.inbox(), id, url = std::move(url),
+                             request = std::move(request)](std::stop_token stop) mutable {
             auto completion = std::make_unique<Completion>(id);
-            try { completion->response = perform_http_request(url, std::move(request), stop); }
-            catch (...) { completion->error = std::current_exception(); }
+            try {
+                completion->response = perform_http_request(url, std::move(request), stop);
+            } catch (...) {
+                completion->error = std::current_exception();
+            }
             inbox->post(std::move(completion));
         });
     } catch (...) {

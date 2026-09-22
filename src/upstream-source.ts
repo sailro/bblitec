@@ -1,11 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import {
-    dirname,
-    join,
-    posix,
-    relative,
-    resolve,
-} from "node:path";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "./repository-root.js";
@@ -54,19 +48,10 @@ export function readUpstreamPin(
     pinPath = "upstream/babylon-lite.json",
 ): UpstreamPin {
     const value: unknown = JSON.parse(
-        readFileSync(
-            resolve(repositoryRoot, pinPath),
-            "utf8",
-        ),
+        readFileSync(resolve(repositoryRoot, pinPath), "utf8"),
     );
-    if (
-        typeof value !== "object" ||
-        value === null ||
-        Array.isArray(value)
-    ) {
-        throw new Error(
-            `Invalid Babylon Lite pin file: ${pinPath}.`,
-        );
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`Invalid Babylon Lite pin file: ${pinPath}.`);
     }
     const record = value as Record<string, unknown>;
     if (
@@ -150,18 +135,23 @@ export class UpstreamSourceStore {
         ),
         pinPath = "upstream/babylon-lite.json",
     ) {
-        const pin = readUpstreamPin(
-            repositoryRoot,
-            pinPath,
-        );
+        const pin = readUpstreamPin(repositoryRoot, pinPath);
         this.pin = pin;
         this.repositoryRoot = repositoryRoot;
-        this.packageRoot = resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
+        this.packageRoot = resolve(
+            repositoryRoot,
+            "node_modules",
+            ...pin.package.split("/"),
+        );
         const packageJsonPath = join(this.packageRoot, "package.json");
         if (!existsSync(packageJsonPath)) {
-            throw new Error(`Pinned upstream package is not installed: ${pin.package}@${pin.version}. Run npm ci.`);
+            throw new Error(
+                `Pinned upstream package is not installed: ${pin.package}@${pin.version}. Run npm ci.`,
+            );
         }
-        const metadata = JSON.parse(readFileSync(packageJsonPath, "utf8")) as PackageMetadata;
+        const metadata = JSON.parse(
+            readFileSync(packageJsonPath, "utf8"),
+        ) as PackageMetadata;
         if (metadata.name !== pin.package || metadata.version !== pin.version) {
             throw new Error(
                 `Upstream package mismatch: expected ${pin.package}@${pin.version}, ` +
@@ -190,7 +180,10 @@ export class UpstreamSourceStore {
         const built = UpstreamSourceStore.builtSources.get(key);
         if (built !== undefined) return built;
         const source = this.sources.get(normalized);
-        if (!source) throw new Error(`Upstream TypeScript source not found: ${normalized}.`);
+        if (!source)
+            throw new Error(
+                `Upstream TypeScript source not found: ${normalized}.`,
+            );
         const text =
             pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
                 ?.code ?? source;
@@ -213,9 +206,7 @@ export class UpstreamSourceStore {
             this.getSource(normalized),
             ts.ScriptTarget.Latest,
             true,
-            normalized.endsWith(".js")
-                ? ts.ScriptKind.JS
-                : ts.ScriptKind.TS,
+            normalized.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
         );
         this.sourceFiles.set(normalized, sourceFile);
         return sourceFile;
@@ -227,28 +218,49 @@ export class UpstreamSourceStore {
 
     public resolvePublicExport(name: string): PublicExport {
         const entry = this.publicExports.get(name);
-        if (!entry) throw new Error(`Babylon Lite public export '${name}' was not found.`);
+        if (!entry)
+            throw new Error(
+                `Babylon Lite public export '${name}' was not found.`,
+            );
         return entry;
     }
 
-    public resolveImport(fromModule: string, specifier: string): string | undefined {
+    public resolveImport(
+        fromModule: string,
+        specifier: string,
+    ): string | undefined {
         if (!specifier.startsWith(".")) return undefined;
         const withoutExtension = specifier.replace(/\.(?:js|mjs|cjs|ts)$/, "");
-        const candidate = posix.normalize(posix.join(posix.dirname(fromModule), `${withoutExtension}.ts`));
+        const candidate = posix.normalize(
+            posix.join(posix.dirname(fromModule), `${withoutExtension}.ts`),
+        );
         return this.hasSource(candidate) ? candidate : undefined;
     }
 
     private loadSources(): void {
         const libRoot = join(this.packageRoot, "lib");
-        for (const mapPath of walk(libRoot).filter((path) => path.endsWith(".js.map"))) {
-            const map = JSON.parse(readFileSync(mapPath, "utf8")) as SourceMapFile;
-            for (let index = 0; index < (map.sources?.length ?? 0); index += 1) {
+        for (const mapPath of walk(libRoot).filter((path) =>
+            path.endsWith(".js.map"),
+        )) {
+            const map = JSON.parse(
+                readFileSync(mapPath, "utf8"),
+            ) as SourceMapFile;
+            for (
+                let index = 0;
+                index < (map.sources?.length ?? 0);
+                index += 1
+            ) {
                 const content = map.sourcesContent?.[index];
-                const path = map.sources?.[index] ? virtualSourcePath(map.sources[index]!) : undefined;
+                const path = map.sources?.[index]
+                    ? virtualSourcePath(map.sources[index]!)
+                    : undefined;
                 if (path && content) this.sources.set(path, content);
             }
         }
-        this.sources.set("src/index.ts", readFileSync(join(libRoot, "index.js"), "utf8"));
+        this.sources.set(
+            "src/index.ts",
+            readFileSync(join(libRoot, "index.js"), "utf8"),
+        );
     }
 
     private loadPublicExports(): void {
@@ -266,8 +278,10 @@ export class UpstreamSourceStore {
             for (const element of statement.exportClause.elements) {
                 const exportedName = element.name.text;
                 const modulePath =
-                    this.resolveImport("src/index.ts", statement.moduleSpecifier.text) ??
-                    this.findSourceExport(exportedName);
+                    this.resolveImport(
+                        "src/index.ts",
+                        statement.moduleSpecifier.text,
+                    ) ?? this.findSourceExport(exportedName);
                 if (!modulePath) continue;
                 this.publicExports.set(exportedName, {
                     exportedName,
@@ -291,16 +305,15 @@ export class UpstreamSourceStore {
             }
             const file = this.getSourceFile(path);
             for (const statement of file.statements) {
-                if (
-                    !(
-                        ts.canHaveModifiers(statement) &&
-                        ts.getModifiers(statement)?.some(
-                        (modifier) =>
-                            modifier.kind ===
-                            ts.SyntaxKind.ExportKeyword,
+                if (!(
+                    ts.canHaveModifiers(statement) &&
+                    ts
+                        .getModifiers(statement)
+                        ?.some(
+                            (modifier) =>
+                                modifier.kind === ts.SyntaxKind.ExportKeyword,
                         )
-                    )
-                ) {
+                )) {
                     continue;
                 }
                 if (
@@ -314,8 +327,8 @@ export class UpstreamSourceStore {
                     return path;
                 }
                 if (ts.isVariableStatement(statement)) {
-                    for (const declaration of
-                        statement.declarationList.declarations) {
+                    for (const declaration of statement.declarationList
+                        .declarations) {
                         if (
                             ts.isIdentifier(declaration.name) &&
                             declaration.name.text === name

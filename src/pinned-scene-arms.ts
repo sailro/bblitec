@@ -27,7 +27,7 @@ export const pinnedSingleLightTypes = [
     "spot",
 ] as const;
 
-export type PinnedSingleLightType = typeof pinnedSingleLightTypes[number];
+export type PinnedSingleLightType = (typeof pinnedSingleLightTypes)[number];
 
 /** One reachable scene arm: what it is, and the composer input for it. */
 export interface PinnedSceneArm {
@@ -88,9 +88,7 @@ export async function pinnedSceneArms(
             COMPUTE_PBR_LIGHT: string;
             getMultiLightLoop: () => string;
         }>("material/pbr/fragments/multilight-wgsl.js"),
-        pinnedToneMapping(
-            request.toneMappingName ?? defaultToneMappingName,
-        ),
+        pinnedToneMapping(request.toneMappingName ?? defaultToneMappingName),
     ]);
     const multi = {
         multiLightWgsl:
@@ -117,7 +115,8 @@ export async function pinnedSceneArms(
     const arms: PinnedSceneArm[] = [];
     for (const toneMappingOn of request.toneMapping) {
         const toneLabel = toneMappingOn ? " +tonemap" : "";
-        const sceneFeatures = (request.environment ? bits.PBR_HAS_ENV : 0) |
+        const sceneFeatures =
+            (request.environment ? bits.PBR_HAS_ENV : 0) |
             (request.fog ? bits.PBR_HAS_FOG : 0) |
             (toneMappingOn ? bits.PBR_HAS_TONEMAP : 0);
         const toneOptions = toneMappingOn ? tone : {};

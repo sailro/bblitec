@@ -9,30 +9,31 @@ import {
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
-
 export interface AnimationIntrinsicContext
-    extends IntrinsicCallContext,
-    Pick<LoweringServices,
-        | "isDefaultLibraryIdentifier"
-        | "compilePropertyAnimationClip"
-        | "compilePropertyAnimationGroupOptions"
-        | "compilePropertyAnimationTargets"
-        | "compileNumber"
-        | "resolveStaticExpression"
-        | "lookup"
-        | "lookupOptional"
-        | "requirePresentationHost"
-        | "compileFrameCallback"
-        | "requireCompatibleFrameConductor"
-        | "requireEngine"
-        | "expectSameEngine"
-        | "fail"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "propertyName"
-        | "compileAnimationGroupList"
-        | "symbols"
-    > {}
+    extends
+        IntrinsicCallContext,
+        Pick<
+            LoweringServices,
+            | "isDefaultLibraryIdentifier"
+            | "compilePropertyAnimationClip"
+            | "compilePropertyAnimationGroupOptions"
+            | "compilePropertyAnimationTargets"
+            | "compileNumber"
+            | "resolveStaticExpression"
+            | "lookup"
+            | "lookupOptional"
+            | "requirePresentationHost"
+            | "compileFrameCallback"
+            | "requireCompatibleFrameConductor"
+            | "requireEngine"
+            | "expectSameEngine"
+            | "fail"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "propertyName"
+            | "compileAnimationGroupList"
+            | "symbols"
+        > {}
 
 /**
  * Which arm of the pin's `AnimationGroupMaskMode` an argument names.
@@ -95,10 +96,7 @@ function associateManagerEngine(
     engineCpp: string,
     node: ts.Node,
 ): void {
-    if (
-        manager.engineCpp !== undefined &&
-        manager.engineCpp !== engineCpp
-    ) {
+    if (manager.engineCpp !== undefined && manager.engineCpp !== engineCpp) {
         context.fail(
             node,
             "Animation manager and group/scene belong to different engines.",
@@ -123,19 +121,14 @@ export function compileAnimationIntrinsic(
                     cpp: "bbl::create_animation_manager()",
                 };
             }
-            const options = context.expectObjectLiteral(
-                optionsExpression,
-            );
+            const options = context.expectObjectLiteral(optionsExpression);
             validateObjectProperties(
                 context,
                 options,
                 ["engine", "fixedDeltaMs", "onUpdate"],
                 "Animation manager options support engine, fixedDeltaMs and onUpdate.",
             );
-            const engineExpression = context.objectProperty(
-                options,
-                "engine",
-            );
+            const engineExpression = context.objectProperty(options, "engine");
             let engineCpp: string | undefined;
             if (engineExpression) {
                 const engine = context.compileValue(engineExpression);
@@ -148,9 +141,16 @@ export function compileAnimationIntrinsic(
             // before the callback's retained captures are compiled.
             if (onUpdate) engineCpp ??= context.requirePresentationHost(call);
             const fields: string[] = [];
-            if (fixedDelta) fields.push(`.fixed_delta_ms = ${context.compileNumber(fixedDelta, "double")}`);
-            if (onUpdate) fields.push(`.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`);
-            if (onUpdate && !engineExpression) fields.push(".source_engine_present = false");
+            if (fixedDelta)
+                fields.push(
+                    `.fixed_delta_ms = ${context.compileNumber(fixedDelta, "double")}`,
+                );
+            if (onUpdate)
+                fields.push(
+                    `.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`,
+                );
+            if (onUpdate && !engineExpression)
+                fields.push(".source_engine_present = false");
             const nativeOptions = `bbl::PropertyAnimationManagerOptions{${fields.join(", ")}}`;
             return {
                 kind: "animation-manager",
@@ -164,8 +164,7 @@ export function compileAnimationIntrinsic(
             // attached to the manager, which then ticks it instead of the
             // scene doing so.
             context.expectArgumentCount(call, 2, 2);
-            const manager =
-                context.compileValue(argumentAt(call, 0));
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
@@ -174,16 +173,8 @@ export function compileAnimationIntrinsic(
             const groups = context.compileAnimationGroupList(
                 argumentAt(call, 1),
             );
-            associateManagerEngine(
-                context,
-                manager,
-                groups.engineCpp,
-                call,
-            );
-            context.reachFeature(
-                "animation:managed-groups",
-                call,
-            );
+            associateManagerEngine(context, manager, groups.engineCpp, call);
+            context.reachFeature("animation:managed-groups", call);
             context.reachFeature("animation:gltf-groups", call);
             return {
                 kind: "void",
@@ -195,8 +186,7 @@ export function compileAnimationIntrinsic(
 
         case "updateAnimationManager": {
             context.expectArgumentCount(call, 2, 2);
-            const manager =
-                context.compileValue(argumentAt(call, 0));
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
@@ -208,30 +198,23 @@ export function compileAnimationIntrinsic(
                     "updateAnimationManager needs a manager created with an engine.",
                 );
             }
-            context.reachFeature(
-                "animation:managed-groups",
-                call,
-            );
+            context.reachFeature("animation:managed-groups", call);
             return {
                 kind: "void",
                 cpp:
                     `bbl::update_animation_manager(` +
                     `${manager.cpp}, ${manager.engineCpp}, ` +
-                    `${context.compileNumber(
-                        argumentAt(call, 1),
-                        "double",
-                    )})`,
+                    `${context.compileNumber(argumentAt(call, 1), "double")})`,
             };
         }
 
         case "createPropertyAnimationClip": {
             context.expectArgumentCount(call, 2, 3);
-            const compiled =
-                context.compilePropertyAnimationClip(
-                    argumentAt(call, 0),
-                    argumentAt(call, 1),
-                    call.arguments[2],
-                );
+            const compiled = context.compilePropertyAnimationClip(
+                argumentAt(call, 0),
+                argumentAt(call, 1),
+                call.arguments[2],
+            );
             context.reachFeature("animation:property", call);
             return {
                 kind: "animation-clip",
@@ -245,26 +228,18 @@ export function compileAnimationIntrinsic(
 
         case "createPropertyAnimationGroup": {
             context.expectArgumentCount(call, 3, 4);
-            const manager =
-                context.compileValue(argumentAt(call, 0));
-            const target =
-                context.compileValue(argumentAt(call, 1));
-            const clip =
-                context.compileValue(argumentAt(call, 2));
+            const manager = context.compileValue(argumentAt(call, 0));
+            const target = context.compileValue(argumentAt(call, 1));
+            const clip = context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 manager,
                 "animation-manager",
                 argumentAt(call, 0),
             );
-            context.expectKind(
-                clip,
-                "animation-clip",
-                argumentAt(call, 2),
-            );
+            context.expectKind(clip, "animation-clip", argumentAt(call, 2));
             // Plain objects resolve their fields independently of native
             // mesh/camera lane names; a clip can bind either kind of target.
-            const targetKind =
-                clip.animationTargetKind ?? "mesh";
+            const targetKind = clip.animationTargetKind ?? "mesh";
             const paths = clip.animationPaths ?? [];
             if (paths.length === 0) {
                 context.fail(
@@ -275,20 +250,15 @@ export function compileAnimationIntrinsic(
             let targetsCpp: string;
             let engine: string;
             if (target.kind === "data" || target.kind === "record") {
-                const compiled =
-                    context.compilePropertyAnimationTargets(
-                        target,
-                        paths,
-                        argumentAt(call, 1),
-                    );
+                const compiled = context.compilePropertyAnimationTargets(
+                    target,
+                    paths,
+                    argumentAt(call, 1),
+                );
                 targetsCpp = compiled.cpp;
                 engine = compiled.engineCpp;
             } else {
-                context.expectKind(
-                    target,
-                    targetKind,
-                    argumentAt(call, 1),
-                );
+                context.expectKind(target, targetKind, argumentAt(call, 1));
                 engine = context.requireEngine(target, call);
                 targetsCpp = `{${paths
                     .map(
@@ -300,11 +270,10 @@ export function compileAnimationIntrinsic(
                     .join(", ")}}`;
                 context.expectSameEngine(manager, target, call);
             }
-            const options =
-                context.compilePropertyAnimationGroupOptions(
-                    call.arguments[3],
-                    clip,
-                );
+            const options = context.compilePropertyAnimationGroupOptions(
+                call.arguments[3],
+                clip,
+            );
             // A manager created without options acquires its engine from
             // the first property target bound into it. The pin stores that
             // association on each manager-owned task; carrying it on the
@@ -346,11 +315,7 @@ export function compileAnimationIntrinsic(
                 "animation-group",
                 argumentAt(call, 1),
             );
-            context.expectKind(
-                toGroup,
-                "animation-group",
-                argumentAt(call, 2),
-            );
+            context.expectKind(toGroup, "animation-group", argumentAt(call, 2));
             context.expectSameEngine(fromGroup, toGroup, call);
             context.expectSameEngine(manager, fromGroup, call);
             const engine = context.requireEngine(
@@ -358,29 +323,21 @@ export function compileAnimationIntrinsic(
                 argumentAt(call, 1),
             );
             associateManagerEngine(context, manager, engine, call);
-            const options = context.expectObjectLiteral(
-                argumentAt(call, 3),
-            );
+            const options = context.expectObjectLiteral(argumentAt(call, 3));
             validateObjectProperties(
                 context,
                 options,
                 ["durationMs", "toWeight"],
                 "Cross-fade options support durationMs and toWeight.",
             );
-            const duration = context.objectProperty(
-                options,
-                "durationMs",
-            );
+            const duration = context.objectProperty(options, "durationMs");
             if (!duration) {
                 context.fail(
                     options,
                     "crossFadeAnimationGroups requires durationMs.",
                 );
             }
-            const toWeight = context.objectProperty(
-                options,
-                "toWeight",
-            );
+            const toWeight = context.objectProperty(options, "toWeight");
             context.reachFeature("animation:property", call);
             context.reachFeature("animation:weight-fades", call);
             if (
@@ -401,9 +358,7 @@ export function compileAnimationIntrinsic(
                     `${fadeTarget(fromGroup)}, ` +
                     `${fadeTarget(toGroup)}, ` +
                     `${context.compileNumber(duration)}, ` +
-                    `${toWeight
-                        ? context.compileNumber(toWeight)
-                        : "1.0f"})`,
+                    `${toWeight ? context.compileNumber(toWeight) : "1.0f"})`,
             };
         }
 
@@ -414,21 +369,11 @@ export function compileAnimationIntrinsic(
             // carries its own, a glTF group's lives on the engine record
             // the skeleton mixer reads.
             context.expectArgumentCount(call, 2, 2);
-            const group =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                group,
-                "animation-group",
-                argumentAt(call, 0),
-            );
-            const weight = context.compileNumber(
-                argumentAt(call, 1),
-            );
+            const group = context.compileValue(argumentAt(call, 0));
+            context.expectKind(group, "animation-group", argumentAt(call, 0));
+            const weight = context.compileNumber(argumentAt(call, 1));
             if (group.animationGroupSource === "property") {
-                context.reachFeature(
-                    "animation:property-blending",
-                    call,
-                );
+                context.reachFeature("animation:property-blending", call);
                 return {
                     kind: "void",
                     cpp:
@@ -439,10 +384,7 @@ export function compileAnimationIntrinsic(
             // A glTF group's weight is engine state the weighted
             // skeleton mixer reads, so it lands on the group record
             // rather than on a manager-owned clip.
-            context.reachFeature(
-                "animation:gltf-groups",
-                call,
-            );
+            context.reachFeature("animation:gltf-groups", call);
             return {
                 kind: "void",
                 cpp:
@@ -466,13 +408,8 @@ export function compileAnimationIntrinsic(
             // frame rate it divides by, the way `go_to_frame` already
             // carries it.
             context.expectArgumentCount(call, 1, 2);
-            const group =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                group,
-                "animation-group",
-                argumentAt(call, 0),
-            );
+            const group = context.compileValue(argumentAt(call, 0));
+            context.expectKind(group, "animation-group", argumentAt(call, 0));
             requireGltfGroupSource(
                 context,
                 group,
@@ -480,25 +417,13 @@ export function compileAnimationIntrinsic(
                 "setAnimationAdditive",
             );
             context.reachFeature("animation:gltf-groups", call);
-            context.reachFeature(
-                "animation:gltf-additive",
-                call,
-            );
+            context.reachFeature("animation:gltf-additive", call);
             // The pin's setter reaches the mixer module and, through the
             // owner, the manager machinery — reaching the intrinsic
             // composes both, the way `enableAnimationBlending` does.
-            context.reachFeature(
-                "animation:gltf-blending",
-                call,
-            );
-            context.reachFeature(
-                "animation:managed-groups",
-                call,
-            );
-            const engine = context.requireEngine(
-                group,
-                argumentAt(call, 0),
-            );
+            context.reachFeature("animation:gltf-blending", call);
+            context.reachFeature("animation:managed-groups", call);
+            const engine = context.requireEngine(group, argumentAt(call, 0));
             const optionsExpression = call.arguments[1];
             if (!optionsExpression) {
                 // `(options?.referenceFrame ?? 0)`: no options means
@@ -510,9 +435,7 @@ export function compileAnimationIntrinsic(
                         `${engine}, ${group.cpp}, 0.0f)`,
                 };
             }
-            const options = context.expectObjectLiteral(
-                optionsExpression,
-            );
+            const options = context.expectObjectLiteral(optionsExpression);
             validateObjectProperties(
                 context,
                 options,
@@ -533,8 +456,7 @@ export function compileAnimationIntrinsic(
                     "Additive animation reference must use either referenceFrame or referenceTime, not both — the pinned setter throws on the pair.",
                 );
             }
-            const selected =
-                timeExpression ?? frameExpression;
+            const selected = timeExpression ?? frameExpression;
             const reference = selected
                 ? staticNumberValue(context, selected)
                 : 0;
@@ -580,26 +502,17 @@ export function compileAnimationIntrinsic(
             // kept separate from the property one so a manual-only scene
             // loads neither (src/animation/weighted-gltf-mixer.ts).
             context.expectArgumentCount(call, 1, 1);
-            const blended =
-                context.compileValue(argumentAt(call, 0));
+            const blended = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 blended,
                 "animation-manager",
                 argumentAt(call, 0),
             );
-            context.reachFeature(
-                "animation:gltf-blending",
-                call,
-            );
-            context.reachFeature(
-                "animation:managed-groups",
-                call,
-            );
+            context.reachFeature("animation:gltf-blending", call);
+            context.reachFeature("animation:managed-groups", call);
             return {
                 kind: "void",
-                cpp:
-                    `bbl::enable_animation_blending(` +
-                    `${blended.cpp})`,
+                cpp: `bbl::enable_animation_blending(` + `${blended.cpp})`,
             };
         }
 
@@ -610,17 +523,13 @@ export function compileAnimationIntrinsic(
             // into the same property (src/animation/
             // weighted-pointer-mixer.ts).
             context.expectArgumentCount(call, 1, 1);
-            const manager =
-                context.compileValue(argumentAt(call, 0));
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
                 argumentAt(call, 0),
             );
-            context.reachFeature(
-                "animation:property-blending",
-                call,
-            );
+            context.reachFeature("animation:property-blending", call);
             return {
                 kind: "void",
                 cpp:
@@ -675,8 +584,7 @@ export function compileAnimationIntrinsic(
         case "startAnimationManager": {
             context.expectArgumentCount(call, 1, 1);
             context.requireCompatibleFrameConductor("manager", call);
-            const manager =
-                context.compileValue(argumentAt(call, 0));
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
@@ -698,9 +606,16 @@ export function compileAnimationIntrinsic(
         case "stopAnimationManager": {
             context.expectArgumentCount(call, 1, 1);
             const manager = context.compileValue(argumentAt(call, 0));
-            context.expectKind(manager, "animation-manager", argumentAt(call, 0));
+            context.expectKind(
+                manager,
+                "animation-manager",
+                argumentAt(call, 0),
+            );
             context.reachFeature("animation:property", call);
-            return { kind: "void", cpp: `bbl::stop_animation_manager(${manager.cpp})` };
+            return {
+                kind: "void",
+                cpp: `bbl::stop_animation_manager(${manager.cpp})`,
+            };
         }
 
         case "playAnimation":
@@ -708,13 +623,8 @@ export function compileAnimationIntrinsic(
         case "stopAnimation": {
             // src/animation/animation-group.ts: three writes over one group.
             context.expectArgumentCount(call, 1, 1);
-            const group =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                group,
-                "animation-group",
-                argumentAt(call, 0),
-            );
+            const group = context.compileValue(argumentAt(call, 0));
+            context.expectKind(group, "animation-group", argumentAt(call, 0));
             // Property groups remain manager-owned and sampled; these
             // operations update their public playback state in place.
             if (group.animationGroupSource === "property") {
@@ -750,16 +660,9 @@ export function compileAnimationIntrinsic(
             // is already how a group is reached -- so what travels is that
             // the caller passed it.
             context.expectArgumentCount(call, 2, 3);
-            const group =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                group,
-                "animation-group",
-                argumentAt(call, 0),
-            );
-            const frame = context.compileNumber(
-                argumentAt(call, 1),
-            );
+            const group = context.compileValue(argumentAt(call, 0));
+            context.expectKind(group, "animation-group", argumentAt(call, 0));
+            const frame = context.compileNumber(argumentAt(call, 1));
             const engineArgument = call.arguments[2];
             if (engineArgument !== undefined) {
                 context.expectKind(
@@ -769,10 +672,7 @@ export function compileAnimationIntrinsic(
                 );
             }
             if (group.animationGroupSource !== "property") {
-                context.reachFeature(
-                    "animation:gltf-groups",
-                    call,
-                );
+                context.reachFeature("animation:gltf-groups", call);
                 return {
                     kind: "void",
                     cpp:

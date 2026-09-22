@@ -54,10 +54,7 @@ test("capture and draw paths take their matrices from one record", () => {
         (header.match(/struct ShaderDrawMatrices \{/g) ?? []).length,
         1,
     );
-    assert.match(
-        header,
-        /world\(shader_draw_world\(engine, mesh\)\),/,
-    );
+    assert.match(header, /world\(shader_draw_world\(engine, mesh\)\),/);
     assert.match(
         header,
         /world_view_projection\(\s*upstream::matrix_product\(pass\.view_projection, world\)\),/,
@@ -91,24 +88,43 @@ test("capture and draw paths take their matrices from one record", () => {
     // The two SDL_GPU draw loops both construct it; the count also
     // catches a site quietly reverting to hand-patched matrices.
     assert.equal(
-        (consumers()["pal_sdl_gpu.cpp"]!
-            .match(/ShaderDrawMatrices shader_matrices\(/g) ?? []).length,
+        (
+            consumers()["pal_sdl_gpu.cpp"].match(
+                /ShaderDrawMatrices shader_matrices\(/g,
+            ) ?? []
+        ).length,
         2,
     );
 });
 
 test("PBR capture uses the resolved draw world including late root transforms", () => {
     const capture = consumers()["pal_render_capture.hpp"];
-    const blocks = capture.slice(capture.indexOf('json.key("pinnedMeshBlocks")'));
+    const blocks = capture.slice(
+        capture.indexOf('json.key("pinnedMeshBlocks")'),
+    );
     assert.match(blocks, /pinned_variant_for_draw\(scene, engine, draw\)/);
-    assert.match(blocks, /if \(variant == npos\) continue;/);
-    const builder = shared().slice(shared().indexOf("inline upstream::MeshUniforms pinned_draw_mesh_block("));
+    assert.match(blocks, /if \(variant == npos\)\s+continue;/);
+    const builder = shared().slice(
+        shared().indexOf(
+            "inline upstream::MeshUniforms pinned_draw_mesh_block(",
+        ),
+    );
     assert.match(blocks, /pinned_draw_conventions\(variant, record\)/);
     assert.match(builder, /const PinnedDrawConventions& conventions/);
-    assert.match(builder, /pinned_draw_world\(\s*conventions.identity_world,\s*conventions.world_from_palette,\s*upstream::pbr_variants\[variant\].uses_local_position,/);
+    assert.match(
+        builder,
+        /pinned_draw_world\(\s*conventions.identity_world,\s*conventions.world_from_palette,\s*upstream::pbr_variants\[variant\].uses_local_position,/,
+    );
     for (const [name, source] of Object.entries(consumers())) {
-        assert.ok(source.includes("pinned_draw_mesh_block("), `${name} bypasses the shared PBR draw block`);
-        assert.doesNotMatch(source, /pinned_draw_world\(/, `${name} reconstructs the PBR draw world`);
+        assert.ok(
+            source.includes("pinned_draw_mesh_block("),
+            `${name} bypasses the shared PBR draw block`,
+        );
+        assert.doesNotMatch(
+            source,
+            /pinned_draw_world\(/,
+            `${name} reconstructs the PBR draw world`,
+        );
     }
     assert.doesNotMatch(blocks, /pinned_mesh_world\(\)/);
     assert.match(blocks, /"worldSource", "effective-draw"/);

@@ -13,10 +13,14 @@ struct UiDawnTexture {
     WGPUBindGroup group = nullptr;
     WGPUBindGroup nearest_group = nullptr;
     void release() {
-        if (nearest_group) wgpuBindGroupRelease(nearest_group);
-        if (group) wgpuBindGroupRelease(group);
-        if (view) wgpuTextureViewRelease(view);
-        if (texture) wgpuTextureRelease(texture);
+        if (nearest_group)
+            wgpuBindGroupRelease(nearest_group);
+        if (group)
+            wgpuBindGroupRelease(group);
+        if (view)
+            wgpuTextureViewRelease(view);
+        if (texture)
+            wgpuTextureRelease(texture);
         *this = {};
     }
 };
@@ -35,21 +39,24 @@ struct UiBackdropDawnResources {
             pair.first.release();
             pair.second.release();
         }
-        if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        if (pipeline)
+            wgpuRenderPipelineRelease(pipeline);
         *this = {};
     }
 };
 
-inline UiDawnTexture create_ui_backdrop_dawn_texture(
-    WGPUDevice device, WGPUBindGroupLayout layout, WGPUSampler sampler,
-    std::uint32_t width, std::uint32_t height, WGPUTextureFormat format) {
+inline UiDawnTexture create_ui_backdrop_dawn_texture(WGPUDevice device, WGPUBindGroupLayout layout,
+                                                     WGPUSampler sampler, std::uint32_t width,
+                                                     std::uint32_t height,
+                                                     WGPUTextureFormat format) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.dimension = WGPUTextureDimension_2D;
     descriptor.size = {width, height, 1};
     descriptor.format = format;
     descriptor.mipLevelCount = 1;
     descriptor.sampleCount = 1;
-    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment |
+                       WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc;
     UiDawnTexture result;
     result.texture = wgpuDeviceCreateTexture(device, &descriptor);
     result.view = create_dawn_texture_view(result.texture, nullptr);
@@ -68,40 +75,44 @@ inline UiDawnTexture create_ui_backdrop_dawn_texture(
     return result;
 }
 
-inline void render_ui_backdrop_dawn(
-    WGPUDevice device, WGPUCommandEncoder encoder, WGPUTexture target,
-    WGPUTextureView target_view, WGPUTextureFormat target_format,
-    WGPUBuffer vertices, WGPUBuffer indices, WGPUSampler sampler,
-    WGPUBindGroup screen_group, WGPUBindGroupLayout texture_layout,
-    WGPURenderPipeline composite_pipeline, UiBackdropDawnResources& resources,
-    const UiRenderFrame& frame, std::size_t backdrop_index) {
+inline void render_ui_backdrop_dawn(WGPUDevice device, WGPUCommandEncoder encoder,
+                                    WGPUTexture target, WGPUTextureView target_view,
+                                    WGPUTextureFormat target_format, WGPUBuffer vertices,
+                                    WGPUBuffer indices, WGPUSampler sampler,
+                                    WGPUBindGroup screen_group, WGPUBindGroupLayout texture_layout,
+                                    WGPURenderPipeline composite_pipeline,
+                                    UiBackdropDawnResources& resources, const UiRenderFrame& frame,
+                                    std::size_t backdrop_index) {
     const auto& backdrop = frame.backdrops[backdrop_index];
     const auto create = [&](std::uint32_t width, std::uint32_t height, WGPUTextureFormat format) {
-        return create_ui_backdrop_dawn_texture(device, texture_layout, sampler, width, height, format);
+        return create_ui_backdrop_dawn_texture(device, texture_layout, sampler, width, height,
+                                               format);
     };
-    if (resources.pairs.size() <= backdrop_index) resources.pairs.resize(backdrop_index + 1);
+    if (resources.pairs.size() <= backdrop_index)
+        resources.pairs.resize(backdrop_index + 1);
     auto& pair = resources.pairs[backdrop_index];
-    sync_ui_backdrop_targets(pair, backdrop, pair.snapshot.texture != nullptr, pair.first.texture != nullptr,
+    sync_ui_backdrop_targets(
+        pair, backdrop, pair.snapshot.texture != nullptr, pair.first.texture != nullptr,
         [&](std::uint32_t width, std::uint32_t height) {
-            pair.snapshot.release(); pair.snapshot = create(width, height, target_format);
+            pair.snapshot.release();
+            pair.snapshot = create(width, height, target_format);
         },
         [&](std::uint32_t width, std::uint32_t height) {
-            pair.first.release(); pair.second.release();
+            pair.first.release();
+            pair.second.release();
             pair.first = create(width, height, WGPUTextureFormat_RGBA16Float);
             pair.second = create(width, height, WGPUTextureFormat_RGBA16Float);
         });
     WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     source.texture = target;
-    source.origin = {
-        static_cast<std::uint32_t>(backdrop.left),
-        static_cast<std::uint32_t>(backdrop.top),
-        0};
+    source.origin = {static_cast<std::uint32_t>(backdrop.left),
+                     static_cast<std::uint32_t>(backdrop.top), 0};
     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     destination.texture = pair.snapshot.texture;
     const WGPUExtent3D extent{backdrop.width, backdrop.height, 1};
     wgpuCommandEncoderCopyTextureToTexture(encoder, &source, &destination, &extent);
-    const auto draw = [&](WGPUTextureView output, WGPUBindGroup input,
-                          std::uint32_t first, std::uint32_t count, bool composite) {
+    const auto draw = [&](WGPUTextureView output, WGPUBindGroup input, std::uint32_t first,
+                          std::uint32_t count, bool composite) {
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         attachment.view = output;
         attachment.loadOp = composite ? WGPULoadOp_Load : WGPULoadOp_Clear;
@@ -115,16 +126,20 @@ inline void render_ui_backdrop_dawn(
         wgpuRenderPassEncoderSetBindGroup(pass, 0, screen_group, 0, nullptr);
         wgpuRenderPassEncoderSetBindGroup(pass, 1, input, 0, nullptr);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vertices, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, indices, WGPUIndexFormat_Uint32, 0,
+                                            WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderDrawIndexed(pass, count, 1, first, 0, 0);
         wgpuRenderPassEncoderEnd(pass);
         pass.reset();
     };
-    const std::array<WGPUTextureView, 4> views{target_view, pair.snapshot.view, pair.first.view, pair.second.view};
-    const std::array<WGPUBindGroup, 4> groups{nullptr, pair.snapshot.group, pair.first.group, pair.second.group};
+    const std::array<WGPUTextureView, 4> views{target_view, pair.snapshot.view, pair.first.view,
+                                               pair.second.view};
+    const std::array<WGPUBindGroup, 4> groups{nullptr, pair.snapshot.group, pair.first.group,
+                                              pair.second.group};
     for (const auto& pass : ui_backdrop_draw_plan(backdrop)) {
-        draw(views[static_cast<std::size_t>(pass.output)], groups[static_cast<std::size_t>(pass.input)],
-            pass.first, pass.count, pass.output == UiBackdropSurface::target);
+        draw(views[static_cast<std::size_t>(pass.output)],
+             groups[static_cast<std::size_t>(pass.input)], pass.first, pass.count,
+             pass.output == UiBackdropSurface::target);
     }
 }
 

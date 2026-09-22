@@ -17,20 +17,26 @@ struct TextLayoutOptions {
     double letter_spacing = 0;
     double tab_size = 4;
 };
-struct TextShapeInfo { double glyph_id = 0, codepoint = 0, cluster = 0; };
-struct TextShapePosition { double x_advance = 0, x_offset = 0, y_offset = 0; };
+struct TextShapeInfo {
+    double glyph_id = 0, codepoint = 0, cluster = 0;
+};
+struct TextShapePosition {
+    double x_advance = 0, x_offset = 0, y_offset = 0;
+};
 struct TextShapeOutput {
     std::vector<TextShapeInfo> infos;
     std::vector<TextShapePosition> positions;
 };
-struct TextPlacedGlyph { double glyph_id = 0, x = 0, y = 0; };
+struct TextPlacedGlyph {
+    double glyph_id = 0, x = 0, y = 0;
+};
 struct TextLayoutResult {
     std::vector<TextPlacedGlyph> glyphs;
     double pixels_per_font_unit = 0, width = 0, height = 0;
 };
 struct TextRunState {
     TextLayoutResult layout;
-    js::Tuple<4> color{1,1,1,1};
+    js::Tuple<4> color{1, 1, 1, 1};
     double weight = 0;
 };
 struct TextLiveData {
@@ -50,5 +56,5 @@ namespace pal {
 std::shared_ptr<TextLayoutFont> create_text_layout_font(std::span<const std::uint8_t> bytes);
 std::u32string text_codepoints(std::string_view text);
 void text_shape(const TextLayoutFont& font, const std::u32string& input, TextShapeOutput& output);
-}
+} // namespace pal
 } // namespace bbl

@@ -64,7 +64,9 @@ import { captureSettleMilliseconds } from "./capture-timing.js";
  *  and GPU; enabling another host does not repin their golden hashes. */
 export const webgpuComputeBrowserArgs = [
     "--enable-unsafe-webgpu",
-    ...(process.platform === "linux" ? ["--use-angle=vulkan", "--enable-features=Vulkan"] : []),
+    ...(process.platform === "linux"
+        ? ["--use-angle=vulkan", "--enable-features=Vulkan"]
+        : []),
 ] as const;
 
 /** The sRGB pin keeps screenshots independent of the host display profile. */
@@ -131,9 +133,7 @@ export async function withBrowserPage<T>(
             // Linux needs a graphical session for reliable WebGPU external
             // image uploads and canvas presentation, including under SSH.
             headless: options.headless ?? process.platform !== "linux",
-            ...(options.browserArgs
-                ? { args: [...options.browserArgs] }
-                : {}),
+            ...(options.browserArgs ? { args: [...options.browserArgs] } : {}),
         });
         const page = await browser.newPage(
             options.viewport
@@ -153,9 +153,7 @@ export async function withBrowserPage<T>(
         if (consoleErrorPrefix !== undefined) {
             page.on("console", (message) => {
                 if (message.type() === "error") {
-                    console.error(
-                        `${consoleErrorPrefix}: ${message.text()}`,
-                    );
+                    console.error(`${consoleErrorPrefix}: ${message.text()}`);
                 }
             });
         }
@@ -185,9 +183,7 @@ export async function waitForSceneReady(
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
     await page.waitForFunction(
-        () =>
-            document.getElementById("renderCanvas")?.dataset.ready ===
-            "true",
+        () => document.getElementById("renderCanvas")?.dataset.ready === "true",
         undefined,
         { timeout: 120_000 },
     );
@@ -310,7 +306,7 @@ export async function runPageGlobal(
  */
 export const pageBase64Script =
     "const bblBase64 = (bytes) => {\n" +
-    "    let binary = \"\";\n" +
+    '    let binary = "";\n' +
     "    for (let index = 0; index < bytes.length; index += 0x8000) {\n" +
     "        binary += String.fromCharCode.apply(\n" +
     "            null,\n" +

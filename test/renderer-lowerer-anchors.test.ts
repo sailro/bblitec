@@ -108,9 +108,9 @@ test("anchors the fogInfos packing order to the pinned WGSL_FOG reads", () => {
             `pinned WGSL_FOG no longer reads ${name} from .${component}`,
         );
     }
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ imageSkybox: true });
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+        imageSkybox: true,
+    });
     assert.match(
         plan.source,
         /result\.fog_infos = \{\s*\r?\n\s*scene\.fog_mode,\s*\r?\n\s*scene\.fog_start,\s*\r?\n\s*scene\.fog_end,\s*\r?\n\s*scene\.fog_density,\s*\r?\n\s*\};/,
@@ -132,9 +132,9 @@ test("prunes the PbrUniforms extension lanes to the fixed base block", () => {
     }
     assert.match(struct, /spherical_harmonics/);
     // Every option class emits the same fixed block.
-    const baseline = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const baseline = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
+        {},
+    );
     assert.equal(struct, pbrUniformsStruct(baseline.header));
     // The base fills survive; the extension fills are gone with their
     // fields — those values live in the pinned material blocks.
@@ -162,9 +162,7 @@ test("prunes the PbrUniforms extension lanes to the fixed base block", () => {
 });
 
 test("derives the view transpose from the pinned getViewMatrix store map", () => {
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // The eye reads and the transpose index pairs flow from the pinned
     // stores; these are the derived bytes, not hand-typed ones.
     assert.match(
@@ -182,19 +180,19 @@ test("derives the view transpose from the pinned getViewMatrix store map", () =>
 });
 
 test("derives the thin-instance TRS terms from the pinned writers", () => {
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ gpuInstancing: true });
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+        gpuInstancing: true,
+    });
     // The composition lives once, in the always-emitted world-transform
     // header; the render plan's mesh, transform-node, thin-instance and
     // eye-relative worlds all call it there.
     assert.match(
         plan.source,
-        /std::array<float, 16> mesh_local_matrix\(const MeshRecord& mesh\) \{\n    return trs_matrix\(mesh\);/,
+        /std::array<float, 16> mesh_local_matrix\(const MeshRecord& mesh\) \{\n {4}return trs_matrix\(mesh\);/,
     );
     assert.match(
         plan.source,
-        /const TransformNodeRecord& node\) \{\n    return trs_matrix\(node\);/,
+        /const TransformNodeRecord& node\) \{\n {4}return trs_matrix\(node\);/,
     );
     assert.match(
         plan.source,
@@ -242,9 +240,7 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
 test("translates the pinned multiply writer whole", () => {
     // Pinned drift now flows into different emitted bytes rather than
     // throwing at a per-term anchor, so the regexes below pin the emission.
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // The multiply is the pinned writer translated whole — the unrolled
     // accumulation in the pin's own order, templated on both operands'
     // storage; the projection writers' emitted rows are pinned
@@ -252,7 +248,10 @@ test("translates the pinned multiply writer whole", () => {
     // perspective writer whole").
     assert.match(plan.source, /#include <bblite\/upstream\/pinned_matrix.hpp>/);
     const matrixHeader = pinnedMatrixHeader(new LoweringContext());
-    assert.match(matrixHeader, /template <typename MatA, typename MatB>\nvoid mat4_multiply_into\(/);
+    assert.match(
+        matrixHeader,
+        /template <typename MatA, typename MatB>\nvoid mat4_multiply_into\(/,
+    );
     assert.match(
         matrixHeader,
         /\(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\)/,
@@ -264,13 +263,8 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     const module = readPinnedLibraryModule(
         "material/standard/skybox-cubemap.js",
     );
-    const fragmentLiteral = extractPackagedStringLiteral(
-        module,
-        "skyFragSrc",
-    );
-    assert.ok(
-        fragmentLiteral.includes("let e=normalize(b.vPositionLocal);"),
-    );
+    const fragmentLiteral = extractPackagedStringLiteral(module, "skyFragSrc");
+    assert.ok(fragmentLiteral.includes("let e=normalize(b.vPositionLocal);"));
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
         ground: false,
         skybox: false,
@@ -297,7 +291,10 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     assert.match(vertex, /a\.clipPos = \(uniforms\.viewProjection \* b\);/);
     assert.match(fragment, /let e = normalize\(b\.vPositionLocal\);/);
     assert.match(fragment, /var a = textureSample\(c, d, e\);/);
-    assert.match(fragment, /bblCalcFogFactor\(\(\(uniforms\.view \* vec4<f32>\(b\.vPositionW, 1\.0\)\)\)\.xyz\)/);
+    assert.match(
+        fragment,
+        /bblCalcFogFactor\(\(\(uniforms\.view \* vec4<f32>\(b\.vPositionW, 1\.0\)\)\)\.xyz\)/,
+    );
     assert.match(fragment, /mix\(uniforms\.fogColor\.rgb, a\.rgb, f\)/);
     // No pinned browser-frame reference survives the re-homing.
     assert.ok(!vertex.includes("scene.") && !vertex.includes("mesh."));
@@ -308,7 +305,10 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
         /@group\(1\) @binding\(0\) var<uniform> uniforms: BblSkyboxUniforms;/,
     );
     assert.match(vertex, /fn mainVertex\(@location\(0\) c: vec3<f32>\)/);
-    assert.match(fragment, /@group\(2\) @binding\(0\) var c: texture_cube<f32>;/);
+    assert.match(
+        fragment,
+        /@group\(2\) @binding\(0\) var c: texture_cube<f32>;/,
+    );
     assert.match(fragment, /@group\(2\) @binding\(1\) var d: sampler;/);
     assert.match(
         fragment,
@@ -316,9 +316,9 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     );
     assert.match(fragment, /fn mainFragment\(b: g\)/);
     // The generated block matches the lifted fragment's uniform struct.
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({ imageSkybox: true });
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+        imageSkybox: true,
+    });
     assert.match(
         plan.header,
         /struct ImageSkyboxUniforms \{\s*\r?\n\s*std::array<float, 16> view\{\};\s*\r?\n\s*std::array<float, 4> fog_infos\{\};\s*\r?\n\s*std::array<float, 4> fog_color\{\};\s*\r?\n\};/,
@@ -338,9 +338,7 @@ test("caches opaque visibility at build and retains transparent bindings", () =>
     // deferral the regression-mesh-flags gate measures. Moving this test
     // per draw would break that gate; dropping it while the epoch rebuild
     // exists would freeze every toggle (the quake weapon-switch defect).
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     const appendDraw = plan.source.slice(
         plan.source.indexOf("void append_draw("),
         plan.source.indexOf("void order_draw_lists("),
@@ -353,29 +351,21 @@ test("caches opaque visibility at build and retains transparent bindings", () =>
         appendDraw,
         /if \(!mesh_draws\(engine\.meshes\[item\.mesh\.value\]\)\) \{\s*\r?\n\s*return;/,
     );
-    assert.ok(appendDraw.indexOf("list.visibility_candidates.push_back(command)") <
-        appendDraw.indexOf("if (!mesh_draws("));
+    assert.ok(
+        appendDraw.indexOf("list.visibility_candidates.push_back(command)") <
+            appendDraw.indexOf("if (!mesh_draws("),
+    );
 });
 
 test("anchors the draw-list rules to the pinned bucket fork", () => {
     // The pinned fork the anchors inside lowerRenderPlan pair with: a
     // failed pairing throws there, so this test both re-states the pin's
     // side and checks the emitted rules still carry the transcription.
-    const renderTask = sharedStore.getSource(
-        "src/frame-graph/render-task.ts",
-    );
-    assert.ok(
-        renderTask.includes("if (r.isTransparent || r._transmissive) {"),
-    );
+    const renderTask = sharedStore.getSource("src/frame-graph/render-task.ts");
+    assert.ok(renderTask.includes("if (r.isTransparent || r._transmissive) {"));
     assert.ok(renderTask.includes("} else if (r._direct) {"));
-    assert.ok(
-        renderTask.includes(
-            "opaque.sort(compareBindingOrder);",
-        ),
-    );
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    assert.ok(renderTask.includes("opaque.sort(compareBindingOrder);"));
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // append_draw transcribes the pinned transparent predicate.
     assert.match(
         plan.source,
@@ -416,14 +406,12 @@ test("adopts pinned defaults and transports explicit render order", () => {
     assert.equal(
         lowerOpaqueOrderStamp(
             orderStampModules.map((modulePath) =>
-                sharedStore.getSourceFile(modulePath)
+                sharedStore.getSourceFile(modulePath),
             ),
         ),
         "100",
     );
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // The invented pipeline grouping is gone. The generated plan carries
     // the source's default, optional override, and stable ordering rule.
     assert.ok(!plan.source.includes("pipeline_order("));
@@ -441,7 +429,10 @@ test("adopts pinned defaults and transports explicit render order", () => {
 test("a moved shared opaque stamp flows out of the lowering", () => {
     const stamp = lowerOpaqueOrderStamp([
         doctoredSourceFile("src/material/pbr/pbr-renderable.ts", [
-            ["needsTaskRefraction ? 150 : 100", "needsTaskRefraction ? 150 : 90"],
+            [
+                "needsTaskRefraction ? 150 : 100",
+                "needsTaskRefraction ? 150 : 90",
+            ],
         ]),
         doctoredSourceFile("src/material/pbr/pbr-geometry-renderable.ts", [
             ["isAlphaBlend ? 200 : 100", "isAlphaBlend ? 200 : 90"],
@@ -487,10 +478,12 @@ test("an order stamp that stops substituting renderOrder refuses", () => {
             lowerOpaqueOrderStamp([
                 doctoredSourceFile(
                     "src/material/standard/standard-renderable.ts",
-                    [[
-                        "order: mesh.renderOrder ?? (isTransparent ? 200 : 100),",
-                        "order: mesh.drawRank ?? (isTransparent ? 200 : 100),",
-                    ]],
+                    [
+                        [
+                            "order: mesh.renderOrder ?? (isTransparent ? 200 : 100),",
+                            "order: mesh.drawRank ?? (isTransparent ? 200 : 100),",
+                        ],
+                    ],
                 ),
             ]),
         /no longer substitutes mesh\.renderOrder/,
@@ -501,10 +494,9 @@ test("a plain stamp with no literal transparency to classify it refuses", () => 
     assert.throws(
         () =>
             lowerOpaqueOrderStamp([
-                doctoredSourceFile(
-                    "src/material/shader/shader-renderable.ts",
-                    [["isTransparent: false,", "isTransparent: opaqueFlag,"]],
-                ),
+                doctoredSourceFile("src/material/shader/shader-renderable.ts", [
+                    ["isTransparent: false,", "isTransparent: opaqueFlag,"],
+                ]),
             ]),
         /no literal isTransparent sibling/,
     );
@@ -531,9 +523,7 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
             `pinned ${modulePath} no longer stores the world-translation sort center`,
         );
     }
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     assert.match(plan.source, /pin-adopted\(sort-center\)/);
     assert.match(
         plan.source,
@@ -550,12 +540,18 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
         plan.source,
         /transform_position\(\s*outer_transform_matrix\(mesh\.outer_position, mesh\.outer_rotation\),\s*local_center\)/,
     );
-    assert.match(plan.source, /#include <bblite\/upstream\/pinned_world_transform\.hpp>/);
+    assert.match(
+        plan.source,
+        /#include <bblite\/upstream\/pinned_world_transform\.hpp>/,
+    );
     // The bounds-center derivation and its euler helper are gone; the
     // anchored comparator and view-forward distance stay.
     assert.ok(!plan.source.includes("rotate_euler"));
     assert.ok(!plan.source.includes("bounds_min"));
-    assert.match(plan.source, /command\.sort_distance = dot\(delta, forward\);/);
+    assert.match(
+        plan.source,
+        /command\.sort_distance = dot\(delta, forward\);/,
+    );
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {
@@ -565,9 +561,7 @@ test("anchors the light-slot packing to the pinned lights-ubo module", () => {
     // _writeLightUbo lights, which keeps a mesh's packed indices aligned
     // with the UBO slots.
     assert.ok(
-        lightsUbo.includes(
-            "u32[MSH_LIGHT_INDEX_WORD_OFFSET + count] = pi;",
-        ),
+        lightsUbo.includes("u32[MSH_LIGHT_INDEX_WORD_OFFSET + count] = pi;"),
     );
     assert.ok(lightsUbo.includes("u32[16] = count;"));
     assert.ok(
@@ -575,9 +569,7 @@ test("anchors the light-slot packing to the pinned lights-ubo module", () => {
             "light._writeLightUbo(data, headerFloats + count * LIGHT_ENTRY_FLOATS);",
         ),
     );
-    const plan = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // The emitted affectsMesh transcription: included list wins when
     // non-empty, exclusion filters otherwise.
     assert.match(
@@ -591,9 +583,10 @@ test("anchors the light-slot packing to the pinned lights-ubo module", () => {
 });
 
 test("derives the background geometry from the pinned builders", () => {
-    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
-        { imageSkybox: true, solidSkybox: true },
-    );
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+        imageSkybox: true,
+        solidSkybox: true,
+    });
     // The ground quad: pinned XY corners composed with the pinned
     // XY-to-XZ world, BACKSIDE winding and UVs flowing unchanged.
     assert.ok(
@@ -636,12 +629,12 @@ test("re-lowering emits byte-identical renderer text", () => {
         punctualLights: true,
         nodeVisibility: true,
     };
-    const first = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan(options);
-    const second = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan(options);
+    const first = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
+        options,
+    );
+    const second = new RendererLowerer(new LoweringContext()).lowerRenderPlan(
+        options,
+    );
     assert.equal(first.header, second.header);
     assert.equal(first.source, second.source);
     const shaderOptions = {
@@ -656,12 +649,8 @@ test("re-lowering emits byte-identical renderer text", () => {
         geometryOutputTasks: [],
     };
     assert.deepEqual(
-        new RendererLowerer(new LoweringContext()).lowerShaders(
-            shaderOptions,
-        ),
-        new RendererLowerer(new LoweringContext()).lowerShaders(
-            shaderOptions,
-        ),
+        new RendererLowerer(new LoweringContext()).lowerShaders(shaderOptions),
+        new RendererLowerer(new LoweringContext()).lowerShaders(shaderOptions),
     );
 });
 
