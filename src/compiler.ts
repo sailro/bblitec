@@ -12502,7 +12502,7 @@ class Compiler implements LoweringServices {
         );
         value.audioMainBusCpp = shared ? `(*${name})` : name;
         value.audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(name, borrows, !shared);
+        const binding = this.registerNativeBinding(name, false, !shared);
         if (borrows) this.nativeConstBindings.add(binding);
         value.nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
@@ -16669,8 +16669,6 @@ class Compiler implements LoweringServices {
                 });
             }
         } else {
-            if (borrowsImmutableBinding)
-                this.registerNativeBinding(cppName, true);
             this.emit({
                 kind: "declaration",
                 type: nativeType,
@@ -16722,9 +16720,7 @@ class Compiler implements LoweringServices {
                 (copiesHandle && !reference) ||
                 nativeType === "std::string")
         ) {
-            this.nativeConstBindings.add(
-                this.registerNativeBinding(cppName, borrowsImmutableBinding),
-            );
+            this.registerNativeConstBinding(cppName);
         }
     }
 

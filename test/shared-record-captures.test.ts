@@ -57,6 +57,64 @@ const source = `
 
 const tools = optionalNativeFixtureTools(false);
 test(
+    "returned callbacks own borrowed parameters after their factory environment is released",
+    { skip: !tools },
+    () => {
+        const result = compileSource(`
+        interface Track { samples: number[]; }
+        function createTicker(track: Track): () => number {
+            return () => track.samples[0]!;
+        }
+        function createTrack(value: number): Track {
+            return {samples: [value]};
+        }
+        function createFactory(value: number): () => () => number {
+            const tracks: Track[] = [createTrack(value)];
+            const track = tracks[0]!;
+            return () => createTicker(track);
+        }
+        const factories: (() => () => number)[] = [
+            createFactory(7),
+            createFactory(11),
+        ];
+        const first = factories[0]!();
+        const second = factories[1]!();
+        factories.length = 0;
+        if (first() !== 7 || second() !== 11)
+            throw new Error("escaped parameter lost its owning capture");
+    `);
+        assert.doesNotMatch(result.cpp, /std::ref\(v_\w+_track\)/);
+        const output = resolve("artifacts", "borrowed-parameter-captures");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native\\include",
+            source,
+        ]);
+        assert.equal(
+            execFileSync(executable, {
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 10000,
+            }),
+            "",
+        );
+    },
+);
+
+test(
     "shared record arguments retain expression and navigation query owners",
     { skip: !tools },
     () => {

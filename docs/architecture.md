@@ -46,6 +46,7 @@ use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.
+Escaping callbacks capture copyable handles by value, including handles borrowed by local aliases or parameters.
 
 ## Scene orchestration
 
