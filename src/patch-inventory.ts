@@ -8,7 +8,7 @@
  * patch this repository owns opens with its rationale, script patches are
  * numbered in application order, each overlay portfile applies exactly its
  * listed series, and no builder names a patch file itself.
- * `artifactPatchRecord` compares an installed artifact's record with the
+ * `artifactPatchState` compares an installed artifact's record with the
  * series the manifest selects, as the CMake check does.
  */
 import { createHash } from "node:crypto";
@@ -79,8 +79,22 @@ function text(value: unknown, where: string): string {
     return value;
 }
 
-function optionalText(value: unknown, where: string): string | undefined {
-    return value === undefined ? undefined : text(value, where);
+function requiredText(
+    value: Record<string, unknown>,
+    key: string,
+    where: string,
+): string {
+    return text(field(value, key, where), `${where}.${key}`);
+}
+
+function optionalText(
+    value: Record<string, unknown>,
+    key: string,
+    where: string,
+): string | undefined {
+    return value[key] === undefined
+        ? undefined
+        : text(value[key], `${where}.${key}`);
 }
 
 function strings(value: unknown, where: string): string[] {
@@ -113,26 +127,14 @@ export function parsePatchManifest(source: string): PatchManifest {
         libraries.set(name, {
             name,
             pin: {
-                file: text(
-                    field(pin, "file", `${where}.pin`),
-                    `${where}.pin.file`,
-                ),
-                field: text(
-                    field(pin, "field", `${where}.pin`),
-                    `${where}.pin.field`,
-                ),
+                file: requiredText(pin, "file", `${where}.pin`),
+                field: requiredText(pin, "field", `${where}.pin`),
             },
-            builder: optionalText(library.builder, `${where}.builder`),
-            port: optionalText(library.port, `${where}.port`),
+            builder: optionalText(library, "builder", where),
+            port: optionalText(library, "port", where),
             record: record && {
-                prefix: text(
-                    field(record, "prefix", `${where}.record`),
-                    `${where}.record.prefix`,
-                ),
-                file: text(
-                    field(record, "file", `${where}.record`),
-                    `${where}.record.file`,
-                ),
+                prefix: requiredText(record, "prefix", `${where}.record`),
+                file: requiredText(record, "file", `${where}.record`),
             },
             variants: strings(
                 field(library, "variants", where),
@@ -149,10 +151,7 @@ export function parsePatchManifest(source: string): PatchManifest {
             field(patch, "upstream", where),
             `${where}.upstream`,
         );
-        const state = text(
-            field(upstream, "state", `${where}.upstream`),
-            `${where}.upstream.state`,
-        );
+        const state = requiredText(upstream, "state", `${where}.upstream`);
         if (!isUpstreamState(state))
             throw new Error(
                 `${where}.upstream.state must be one of ${upstreamStates.join(", ")}.`,
@@ -163,16 +162,13 @@ export function parsePatchManifest(source: string): PatchManifest {
         const inherited = field(patch, "inheritedFromVcpkg", where);
         if (typeof inherited !== "boolean")
             throw new Error(`${where}.inheritedFromVcpkg must be a boolean.`);
-        const link = optionalText(upstream.link, `${where}.upstream.link`);
-        const retire = optionalText(
-            upstream.retire,
-            `${where}.upstream.retire`,
-        );
+        const link = optionalText(upstream, "link", `${where}.upstream`);
+        const retire = optionalText(upstream, "retire", `${where}.upstream`);
         return {
-            library: text(field(patch, "library", where), `${where}.library`),
+            library: requiredText(patch, "library", where),
             order,
-            file: text(field(patch, "file", where), `${where}.file`),
-            purpose: text(field(patch, "purpose", where), `${where}.purpose`),
+            file: requiredText(patch, "file", where),
+            purpose: requiredText(patch, "purpose", where),
             upstream: {
                 state,
                 ...(link === undefined ? {} : { link }),
@@ -231,10 +227,7 @@ function pinnedSource(root: string, library: PatchLibrary): string {
         JSON.parse(readFileSync(join(root, library.pin.file), "utf8")),
         library.pin.file,
     );
-    return text(
-        field(pin, library.pin.field, library.pin.file),
-        `${library.pin.file} ${library.pin.field}`,
-    );
+    return requiredText(pin, library.pin.field, library.pin.file);
 }
 
 /** The record an artifact of `library` built for `variants` must carry. */
@@ -317,12 +310,14 @@ export function artifactPatchState(
 
 const diffStart = /^(diff --git |--- |Index: )/;
 
+const reason = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
+
 function listFiles(directory: string): string[] {
     if (!existsSync(directory)) return [];
-    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-        const path = join(directory, entry.name);
-        return entry.isDirectory() ? listFiles(path) : [path];
-    });
+    return readdirSync(directory, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => join(entry.parentPath, entry.name));
 }
 
 const posix = (path: string): string => path.split(sep).join("/");
@@ -366,9 +361,7 @@ export function checkPatchInventory(root = repositoryRoot): string[] {
             readFileSync(patchManifestPath(root), "utf8"),
         );
     } catch (error) {
-        return [
-            `native/patches/manifest.json: ${error instanceof Error ? error.message : String(error)}`,
-        ];
+        return [`native/patches/manifest.json: ${reason(error)}`];
     }
     const problems: string[] = [];
     const listed = new Set(manifest.patches.map((patch) => patch.file));
@@ -381,7 +374,7 @@ export function checkPatchInventory(root = repositoryRoot): string[] {
             pinnedSource(root, library);
         } catch (error) {
             problems.push(
-                `${where}: pin ${library.pin.file} ${library.pin.field}: ${error instanceof Error ? error.message : String(error)}`,
+                `${where}: pin ${library.pin.file} ${library.pin.field}: ${reason(error)}`,
             );
         }
         for (const path of [library.builder, library.port]) {
@@ -427,7 +420,7 @@ export function checkPatchInventory(root = repositoryRoot): string[] {
                     );
             } catch (error) {
                 problems.push(
-                    `${library.port}/portfile.cmake: ${error instanceof Error ? error.message : String(error)}`,
+                    `${library.port}/portfile.cmake: ${reason(error)}`,
                 );
             }
         }
