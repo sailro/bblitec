@@ -39,6 +39,28 @@ const kernelMethods = [
     "_simplexSolverSolve",
 ] as const;
 
+/** The module's own vector helpers the kernel calls, `v` and `v<op>`. */
+const vectorHelpers: ReadonlySet<string> = new Set(
+    [
+        "",
+        "clone",
+        "copy",
+        "set",
+        "add",
+        "sub",
+        "scale",
+        "addIn",
+        "subIn",
+        "scaleIn",
+        "dot",
+        "cross",
+        "lenSq",
+        "len",
+        "normIn",
+        "equalsEps",
+    ].map((operation) => `v${operation}`),
+);
+
 /** The controller's reference-bearing solver arithmetic is emitted from the pin's AST.
  * Body kinematics and contact construction are separate transport-dependent methods. */
 export function lowerCharacterControllerKernel(
@@ -235,9 +257,7 @@ export function lowerCharacterControllerKernel(
                     ["transformCoord", "matToArray"].includes(
                         node.name.text,
                     )) ||
-                /^v(?:clone|copy|set|add|sub|scale|addIn|subIn|scaleIn|dot|cross|lenSq|len|normIn|equalsEps)?$/.test(
-                    node.name.text,
-                )),
+                vectorHelpers.has(node.name.text)),
     );
     const methodNames = full
         ? [
