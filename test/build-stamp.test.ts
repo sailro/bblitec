@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
     mkdirSync,
     mkdtempSync,
@@ -143,6 +144,35 @@ test("cache paths follow the host's case and separator rules", () => {
             [`-DCMAKE_CXX_COMPILER=${resolve("tools/clang")}`],
         ).map((entry) => entry.name),
         windows ? [] : ["CMAKE_CXX_COMPILER"],
+    );
+});
+
+test("an existing tool matches its short DOS spelling", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-short-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const directory = resolve(root, "Long Tool Directory Name");
+    mkdirSync(directory);
+    const tool = resolve(directory, "ninja.exe");
+    writeFileSync(tool, "");
+    if (process.platform !== "win32") {
+        assert.equal(sameCachePath(tool, tool), true);
+        return;
+    }
+    // cmd's %~s modifier prints the 8.3 spelling CMake writes back into
+    // CMAKE_MAKE_PROGRAM; volumes without 8.3 names return the long path.
+    const listing = spawnSync(
+        "cmd",
+        ["/d", "/s", "/c", `"for %I in ("${tool}") do @echo %~sI"`],
+        { encoding: "utf8", windowsVerbatimArguments: true },
+    );
+    assert.equal(listing.status, 0, listing.stderr);
+    const short = listing.stdout.trim();
+    assert.equal(sameCachePath(short, tool), true);
+    assert.deepEqual(
+        incompatibleCacheEntries({ CMAKE_MAKE_PROGRAM: short }, [
+            `-DCMAKE_MAKE_PROGRAM=${tool}`,
+        ]),
+        [],
     );
 });
 

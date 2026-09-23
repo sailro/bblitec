@@ -21,7 +21,13 @@
 // drops a backend's translation units, and the same sources must digest
 // identically whichever backends are compiled in.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+    existsSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    statSync,
+} from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { contentDigest } from "./validation-resume.js";
 
@@ -320,7 +326,12 @@ function requestedCacheConfiguration(
 
 export function cachePathKey(path: string): string {
     const absolute = resolve(path);
-    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    // CMake's in-build regeneration rewrites tool paths in their short DOS
+    // spelling (C:/PROGRA~1/...); an existing file compares by its final path.
+    const canonical = existsSync(absolute)
+        ? realpathSync.native(absolute)
+        : absolute;
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 export function sameCachePath(left: string, right: string): boolean {
