@@ -414,21 +414,23 @@ test("generates property animation evaluation and seeking", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),
     ).lowerPropertyAnimation();
-    // The rotation path is the pinned quatSlerp/normalizeQuat4 pair
-    // translated whole -- the glTF loader's own translation -- with the
-    // double-math-float-store width the pin evaluates at, not a float
-    // restatement beside it.
+    // Sampling is the pinned evaluateSampler with findKeyframe, quatSlerp
+    // and normalizeQuat4 translated whole -- the glTF loader's own
+    // translation -- over the track's keys read in place, at the
+    // double-math-float-store width the pin evaluates at.
+    assert.ok(
+        lowered.source.includes(
+            lowerGltfAnimationEvaluator(new LoweringContext(), "property"),
+        ),
+    );
     assert.match(
         lowered.source,
-        /Vec4 interpolate_quaternion\(Vec4 left, Vec4 right, double amount\)/,
+        /upstream::property_evaluate_animation_sampler\(\s*sampler,\s*time,/,
     );
-    assert.match(lowered.source, /Vec4 normalize_quaternion\(Vec4 value\)/);
     assert.match(
         lowered.source,
-        /return track_lanes\(upstream::interpolate_quaternion\(\s*track_quaternion\(track\.keys\[left\]\.value\),\s*track_quaternion\(track\.keys\[right\]\.value\),\s*amount\)\);/,
+        /PropertyAnimationInterpolation::step\s*\?\s*1\.0\s*:\s*0\.0/,
     );
-    assert.doesNotMatch(lowered.source, /slerp_quaternion|std::clamp\(dot/);
-    assert.match(lowered.source, /PropertyAnimationInterpolation::step/);
     assert.match(lowered.source, /void seek_animation_manager\(/);
     assert.match(
         new SceneLowerer(new LoweringContext()).lowerCore({
@@ -474,7 +476,10 @@ test("emits the weighted property mixer only when blending is reached", () => {
     // The two opt-ins share one handler slot, the way the pin's own
     // setAnimationTaskCategoryHandler does.
     assert.match(blended.source, /AnimationCategoryHandler::property_mixer;/);
-    assert.match(blended.source, /sign = dot < 0\.0 \? -1\.0 : 1\.0;/);
+    assert.match(
+        blended.source,
+        /sign = \(\(dot < 0\.0\) \? \(-1\.0\) : 1\.0\);/,
+    );
     assert.match(
         blended.source,
         /normalize_blended_quaternion\(bucket\.values\);/,
@@ -513,23 +518,23 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     );
     assert.doesNotMatch(faded.source, /AnimationCategoryHandler::gltf_mixer;/);
 
-    // The emitted interpolation is the pin's elapsed/duration lerp. At
-    // 250ms of a 1000ms cross-fade it yields 0.75/0.25 and a +1 mixed
-    // pose for the pin's constant +2/-2 property-animation fixture.
+    // The emitted update is the pin's updateFades lowered whole: the
+    // clamped advance, the elapsed/duration lerp and, on completion, the
+    // exact destination weight before the job is removed. Replacement
+    // removes every prior job for the same target before the new one is
+    // pushed.
     assert.match(
         faded.source,
-        /fade\.elapsed_ms = std::min\(\s*fade\.duration_ms,\s*fade\.elapsed_ms \+ std::max\(0\.0f, delta_ms\)\);/,
+        /AnimationFloatLane\{manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.elapsed_ms\} = std::min<double>\(/,
+    );
+    assert.match(faded.source, /std::max<double>\(0\.0, delta_ms\)/);
+    assert.match(
+        faded.source,
+        /\(static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.to\) - static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.from\)\) \* t\)/,
     );
     assert.match(
         faded.source,
-        /fade\.from \+ \(fade\.to - fade\.from\) \* amount/,
-    );
-    // Elapsed time is clamped to the duration, so the interpolation writes
-    // the exact destination before the completed job is removed. Replacement
-    // removes every prior job for the same target before the new one is pushed.
-    assert.match(
-        faded.source,
-        /if \(fade\.elapsed_ms >= fade\.duration_ms\) \{[\s\S]*?manager\.weight_fades\.erase/,
+        /\.duration_ms\)\) \{\s*AnimationFloatLane\{animation_weight_fade_target_weight\(engine, [^}]*\.target\)\} = static_cast<double>\([^;]*\.to\);\s*manager\.weight_fades\.erase/,
     );
     const replacement = faded.source.indexOf(
         "same_animation_weight_fade_target(",
@@ -629,11 +634,11 @@ test("integrates the source property clock and pinned interpolation", () => {
         lowered.source,
         /tick_property_animation_group\(\*group,delta_ms,/,
     );
-    // The STEP tie-break direction the lowerer shape-asserts: an exact
-    // key-time query takes the LATER key's value.
+    // The pinned STEP tie-break: an exact key-time query takes the LATER
+    // key's value.
     assert.match(
         lowered.source,
-        /time >= track\.keys\[right\]\.time\s*\? track\.keys\[right\]\.value/,
+        /\(\(t >= t1\) \? \(idx \+ 1\.0\) : idx\) \* stride/,
     );
 });
 
@@ -822,15 +827,19 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /upstream::transform_position\(/);
     assert.doesNotMatch(adapter.source, /transform_point_raw/);
     // Vertex, tangent and face normals take the vertex stage's own
-    // normalize (the declared guarded CPU bake). Animated light refresh
-    // alone still uses the loader-local `hypot || 1` helper.
+    // normalize (the declared guarded CPU bake). Animated lights take the
+    // pin's writeWorldLightDirection, lowered whole.
     assert.match(
         adapter.source,
         /upstream::transform_direction\(\n\s*matrix, upstream::normalize_baked_direction\(value\)\)/,
     );
+    const animatedLights = lowerer.lowerLoaderAdapter({
+        animationPointer: true,
+    }).source;
+    assert.match(animatedLights, /void gltf_write_world_light_direction\(/);
     assert.match(
-        lowerer.lowerLoaderAdapter({ animationPointer: true }).source,
-        /js::or_number\(\n\s*js::hypot_js\(\{value\.x, value\.y, value\.z\}\), 1\.0\)/,
+        animatedLights,
+        /\(1\.0 \/ bbl::js::or_number\(bbl::js::hypot_js\(\{x, y, z\}\), 1\.0\)\)/,
     );
     assert.doesNotMatch(
         adapter.source,
@@ -1059,7 +1068,10 @@ test("emits the torus knot only where a scene reached it", () => {
     assert.doesNotMatch(bare.source, /MeshHandle create_torus\(/);
     assert.doesNotMatch(bare.source, /pinned_torus_knot_pos/);
     assert.doesNotMatch(bare.source, /pinned_compute_normals/);
-    assert.doesNotMatch(bare.source, /#include <bblite\/js_data\.hpp>/);
+    // createBoxData, which every box is built from (gizmo boxes included),
+    // decodes its signs with the pin's JavaScript bitwise arithmetic.
+    assert.match(bare.source, /#include <bblite\/js_data\.hpp>/);
+    assert.match(bare.source, /MeshData create_box_data\(/);
 });
 
 test("emits the thin-instance pool helpers only where a scene reached them", () => {
@@ -1266,9 +1278,9 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     );
     assert.match(
         mesh.source,
-        /mesh\.dimensions = Vec3\{width, height, depth\}/,
+        /create_box_data\(options\.width, options\.height, options\.depth\)/,
     );
-    assert.match(mesh.source, /geometry\.vertices\.insert/);
+    assert.match(mesh.source, /return create_mesh_from_data\(/);
     assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
     assert.match(
         mesh.source,
@@ -1290,7 +1302,7 @@ test("generates mesh and standard-material factories from upstream defaults", ()
         mesh.source,
         /create_torus\(Engine& engine, TorusOptions options\)/,
     );
-    assert.match(mesh.source, /Vec2\{1\.0f, 1\.0f\}/);
+    assert.match(mesh.source, /std::vector<float>\{1\.0f, 1\.0f, 0\.0f, 1\.0f/);
     // The dynamic thin-instance path: the pool adopts the caller's named
     // array, and the per-frame helpers copy the pinned [0, count) dirty
     // range and bump the version the PAL sync gates on.

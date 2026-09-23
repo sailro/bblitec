@@ -35,10 +35,15 @@ test("mesh data calls share typed-array results and preserve double box options"
     `),
         /Box options support/,
     );
+    // Every native box -- a scene's or a gizmo's -- is the pinned
+    // createBoxData handed to createMeshFromData, so the unit always
+    // carries the lowered builder.
     const factory = new FactoryLowerer(new LoweringContext());
-    assert.doesNotMatch(
-        factory.lowerMeshFactories([]).source,
-        /MeshData create_box_data/,
+    const unreached = factory.lowerMeshFactories([]).source;
+    assert.match(unreached, /MeshData create_box_data/);
+    assert.match(
+        unreached,
+        /create_box_data\(options\.width, options\.height, options\.depth\)/,
     );
     assert.match(
         factory.lowerMeshFactories(["mesh:box"]).source,
