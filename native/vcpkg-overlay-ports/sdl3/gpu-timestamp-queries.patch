@@ -1,3 +1,7 @@
+Optional GPU timestamp queries (SDL_BBLite*GPUTimestamp* entry points), written
+and resolved outside passes; implemented on the D3D12 direct queue, frequency
+zero elsewhere.
+
 --- a/include/SDL3/SDL_gpu.h
 +++ b/include/SDL3/SDL_gpu.h
 @@ -4566,6 +4566,21 @@

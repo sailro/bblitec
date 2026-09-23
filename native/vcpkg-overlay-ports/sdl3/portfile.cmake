@@ -4,29 +4,16 @@ vcpkg_from_github(
     REF "release-${VERSION}"
     SHA512 6e6f91cde7dffec527af8a9b0162e9fb7997ec2b6770d3002c662cd75e5cd01afd2fb5f5cadfa2496c86e67ed22e876d99ebdf60b9ea7431a3a3caf5686d0f8f
     HEAD_REF main
+    # native/patches/manifest.json lists each patch's purpose and upstream
+    # state; every patch this repository owns opens with its rationale.
     PATCHES
         fix-freebsd.patch
-        # libsdl-org/SDL#15838 -- allow a multisample texture to carry a
-        # read usage, and give D3D12 a TEXTURE2DMS shader-resource view.
-        # Applies to the release branch unmodified. Drop this overlay
-        # once the patch ships in an SDL release.
         sdl-multisample-read.patch
-        # libsdl-org/SDL#16182 (PR #16183) -- a LINELIST pipeline on a
-        # multisampled target takes D3D12's aliased diamond-exit rule
-        # unless MultisampleEnable is set, where Vulkan and Metal always
-        # rasterize lines against the target's samples. Drop this overlay
-        # once the patch ships in an SDL release; the measurement, which
-        # reaches triangle edges too, is in docs/backends.md.
         d3d12-multisample-lines.patch
-        # Reserve complete graphics/compute descriptor bindings before
-        # switching heaps, then republish every affected root table.
         d3d12-descriptor-heaps.patch
-        # Opt-in whole-array compute UAVs with matching subresource barriers.
         d3d12-storage-array.patch
-        # Supply buffer lengths for Tint's robust Metal storage accesses.
         metal-storage-buffer-sizes.patch
         metal-fence-query.patch
-        # Optional hardware timestamp queries; D3D12 direct-queue implementation.
         gpu-timestamp-queries.patch
 )
 

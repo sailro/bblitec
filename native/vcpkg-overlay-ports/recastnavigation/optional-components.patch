@@ -1,3 +1,6 @@
+Make DebugUtils, DetourCrowd and DetourTileCache optional components so the
+port builds only the parts a scene's navigation features reach.
+
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
