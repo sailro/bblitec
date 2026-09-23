@@ -367,7 +367,7 @@ async function main(): Promise<void> {
     );
     if (flags.flags.has("--help")) {
         console.log(
-            "npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64] [--backend sdl_gpu|dawn].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan describes the packages without building or packaging.",
+            "npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64] [--backend sdl_gpu|dawn].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan generates the selected scenes (skipped when current) and describes the packages without building dependencies or packaging.",
         );
         return;
     }
@@ -474,19 +474,20 @@ async function main(): Promise<void> {
         console.log(`${stage} ${id}: PASS`);
     };
     const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-    if (!flags.flags.has("--plan")) {
-        await runConcurrently(
-            selected,
-            workers,
-            (scene) => scene.id,
-            (scene) =>
-                run("generate", scene.id, process.execPath, [
-                    join(moduleDirectory, "scene-command.js"),
-                    "compile",
-                    scene.id,
-                ]),
-        );
-    }
+    // The plan reads each scene's generated features, so --plan generates too:
+    // a current tree costs a stamp check, and a missing or stale one would
+    // describe packages the build would not make.
+    await runConcurrently(
+        selected,
+        workers,
+        (scene) => scene.id,
+        (scene) =>
+            run("generate", scene.id, process.execPath, [
+                join(moduleDirectory, "scene-command.js"),
+                "compile",
+                scene.id,
+            ]),
+    );
     const inputs: { scene: SceneDefinition; reached: ShippingFeatures }[] = [];
     for (const scene of selected) {
         const profilePath = join(logs, `${scene.id}.profile`);
