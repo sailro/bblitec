@@ -25,12 +25,11 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { pinnedHeader } from "./pinned-header.js";
 
-export const COMPUTE_AABB_MODULE = "src/math/compute-aabb.ts";
+const COMPUTE_AABB_MODULE = "src/math/compute-aabb.ts";
 
 /** The pin's `Aabb` return, as the double pair every consumer reads. */
-export const COMPUTE_AABB_RESULT = "std::array<std::array<double, 3>, 2>";
+const COMPUTE_AABB_RESULT = "std::array<std::array<double, 3>, 2>";
 
 export interface ComputeAabbLowering {
     /** Which of the pinned guard's two arms the emitted function is. */
@@ -175,31 +174,4 @@ export function positionsView(view: {
     }
     std::size_t size() const { return ${view.member}->size() * 3u; }
 };`;
-}
-
-/**
- * Both arms of the pinned fold as one header, for the tree to carry once
- * beside the other `pinned_*.hpp` translations: `compute_aabb(positions)`
- * and `compute_aabb(positions, world)`, each a template over the
- * positions container.
- */
-export function pinnedComputeAabbHeader(context: LoweringContext): string {
-    const local = lowerComputeAabb(context, {
-        arm: "local",
-        cppName: "compute_aabb",
-        inline: true,
-    });
-    const world = lowerComputeAabb(context, {
-        arm: "world",
-        cppName: "compute_aabb",
-        inline: true,
-    });
-    return pinnedHeader(
-        ["<array>", "<cstddef>", "<cstdint>", "<limits>"],
-        `
-${local}
-
-${world}
-`,
-    );
 }

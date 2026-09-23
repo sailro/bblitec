@@ -225,7 +225,7 @@ export interface ValueModel<V, B> {
 }
 
 /** JavaScript's `typeof` of a value generation holds. */
-export function jsTypeof(raw: unknown): string {
+function jsTypeof(raw: unknown): string {
     return raw === null ? "object" : typeof raw;
 }
 
