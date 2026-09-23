@@ -51,11 +51,7 @@ export interface Nullability {
     readonly null: boolean;
     /** A member is `undefined` or `void`, which reads as undefined. */
     readonly undefined: boolean;
-    /**
-     * A member is `void` itself: a result the caller is not meant to read,
-     * so a type that pairs it with more than one present member names no
-     * storage.
-     */
+    /** A member is `void` itself, a result the caller is not meant to read. */
     readonly void: boolean;
 }
 

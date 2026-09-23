@@ -825,6 +825,8 @@ export class DataTypeRegistry {
         // A lone member maps as itself, which also registers it as its own
         // record source; the checker's NonNullable<T> intersection would map
         // through the intersection arm of `fromNonNullableType` instead.
+        // Beside several present members, `void` marks a result nobody is
+        // meant to read, which names no storage.
         const present = presentMembers(type);
         const inner =
             present.length === 1
