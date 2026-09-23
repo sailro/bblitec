@@ -11,6 +11,10 @@ import { argumentAt } from "./syntax.js";
 import { LoweringContext } from "../lowering/context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import {
+    PinnedShaderText,
+    type ShaderTextContext,
+} from "../lowering/pinned-shader-text.js";
 import type {
     MaterialPluginManifest,
     MaterialPluginSamplerManifest,
@@ -1440,11 +1444,12 @@ function foldSingleReturn(
 /**
  * `getCustomCode(shaderType)` evaluated at one argument.
  *
- * Two body shapes reach: a block whose shader-type guard returns null for
- * the other type and an injection-point record for this one, and the arrow
- * whose whole body is that choice as a conditional expression. Both halves
- * are constants either way, so the call is folded at each of the pin's two
- * argument values rather than lowered — nothing in it reaches a run time.
+ * The pin calls it once per shader type at composition, so the body is
+ * folded at each argument value by the shared shader-text evaluator: its
+ * branch folding picks the `return` the argument reaches -- a guarded
+ * block or an arrow whose whole body is the conditional choice -- and the
+ * record that return hands back is read here. Nothing in it reaches a run
+ * time.
  */
 function foldCustomCode(
     context: MaterialPluginContext,
@@ -1453,165 +1458,50 @@ function foldCustomCode(
     accepted: ReadonlySet<string>,
 ): Readonly<Record<string, string>> | undefined {
     const parameter = declaration.parameters[0];
-    const parameterName =
-        parameter && ts.isIdentifier(parameter.name)
-            ? parameter.name.text
-            : undefined;
-    const body = declaration.body;
-    if (!body) {
-        context.fail(declaration, "getCustomCode has no body.");
-    }
-    if (!ts.isBlock(body)) {
-        return foldCustomCodeChoice(
-            context,
-            body,
-            parameterName,
-            shaderType,
-            accepted,
-        );
-    }
-    for (const statement of body.statements) {
-        if (ts.isIfStatement(statement)) {
-            if (statement.elseStatement) {
-                context.fail(
-                    statement,
-                    "getCustomCode's shader-type guard takes no else branch.",
-                );
-            }
-            if (
-                !guardHolds(
-                    context,
-                    statement.expression,
-                    parameterName,
-                    shaderType,
-                )
-            ) {
-                continue;
-            }
-            const returned = onlyReturn(statement.thenStatement);
-            if (!returned) {
-                context.fail(
-                    statement,
-                    "getCustomCode's shader-type guard returns a value.",
-                );
-            }
-            return foldCustomCodeValue(context, returned, accepted);
-        }
-        if (ts.isReturnStatement(statement)) {
-            if (!statement.expression) {
-                context.fail(
-                    statement,
-                    "getCustomCode returns a value or null.",
-                );
-            }
-            return foldCustomCodeValue(context, statement.expression, accepted);
-        }
-        context.fail(
-            statement,
-            "getCustomCode's reached body is a shader-type guard and a " +
-                "return; a statement that computes is not folded, because " +
-                "the pin calls it at generation and never again.",
-        );
-    }
-    context.fail(
+    const file = declaration.getSourceFile();
+    const returned = new PinnedShaderText(
+        pluginShaderTextContext(context, file),
+    ).returnedExpression(
+        file.fileName,
         declaration,
-        "getCustomCode falls off its body without returning.",
+        new Map(
+            parameter && ts.isIdentifier(parameter.name)
+                ? [[parameter.name.text, shaderType]]
+                : [],
+        ),
     );
+    return foldCustomCodeValue(context, returned, accepted);
 }
 
 /**
- * An arrow whose whole body is the shader-type choice.
- *
- * `shaderType === "fragment" ? { ... } : null` is the same fold as the
- * block's guard-and-return, written as one expression — which is how the
- * corpus writes it. The condition is evaluated at each of the pin's two
- * argument values and the arm it selects is folded.
+ * What the shared evaluator may read while folding `getCustomCode`: its own
+ * module, and nothing it would have to call -- the pin reads the member once
+ * for a record, so a body reaching another function or module refuses.
  */
-function foldCustomCodeChoice(
+function pluginShaderTextContext(
     context: MaterialPluginContext,
-    body: ts.Expression,
-    parameterName: string | undefined,
-    shaderType: "fragment" | "vertex",
-    accepted: ReadonlySet<string>,
-): Readonly<Record<string, string>> | undefined {
-    const expression = context.unwrap(body);
-    if (!ts.isConditionalExpression(expression)) {
-        return foldCustomCodeValue(context, expression, accepted);
-    }
-    const selected = guardHolds(
-        context,
-        expression.condition,
-        parameterName,
-        shaderType,
-    )
-        ? expression.whenTrue
-        : expression.whenFalse;
-    return foldCustomCodeValue(context, selected, accepted);
-}
-
-/** The single `return` a guard's branch carries. */
-function onlyReturn(branch: ts.Statement): ts.Expression | undefined {
-    const statement = ts.isBlock(branch)
-        ? branch.statements.length === 1
-            ? branch.statements[0]
-            : undefined
-        : branch;
-    return statement && ts.isReturnStatement(statement)
-        ? statement.expression
-        : undefined;
-}
-
-/**
- * Whether the shader-type guard holds at `shaderType`.
- *
- * Both spellings reach: the statement form writes `shaderType !== "<type>"`
- * before an early `return null`, and the expression form writes
- * `shaderType === "<type>"` before the record. Over the pin's two argument
- * values each is decided by one string comparison, so both fold — a guard
- * comparing anything else refuses, because the pin calls this once at
- * composition and the answer has to be a constant.
- */
-function guardHolds(
-    context: MaterialPluginContext,
-    condition: ts.Expression,
-    parameterName: string | undefined,
-    shaderType: "fragment" | "vertex",
-): boolean {
-    const expression = context.unwrap(condition);
-    if (!ts.isBinaryExpression(expression)) {
+    file: ts.SourceFile,
+): ShaderTextContext {
+    const refuse = (node: ts.Node, what: string): never =>
         context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal with `===` or `!==`.",
+            node,
+            `getCustomCode ${what}; the pin reads it once at composition, so ` +
+                "its body folds to a guarded record without calls.",
         );
-    }
-    const operator = expression.operatorToken.kind;
-    if (
-        operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-        operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-    ) {
-        context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal with `===` or `!==`.",
-        );
-    }
-    const left = context.unwrap(expression.left);
-    const right = context.unwrap(expression.right);
-    if (
-        !ts.isIdentifier(left) ||
-        left.text !== parameterName ||
-        !ts.isStringLiteral(right)
-    ) {
-        context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal.",
-        );
-    }
-    return operator === ts.SyntaxKind.EqualsEqualsEqualsToken
-        ? right.text === shaderType
-        : right.text !== shaderType;
+    return {
+        sourceFile: (modulePath) =>
+            modulePath === file.fileName
+                ? file
+                : refuse(file, `reads module '${modulePath}'`),
+        contractError: (node, message) => context.fail(node, message),
+        hasNode: (root) => refuse(root, "loops"),
+        functionDeclaration: (_modulePath, symbolName) =>
+            refuse(file, `calls '${symbolName}'`),
+        propertyPath: () => undefined,
+        moduleOfImport: () => undefined,
+        moduleScopeConstant: () => undefined,
+        unwrapExpression: (expression) => context.unwrap(expression),
+    };
 }
 
 /** `null`, or the point-to-WGSL record a `return` hands back. */

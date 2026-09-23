@@ -4,13 +4,13 @@ import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 
 import { LoweringContext } from "../src/lowering/context.js";
+import { PinnedShaderBuilders } from "../src/lowering/pinned-shader-builders.js";
 import {
     PinnedShaderText,
     type ShaderTextBinding,
 } from "../src/lowering/pinned-shader-text.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
-import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { spriteFragmentWgsl } from "../src/shader-builtins-sprite.js";
 import { billboardFragmentWgsl } from "../src/shader-builtins-billboard.js";
 
@@ -19,11 +19,7 @@ const TINT_BODY =
     "return textureSample(atlasTex, atlasSamp, in.uv) * in.tint * fx.params;";
 
 function billboards(): BillboardLowerer {
-    const context = new LoweringContext();
-    return new BillboardLowerer(
-        context,
-        new RendererLowerer(context).compiledSceneUniformsWgsl(),
-    );
+    return new BillboardLowerer(new LoweringContext());
 }
 
 test("folds the pinned extra-binding loop over a bound list", () => {
@@ -59,6 +55,56 @@ test("folds the pinned extra-binding loop over a bound list", () => {
             ]),
         ),
         "",
+    );
+});
+
+test("executed pinned builders return the text their declarations fold to", () => {
+    const context = new LoweringContext();
+    const folded = new PinnedShaderText(context);
+    const executed = new PinnedShaderBuilders(context);
+    const calls: Array<[string, string, Map<string, ShaderTextBinding>]> = [
+        [
+            "src/sprite/custom-shader-core.ts",
+            "makeExtraBindingsWgsl",
+            new Map<string, ShaderTextBinding>([
+                ["group", "2"],
+                ["startBinding", 2],
+                ["extras", [{ name: "palette" }, { name: "noise" }]],
+            ]),
+        ],
+        [
+            "src/sprite/sprite-pipeline.ts",
+            "makeSpriteWgsl",
+            new Map<string, ShaderTextBinding>([
+                ["hasDepth", true],
+                ["spriteGroupIndex", "1"],
+                ["uvScroll", true],
+            ]),
+        ],
+        [
+            "src/material/line/line-material.ts",
+            "vertexSource",
+            new Map<string, ShaderTextBinding>([
+                ["useVertexColor", true],
+                ["useThinInstances", true],
+                ["useThinInstanceColors", false],
+            ]),
+        ],
+    ];
+    for (const [module, symbol, parameters] of calls) {
+        assert.equal(
+            executed.evaluate(module, symbol, parameters),
+            folded.evaluate(module, symbol, parameters),
+        );
+    }
+    assert.throws(
+        () =>
+            executed.evaluate(
+                "src/material/line/line-material.ts",
+                "fragmentSource",
+                new Map([["hasColour", true]]),
+            ),
+        /takes no parameter 'hasColour'/,
     );
 });
 

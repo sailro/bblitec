@@ -13,7 +13,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { NodeParticleLowerer } from "../src/lowering/node-particle-lowerer.js";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
-import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 
 function scene(body: string, helpers = ""): string {
     return `
@@ -322,10 +321,7 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
                     },
                 ],
             );
-            const billboard = new BillboardLowerer(
-                context,
-                new RendererLowerer(context).compiledSceneUniformsWgsl(),
-            ).lowerCore();
+            const billboard = new BillboardLowerer(context).lowerCore();
             const sprite = new SpriteLowerer(context).lowerCore();
             const output = resolve(
                 `artifacts/node-particle-provider-bridge-check-${search ? "frozen" : "live"}`,

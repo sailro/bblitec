@@ -288,7 +288,7 @@ test("lifts the pinned WGSL_FOG with the documented renames", () => {
 
 const gridModulePath = "src/material/grid/grid-material.ts";
 
-test("builds the grid WGSL by evaluating the pinned template functions", () => {
+test("builds the grid WGSL by executing the pinned template functions", () => {
     const store = new UpstreamSourceStore();
     const file = store.getSourceFile(gridModulePath);
     const vertex = gridVertexWgsl("p", file);
@@ -356,19 +356,19 @@ test("builds the grid WGSL by evaluating the pinned template functions", () => {
     assert.doesNotMatch(fragment, /shaderSystem\./);
 });
 
-test("a grid template the evaluator cannot fold fails generation", () => {
+test("a grid template whose builders changed fails generation", () => {
     const doctored = ts.createSourceFile(
         gridModulePath,
-        "function buildFragmentSource(opts: unknown): string { return dynamic(); }",
+        "function buildFragmentSource(options: unknown): string { return ''; }",
         ts.ScriptTarget.Latest,
         true,
         ts.ScriptKind.TS,
     );
-    // The shared shader-text evaluator refuses by the pinned node it could
-    // not fold: a builder call it cannot resolve, a builder that is gone.
+    // The executed builders bind by the pin's own parameter names and refuse
+    // by the pinned declaration: a renamed parameter, a builder that is gone.
     assert.throws(
         () => gridFragmentWgsl("p", doctored),
-        /Expected function 'dynamic' with a body/,
+        /buildFragmentSource takes no parameter 'opts'/,
     );
     assert.throws(
         () =>

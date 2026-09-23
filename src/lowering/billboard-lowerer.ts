@@ -4,7 +4,8 @@ import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
-import { PinnedShaderText, ShaderTextBinding } from "./pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
+import type { ShaderTextBinding } from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -93,19 +94,10 @@ interface AttributeRow {
  * arm refuses at the intrinsic rather than silently rendering the wrong one.
  */
 export class BillboardLowerer {
-    private readonly shaderText: PinnedShaderText;
+    private readonly shaderText: PinnedShaderBuilders;
 
-    public constructor(
-        private readonly context: LoweringContext,
-        sceneUboWgsl: string,
-    ) {
-        // `SCENE_UBO_WGSL` is an import in the pinned pipeline module, so the
-        // evaluator cannot reach it; the renderer already owns that text and
-        // hands it in, which keeps one copy of the scene UBO in the tree.
-        this.shaderText = new PinnedShaderText(
-            context,
-            new Map([["SCENE_UBO_WGSL", sceneUboWgsl]]),
-        );
+    public constructor(private readonly context: LoweringContext) {
+        this.shaderText = new PinnedShaderBuilders(context);
     }
 
     // -----------------------------------------------------------------

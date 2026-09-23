@@ -2773,12 +2773,7 @@ ${wgsl}`,
         },
     ): void {
         if (features.includes("sprite:billboard")) {
-            // The billboard vertex stage reads the scene block, so it takes
-            // the renderer's own copy of that WGSL rather than a second one.
-            const billboards = new BillboardLowerer(
-                context,
-                new RendererLowerer(context).compiledSceneUniformsWgsl(),
-            );
+            const billboards = new BillboardLowerer(context);
             const customBillboard = options.spriteCustomShaders.find(
                 (entry) => entry.family === "billboard",
             );
