@@ -158,7 +158,6 @@ export interface ComposedScenePipeline {
     lightKinds: PinnedSingleLightType[];
     /** The upstream loader/runtime tone-mapping states this scene can reach. */
     toneMappingStates: boolean[];
-    linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
     /**
@@ -1200,7 +1199,6 @@ export async function composeScenePipeline({
     return {
         lightKinds,
         toneMappingStates,
-        linearImageProcessing,
         gltfAssets,
         materialIndexBase: totalAssetMaterials,
         casterViewCount,

@@ -1134,7 +1134,6 @@ async function main(): Promise<void> {
     const {
         lightKinds,
         toneMappingStates,
-        linearImageProcessing,
         gltfAssets,
         materialIndexBase,
         casterViewCount,
@@ -1576,7 +1575,6 @@ ${imageCodecLines || '    ""'}
                     toneMappingStates,
                     mutableToneMappingEnabled:
                         result.manifest.mutableToneMappingEnabled,
-                    linearImageProcessing,
                 },
             }),
             null,

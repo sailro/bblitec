@@ -15,11 +15,14 @@
 // Two disciplines keep the table honest rather than a parallel
 // re-derivation:
 //
-// - Rows are built from the values the CLI actually used. The caller
-//   passes the already-computed booleans in; where a value is a merge of
-//   two inputs, the row derives its reason from the same halves and a
-//   disagreement with the emitted value fails generation loudly, the
-//   same way the generated-source table does.
+// - Rows are built from the values generation actually used. A
+//   capability an asset and a scene call can both turn on is recorded
+//   from the activation plan, with the reasons the plan decided it from
+//   (`asset-feature-join.ts`). A row that reads a second view of the
+//   same output -- the composed variants against the emitted arms --
+//   derives its reason from that view, and a disagreement with the
+//   emitted value fails generation loudly, the same way the
+//   generated-source table does.
 // - `upstreamProvenance` is the drift detector's other half. Every unit
 //   in the current inventory maps to a pinned module/predicate or to a
 //   documented `native-architecture:` divergence; a row that resolves to
@@ -54,7 +57,8 @@ export type FeatureActivationMechanism =
  * stay greppable: `features.cmake` (BBLITE_RUNTIME_FEATURES and the
  * source lists), the two generated capability headers, the three family
  * headers that carry a define of their own (the post-process, Standard
- * variant and render-plan headers), the composed pinned variant set
+ * variant and render-plan headers), the character-controller header the
+ * physics lowerer specializes, the composed pinned variant set
  * ("variant table"), the generated loader's lowering flags, the renderer
  * plan/shader lowering options, the vcpkg codec manifest features, the
  * per-scene `fidelity.json` adaptations, the generation-time gates that
@@ -69,6 +73,7 @@ export type FeatureActivationConsumer =
     | "frame_graph_post_process.hpp"
     | "standard_variants.hpp"
     | "renderer_plan.hpp"
+    | "character_controller.hpp"
     | "variant table"
     | "deployed shaders"
     | "loader flag"
@@ -95,21 +100,17 @@ export interface FeatureActivationRow {
 }
 
 export interface FeatureActivationInputs {
-    /** The final manifest feature list, after the asset-light join. */
+    /** The final manifest feature list, after the asset join. */
     features: readonly string[];
     /**
      * feature -> "file:line" of the first scene-source call site that
      * reached it, from the manifest's `featureSites` record. Optional:
      * a caller without recorded sites keeps the generic scene-source
-     * reason. Features the CLI asset-join added carry no entry and are
+     * reason. Features the asset join added carry no entry and are
      * attributed to their asset instead.
      */
     featureSites?: Readonly<Record<string, string>>;
-    /**
-     * feature -> asset output for the two deliberate post-compilation
-     * joins (`light:*` kinds and `environment:ibl`), recorded by the CLI
-     * loop that performed them.
-     */
+    /** feature -> asset output for every feature the asset join added. */
     assetJoinedFeatures: ReadonlyMap<string, string>;
     /** The asset specializer's per-scene summary. */
     specialization: AssetSpecializationFeatures;
@@ -149,7 +150,6 @@ export interface FeatureActivationInputs {
         toneMappingStates: readonly boolean[];
         /** Whether scene code can assign the tone-mapping state at runtime. */
         mutableToneMappingEnabled: boolean;
-        linearImageProcessing: boolean;
     };
 }
 
@@ -364,7 +364,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:uniform-layout": {
         provenance:
             "src/compute/compute-uniform-writer.ts#createComputeUniformLayout",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "engine:device-recovery": {
         provenance:
@@ -576,11 +576,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/loader-splat/load-sog.ts#loadSOG + " +
             "src/loader-splat/zip-parser.ts#unzipBuffer",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "loader:splat-spz": {
         provenance: "src/loader-splat/load-spz.ts#loadSPZ",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "loader:splat-sh": {
         provenance:
@@ -607,32 +607,28 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:clearcoat": {
         provenance: "src/material/pbr/set-clearcoat.ts",
-        consumers: [
-            "features.cmake",
-            "render_capabilities.hpp",
-            "variant table",
-        ],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:sheen": {
         provenance: "src/material/pbr/set-sheen.ts",
-        consumers: [
-            "features.cmake",
-            "render_capabilities.hpp",
-            "variant table",
-        ],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:sheen-albedo-scaling": {
         provenance:
             "src/material/pbr/set-sheen.ts (the albedo-scaling arm; the " +
             "two pinned sheen models compose distinct fragments)",
-        consumers: ["features.cmake", "renderer plan", "variant table"],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:clearcoat-f0-remap": {
         provenance:
             "src/material/pbr/set-clearcoat.ts (useF0Remap; " +
             "src/loader-gltf/gltf-ext-clearcoat.ts is the single pinned " +
             "caller passing false)",
-        consumers: ["features.cmake", "renderer plan", "variant table"],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:pbr-gamma-albedo": {
         provenance:
@@ -645,23 +641,16 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
-        consumers: [
-            "features.cmake",
-            "render_capabilities.hpp",
-            "variant table",
-        ],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:lightmap": {
         provenance:
             "src/material/pbr/enable-pbr-lightmap.ts (the opt-in that " +
             "imports and registers the fragment; the always-loaded PBR " +
             "core scans for no lightmapTexture at all)",
-        consumers: [
-            "features.cmake",
-            "render_capabilities.hpp",
-            "material_texture_slots.hpp",
-            "variant table",
-        ],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:local-cubemap": {
         provenance:
@@ -676,7 +665,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "renderer:surface": {
         provenance:
             "src/engine/surface.ts createSurface; native-architecture: retained canvas presentation in one OS window",
-        consumers: ["renderer plan", "fidelity.json"],
+        consumers: ["fidelity.json"],
     },
     "material:anisotropy": {
         provenance: "src/material/pbr/set-anisotropy.ts",
@@ -687,11 +676,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:metallic-reflectance": {
         provenance: "src/material/pbr/set-metallic-reflectance.ts",
-        consumers: [
-            "features.cmake",
-            "material_texture_slots.hpp",
-            "variant table",
-        ],
+        // The arm is read off the composed variants, never from this name.
+        consumers: INVENTORY,
     },
     "material:tracking": {
         provenance: "src/material/tracking/pbr-tracking.ts",
@@ -880,7 +866,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:pickable": {
         provenance: "src/mesh/mesh.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "mesh:vat": {
         provenance: "src/vat/vat-baker.ts",
@@ -939,7 +925,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "scene:remove": {
         provenance: "src/scene/scene-remove.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "scene:node-transforms": {
         provenance: "src/scene/scene-node.ts + src/scene/transform-node.ts",
@@ -1035,7 +1021,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     "sprite:2d": {
         provenance:
@@ -1277,7 +1263,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/physics/havok.ts createPhysicsAggregate + " +
             "createPrimitivePhysicsShapeHandle",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "physics:queries": {
         provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
@@ -1313,12 +1299,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +
             "onPhysicsTrigger (upstream keeps the trigger path in its own " +
             "module so a scene that imports neither pays nothing for it)",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     "physics:thin-instances": {
         provenance:
             "src/physics/havok-thin-instances.ts, enabled by enableHavokThinInstancePhysics",
-        consumers: INVENTORY,
+        consumers: ["character_controller.hpp"],
     },
     "physics:floating-origin": {
         provenance:
@@ -1332,7 +1318,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "sprite:billboard-custom-shader": {
         provenance:
             "src/sprite/billboard-custom-shader.ts + src/sprite/custom-shader-core.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "sprite:billboard-axis-locked": {
         provenance:
@@ -1467,7 +1453,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "platform:packaged-fetch": {
         provenance:
             "owned fetch responses from the closed packaged asset manifest, without network transport",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "platform:window": {
         provenance:
@@ -1517,11 +1503,10 @@ function runtimeEntry(name: string): RuntimeFeatureEntry | undefined {
 }
 
 /**
- * Derive `active`/`activatedBy` from the individual halves the CLI
- * merged. The parts are the same already-computed booleans the join
- * point used, so the derivation cannot disagree with the emitted value
- * unless the join changes without this table — which `checkedRow` turns
- * into a generation failure instead of a silently wrong inventory.
+ * Derive `active`/`activatedBy` from the parts a row reads. Where the
+ * parts are a second reading of what the emitter consumed, a disagreement
+ * is a table that no longer mirrors its emitter -- which `checkedRow`
+ * turns into a generation failure instead of a silently wrong inventory.
  */
 function activation(
     parts: ReadonlyArray<readonly [boolean, string]>,
@@ -1548,8 +1533,8 @@ function checkedRow(
             name,
             `feature-activation: row '${name}' derives ${active} from its ` +
                 `recorded reasons but the emitted value is ${emitted}; the ` +
-                `activation table no longer mirrors the join point. Update ` +
-                `src/feature-activation.ts beside the cli.ts merge.`,
+                `activation table no longer mirrors its emitter. Update ` +
+                `src/feature-activation.ts beside the emitter's value.`,
         );
     }
     return {
@@ -1613,6 +1598,12 @@ function plannedRow(
 function assetJoinReason(name: string, joinedBy: string): string {
     if (name === "environment:ibl") {
         return " carries EXT_lights_image_based";
+    }
+    if (name === "renderer:transmission") {
+        return (
+            " makes a material transmissive (KHR_materials_transmission), " +
+            "whose setPbrTransmission scene hook enables scene transmission"
+        );
     }
     if (name === "loader:splat") {
         return (
@@ -1804,23 +1795,10 @@ function capabilityRows(
                 "variant table",
             ],
         ),
-        checkedRow(
+        plannedRow(
             "BBLITE_GPU_DEFORMATION",
             "capability",
-            emit.gpuDeformation,
-            [
-                [spec.gpuDeformation, "a glTF asset carries animations"],
-                [
-                    has("mesh:morph-targets"),
-                    "scene-source morph targets need the deformation " +
-                        "vertex layout",
-                ],
-                [
-                    has("mesh:skeleton"),
-                    "a scene-authored skeleton needs the deformation " +
-                        "vertex layout's joint and weight lanes",
-                ],
-            ],
+            inputs.activation.gpuDeformation,
             "no animated glTF assets, no scene-source morph targets and no " +
                 "scene-authored skeleton",
             "native-architecture: upstream keys its skeleton module on " +
@@ -1909,16 +1887,9 @@ function capabilityRows(
             "capability",
             emit.morphStorage || nodeMorphStorage,
             [
-                [
-                    spec.morphStorage,
-                    "a glTF primitive carries morph targets " +
-                        "(maxMorphTargets > 0)",
-                ],
-                [
-                    has("mesh:morph-targets"),
-                    "scene source reached mesh:morph-targets (the pinned " +
-                        "standard morph fragment reads storage buffers)",
-                ],
+                ...inputs.activation.morphStorage.reasons.map(
+                    (reason) => [true, reason] as const,
+                ),
                 [
                     nodeMorphStorage,
                     "a compiled node graph reaches MorphTargetsBlock and " +
@@ -1934,21 +1905,10 @@ function capabilityRows(
                 "the pin has one uncapped storage-buffer morph mechanism",
             ["render_capabilities.hpp"],
         ),
-        checkedRow(
+        plannedRow(
             "BBLITE_GPU_INSTANCING",
             "capability",
-            emit.gpuInstancing,
-            [
-                [spec.gpuInstancing, "an asset uses EXT_mesh_gpu_instancing"],
-                [
-                    has("mesh:thin-instances"),
-                    "scene source reached mesh:thin-instances",
-                ],
-                [
-                    has("mesh:thin-instances-dynamic"),
-                    "scene source reached mesh:thin-instances-dynamic",
-                ],
-            ],
+            inputs.activation.gpuInstancing,
             "no instanced assets or thin instances",
             "src/loader-gltf/gltf-feature-registry.ts: " +
                 "EXT_mesh_gpu_instancing -> gltf-feature-gpu-instancing.js; " +
@@ -2666,17 +2626,10 @@ function emitOptionRows(
                 "generated loader (mirrored_x)",
             ["loader flag"],
         ),
-        checkedRow(
+        plannedRow(
             "nodeVisibility",
             "emit-option",
-            emit.nodeVisibility,
-            [
-                [emit.gltfNodeVisibility, "an asset uses KHR_node_visibility"],
-                [
-                    features.includes("mesh:visible"),
-                    "scene code writes mesh.visible",
-                ],
-            ],
+            inputs.activation.nodeVisibility,
             "no asset uses KHR_node_visibility and no scene code " +
                 "writes mesh.visible",
             "src/scene/scene-node.ts visible?: boolean; " +
@@ -2969,7 +2922,7 @@ function emitOptionRows(
 function compositionRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
-    const { composition, emit, specialization: spec, features } = inputs;
+    const { composition, emit, features } = inputs;
     const variantCount = (emit.pinnedVariants ?? []).length;
     const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
     const nodeVariantCount = (emit.nodeVariants ?? []).length;
@@ -3026,21 +2979,10 @@ function compositionRows(
                 "src/scene/scene-image-processing.ts",
             ["variant table"],
         ),
-        checkedRow(
+        plannedRow(
             "linear-image-processing",
             "composition",
-            composition.linearImageProcessing,
-            [
-                [
-                    features.includes("material:pbr-linear-image-processing"),
-                    "scene source reached linear PBR image processing",
-                ],
-                [
-                    spec.assetTransmission,
-                    "asset-carried KHR_materials_transmission enables the " +
-                        "runtime's transmission exactly like the feature",
-                ],
-            ],
+            inputs.activation.linearImageProcessing,
             "no transmission, so materials keep gamma-space image " +
                 "processing",
             "src/frame-graph/transmission.ts markPbrMaterialsLinear: " +

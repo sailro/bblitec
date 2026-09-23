@@ -10,6 +10,9 @@ import type { NodeVariantManifestEntry } from "../src/pinned-node-material-cpp.j
 import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
 import type { PinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
 import type { UpstreamEmitOptions } from "../src/upstream-lower.js";
+import type { Feature } from "../src/compiler/types.js";
+import { featureSources } from "../src/compiler/output-projection.js";
+import { generatedSourceRules } from "../src/generated-sources.js";
 import {
     featureActivationRows,
     inventoriedRuntimeFeatures,
@@ -161,7 +164,6 @@ function metallicReflectanceMapInputs(
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: false,
         },
     };
 }
@@ -237,7 +239,6 @@ function scene33Inputs(): FeatureActivationInputs {
             lightKinds: ["point"],
             toneMappingStates: [true],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: true,
         },
     };
 }
@@ -284,7 +285,6 @@ function dispersiveInputs(): FeatureActivationInputs {
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: true,
         },
     };
 }
@@ -382,7 +382,6 @@ function everythingOnInputs(): FeatureActivationInputs {
             lightKinds: ["hemispheric", "directional", "point", "spot"],
             toneMappingStates: [false, true],
             mutableToneMappingEnabled: true,
-            linearImageProcessing: true,
         },
     };
 }
@@ -514,7 +513,6 @@ function familyInputs(): FeatureActivationInputs {
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: false,
         },
     };
 }
@@ -1161,5 +1159,72 @@ test("creation-order rows record ordered and interleaved paths", () => {
         named(interleaved, "refusal:scene-material-interleave").activatedBy,
         "composed 1 scene-code PBR material creation(s) through 1 glTF " +
             "load(s) in their recorded handle order",
+    );
+});
+
+test("every claimed reader of a runtime feature reads it", () => {
+    // A runtime-feature row names what reads the feature past the compiler.
+    // The claim is checked against the readers themselves, so a row cannot
+    // name a consumer that never tests the feature -- and a feature nothing
+    // reads is labelled `inventory` rather than dressed as a capability.
+    const cmake = [
+        "native/CMakeLists.txt",
+        ...sourceFiles("native", [".cmake"]),
+    ]
+        .map((file) => readFileSync(file, "utf8"))
+        .join("\n");
+    const adaptations = readFileSync("src/compiler/adaptations.ts", "utf8");
+    // Past the compiler's own walk: the pipeline, the join, the lowerers and
+    // the composition read the finished feature list. The compiler's reach
+    // sites and this inventory are what the claim is about, not readers.
+    const readers = sourceFiles("src", [".ts"])
+        .filter(
+            (file) =>
+                !file.startsWith(join("src", "compiler")) &&
+                file !== join("src", "feature-activation.ts"),
+        )
+        .map((file) => readFileSync(file, "utf8"))
+        .join("\n");
+    // A CMake rule over a family spells the feature as a prefix it
+    // completes per member (`"audio:decode-${codec_feature}"`).
+    const cmakePrefixes = [...cmake.matchAll(/"([a-z0-9:-]+)\$\{/g)].map(
+        (match) => match[1]!,
+    );
+    const buildReads = (name: string): boolean =>
+        (featureSources[name as Feature] ?? []).length > 0 ||
+        generatedSourceRules.some((rule) =>
+            rule.features.some((feature) => feature === name),
+        ) ||
+        cmake.includes(`"${name}"`) ||
+        cmakePrefixes.some((prefix) => name.startsWith(prefix));
+    const rows = featureActivationRows(everythingOnInputs()).filter(
+        (row) => row.mechanism === "runtime-feature",
+    );
+    const wrong: string[] = [];
+    for (const row of rows) {
+        const quoted = `"${row.name}"`;
+        // Every reached feature is listed in features.cmake; claiming it as
+        // the consumer means something past the walk tests the name.
+        const read =
+            buildReads(row.name) ||
+            readers.includes(quoted) ||
+            adaptations.includes(quoted);
+        for (const consumer of row.consumers) {
+            const reads =
+                consumer === "inventory"
+                    ? !read
+                    : consumer === "features.cmake" ||
+                        consumer === "vcpkg manifest"
+                      ? read
+                      : consumer === "fidelity.json"
+                        ? adaptations.includes(quoted)
+                        : readers.includes(quoted);
+            if (!reads) wrong.push(`${row.name} claims '${consumer}'`);
+        }
+    }
+    assert.deepEqual(
+        wrong,
+        [],
+        "name the reader that tests each feature, or label it inventory",
     );
 });
