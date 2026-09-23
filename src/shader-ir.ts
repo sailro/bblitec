@@ -332,6 +332,8 @@ export interface WgslFunctionDeclaration extends WgslSpan {
     returnAttributes: WgslAttribute[];
     returnType?: WgslTypeReference;
     statements: ShaderStatement[];
+    /** The source between the body's braces. */
+    body: WgslSpan;
 }
 
 export interface WgslDirective extends WgslSpan {
@@ -996,6 +998,7 @@ class WgslParser {
             returnAttributes = this.parseAttributes();
             returnType = this.parseType();
         }
+        const open = this.peek().end;
         const statements = this.parseBlock();
         return {
             kind: "fn",
@@ -1005,6 +1008,7 @@ class WgslParser {
             returnAttributes,
             ...(returnType ? { returnType } : {}),
             statements,
+            body: { start: open, end: this.tokens[this.index - 1]!.start },
             ...this.span(start),
         };
     }

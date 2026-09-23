@@ -341,6 +341,7 @@ import type {
 } from "./compiler.js";
 import {
     blitVertexWgsl,
+    pinnedImageProcessingFragments,
     pinnedImageProcessingSource,
 } from "./shader-builtins-utility.js";
 import { uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
@@ -4211,28 +4212,8 @@ export function dawnUtilityShaders(transmission: boolean): DawnUtilityShaders {
             );
         }
     }
-    const fragments = [
-        ...imageProcessing.matchAll(/`(@fragment fn fs[^`]*)`/g),
-    ].map((match) => match[1]!);
-    if (fragments.length !== 2) {
-        refuseGeneration(
-            imageProcessingModule,
-            "Pinned image-processing no longer carries exactly two " +
-                "fragment arms.",
-        );
-    }
-    const multisampledFragment = fragments.find((fragment) =>
-        fragment.includes("textureNumSamples"),
-    );
-    const singleFragment = fragments.find(
-        (fragment) => !fragment.includes("textureNumSamples"),
-    );
-    if (!multisampledFragment || !singleFragment) {
-        refuseGeneration(
-            imageProcessingModule,
-            "Pinned image-processing fragment arms changed shape.",
-        );
-    }
+    const { multisampled: multisampledFragment, single: singleFragment } =
+        pinnedImageProcessingFragments(imageProcessing);
     shaders.imageProcessingVertex =
         ipProvenance +
         renameEntryPoint(

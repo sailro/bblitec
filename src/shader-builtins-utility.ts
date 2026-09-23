@@ -12,6 +12,8 @@ import {
     splitWgslStatements,
 } from "./pinned-shader-composer.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
+import ts from "typescript";
+import { reflectWgslModule, wgslEntryPoints } from "./shader-ir.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -170,20 +172,66 @@ export function pinnedImageProcessingSource(): PinnedImageProcessingSource {
     return { module, common, uniformStruct, binding, ip };
 }
 
+/**
+ * The pin's two image-processing fragment arms, as its task writes them:
+ * `const fragment = multisampled ? \`...\` : \`...\`` inside the task
+ * factory. Read off the packaged module's syntax tree, so the arm each
+ * backend deploys is chosen by the pin's own `multisampled` condition.
+ */
+export function pinnedImageProcessingFragments(module: string): {
+    multisampled: string;
+    single: string;
+} {
+    const file = ts.createSourceFile(
+        "image-processing-task.js",
+        module,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS,
+    );
+    const arms: Array<{ multisampled: string; single: string }> = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "fragment" &&
+            node.initializer &&
+            ts.isConditionalExpression(node.initializer) &&
+            ts.isIdentifier(node.initializer.condition) &&
+            node.initializer.condition.text === "multisampled" &&
+            ts.isNoSubstitutionTemplateLiteral(node.initializer.whenTrue) &&
+            ts.isNoSubstitutionTemplateLiteral(node.initializer.whenFalse)
+        ) {
+            const raw = (literal: ts.NoSubstitutionTemplateLiteral): string =>
+                literal.getText(file).slice(1, -1);
+            arms.push({
+                multisampled: raw(node.initializer.whenTrue),
+                single: raw(node.initializer.whenFalse),
+            });
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (arms.length !== 1) {
+        utilityLiftError(
+            "image-processing fragment arms (`const fragment = multisampled ? ... : ...`)",
+        );
+    }
+    return arms[0]!;
+}
+
 function pinnedImageProcessing(): PinnedImageProcessing {
     const { module, uniformStruct, ip } = pinnedImageProcessingSource();
-    const multisampled = /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(
-        module,
-    );
-    if (!multisampled) {
-        utilityLiftError("image-processing multisampled fragment");
-    }
-    const entry = /\{([\s\S]*)\}$/.exec(multisampled[1]!);
+    const multisampled = pinnedImageProcessingFragments(module).multisampled;
+    const entry = wgslEntryPoints(
+        reflectWgslModule(multisampled),
+        "fragment",
+    ).find(({ name }) => name === "fs");
     if (!entry) {
         utilityLiftError("image-processing multisampled entry point");
     }
     const multisampledBody = rehome(
-        entry[1]!,
+        multisampled.slice(entry.body.start, entry.body.end),
         [
             // The pin binds its source as `s` and reads its own position
             // builtin `q`; natively the texture arrives through the storage
