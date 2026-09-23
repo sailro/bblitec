@@ -2961,10 +2961,6 @@ ${wgsl}`,
                 gpuDeformation: options.gpuDeformation,
                 morphStorage: options.morphStorage,
                 gpuInstancing: options.gpuInstancing,
-                clearcoat: options.clearcoat,
-                sheen: options.sheen,
-                iridescence: options.iridescence,
-                dispersion: options.dispersion,
             });
             // Every module `lowerShaders` returns is one this repository
             // authors or specializes -- the PBR vertex stage, the grid, the
