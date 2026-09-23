@@ -8,10 +8,10 @@ import {
     backendFileToken,
     canonicalBackend,
     measuredBackends,
-    parseBackendName,
     resolveBackend,
     resolvePose,
 } from "../src/tooling/artifacts.js";
+import { parseBackendName } from "../src/tooling/backends.js";
 
 test("process exposes one normal deployment without a live mode", () => {
     const command = fileURLToPath(

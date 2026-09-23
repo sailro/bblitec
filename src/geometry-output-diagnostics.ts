@@ -15,8 +15,8 @@ import {
     readCaptureMeta,
     resolvePose,
     writeSeekMeta,
-    type NativeBackend,
 } from "./tooling/artifacts.js";
+import type { NativeBackend } from "./tooling/backends.js";
 import { writeReport } from "./tooling/reports.js";
 import { resolveNativeExecutable, runMeasured } from "./tooling/native-run.js";
 import { compareImages, generateDiffMap } from "./parity.js";

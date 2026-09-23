@@ -46,13 +46,15 @@ import {
     parityCanvasReportPath,
     parityNativeImagePath,
     parityReportPath,
-    parseBackendName,
     resolveBackend,
     resolvePose,
-    type BackendSelection,
-    type NativeBackend,
     type ScenePose,
 } from "./tooling/artifacts.js";
+import {
+    parseBackendName,
+    type BackendSelection,
+    type NativeBackend,
+} from "./tooling/backends.js";
 import { readMemoryTape } from "./tooling/check-spec.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
