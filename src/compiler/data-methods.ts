@@ -21,6 +21,7 @@ import { compileHttpResponseMethod } from "./http.js";
 import {
     compileSearchParamsMethod,
     deploymentSearchParamsValue,
+    RuntimeSearchParamsRequired,
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 
@@ -433,6 +434,7 @@ export function compileDataMethodCall(
         dynamicOwner?.kind === "browser" &&
         dynamicOwner.browserValue?.kind === "search-params"
     ) {
+        if (method === "set") throw new RuntimeSearchParamsRequired();
         dynamicOwner = deploymentSearchParamsValue(
             lowerer,
             dynamicOwner.browserValue.search,
@@ -2239,7 +2241,13 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
     }
     lowerer.invalidateAliases(narrowed.cpp);
     const receiver = captureArrayReceiver(lowerer, narrowed);
-    const values = call.arguments.map((argument) => {
+    let lastEffect = call.arguments.length - 1;
+    while (
+        lastEffect >= 0 &&
+        !expressionMayRunCode(call.arguments[lastEffect]!)
+    )
+        --lastEffect;
+    const values = call.arguments.map((argument, index) => {
         const cpp = lowerer.compileForRetainedSink(
             argument,
             dataType.element,
@@ -2249,9 +2257,10 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
             lowerer.context.allocateTemporaryCppName("unshift_argument");
         lowerer.context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: index < lastEffect ? "const auto" : "const auto&",
             name,
-            initializer: cpp,
+            initializer:
+                index < lastEffect ? `bbl::js::snapshot_value(${cpp})` : cpp,
         });
         return name;
     });

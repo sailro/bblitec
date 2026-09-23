@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "scene": "ocean",
+  "pin": {
+    "package": "@babylonjs/lite",
+    "version": "1.31.0",
+    "sourceVersion": "3ce8ae6d34945f4c32c73e357714ffa43be41584"
+  },
+  "reference": {
+    "source": "reference/ocean/babylon-lite-golden.png",
+    "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d"
+  },
+  "entry": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+  "hostPage": "corpus/babylon-lite/lab/lite/demo-ocean.html",
+  "pose": {
+    "search": "?seekTime=0.1",
+    "width": 1280,
+    "height": 720,
+    "dpr": 1,
+    "referenceFrame": 30
+  },
+  "readiness": {
+    "loadingSize": "Estimated demo assets: 6.1 MB",
+    "progress": "100",
+    "fixedAnimationFrame": "153",
+    "fixedCaptureFrame": "30",
+    "fixedAnimationCallbacks": "1",
+    "engine": "Babylon Lite v1.31.0",
+    "loadingDetail": "Preparing scene…",
+    "animationFrozen": "true",
+    "seekWarmupFrames": "6",
+    "seekWarmupMode": "compute-only",
+    "fixedEngineStarting": "true",
+    "oceanStage": "complete",
+    "ready": "true"
+  },
+  "camera": {
+    "position": {
+      "x": -33.91187023336096,
+      "y": 4.727123075533213,
+      "z": -8.578004717405992
+    },
+    "rotation": {
+      "x": 0.10888242375229738,
+      "y": 1.5924857677541429,
+      "z": 0
+    },
+    "target": {
+      "x": -32.91802588437002,
+      "y": 4.835790486320023,
+      "z": -8.599564026570702
+    }
+  },
+  "moduleSha256": "b518d19afb681d86f032d34d5fbef22fd668af1a58b202101b4b2a9a0c162184",
+  "sourceFiles": [
+    {
+      "path": "corpus/babylon-lite/lab/lite/demo-ocean.html",
+      "sha256": "345250881b0a9c83dc671ef20b6ba4ce954b7b9cbbf00107169b07ed25f25e29"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+      "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+      "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+      "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+      "sha256": "bc62062401e3ca955decc27d38e500e819a9242fb00d5ab03798e28398e9fb3c"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/buoy.ts",
+      "sha256": "f551620cfe1b04ae0bd37ade73ef6d8f2f00a7f0c69c0bc0fc3db0db1478cc57"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/constants.ts",
+      "sha256": "5191d59863e4befc987186a5f88bdc7e67add3ec626f99bee95eb437fd62b35a"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/controls.ts",
+      "sha256": "cb32ce25030cd0fdc0c2b93cfb7b02dd35919378f310da852f94602e4943f60b"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/debug.ts",
+      "sha256": "4ba9a2778848e7e63ec6a7e661b3d19833f2dd69ad8e8275ea1008f9f38388cd"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/demo.ts",
+      "sha256": "a2e3669d9a9d7cf647becd06438ac65805b5a3da8ed56071f5e1aaaf76c4a27a"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/fft.ts",
+      "sha256": "5ac854f7223f18dd8d5c0a9990d7553e8f9b105cd5d0819a2e4a18912daabf45"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/geometry.ts",
+      "sha256": "1c00140bd4391b69be4c097562b3417acea65fb3b4155d2ca4de6a8a9486a8b4"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/lifecycle.ts",
+      "sha256": "846cc4fb56c1ceb3e2008258b5948f12ba83a2fa434903533856e477fcbfc5bc"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/material-plugin.ts",
+      "sha256": "d17c8f482450508ccc225e6249f1b07f148ca8636470f7aa0ad4aef69174f667"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/material.ts",
+      "sha256": "eb4cb95b574525241e1e409195d671cb32f7d05af78a4faa09583fb7785a9e2f"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/ownership.ts",
+      "sha256": "98f3703509757551e76bc23bf27b81d008b5c55abae52aca3b7b49072c413583"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/resources.ts",
+      "sha256": "4016e47d43c2c2232ece435c1cdf047eb2637b99decd569426ac540dc8349538"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/shaders.ts",
+      "sha256": "7ca6dcab8415a09b0c103aefcb12f61fc89db908755ae73ec4443414ed38dd62"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/simulation.ts",
+      "sha256": "112cc975e36999534b69fb72fa1db1b94416d696f2f5d778bdb8e05191b81b45"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/sky.ts",
+      "sha256": "1552219feaa8596e6192577cb14bae199648d51413216aa5cb4551754896039f"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/spectrum.ts",
+      "sha256": "b3431b820d0bbc8563ce6d1f7863d151e02e767c18344910742beafbc4aafd9c"
+    },
+    {
+      "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/timing.ts",
+      "sha256": "e79fbd27a783a4871bb813b07f8d7eb9212fe9a2553be79bab997a213f32514d"
+    }
+  ],
+  "browser": {
+    "showScrollbars": true,
+    "ignoredDefaultArguments": [
+      "--hide-scrollbars"
+    ],
+    "version": "153.0.8010.53",
+    "arguments": [
+      "--force-color-profile=srgb",
+      "--enable-unsafe-webgpu"
+    ],
+    "adapter": {
+      "info": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "device": "",
+        "description": ""
+      },
+      "features": [
+        "depth32float-stencil8",
+        "rg11b10ufloat-renderable",
+        "bgra8unorm-storage",
+        "texture-formats-tier1",
+        "chromium-experimental-multi-draw-indirect",
+        "texture-compression-bc",
+        "dual-source-blending",
+        "core-features-and-limits",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "float32-filterable",
+        "indirect-first-instance",
+        "float32-blendable",
+        "subgroup-size-control",
+        "texture-compression-unaligned",
+        "depth-clip-control",
+        "texture-compression-bc-sliced-3d",
+        "timestamp-query",
+        "clip-distances",
+        "texture-formats-tier2",
+        "shader-f16",
+        "primitive-index",
+        "texture-component-swizzle",
+        "subgroups"
+      ]
+    }
+  },
+  "capabilityDifferences": [
+    {
+      "area": "GPU task timing",
+      "browser": "timestamp-query supported; full-page panel contains live FPS, GPU frame index and durations",
+      "native": "timestamp-query not enabled; pinned unsupported result",
+      "parity": "No screenshot masking, browser capability override or threshold changes applied. Canvas image is stable; full-page timing text is nondeterministic."
+    }
+  ],
+  "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582"
+}

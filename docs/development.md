@@ -22,6 +22,9 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
 Rebuild installed dependencies after maintained patches change, including `pwsh -File tools/build-rmlui.ps1`.
 
+Runtime Window applications start with their authored live defaults. Parity and interaction checks
+apply their registered query internally to the same executable.
+
 ### Linux prerequisites
 
 Install [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu),

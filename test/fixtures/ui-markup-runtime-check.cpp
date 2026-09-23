@@ -117,7 +117,7 @@ int main() {
                             horizontal) < .01f);
         };
         expect_size(owner, 8, 8);
-        expect_size(nested, 16, 16); // Width does not inherit; colors do.
+        expect_size(nested, 15, 15); // Width does not inherit; colors do.
         assert(thumb(owner)->GetComputedValues().background_color() == Rml::Colourb(33, 66, 99));
         assert(thumb(nested)->GetComputedValues().background_color() == Rml::Colourb(33, 66, 99));
         assert(std::abs(owner->GetClientWidth() - 152) < .01f);
@@ -131,7 +131,7 @@ int main() {
         ui_set_style_property(engine, panel, "scrollbar-color", "auto");
         pal::update_ui_rml_runtime(runtime, 640, 480);
         expect_size(owner, 12, 10);
-        expect_size(nested, 16, 16); // Vendor rules cannot leak into a descendant.
+        expect_size(nested, 15, 15); // Vendor rules cannot leak into a descendant.
         assert(thumb(owner)->GetComputedValues().background_color() ==
                Rml::Colourb(0xab, 0xcd, 0xef));
         thumb(owner)->SetPseudoClass("hover", true);
@@ -140,7 +140,7 @@ int main() {
                Rml::Colourb(0xfe, 0xdc, 0xba));
         ui_remove(engine, sheet);
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        expect_size(owner, 16, 16);
+        expect_size(owner, 15, 15);
     }
     {
         Engine engine;

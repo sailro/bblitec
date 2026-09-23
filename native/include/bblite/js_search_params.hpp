@@ -43,6 +43,28 @@ inline std::string decode(std::string_view input) {
     }
     return decode_utf8(bytes);
 }
+
+inline void append_percent_encoded(std::string& output, unsigned char byte) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    output.push_back('%');
+    output.push_back(hex[byte >> 4]);
+    output.push_back(hex[byte & 15]);
+}
+
+inline std::string encode(std::string_view input) {
+    std::string output;
+    for (const unsigned char byte : input) {
+        if (byte == ' ')
+            output.push_back('+');
+        else if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                 (byte >= '0' && byte <= '9') || byte == '*' || byte == '-' || byte == '.' ||
+                 byte == '_')
+            output.push_back(static_cast<char>(byte));
+        else
+            append_percent_encoded(output, byte);
+    }
+    return output;
+}
 } // namespace search_params_detail
 
 /** String-initialized URLSearchParams retain the ordered query list across aliases. */
@@ -95,6 +117,35 @@ public:
         return std::any_of(entries_->begin(), entries_->end(), [&](const auto& item) {
             return item.first == name && item.second == expected;
         });
+    }
+    void set(const std::string& key, const std::string& value) const {
+        if (!entries_)
+            throw std::runtime_error("URLSearchParams receiver is absent.");
+        const auto name = search_params_detail::scalar_string(key);
+        const auto replacement = search_params_detail::scalar_string(value);
+        auto first = std::find_if(entries_->begin(), entries_->end(),
+                                  [&](const auto& item) { return item.first == name; });
+        if (first == entries_->end()) {
+            entries_->emplace_back(name, replacement);
+            return;
+        }
+        first->second = replacement;
+        entries_->erase(std::remove_if(std::next(first), entries_->end(),
+                                       [&](const auto& item) { return item.first == name; }),
+                        entries_->end());
+    }
+    std::string to_string() const {
+        if (!entries_)
+            throw std::runtime_error("URLSearchParams receiver is absent.");
+        std::string result;
+        for (const auto& [key, value] : *entries_) {
+            if (!result.empty())
+                result.push_back('&');
+            result += search_params_detail::encode(key);
+            result.push_back('=');
+            result += search_params_detail::encode(value);
+        }
+        return result;
     }
 };
 } // namespace bbl::js

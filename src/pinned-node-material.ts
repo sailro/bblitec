@@ -242,16 +242,50 @@ interface PinnedNodeCompiledBindings {
         _brdfLUT: number;
         _brdfSampler: number;
     } | null;
-    _morphBindings: {
-        _deltasBinding: number;
-        _uboBinding: number;
-    } | null;
+    _bindVertexFeature?: (
+        engine: object,
+        mesh: object,
+        entries: Array<{ binding: number; resource: { buffer: object } }>,
+    ) => void;
+}
+
+/** Observe the pin's retained per-mesh binder with distinct morph resources. */
+function nodeMorphBindings(
+    compile: PinnedNodeCompiledBindings,
+): ComposedNodeMorphBindings | null {
+    if (!compile._bindVertexFeature) return null;
+    const deltasBuffer = {},
+        weightsBuffer = {};
+    const entries: Array<{ binding: number; resource: { buffer: object } }> =
+        [];
+    compile._bindVertexFeature(
+        {},
+        { morphTargets: { deltasBuffer, weightsBuffer } },
+        entries,
+    );
+    const deltas = entries.find(
+        (entry) => entry.resource.buffer === deltasBuffer,
+    );
+    const weights = entries.find(
+        (entry) => entry.resource.buffer === weightsBuffer,
+    );
+    if (
+        entries.length !== 2 ||
+        !deltas ||
+        !weights ||
+        deltas.binding === weights.binding
+    )
+        throw new Error(
+            "Unsupported pinned node vertex-feature binding resources.",
+        );
+    return { deltas: deltas.binding, weights: weights.binding };
 }
 
 /** Bindings that must keep the same numbers in receiver and caster modules. */
 function nodeSharedBindings(
     compile: PinnedNodeCompiledBindings,
 ): readonly (readonly [string, number])[] {
+    const morph = nodeMorphBindings(compile);
     return [
         ...(compile._nodeUboBinding === null
             ? []
@@ -268,10 +302,10 @@ function nodeSharedBindings(
                   ["env.brdfSampler", compile._envBindings._brdfSampler],
               ] as const)
             : []),
-        ...(compile._morphBindings
+        ...(morph
             ? ([
-                  ["morph.deltas", compile._morphBindings._deltasBinding],
-                  ["morph.weights", compile._morphBindings._uboBinding],
+                  ["morph.deltas", morph.deltas],
+                  ["morph.weights", morph.weights],
               ] as const)
             : []),
     ];
@@ -304,7 +338,7 @@ interface PinnedNodeBuildState {
 interface PinnedNodeMaterial {
     _compile: PinnedNodeCompiledBindings & {
         _wgsl: string;
-        _nodeUboSize: number;
+        _nodeUboSpec: { _totalBytes: number } | null;
         /** One per shadow light, allocated in the graph's own binding run. */
         _shadowBindings: readonly {
             _lightIndex: number;
@@ -397,7 +431,7 @@ interface PinnedNodeGeometryResources {
 
 interface PinnedNodeGeometryCompile extends PinnedNodeCompiledBindings {
     _wgsl: string;
-    _nodeUboSize: number;
+    _nodeUboSpec: { _totalBytes: number } | null;
     _geometryGpBinding: number | null;
 }
 
@@ -697,7 +731,7 @@ export async function composeNodeMaterial(
         label,
     );
     const uboFloats = new Array<number>(
-        material._compile._nodeUboSize / 4,
+        (material._compile._nodeUboSpec?._totalBytes ?? 0) / 4,
     ).fill(0);
     for (const slot of material._uniformValues.values()) {
         const start = slot._offsetBytes / 4;
@@ -706,7 +740,7 @@ export async function composeNodeMaterial(
         });
     }
     const env = material._compile._envBindings;
-    const morph = material._compile._morphBindings;
+    const morph = nodeMorphBindings(material._compile);
     if (castsEsmShadow && castsPcfShadow) {
         throw new Error(
             `Node material '${label}' cannot serve both ESM and PCF caster views.`,
@@ -719,7 +753,7 @@ export async function composeNodeMaterial(
           : null;
     return {
         wgsl: material._compile._wgsl,
-        uboBytes: material._compile._nodeUboSize,
+        uboBytes: material._compile._nodeUboSpec?._totalBytes ?? 0,
         uboBinding: material._compile._nodeUboBinding,
         uboFloats,
         attributes,
@@ -742,12 +776,7 @@ export async function composeNodeMaterial(
                   brdfSampler: env._brdfSampler,
               }
             : null,
-        morphBindings: morph
-            ? {
-                  deltas: morph._deltasBinding,
-                  weights: morph._uboBinding,
-              }
-            : null,
+        morphBindings: morph,
         shadowBindings: material._compile._shadowBindings.map((binding) => ({
             lightIndex: binding._lightIndex,
             texture: binding._texBinding,
@@ -901,12 +930,13 @@ async function composeNodeGeometryViews(
             material,
         );
         const written = device.recorder.bufferWrites.slice(writesBefore);
-        const expected = compile._nodeUboSize > 0 ? 1 : 0;
+        const uboBytes = compile._nodeUboSpec?._totalBytes ?? 0;
+        const expected = uboBytes > 0 ? 1 : 0;
         if (
             written.length !== expected ||
             (written[0] !== undefined &&
                 (written[0].offset !== 0 ||
-                    written[0].bytes.byteLength !== compile._nodeUboSize))
+                    written[0].bytes.byteLength !== uboBytes))
         ) {
             throw new Error(
                 `The pinned node geometry uniform block for '${viewLabel}' ` +
@@ -918,7 +948,7 @@ async function composeNodeGeometryViews(
         composed.push({
             taskIndex: task.index,
             wgsl: compile._wgsl,
-            uboBytes: compile._nodeUboSize,
+            uboBytes,
             uboBinding: compile._nodeUboBinding,
             uboFloats,
             attributes: composedAttributes(resources._attrNames, viewLabel),

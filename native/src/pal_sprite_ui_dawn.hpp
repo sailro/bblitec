@@ -20,6 +20,7 @@
 #include "pal_dawn_shared.hpp"
 #include "pal_ui_backdrop_dawn.hpp"
 #include "pal_ui_filter_dawn.hpp"
+#include "pal_ui_texture_cache.hpp"
 
 namespace bbl::pal {
 
@@ -39,7 +40,7 @@ struct SpriteUiDawnResources {
     WGPUBindGroup screen_group = nullptr;
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
-    std::unordered_map<std::uint64_t, SpriteUiDawnTexture> textures;
+    std::unordered_map<std::uint64_t, UiCachedTexture<SpriteUiDawnTexture>> textures;
     std::uint64_t vertex_capacity = 0;
     std::uint64_t index_capacity = 0;
 };
@@ -305,6 +306,7 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
                                         WGPUTexture target_texture, WGPUTextureView target,
                                         SpriteUiDawnResources& ui, const UiRenderFrame& frame,
                                         ExternalTexture external_texture = nullptr) {
+    prune_ui_texture_cache(ui.textures, [](SpriteUiDawnTexture& texture) { texture.release(); });
     if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0)
         return;
     create_sprite_ui_dawn_resources(state, ui);
@@ -323,14 +325,6 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
                                       static_cast<float>(frame.height), 0, 0};
     wgpuQueueWriteBuffer(state.queue, ui.screen, 0, screen.data(), sizeof(screen));
 
-    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
-        if (ui_frame_uses_texture(frame, texture->first)) {
-            ++texture;
-            continue;
-        }
-        texture->second.release();
-        texture = ui.textures.erase(texture);
-    }
     for (const UiRenderTexture& source : frame.textures) {
         if (ui.textures.contains(source.id) || !source.rgba)
             continue;
@@ -344,7 +338,7 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
         texture.group = create_sprite_ui_dawn_texture_group(state, ui, texture.view, ui.sampler);
         texture.nearest_group =
             create_sprite_ui_dawn_texture_group(state, ui, texture.view, ui.nearest_sampler);
-        ui.textures.emplace(source.id, texture);
+        ui.textures.emplace(source.id, UiCachedTexture<SpriteUiDawnTexture>{texture, source.rgba});
     }
 
     const UiDawnTexture root_target{target_texture, target, nullptr, nullptr};
@@ -380,7 +374,7 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
                 if (draw.texture_id) {
                     const auto owned = ui.textures.find(draw.texture_id);
                     const SpriteUiDawnTexture* texture =
-                        owned == ui.textures.end() ? nullptr : &owned->second;
+                        owned == ui.textures.end() ? nullptr : &owned->second.resource;
                     if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
                         if (!texture)
                             texture = external_texture(draw.texture_id);
@@ -422,7 +416,7 @@ inline void release_sprite_ui_dawn_resources(SpriteUiDawnResources& ui) {
     ui.filters.release();
     for (auto& [id, source] : ui.textures) {
         static_cast<void>(id);
-        source.release();
+        source.resource.release();
     }
     if (ui.indices)
         wgpuBufferRelease(ui.indices);

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
+import { compileSource } from "../src/compiler.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -23,6 +24,7 @@ function sourceResult(context: LoweringContext): object {
         "installMaterialSetter",
         "registerMeshScene",
         "unregisterMeshScene",
+        "markMeshRenderableDirty",
     ]
         .map((name) =>
             context
@@ -33,7 +35,7 @@ function sourceResult(context: LoweringContext): object {
         .join("\n");
     const code = transpileCommonJs(
         `let _meshScenes = null; ${declarations}
-        return {add: registerMeshScene, remove: unregisterMeshScene};`,
+        return {add: registerMeshScene, remove: unregisterMeshScene, dirty: markMeshRenderableDirty};`,
         module,
     );
     type Mesh = { material: object };
@@ -41,6 +43,7 @@ function sourceResult(context: LoweringContext): object {
     const execute = createJavaScriptFunction(code)() as {
         add(scene: Scene, mesh: Mesh): void;
         remove(scene: Scene, mesh: Mesh): boolean;
+        dirty(mesh: Mesh): void;
     };
     const materials = [{}, {}, {}],
         mesh: Mesh = { material: materials[0]! };
@@ -57,15 +60,26 @@ function sourceResult(context: LoweringContext): object {
         });
         for (const scene of scenes) scene._materialSwapQueue.length = 0;
     };
+    const dirty = () => {
+        execute.dirty(mesh);
+        execute.dirty(mesh);
+        states.push({
+            material: materials.indexOf(mesh.material),
+            queues: scenes.map((scene) => scene._materialSwapQueue.length),
+        });
+        for (const scene of scenes) scene._materialSwapQueue.length = 0;
+    };
     execute.add(scenes[0]!, mesh);
     execute.add(scenes[0]!, mesh);
     execute.add(scenes[1]!, mesh);
+    dirty();
     write(0);
     write(1);
     write(1);
     const removals = [execute.remove(scenes[0]!, mesh)];
     write(2);
     removals.push(execute.remove(scenes[1]!, mesh));
+    dirty();
     write(0);
     execute.add(scenes[0]!, mesh);
     write(1);
@@ -109,16 +123,22 @@ void check(std::size_t variant, const nlohmann::json& expected) {
     const std::array add{${contexts.map((_, i) => `variant_${i}::register_mesh_material_scene`).join(", ")}};
     const std::array remove{${contexts.map((_, i) => `variant_${i}::unregister_mesh_material_scene`).join(", ")}};
     const std::array assign{${contexts.map((_, i) => `variant_${i}::set_mesh_material`).join(", ")}};
+    const std::array mark{${contexts.map((_, i) => `variant_${i}::mark_mesh_renderable_dirty`).join(", ")}};
     nlohmann::json states = nlohmann::json::array();
     const auto write = [&](std::uint32_t material) {
         assign.at(variant)(engine, MeshHandle{0}, MaterialHandle{material});
         states.push_back({{"material", engine.meshes[0].material.value}, {"queues", {scenes[0].state->pbr_material_swap_queue.size(), scenes[1].state->pbr_material_swap_queue.size()}}});
         for (auto& scene : scenes) scene.state->pbr_material_swap_queue.clear();
     };
+    const auto dirty = [&] {
+        mark.at(variant)(engine,MeshHandle{0});mark.at(variant)(engine,MeshHandle{0});
+        states.push_back({{"material",engine.meshes[0].material.value},{"queues",{scenes[0].state->pbr_material_swap_queue.size(),scenes[1].state->pbr_material_swap_queue.size()}}});
+        for(auto& scene:scenes) scene.state->pbr_material_swap_queue.clear();
+    };
     add.at(variant)(scenes[0], MeshHandle{0}); add.at(variant)(scenes[0], MeshHandle{0}); add.at(variant)(scenes[1], MeshHandle{0});
-    write(0); write(1); write(1);
+    dirty();write(0); write(1); write(1);
     std::vector<bool> removals{remove.at(variant)(scenes[0], MeshHandle{0})}; write(2);
-    removals.push_back(remove.at(variant)(scenes[1], MeshHandle{0})); write(0);
+    removals.push_back(remove.at(variant)(scenes[1], MeshHandle{0})); dirty();write(0);
     add.at(variant)(scenes[0], MeshHandle{0}); write(1);
     const nlohmann::json actual{{"states", states}, {"removals", removals}};
     if (actual != expected) std::cerr << actual.dump() << " expected=" << expected.dump() << '\\n';
@@ -153,14 +173,40 @@ int main() { nlohmann::json expected; std::ifstream("cases.json") >> expected;
     );
 });
 
+test("mesh primitive state retains optional fields and dirty notification", () => {
+    const result =
+        compileSource(`import {createEngine,createBox,createPbrMaterial,markMeshRenderableDirty,type Mesh} from '@babylonjs/lite';
+function wireframe(mesh:Mesh,enabled:boolean){
+ const primitive=mesh as Mesh & {_primitive?:GPUPrimitiveState;_primitiveFeatures?:number};
+ mesh._topology=enabled?2:undefined;
+ primitive._primitive=enabled?{topology:'line-list',cullMode:'none'}:undefined;
+ primitive._primitiveFeatures=enabled?2<<12:undefined;
+ markMeshRenderableDirty(mesh);
+}
+async function main(){const engine=await createEngine(document.createElement('canvas'));const mesh=createBox(engine);mesh.material=createPbrMaterial({});wireframe(mesh,true);wireframe(mesh,false);}void main();`);
+    assert.match(
+        result.cpp,
+        /MeshPrimitiveState\{bbl::MeshTopology::lines, true, std::nullopt\}/,
+    );
+    assert.match(result.cpp, /primitive_override/);
+    assert.match(result.cpp, /mark_mesh_renderable_dirty/);
+    assert.throws(
+        () =>
+            compileSource(
+                `import {createEngine,createBox,type Mesh} from '@babylonjs/lite';async function main(){const engine=await createEngine(document.createElement('canvas'));const mesh=createBox(engine) as Mesh & {_primitiveFeatures?:number};mesh._primitiveFeatures=1;}void main();`,
+            ),
+        /arbitrary shader-feature masks/,
+    );
+});
+
 test("material subscriber lowering refuses unrepresented source operations", () => {
     assert.throws(
         () =>
             lowerMeshMaterialSetter(
                 doctoredContext(
                     module,
-                    "enqueueMaterialSwap(scene, mesh);",
-                    "enqueueMaterialSwap(scene, otherMesh);",
+                    "enqueueMaterialSwap(scene, mesh);\n                        scene._meshMaterialChange",
+                    "enqueueMaterialSwap(scene, otherMesh);\n                        scene._meshMaterialChange",
                 ),
             ),
         /Unsupported|supported/,
@@ -170,8 +216,8 @@ test("material subscriber lowering refuses unrepresented source operations", () 
             lowerMeshMaterialSetter(
                 doctoredContext(
                     module,
-                    "const scenes = _meshScenes?.get(mesh);",
-                    "const scenes = _meshScenes?.get(otherMesh);",
+                    "_mat = v;\n                const scenes = _meshScenes?.get(mesh);",
+                    "_mat = v;\n                const scenes = _meshScenes?.get(otherMesh);",
                 ),
             ),
         /lookup/,

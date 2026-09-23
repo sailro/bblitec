@@ -65,6 +65,23 @@ test("async methods preserve activation timing, receivers and conditional evalua
         const earlier=readStored(),later=readStored();
         if(await earlier!==7||await later!==7)
             throw new Error("overlapping computed receiver lifetimes");
+        const delayed:((count:number,fallback?:number,label?:string)=>Promise<string>)[]=[
+            async(count:number,fallback=60,label="default")=>{
+                await Promise.resolve();
+                return label+":"+String(count+fallback);
+            }
+        ];
+        let copiedCount=2,copiedLabel="kept";
+        const copied=delayed[0]!(copiedCount,undefined,copiedLabel);
+        copiedCount=40;copiedLabel="changed";
+        if(await copied!=="kept:62"||await delayed[0]!(copiedCount,2)!=="default:42")
+            throw new Error("stored coroutine parameter ownership");
+        const owned=async(value:number):Promise<number>=>{await Promise.resolve();return value+3;};
+        const ownedAlias:(value:number)=>Promise<number>=owned;
+        const inputs:number[]=[1,2];
+        const mapped=await Promise.all(inputs.map(value=>owned(value)));
+        if(mapped[0]!==4||mapped[1]!==5||await ownedAlias(4)!==7||await owned(5)!==8)
+            throw new Error("stored callbacks transfer fresh owners and retain aliases");
         globalThis.close();
     })();`;
     let closed = false;
@@ -82,6 +99,18 @@ test("async methods preserve activation timing, receivers and conditional evalua
     const result = compileSource(prefix + body, {
         fileName: join(directory, "entry.ts"),
     });
+    const parameters = result.cpp.match(
+        /double (fn\d+_)arg_0, \[\[maybe_unused\]\] bbl::js::Nullable<double> \1arg_1, \[\[maybe_unused\]\] bbl::js::Nullable<std::string> \1arg_2/,
+    );
+    assert.ok(parameters, "stored async callback keeps typed parameters");
+    const parameterPrefix = parameters[1]!;
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `\\}\\(v_bblite_environment_\\d+, ${parameterPrefix}arg_0, ${parameterPrefix}arg_1, std::move\\(${parameterPrefix}arg_2\\)\\)\\)`,
+        ),
+        "coroutine frame copies numeric parameters and moves owned strings",
+    );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");

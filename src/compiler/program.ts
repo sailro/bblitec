@@ -56,6 +56,16 @@ const erasedInternalMembers: readonly {
     /** The member `@internal` removed. */
     member: string;
 }[] = [
+    {
+        module: "src/camera/free-camera.ts",
+        interfaceName: "FreeCamera",
+        member: "_yaw",
+    },
+    {
+        module: "src/camera/free-camera.ts",
+        interfaceName: "FreeCamera",
+        member: "_pitch",
+    },
     // `AssetContainer._gaussianSplats`: the clouds the pinned
     // KHR_gaussian_splatting feature contributes, one promise per GS
     // primitive. Scene 226 reads it, and its element type is what tells the

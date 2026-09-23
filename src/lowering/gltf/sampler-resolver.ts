@@ -10,6 +10,144 @@ import {
 } from "../../pinned-address-modes.js";
 
 const module = "src/loader-gltf/gltf-sampler-desc.ts";
+
+/** Specialize the pin's sampler-key loop over its own immutable defaults table. */
+function lowerSamplerKey(context: LoweringContext): string {
+    const generalModule = "src/resource/sampler-pool.ts";
+    const poolModule = "src/resource/texture-sampler-pool.ts";
+    const general = context.functionDeclaration(
+        generalModule,
+        "getOrCreateSampler",
+    ).declaration;
+    const pool = context.functionDeclaration(
+        poolModule,
+        "getOrCreateSampler",
+    ).declaration;
+    const defaults = context.unwrapExpression(
+        context.variableInitializer(
+            context.sourceFile(poolModule),
+            "textureSamplerDefaults",
+        ),
+    );
+    if (!ts.isObjectLiteralExpression(defaults))
+        context.contractError(defaults, "Expected sampler defaults table.");
+    const loop = pool.body!.statements.find(ts.isForInStatement);
+    if (!loop)
+        context.contractError(pool, "Expected sampler defaults key loop.");
+    context.assertExpressionShape(
+        loop.expression,
+        "textureSamplerDefaults",
+        "Sampler key fields",
+    );
+    const key = pool.body!.statements.find(
+        (statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations.some(
+                (variable) =>
+                    ts.isIdentifier(variable.name) &&
+                    variable.name.text === "key",
+            ),
+    );
+    if (!key)
+        context.contractError(pool, "Expected sampler key initialization.");
+    const printed: string[] = general
+        .body!.statements.slice(0, -1)
+        .map((statement) => statement.getText());
+    printed.push(key.getText());
+    const loopStatements = ts.isBlock(loop.statement)
+        ? loop.statement.statements
+        : [loop.statement];
+    if (loopStatements.length !== 2)
+        context.contractError(
+            loop,
+            "Expected field alias and key accumulation.",
+        );
+    context.assertExpressionShape(
+        (loopStatements[0] as ts.VariableStatement).declarationList
+            .declarations[0]!.initializer!,
+        "property as keyof typeof textureSamplerDefaults",
+        "Sampler key field alias",
+    );
+    for (const property of defaults.properties) {
+        if (!ts.isPropertyAssignment(property))
+            context.contractError(property, "Expected named sampler default.");
+        const name = context.propertyName(property.name);
+        if (!name)
+            context.contractError(property, "Expected named sampler field.");
+        let value = context.unwrapExpression(property.initializer);
+        if (ts.isIdentifier(value))
+            value = context.variableInitializer(
+                context.sourceFile(poolModule),
+                value.text,
+            );
+        const defaultValue = value;
+        const result = ts.transform(loopStatements[1]!, [
+            (transformation) => (root) => {
+                const visit: ts.Visitor = (node) => {
+                    if (
+                        ts.isElementAccessExpression(node) &&
+                        context.expressionMatchesShape(
+                            node.argumentExpression,
+                            "field",
+                        )
+                    ) {
+                        if (
+                            context.expressionMatchesShape(
+                                node.expression,
+                                "textureSamplerDefaults",
+                            )
+                        )
+                            return defaultValue;
+                        if (
+                            context.expressionMatchesShape(
+                                node.expression,
+                                "descriptor",
+                            )
+                        )
+                            return ts.factory.updateElementAccessExpression(
+                                node,
+                                node.expression,
+                                ts.factory.createStringLiteral(name),
+                            );
+                    }
+                    return ts.visitEachChild(node, visit, transformation);
+                };
+                return ts.visitNode(root, visit, ts.isStatement)!;
+            },
+        ]);
+        printed.push(
+            ts
+                .createPrinter()
+                .printNode(
+                    ts.EmitHint.Unspecified,
+                    result.transformed[0]!,
+                    context.sourceFile(poolModule),
+                ),
+        );
+        result.dispose();
+    }
+    // The device boundary returns the canonical key instead of allocating a sampler.
+    const file = ts.createSourceFile(
+        generalModule,
+        `function samplerKey(descriptor) { ${printed.join("\n")} return key; }`,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const declaration = file.statements[0];
+    if (!declaration || !ts.isFunctionDeclaration(declaration))
+        throw new Error("Invalid specialized sampler key.");
+    return lowerGltfMaterialObjectFunction(
+        context,
+        {
+            module: generalModule,
+            name: "samplerKey",
+            sourceSymbol: "getOrCreateSampler",
+            cpp: "gltf_source_sampler_key",
+            declaration,
+        },
+        () => undefined,
+    );
+}
 export const gltfSamplerFields = [
     ["minFilter", "min_filter", textureFilterByPin],
     ["magFilter", "mag_filter", textureFilterByPin],
@@ -167,7 +305,7 @@ function lowerSamplerFor(context: LoweringContext): string {
     return `// ${context.provenance(module, "makeSamplerFor")}
 template<class Create, class Cached, class Register> GltfMaterialSampler gltf_sampler_for(
     GltfPbrValue json, const ts::JsonValue* info, GltfMaterialSampler default_sampler,
-    Create create_sampler, Cached cached_sampler, Register register_sampler) {
+    [[maybe_unused]] Create create_sampler, Cached cached_sampler, Register register_sampler) {
 ${body}
 }`;
 }
@@ -235,7 +373,7 @@ ${Object.entries(enums)
         })
         .join("\n");
     return `${lower(module, "gltfTexSamplerDesc", "gltf_source_sampler_desc")}
-${lower("src/resource/gpu-pool.ts", "samplerKey", "gltf_source_sampler_key")}
+${lowerSamplerKey(context)}
 TextureSamplerState gltf_project_sampler(const GltfPbrValue& descriptor) {
     TextureSamplerState result;
 ${projection}

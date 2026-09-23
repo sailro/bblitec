@@ -27,7 +27,7 @@
  */
 import type { SplatFragmentManifest } from "./compiler/types.js";
 import {
-    extractPackagedStringLiteral,
+    extractPackagedRawShader,
     importPinnedModule,
     importPinnedModuleWithExports,
     readPinnedLibraryModule,
@@ -129,9 +129,9 @@ export async function splatFragmentRecords(
 
 /** The packaged WGSL both stages are split out of. */
 export function pinnedSplatModuleWgsl(): string {
-    return extractPackagedStringLiteral(
+    return extractPackagedRawShader(
         readPinnedLibraryModule(splatPipelineModule),
-        "WGSL",
+        "shaders/gaussian-splatting.wgsl",
     );
 }
 

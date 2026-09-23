@@ -105,6 +105,17 @@ template <typename T> Promise<Array<T>> promise_all(const Array<Promise<T>>& inp
     return state->result;
 }
 
+/** Settlement records are fresh owned objects supplied by the typed lowering. */
+template <typename T, typename Fulfilled, typename Rejected>
+auto promise_all_settled(const Array<Promise<T>>& inputs, Fulfilled fulfilled, Rejected rejected) {
+    using Result = std::invoke_result_t<Fulfilled&, const T&>;
+    Array<Promise<Result>> settlements;
+    settlements.reserve(inputs.size());
+    for (const auto& input : inputs)
+        settlements.push_back(input.then(fulfilled, rejected));
+    return promise_all(settlements);
+}
+
 /** Observing every competitor also handles rejections after the race has settled. */
 template <typename T> void observe_race(const Promise<T>& input, const Promise<T>& result) {
     input.observe(make_closure(std::tuple{result},

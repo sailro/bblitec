@@ -108,8 +108,10 @@ $patches = @(
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\sdl-multisample-read.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-multisample-lines.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-descriptor-heaps.patch"),
+    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-storage-array.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-storage-buffer-sizes.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-fence-query.patch"),
+    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\gpu-timestamp-queries.patch"),
     (Join-Path $root "tools\patches\sdl-static-no-dynapi.patch")
 )
 foreach ($patch in $patches) {

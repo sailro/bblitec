@@ -45,6 +45,11 @@ ui_query_element(Engine& engine, UiElementHandle root,
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
 std::string ui_get_form_value(Engine& engine, UiElementHandle element);
+bool ui_get_checked(Engine& engine, UiElementHandle element);
+void ui_set_checked(Engine& engine, UiElementHandle element, bool checked);
+bool ui_get_selected(Engine& engine, UiElementHandle element);
+void ui_set_selected(Engine& engine, UiElementHandle element, bool selected);
+void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text);

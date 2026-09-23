@@ -18,6 +18,13 @@ export interface ShaderStageConstant {
 export type ShaderType =
     "f32" | "mat4x4<f32>" | "vec2<f32>" | "vec3<f32>" | "vec4<f32>";
 
+const shaderTypeShorthands: Readonly<Record<string, ShaderType>> = {
+    vec2f: "vec2<f32>",
+    vec3f: "vec3<f32>",
+    vec4f: "vec4<f32>",
+    mat4x4f: "mat4x4<f32>",
+};
+
 export interface ShaderAttribute {
     kind: "builtin" | "location";
     value: string | number;
@@ -700,14 +707,7 @@ class WgslSubsetParser {
             return expression;
         }
         const name = this.expectIdentifier();
-        const shorthand = (
-            {
-                vec2f: "vec2<f32>",
-                vec3f: "vec3<f32>",
-                vec4f: "vec4<f32>",
-                mat4x4f: "mat4x4<f32>",
-            } as const
-        )[name as "vec2f" | "vec3f" | "vec4f" | "mat4x4f"];
+        const shorthand = shaderTypeShorthands[name];
         if (shorthand)
             return {
                 kind: "construct",
@@ -763,7 +763,7 @@ class WgslSubsetParser {
 
     private parseNamedType(): string {
         const name = this.expectIdentifier();
-        if (!this.accept("<")) return name;
+        if (!this.accept("<")) return shaderTypeShorthands[name] ?? name;
         const components: string[] = [];
         do {
             components.push(
@@ -1105,7 +1105,8 @@ function parseRawModule(source: string, stage: ShaderStage): ShaderModule {
                     `Unsupported shader struct member near '${body.slice(offset).trim().slice(0, 40)}'.`,
                 );
             }
-            const type = member[4]!.replace(/\s+/g, "");
+            const spelling = member[4]!.replace(/\s+/g, "");
+            const type = shaderTypeShorthands[spelling] ?? spelling;
             if (!shaderTypes.has(type as ShaderType)) {
                 throw new Error(
                     `Unsupported WGSL shader type '${type}' in struct '${match[1]}'.`,

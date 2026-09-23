@@ -184,11 +184,17 @@ export function lowerMaterialPublication(context: LoweringContext): string {
         return lowerPinnedBody(source.file, checks, {
             bindings: new Map([
                 ["isOverride", { cpp: "is_override", type: "bool" }],
+                // Native outputs are removed before packet storage is released.
+                [
+                    "packet._disposed",
+                    { cpp: "false", type: "bool", staticallyAbsent: true },
+                ],
                 [current, { cpp: "current.value", type: "scalar" }],
                 [captured, { cpp: "captured.value", type: "scalar" }],
             ]),
             calls: new Map(),
             booleanAnd: true,
+            booleanOr: true,
             returnValue: () => "false",
         });
     };
@@ -202,7 +208,7 @@ export function lowerMaterialPublication(context: LoweringContext): string {
     const shaderGuard = familyGuard(
         "src/material/shader/shader-renderable.ts",
         "createTransparentRenderable",
-        "!isOverride && packet.mesh.material !== material",
+        "packet._disposed || (!isOverride && packet.mesh.material !== material)",
         "packet.mesh.material",
         "material",
     );

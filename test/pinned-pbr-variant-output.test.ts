@@ -75,3 +75,52 @@ test("writes independently reachable shader stages exactly once", () => {
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+test("keeps sampler layout variants distinct when their WGSL is identical", () => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-pbr-layout-"));
+    try {
+        const tree = new GeneratedTree(root);
+        const shared = variant(
+            0,
+            "@vertex fn mainVertex() {}",
+            "@fragment fn mainFragment() {}",
+        );
+        const manifest = writePinnedPbrVariants(tree, [
+            {
+                ...shared,
+                meshBindingLayout: [
+                    {
+                        binding: 2,
+                        visibility: 2,
+                        sampler: { type: "filtering" },
+                    },
+                ],
+            },
+            {
+                ...shared,
+                materialIndex: 1,
+                meshBindingLayout: [
+                    {
+                        binding: 2,
+                        visibility: 2,
+                        sampler: { type: "non-filtering" },
+                    },
+                ],
+            },
+        ]);
+        assert.equal(manifest.length, 2);
+        assert.equal(manifest[0]!.vertex, manifest[1]!.vertex);
+        assert.equal(manifest[0]!.fragment, manifest[1]!.fragment);
+        assert.notEqual(manifest[0]!.pipeline, manifest[1]!.pipeline);
+        assert.deepEqual(
+            new Set(
+                manifest.map(
+                    (entry) => entry.meshBindingLayout?.[0]?.sampler?.type,
+                ),
+            ),
+            new Set(["filtering", "non-filtering"]),
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});

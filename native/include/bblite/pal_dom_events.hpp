@@ -342,6 +342,20 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
 }
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+inline bool dom_target_has_tag(DomEventTargetValue value, std::string_view tag) {
+    if (value.target.kind == DomEventTargetKind::Canvas)
+        return tag == "canvas";
+    if (value.target.kind != DomEventTargetKind::Element)
+        return false;
+    return handle_at(dom_target_owner(value).ui_elements, UiElementHandle{value.target.element})
+               .tag == tag;
+}
+
+inline bool dom_target_has_tag(const js::Nullable<DomEventTargetValue>& value,
+                               std::string_view tag) {
+    return value.has_value() && dom_target_has_tag(*value, tag);
+}
+
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {
     std::vector<DomEventTarget> path;
     while (target.value != invalid_handle) {

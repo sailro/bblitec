@@ -7,9 +7,12 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerDeviceRecovery } from "../src/lowering/device-recovery-lowerer.js";
+import { lowerEngineDisposal } from "../src/lowering/engine-dispose-lowerer.js";
+import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { canvasDatasetSource } from "../src/lowering/canvas-dataset.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import {
+    cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -302,9 +305,13 @@ test(
     () => {
         const output = resolve("artifacts/device-recovery-native");
         mkdirSync(output, { recursive: true });
+        const context = new LoweringContext();
+        const core = new EngineLowerer(context).lowerCore().source;
         writeFileSync(
             join(output, "recovery.hpp"),
-            lowerDeviceRecovery(new LoweringContext()).source +
+            lowerDeviceRecovery(context).source +
+                lowerEngineDisposal(context).source +
+                `namespace bbl { ${cppFunction(core, "void stop_engine(Engine& engine)")} }` +
                 canvasDatasetSource,
         );
         const executable = join(output, "check.exe");

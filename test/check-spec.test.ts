@@ -9,7 +9,10 @@ import {
     readCheckSpec,
 } from "../src/tooling/check-spec.js";
 import { readCapturePath } from "../src/tooling/capture-path.js";
-import { applyObserveHooks } from "../src/tooling/observe-run.js";
+import {
+    applyObserveHooks,
+    observationSearch,
+} from "../src/tooling/observe-run.js";
 import { checkEnvironmentBase } from "../src/tooling/check-run.js";
 import { getScene, resolveScene } from "../src/scene-registry.js";
 
@@ -78,6 +81,36 @@ test("parses a declared check and expands tape shorthands", () => {
         drag: [1, 2, 3, 4],
         steps: 8,
     });
+});
+
+test("observations preserve registry queries, explicit overrides and no-query twins", () => {
+    const scene = getScene("scene12");
+    const spec = { steps: [] };
+    assert.equal(observationSearch(scene, spec), "?seekTime=0.5");
+    assert.equal(observationSearch(scene, spec, true), "");
+    assert.equal(observationSearch(scene, { ...spec, search: "" }), "");
+    assert.equal(
+        observationSearch(scene, { ...spec, search: "?animate=1" }, true),
+        "?animate=1",
+    );
+    assert.equal(
+        observationSearch(scene, spec, false, 20),
+        "?seekTime=0.5&captureFrame=20",
+    );
+    assert.equal(
+        observationSearch(
+            scene,
+            { ...spec, search: "?captureFrame=9&x=1" },
+            false,
+            20,
+        ),
+        "?captureFrame=20&x=1",
+    );
+    const parsed = parseCheckSpec(
+        JSON.stringify({ ...minimal, observe: { search: "", steps: [] } }),
+        "empty-query",
+    );
+    assert.equal(parsed.observe?.search, "");
 });
 
 test("refuses unknown keys, kinds and undeclared phases by name", () => {
@@ -260,7 +293,10 @@ test("spreads the registry pose before a check's own clock", () => {
             phases: [],
             expect: [],
         }),
-        { BBLITE_SCREENSHOT_FRAME: "20" },
+        {
+            BBLITE_SCREENSHOT_FRAME: "20",
+            BBLITE_LOCATION_SEARCH: "?captureFrame=10",
+        },
     );
     assert.deepEqual(
         checkEnvironmentBase(scene, {
@@ -271,6 +307,7 @@ test("spreads the registry pose before a check's own clock", () => {
         }),
         {
             BBLITE_SCREENSHOT_FRAME: "20",
+            BBLITE_LOCATION_SEARCH: "?captureFrame=10",
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
         },
     );
@@ -282,6 +319,25 @@ test("spreads the registry pose before a check's own clock", () => {
             expect: [],
         }),
         {},
+    );
+});
+
+test("checks apply registered capture queries without changing no-query twins", () => {
+    const scene = getScene("ocean");
+    const spec = { scene: scene.id, phases: [], expect: [] };
+    assert.equal(
+        checkEnvironmentBase(scene, spec).BBLITE_LOCATION_SEARCH,
+        "?seekTime=0.1",
+    );
+    assert.equal(
+        checkEnvironmentBase(scene, { ...spec, twin: true })
+            .BBLITE_LOCATION_SEARCH,
+        "?",
+    );
+    assert.equal(
+        checkEnvironmentBase(scene, { ...spec, base: "none" })
+            .BBLITE_LOCATION_SEARCH,
+        undefined,
     );
 });
 

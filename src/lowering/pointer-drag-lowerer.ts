@@ -3,6 +3,7 @@
  * readback are platform seams. Canvas proxies keep their source listeners.
  */
 import ts from "typescript";
+import { objectProperty } from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
     lowerMat4InvertCpp,
@@ -117,6 +118,136 @@ export function lowerPointerDrag(
             move.declaration,
             "Missing pinned drag delta/projection slice.",
         );
+    const planeIndex = statements.findIndex(
+        (statement) =>
+            ts.isIfStatement(statement) &&
+            context
+                .propertyPath(
+                    ts.isBinaryExpression(statement.expression)
+                        ? statement.expression.left
+                        : statement.expression,
+                )
+                ?.join(".") === "active.drag.options.updateDragPlane",
+    );
+    if (planeIndex <= begin || planeIndex >= end)
+        context.contractError(
+            move.declaration,
+            "Missing pinned drag plane update.",
+        );
+    const planeUpdate = statements[planeIndex]!;
+    const planeLowerer = new PinnedNumericLowerer(move.file, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                "active.drag.options.updateDragPlane",
+                { cpp: "drag.update_drag_plane", type: "bool" },
+            ],
+            [
+                "active.drag.options.dragPlaneNormal",
+                { ...vector("axis"), absentCpp: "!drag.plane_drag" },
+            ],
+            ["active.planeNormal", vector("state.plane_normal")],
+            ["active.planePoint", vector("state.plane_point")],
+            ["active.drag", { cpp: "drag", type: "opaque" }],
+            ["state.layer.scene", { cpp: "state", type: "opaque" }],
+            ["hit", vector("hit")],
+            ["livePlanePoint", vector("livePlanePoint")],
+        ]),
+        calls: new Map([
+            ...calls,
+            [
+                "pickDragPlaneNormal",
+                (args) => `drag_plane(${args[1]}, ${args[0]}, ${args[2]})`,
+            ],
+        ]),
+        expression: (expression) => {
+            if (
+                ts.isCallExpression(expression) &&
+                context.propertyPath(expression.expression)?.join(".") ===
+                    "active.drag.options.getPlanePoint"
+            ) {
+                context.assertExpressionShape(
+                    expression,
+                    "active.drag.options.getPlanePoint?.()",
+                    "Pointer drag plane anchor callback",
+                );
+                return "drag_anchor(*state.engine, drag)";
+            }
+            return undefined;
+        },
+        statement: (statement, lowerer, indent) => {
+            if (
+                ts.isVariableStatement(statement) &&
+                statement.declarationList.declarations[0]?.name.getText(
+                    move.file,
+                ) === "livePlanePoint"
+            ) {
+                context.assertStatementShapes(
+                    statement,
+                    [statement],
+                    "const livePlanePoint = active.drag.options.getPlanePoint?.();",
+                    "Pointer drag live anchor",
+                );
+                return [
+                    `${indent}const Vec3d livePlanePoint = ${lowerer.expression(statement.declarationList.declarations[0].initializer!)};`,
+                ];
+            }
+            return undefined;
+        },
+        vec3Literal,
+    });
+    // Every native pointer gizmo supplies its root position as the live anchor.
+    // Read each factory's update option; absent options retain the source default.
+    const updatesPlane = (modulePath: string, factory: string): string => {
+        const declaration = context.functionDeclaration(
+            modulePath,
+            factory,
+        ).declaration;
+        const call = context.callExpression(declaration, "createPointerDrag");
+        if (call.arguments.length !== 1)
+            return context.contractError(
+                call,
+                "Expected one pointer drag options argument.",
+            );
+        const options = context.callObjectArgument(call, "createPointerDrag");
+        const anchor = objectProperty(options, "getPlanePoint");
+        if (!anchor)
+            return context.contractError(
+                options,
+                "Native gizmos require a live root anchor.",
+            );
+        context.assertExpressionShape(
+            anchor,
+            "() => ({ x: root.position.x, y: root.position.y, z: root.position.z })",
+            "Pointer gizmo anchor",
+        );
+        const update = objectProperty(options, "updateDragPlane");
+        if (!update) return "true";
+        if (update.kind === ts.SyntaxKind.TrueKeyword) return "true";
+        if (update.kind === ts.SyntaxKind.FalseKeyword) return "false";
+        return context.contractError(
+            update,
+            "Expected literal pointer plane update option.",
+        );
+    };
+    const axisUpdates = updatesPlane(
+        "src/gizmo/axis-drag-gizmo.ts",
+        "createAxisDragGizmo",
+    );
+    const planeUpdates = updatesPlane(
+        "src/gizmo/plane-drag-gizmo.ts",
+        "createPlaneDragGizmo",
+    );
+    if (
+        rotation &&
+        updatesPlane(
+            "src/gizmo/plane-rotation-gizmo.ts",
+            "createPlaneRotationGizmo",
+        ) !== planeUpdates
+    )
+        context.contractError(
+            move.declaration,
+            "Rotation and plane gizmos need distinct update profiles.",
+        );
     const moveLowerer = new PinnedNumericLowerer(move.file, {
         bindings: new Map([
             ["hit", vector("hit")],
@@ -191,7 +322,7 @@ struct DragStep { Vec3d delta; double distance; };
 DragStep drag_step(const Vec3d& hit, const Vec3d& last, const Vec3d& start,
     const Vec3d& axis, bool axis_mode) {
 ${statements
-    .slice(begin, end)
+    .slice(begin, planeIndex)
     .flatMap((statement) => moveLowerer.statement(statement, "    "))
     .join("\n")}
     return {delta, dragDistance};
@@ -225,6 +356,10 @@ Vec3d drag_plane(PointerDragDispatcher& state, const EditGizmoRecord& drag, cons
     const auto axis = drag_axis(engine, drag);
     return drag.plane_drag ? normalize_vec3(axis)
         : drag_axis_plane(upstream::camera_position(engine.cameras[scene.camera.value]), hit, axis);
+}
+void drag_update_plane(PointerDragDispatcher& state, const EditGizmoRecord& drag, const Vec3d& hit) {
+    const auto axis = drag_axis(*state.engine, drag);
+${planeLowerer.statement(planeUpdate, "    ").join("\n")}
 }
 // ${context.provenance(POINTER, "canvasRayFromPointer")}
 std::optional<Vec3d> drag_pointer_hit(PointerDragDispatcher& state, const PlatformMouseEvent& event) {
@@ -300,9 +435,9 @@ void drag_event(PointerDragDispatcher& state, unsigned event_kind, const Platfor
     }
     if (active) {
         auto& drag = engine.edit_gizmos[state.active.value];
-        state.plane_point = drag_anchor(engine, drag);
         const auto hit = drag_pointer_hit(state, event);
         if (!hit) return;
+        drag_update_plane(state, drag, *hit);
 ${
     rotation
         ? `        if (drag.rotation_drag) {
@@ -322,7 +457,6 @@ ${
             node.position = {node.position.x + delta.x, node.position.y + delta.y, node.position.z + delta.z};
             mark_mesh_runtime_transform(engine, drag.attached_node);
         }
-        if (!drag.plane_drag) state.plane_normal = drag_plane(state, drag, *hit);
         return;
     }
     PointerDragHandle next{};
@@ -350,6 +484,7 @@ void pointer_drag_hover(Engine& engine, PointerDragHandle handle, bool hovered) 
 void initialize_pointer_gizmo(Engine& engine, UtilityLayerHandle layer, EditGizmoHandle handle, MaterialHandle material, bool plane) {
     auto& drag = engine.edit_gizmos[handle.value];
     drag.plane_drag = plane;
+    drag.update_drag_plane = plane ? ${planeUpdates} : ${axisUpdates};
     drag.colored_material = material;
     drag.hover_material = create_standard_material(engine);
     set_material_diffuse_color(engine, drag.hover_material,

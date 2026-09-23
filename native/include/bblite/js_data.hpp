@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_callback.hpp>
+#include <bblite/js_error.hpp>
 #include <bblite/dom_event_state.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
@@ -1769,6 +1770,15 @@ public:
         storage_->entries.insert_or_assign(key, value);
         return *this;
     }
+    bool erase(const WeakIdentity& key) {
+        storage_->prune();
+        const auto found = storage_->entries.find(key);
+        if (found == storage_->entries.end())
+            return false;
+        const bool alive = !key.expired();
+        storage_->erase(found);
+        return alive;
+    }
     void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 };
 
@@ -2020,6 +2030,7 @@ public:
     [[nodiscard]] const double& operator[](std::size_t index) const { return (*values_)[index]; }
     [[nodiscard]] constexpr std::size_t size() const { return N; }
     [[nodiscard]] const void* identity() const { return values_.get(); }
+    [[nodiscard]] bool operator==(const Tuple& other) const { return values_ == other.values_; }
     [[nodiscard]] double* data() { return values_->data(); }
     [[nodiscard]] const double* data() const { return values_->data(); }
     [[nodiscard]] iterator begin() { return values_->begin(); }

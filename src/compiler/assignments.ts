@@ -1,4 +1,8 @@
 import { EmissionMap } from "./emission-transaction.js";
+import {
+    compositeScalarAccessors,
+    compositeScalarFunction,
+} from "../lowering/post-process-accessors.js";
 import type { LoweringServices } from "./lowering-services.js";
 type AssignmentValueKind = "color3" | "number";
 
@@ -552,6 +556,10 @@ export interface AssignmentContext
             | "staticStringElements"
             | "compileStaticString"
             | "withBoundParameters"
+            | "withRecordScopes"
+            | "compileStoredDataFunction"
+            | "cppString"
+            | "dataValue"
             | "recordScenePbrPlugins"
             | "recordStandardMaterialPlugins"
             | "fail"
@@ -761,14 +769,30 @@ function emitPostProcessOptionAssignment(
     owner: Value,
 ): boolean {
     if (owner.kind === "task" && owner.postProcessComposite) {
-        // The pin publishes setters on a composite too, but each writes a
-        // parameter on a pass its own factory built, and generation baked
-        // those in. Refusing says so rather than writing a slot that is not
-        // the one the pin would have moved.
+        const composite = owner.postProcessComposite;
+        const accessor = compositeScalarAccessors(composite.intrinsic, [
+            left.name.text,
+        ]).find((entry) => entry.property === left.name.text);
+        if (accessor) {
+            composite.scalarAccesses = [
+                ...new Set([
+                    ...(composite.scalarAccesses ?? []),
+                    accessor.property,
+                ]),
+            ];
+            requireSimpleAssignment(
+                context,
+                expression,
+                "composite post-process option",
+            );
+            context.emit(
+                `bbl::${compositeScalarFunction(composite.compositeIndex, accessor.property, true)}(${context.requireEngine(owner, expression)}, ${owner.cpp}, ${context.compileNumber(expression.right, "double")});`,
+            );
+            return true;
+        }
         context.fail(
             left,
-            `'${left.name.text}' is a setter on a composite post-process ` +
-                "task, which this port bakes at generation.",
+            `'${left.name.text}' is a setter on a composite post-process task with no represented live accessor.`,
         );
     }
     if (owner.kind !== "task" || !owner.postProcessTask) {
@@ -1267,6 +1291,11 @@ export function emitPropertyAssignment(
     if (operator === "=") {
         const owner = context.resolveRecordValue(left.expression);
         if (owner) {
+            if (owner.nativeError)
+                context.fail(
+                    expression,
+                    "Mutation of represented Error properties is not supported.",
+                );
             if (owner.moduleNamespace)
                 context.fail(
                     expression,
@@ -1594,37 +1623,36 @@ export function emitPropertyAssignment(
                     `Unsupported imported root axis '${left.name.text}'.`,
                 );
             }
-            if (!trsVector.assetComponentSetter && vector === "scaling") {
+            const component = trsVector.components[axis];
+            if (!component)
                 context.fail(
-                    left.expression,
-                    "An imported root currently exposes position and Y rotation; scaling requires a retained outer matrix.",
+                    left.name,
+                    `Unsupported imported root axis '${left.name.text}'.`,
                 );
-            }
-            if (
-                !trsVector.assetComponentSetter &&
-                vector === "rotationQuaternion"
-            ) {
-                context.fail(
-                    left.expression,
-                    "An imported root currently exposes position and Y rotation; quaternion components require a retained outer matrix.",
-                );
-            }
-            if (!trsVector.assetComponentSetter) {
-                context.fail(
-                    left.expression,
-                    `An imported root has no '${vector}' component writer.`,
-                );
-            }
-            requireSimpleAssignment(
-                context,
-                expression,
-                `imported root ${vector}`,
-            );
             const engine = context.requireEngine(root, expression);
+            const target = context.allocateTemporaryCppName(
+                "asset_transform_target",
+            );
+            context.emit(`const auto ${target} = ${root.cpp};`);
+            let previous: string | undefined;
+            if (operator !== "=") {
+                previous = context.allocateTemporaryCppName(
+                    "asset_transform_component",
+                );
+                const vectorRead =
+                    vector === "rotation"
+                        ? `bbl::asset_root_rotation(${engine}, ${target})`
+                        : `${engine}.assets[${target}.value].root_${trsVector.nativeField}`;
+                context.emit(
+                    `const double ${previous} = ${vectorRead}.${component};`,
+                );
+            }
+            const right = context.compileNumber(expression.right, "double");
+            const replacement = previous
+                ? `(${previous} ${operator.slice(0, -1)} ${right})`
+                : right;
             context.emit(
-                `bbl::${trsVector.assetComponentSetter}(` +
-                    `${engine}, ${root.cpp}, ${axis}u, ` +
-                    `${context.compileNumber(expression.right, "float")});`,
+                `bbl::${trsVector.assetComponentSetter}(${engine}, ${target}, ${axis}u, ${replacement});`,
             );
             return;
         }
@@ -2205,7 +2233,10 @@ import {
     nativeSettingName,
 } from "../pinned-screen-space.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
-import { foldMaterialPluginList } from "./material-plugin.js";
+import {
+    emitMaterialPluginResources,
+    foldMaterialPluginList,
+} from "./material-plugin.js";
 import {
     isTrsVectorName,
     sceneNodeTransformDescriptor,
@@ -2220,6 +2251,102 @@ interface TargetPropertyAssignment {
     target: Value;
     property: string;
     operator: ReturnType<typeof assignmentOperator>;
+}
+
+function compileMeshPrimitiveState(
+    context: AssignmentContext,
+    expression: ts.Expression,
+): string {
+    const node = context.unwrap(expression);
+    if (ts.isConditionalExpression(node))
+        return `(${context.compileBoolean(node.condition)} ? ${compileMeshPrimitiveState(context, node.whenTrue)} : ${compileMeshPrimitiveState(context, node.whenFalse)})`;
+    if (ts.isIdentifier(node) && node.text === "undefined")
+        return "std::optional<bbl::MeshPrimitiveState>{}";
+    const object = node;
+    if (!ts.isObjectLiteralExpression(object))
+        return context.fail(
+            node,
+            "Mesh primitive state requires a literal partial or undefined.",
+        );
+    let topology = "bbl::MeshTopology::triangles",
+        cull = "std::nullopt",
+        front = "std::nullopt";
+    for (const property of object.properties) {
+        if (
+            !ts.isPropertyAssignment(property) &&
+            !ts.isShorthandPropertyAssignment(property)
+        )
+            return context.fail(
+                property,
+                "Mesh primitive state requires named fields.",
+            );
+        const key = context.propertyName(property.name);
+        const value = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : property.name;
+        const literal = context.compileStaticString(value);
+        if (key === "topology") {
+            const mapped: Record<string, string> = {
+                "triangle-list": "triangles",
+                "point-list": "points",
+                "line-list": "lines",
+                "line-strip": "line_strip",
+            };
+            if (!mapped[literal])
+                return context.fail(
+                    value,
+                    `Unrepresented mesh topology '${literal}'.`,
+                );
+            topology = `bbl::MeshTopology::${mapped[literal]}`;
+        } else if (key === "cullMode" && ["none", "back"].includes(literal))
+            cull = literal === "none" ? "true" : "false";
+        else if (key === "frontFace" && ["cw", "ccw"].includes(literal))
+            front = literal === "cw" ? "true" : "false";
+        else if (key === "stripIndexFormat" && literal === "uint32") continue;
+        else
+            return context.fail(
+                property,
+                "Unrepresented mesh primitive field or value.",
+            );
+    }
+    return `std::optional<bbl::MeshPrimitiveState>{bbl::MeshPrimitiveState{${topology}, ${cull}, ${front}}}`;
+}
+
+/** Only the pin's primitive cache bits can be represented by native pipeline state. */
+function validateMeshPrimitiveFeatures(
+    context: AssignmentContext,
+    expression: ts.Expression,
+): void {
+    const node = context.unwrap(context.resolveStaticExpression(expression));
+    if (ts.isConditionalExpression(node)) {
+        validateMeshPrimitiveFeatures(context, node.whenTrue);
+        validateMeshPrimitiveFeatures(context, node.whenFalse);
+        return;
+    }
+    if (ts.isIdentifier(node) && node.text === "undefined") return;
+    let value = staticNumberValue(context, node);
+    if (
+        value === undefined &&
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken
+    ) {
+        const left = staticNumberValue(context, node.left),
+            right = staticNumberValue(context, node.right);
+        if (left !== undefined && right !== undefined) value = left << right;
+    }
+    // gltf-feature-primitive owns winding, topology and uint32-strip in bits11–15.
+    // Lower bits select shader inputs and require their own resource/variant admission.
+    if (
+        value === undefined ||
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value > 0xf800 ||
+        (value & ~0xf800) !== 0
+    )
+        context.fail(
+            expression,
+            "Mesh primitive features require static primitive cache bits or undefined; arbitrary shader-feature masks are not represented.",
+        );
 }
 
 function emitTargetPropertyAssignment(
@@ -2237,6 +2364,66 @@ function emitTargetPropertyAssignment(
         ? context.lookup(targetExpression)
         : context.compileValue(targetExpression);
     const property = left.name.text;
+    if (
+        target.kind === "mesh" &&
+        ["_topology", "_primitiveFeatures", "_primitive"].includes(property)
+    ) {
+        requireSimpleAssignment(context, expression, `Mesh.${property}`);
+        if (property === "_primitiveFeatures")
+            validateMeshPrimitiveFeatures(context, expression.right);
+        const field =
+            property === "_topology"
+                ? "topology_index"
+                : property === "_primitiveFeatures"
+                  ? "primitive_features"
+                  : "primitive_override";
+        const value =
+            property === "_primitive"
+                ? compileMeshPrimitiveState(context, expression.right)
+                : `bbl::js::Nullable<double>(${context.dataLowerer.compileForSink(
+                      expression.right,
+                      {
+                          kind: "optional",
+                          inner: { kind: "number" },
+                      },
+                  )}).to_optional()`;
+        context.emit(
+            `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].${field} = ${value};`,
+        );
+        return true;
+    }
+    if (target.kind === "task" && property === "executionEnabled") {
+        requireSimpleAssignment(context, expression, "Task.executionEnabled");
+        context.emit(
+            `${context.requireEngine(target, expression)}.frame_tasks[${target.cpp}.value].execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
+        );
+        return true;
+    }
+    if (
+        target.kind === "compute-task" &&
+        ["dispose", "name", "executionEnabled"].includes(property)
+    ) {
+        requireSimpleAssignment(context, expression, `ComputeTask.${property}`);
+        const field =
+            property === "executionEnabled" ? "execution_enabled" : property;
+        const type: import("./data-types.js").DataType =
+            property === "dispose"
+                ? { kind: "function", parameters: [], identity: true }
+                : property === "name"
+                  ? { kind: "string" }
+                  : { kind: "boolean" };
+        context.emit(
+            `bbl::compute_task_${field}(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, type)};`,
+        );
+        return true;
+    }
+    if (target.kind === "compute-dispatch" && property === "enabled") {
+        requireSimpleAssignment(context, expression, "ComputeDispatch.enabled");
+        context.emit(
+            `bbl::compute_dispatch_enabled(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, { kind: "boolean" })};`,
+        );
+        return true;
+    }
     const handler0 = targetPropertyHandlers0.get(property);
     if (
         handler0?.(context, {
@@ -2587,6 +2774,27 @@ function emitTargetPropertyAssignment(
         }
     }
 
+    if (target.kind === "light" && property === "parent") {
+        requireSimpleAssignment(context, expression, "light parent");
+        const parent =
+            context.unwrap(expression.right).kind === ts.SyntaxKind.NullKeyword
+                ? undefined
+                : context.compileValue(expression.right);
+        if (parent) {
+            if (parent.kind !== "asset-root")
+                context.fail(
+                    expression.right,
+                    "A light parent currently requires an imported transform root or null.",
+                );
+            context.expectSameEngine(target, parent, expression);
+            context.assertAssetRootWritable(parent, expression);
+        }
+        context.emit(
+            `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
+        );
+        return true;
+    }
+
     const scalarSetter = lightSetter(target, property, "scalar");
     if (scalarSetter) {
         requireSimpleAssignment(context, expression, `light ${property}`);
@@ -2614,7 +2822,12 @@ function emitTargetPropertyAssignment(
         const value =
             direct.valueKind === "color3"
                 ? context.compileColor3(expression.right)
-                : context.compileNumber(expression.right);
+                : context.compileNumber(
+                      expression.right,
+                      direct.nativeProperty === "intensity"
+                          ? "double"
+                          : "float",
+                  );
         context.emit(
             `${context.requireEngine(target, expression)}.${direct.collection}[${target.cpp}.value].${direct.nativeProperty} ${operator} ${value};`,
         );
@@ -2874,9 +3087,6 @@ function emitPluginsAssignment(
                     "other family composes nothing upstream either.",
             );
         }
-        // The family is the fold's input rather than a check after it: a PBR
-        // plugin's samplers refuse at their own declaration, before any
-        // texture value is lowered.
         const family =
             target.scenePbrMaterialIndex !== undefined ? "pbr" : "standard";
         const plugins = foldMaterialPluginList(
@@ -2889,6 +3099,7 @@ function emitPluginsAssignment(
                 plugins.manifests,
                 target.scenePbrMaterialIndex,
             );
+            emitMaterialPluginResources(context, target, expression, plugins);
             return true;
         }
         // The record lane is its own reach, separate from the
@@ -2898,39 +3109,18 @@ function emitPluginsAssignment(
         // -- gating the setter's definition on the opt-in instead would
         // leave this call undefined for a scene that never made it.
         context.reachFeature("material:plugin-index", expression);
-        const engineCpp = context.requireEngine(target, expression);
         const pluginIndex = context.recordStandardMaterialPlugins(
             plugins.manifests,
             target.standardMaterialInput ?? {},
         );
         target.standardMaterialPluginIndex = pluginIndex;
-        context.emit(
-            `bbl::set_material_plugins(` +
-                `${engineCpp}, ` +
-                `${target.cpp}, static_cast<std::uint8_t>(` +
-                `${pluginIndex}));`,
+        emitMaterialPluginResources(
+            context,
+            target,
+            expression,
+            plugins,
+            pluginIndex,
         );
-        // The textures the list's `bindTextures` fills its declared
-        // bindings with, appended in that order -- which is the order
-        // `bindPluginTextures` pushes them upstream and the order the
-        // composed fragment declared them in. `set_material_plugins`
-        // above cleared the list, so a second `plugins` write replaces
-        // the textures the way reassigning the array replaces them.
-        for (const texture of plugins.textures) {
-            context.expectSameEngine(target, texture.value, texture.node);
-            const pixels = texture.value.textureStorage === "pixels";
-            if (pixels) {
-                context.boundPixelsTextures.add(texture.value.cpp);
-            }
-            context.reachFeature("material:plugin-textures", texture.node);
-            context.emit(
-                `bbl::${
-                    pixels
-                        ? "add_material_plugin_pixels_texture"
-                        : "add_material_plugin_file_texture"
-                }(${engineCpp}, ${target.cpp}, ${texture.value.cpp});`,
-            );
-        }
         return true;
     }
     return false;

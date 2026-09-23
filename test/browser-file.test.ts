@@ -420,6 +420,11 @@ test("browser file ownership stays generic and PAL-isolated", () => {
     const ui = readFileSync(resolve("native/src/pal_ui_rml.cpp"), "utf8");
     assert.match(
         cppFunction(ui, "void ui_click("),
+        /dispatch_ui_click\(engine, element, trusted, true\)/,
+        "programmatic clicks use the shared listener and default-action dispatch",
+    );
+    assert.match(
+        cppFunction(ui, "bool dispatch_ui_click("),
         /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]*dispatch_dom_pointer[\s\S]*callback\(\);[\s\S]*const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]*tag == "a"/,
         "programmatic and projected clicks dispatch listeners before the default action",
     );
@@ -434,8 +439,9 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "subtree removal releases descendant browser-file ownership",
     );
     assert.match(
-        ui,
-        /event_type == "click"[\s\S]{0,80}ui_click\(engine, element, true\)/,
+        cppFunction(ui, "void ProcessEvent(Rml::Event& event) override"),
+        /event_type == "click"[\s\S]*dispatch_ui_click\(engine, element, true, first_listener\)/,
+        "projected clicks use the same listener and default-action dispatch",
     );
 
     const projection = readFileSync(

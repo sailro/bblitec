@@ -92,6 +92,8 @@ export function lowerGltfVatBinding(context: LoweringContext): string {
     const guard = (statements: readonly ts.Statement[]) =>
         lowerPinnedBody(file, statements, {
             bindings: new Map<string, PinnedBinding>([
+                ["target.mesh.name", { cpp: "mesh_name", type: "opaque" }],
+                ["group.name", { cpp: "group_name", type: "opaque" }],
                 ["skeleton", { cpp: "skeleton", type: "bool" }],
                 ["binding", { cpp: "binding", type: "bool" }],
                 [

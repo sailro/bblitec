@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     webgpuComputeBrowserArgs,
@@ -8,6 +7,7 @@ import {
 } from "./browser-harness.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
+import { readPinnedRawShader } from "./pinned-shader-composer.js";
 
 export function getHdrGgxPrefilterProvenance() {
     const repositoryRoot = findRepositoryRoot(
@@ -33,26 +33,15 @@ function loadPinnedHdrShaders(): {
     equirectToCube: string;
     prefilterCube: string;
 } {
-    const pipelinePath = resolve(
-        "node_modules",
-        "@babylonjs",
-        "lite",
-        "lib",
-        "loader-hdr",
-        "hdr-ibl-pipeline.js",
+    const module = "loader-hdr/hdr-ibl-pipeline.js";
+    const prefilterCube = readPinnedRawShader(
+        module,
+        "shaders/hdr-prefilter-cube.compute.wgsl",
     );
-    const bundledSource = readFileSync(pipelinePath, "utf8");
-    const prefilterMatch = bundledSource.match(
-        /const prefilterCubeWGSL = ("(?:[^"\\]|\\.)*");/,
+    const equirectToCube = readPinnedRawShader(
+        module,
+        "shaders/hdr-equirect-to-cube.compute.wgsl",
     );
-    const equirectMatch = bundledSource.match(
-        /const equirectToCubeWGSL = ("(?:[^"\\]|\\.)*");/,
-    );
-    if (!prefilterMatch?.[1] || !equirectMatch?.[1]) {
-        throw new Error("Pinned Babylon Lite HDR IBL shaders were not found.");
-    }
-    const prefilterCube: unknown = JSON.parse(prefilterMatch[1]);
-    const equirectToCube: unknown = JSON.parse(equirectMatch[1]);
     if (
         typeof prefilterCube !== "string" ||
         // The sample count, whatever miniray named its constant.

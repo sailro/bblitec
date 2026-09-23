@@ -90,8 +90,8 @@ test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     const store = new UpstreamSourceStore();
     assert.deepEqual(store.pin, readUpstreamPin());
     assert.match(
-        store.getSource("src/light/light-matrix.ts"),
-        /function localMatrixFromDirection/,
+        store.getSource("src/light/light-base.ts"),
+        /function writeWorldLightDirection/,
     );
     assert.equal(
         store.resolvePublicExport("createHemisphericLight").modulePath,
@@ -263,7 +263,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(lowered.source, /record\.feature_source_mesh =/);
     assert.match(
         lowered.source,
-        /component_ref\(record\.outer_position\) \+= delta;/,
+        /record\.outer_position = root\.root_position;/,
     );
     assert.doesNotMatch(lowered.source, /&root\.root_position\.x/);
     assert.match(
@@ -333,7 +333,7 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /if \(!inverse_parent\) \{[\s\S]{0,420}child_record\.position = Vec3d\{\s*child_world\[12\], child_world\[13\], child_world\[14\]\};[\s\S]{0,120}mark_mesh_dirty\(engine, child\);\s*return;/,
+        /if \(!inverse_parent\) \{[\s\S]{0,420}child_record\.outer_scaling = \{1, 1, 1\};\s*child_record\.outer_has_rotation_quaternion = false;\s*child_record\.gpu_world_transform = true;\s*child_record\.position = Vec3d\{\s*child_world\[12\], child_world\[13\], child_world\[14\]\};[\s\S]{0,120}mark_mesh_dirty\(engine, child\);\s*return;/,
     );
     assert.match(
         lowered.source,
@@ -706,106 +706,60 @@ test("flows the pinned camera inertia constants into the controls", () => {
 // parses every pinned source map, which dwarfs the lowering itself.
 const lightLowerer = new LightLowerer(new LoweringContext());
 
-test("flows the pinned light matrices and spot cone into the factories", () => {
-    const lowerer = lightLowerer;
-    // The spot half-angle factor flows from the pinned _cosHalfAngle
-    // initializer (src/light/spot-light.ts), and stays a double until the
-    // one store assigns the result to its float UBO field. That store is
-    // emitted once, beside the local-matrix refresh and for the same
-    // reason: the factory and the angle setter both perform it, and a pin
-    // that retuned the factor must reach both.
-    const spot = lowerer.lowerSpotFactory();
+test("flows SceneNode transforms and the pinned spot cone into light factories", () => {
+    const spot = lightLowerer.lowerSpotFactory().source;
     assert.match(
-        spot.source,
-        /void refresh_spot_light_cone\(LightRecord& light, double angle\) \{\s*light\.angle = angle;\s*light\.cos_half_angle = static_cast<float>\(std::cos\(\s*angle \* 0\.5\)\);/,
+        spot,
+        /light\.cos_half_angle = static_cast<float>\(std::cos\(\s*angle \* 0\.5\)\);/,
     );
-    assert.equal(
-        spot.source.split("light.cos_half_angle").length - 1,
-        1,
-        "The pinned cone store belongs to one emitted helper.",
+    assert.equal(spot.split("light.cos_half_angle").length - 1, 1);
+    assert.match(spot, /refresh_spot_light_cone\(light, angle\);/);
+    assert.match(
+        spot,
+        /refresh_spot_light_cone\(engine\.lights\[light\.value\], angle\);/,
+    );
+    for (const source of [
+        lightLowerer.lowerFactory(),
+        lightLowerer.lowerDirectionalFactory(),
+        lightLowerer.lowerPointFactory(),
+        lightLowerer.lowerSpotFactory(),
+    ]) {
+        assert.doesNotMatch(source.source, /local_matrix_from_direction/);
+    }
+    assert.match(
+        lightLowerer.lowerPointFactory().source,
+        /light\.position = position;/,
     );
     assert.match(
-        spot.source,
-        /double angle,[\s\S]*refresh_spot_light_cone\(light, angle\);/,
-    );
-    assert.match(
-        spot.source,
-        /void set_spot_light_angle\([\s\S]*refresh_spot_light_cone\(\s*engine\.lights\[light\.value\], angle\);/,
-    );
-    // The point-light identity diagonal and translation column flow
-    // from the pinned factory's own m[...] stores
-    // (src/light/point-light.ts).
-    const point = lowerer.lowerPointFactory();
-    assert.match(point.source, /light\.local_matrix\[0\] = 1\.0f;/);
-    assert.match(point.source, /light\.local_matrix\[10\] = 1\.0f;/);
-    assert.match(
-        point.source,
-        /light\.local_matrix\[12\] = light\.position\.x;/,
-    );
-    assert.match(point.source, /refresh_point_light_matrix\(light\);/);
-    assert.match(point.source, /light\.local_matrix\[15\] = 1\.0f;/);
-    // The directional zeros are the pinned default position, which the
-    // factory now stores on the record so the rebuild an ObservableVec3
-    // write triggers reads the same field the setter moved.
-    const directional = lowerer.lowerDirectionalFactory();
-    assert.match(
-        directional.source,
-        /light\.position = Vec3\{\s*0\.0f,\s*0\.0f,\s*0\.0f\};/,
-    );
-    // The hemispheric zeros stay the pinned literal origin arguments: that
-    // kind carries no position to move.
-    assert.match(
-        lowerer.lowerFactory().source,
-        /0\.0f,\s*0\.0f,\s*0\.0f,\s*light\.local_matrix\);/,
+        lightLowerer.lowerDirectionalFactory().source,
+        /light\.position = Vec3\{0\.0f, 0\.0f, 0\.0f\};/,
     );
 });
 
-test("every light vector setter rebuilds its own kind's local matrix", () => {
-    // An ObservableVec3 write marks the light's local matrix dirty and the
-    // next read rebuilds it, so a setter that only moved the field would
-    // leave `local_matrix`'s readers on the old pose — including the CPU
-    // raster path, which the image gate does not run. This is what holds
-    // the setters to the rebuild.
+test("light vector setters update the source transform lanes", () => {
     const sources: Readonly<Record<LightKind, string>> = {
         hemispheric: lightLowerer.lowerFactory().source,
         directional: lightLowerer.lowerDirectionalFactory().source,
         point: lightLowerer.lowerPointFactory().source,
         spot: lightLowerer.lowerSpotFactory().source,
     };
-    let emitted = 0;
     for (const kind of Object.keys(sources) as LightKind[]) {
         for (const vector of ["position", "direction"]) {
-            const setter = lightSetter(
-                { kind: "light", cpp: "", lightKind: kind },
-                vector,
-                "vector",
-            );
-            if (!setter) continue;
-            emitted++;
-            assert.ok(
-                sources[kind].includes(
-                    `    LightRecord& record = engine.lights[light.value];\n` +
-                        `    record.${vector} = ${vector};\n` +
-                        `    refresh_${kind}_light_matrix(record);\n}`,
-                ),
-                `the ${kind} light's ${vector} setter no longer rebuilds its matrix`,
-            );
-        }
-        // A kind the compiler refuses every vector for emits no setter at
-        // all, so its factory stays the pin's plain one.
-        if (
-            !["position", "direction"].some((vector) =>
-                lightSetter(
+            if (
+                !lightSetter(
                     { kind: "light", cpp: "", lightKind: kind },
                     vector,
                     "vector",
-                ),
+                )
             )
-        ) {
-            assert.ok(!sources[kind].includes(`void set_${kind}_light_`));
+                continue;
+            const body = sources[kind]
+                .split(`void set_${kind}_light_${vector}(`)[1]
+                ?.split("}")[0];
+            assert.ok(body);
+            assert.ok(body.includes(`record.${vector} = value;`));
         }
     }
-    assert.equal(emitted, 5);
 });
 
 test("generates scene fog storage for the pinned fog UBO field set", () => {
@@ -1439,7 +1393,6 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     );
     assert.match(point.source, /void set_point_light_position\(/);
     assert.match(directional.source, /light\.kind = LightKind::directional/);
-    assert.match(directional.source, /local_matrix_from_direction/);
 });
 
 test("default camera framing consumes scene mesh bound overrides", () => {
@@ -1526,7 +1479,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(
         controls.source,
-        /if \(has_movement \|\| has_rotation\) \{\s*camera\.target = Vec3d/,
+        /if \(has_movement \|\| has_rotation\) \{\s*set_camera_vector\(camera, &CameraRecord::target, Vec3d/,
     );
     const ortho = lowerer.lowerOrthographic();
     assert.equal(ortho.modulePath, "src/camera/orthographic.ts");
@@ -1548,7 +1501,7 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     assert.match(plan.source, /if \(camera\.orthographic\) \{/);
     assert.match(
         plan.source,
-        /const double half_width =\s*half_height \* static_cast<double>\(aspect\);/,
+        /const double halfWidth = \(halfHeight \* aspect\);/,
     );
     assert.match(
         plan.source,
@@ -1572,7 +1525,7 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     );
     assert.match(
         plan.source,
-        /mat4_ortho_off_center_lh_to_ref\(\n\s*projection,\n\s*-half_width,/,
+        /mat4_ortho_off_center_lh_to_ref\(projection, camera\.ortho_left\.value_or\(\(-halfWidth\)\),/,
     );
     // A perspective-only scene keeps the branch and the writer out of its
     // plan.
@@ -1623,7 +1576,7 @@ test("lowers both readers of a camera viewport from their pinned bodies", () => 
     );
     assert.match(
         plan.source,
-        /return \(\(target_width \/ target_height\) \* \(camera\.viewport \? /,
+        /return \(\(target_width \/ target_height\) \* \(!\(!camera\.viewport\.has_value\(\)\) \? /,
     );
     // src/camera/viewport.ts resolveCameraViewport: `y` flipped to the
     // top, each edge clamped, floor on the near edges and ceil on the
@@ -1663,24 +1616,15 @@ test("lowers both readers of a camera viewport from their pinned bodies", () => 
     assert.match(plan.source, pinnedProvenance());
 });
 
-test("lowers the reachable upstream light matrix implementation", () => {
-    const lowered = new LightLowerer(new LoweringContext()).lowerMatrix();
-    assert.equal(lowered.modulePath, "src/light/light-matrix.ts");
-    assert.match(lowered.source, /std::sqrt/);
-    // The pinned body computes in JavaScript numbers: double locals, the
-    // NaN-aware value-selecting `||`, and a single rounding cast at each
-    // Float32Array store.
-    assert.match(lowered.source, /const double flen = bbl::js::or_number\(/);
+test("lowers light direction through the SceneNode matrix with source normalization", () => {
+    const lowered = lightLowerer.lowerMatrix();
+    assert.equal(lowered.modulePath, "src/light/light-base.ts");
     assert.match(
         lowered.source,
-        /const double dx = static_cast<double>\(dx_f32\)/,
+        /bbl::js::or_number\(bbl::js::hypot_js\(\{x, y, z\}\), 1\.0\)/,
     );
-    assert.match(
-        lowered.source,
-        /out\[static_cast<std::size_t>\(15\.0\)\] = static_cast<float>\(1\.0\)/,
-    );
-    assert.doesNotMatch(lowered.source, /nonzero_or/);
-    assert.doesNotMatch(lowered.source, /const float/);
+    assert.match(lowered.source, /static_cast<double>\(direction\.x\)/);
+    assert.match(lowered.source, /static_cast<float>\(\(z \* invLength\)\)/);
     assert.match(lowered.source, pinnedProvenance());
 });
 
@@ -1727,11 +1671,11 @@ test("emits the world-basis pair and pinned determinant once for every scene sha
     // storage arm applying it on the left of a world.
     assert.match(
         header,
-        /inline std::array<double, 16> outer_transform_local\(\n {4}const Vec3& position, const Vec3& rotation\)/,
+        /inline std::array<double, 16> outer_transform_local\(const MeshRecord& mesh\)/,
     );
     assert.match(
         header,
-        /inline std::array<float, 16> outer_transform_matrix\(\n {4}const Vec3& position, const Vec3& rotation\) \{\n {4}return narrow_mat4\(outer_transform_local\(position, rotation\)\);/,
+        /inline std::array<float, 16> outer_transform_matrix\(const MeshRecord& mesh\) \{\n {4}return narrow_mat4\(outer_transform_local\(mesh\)\);/,
     );
     // The pinned TRS composition is emitted here once, over whichever
     // record carries the lanes, and narrowed by one store loop; every other
@@ -1758,12 +1702,12 @@ test("emits the world-basis pair and pinned determinant once for every scene sha
     );
     assert.match(
         header,
-        /return trs_local_matrix\(TrsLanes\{\n {8}\.rotation = rotation,\n {8}\.position = Vec3d\{position\.x, position\.y, position\.z\}\}\);/,
+        /return trs_local_matrix\(TrsLanes64\{\n {8}\.rotation = mesh\.outer_rotation,/,
     );
     // An identity root returns the world itself instead of composing.
     assert.match(
         header,
-        /rotation\.x == 0\.0f && rotation\.y == 0\.0f && rotation\.z == 0\.0f\) \{\n {8}return world;/,
+        /if \(outer_transform_is_identity\(mesh\)\) return world;/,
     );
     assert.match(
         header,
@@ -1775,7 +1719,7 @@ test("emits the world-basis pair and pinned determinant once for every scene sha
     );
     assert.match(
         header,
-        /mat4_multiply_into_f64\(\n {8}product, 0, outer_transform_local\(position, rotation\), 0, world, 0\);/,
+        /mat4_multiply_into_f64\(result, 0, outer_transform_local\(mesh\), 0, world, 0\);/,
     );
     assert.doesNotMatch(header, /std::sin\(rotation|cos_x|sin_x/);
     // The determinant is the pin's own fold — double, expanded along the
@@ -1838,7 +1782,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     });
     const shaders = lowerer.lowerShaders();
     const fidelity = lowerer.fidelityManifest();
-    assert.equal(lowered.modulePath, "src/frame-graph/render-task.ts");
+    assert.equal(lowered.modulePath, "src/frame-graph/render-task-base.ts");
     assert.match(lowered.header, /struct RenderItem/);
     assert.match(lowered.header, /enum class RenderMaterialKind/);
     assert.match(lowered.header, /enum class RenderBucket/);
@@ -2280,7 +2224,7 @@ test("builds a conservative reachable module graph", () => {
     assert.ok(graph.summary.moduleCount > 5);
     assert.ok(
         graph.modules.some(
-            (module) => module.path === "src/light/light-matrix.ts",
+            (module) => module.path === "src/light/light-base.ts",
         ),
     );
     assert.ok(graph.summary.diagnostics.closures > 0);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
@@ -15,46 +16,58 @@ template <class Buffer> struct VersionedGpuBuffer {
     Buffer buffer = nullptr;
     std::size_t size = 0;
     std::uint64_t version = 0;
+    std::shared_ptr<void> borrowed_owner;
 };
 
 /** Invalidate dependent bindings before retiring buffers; publish versions after upload. */
-template <class Source, class Buffer, class Invalidate, class Release, class Create, class Update>
+template <class Source, class Buffer, class Invalidate, class Release, class Create, class Update,
+          class Borrow>
 void sync_storage_records(const std::vector<Source>& sources,
                           std::vector<VersionedGpuBuffer<Buffer>>& targets, Invalidate&& invalidate,
-                          Release&& release, Create&& create, Update&& update) {
+                          Release&& release, Create&& create, Update&& update, Borrow&& borrow) {
     bool changed = targets.size() != sources.size();
     for (std::size_t index = 0; index < sources.size(); ++index) {
         const auto& source = sources[index];
-        if (!source.disposed && source.bytes.empty()) {
+        const auto external = borrow(source);
+        if (!source.disposed && !external.buffer && source.bytes.empty()) {
             throw std::runtime_error("A shader storage buffer cannot be empty.");
         }
         if (index < targets.size()) {
             const auto& target = targets[index];
             changed = changed ||
-                      (target.buffer && (source.disposed || target.size != source.bytes.size()));
+                      (target.buffer &&
+                       (source.disposed ||
+                        target.size != (external.buffer ? external.size : source.bytes.size()) ||
+                        target.borrowed_owner != external.borrowed_owner ||
+                        (external.buffer && target.buffer != external.buffer)));
         }
     }
     if (changed)
         invalidate();
     for (std::size_t index = sources.size(); index < targets.size(); ++index) {
-        if (targets[index].buffer)
+        if (targets[index].buffer && !targets[index].borrowed_owner)
             release(targets[index].buffer);
     }
     targets.resize(sources.size());
     for (std::size_t index = 0; index < sources.size(); ++index) {
         const auto& source = sources[index];
         auto& target = targets[index];
+        auto external = borrow(source);
         if (source.disposed) {
-            if (target.buffer)
+            if (target.buffer && !target.borrowed_owner)
                 release(target.buffer);
             target = {};
-        } else if (!target.buffer || target.size != source.bytes.size()) {
+        } else if (external.buffer) {
+            if (target.buffer && !target.borrowed_owner)
+                release(target.buffer);
+            target = std::move(external);
+        } else if (!target.buffer || target.borrowed_owner || target.size != source.bytes.size()) {
             auto replacement = create(source.bytes.data(), source.bytes.size());
             if (!replacement)
                 throw std::runtime_error("Shader storage buffer creation returned no resource.");
-            if (target.buffer)
+            if (target.buffer && !target.borrowed_owner)
                 release(target.buffer);
-            target = {replacement, source.bytes.size(), source.version};
+            target = {replacement, source.bytes.size(), source.version, {}};
         } else if (target.version != source.version) {
             update(target.buffer, source.bytes.data(), source.bytes.size());
             target.version = source.version;

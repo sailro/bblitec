@@ -176,6 +176,11 @@ int main() {
         assert(!matches(item, ".panel > .item:empty"));
         assert(raw(item)->GetChild(0) == box(item, Pseudo::Before));
         assert(raw(item)->GetChild(raw(item)->GetNumChildren() - 1) == box(item, Pseudo::After));
+        ui_set_text(engine, item, "Updated");
+        update();
+        assert(text(raw(item)) == "ID:<em>Now</em>UpdatedEnd");
+        assert(raw(item)->GetChild(0) == box(item, Pseudo::Before));
+        assert(raw(item)->GetChild(raw(item)->GetNumChildren() - 1) == box(item, Pseudo::After));
         ui_append_child(engine, panel, item);
         update();
         assert(!matches(item, ".panel > .item:nth-child(1)"));

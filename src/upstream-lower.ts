@@ -30,10 +30,38 @@ import { stringLiteral as cppStringLiteral } from "./cpp-literals.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
+import { lowerProceduralSkyAtmosphere } from "./lowering/procedural-sky-atmosphere.js";
+import { lowerProceduralSkyLoader } from "./lowering/procedural-sky-loader.js";
+import { lowerProceduralSkyUpdate } from "./lowering/procedural-sky-update.js";
+import { proceduralSkyGpuSource } from "./lowering/procedural-sky-gpu.js";
 import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { lowerDeviceRecovery } from "./lowering/device-recovery-lowerer.js";
+import { lowerEngineDisposal } from "./lowering/engine-dispose-lowerer.js";
+import { lowerGpuRetirement } from "./lowering/gpu-retirement-lowerer.js";
+import { lowerGpuTaskTiming } from "./lowering/gpu-task-timing-lowerer.js";
+import { lowerComputeTexture } from "./lowering/compute-texture-lowerer.js";
+import { lowerComputeTextureMipmaps } from "./lowering/compute-texture-mipmaps-lowerer.js";
+import { lowerStorageBuffer } from "./lowering/storage-buffer-lowerer.js";
+import { lowerStorageReadback } from "./lowering/storage-readback-lowerer.js";
+import { lowerComputeTask } from "./lowering/compute-task-lowerer.js";
+import { lowerComputeTaskExecution } from "./lowering/compute-task-execution-lowerer.js";
+import { lowerComputeFrameGraph } from "./lowering/compute-frame-graph-lowerer.js";
+import { lowerManagedResources } from "./lowering/managed-resource-lowerer.js";
+import { lowerComputeUniformArena } from "./lowering/compute-uniform-arena-lowerer.js";
+import { lowerComputeUniformWriter } from "./lowering/compute-uniform-writer-lowerer.js";
+import { lowerComputeBindingDecl } from "./lowering/compute-binding-decl-lowerer.js";
+import type { CompiledComputeProgram } from "./compiler/types.js";
+import { lowerComputeShader } from "./lowering/compute-shader-lowerer.js";
+import { lowerComputeBindings } from "./lowering/compute-bindings-lowerer.js";
+import { lowerComputeBufferBinding } from "./lowering/compute-buffer-binding-lowerer.js";
+import { lowerComputeBindingResolvers } from "./lowering/compute-binding-resolvers.js";
+import { lowerComputeOneShot } from "./lowering/compute-one-shot-lowerer.js";
+import { lowerComputeDispatch } from "./lowering/compute-dispatch-lowerer.js";
+import { lowerUniformBuffer } from "./lowering/uniform-buffer-lowerer.js";
+import { lowerConfigurableCameraControls } from "./lowering/configurable-camera-controls.js";
 import { lowerClusteredLights } from "./lowering/clustered-light-runtime.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
+import { lightParameterHeader } from "./lowering/light-parameters.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { FrameGraphContextLowerer } from "./lowering/frame-graph-context-lowerer.js";
 import { RenderTargetLowerer } from "./lowering/render-target-lowerer.js";
@@ -69,6 +97,7 @@ import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { pinnedQuaternionHeader } from "./lowering/pinned-euler-proxy.js";
 import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
@@ -212,7 +241,7 @@ export function readPinnedMaxLights(): number {
 }
 
 function meshLightIndexWordOffset(context: LoweringContext): number {
-    const file = context.sourceFile("src/render/lights-ubo.ts");
+    const file = context.sourceFile("src/render/mesh-light-selection.ts");
     const initializer = context.unwrapExpression(
         context.variableInitializer(file, "MSH_LIGHT_INDEX_WORD_OFFSET"),
     );
@@ -345,6 +374,7 @@ export interface UpstreamEmitOptions {
      */
     assetLightNodes?: { count: number; asset: string };
     shaderPrograms: CompiledShaderProgram[];
+    computePrograms?: readonly CompiledComputeProgram[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     /**
      * The post-process passes a scene reached, in reach order. Each carries
@@ -602,6 +632,7 @@ export interface UpstreamEmitOptions {
  * inferring from a filename prefix -- the ladder that grew a rung per family.
  */
 const SHADER_FAMILIES = {
+    compute: { vertex: "", fragment: "", pinnedBindings: true },
     /** Babylon Lite's own composed material variants name both stages main. */
     variant: { vertex: "main", fragment: "main", pinnedBindings: true },
     /** One module per pass, both stages in it, each naming itself. */
@@ -902,6 +933,12 @@ class GeneratedSourceWriter {
                 pinnedNormalizeVec3Header(new LoweringContext(this.store)),
             );
         }
+        if (features.includes("math:quaternion")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_quaternion.hpp",
+                pinnedQuaternionHeader(new LoweringContext(this.store)),
+            );
+        }
         if (features.includes("math:mat4-invert")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_invert.hpp",
@@ -967,10 +1004,184 @@ class GeneratedSourceWriter {
             ),
             generated,
         );
+        if (features.includes("engine:gpu-task-timing"))
+            this.writeSource(
+                "upstream/src/gpu_task_timing.cpp",
+                lowerGpuTaskTiming(context),
+                generated,
+            );
+        if (features.includes("engine:gpu-retirement"))
+            this.writeSource(
+                "upstream/src/gpu_retirement.cpp",
+                lowerGpuRetirement(context),
+                generated,
+            );
+        if (features.includes("compute:storage-texture"))
+            this.writeSource(
+                "upstream/src/compute_texture.cpp",
+                lowerComputeTexture(context),
+                generated,
+            );
+        if (features.includes("compute:task"))
+            this.writeSource(
+                "upstream/src/compute_task.cpp",
+                lowerComputeTask(
+                    context,
+                    features.includes("compute:task-execution"),
+                ),
+                generated,
+            );
+        if (features.includes("light:parameters"))
+            this.tree.write(
+                "upstream/include/bblite/upstream/light_parameters.hpp",
+                lightParameterHeader(context),
+            );
+        if (features.includes("environment:sky-atmosphere")) {
+            const atmosphere = lowerProceduralSkyAtmosphere(context);
+            this.tree.write(
+                "upstream/include/bblite/upstream/procedural_sky_atmosphere.hpp",
+                atmosphere.header,
+            );
+            this.writeSource(
+                "upstream/src/procedural_sky_atmosphere.cpp",
+                atmosphere,
+                generated,
+            );
+        }
+        if (features.includes("environment:procedural-sky")) {
+            const gpu = proceduralSkyGpuSource(context);
+            this.writeSource(
+                "upstream/src/procedural_sky_loader.cpp",
+                lowerProceduralSkyLoader(
+                    context,
+                    "make_procedural_sky_descriptor()",
+                    gpu.source,
+                ),
+                generated,
+            );
+            this.writeSource(
+                "upstream/src/procedural_sky_update.cpp",
+                lowerProceduralSkyUpdate(context),
+                generated,
+            );
+        }
+        if (features.includes("compute:texture-mipmaps"))
+            this.writeSource(
+                "upstream/src/compute_texture_mipmaps.cpp",
+                lowerComputeTextureMipmaps(context),
+                generated,
+            );
+        if (features.includes("compute:task-execution"))
+            this.writeSource(
+                "upstream/src/compute_task_execution.cpp",
+                lowerComputeTaskExecution(context),
+                generated,
+            );
+        if (features.includes("compute:frame-graph"))
+            this.writeSource(
+                "upstream/src/compute_frame_graph.cpp",
+                lowerComputeFrameGraph(context),
+                generated,
+            );
+        if (features.includes("compute:dispatch"))
+            this.writeSource(
+                "upstream/src/compute_dispatch.cpp",
+                lowerComputeDispatch(context),
+                generated,
+            );
+        if (
+            features.includes("compute:storage-texture") ||
+            features.includes("compute:uniform-buffer")
+        )
+            this.writeSource(
+                "upstream/src/managed_resources.cpp",
+                lowerManagedResources(context),
+                generated,
+            );
+        if (features.includes("compute:uniform-arena"))
+            this.writeSource(
+                "upstream/src/compute_uniform_arena.cpp",
+                lowerComputeUniformArena(context),
+                generated,
+            );
+        if (features.includes("compute:uniform-writer"))
+            this.writeSource(
+                "upstream/src/compute_uniform_writer.cpp",
+                lowerComputeUniformWriter(context),
+                generated,
+            );
+        if (features.includes("compute:binding-decl"))
+            this.writeSource(
+                "upstream/src/compute_binding_decl.cpp",
+                lowerComputeBindingDecl(context),
+                generated,
+            );
+        if (features.includes("compute:shader"))
+            this.writeSource(
+                "upstream/src/compute_shader.cpp",
+                lowerComputeShader(context),
+                generated,
+            );
+        if (features.includes("compute:bindings")) {
+            this.writeSource(
+                "upstream/src/compute_bindings.cpp",
+                lowerComputeBindings(context),
+                generated,
+            );
+            this.writeSource(
+                "upstream/src/compute_buffer_binding.cpp",
+                lowerComputeBufferBinding(context),
+                generated,
+            );
+            this.writeSource(
+                "upstream/src/compute_binding_resolvers.cpp",
+                lowerComputeBindingResolvers(context),
+                generated,
+            );
+        }
+        if (features.includes("compute:one-shot"))
+            this.writeSource(
+                "upstream/src/compute_one_shot.cpp",
+                lowerComputeOneShot(context),
+                generated,
+            );
+        if (features.includes("compute:uniform-buffer"))
+            this.writeSource(
+                "upstream/src/uniform_buffer.cpp",
+                lowerUniformBuffer(context),
+                generated,
+            );
+        if (features.includes("compute:storage-buffer"))
+            this.writeSource(
+                "upstream/src/storage_buffer.cpp",
+                lowerStorageBuffer(
+                    context,
+                    features.includes("compute:storage-readback"),
+                ),
+                generated,
+            );
+        if (features.includes("compute:storage-readback"))
+            this.writeSource(
+                "upstream/src/storage_readback.cpp",
+                lowerStorageReadback(context),
+                generated,
+            );
+        if (features.includes("camera:configurable-free"))
+            this.writeSource(
+                "upstream/src/camera_configurable_free.cpp",
+                lowerConfigurableCameraControls(context),
+                generated,
+            );
         if (features.includes("engine:device-recovery"))
             this.writeSource(
                 "upstream/src/device_recovery.cpp",
                 lowerDeviceRecovery(context),
+                generated,
+            );
+        if (features.includes("engine:dispose"))
+            this.writeSource(
+                "upstream/src/engine_dispose.cpp",
+                lowerEngineDisposal(context),
                 generated,
             );
         this.writeSource(
@@ -998,7 +1209,10 @@ class GeneratedSourceWriter {
         if (features.includes("frame-graph:resources")) {
             this.writeSource(
                 "upstream/src/frame_graph_resources.cpp",
-                new RenderTargetLowerer(context).lower(),
+                new RenderTargetLowerer(
+                    context,
+                    features.includes("frame-graph:surface-target"),
+                ).lower(),
                 generated,
             );
         }
@@ -1123,7 +1337,21 @@ class GeneratedSourceWriter {
             );
         }
         // Every WGSL module this run emits, whichever renderer produced it.
-        const composedShaders: ComposedShader[] = [];
+        const composedShaders: ComposedShader[] = (
+            options.computePrograms ?? []
+        ).map((program) => ({
+            output: `upstream/shaders/${program.name}.comp.native.wgsl`,
+            data: program.source,
+            entryPoint: program.entryPoint,
+            family: "compute",
+        }));
+        if (features.includes("environment:procedural-sky"))
+            composedShaders.push({
+                output: "upstream/shaders/procedural-sky.comp.native.wgsl",
+                data: proceduralSkyGpuSource(context).wgsl,
+                entryPoint: "main",
+                family: "compute",
+            });
         if (features.includes("ui:rml")) {
             composedShaders.push(
                 {
@@ -1198,6 +1426,7 @@ class GeneratedSourceWriter {
                 symbolName: "BLIT_SHADER",
             });
         };
+        if (features.includes("compute:texture-mipmaps")) deployMipBlit();
         this.emitEffectWrapper(
             features,
             context,
@@ -1825,7 +2054,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         ) {
             const cameraLowerer = new CameraLowerer(
                 context,
-                features.includes("text:renderable") ||
+                features.includes("camera:world-matrix-version") ||
+                    features.includes("text:renderable") ||
                     options.postProcessComposites.some(
                         (composite) =>
                             composite.intrinsic === "createTaaPostProcessTask",
@@ -1978,10 +2208,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 "upstream/src/animation_property.cpp",
                 new AnimationLowerer(context).lowerPropertyAnimation({
                     gltfLoaderAvailable: features.includes("loader:gltf"),
-                    cameraVersions: options.postProcessComposites.some(
-                        (composite) =>
-                            composite.intrinsic === "createTaaPostProcessTask",
-                    ),
+                    cameraVersions:
+                        features.includes("camera:world-matrix-version") ||
+                        options.postProcessComposites.some(
+                            (composite) =>
+                                composite.intrinsic ===
+                                "createTaaPostProcessTask",
+                        ),
                     blending: features.includes("animation:property-blending"),
                     weightFades: features.includes("animation:weight-fades"),
                     managedGroups: features.includes(
@@ -3069,6 +3302,7 @@ ${composed.wgsl}`,
             features.includes("mesh:box") ||
             features.includes("mesh:from-data") ||
             features.includes("mesh:update-positions") ||
+            features.includes("mesh:resize-geometry") ||
             features.includes("mesh:ground") ||
             features.includes("mesh:ground-heightmap") ||
             features.includes("mesh:morph-targets") ||

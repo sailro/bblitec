@@ -69,6 +69,14 @@ test("keeps external golden applications byte-identical to their manifests", () 
             application.reference.sha256,
             `${application.id} reference image differs from its recorded bytes.`,
         );
+        const provenance = application.reference.provenance;
+        if (provenance !== undefined) {
+            assert.equal(
+                sha256(provenance.source),
+                provenance.sha256,
+                `${application.id} capture provenance differs from its recorded bytes.`,
+            );
+        }
     }
 
     const registered = scenes.filter(
@@ -118,4 +126,69 @@ test("keeps external golden applications byte-identical to their manifests", () 
             );
         }
     }
+});
+
+test("Ocean reference preserves the pinned frozen pose and reached source graph", () => {
+    const application = manifest.applications.find(({ id }) => id === "ocean");
+    const scene = scenes.find(({ id }) => id === "ocean");
+    assert.ok(application?.reference.provenance);
+    assert.ok(scene?.parity);
+    const provenance = JSON.parse(
+        readFileSync(application.reference.provenance.source, "utf8"),
+    ) as {
+        pin: ReturnType<typeof readUpstreamPin>;
+        reference: { source: string; sha256: string };
+        entry: string;
+        hostPage: string;
+        pose: {
+            search: string;
+            width: number;
+            height: number;
+            dpr: number;
+            referenceFrame: number;
+        };
+        readiness: Record<string, string>;
+        browser: { showScrollbars?: boolean };
+        moduleSha256: string;
+        sourceFiles: Array<{ path: string; sha256: string }>;
+    };
+    assert.deepEqual(provenance.pin, readUpstreamPin());
+    assert.equal(provenance.entry, scene.source);
+    assert.equal(provenance.hostPage, scene.parity.referenceHostPage);
+    assert.equal(scene.nativeHostUi, "ui/ocean-host.json");
+    assert.equal(scene.parity.referenceScrollbars, true);
+    assert.equal(provenance.browser.showScrollbars, true);
+    assert.deepEqual(provenance.pose, {
+        search: "?seekTime=0.1",
+        width: 1280,
+        height: 720,
+        dpr: 1,
+        referenceFrame: 30,
+    });
+    assert.equal(scene.parity.referenceSearch, provenance.pose.search);
+    assert.equal(scene.parity.referenceFrame, provenance.pose.referenceFrame);
+    assert.equal(provenance.readiness.ready, "true");
+    assert.equal(provenance.readiness.oceanStage, "complete");
+    assert.equal(provenance.readiness.animationFrozen, "true");
+    assert.equal(provenance.readiness.seekWarmupFrames, "6");
+    assert.equal(provenance.readiness.seekWarmupMode, "compute-only");
+    assert.equal(provenance.readiness.fixedCaptureFrame, "30");
+    assert.equal(provenance.reference.source, application.reference.source);
+    assert.equal(provenance.reference.sha256, application.reference.sha256);
+    assert.equal(
+        provenance.moduleSha256,
+        suiteBrowserModuleDigest(
+            scene.source,
+            undefined,
+            undefined,
+            scene.parity.referenceFrame,
+        ),
+    );
+    assert.deepEqual(
+        provenance.sourceFiles,
+        application.files.map(({ source, sha256 }) => ({
+            path: source,
+            sha256,
+        })),
+    );
 });

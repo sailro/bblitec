@@ -220,6 +220,64 @@ test("self-referential callbacks share their storage across sink signatures", (t
 test("self-referential callbacks share their storage across sink signatures in a worker realm", (t) =>
     nativeCheck("shared-storage-worker", sharedStorage, t, true));
 
+test("self-captured satisfies objects retain identity through readonly result interfaces", (t) =>
+    nativeCheck(
+        "checked-self-capture",
+        `
+        interface Counter {
+            readonly value: number;
+            increment(by?: number): number;
+            read(): Promise<number>;
+        }
+        function create(): Counter {
+            const counter = {
+                value: 0,
+                increment(by = 1): number {
+                    counter.value += by;
+                    return counter.value;
+                },
+                async read(): Promise<number> {
+                    await Promise.resolve();
+                    return counter.value;
+                }
+            } satisfies Counter;
+            return counter;
+        }
+        const counter = create();
+        const increment = counter.increment;
+        if (increment() !== 1 || counter.value !== 1 || await counter.read() !== 1)
+            throw new Error("Owned self capture lost identity");
+        if (increment(4) !== 5 || counter.value !== 5 || await counter.read() !== 5)
+            throw new Error("Owned self capture stopped updating");
+    `,
+        t,
+        true,
+    ));
+
+test("checked self-capture refuses layouts which widen a source field", () => {
+    const directory = resolve(
+        "artifacts/callback-values/checked-self-capture-invalid",
+    );
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    assert.throws(
+        () =>
+            compileSource(
+                workerRealm +
+                    `
+        interface State { value: number | string; read(): number; }
+        const state = {
+            value: 1,
+            read(): number { return state.value; }
+        } satisfies State;
+        state.read();
+    `,
+                { fileName: join(directory, "entry.ts") },
+            ),
+        /binding captured by its initializer requires an owned data type/,
+    );
+});
+
 test("a stored callback reaching a signature its storage cannot serve refuses instead of recursing", () => {
     assert.throws(
         () =>

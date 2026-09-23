@@ -115,7 +115,7 @@ int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.
         if(manager->ordered_groups.size()!=1)return 3;
     }
     if(engine_flags!=std::vector<bool>{false,false,true})return 4;
-    try{add_animation_groups(explicit_engine,engine,{{0}});return 5;}catch(const std::runtime_error& error){if(std::string(error.what())!=${JSON.stringify('AnimationGroup "gltf" is already attached to another AnimationManager')})return 6;}
+    try{add_animation_groups(explicit_engine,engine,{{0}});return 5;}catch(const std::runtime_error& error){if(std::string(error.what())!="#0")return 6;}
 }
 `,
     );

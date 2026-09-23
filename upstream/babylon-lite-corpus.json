@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.29.0",
+  "version": "1.31.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "fbbf158d48f07b5b3e278e62616d2c463e5df609",
+  "sourceVersion": "3ce8ae6d34945f4c32c73e357714ffa43be41584",
   "scenes": [
     {
       "id": "scene1",
@@ -218,7 +218,7 @@
       "id": "scene110",
       "upstreamPath": "lab/lite/src/lite/scene110.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene110.ts",
-      "sha256": "1991c32666f67efff862702c37f8bf0d978dd00b5730dc3b1d1cd04a8e6c5d3f"
+      "sha256": "5455c3ada0938623c6a7cea8ce938d345c802e9a41dc17ee6c174778a6b79472"
     },
     {
       "id": "scene120",
@@ -284,7 +284,7 @@
       "id": "scene116",
       "upstreamPath": "lab/lite/src/lite/scene116.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",
-      "sha256": "0e965e0f886310904886b7ba51c07fbed4768774977101887c4aabb6dcff6828"
+      "sha256": "250437d7ce9bdf0c935768718459ae644d8795a45ac18fcbee2a6dadefa2031b"
     },
     {
       "id": "scene117",
@@ -752,7 +752,7 @@
       "id": "scene94",
       "upstreamPath": "lab/lite/src/lite/scene94.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene94.ts",
-      "sha256": "4f88e8933f6b156a93b35b12cb2b546f99bf4bbc53ced7d9b26e0a20108cc6bb"
+      "sha256": "1a8a43f203ffa365df337a0a41e438cd5c7048846c345638576966f8cffdcec5"
     },
     {
       "id": "scene93",
@@ -776,7 +776,7 @@
       "id": "scene142",
       "upstreamPath": "lab/lite/src/lite/scene142.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene142.ts",
-      "sha256": "9c239b0bb559052ef2b2e2e3586dd4eddac0490a1fbc4f40dce8a10a8ae5bc72"
+      "sha256": "ab264b5805c401432a9aae6d6e837f2762c45a8fb0d0f3610fb421688f5659e1"
     },
     {
       "id": "scene147",
@@ -794,7 +794,7 @@
       "id": "scene149",
       "upstreamPath": "lab/lite/src/lite/scene149.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene149.ts",
-      "sha256": "3d78b87edc62f16f4faa73b46b992f4a206218778371062039cf7d537b00037f"
+      "sha256": "e221ccf3480c1d00f6b9c1b15e1de55a1e19e0820b96921e95dc8f9faf75cc9d"
     },
     {
       "id": "scene11",
@@ -872,7 +872,7 @@
       "id": "scene88",
       "upstreamPath": "lab/lite/src/lite/scene88.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene88.ts",
-      "sha256": "c46c6217763ebf11d23fcf3185fba3bd4905e8b0a9b93436c91496e991bf8e58"
+      "sha256": "884f8682e1631694fca2c6c0676a5b6fcb3a41d5731f4c6349fdb736709b84f1"
     },
     {
       "id": "scene89",
@@ -932,7 +932,7 @@
       "id": "scene62",
       "upstreamPath": "lab/lite/src/lite/scene62.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene62.ts",
-      "sha256": "903cb25c5edd5372491f5373d99b1c4834be0e9410b2a5fa05ff8f892eb7e765"
+      "sha256": "cc7458409be8ffc70f6117d744a6e2277c747c29b242c4150b9dd2b5cbf10e2c"
     },
     {
       "id": "scene74",
@@ -1184,7 +1184,7 @@
       "id": "scene66",
       "upstreamPath": "lab/lite/src/lite/scene66.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene66.ts",
-      "sha256": "bcb7f35d3878271a860817c1306d5a35ec2d9f44fe47548986ed038a831fca6e"
+      "sha256": "eaa3b8a83434ff7f108c3426040bb4af71ec56d4728ed88e53539f641e251006"
     },
     {
       "id": "scene72",
@@ -1298,7 +1298,7 @@
       "id": "scene222",
       "upstreamPath": "lab/lite/src/lite/scene222.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
-      "sha256": "32529423c1b2068df86ac19fd578d74458746715e58b8142f327f04a0e3ff35f"
+      "sha256": "08d0ff4209ff263586a05e3fefbfece62d2c8daf24b80a85527e9ce82fa1460b"
     },
     {
       "id": "scene86",
@@ -1496,7 +1496,7 @@
       "id": "scene180",
       "upstreamPath": "lab/lite/src/lite/scene180.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
-      "sha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1"
+      "sha256": "4949a9a0b7f865639261568df72caad7db13e34cb501ca988c6fac51f18aa873"
     },
     {
       "id": "scene290",
@@ -1795,18 +1795,43 @@
       "upstreamPath": "lab/lite/scene180.html",
       "source": "corpus/babylon-lite/lab/lite/scene180.html",
       "sha256": "3e0228b08f2eaf4ca6ce80bcb33d245a613b882defc0c38e1b45cfd7859881a9"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene149-block-loader.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene149-block-loader.ts",
+      "sha256": "03a810b53d728bf8bfccb9e59a7e25f727b3f0b009700ac5585fcb1d804a429c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene88-block-loader.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene88-block-loader.ts",
+      "sha256": "8b55e7092ff8206cb50feb394b83a9c2a36550fccf22285485c1d5c2b50622b2"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene62-block-loader.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene62-block-loader.ts",
+      "sha256": "6ed67f0360caaa51e65f4e726c8ab19658a040714f03589abdb1ba90fb723f75"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene66-block-loader.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene66-block-loader.ts",
+      "sha256": "6b05ac91f03798c89d3600d254dbc49a79fe235c1872618f89ecc1aa55c40b57"
     }
   ],
   "staged": [
     {
-      "upstreamPath": "LICENSE",
-      "source": "corpus/babylon-lite/LICENSE",
-      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      "upstreamPath": "lab/lite/demo-ocean-reference.html",
+      "source": "corpus/babylon-lite/lab/lite/demo-ocean-reference.html",
+      "sha256": "7e167613b8e4f06c63a26ea602ef856ad3ddccedb33a2733adb201c5b6780cb5"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene187-debug.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene187-debug.ts",
       "sha256": "285c0899039f0eead5d7a0d9465b7186c2cd39a17e6abfa8664fb0f9d5c1af63"
+    },
+    {
+      "upstreamPath": "LICENSE",
+      "source": "corpus/babylon-lite/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     }
   ],
   "tooling": [
@@ -1833,7 +1858,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -1928,7 +1953,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom.ts",
@@ -2116,7 +2141,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/quake.ts",
@@ -2700,7 +2725,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -2885,7 +2910,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/break-meshes.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
-          "sha256": "62b07f18f3cc169431c2c2c21c43e5204151953f3bb8ff2cf865ee0dbeb7d743"
+          "sha256": "b3519e21f67ecc3bc4bd09d125864109ffc78baba4d3ee8248aa0ff5fa4044d1"
         },
         {
           "upstreamPath": "lab/lite/src/demos/break-mesh.ts",
@@ -2895,7 +2920,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -2925,7 +2950,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/racer/audio.ts",
@@ -3136,7 +3161,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3296,12 +3321,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/littlest-tokyo.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
-          "sha256": "10994a29bd4cfa8912c65ad799e87e391680ff90ba77e760e8652550791ac08f"
+          "sha256": "09100017c9b6f5ede345f18606ae3508e2c25f6f8353142e7db73f312fa96da3"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3336,12 +3361,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/bath-day.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
-          "sha256": "4d2cda8fc7782111bc52134693a87a8aec1ccb4023634368878641aafcfeb2d2"
+          "sha256": "a32ee2e50f1bbe989223cad01aece81d946c1fe7480e4374775021c2a8d8b2e6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3386,7 +3411,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3624,6 +3649,130 @@
       ]
     },
     {
+      "id": "ocean",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+      "reference": {
+        "source": "reference/ocean/babylon-lite-golden.png",
+        "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
+        "provenance": {
+          "source": "reference/ocean/provenance.json",
+          "sha256": "3d3408ce72fba2eb66c5985c2f925ccd880aee42c1ff022c9ffe018fbdd668a6"
+        }
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-ocean.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-ocean.html",
+          "sha256": "345250881b0a9c83dc671ef20b6ba4ce954b7b9cbbf00107169b07ed25f25e29"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+          "sha256": "bc62062401e3ca955decc27d38e500e819a9242fb00d5ab03798e28398e9fb3c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/buoy.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/buoy.ts",
+          "sha256": "f551620cfe1b04ae0bd37ade73ef6d8f2f00a7f0c69c0bc0fc3db0db1478cc57"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/constants.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/constants.ts",
+          "sha256": "5191d59863e4befc987186a5f88bdc7e67add3ec626f99bee95eb437fd62b35a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/controls.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/controls.ts",
+          "sha256": "cb32ce25030cd0fdc0c2b93cfb7b02dd35919378f310da852f94602e4943f60b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/debug.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/debug.ts",
+          "sha256": "4ba9a2778848e7e63ec6a7e661b3d19833f2dd69ad8e8275ea1008f9f38388cd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/demo.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/demo.ts",
+          "sha256": "a2e3669d9a9d7cf647becd06438ac65805b5a3da8ed56071f5e1aaaf76c4a27a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/fft.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/fft.ts",
+          "sha256": "5ac854f7223f18dd8d5c0a9990d7553e8f9b105cd5d0819a2e4a18912daabf45"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/geometry.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/geometry.ts",
+          "sha256": "1c00140bd4391b69be4c097562b3417acea65fb3b4155d2ca4de6a8a9486a8b4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/lifecycle.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/lifecycle.ts",
+          "sha256": "846cc4fb56c1ceb3e2008258b5948f12ba83a2fa434903533856e477fcbfc5bc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/material-plugin.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/material-plugin.ts",
+          "sha256": "d17c8f482450508ccc225e6249f1b07f148ca8636470f7aa0ad4aef69174f667"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/material.ts",
+          "sha256": "eb4cb95b574525241e1e409195d671cb32f7d05af78a4faa09583fb7785a9e2f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/ownership.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/ownership.ts",
+          "sha256": "98f3703509757551e76bc23bf27b81d008b5c55abae52aca3b7b49072c413583"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/resources.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/resources.ts",
+          "sha256": "4016e47d43c2c2232ece435c1cdf047eb2637b99decd569426ac540dc8349538"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/shaders.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/shaders.ts",
+          "sha256": "7ca6dcab8415a09b0c103aefcb12f61fc89db908755ae73ec4443414ed38dd62"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/simulation.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/simulation.ts",
+          "sha256": "112cc975e36999534b69fb72fa1db1b94416d696f2f5d778bdb8e05191b81b45"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/sky.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/sky.ts",
+          "sha256": "1552219feaa8596e6192577cb14bae199648d51413216aa5cb4551754896039f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/spectrum.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/spectrum.ts",
+          "sha256": "b3431b820d0bbc8563ce6d1f7863d151e02e767c18344910742beafbc4aafd9c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ocean/timing.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/timing.ts",
+          "sha256": "e79fbd27a783a4871bb813b07f8d7eb9212fe9a2553be79bab997a213f32514d"
+        }
+      ]
+    },
+    {
       "id": "sandblox",
       "entry": "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
       "reference": {
@@ -3639,7 +3788,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/adornments/handles.ts",
@@ -3834,7 +3983,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -4243,7 +4392,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -4288,12 +4437,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/mosquito-amber.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/mosquito-amber.ts",
-          "sha256": "e1ff6107fbaacc57a922ff514ebfc1a5ec43f66a882ec9db9898b256a8063b28"
+          "sha256": "068b00679c104312963ad8def5a2cc81c79b73c347b311fe3449b9a9ca242c90"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -4318,12 +4467,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/calculator.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/calculator.ts",
-          "sha256": "e7ec53cf9b9528a16f0b1580ca79c3e596e18101e49b346dce1ea6ff35239665"
+          "sha256": "b8f8166f9dee79d1adbf6c60fc69d48bf2d42518ea7c44f1aeed9289765cba28"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -4366,7 +4515,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/offscreen-scene.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/offscreen-scene.ts",
-          "sha256": "0a504498be91953934d58585c0aaa8154091674af9eba2809829978cfe1916af"
+          "sha256": "7d7aefadba39e215fe64048b61b2fa0ebdd73b64fd71f720d5e9f4b4a97814da"
         },
         {
           "upstreamPath": "lab/lite/src/demos/offscreen-worker.ts",
@@ -4381,7 +4530,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",

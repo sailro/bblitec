@@ -306,6 +306,8 @@ test("Dawn Android surfaces negotiate worker formats and retain native windows a
             "\n" +
             cppFunction(shared, "inline void configure_dawn_surface") +
             "\n" +
+            cppFunction(shared, "inline void set_dawn_display_paced") +
+            "\n" +
             cppSection(
                 shared,
                 "inline bool resize_dawn_surface",

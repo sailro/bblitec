@@ -28,6 +28,8 @@ export interface CorpusApplication {
     reference: {
         source: string;
         sha256: string;
+        /** Immutable capture recipe and source/host fingerprints. */
+        provenance?: { source: string; sha256: string };
         capture?: {
             frame: number;
             independentEngines: number;

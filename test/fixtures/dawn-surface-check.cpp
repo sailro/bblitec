@@ -211,6 +211,26 @@ int main() {
     assert(surface_configuration.width == 960 && surface_configuration.height == 540);
     assert(surface_configuration.format == WGPUTextureFormat_RGBA8Unorm);
     assert(surface_configuration.device == state.device);
+    status = WGPUStatus_Success;
+    modes = {WGPUPresentMode_Fifo, WGPUPresentMode_Immediate};
+    set_dawn_display_paced(state, true);
+    assert(state.present_mode == WGPUPresentMode_Fifo && configured == 3);
+    modes.push_back(WGPUPresentMode_Mailbox);
+    set_dawn_display_paced(state, true);
+    assert(state.present_mode == WGPUPresentMode_Mailbox && configured == 4);
+    assert(surface_configuration.presentMode == WGPUPresentMode_Mailbox);
+    set_dawn_display_paced(state, true);
+    assert(configured == 4); // Repeated policy selection keeps the current swapchain.
+    assert(resize_dawn_surface(state, 961, 540));
+    assert(surface_configuration.presentMode == WGPUPresentMode_Mailbox);
+    set_dawn_display_paced(state, false);
+    assert(state.present_mode == WGPUPresentMode_Fifo && configured == 6);
+    assert(surface_configuration.presentMode == WGPUPresentMode_Fifo);
+    status = WGPUStatus_Error;
+    expect_error([&] { set_dawn_display_paced(state, true); });
+    assert(state.present_mode == WGPUPresentMode_Fifo && configured == 6);
+    status = WGPUStatus_Success;
+    assert(resize_dawn_surface(state, 960, 540));
     assert(!resize_dawn_surface(state, EngineOptions{0, 540}));
     WGPUSurfaceTexture acquired = WGPU_SURFACE_TEXTURE_INIT;
     for (const auto success : {WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal,

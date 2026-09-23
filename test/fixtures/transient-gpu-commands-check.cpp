@@ -1,3 +1,4 @@
+#include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_resources.hpp"
 #include <array>
 #include <cstdint>

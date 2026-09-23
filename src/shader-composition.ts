@@ -90,7 +90,7 @@ export function readShaderComposition(
     if (!Array.isArray(parsed.modules))
         throw new Error(`${path} must declare a modules array.`);
     const add = (stage: OfflineShaderStage): void => {
-        if (!/^[\w.-]+\.(?:vert|frag)$/.test(stage.stem))
+        if (!/^[\w.-]+\.(?:vert|frag|comp)$/.test(stage.stem))
             throw new Error(`Invalid shader stage stem '${stage.stem}'.`);
         if (stages.has(stage.stem))
             throw new Error(

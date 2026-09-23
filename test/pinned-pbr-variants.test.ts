@@ -7,7 +7,10 @@ import {
     composePinnedPbrVariant,
     registeredPbrExtensionIds,
 } from "../src/pinned-pbr-variants.js";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "../src/pinned-shader-composer.js";
 
 /** Whitespace is not shader identity; the composer and the capture differ in it. */
 const normalize = (source: string): string =>
@@ -59,8 +62,10 @@ test("registers every PBR extension the pin owns", async () => {
 });
 
 test("derives a material's feature bits through the pin's own detect hooks", async () => {
-    const { PBR_HAS_CLEARCOAT, PBR_HAS_OCCLUSION } = await importPinnedModule<{
+    const { PBR_HAS_CLEARCOAT } = await importPinnedModuleWithExports<{
         PBR_HAS_CLEARCOAT: number;
+    }>("material/pbr/fragments/clearcoat-fragment.js", ["PBR_HAS_CLEARCOAT"]);
+    const { PBR_HAS_OCCLUSION } = await importPinnedModule<{
         PBR_HAS_OCCLUSION: number;
     }>("material/pbr/pbr-flag-bits.js");
 

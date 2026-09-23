@@ -4,6 +4,8 @@ import { errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataLowerer } from "./data-lowering.js";
+import { RuntimeSearchParamsRequired } from "./search-params.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type WindowContext = Pick<
     LoweringServices,
@@ -14,7 +16,34 @@ type WindowContext = Pick<
     | "reachFeature"
     | "cppString"
     | "fail"
+    | "referenceSearch"
 >;
+
+export function emitWindowLocationAssignment(
+    lowerer: DataLowerer,
+    expression: ts.BinaryExpression,
+): boolean {
+    const context = lowerer.context;
+    const left = context.unwrap(expression.left);
+    if (
+        !ts.isPropertyAccessExpression(left) ||
+        left.name.text !== "search" ||
+        browserGlobalNamed(context, left.expression)?.text !== "location"
+    )
+        return false;
+    if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+        context.fail(
+            expression,
+            "Location search supports direct assignment only.",
+        );
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    requireWindowHost(context, expression);
+    if (!context.options.runtimeLocationSearch)
+        throw new RuntimeSearchParamsRequired(true);
+    const value = lowerer.compileForSink(expression.right, { kind: "string" });
+    context.emit(`bbl::pal::window_location_set_search(${value});`);
+    return true;
+}
 
 /** Retained host method aliases use the same operation as a direct call. */
 export function compileWindowServiceCall(
@@ -99,6 +128,19 @@ export function compileWindowIdentity(
     context: WindowContext,
     expression: ts.Expression,
 ): Value | undefined {
+    if (
+        context.options.runtimeLocationSearch &&
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "search" &&
+        browserGlobalNamed(context, expression.expression)?.text === "location"
+    ) {
+        requireWindowHost(context, expression);
+        return {
+            kind: "string",
+            cpp: `bbl::pal::window_location_search(${context.cppString(context.options.initialSearch ?? context.referenceSearch())})`,
+            dataType: { kind: "string" },
+        };
+    }
     if (!context.options.workers || context.options.workers.namespace)
         return undefined;
     const global = browserGlobalNamed(context, expression)?.text;

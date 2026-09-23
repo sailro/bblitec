@@ -15,6 +15,7 @@
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
@@ -37,10 +38,13 @@
 #include "pal_ui_snapshot.hpp"
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
+#include "pal_ui_length_math.hpp"
 #include "pal_ui_form.hpp"
 #include "pal_ui_font_win32.hpp"
 #include "pal_ui_font_color.hpp"
 #include "pal_ui_range.hpp"
+#include "pal_ui_control_marks.hpp"
+#include "pal_ui_color.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
 #include "pal_ui_text.hpp"
@@ -436,18 +440,123 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
 
 std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
     const auto& record = ui_element(engine, element);
+    if (record.tag == "output")
+        return record.text;
+    if (record.tag == "select") {
+        for (const auto child : record.children)
+            if (ui_element(engine, child).tag == "option" && ui_get_selected(engine, child))
+                return ui_get_form_value(engine, child);
+        return {};
+    }
     const auto type = record.attributes.find("type");
-    if ((record.tag != "input" && record.tag != "textarea") ||
+    if ((record.tag != "input" && record.tag != "textarea" && record.tag != "option") ||
         (type != record.attributes.end() && type->second == "file"))
-        throw std::runtime_error("Form value requires an editable input or textarea.");
+        throw std::runtime_error(
+            "Form value requires an input, textarea, select, option or output.");
     const auto value = record.attributes.find("value");
-    return value != record.attributes.end() ? value->second
-           : record.tag == "textarea"       ? record.text
-                                            : std::string{};
+    if (record.tag == "input" && type != record.attributes.end() && type->second == "color")
+        return pal::ui_simple_color(value != record.attributes.end() ? value->second : "")
+            .value_or("#000000");
+    return value != record.attributes.end()                     ? value->second
+           : record.tag == "textarea" || record.tag == "option" ? record.text
+                                                                : std::string{};
+}
+
+bool ui_get_checked(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    if (record.tag != "input")
+        throw std::runtime_error("checked requires an input element.");
+    return record.checked.value_or(record.attributes.contains("checked"));
+}
+
+void ui_set_checked(Engine& engine, UiElementHandle element, bool checked) {
+    auto& record = ui_element(engine, element);
+    if (record.tag != "input")
+        throw std::runtime_error("checked requires an input element.");
+    if (record.checked == checked)
+        return;
+    record.checked = checked;
+    mark_ui_changed(engine, record);
+}
+
+bool ui_get_selected(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    if (record.tag != "option")
+        throw std::runtime_error("selected requires an option element.");
+    return record.selected.value_or(record.attributes.contains("selected"));
+}
+
+void ui_set_selected(Engine& engine, UiElementHandle element, bool selected) {
+    auto& record = ui_element(engine, element);
+    if (record.tag != "option")
+        throw std::runtime_error("selected requires an option element.");
+    if (selected && record.parent.value != invalid_handle &&
+        ui_element(engine, record.parent).tag == "select") {
+        for (const auto sibling : ui_element(engine, record.parent).children) {
+            auto& option = ui_element(engine, sibling);
+            if (sibling != element && option.tag == "option" && ui_get_selected(engine, sibling)) {
+                option.selected = false;
+                mark_ui_changed(engine, option);
+            }
+        }
+    }
+    if (record.selected == selected)
+        return;
+    record.selected = selected;
+    mark_ui_changed(engine, record);
+}
+
+namespace {
+void normalize_select_selection(Engine& engine, UiElementHandle parent,
+                                UiElementHandle preferred = {}) {
+    if (parent.value == invalid_handle || ui_element(engine, parent).tag != "select")
+        return;
+    UiElementHandle first;
+    for (const auto child : ui_element(engine, parent).children) {
+        const auto& option = ui_element(engine, child);
+        if (option.tag != "option")
+            throw std::runtime_error("Native select supports direct option children.");
+        if (first.value == invalid_handle && !option.attributes.contains("disabled"))
+            first = child;
+        if (ui_get_selected(engine, child) && preferred.value == invalid_handle)
+            preferred = child;
+    }
+    if (preferred.value == invalid_handle)
+        preferred = first;
+    if (preferred.value != invalid_handle)
+        ui_set_selected(engine, preferred, true);
+}
+} // namespace
+
+void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option) {
+    const auto& record = ui_element(engine, select);
+    if (record.tag != "select" ||
+        (option.value != invalid_handle && ui_element(engine, option).parent != select))
+        throw std::runtime_error("Native select selection requires one of its option children.");
+    for (const auto child : record.children)
+        if (ui_element(engine, child).tag == "option")
+            ui_set_selected(engine, child, child == option);
 }
 
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value) {
     static_cast<void>(ui_get_form_value(engine, element));
+    if (ui_element(engine, element).tag == "output") {
+        ui_set_text(engine, element, std::move(value));
+        return;
+    }
+    if (ui_element(engine, element).tag == "select") {
+        bool matched = false;
+        for (const auto child : ui_element(engine, element).children) {
+            if (ui_element(engine, child).tag != "option")
+                continue;
+            const bool selected = !matched && ui_get_form_value(engine, child) == value;
+            ui_set_selected(engine, child, selected);
+            matched |= selected;
+        }
+        return;
+    }
+    if (ui_get_attribute(engine, element, "type") == "color")
+        value = pal::ui_simple_color(std::move(value)).value_or("#000000");
     ui_set_attribute(engine, element, "value", std::move(value));
 }
 
@@ -455,11 +564,25 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     UiElementRecord& record = ui_element(engine, element);
     if (record.text == text && record.inner_rml.empty() && record.children.empty())
         return;
+    // Nonempty plain leaf text cannot change structural selectors or the
+    // anonymous flex/grid wrapper. All other writes retain full projection.
+    const auto plain_text = [](const std::string& value) {
+        return value.find_first_not_of(" \t\r\n\f") != std::string::npos &&
+               !pal::ui_text_needs_emoji_normalization(value);
+    };
+    const bool text_only =
+        record.children.empty() && record.markup_children.empty() && record.inner_rml.empty() &&
+        record.markup_owner.value == invalid_handle && record.tag != "style" &&
+        record.tag != "input" && record.tag != "textarea" && record.tag != "select" &&
+        record.tag != "option" && record.tag != "canvas" && record.tag != "#text" &&
+        plain_text(record.text) && plain_text(text);
     if (!record.children.empty())
         ui_replace_children(engine, element);
     record.text = std::move(text);
     record.inner_rml.clear();
     mark_ui_changed(engine, record);
+    if (text_only)
+        record.text_revision = ++engine.ui_text_revision;
 }
 
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup) {
@@ -933,13 +1056,19 @@ UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElemen
         (child == engine.ui_document_roots.html || child == engine.ui_document_roots.head ||
          child == engine.ui_document_roots.body))
         throw std::runtime_error("Reparenting document roots is not supported.");
-    if (child_record.parent.value != invalid_handle)
-        std::erase(ui_element(engine, child_record.parent).children, child);
+    if (child_record.parent.value != invalid_handle) {
+        const auto previous_parent = child_record.parent;
+        std::erase(ui_element(engine, previous_parent).children, child);
+        normalize_select_selection(engine, previous_parent);
+    }
     if (child_record.attached_to_root)
         std::erase(engine.ui_root_children, child);
     child_record.attached_to_root = false;
     child_record.parent = parent;
     parent_record.children.push_back(child);
+    normalize_select_selection(
+        engine, parent,
+        child_record.tag == "option" && ui_get_selected(engine, child) ? child : UiElementHandle{});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
     return child;
@@ -950,7 +1079,9 @@ UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child) {
         return ui_append_child(engine, engine.ui_document_roots.body, child);
     UiElementRecord& record = ui_element(engine, child);
     if (record.parent.value != invalid_handle) {
-        std::erase(ui_element(engine, record.parent).children, child);
+        const auto previous_parent = record.parent;
+        std::erase(ui_element(engine, previous_parent).children, child);
+        normalize_select_selection(engine, previous_parent);
         record.parent = {};
         ++engine.ui_style_revision;
     }
@@ -1008,6 +1139,7 @@ void ui_remove(Engine& engine, UiElementHandle element) {
     release_browser_file_subtree(engine, element);
 #endif
     if (record.parent.value != invalid_handle) {
+        const auto previous_parent = record.parent;
         UiElementRecord& parent = ui_element(engine, record.parent);
         parent.children.erase(std::remove_if(parent.children.begin(), parent.children.end(),
                                              [element](UiElementHandle child) {
@@ -1015,6 +1147,7 @@ void ui_remove(Engine& engine, UiElementHandle element) {
                                              }),
                               parent.children.end());
         record.parent = {};
+        normalize_select_selection(engine, previous_parent);
     }
     if (record.attached_to_root) {
         engine.ui_root_children.erase(std::remove_if(engine.ui_root_children.begin(),
@@ -1039,18 +1172,25 @@ void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> 
 
 namespace {
 bool ui_activation_disabled(const UiElementRecord& record) {
-    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea") &&
+    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea" ||
+            record.tag == "select" || record.tag == "option") &&
            record.attributes.contains("disabled");
 }
 } // namespace
 
-void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
+namespace {
+bool ui_needs_click_listener(const Engine& engine, const UiElementRecord& record) {
+    return record.tag == "summary" || !record.click_callbacks.empty() ||
+           (engine.dom_input && engine.dom_input->event_types.contains("click"));
+}
+
+bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bool dispatch_dom) {
     if (ui_activation_disabled(ui_element(engine, element)))
-        return;
+        return false;
     // Copy first, matching event dispatch: a callback may mutate the retained
     // element or register another callback without invalidating this event.
     const auto callbacks = ui_element(engine, element).click_callbacks;
-    if (engine.dom_input && !engine.dom_input->native_pointer_default) {
+    if (dispatch_dom && engine.dom_input && !engine.dom_input->native_pointer_default) {
         PlatformMouseEvent pointer;
         pointer.pointer_id = -1;
         pointer.pointer_type.clear();
@@ -1058,10 +1198,28 @@ void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
         event.dom->trusted = trusted;
         dispatch_dom_pointer(engine, event);
         if (event.default_prevented)
-            return;
+            return false;
     }
     for (const auto& callback : callbacks)
         callback();
+    const auto parent = ui_element(engine, element).parent;
+    if (ui_element(engine, element).tag == "summary" && parent.value != invalid_handle &&
+        ui_element(engine, parent).tag == "details") {
+        const auto& children = ui_element(engine, parent).children;
+        const auto first_summary = std::find_if(children.begin(), children.end(), [&](auto child) {
+            return ui_element(engine, child).tag == "summary";
+        });
+        if (first_summary != children.end() && *first_summary == element) {
+            ui_set_boolean_attribute(engine, parent, "open",
+                                     !ui_has_attribute(engine, parent, "open"));
+            const auto& events = ui_element(engine, parent).event_callbacks;
+            if (const auto found = events.find("toggle"); found != events.end()) {
+                const auto toggle_callbacks = found->second;
+                for (const auto& callback : toggle_callbacks)
+                    callback(PlatformMouseEvent{});
+            }
+        }
+    }
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
     // Default actions carry the stable handle because opening a dialog can
     // synchronously release pointer lock and run callbacks that grow this arena.
@@ -1072,6 +1230,12 @@ void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
         js::click_file_input(engine, element);
     }
 #endif
+    return true;
+}
+} // namespace
+
+void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
+    static_cast<void>(dispatch_ui_click(engine, element, trusted, true));
 }
 
 namespace {
@@ -1526,16 +1690,53 @@ namespace {
 class UiEventListener final : public Rml::EventListener {
 public:
     UiEventListener(Engine& engine, UiElementHandle element, std::string event,
-                    bool& default_prevented)
+                    bool& default_prevented, bool& projecting, bool& native_focus_pending,
+                    const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets)
         : engine(engine), element(element), event_type(std::move(event)),
-          default_prevented(default_prevented) {}
+          default_prevented(default_prevented), projecting(projecting),
+          native_focus_pending(native_focus_pending), event_targets(event_targets) {}
 
     void ProcessEvent(Rml::Event& event) override {
-        if (event_type == "input") {
+        if (event_type == "focus") {
+            // RmlUi focuses every newly entered ancestor before publishing
+            // its actual focus leaf. Resolve that leaf after dispatch ends.
+            if (!projecting)
+                native_focus_pending = true;
+            return;
+        }
+        if (event_type == "form-change" || event_type == "color-input" ||
+            event_type == "color-change") {
+            if (projecting)
+                return;
             auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(event.GetCurrentElement());
             if (!control)
                 throw std::runtime_error("Native input event requires a form control.");
-            ui_set_form_value(engine, element, control->GetValue());
+            if (ui_get_attribute(engine, element, "type") == "checkbox")
+                ui_set_checked(engine, element, control->HasAttribute("checked"));
+            else if (const auto* select =
+                         rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(control)) {
+                const int index = select->GetSelection();
+                const auto& children = ui_element(engine, element).children;
+                ui_set_selection(engine, element,
+                                 index >= 0 ? children.at(static_cast<std::size_t>(index))
+                                            : UiElementHandle{});
+            } else
+                ui_set_form_value(engine, element, control->GetValue());
+            // RmlUi's form change notification represents the native edit. The
+            // current state is visible before either browser-facing callback.
+            for (const char* name : {"input", "change"}) {
+                if ((event_type == "color-input" && std::string_view(name) != "input") ||
+                    (event_type == "color-change" && std::string_view(name) != "change"))
+                    continue;
+                const auto& callbacks = ui_element(engine, element).event_callbacks;
+                if (const auto found = callbacks.find(name); found != callbacks.end()) {
+                    const auto snapshot = found->second;
+                    for (const auto& callback : snapshot)
+                        callback(PlatformMouseEvent{});
+                }
+            }
+            event.StopPropagation();
+            return;
         }
         if (::bbl::pal::runtime_trace_enabled()) {
             std::cerr << "[bblite trace] ui-event type=" << event_type
@@ -1543,10 +1744,25 @@ public:
                       << '\n';
         }
         // Copy the callback list so a callback may safely mutate UI state.
-        if (event_type == "focus") {
-            ui_focus(engine, element, engine.ui_focus_visible);
-        } else if (event_type == "click") {
-            ui_click(engine, element, true);
+        if (event_type == "click") {
+            bool first_listener = true;
+            for (auto* cursor = event.GetTargetElement();
+                 cursor && cursor != event.GetCurrentElement(); cursor = cursor->GetParentNode()) {
+                const auto found = event_targets.find(cursor);
+                if (found != event_targets.end() &&
+                    ui_needs_click_listener(engine, engine.ui_elements.at(found->second.element))) {
+                    first_listener = false;
+                    break;
+                }
+            }
+            if (!dispatch_ui_click(engine, element, true, first_listener)) {
+                default_prevented = true;
+                event.StopPropagation();
+            }
+            // RmlUi also uses propagation to gate native default actions.
+            // Keep a permitted click alive so checkboxes toggle and color
+            // controls open; the DOM bridge above runs once for the path.
+            return;
         } else {
             float fallback_x = 0.0f;
             float fallback_y = 0.0f;
@@ -1581,6 +1797,20 @@ private:
     UiElementHandle element;
     std::string event_type;
     bool& default_prevented;
+    bool& projecting;
+    bool& native_focus_pending;
+    const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
+};
+
+class UiProjectionScope {
+public:
+    explicit UiProjectionScope(bool& projecting)
+        : projecting(projecting), previous(std::exchange(projecting, true)) {}
+    ~UiProjectionScope() { projecting = previous; }
+
+private:
+    bool& projecting;
+    bool previous;
 };
 
 /** Keep RmlUi animations on the same clock as browser-facing scene time. */
@@ -2419,6 +2649,8 @@ struct ProjectedUiElement {
     std::unordered_map<std::string, std::string> style_properties;
     std::vector<std::string> style_property_order;
     std::string resolved_style;
+    std::string outline;
+    std::string outline_offset;
     std::vector<UiElementHandle> child_order;
     std::string intrinsic_min_width;
     std::string crosshair_color;
@@ -2442,6 +2674,51 @@ struct ProjectedGradientText {
     double scale = 1.0;
 };
 
+struct UiCpuProfile {
+    const bool enabled = environment_variable("BBLITE_CPU_PROFILE") == "1";
+    std::uint64_t frame = 0;
+    struct Sample {
+        std::uint32_t updates = 0, changed = 0, text_batches = 0, text_nodes = 0;
+        std::uint32_t full = 0, reproject = 0, compiled = 0, draws = 0, clips = 0;
+        std::uint32_t released_geometry = 0, textures = 0, released_textures = 0;
+        std::uint32_t masks = 0, snapshots = 0, gradients = 0;
+        std::uint64_t triangles = 0, clip_pairs = 0;
+        std::uint64_t texture_bytes = 0, compiled_bytes = 0;
+        const char* text_path = "none";
+        std::uint32_t fallback_node = invalid_handle;
+        double projection = 0, context = 0, decorations = 0, intrinsic = 0;
+        double rectangles = 0, outlines = 0, clipping = 0;
+        double compile_ms = 0, release_geometry_ms = 0, texture_ms = 0, release_texture_ms = 0;
+        double mask_ms = 0, snapshot_ms = 0, gradient_ms = 0, draw_ms = 0;
+    } sample;
+
+    double now() const {
+        if (!enabled)
+            return 0;
+        static const double milliseconds_per_tick =
+            1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
+        return static_cast<double>(SDL_GetPerformanceCounter()) * milliseconds_per_tick;
+    }
+    void split(double& elapsed, double& previous) const {
+        if (!enabled)
+            return;
+        const double current = now();
+        elapsed += current - previous;
+        previous = current;
+    }
+    struct Timer {
+        const UiCpuProfile& cpu;
+        double& elapsed;
+        const double started;
+        Timer(const UiCpuProfile& cpu, double& elapsed)
+            : cpu(cpu), elapsed(elapsed), started(cpu.now()) {}
+        ~Timer() {
+            if (cpu.enabled)
+                elapsed += cpu.now() - started;
+        }
+    };
+};
+
 /**
  * CPU-side RmlUi renderer. It deliberately owns no graphics API objects:
  * RmlUi compiles retained geometry here and each PAL renderer consumes the
@@ -2450,6 +2727,7 @@ struct ProjectedGradientText {
  */
 class UiRenderRecorder final : public Rml::RenderInterface {
 public:
+    UiCpuProfile cpu;
     ~UiRenderRecorder() override {
         for (const auto& [key, cached] : retained_canvas_textures) {
             static_cast<void>(key);
@@ -2494,6 +2772,12 @@ public:
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                 Rml::Span<const int> indices) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.compile_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.compiled;
+            cpu.sample.compiled_bytes +=
+                vertices.size() * sizeof(Rml::Vertex) + indices.size() * sizeof(int);
+        }
         auto geometry = std::make_unique<Geometry>();
         geometry->vertices.assign(vertices.begin(), vertices.end());
         geometry->indices.assign(indices.begin(), indices.end());
@@ -2504,6 +2788,9 @@ public:
 
     void RenderToClipMask(Rml::ClipMaskOperation operation, Rml::CompiledGeometryHandle handle,
                           Rml::Vector2f translation) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.mask_ms);
+        if (cpu.enabled)
+            ++cpu.sample.masks;
         const auto& geometry = *reinterpret_cast<const Geometry*>(handle);
         std::vector<UiClipTriangle> triangles;
         triangles.reserve(geometry.indices.size() / 3);
@@ -2657,6 +2944,11 @@ public:
         const Geometry& geometry = *reinterpret_cast<const Geometry*>(handle);
         if (geometry.vertices.empty() || geometry.indices.empty())
             return;
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.draw_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.draws;
+            cpu.sample.triangles += geometry.indices.size() / 3;
+        }
 
         const std::uint32_t base_vertex = static_cast<std::uint32_t>(frame.vertices.size());
         const std::uint32_t first_index = static_cast<std::uint32_t>(frame.indices.size());
@@ -2681,8 +2973,17 @@ public:
             frame.indices.push_back(base_vertex + static_cast<std::uint32_t>(index));
         }
 
-        if (clip_mask_enabled)
+        if (clip_mask_enabled) {
+            const double started = cpu.now();
+            if (cpu.enabled) {
+                ++cpu.sample.clips;
+                cpu.sample.clip_pairs +=
+                    static_cast<std::uint64_t>(geometry.indices.size() / 3) * clip_mask.size();
+            }
             clip_ui_geometry(frame, base_vertex, first_index, clip_mask);
+            if (cpu.enabled)
+                cpu.sample.clipping += cpu.now() - started;
+        }
 
         std::uint64_t texture_id = 0;
         if (texture_handle) {
@@ -2750,6 +3051,9 @@ public:
     }
 
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.release_geometry_ms);
+        if (cpu.enabled)
+            ++cpu.sample.released_geometry;
         delete reinterpret_cast<Geometry*>(handle);
     }
 
@@ -2839,6 +3143,11 @@ public:
         if (source_dimensions.x <= 0 || source_dimensions.y <= 0 || source.empty()) {
             return {};
         }
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.texture_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.textures;
+            cpu.sample.texture_bytes += source.size();
+        }
         auto texture = std::make_unique<Texture>();
         texture->id = next_texture_id++;
         texture->width = static_cast<std::uint32_t>(source_dimensions.x);
@@ -2849,6 +3158,9 @@ public:
     }
 
     Rml::TextureHandle SaveLayerAsTexture() override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.snapshot_ms);
+        if (cpu.enabled)
+            ++cpu.sample.snapshots;
         if (layers.empty())
             throw std::runtime_error("Saving a retained UI texture requires an owned layer.");
         const auto region = scissor.Intersect(Rml::Rectanglei::FromSize(
@@ -2868,6 +3180,9 @@ public:
     }
 
     void ReleaseTexture(Rml::TextureHandle handle) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.release_texture_ms);
+        if (cpu.enabled)
+            ++cpu.sample.released_textures;
         delete reinterpret_cast<Texture*>(handle);
     }
 
@@ -2937,6 +3252,9 @@ public:
 
         if (!shader.texture || shader.minimum != minimum || shader.extent != extent ||
             shader.dimensions.x != int(width) || shader.dimensions.y != int(height)) {
+            const UiCpuProfile::Timer timer(cpu, cpu.sample.gradient_ms);
+            if (cpu.enabled)
+                ++cpu.sample.gradients;
             if (shader.texture)
                 ReleaseTexture(shader.texture);
             std::vector<Rml::byte> pixels(static_cast<std::size_t>(width) * height * 4);
@@ -3108,6 +3426,7 @@ struct UiRmlRuntime {
                  bool (*read_motion_preference)() = system_reduced_motion)
         : engine(engine), window(window), system_interface(window), viewport_width(width),
           viewport_height(height), motion_preference_reader(read_motion_preference) {
+        UiProjectionScope projection_scope(projecting);
         try {
             Rml::SetSystemInterface(&system_interface);
             Rml::SetRenderInterface(&render_interface);
@@ -3117,9 +3436,16 @@ struct UiRmlRuntime {
             initialized = true;
             register_ui_style_properties();
             Rml::Factory::RegisterElementInstancer("button", &button_instancer);
+            Rml::Factory::RegisterElementInstancer("select", &select_instancer);
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-control-mark",
+                                                     &control_mark_decorator);
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-select-arrow",
+                                                     &control_arrow_decorator);
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-scroll-arrow",
+                                                     &control_arrow_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
 #elif defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
@@ -3347,6 +3673,8 @@ struct UiRmlRuntime {
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_animation_easing(std::move(value));
         value = rml_css_filter_arguments(std::move(value));
+        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
+                                    viewport_height / density_ratio);
         value = rml_css_density_units(std::move(value));
         return rml_css_color_alpha(std::move(value));
     }
@@ -3517,8 +3845,8 @@ struct UiRmlRuntime {
         return source_order;
     }
 
-    void sync_style_sheet() {
-        if (projected_style_revision == engine.ui_style_revision &&
+    void sync_style_sheet(bool viewport_changed = false) {
+        if (!viewport_changed && projected_style_revision == engine.ui_style_revision &&
             document->GetStyleSheetContainer())
             return;
         // Browser user-agent defaults belong below author rules. Keeping them
@@ -3527,7 +3855,7 @@ struct UiRmlRuntime {
         std::string source(ui_user_agent_css);
         source +=
             "html{width:100%;height:100%;font-family:" + css_font_family +
-            ";font-size:16dp;line-height:1.32;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
+            ";font-size:16dp;line-height:normal;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         observes_motion_preference = false;
         observes_focus_within = false;
         observes_generated_content = false;
@@ -3821,34 +4149,59 @@ struct UiRmlRuntime {
     }
 
     void attach_listeners(ProjectedUiElement& projected, UiElementHandle handle) {
-        const UiElementRecord& record = ui_element(engine, handle);
-        if (!projected.event_listeners_attached["focus"]) {
+        const auto add_listener = [&](const std::string& type, const std::string& event) {
             auto listener =
-                std::make_unique<UiEventListener>(engine, handle, "focus", default_prevented);
-            projected.element->AddEventListener("focus", listener.get());
+                std::make_unique<UiEventListener>(engine, handle, type, default_prevented,
+                                                  projecting, native_focus_pending, event_targets);
+            projected.element->AddEventListener(event, listener.get());
             listeners.push_back(std::move(listener));
+        };
+        const UiElementRecord& record = ui_element(engine, handle);
+        const auto input_type = record.attributes.find("type");
+        const bool editable =
+            (record.tag == "input" || record.tag == "textarea" || record.tag == "select") &&
+            (input_type == record.attributes.end() || input_type->second != "file");
+        auto* color = dynamic_cast<UiColorInput*>(projected.element);
+        if (color) {
+            color->activate = [this, handle] { open_color_picker(handle); };
+            for (const char* name : {"input", "change"}) {
+                const std::string key = std::string("color-") + name;
+                if (projected.event_listeners_attached[key])
+                    continue;
+                add_listener(key, name);
+                projected.event_listeners_attached[key] = true;
+            }
+        }
+        if (editable && !color && !projected.event_listeners_attached["form-change"]) {
+            add_listener("form-change", "change");
+            projected.event_listeners_attached["form-change"] = true;
+        }
+        if (!projected.event_listeners_attached["focus"]) {
+            add_listener("focus", "focus");
             projected.event_listeners_attached["focus"] = true;
         }
-        if (!projected.click_listener_attached &&
-            (!record.click_callbacks.empty() ||
-             (engine.dom_input && engine.dom_input->event_types.contains("click")))) {
-            auto listener =
-                std::make_unique<UiEventListener>(engine, handle, "click", default_prevented);
-            projected.element->AddEventListener("click", listener.get());
-            listeners.push_back(std::move(listener));
+        if (!projected.click_listener_attached && ui_needs_click_listener(engine, record)) {
+            add_listener("click", "click");
             projected.click_listener_attached = true;
         }
         for (const auto& [event, callbacks] : record.event_callbacks) {
-            if (callbacks.empty() || projected.event_listeners_attached[event]) {
+            if (callbacks.empty() || event == "toggle" ||
+                projected.event_listeners_attached[event] ||
+                (editable && (event == "input" || event == "change"))) {
                 continue;
             }
-            auto listener =
-                std::make_unique<UiEventListener>(engine, handle, event, default_prevented);
-            projected.element->AddEventListener(event == "input" ? "change" : event,
-                                                listener.get());
-            listeners.push_back(std::move(listener));
+            add_listener(event, event == "input" ? "change" : event);
             projected.event_listeners_attached[event] = true;
         }
+    }
+
+    void open_color_picker(UiElementHandle handle) {
+        auto* color = dynamic_cast<UiColorInput*>(handle_at(projected_elements, handle).element);
+        if (!color || color->IsDisabled() || (color_popup && !color_popup->closed()))
+            return;
+        color_popup = std::make_unique<UiColorPopup>(
+            *context, *color, css_font_family,
+            [this](std::string source) { return project_css(std::move(source)); });
     }
 
     std::vector<Rml::ElementPtr> detach_authored_children(Rml::Element& parent,
@@ -3905,6 +4258,7 @@ struct UiRmlRuntime {
     }
 
     void append_element(Rml::Element& parent, UiElementHandle handle) {
+        UiProjectionScope projection_scope(projecting);
         invalidate_gradient_text();
         ensure_projection_size();
         const UiElementRecord& record = ui_element(engine, handle);
@@ -3917,7 +4271,15 @@ struct UiRmlRuntime {
             projected.text = record.text;
             return;
         }
-        Rml::ElementPtr element = document->CreateElement(record.tag);
+        Rml::ElementPtr element;
+        if (record.tag == "input") {
+            Rml::XMLAttributes attributes;
+            if (const auto type = record.attributes.find("type"); type != record.attributes.end())
+                attributes["type"] = type->second;
+            element = Rml::Factory::InstanceElement(nullptr, record.tag, record.tag, attributes);
+        } else {
+            element = document->CreateElement(record.tag);
+        }
         if (!element) {
             throw std::runtime_error("RmlUi could not create element tag '" + record.tag + "'.");
         }
@@ -3929,6 +4291,18 @@ struct UiRmlRuntime {
             if (name == "style")
                 continue;
             raw->SetAttribute(name, projected_attribute_value(name, source_value));
+        }
+        if (record.tag == "input" && record.checked) {
+            if (*record.checked)
+                raw->SetAttribute("checked", "");
+            else
+                raw->RemoveAttribute("checked");
+        }
+        if (record.tag == "option" && record.selected) {
+            if (*record.selected)
+                raw->SetAttribute("selected", "");
+            else
+                raw->RemoveAttribute("selected");
         }
         std::string resolved_display;
         projected.resolved_style = resolved_style_attribute(handle, record, &resolved_display);
@@ -3970,7 +4344,27 @@ struct UiRmlRuntime {
             if (ui_element(engine, child).tag != "style")
                 append_element(*raw, child);
         }
+        project_select_selection(*raw, handle);
         parent.AppendChild(std::move(element));
+    }
+
+    void project_select_selection(Rml::Element& raw, UiElementHandle handle) {
+        const auto& record = ui_element(engine, handle);
+        if (record.tag != "select")
+            return;
+        auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(&raw);
+        if (!select)
+            throw std::runtime_error("RmlUi select lacks its form control implementation.");
+        static_cast<void>(select->GetNumOptions());
+        int selected = -1;
+        for (std::size_t index = 0; index < record.children.size(); ++index)
+            if (ui_get_selected(engine, record.children[index])) {
+                selected = static_cast<int>(index);
+                break;
+            }
+        // Option attribute projection can already change GetSelection() while
+        // the widget still holds its previous value and checked pseudo-class.
+        select->SetSelection(selected);
     }
 
     void mark_reachable(UiElementHandle handle, std::vector<bool>& reachable) const {
@@ -4051,9 +4445,14 @@ struct UiRmlRuntime {
     }
 
     void update_element(UiElementHandle handle) {
+        UiProjectionScope projection_scope(projecting);
         ProjectedUiElement& projected = handle_at(projected_elements, handle);
         UiElementRecord& record = ui_element(engine, handle);
         Rml::Element& raw = *projected.element;
+        if (record.tag == "input" && (dynamic_cast<UiColorInput*>(&raw) != nullptr) !=
+                                         (ui_get_attribute(engine, handle, "type") == "color"))
+            throw std::runtime_error(
+                "Changing a projected input between color and another type is not represented.");
         if (record.tag == "#text") {
             const bool wrapped = text_node_wrapped(record);
             if (projected.text != record.text || projected.text_wrapped != wrapped) {
@@ -4104,6 +4503,20 @@ struct UiRmlRuntime {
             if (existing == projected.attributes.end() || existing->second != value) {
                 raw.SetAttribute(name, projected_attribute_value(name, value));
             }
+        }
+        if (record.tag == "input" &&
+            raw.HasAttribute("checked") != ui_get_checked(engine, handle)) {
+            if (ui_get_checked(engine, handle))
+                raw.SetAttribute("checked", "");
+            else
+                raw.RemoveAttribute("checked");
+        }
+        if (record.tag == "option" &&
+            raw.HasAttribute("selected") != ui_get_selected(engine, handle)) {
+            if (ui_get_selected(engine, handle))
+                raw.SetAttribute("selected", "");
+            else
+                raw.RemoveAttribute("selected");
         }
         std::string resolved_display;
         std::string resolved_style = resolved_style_attribute(handle, record, &resolved_display);
@@ -4221,9 +4634,72 @@ struct UiRmlRuntime {
             }
         }
         if (projected.child_order != record.children) {
-            sync_child_order(children_parent, record.children);
+            if (record.tag == "select") {
+                auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(&raw);
+                if (select && select->GetNumOptions() > 0)
+                    sync_child_order(*select->GetOption(0)->GetParentNode(), record.children);
+            } else
+                sync_child_order(children_parent, record.children);
             projected.child_order = record.children;
         }
+        project_select_selection(raw, handle);
+    }
+
+    bool sync_text_updates() {
+        auto& cpu = render_interface.cpu;
+        const auto fallback = [&](const char* reason, std::uint32_t node = invalid_handle) {
+            if (cpu.enabled) {
+                cpu.sample.text_path = reason;
+                cpu.sample.fallback_node = node;
+            }
+            return false;
+        };
+        if (!engine.ui_only_text_changed_since(projected_revision, projected_text_revision))
+            return fallback("mixed");
+        struct Update {
+            ProjectedUiElement* projected;
+            Rml::ElementText* text;
+            const std::string* value;
+        };
+        std::vector<Update> updates;
+        for (std::size_t index = 0; index < engine.ui_elements.size(); ++index) {
+            const auto& record = engine.ui_elements[index];
+            if (record.text_revision <= projected_text_revision)
+                continue;
+            auto& projected = projected_elements.at(index);
+            auto* element = projected.element;
+            if (!element)
+                continue;
+            // Generated content, gradients and control internals may own text
+            // children. Only an unchanged, single authored text child is safe.
+            if (element->GetNumChildren() != 1)
+                return fallback("children", static_cast<std::uint32_t>(index));
+            if (element->GetProperty<Rml::String>("bbl-text-gradient").find('|') !=
+                Rml::String::npos)
+                return fallback("gradient", static_cast<std::uint32_t>(index));
+            auto* child = element->GetChild(0);
+            if (projected.text_wrapped) {
+                if (child->GetTagName() != "span" || child->GetNumChildren() != 1)
+                    return fallback("wrapper", static_cast<std::uint32_t>(index));
+                child = child->GetChild(0);
+            }
+            auto* text = dynamic_cast<Rml::ElementText*>(child);
+            if (!text || text->GetText() != projected.text)
+                return fallback("text", static_cast<std::uint32_t>(index));
+            updates.push_back({&projected, text, &record.text});
+        }
+        for (const auto& update : updates) {
+            update.text->SetText(*update.value);
+            update.projected->text = *update.value;
+        }
+        projected_revision = engine.ui_revision;
+        projected_text_revision = engine.ui_text_revision;
+        if (cpu.enabled) {
+            ++cpu.sample.text_batches;
+            cpu.sample.text_nodes += static_cast<std::uint32_t>(updates.size());
+            cpu.sample.text_path = "retained";
+        }
+        return true;
     }
 
     void sync_tree() {
@@ -4240,6 +4716,15 @@ struct UiRmlRuntime {
                 handle_at(engine.ui_elements, handle).attached_to_root) {
                 mark_reachable(handle, reachable);
             }
+        }
+        // The picker never outlives the projected control which owns its value.
+        if (color_popup && !color_popup->closed()) {
+            const auto owner = std::find_if(
+                projected_elements.begin(), projected_elements.end(),
+                [&](const auto& projected) { return projected.element == color_popup->input(); });
+            if (owner == projected_elements.end() ||
+                !reachable[static_cast<std::size_t>(owner - projected_elements.begin())])
+                color_popup->close();
         }
 
         // Detach moved nodes before pruning their former ancestors. The
@@ -4316,6 +4801,7 @@ struct UiRmlRuntime {
             if (auto* element = projected_elements[index].element)
                 event_targets.emplace(element, DomEventTarget::node(index));
         projected_revision = engine.ui_revision;
+        projected_text_revision = engine.ui_text_revision;
     }
 
     bool has_active_authored_width(UiElementHandle handle, const UiElementRecord& record) const {
@@ -4396,6 +4882,18 @@ struct UiRmlRuntime {
 #endif
     }
 
+    void sync_native_focus() {
+        if (!native_focus_pending)
+            return;
+        native_focus_pending = false;
+        for (auto* cursor = context->GetFocusElement(); cursor; cursor = cursor->GetParentNode()) {
+            if (const auto found = event_targets.find(cursor); found != event_targets.end()) {
+                ui_focus(engine, UiElementHandle{found->second.element}, engine.ui_focus_visible);
+                return;
+            }
+        }
+    }
+
     bool sync_focus() {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused)
@@ -4439,16 +4937,22 @@ struct UiRmlRuntime {
         return changed;
     }
 
-    void sync_outlines() {
+    void sync_outlines(bool styles_changed = true) {
         for (std::uint32_t index = 0; index < projected_elements.size(); ++index) {
             auto& projected = projected_elements[index];
             auto* parent = projected.element;
             if (!parent)
                 continue;
-            std::string style =
-                resolved_style_attribute(UiElementHandle{index}, engine.ui_elements[index]);
-            const std::string outline = take_css_declaration(style, "--bbl-outline");
-            const std::string offset_text = take_css_declaration(style, "--bbl-outline-offset");
+            if (styles_changed) {
+                std::string style =
+                    resolved_style_attribute(UiElementHandle{index}, engine.ui_elements[index]);
+                projected.outline = take_css_declaration(style, "--bbl-outline");
+                projected.outline_offset = take_css_declaration(style, "--bbl-outline-offset");
+            } else if (projected.outline.empty() || projected.outline == "none") {
+                continue;
+            }
+            const auto& outline = projected.outline;
+            const auto& offset_text = projected.outline_offset;
             auto* ring = parent->QuerySelector("bbl-outline");
             if (outline.empty() || outline == "none") {
                 if (ring)
@@ -4479,22 +4983,23 @@ struct UiRmlRuntime {
                 return std::string(side) + ":" + std::to_string(-extent - border / density_ratio) +
                        "dp;";
             };
-            const auto radius = [&](const char* corner, double value) {
-                return std::string("border-") + corner +
-                       "-radius:" + std::to_string(value / density_ratio + extent) + "dp;";
-            };
             ring->SetAttribute("style",
                                "position:absolute;pointer-events:none;box-sizing:border-box;" +
                                    inset("top", computed.border_top_width()) +
                                    inset("right", computed.border_right_width()) +
                                    inset("bottom", computed.border_bottom_width()) +
-                                   inset("left", computed.border_left_width()) +
-                                   radius("top-left", computed.border_top_left_radius()) +
-                                   radius("top-right", computed.border_top_right_radius()) +
-                                   radius("bottom-left", computed.border_bottom_left_radius()) +
-                                   radius("bottom-right", computed.border_bottom_right_radius()) +
-                                   "border:" + std::to_string(width) + "dp " +
-                                   outline.substr(solid + 7) + ";");
+                                   inset("left", computed.border_left_width()) + "border:" +
+                                   std::to_string(width) + "dp " + outline.substr(solid + 7) + ";");
+            const auto radii = parent->GetRenderBox(Rml::BoxArea::Border).GetBorderRadius();
+            constexpr std::array corner_properties{
+                Rml::PropertyId::BorderTopLeftRadius, Rml::PropertyId::BorderTopRightRadius,
+                Rml::PropertyId::BorderBottomRightRadius, Rml::PropertyId::BorderBottomLeftRadius};
+            for (std::size_t corner = 0; corner < radii.size(); ++corner)
+                ring->SetProperty(
+                    corner_properties[corner],
+                    Rml::Property(radii[corner] +
+                                      Rml::Vector2f(static_cast<float>(extent) * density_ratio),
+                                  Rml::Unit::PX));
         }
     }
 
@@ -4954,14 +5459,18 @@ struct UiRmlRuntime {
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
     UiRangeDecoratorInstancer range_decorator;
+    UiControlMarkDecoratorInstancer control_mark_decorator;
+    UiControlArrowDecoratorInstancer control_arrow_decorator;
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
-    Rml::ElementInstancerGeneric<UiInputElement> input_instancer;
+    Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;
+    UiInputInstancer input_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
     Rml::Element* document_head = nullptr;
     Rml::Element* document_body = nullptr;
     std::unordered_map<std::uint32_t, Rml::ElementPtr> pending_reparents;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
+    std::unique_ptr<UiColorPopup> color_popup;
     std::vector<ProjectedUiElement> projected_elements;
     std::unordered_map<Rml::Element*, DomEventTarget> event_targets;
     std::vector<ProjectedGradientText> gradient_text;
@@ -4969,7 +5478,8 @@ struct UiRmlRuntime {
     bool style_trace_written = false;
     std::vector<Rml::Element*> current_color_svg_elements;
     std::vector<std::uint32_t> projected_root_order;
-    std::uint64_t projected_revision = invalid_handle;
+    std::uint64_t projected_revision = ~std::uint64_t{0};
+    std::uint64_t projected_text_revision = 0;
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
     std::string css_font_family;
@@ -4997,6 +5507,8 @@ struct UiRmlRuntime {
     bool motion_preference_initialized = false;
     bool reduced_motion = false;
     bool default_prevented = false;
+    bool projecting = false;
+    bool native_focus_pending = false;
     UiElementHandle resizing{};
     float resize_start_y = 0;
     float resize_start_height = 0;
@@ -5143,10 +5655,17 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
             current_focus->Blur();
         }
     }
+    runtime.sync_native_focus();
     return result;
 }
 
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height) {
+    auto& cpu = runtime.render_interface.cpu;
+    double checkpoint = cpu.now();
+    if (cpu.enabled)
+        ++cpu.sample.updates;
+    runtime.sync_native_focus();
+    UiProjectionScope projection_scope(runtime.projecting);
     const bool dimensions_changed =
         runtime.viewport_width != width || runtime.viewport_height != height;
     runtime.viewport_width = width;
@@ -5154,13 +5673,33 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     runtime.context->SetDimensions(
         Rml::Vector2i{static_cast<int>(width), static_cast<int>(height)});
     const bool density_changed = runtime.update_density_ratio();
+    const bool viewport_changed = dimensions_changed || density_changed;
     const bool tree_changed = runtime.projected_revision != runtime.engine.ui_revision;
-    if (tree_changed)
-        runtime.sync_style_sheet();
+    if (cpu.enabled && tree_changed)
+        ++cpu.sample.changed;
+    if (tree_changed || viewport_changed)
+        runtime.sync_style_sheet(viewport_changed);
     const bool motion_changed = runtime.sync_motion_preference();
-    if (tree_changed || motion_changed)
+    const bool text_only =
+        tree_changed && !motion_changed && !viewport_changed && runtime.sync_text_updates();
+    if ((tree_changed && !text_only) || motion_changed || viewport_changed) {
+        if (cpu.enabled)
+            ++cpu.sample.full;
         runtime.sync_tree();
+    }
+    if (viewport_changed) {
+        for (std::size_t index = 0; index < runtime.projected_elements.size(); ++index) {
+            auto* element = runtime.projected_elements[index].element;
+            if (!element)
+                continue;
+            const auto& record = runtime.engine.ui_elements[index];
+            for (const auto& name : record.style_property_order)
+                runtime.set_projected_property(*element, name, record.style_properties.at(name));
+        }
+    }
+    cpu.split(cpu.sample.projection, checkpoint);
     runtime.context->Update();
+    cpu.split(cpu.sample.context, checkpoint);
     if (runtime.sync_text_form_metrics())
         runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
@@ -5171,6 +5710,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     const bool hover_changed = runtime.sync_hover_states();
     const bool containers_changed = runtime.sync_container_queries();
     if (hover_changed || containers_changed) {
+        if (cpu.enabled)
+            ++cpu.sample.reproject;
         // Public conditional declarations are handled by RmlUi itself. Re-run the
         // private projection so intrinsic widths and decorators observe the
         // same active selector set.
@@ -5203,25 +5744,34 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     const bool layout_changed = tree_changed || density_changed || dimensions_changed ||
                                 motion_changed || generated_changed || containers_changed ||
                                 hover_changed;
+    cpu.split(cpu.sample.decorations, checkpoint);
     if (layout_changed)
         runtime.update_intrinsic_widths();
+    cpu.split(cpu.sample.intrinsic, checkpoint);
     runtime.sync_client_rects(layout_changed);
+    cpu.split(cpu.sample.rectangles, checkpoint);
     if (layout_changed || focus_changed) {
-        runtime.sync_outlines();
+        runtime.sync_outlines(!text_only || focus_changed || hover_changed || containers_changed ||
+                              generated_changed);
         runtime.context->Update();
     }
     if (runtime.update_gradient_text())
         runtime.context->Update();
+    cpu.split(cpu.sample.outlines, checkpoint);
 }
 
 const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t width,
                                          std::uint32_t height) {
+    auto& cpu = runtime.render_interface.cpu;
+    const double started = cpu.now();
     runtime.render_interface.begin_frame(width, height);
     // Canvas overlays are below the regular retained DOM controls in the
     // racer (speed lines at z=9, HUD/minimap at z=10). Queue their geometry
     // first, then let RmlUi draw the interactive tree above it.
     runtime.render_canvases();
+    const double canvases_finished = cpu.now();
     runtime.context->Render();
+    const double render_finished = cpu.now();
     if (!runtime.style_trace_written && std::getenv("BBLITE_UI_STYLE_TRACE")) {
         Rml::ElementList elements;
         runtime.document->QuerySelectorAll(
@@ -5244,6 +5794,66 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
         append_canvas_focus_outline(runtime.render_interface.frame);
     }
     runtime.render_interface.append_composite_quad();
+    if (cpu.enabled) {
+        const auto& sample = cpu.sample;
+#if defined(_WIN32)
+        if (runtime.platform_fonts) {
+            const auto font = runtime.platform_fonts->take_cpu_sample();
+            if (sample.changed || cpu.frame % 30 == 0)
+                std::fprintf(
+                    stderr,
+                    "[cpu][font] frame=%llu width_calls=%llu width_ms=%.3f "
+                    "mapping_calls=%llu mapping_ms=%.3f shape_calls=%llu shape_ms=%.3f "
+                    "generate_calls=%llu generate_ms=%.3f glyph_misses=%llu glyph_ms=%.3f "
+                    "width_fallback=%llu generate_fallback=%llu "
+                    "shape_cache_hits=%llu shape_cache_evictions=%llu shape_oversized=%llu\n",
+                    static_cast<unsigned long long>(cpu.frame),
+                    static_cast<unsigned long long>(font.widths), font.width_ms,
+                    static_cast<unsigned long long>(font.mapping), font.mapping_ms,
+                    static_cast<unsigned long long>(font.shapes), font.shape_ms,
+                    static_cast<unsigned long long>(font.generated), font.generate_ms,
+                    static_cast<unsigned long long>(font.glyphs), font.glyph_ms,
+                    static_cast<unsigned long long>(font.width_fallback),
+                    static_cast<unsigned long long>(font.generate_fallback),
+                    static_cast<unsigned long long>(font.cache_hits),
+                    static_cast<unsigned long long>(font.cache_evictions),
+                    static_cast<unsigned long long>(font.cache_oversized));
+        }
+#endif
+        if (sample.changed || cpu.frame % 30 == 0) {
+            std::fprintf(stderr,
+                         "[cpu][rml] frame=%llu revision=%llu updates=%u changed=%u "
+                         "text_batches=%u text_nodes=%u full=%u reproject=%u text_path=%s "
+                         "fallback_node=%u projection_ms=%.3f context_ms=%.3f decorations_ms=%.3f "
+                         "intrinsic_ms=%.3f rectangles_ms=%.3f outlines_ms=%.3f "
+                         "canvas_ms=%.3f render_ms=%.3f compiled=%u draws=%u triangles=%llu "
+                         "clips=%u clip_pairs=%llu clip_ms=%.3f\n",
+                         static_cast<unsigned long long>(cpu.frame),
+                         static_cast<unsigned long long>(runtime.engine.ui_revision),
+                         sample.updates, sample.changed, sample.text_batches, sample.text_nodes,
+                         sample.full, sample.reproject, sample.text_path, sample.fallback_node,
+                         sample.projection, sample.context, sample.decorations, sample.intrinsic,
+                         sample.rectangles, sample.outlines, canvases_finished - started,
+                         render_finished - canvases_finished, sample.compiled, sample.draws,
+                         static_cast<unsigned long long>(sample.triangles), sample.clips,
+                         static_cast<unsigned long long>(sample.clip_pairs), sample.clipping);
+            std::fprintf(stderr,
+                         "[cpu][rml-resources] frame=%llu compile_ms=%.3f compiled_bytes=%llu "
+                         "released_geometry=%u release_geometry_ms=%.3f textures=%u "
+                         "texture_bytes=%llu texture_ms=%.3f released_textures=%u "
+                         "release_texture_ms=%.3f masks=%u mask_ms=%.3f snapshots=%u "
+                         "snapshot_ms=%.3f gradients=%u gradient_ms=%.3f draw_ms=%.3f\n",
+                         static_cast<unsigned long long>(cpu.frame), sample.compile_ms,
+                         static_cast<unsigned long long>(sample.compiled_bytes),
+                         sample.released_geometry, sample.release_geometry_ms, sample.textures,
+                         static_cast<unsigned long long>(sample.texture_bytes), sample.texture_ms,
+                         sample.released_textures, sample.release_texture_ms, sample.masks,
+                         sample.mask_ms, sample.snapshots, sample.snapshot_ms, sample.gradients,
+                         sample.gradient_ms, sample.draw_ms);
+        }
+        cpu.sample = {};
+        ++cpu.frame;
+    }
     return runtime.render_interface.frame;
 }
 

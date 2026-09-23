@@ -379,6 +379,7 @@ export function runMeasured(
         executable,
         measuredRunEnvironment(options, stampPath),
         [
+            "BBLITE_LOCATION_SEARCH",
             ...(options.backend !== undefined ? ["BBLITE_GPU_BACKEND"] : []),
             ...(options.dropVariables ?? []),
         ],

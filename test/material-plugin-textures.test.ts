@@ -187,11 +187,11 @@ test("folds a MaterialPlugin through a bounded local factory call", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::add_material_plugin_pixels_texture\(v_engine, v_material, v_stripe\);/,
+        /bbl::add_material_plugin_pixels_texture\(v_engine, v_material, v_stripe, "oneT", "oneS"\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::add_material_plugin_file_texture\(v_engine, v_material, v_tint\);/,
+        /bbl::add_material_plugin_file_texture\(v_engine, v_material, v_tint, "twoT", "twoS"\);/,
     );
     // Both producers reach the one feature that gates the setter
     // translation unit's plugin arm and both backends' bind path.
@@ -481,8 +481,8 @@ test("refuses samplers with no bindTextures, and bindTextures with no samplers",
     );
 });
 
-test("refuses samplers on a PBR material's plugin", () => {
-    const message = refusal(`
+test("retains named samplers on a PBR material's plugin", () => {
+    const result = compileSource(`
         import {
             createEngine,
             createPbrMaterial,
@@ -512,8 +512,8 @@ test("refuses samplers on a PBR material's plugin", () => {
     `);
 
     assert.match(
-        message,
-        /needs the PBR family's own plugin bind-group contract/,
+        result.cpp,
+        /add_material_plugin_pixels_texture\(v_engine, v_material, v_stripe, "oneT", "oneS"\)/,
     );
 });
 
@@ -776,11 +776,11 @@ test("keeps a factory parameter apart from the scene local it shadows", () => {
     // parameter binding is a local of its own beside it.
     assert.match(
         result.cpp,
-        /bbl::add_material_plugin_pixels_texture\(v_engine, v_first, v_[A-Za-z0-9_]*stripe\);/,
+        /bbl::add_material_plugin_pixels_texture\(v_engine, v_first, v_[A-Za-z0-9_]*stripe, "oneT", "oneS"\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::add_material_plugin_file_texture\(v_engine, v_second, v_[A-Za-z0-9_]*stripe\);/,
+        /bbl::add_material_plugin_file_texture\(v_engine, v_second, v_[A-Za-z0-9_]*stripe, "oneT", "oneS"\);/,
     );
 });
 

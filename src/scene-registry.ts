@@ -12,6 +12,8 @@ export interface SceneParityDefinition {
     independentEngines?: number;
     /** Exact upstream host HTML used for the reference page. */
     referenceHostPage?: string;
+    /** Capture authored overflow with visible browser scrollbars. */
+    referenceScrollbars?: boolean;
     /**
      * Offset the native screenshot gate from `referenceFrame`. This is for a
      * renderer boundary whose browser-side update becomes visible on the next
@@ -21,9 +23,9 @@ export interface SceneParityDefinition {
     /**
      * The query string the pinned parity spec serves this scene at, when it
      * serves one (`"?seekTime=0"`). The reference page is navigated with it
-     * and the compiler folds `window.location.search` to the same text, so
-     * both sides take the branch the pin's own test takes. A scene the pin
-     * serves bare leaves this unset, and the query reads as empty.
+     * and native measurements receive the same text. Static scenes fold it
+     * during generation; runtime Window applications start without a query
+     * and use it only during measurements.
      */
     referenceSearch?: string;
     // The native actual lands in `outputDirectory` as
@@ -4704,6 +4706,29 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "ocean",
+        name: "Ocean",
+        source: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Ocean",
+        nativeHostUi: "ui/ocean-host.json",
+        parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-ocean.html",
+            referenceScrollbars: true,
+            referenceSearch: "?seekTime=0.1",
+            referenceFrame: 30,
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
+            canvasThresholds: {
+                maxFullMad: 0.5,
+                maxForegroundMad: 0.5,
+            },
+            backgroundColor: [61, 110, 158],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "sandblox",
         name: "Sandblox",
         source: "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
@@ -4897,6 +4922,14 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
         ...resolved,
         parity: {
             ...parityWithFrame,
+            ...(parity.referenceSearch !== undefined
+                ? {
+                      nativeEnvironment: {
+                          ...parityWithFrame.nativeEnvironment,
+                          BBLITE_LOCATION_SEARCH: parity.referenceSearch || "?",
+                      },
+                  }
+                : {}),
             reference: parity.reference ?? {
                 kind: "source",
                 path: `reference/${scene.id}/babylon-lite-golden.png`,

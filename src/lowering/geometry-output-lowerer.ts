@@ -1,6 +1,7 @@
 import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
 
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -25,10 +26,10 @@ export class GeometryOutputLowerer {
                         ts.SyntaxKind.GreaterThanToken &&
                     ts.isNumericLiteral(node.right) &&
                     Number(node.right.text) === 8 &&
-                    ts.isPropertyAccessExpression(node.left) &&
-                    node.left.name.text === "length" &&
-                    ts.isPropertyAccessExpression(node.left.expression) &&
-                    node.left.expression.name.text === "textureDescriptions",
+                    this.context.expressionMatchesShape(
+                        node.left,
+                        "config.textureDescriptions.length + (config.targetTexture ? 1 : 0)",
+                    ),
             )
         ) {
             this.context.contractError(
@@ -210,7 +211,7 @@ export class GeometryOutputLowerer {
                     path(node.right)?.join(".") === right,
             );
         const { declaration: createRenderTask } =
-            this.context.functionDeclaration(renderModule, "createRenderTask");
+            this.context.functionDeclaration(renderModule, "queueMesh");
         if (
             !hasNullishFallback(
                 createRenderTask,
@@ -225,7 +226,7 @@ export class GeometryOutputLowerer {
         }
         const { declaration: prepareRenderTaskPass } =
             this.context.functionDeclaration(
-                renderModule,
+                "src/frame-graph/render-task-base.ts",
                 "prepareRenderTaskPass",
             );
         if (
@@ -242,7 +243,7 @@ export class GeometryOutputLowerer {
         }
         const { declaration: writePassSceneUbo } =
             this.context.functionDeclaration(
-                renderModule,
+                "src/frame-graph/render-task-base.ts",
                 "_writePassSceneUBO",
             );
         if (
@@ -338,6 +339,8 @@ TaskHandle append_task(Engine& engine, FrameTaskRecord task) {
 }
 
 } // namespace
+
+${renderTaskMeshRefreshCpp(this.context)}
 
 TaskHandle create_render_task(
     Engine& engine,
@@ -445,7 +448,8 @@ void add_render_task_mesh(
     Engine& engine,
     TaskHandle task,
     MeshHandle mesh,
-    MaterialHandle material) {
+    MaterialHandle material,
+    bool material_override) {
     FrameTaskRecord& record = task_record(engine, task);
     if (record.kind != FrameTaskKind::render) {
         throw std::runtime_error("addMesh requires a render task.");
@@ -453,10 +457,14 @@ void add_render_task_mesh(
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Render task mesh is invalid.");
     }
-    if (material.value >= engine.materials.size()) {
+    if (material_override && material.value >= engine.materials.size()) {
         throw std::runtime_error("Render task material override is invalid.");
     }
-    record.render_meshes.push_back(RenderTaskMesh{mesh, material});
+    if (record.render_mesh_refresh) {
+        add_refreshed_render_task_mesh(engine, record, mesh, material, material_override);
+    } else if (material.value != invalid_handle) {
+        record.render_meshes.push_back(RenderTaskMesh{mesh, material});
+    }
 }
 
 } // namespace bbl

@@ -86,6 +86,7 @@ ${
 
 void stop_engine(Engine& engine) {
     engine.stopped = true;
+    if (engine.flush_gpu_retirements) engine.flush_gpu_retirements();
 }
 ${workers ? this.lowerSurfaceSize() : ""}
 

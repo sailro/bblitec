@@ -1,0 +1,345 @@
+{
+  "scene": "ocean",
+  "notes": "Exact pinned frozen source query. Full-page parity remains gated separately from canvas interaction captures. Browser GPU timing text is live; golden observation records that difference without changing browser capabilities. Native input coordinates are viewport CSS pixels and require the declared 1280x720 host layout.",
+  "base": "registry",
+  "env": {
+    "BBLITE_CAPTURE_UI": "0"
+  },
+  "capture": false,
+  "timeoutMs": 120000,
+  "phases": [
+    {
+      "id": "frozen-full",
+      "frame": 120,
+      "env": {
+        "BBLITE_CAPTURE_UI": "1"
+      }
+    },
+    {
+      "id": "frozen",
+      "frame": 120
+    },
+    {
+      "id": "frozen-idle",
+      "frame": 180
+    },
+    {
+      "id": "shadows-off",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:273"]
+    },
+    {
+      "id": "shadows-restored",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:273", "-*10", "UiClick@1222:273"]
+    },
+    {
+      "id": "debug-on",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:300"]
+    },
+    {
+      "id": "debug-restored",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:300", "-*10", "UiClick@1222:300"]
+    },
+    {
+      "id": "bloom-on",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:58"]
+    },
+    {
+      "id": "bloom-restored",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1222:58", "-*10", "UiClick@1222:58"]
+    },
+    {
+      "id": "light-zero",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1094:246", "UiKey@Home"]
+    },
+    {
+      "id": "light-restored",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1094:246", "UiKey@Home", "UiKey@Right*20"]
+    },
+    {
+      "id": "running",
+      "frame": 120,
+      "tape": ["-*60", "UiClick@1055:58"]
+    },
+    {
+      "id": "paused-idle",
+      "frame": 180,
+      "env": { "BBLITE_SCREENSHOT_FRAMES": "120" },
+      "tape": ["-*60", "UiClick@1055:58", "-*30", "UiClick@1055:58"]
+    }
+  ],
+  "expect": [
+    {
+      "kind": "golden-mad",
+      "phase": "frozen-full",
+      "max": 0.5,
+      "foregroundMax": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "frozen",
+      "vs": "browser:frozen",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "shadows-off",
+      "vs": "browser:shadows-off",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "debug-on",
+      "vs": "browser:debug-on",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "bloom-on",
+      "vs": "browser:bloom-on",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "light-zero",
+      "vs": "browser:light-zero",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "frozen-idle",
+      "vs": "frozen",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "shadows-restored",
+      "vs": "frozen",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "debug-restored",
+      "vs": "frozen",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "bloom-restored",
+      "vs": "frozen",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "light-restored",
+      "vs": "frozen",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "shadows-off",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "image-mad",
+      "phase": "debug-on",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "image-mad",
+      "phase": "bloom-on",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "image-mad",
+      "phase": "light-zero",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "image-mad",
+      "phase": "running",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "image-mad",
+      "phase": "paused-idle",
+      "vs": "frozen",
+      "min": 0.0001,
+      "changedPixelsMin": 100
+    },
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/ocean-controls.mjs"
+    }
+  ],
+  "observe": {
+    "viewport": [1280, 720],
+    "golden": false,
+    "state": "(() => { const canvas = document.getElementById('renderCanvas'); return {search:location.search,dataset:{...canvas.dataset},viewport:{width:canvas.width,height:canvas.height},camera:window.getOceanCameraParameters?.(),pause:document.querySelector('#ocean-controls button')?.textContent,controls:Object.fromEntries([...document.querySelectorAll('#ocean-controls label')].map(label => {const input=label.querySelector('input,select');return [label.querySelector('span')?.textContent,{type:input.type,value:input.value,checked:input.checked}];})),timing:document.getElementById('ocean-gpu-timing')?.textContent}; })()",
+    "steps": [
+      {
+        "id": "frozen-full",
+        "screenshot": "page"
+      },
+      {
+        "id": "frozen",
+        "actions": [],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "frozen-idle",
+        "actions": [
+          {
+            "frames": 60
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "shadows-off",
+        "actions": [
+          {
+            "click": [1222, 273]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "shadows-restored",
+        "actions": [
+          {
+            "click": [1222, 273]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "debug-on",
+        "actions": [
+          {
+            "click": [1222, 300]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "debug-restored",
+        "actions": [
+          {
+            "click": [1222, 300]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "bloom-on",
+        "actions": [
+          {
+            "click": [1222, 58]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "bloom-restored",
+        "actions": [
+          {
+            "click": [1222, 58]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "light-zero",
+        "actions": [
+          {
+            "evaluate": "(() => { const label = [...document.querySelectorAll('#ocean-controls label')].find(e => e.querySelector('span')?.textContent === 'Light intensity'); const input = label.querySelector('input'); input.value = '0'; input.dispatchEvent(new Event('input', {bubbles:true})); })()"
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "light-restored",
+        "actions": [
+          {
+            "evaluate": "(() => { const label = [...document.querySelectorAll('#ocean-controls label')].find(e => e.querySelector('span')?.textContent === 'Light intensity'); const input = label.querySelector('input'); input.value = '1'; input.dispatchEvent(new Event('input', {bubbles:true})); })()"
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "running",
+        "actions": [
+          {
+            "click": [1055, 58]
+          },
+          {
+            "frames": 30
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "paused",
+        "actions": [
+          {
+            "click": [1055, 58]
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "paused-idle",
+        "actions": [
+          {
+            "frames": 60
+          }
+        ],
+        "screenshot": "canvas",
+        "settleFrames": 8,
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      }
+    ]
+  }
+}

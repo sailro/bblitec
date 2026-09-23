@@ -105,6 +105,10 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         "native/src/pal_sprite_ui_dawn.hpp",
         "utf8",
     );
+    const textureCache = readFileSync(
+        "native/src/pal_ui_texture_cache.hpp",
+        "utf8",
+    );
 
     assert.doesNotMatch(cmake, /RmlUi_Renderer_SDL_GPU\.cpp/);
     assert.doesNotMatch(projection, /RenderInterface_SDL_GPU|SDL_GPUDevice/);
@@ -135,10 +139,24 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);
-    for (const renderer of [sdl, dawn, spriteSdlUi, spriteDawnUi]) {
+    for (const renderer of [sdl, dawn])
         assert.match(renderer, /ui_frame_uses_texture/);
-        assert.match(renderer, /draw\.nearest_sampling/);
+    assert.match(
+        textureCache,
+        /std::weak_ptr<const std::vector<std::uint8_t>> source/,
+    );
+    assert.match(textureCache, /source\.expired\(\)/);
+    for (const renderer of [spriteSdlUi, spriteDawnUi]) {
+        assert.match(renderer, /#include "pal_ui_texture_cache\.hpp"/);
+        assert.match(renderer, /prune_ui_texture_cache\(\s*ui\.textures,/);
+        assert.match(
+            renderer,
+            /UiCachedTexture<[^>]+>\{texture, source(?:_texture)?\.rgba\}/,
+        );
+        assert.doesNotMatch(renderer, /ui_frame_uses_texture/);
     }
+    for (const renderer of [sdl, dawn, spriteSdlUi, spriteDawnUi])
+        assert.match(renderer, /draw\.nearest_sampling/);
 });
 
 test("normalizes retained CSS cascade keywords and measures width resets", () => {

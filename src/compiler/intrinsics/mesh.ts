@@ -58,6 +58,8 @@ export const nativeMeshDataIntrinsics: ReadonlySet<string> = new EmissionSet([
     "createTransformNode",
     "createIdentityMat4",
     "composeMat4",
+    "eulerXYZToQuatTuple",
+    "quatToEulerXYZTuple",
     "invertMat4",
     "setThinInstanceMatrix",
     "setThinInstanceColors",
@@ -988,6 +990,32 @@ function compileMat4Compose(
     };
 }
 
+function compileQuaternionTuple(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    inverse: boolean,
+): Value {
+    const parameters = inverse ? 4 : 3;
+    const arity = inverse ? 3 : 4;
+    context.expectArgumentCount(call, parameters, parameters);
+    context.reachFeature("math:quaternion", call);
+    context.reachJsData();
+    const arguments_ = call.arguments.map((argument) => {
+        const value = context.compileNumber(argument, "double");
+        const temporary = context.allocateTemporaryCppName(
+            "quaternion_argument",
+        );
+        context.emit(`const double ${temporary} = ${value};`);
+        return temporary;
+    });
+    return {
+        kind: "data",
+        cpp: `bbl::js::Tuple<${arity}>(bbl::upstream::${inverse ? "quat_to_euler_xyz" : "euler_to_quat"}(${arguments_.join(", ")}))`,
+        dataType: { kind: "tuple", arity },
+        freshData: true,
+    };
+}
+
 function compileNormalizeVec3(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
@@ -1201,37 +1229,10 @@ function compileCloneTransformNode(
     };
 }
 
-function compileCreateMeshFromData(
+function compileMeshOptionalStreams(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
-): Value | undefined {
-    context.expectArgumentCount(call, 5, 9);
-    const engine = context.compileValue(argumentAt(call, 0));
-    context.expectKind(engine, "engine", argumentAt(call, 0));
-    // The record carries the pinned Mesh name; scene code finds
-    // meshes by it.
-    const name = context.compileValue(argumentAt(call, 1));
-    if (
-        name.kind !== "string" &&
-        !(name.kind === "data" && name.dataType?.kind === "string")
-    ) {
-        context.fail(
-            argumentAt(call, 1),
-            `Mesh names must be strings, received ${name.kind}.`,
-        );
-    }
-    const positions = context.compileTypedArrayArgument(
-        argumentAt(call, 2),
-        "f32array",
-    );
-    const normals = context.compileTypedArrayArgument(
-        argumentAt(call, 3),
-        "f32array",
-    );
-    const indices = context.compileTypedArrayArgument(
-        argumentAt(call, 4),
-        "u32array",
-    );
+) {
     // The demo modules skip optional slots with literal
     // `undefined`, which parses as an identifier expression.
     const isUndefinedArgument = (
@@ -1249,7 +1250,7 @@ function compileCreateMeshFromData(
     // attributes they carry — and `create_mesh_from_data` reads an
     // empty array as the absent stream either way, which is the
     // same absence the folded `{}` writes.
-    const streams = [5, 6, 7, 8].map((index) => {
+    return [5, 6, 7, 8].map((index) => {
         const argument = call.arguments[index];
         if (isUndefinedArgument(argument)) {
             return { cpp: "{}", present: false };
@@ -1290,6 +1291,40 @@ function compileCreateMeshFromData(
             present: true,
         };
     });
+}
+
+function compileCreateMeshFromData(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 5, 9);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    // The record carries the pinned Mesh name; scene code finds
+    // meshes by it.
+    const name = context.compileValue(argumentAt(call, 1));
+    if (
+        name.kind !== "string" &&
+        !(name.kind === "data" && name.dataType?.kind === "string")
+    ) {
+        context.fail(
+            argumentAt(call, 1),
+            `Mesh names must be strings, received ${name.kind}.`,
+        );
+    }
+    const positions = context.compileTypedArrayArgument(
+        argumentAt(call, 2),
+        "f32array",
+    );
+    const normals = context.compileTypedArrayArgument(
+        argumentAt(call, 3),
+        "f32array",
+    );
+    const indices = context.compileTypedArrayArgument(
+        argumentAt(call, 4),
+        "u32array",
+    );
+    const streams = compileMeshOptionalStreams(context, call);
     const optional = streams.map((stream) => stream.cpp);
     // The streams decide the mesh half of the variant key. A
     // run-time one leaves its entry unrecorded: generation cannot
@@ -1318,6 +1353,70 @@ function compileCreateMeshFromData(
         ...(streams.some((stream) => stream.present === undefined)
             ? { runtimeMeshStreams: true as const }
             : {}),
+    };
+}
+
+function compileResizeMeshGeometry(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    shared: boolean,
+): Value {
+    context.expectArgumentCount(call, 5, 9);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    let meshCpp: string;
+    if (shared) {
+        const entries = context.handleCollections.staticHandleList(
+            argumentAt(call, 1),
+        );
+        if (entries) {
+            for (const entry of entries) {
+                context.expectKind(entry.value, "mesh", entry.node);
+                context.expectSameEngine(engine, entry.value, entry.node);
+            }
+            meshCpp = `std::vector<bbl::MeshHandle>{${entries.map((entry) => entry.value.cpp).join(",")}}`;
+        } else {
+            const meshes = context.compileValue(argumentAt(call, 1));
+            if (
+                meshes.kind !== "data" ||
+                !meshes.dataType ||
+                !["vector", "span"].includes(meshes.dataType.kind) ||
+                !("element" in meshes.dataType) ||
+                meshes.dataType.element.kind !== "handle" ||
+                meshes.dataType.element.handle !== "mesh"
+            )
+                context.fail(
+                    argumentAt(call, 1),
+                    "Shared geometry resize requires a typed Mesh array.",
+                );
+            meshCpp = meshes.cpp;
+        }
+    } else {
+        const mesh = context.compileValue(argumentAt(call, 1));
+        context.expectKind(mesh, "mesh", argumentAt(call, 1));
+        context.expectSameEngine(engine, mesh, call);
+        meshCpp = mesh.cpp;
+    }
+    const positions = context.compileTypedArrayArgument(
+        argumentAt(call, 2),
+        "f32array",
+    );
+    const normals = context.compileTypedArrayArgument(
+        argumentAt(call, 3),
+        "f32array",
+    );
+    const indices = context.compileTypedArrayArgument(
+        argumentAt(call, 4),
+        "u32array",
+    );
+    const optional = compileMeshOptionalStreams(context, call).map(
+        (stream) => stream.cpp,
+    );
+    context.reachFeature("mesh:resize-geometry", call);
+    context.reachFeature("renderer:scene", call);
+    return {
+        kind: "void",
+        cpp: `bbl::${shared ? "resize_shared_mesh_geometry" : "resize_mesh_geometry"}(${engine.cpp},${meshCpp},${positions},${normals},${indices},${optional.join(",")})`,
     };
 }
 
@@ -1351,6 +1450,20 @@ function compileUpdateMeshPositions(
             `bbl::update_mesh_positions(${engine.cpp}, ${mesh.cpp}, ` +
             `${positions}, ${vertexOffset}, ${vertexCount}, ` +
             `${sourceVertexOffset})`,
+    };
+}
+
+function compileMarkMeshRenderableDirty(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", call);
+    context.reachFeature("renderer:scene", call);
+    return {
+        kind: "void",
+        cpp: `bbl::mark_mesh_renderable_dirty(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
     };
 }
 
@@ -2857,6 +2970,14 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["invertMat4", compileMat4Invert],
     ["composeMat4", compileMat4Compose],
     ["normalizeVec3TupleOrUp", compileNormalizeVec3],
+    [
+        "eulerXYZToQuatTuple",
+        (context, call) => compileQuaternionTuple(context, call, false),
+    ],
+    [
+        "quatToEulerXYZTuple",
+        (context, call) => compileQuaternionTuple(context, call, true),
+    ],
     ["normalizeVec3", compileNormalizeVec3Object],
     ["normalizeVec3ToRef", compileNormalizeVec3ToRef],
     ["createIdentityMat4", compileMat4Identity],
@@ -2865,6 +2986,15 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["cloneTransformNode", compileCloneTransformNode],
     ["createMeshFromData", compileCreateMeshFromData],
     ["updateMeshPositions", compileUpdateMeshPositions],
+    [
+        "resizeMeshGeometry",
+        (context, call) => compileResizeMeshGeometry(context, call, false),
+    ],
+    [
+        "resizeSharedMeshGeometry",
+        (context, call) => compileResizeMeshGeometry(context, call, true),
+    ],
+    ["markMeshRenderableDirty", compileMarkMeshRenderableDirty],
     ["createHierarchyInstancePool", compileCreateHierarchyInstancePool],
     [
         "addHierarchyInstance",

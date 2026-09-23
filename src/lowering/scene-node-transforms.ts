@@ -5,36 +5,16 @@ import {
 } from "../scene-node-transform-descriptor.js";
 
 function assetRead(descriptor: SceneNodeTransformDescriptor): string {
-    const { cppType, nativeField } = descriptor;
-    if (descriptor.assetSetter) {
-        return `const auto& root = asset_record(engine, concrete.value).root_${nativeField};
-                return ${cppType}{root.x, root.y, root.z};`;
-    }
-    if (nativeField === "scaling") {
-        return (
-            "return bbl::Vec3{" +
-            "asset_record(engine, concrete.value).root_scaling_reset " +
-            "? 1.0f : -1.0f, 1, 1};"
-        );
-    }
-    return 'throw std::runtime_error("Reading an imported root quaternion is not supported.");';
+    const root =
+        descriptor.nativeField === "rotation"
+            ? "asset_root_rotation(engine, concrete)"
+            : `asset_record(engine, concrete.value).root_${descriptor.nativeField}`;
+    return `const auto root = ${root};
+                return ${descriptor.cppType}{${descriptor.components.map((c) => `static_cast<${descriptor.precision}>(root.${c})`).join(", ")}};`;
 }
 
 function assetWrite(descriptor: SceneNodeTransformDescriptor): string {
-    const { nativeField } = descriptor;
-    if (descriptor.assetSetter) {
-        return `${descriptor.assetSetter}(engine, concrete, bbl::Vec3{
-                    static_cast<float>(value.x),
-                    static_cast<float>(value.y),
-                    static_cast<float>(value.z)});`;
-    }
-    if (nativeField === "scaling") {
-        return `if (value.x != 1 || value.y != 1 || value.z != 1)
-                    throw std::runtime_error("An imported root only supports resetting scaling to identity.");
-                reset_asset_root_scaling(engine, concrete);`;
-    }
-    return `if (value.x != 0 || value.y != 0 || value.z != 0 || value.w != 1)
-                    throw std::runtime_error("An imported root only supports resetting its quaternion to identity.");`;
+    return `${descriptor.assetSetter}(engine, concrete, ${descriptor.components.length === 4 ? "Vec4d" : "Vec3d"}{${descriptor.components.map((c) => `value.${c}`).join(", ")}});`;
 }
 
 function meshWrite(descriptor: SceneNodeTransformDescriptor): string {
@@ -75,24 +55,7 @@ function componentWrite(
             ${descriptor.transformNodeSetter}(
                 engine, concrete, vector, runtime_transform);`
         : 'throw std::runtime_error("No transform-node factory is reached by this scene.");';
-    let asset: string;
-    if (descriptor.assetComponentSetter) {
-        asset = `${descriptor.assetComponentSetter}(
-                engine, concrete, component, static_cast<float>(value));`;
-    } else if (descriptor.nativeField === "scaling") {
-        asset = `bbl::Vec3 vector{
-                asset_record(engine, concrete.value).root_scaling_reset
-                    ? 1.0f : -1.0f,
-                1,
-                1};
-            assign_component(vector);
-            if (vector.x != 1 || vector.y != 1 || vector.z != 1)
-                throw std::runtime_error("An imported root only supports resetting scaling to identity.");
-            reset_asset_root_scaling(engine, concrete);`;
-    } else {
-        asset =
-            'throw std::runtime_error("Reading an imported root quaternion is not supported.");';
-    }
+    const asset = `${descriptor.assetComponentSetter}(engine, concrete, component, value);`;
     return `
 void ${descriptor.sceneNodeComponentSetter}(
     Engine& engine, const SceneNodeHandle& node, std::size_t component,

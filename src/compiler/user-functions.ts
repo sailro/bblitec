@@ -1011,6 +1011,7 @@ export interface UserFunctionContext
             | "compileCondition"
             | "withRecordScopes"
             | "isBrowserOnlyExpression"
+            | "evaluateBrowserValue"
             | "isInFrameCallback"
             | "compileForDataSink"
             | "compileStoredDataFunction"
@@ -1438,6 +1439,15 @@ export class UserFunctionLowerer {
         pinArguments = true,
     ): Value | undefined {
         if (
+            argumentValues.some(
+                (value) =>
+                    value.browserValue?.kind === "search-params" ||
+                    (value.browserValue?.kind === "object" &&
+                        value.browserValue.moduleUrl === true),
+            )
+        )
+            return undefined;
+        if (
             ts.isCallExpression(call) &&
             requiresDefaultParameterBinding(this.checker, ir.declaration, call)
         )
@@ -1628,7 +1638,12 @@ export class UserFunctionLowerer {
             !ts.isCallExpression(argument) &&
             !ts.isIdentifier(argument)
         ) {
-            return { kind: "browser", cpp: "" };
+            const browserValue = context.evaluateBrowserValue(argument);
+            return {
+                kind: "browser",
+                cpp: "",
+                ...(browserValue ? { browserValue } : {}),
+            };
         }
         const value = context.compileValue(argument);
         if (
@@ -3631,15 +3646,18 @@ export class UserFunctionLowerer {
         // identity beside the closure; everything else is the plain
         // assignment the stored-function model already emitted.
         const identity = dataType.identity
-            ? owner?.repeatedCallbackEvaluation
-                ? "{bbl::js::next_callback_identity(), "
-                : `{${context.callbackIdentity(declaration, owner)}u, `
+            ? owner?.runtimeCallbackIdentityCpp
+                ? `{${owner.runtimeCallbackIdentityCpp}, `
+                : owner?.repeatedCallbackEvaluation
+                  ? "{bbl::js::next_callback_identity(), "
+                  : `{${context.callbackIdentity(declaration, owner)}u, `
             : " = ";
         const lambda = asynchronous
             ? renderAsyncClosure(
                   closure,
                   parameters.map(({ type, cppName: name }) => ({
                       type: context.dataTypes.cppType(type),
+                      dataType: type,
                       name,
                   })),
                   returnCpp,
@@ -3670,6 +3688,7 @@ export class UserFunctionLowerer {
                 initializer: `bbl::js::retain_callback(${selfOwnerCpp})`,
             });
         }
+        context.registerNativeTemporary(cppName, dataType);
         return cppName;
     }
 

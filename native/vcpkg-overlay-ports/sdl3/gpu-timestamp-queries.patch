@@ -1,0 +1,248 @@
+--- a/include/SDL3/SDL_gpu.h
++++ b/include/SDL3/SDL_gpu.h
+@@ -4566,6 +4566,21 @@
+  */
+ extern SDL_DECLSPEC SDL_GPUTextureFormat SDLCALL SDL_GetGPUTextureFormatFromPixelFormat(SDL_PixelFormat format);
+ 
++
++/* Babylon Lite extension: GPU timestamp queries on supported backends.
++ * Writes and resolves occur outside passes. Query pools must stay alive until
++ * all submitted commands using them complete. Resolve destinations are DOWNLOAD
++ * transfer buffers; map them only after the submission fence completes.
++ * Unsupported drivers return frequency zero. Results are Uint64 queue ticks.
++ */
++#define SDL_BBLITE_GPU_TIMESTAMPS 1
++typedef struct SDL_GPUTimestampQueryPool SDL_GPUTimestampQueryPool;
++extern SDL_DECLSPEC Uint64 SDLCALL SDL_BBLiteGetGPUTimestampFrequency(SDL_GPUDevice *device);
++extern SDL_DECLSPEC SDL_GPUTimestampQueryPool *SDLCALL SDL_BBLiteCreateGPUTimestampQueryPool(SDL_GPUDevice *device, Uint32 count);
++extern SDL_DECLSPEC void SDLCALL SDL_BBLiteReleaseGPUTimestampQueryPool(SDL_GPUDevice *device, SDL_GPUTimestampQueryPool *pool);
++extern SDL_DECLSPEC bool SDLCALL SDL_BBLiteWriteGPUTimestamp(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 index);
++extern SDL_DECLSPEC bool SDLCALL SDL_BBLiteResolveGPUTimestamps(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 count, SDL_GPUTransferBuffer *destination);
++
+ #ifdef SDL_PLATFORM_GDK
+ 
+ /**
+--- a/src/gpu/SDL_sysgpu.h
++++ b/src/gpu/SDL_sysgpu.h
+@@ -705,6 +705,13 @@
+         Uint32 size,
+         const char *debugName);
+ 
++    /* Optional Babylon Lite timestamp-query extension. */
++    Uint64 (*GetTimestampFrequency)(SDL_GPURenderer *driverData);
++    SDL_GPUTimestampQueryPool *(*CreateTimestampQueryPool)(SDL_GPURenderer *driverData, Uint32 count);
++    void (*ReleaseTimestampQueryPool)(SDL_GPURenderer *driverData, SDL_GPUTimestampQueryPool *pool);
++    bool (*WriteTimestamp)(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 index);
++    bool (*ResolveTimestamps)(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 count, SDL_GPUTransferBuffer *destination);
++
+     // Debug Naming
+ 
+     void (*SetBufferName)(
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -1371,6 +1371,65 @@
+         createinfo);
+ }
+ 
++
++Uint64 SDL_BBLiteGetGPUTimestampFrequency(SDL_GPUDevice *device)
++{
++    CHECK_DEVICE_MAGIC(device, 0);
++    return device->GetTimestampFrequency ? device->GetTimestampFrequency(device->driverData) : 0;
++}
++
++SDL_GPUTimestampQueryPool *SDL_BBLiteCreateGPUTimestampQueryPool(SDL_GPUDevice *device, Uint32 count)
++{
++    CHECK_DEVICE_MAGIC(device, NULL);
++    if (!device->CreateTimestampQueryPool) {
++        SDL_SetError("GPU timestamps are unsupported by this driver");
++        return NULL;
++    }
++    if (count == 0 || count > SDL_MAX_UINT32 / sizeof(Uint64)) {
++        SDL_InvalidParamError("count");
++        return NULL;
++    }
++    return device->CreateTimestampQueryPool(device->driverData, count);
++}
++
++void SDL_BBLiteReleaseGPUTimestampQueryPool(SDL_GPUDevice *device, SDL_GPUTimestampQueryPool *pool)
++{
++    CHECK_DEVICE_MAGIC(device, );
++    if (pool && device->ReleaseTimestampQueryPool) {
++        device->ReleaseTimestampQueryPool(device->driverData, pool);
++    }
++}
++
++bool SDL_BBLiteWriteGPUTimestamp(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 index)
++{
++    if (!command_buffer || !pool) {
++        return SDL_InvalidParamError(!command_buffer ? "command_buffer" : "pool");
++    }
++    if (COMMAND_BUFFER_DEVICE->debug_mode) {
++        CHECK_COMMAND_BUFFER_RETURN_FALSE
++        CHECK_ANY_PASS_IN_PROGRESS("Timestamp writes must occur outside a pass", false)
++    }
++    if (!COMMAND_BUFFER_DEVICE->WriteTimestamp) {
++        return SDL_SetError("GPU timestamps are unsupported by this driver");
++    }
++    return COMMAND_BUFFER_DEVICE->WriteTimestamp(command_buffer, pool, index);
++}
++
++bool SDL_BBLiteResolveGPUTimestamps(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *pool, Uint32 count, SDL_GPUTransferBuffer *destination)
++{
++    if (!command_buffer || !pool || !destination) {
++        return SDL_InvalidParamError(!command_buffer ? "command_buffer" : (!pool ? "pool" : "destination"));
++    }
++    if (COMMAND_BUFFER_DEVICE->debug_mode) {
++        CHECK_COMMAND_BUFFER_RETURN_FALSE
++        CHECK_ANY_PASS_IN_PROGRESS("Timestamp resolves must occur outside a pass", false)
++    }
++    if (!COMMAND_BUFFER_DEVICE->ResolveTimestamps) {
++        return SDL_SetError("GPU timestamps are unsupported by this driver");
++    }
++    return COMMAND_BUFFER_DEVICE->ResolveTimestamps(command_buffer, pool, count, destination);
++}
++
+ SDL_GPUBuffer *SDL_CreateGPUBuffer(
+     SDL_GPUDevice *device,
+     const SDL_GPUBufferCreateInfo *createinfo)
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -4059,6 +4059,89 @@
+         debugName);
+ }
+ 
++
++/* Babylon Lite timestamp storage. The caller retains this pool through GPU completion. */
++typedef struct D3D12TimestampQueryPool
++{
++    D3D12Renderer *renderer;
++    ID3D12QueryHeap *heap;
++    Uint32 count;
++} D3D12TimestampQueryPool;
++
++static Uint64 D3D12_GetTimestampFrequency(SDL_GPURenderer *driverData)
++{
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    UINT64 frequency = 0;
++    if (FAILED(ID3D12CommandQueue_GetTimestampFrequency(renderer->commandQueue, &frequency))) {
++        return 0;
++    }
++    return frequency;
++}
++
++static SDL_GPUTimestampQueryPool *D3D12_CreateTimestampQueryPool(SDL_GPURenderer *driverData, Uint32 count)
++{
++    static const IID queryHeapIID = { 0x0d9658ae, 0xed45, 0x469e, { 0xa6, 0x1d, 0x97, 0x0e, 0xc5, 0x83, 0xca, 0xb4 } };
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    D3D12TimestampQueryPool *pool;
++    D3D12_QUERY_HEAP_DESC description;
++    HRESULT res;
++    if (!D3D12_GetTimestampFrequency(driverData)) {
++        SDL_SetError("D3D12 queue does not support timestamps");
++        return NULL;
++    }
++    pool = (D3D12TimestampQueryPool *)SDL_calloc(1, sizeof(*pool));
++    if (!pool) {
++        return NULL;
++    }
++    SDL_zero(description);
++    description.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
++    description.Count = count;
++    res = ID3D12Device_CreateQueryHeap(renderer->device, &description, D3D_GUID(queryHeapIID), (void **)&pool->heap);
++    if (FAILED(res)) {
++        SDL_free(pool);
++        CHECK_D3D12_ERROR_AND_RETURN("Could not create timestamp query heap", NULL);
++    }
++    pool->renderer = renderer;
++    pool->count = count;
++    return (SDL_GPUTimestampQueryPool *)pool;
++}
++
++static void D3D12_ReleaseTimestampQueryPool(SDL_GPURenderer *driverData, SDL_GPUTimestampQueryPool *queryPool)
++{
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)queryPool;
++    if (pool->renderer != (D3D12Renderer *)driverData) {
++        SDL_SetError("Timestamp query pool belongs to another GPU device");
++        return;
++    }
++    ID3D12QueryHeap_Release(pool->heap);
++    SDL_free(pool);
++}
++
++static bool D3D12_WriteTimestamp(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *queryPool, Uint32 index)
++{
++    D3D12CommandBuffer *command = (D3D12CommandBuffer *)command_buffer;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)queryPool;
++    if (command->renderer != pool->renderer || index >= pool->count) {
++        return SDL_SetError("Timestamp query index or GPU device is invalid");
++    }
++    ID3D12GraphicsCommandList_EndQuery(command->graphicsCommandList, pool->heap, D3D12_QUERY_TYPE_TIMESTAMP, index);
++    return true;
++}
++
++static bool D3D12_ResolveTimestamps(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTimestampQueryPool *queryPool, Uint32 count, SDL_GPUTransferBuffer *destination)
++{
++    D3D12CommandBuffer *command = (D3D12CommandBuffer *)command_buffer;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)queryPool;
++    D3D12BufferContainer *buffer = (D3D12BufferContainer *)destination;
++    if (command->renderer != pool->renderer || count == 0 || count > pool->count ||
++        buffer->type != D3D12_BUFFER_TYPE_DOWNLOAD || (Uint64)count * sizeof(Uint64) > buffer->size) {
++        return SDL_SetError("Timestamp resolve range or destination is invalid");
++    }
++    ID3D12GraphicsCommandList_ResolveQueryData(command->graphicsCommandList, pool->heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, count, buffer->activeBuffer->handle, 0);
++    D3D12_INTERNAL_TrackBuffer(command, buffer->activeBuffer);
++    return true;
++}
++
+ // Disposal
+ 
+ static void D3D12_ReleaseTexture(
+@@ -9584,6 +9667,11 @@
+     }
+ 
+     ASSIGN_DRIVER(D3D12)
++    result->GetTimestampFrequency = D3D12_GetTimestampFrequency;
++    result->CreateTimestampQueryPool = D3D12_CreateTimestampQueryPool;
++    result->ReleaseTimestampQueryPool = D3D12_ReleaseTimestampQueryPool;
++    result->WriteTimestamp = D3D12_WriteTimestamp;
++    result->ResolveTimestamps = D3D12_ResolveTimestamps;
+     result->driverData = (SDL_GPURenderer *)renderer;
+     result->shader_formats = shaderFormats;
+     result->debug_mode = debugMode;
+--- a/src/dynapi/SDL_dynapi_procs.h
++++ b/src/dynapi/SDL_dynapi_procs.h
+@@ -1305,3 +1305,8 @@
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface_IO,(SDL_IOStream *a,bool b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface,(const char *a),(a),return)
+ SDL_DYNAPI_PROC(bool,SDL_SetWindowFillDocument,(SDL_Window *a,bool b),(a,b),return)
++SDL_DYNAPI_PROC(Uint64,SDL_BBLiteGetGPUTimestampFrequency,(SDL_GPUDevice *a),(a),return)
++SDL_DYNAPI_PROC(SDL_GPUTimestampQueryPool*,SDL_BBLiteCreateGPUTimestampQueryPool,(SDL_GPUDevice *a,Uint32 b),(a,b),return)
++SDL_DYNAPI_PROC(void,SDL_BBLiteReleaseGPUTimestampQueryPool,(SDL_GPUDevice *a,SDL_GPUTimestampQueryPool *b),(a,b),)
++SDL_DYNAPI_PROC(bool,SDL_BBLiteWriteGPUTimestamp,(SDL_GPUCommandBuffer *a,SDL_GPUTimestampQueryPool *b,Uint32 c),(a,b,c),return)
++SDL_DYNAPI_PROC(bool,SDL_BBLiteResolveGPUTimestamps,(SDL_GPUCommandBuffer *a,SDL_GPUTimestampQueryPool *b,Uint32 c,SDL_GPUTransferBuffer *d),(a,b,c,d),return)
+--- a/src/dynapi/SDL_dynapi_overrides.h
++++ b/src/dynapi/SDL_dynapi_overrides.h
+@@ -1297,3 +1297,8 @@
+ #define SDL_LoadSurface_IO SDL_LoadSurface_IO_REAL
+ #define SDL_LoadSurface SDL_LoadSurface_REAL
+ #define SDL_SetWindowFillDocument SDL_SetWindowFillDocument_REAL
++#define SDL_BBLiteGetGPUTimestampFrequency SDL_BBLiteGetGPUTimestampFrequency_REAL
++#define SDL_BBLiteCreateGPUTimestampQueryPool SDL_BBLiteCreateGPUTimestampQueryPool_REAL
++#define SDL_BBLiteReleaseGPUTimestampQueryPool SDL_BBLiteReleaseGPUTimestampQueryPool_REAL
++#define SDL_BBLiteWriteGPUTimestamp SDL_BBLiteWriteGPUTimestamp_REAL
++#define SDL_BBLiteResolveGPUTimestamps SDL_BBLiteResolveGPUTimestamps_REAL
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -1271,6 +1271,11 @@
+     SDL_LoadSurface_IO;
+     SDL_LoadSurface;
+     SDL_SetWindowFillDocument;
++    SDL_BBLiteGetGPUTimestampFrequency;
++    SDL_BBLiteCreateGPUTimestampQueryPool;
++    SDL_BBLiteReleaseGPUTimestampQueryPool;
++    SDL_BBLiteWriteGPUTimestamp;
++    SDL_BBLiteResolveGPUTimestamps;
+     # extra symbols go here (don't modify this line)
+   local: *;
+ };

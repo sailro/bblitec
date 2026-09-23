@@ -82,13 +82,6 @@ void fail_device_recovery(Engine& engine, const std::string& error) {
     state.in_flight.clear();
     for (const auto& registration : registrations) if (registration->on_failed) registration->on_failed(error);
 }
-void dispose_engine(Engine& engine) {
-    engine.stopped = true;
-    auto& state = recovery_state(engine);
-    state.disposed = true;
-    state.registrations.clear(); state.error_listeners.clear();
-    engine.renderer_restart_requested = false;
-}
 void add_gpu_error_listener(GpuDeviceIdentity device, std::function<void(const std::string&)> listener) {
     if (!device.engine) throw std::runtime_error("Invalid GPU device identity.");
     recovery_state(*device.engine).error_listeners[device.generation].push_back(std::move(listener));

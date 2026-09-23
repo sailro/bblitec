@@ -8,12 +8,18 @@
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
+#include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Geometry.h>
+#include <RmlUi/Core/Input.h>
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <memory>
 #include <tuple>
 #include <vector>
 
@@ -32,18 +38,44 @@ public:
         ratio = -1.f;
         return true;
     }
+
+protected:
+    void ProcessDefaultAction(Rml::Event& event) override {
+        Rml::ElementFormControlInput::ProcessDefaultAction(event);
+        if (IsDisabled() || GetAttribute<Rml::String>("type", "text") != "range" ||
+            event != Rml::EventId::Keydown)
+            return;
+        // RmlUi's slider handles arrow increments, but omits browser endpoint keys.
+        const int key = event.GetParameter<int>("key_identifier", 0);
+        if (key == Rml::Input::KI_HOME || key == Rml::Input::KI_END) {
+            SetValue(key == Rml::Input::KI_HOME ? GetAttribute<Rml::String>("min", "0")
+                                                : GetAttribute<Rml::String>("max", "100"));
+            event.StopPropagation();
+        }
+    }
 };
 
 // Chromium 152 NativeThemeBase::PaintSliderTrack/PaintSliderThumb and the
 // default light control palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {
+    using Owner = std::pair<Rml::Element*, Rml::RenderManager*>;
+    struct OwnerLess {
+        bool operator()(const Owner& left, const Owner& right) const {
+            return left.first != right.first
+                       ? std::less<Rml::Element*>{}(left.first, right.first)
+                       : std::less<Rml::RenderManager*>{}(left.second, right.second);
+        }
+    };
     struct Data {
+        Owner owner;
+        std::size_t references = 0;
         std::tuple<int, int, float, int, bool, bool> key{};
         float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
         bool initialized = false;
     };
+    mutable std::map<Owner, std::unique_ptr<Data>, OwnerLess> retained;
     // Pixel coverage of an axis-aligned rounded rectangle. Integrate the
     // horizontal circle interval; full interior pixels take the fast path.
     static float coverage(int x, int y, float left, float top, float right, float bottom,
@@ -105,11 +137,25 @@ class UiRangeDecorator final : public Rml::Decorator {
     }
 
 public:
-    Rml::DecoratorDataHandle GenerateElementData(Rml::Element*, Rml::BoxArea) const override {
-        return reinterpret_cast<Rml::DecoratorDataHandle>(new Data{});
+    Rml::DecoratorDataHandle GenerateElementData(Rml::Element* element,
+                                                 Rml::BoxArea) const override {
+        // RmlUi generates replacement data before releasing the previous handle.
+        // Preserve the pixel/geometry cache across that overlap; the render key
+        // below still invalidates it for actual control appearance changes.
+        const Owner owner{element, element->GetRenderManager()};
+        auto found = retained.find(owner);
+        if (found == retained.end()) {
+            auto data = std::make_unique<Data>();
+            data->owner = owner;
+            found = retained.emplace(owner, std::move(data)).first;
+        }
+        ++found->second->references;
+        return reinterpret_cast<Rml::DecoratorDataHandle>(found->second.get());
     }
     void ReleaseElementData(Rml::DecoratorDataHandle value) const override {
-        delete reinterpret_cast<Data*>(value);
+        auto& data = *reinterpret_cast<Data*>(value);
+        if (--data.references == 0)
+            retained.erase(data.owner);
     }
     void RenderElement(Rml::Element* element, Rml::DecoratorDataHandle value) const override {
         // The range thumb has its own native appearance. Removing the input's
@@ -148,6 +194,10 @@ public:
             data.texture = manager.MakeCallbackTexture(
                 [bytes = pixels(width, height, thumb, state, themed_track, themed_thumb), width,
                  height](const Rml::CallbackTextureInterface& out) {
+                    const char* profile = std::getenv("BBLITE_CPU_PROFILE");
+                    if (profile && std::string_view(profile) == "1")
+                        std::fprintf(stderr, "[cpu][range-raster] width=%d height=%d bytes=%zu\n",
+                                     width, height, bytes.size());
                     return out.GenerateTexture(bytes, {width, height});
                 });
         }

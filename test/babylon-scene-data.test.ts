@@ -175,6 +175,10 @@ test("Babylon scene data preserves material map replacement, light guards and lo
         join(include, "bblite/upstream/pinned_world_transform.hpp"),
         pinnedWorldTransformHeader(context),
     );
+    writeFileSync(
+        join(include, "bblite/upstream/light_matrix.hpp"),
+        new LightLowerer(context).lowerMatrix().header,
+    );
     writeFileSync(join(directory, "source.json"), JSON.stringify(document));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
     const source = join(directory, "check.cpp"),
@@ -184,6 +188,7 @@ test("Babylon scene data preserves material map replacement, light guards and lo
         `#include <bblite/pal_image.hpp>
 #include <fstream>
 #include <cassert>
+${new LightLowerer(context).lowerMatrix().source}
 ${new LightLowerer(context).lowerPointFactory().source}
 ${new BabylonLowerer(context).lowerLoaderAdapter(true).source}
 namespace bbl {
@@ -231,7 +236,8 @@ int main() {
             light.diffuse_color.r,light.diffuse_color.g,light.diffuse_color.b,light.specular_color.r,light.specular_color.g,light.specular_color.b};
         for(std::size_t lane=0;lane<actual.size();++lane)
             assert(std::abs(actual[lane]-expected.at("lights")[i][lane].get<double>())<=1e-6*std::max(1.0,std::abs(actual[lane])));
-        assert(light.local_matrix[12]==light.position.x && light.local_matrix[13]==light.position.y && light.local_matrix[14]==light.position.z);
+        const auto world=bbl::upstream::light_world_matrix(light);
+        assert(world[12]==light.position.x && world[13]==light.position.y && world[14]==light.position.z);
     }
     assert(engine.lights.at(asset.lights[0].value).included_meshes==std::vector<std::uint32_t>({asset.meshes[1].value,asset.meshes[2].value}));
     assert(engine.lights.at(asset.lights[1].value).excluded_meshes==std::vector<std::uint32_t>({asset.meshes[0].value}));

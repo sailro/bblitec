@@ -62,7 +62,9 @@ export function isNativeWorkerExpression(
     }
     if (
         ts.isPropertyAccessExpression(node) &&
-        node.name.text === "reload" &&
+        (node.name.text === "reload" ||
+            (context.options.runtimeLocationSearch &&
+                node.name.text === "search")) &&
         browserGlobalNamed(context, node.expression)?.text === "location"
     )
         return true;

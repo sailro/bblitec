@@ -278,6 +278,7 @@ function compilerArguments(scene: SceneDefinition): string[] {
     ];
     if (scene.parity?.referenceSearch !== undefined) {
         arguments_.push("--search", scene.parity.referenceSearch);
+        arguments_.push("--initial-search", "");
     }
     if (scene.nativeHostUi !== undefined) {
         arguments_.push("--host-ui", scene.nativeHostUi);
@@ -3028,6 +3029,7 @@ async function runDeclaredObserve(
         checkId,
         scene: resolveScene(spec.scene),
         spec: spec.observe,
+        noQueryTwin: spec.twin === true,
         headed: parsed.flags.has("--headed"),
     });
 }

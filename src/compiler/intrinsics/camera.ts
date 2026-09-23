@@ -324,26 +324,32 @@ export function compileCameraIntrinsic(
         }
 
         case "enableOrthographicCamera": {
-            // src/camera/orthographic.ts: the opt-in installs the
-            // projector and hands back live bounds that stay reachable
-            // as `camera.ortho`. The reached surface derives every plane
-            // from `halfHeight`; an explicit off-center plane would need
-            // its own record state, so it is rejected rather than
-            // silently derived.
             context.expectArgumentCount(call, 1, 2);
             const camera = context.compileValue(argumentAt(call, 0));
             context.expectKind(camera, "camera", argumentAt(call, 0));
             let halfHeight = "1.0";
+            const planes = new Map(
+                ["left", "right", "bottom", "top"].map((name) => [
+                    name,
+                    "std::nullopt",
+                ]),
+            );
             const options = call.arguments[1];
             if (options) {
                 const object = context.expectObjectLiteral(options);
-                for (const plane of ["left", "right", "bottom", "top"]) {
-                    if (context.objectProperty(object, plane)) {
-                        context.fail(
-                            options,
-                            `Orthographic '${plane}' planes are not lowered; the reached scenes derive every plane from halfHeight.`,
+                for (const plane of planes.keys()) {
+                    const value = context.objectProperty(object, plane);
+                    if (value)
+                        planes.set(
+                            plane,
+                            `bbl::js::Nullable<double>(${context.dataLowerer.compileForSink(
+                                value,
+                                {
+                                    kind: "optional",
+                                    inner: { kind: "number" },
+                                },
+                            )}).to_optional()`,
                         );
-                    }
                 }
                 const value = context.objectProperty(object, "halfHeight");
                 if (value) {
@@ -352,11 +358,16 @@ export function compileCameraIntrinsic(
             }
             context.reachFeature("camera:orthographic", call);
             const engine = context.requireEngine(camera, call);
+            const planeArguments = [...planes.values()].every(
+                (value) => value === "std::nullopt",
+            )
+                ? ""
+                : `, ${[...planes.values()].join(", ")}`;
             return {
                 kind: "camera-ortho",
                 cpp:
                     `bbl::enable_orthographic_camera(` +
-                    `${engine}, ${camera.cpp}, ${halfHeight})`,
+                    `${engine}, ${camera.cpp}, ${halfHeight}${planeArguments})`,
                 engineCpp: engine,
             };
         }

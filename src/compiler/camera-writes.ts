@@ -66,7 +66,11 @@ export function cameraNumberWrite(
     let vector: Value["cameraVector"];
     let field: string | undefined;
     if (isCameraExpression(context, ownerExpression)) {
-        if (!["alpha", "beta", "radius"].includes(left.name.text))
+        if (
+            !["alpha", "beta", "radius", "_yaw", "_pitch"].includes(
+                left.name.text,
+            )
+        )
             return undefined;
         field = cameraRecordField(left.name.text);
         if (!field) return undefined;

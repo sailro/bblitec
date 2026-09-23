@@ -40,7 +40,8 @@ Texture2D<uint> indices : register(t7, space1);`;
             .join("\n") + "\n";
     const output = resolve("artifacts/test-sdl-integer-textures");
     mkdirSync(output, { recursive: true });
-    const source = `#include "pal_sdl_gpu_resources.hpp"
+    const source = `#include <bblite/runtime.hpp>
+#include "pal_sdl_gpu_resources.hpp"
 #include "pal_spirv_vertex.hpp"
 #include <algorithm>
 #include <array>
@@ -161,6 +162,7 @@ int main() {
         "/W4",
         "/WX",
         `/I${resolve("native/src")}`,
+        `/I${resolve("native/include")}`,
         `/I${sdlInclude}`,
         path,
         `/Fe:${executable}`,

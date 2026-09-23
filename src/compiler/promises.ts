@@ -19,6 +19,7 @@ export interface PromiseLoweringContext extends Pick<
     | "registerNativeConstBinding"
     | "takeNativeTemporary"
     | "fail"
+    | "reachJsData"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -307,7 +308,7 @@ function compileImmediateCatch(
  * keeps emitting its elements as bare statements; a declaration, assignment,
  * return, or argument keeps the eagerly settled tuple/vector value.
  */
-function isPromiseResultUsed(call: ts.CallExpression): boolean {
+export function isPromiseResultUsed(call: ts.CallExpression): boolean {
     let node: ts.Node = call;
     while (
         ts.isAwaitExpression(node.parent) ||

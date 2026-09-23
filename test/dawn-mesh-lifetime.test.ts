@@ -20,10 +20,15 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
     const output = resolve("artifacts/dawn-mesh-lifetime");
     mkdirSync(output, { recursive: true });
     const source = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const pipelineKey = source.match(
+        /using DawnVariantPipelineKey[\s\S]*?;/,
+    )?.[0];
+    assert.ok(pipelineKey);
     const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
     writeFileSync(
         join(output, "records.hpp"),
         [
+            pipelineKey,
             cppRecord(source, "struct DawnSharedMaterialTextures {"),
             "using DawnSharedShaderMaterialTextures = DawnSharedMaterialTextures;",
             ...[

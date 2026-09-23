@@ -13,6 +13,14 @@ export class TextWeightLowerer {
     constructor(private readonly context: LoweringContext) {}
     header(): string {
         const c: LoweringContext = this.context;
+        c.assertFunctionBodyShape(
+            c.functionDeclaration(
+                "src/text/load-font-weight-offset.ts",
+                "loadFontWeightOffset",
+            ).declaration,
+            '{return (await import("./set-font-weight-offset.js")).setFontWeightOffset;}',
+            "Text weight lazy setter export",
+        );
         const { file, declaration } = c.functionDeclaration(
             module,
             "setFontWeightOffset",

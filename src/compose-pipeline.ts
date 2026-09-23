@@ -23,6 +23,7 @@ import { dirname, resolve } from "node:path";
 import { executeModuleGraph } from "./executed-module-graph.js";
 import {
     enablePinnedMaterialPlugins,
+    enablePinnedPbrMaterialPluginVertexData,
     type MaterialPluginSamplerManifest,
     standardPluginBindingTable,
 } from "./pinned-material-plugins.js";
@@ -315,6 +316,9 @@ export async function composeScenePipeline({
     // plugin-free, which is upstream's behaviour rather than a refusal.
     let standardPluginBindings:
         readonly (readonly MaterialPluginSamplerManifest[])[] | undefined;
+    if (result.manifest.features.includes("material:pbr-plugin-vertex-data")) {
+        await enablePinnedPbrMaterialPluginVertexData();
+    }
     if (result.manifest.features.includes("material:plugins")) {
         await enablePinnedMaterialPlugins(
             result.manifest.standardMaterialPlugins,
@@ -922,6 +926,8 @@ export async function composeScenePipeline({
                     linearImageProcessing,
                     metallicReflectanceRegistered:
                         assetMetallicReflectanceRegistered,
+                    pluginsRegistered:
+                        result.manifest.features.includes("material:plugins"),
                     ...(shadowLights.length > 0
                         ? {
                               shadowLights,

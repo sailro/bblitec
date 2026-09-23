@@ -1,4 +1,5 @@
 import { EmissionSet } from "../emission-transaction.js";
+import { nativeTextureFormats } from "../../native-texture-format.js";
 import type { LoweringServices } from "../lowering-services.js";
 // Frame-graph option lowering: render targets, render/geometry/copy
 // tasks, and the scene's default-render-task flag.
@@ -65,6 +66,7 @@ export interface EngineOptionContext
 export interface CompiledRenderTargetOptions {
     cpp: string;
     hasColor: boolean;
+    surface?: Value;
     signature: NonNullable<Value["renderTargetSignature"]>;
 }
 
@@ -85,29 +87,64 @@ export function compileRenderTargetOptions(
     const size = context.objectProperty(object, "size");
     let width = "0u";
     let height = "0u";
+    let surface: Value | undefined;
+    let scale: string | undefined;
     if (size) {
         const unwrappedSize = context.unwrap(size);
         if (ts.isObjectLiteralExpression(unwrappedSize)) {
-            const widthExpression = context.objectProperty(
+            const surfaceExpression = context.objectProperty(
                 unwrappedSize,
-                "width",
+                "surface",
             );
-            const heightExpression = context.objectProperty(
-                unwrappedSize,
-                "height",
-            );
-            if (!widthExpression || !heightExpression) {
-                context.fail(
+            if (surfaceExpression) {
+                validateObjectProperties(
+                    context,
                     unwrappedSize,
-                    "Fixed render target size requires width and height.",
+                    ["surface", "scale"],
+                    "Surface render target size supports surface and scale.",
                 );
+                const scaleExpression = context.objectProperty(
+                    unwrappedSize,
+                    "scale",
+                );
+                if (!scaleExpression)
+                    context.fail(
+                        unwrappedSize,
+                        "Surface render target size requires scale.",
+                    );
+                surface = context.compileValue(surfaceExpression);
+                context.expectKind(surface, "engine", surfaceExpression);
+                scale = context.compileNumber(scaleExpression, "double");
+            } else {
+                validateObjectProperties(
+                    context,
+                    unwrappedSize,
+                    ["width", "height"],
+                    "Fixed render target size supports width and height.",
+                );
+                const widthExpression = context.objectProperty(
+                    unwrappedSize,
+                    "width",
+                );
+                const heightExpression = context.objectProperty(
+                    unwrappedSize,
+                    "height",
+                );
+                if (!widthExpression || !heightExpression) {
+                    context.fail(
+                        unwrappedSize,
+                        "Fixed render target size requires width and height.",
+                    );
+                }
+                width = compilePositiveInteger(context, widthExpression);
+                height = compilePositiveInteger(context, heightExpression);
             }
-            width = compilePositiveInteger(context, widthExpression);
-            height = compilePositiveInteger(context, heightExpression);
         } else {
-            const surface = context.compileValue(unwrappedSize);
+            surface = context.compileValue(unwrappedSize);
             context.expectKind(surface, "engine", unwrappedSize);
         }
+    } else {
+        context.fail(object, "Render target descriptor requires size.");
     }
     const sampleCount = samples
         ? compilePositiveInteger(context, samples)
@@ -119,16 +156,48 @@ export function compileRenderTargetOptions(
         format.name.text === "format" &&
         ts.isIdentifier(format.expression) &&
         context.compileValue(format.expression).kind === "engine";
-    const depth = depthFormat && context.unwrap(depthFormat);
+    const depthFormats = new Map([
+        ["depth16unorm", "depth16_unorm"],
+        ["depth24plus", "depth24_plus"],
+        ["depth24plus-stencil8", "depth24_plus_stencil8"],
+        ["depth32float", "depth32_float"],
+    ]);
+    const depth = depthFormat
+        ? context.compileStringLiteral(depthFormat)
+        : undefined;
+    const color =
+        colorFormat && !surfaceFormat
+            ? context.compileStringLiteral(colorFormat)
+            : undefined;
+    const colorClass =
+        color === undefined ? undefined : nativeTextureFormats.get(color);
+    const depthClass =
+        depth === undefined ? undefined : depthFormats.get(depth);
+    if (color !== undefined && !colorClass)
+        context.fail(
+            colorFormat!,
+            `Unsupported render target color format '${color}'.`,
+        );
+    if (depth !== undefined && !depthClass)
+        context.fail(
+            depthFormat!,
+            `Unsupported render target depth format '${depth}'.`,
+        );
+    let cpp = `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    if (colorClass || depthClass) {
+        cpp = `[&]() { auto options = ${cpp}; ${colorClass ? `options.format = bbl::TextureFormatClass::${colorClass}; options.has_format = true;` : ""} ${depthClass ? `options.depth_format = bbl::DepthTextureFormat::${depthClass};` : ""} return options; }()`;
+    }
+    if (scale !== undefined && surface) {
+        cpp = `[&]() { auto options = ${cpp}; const double scale = ${scale}; (void)bbl::resolve_surface_render_target_size(1.0, 1.0, scale); options.scale_source = bbl::swapchain_render_target(${surface.cpp}); options.width_ratio = scale; options.height_ratio = scale; options.resolve_surface_size = bbl::resolve_surface_render_target_size; return options; }()`;
+    }
     return {
-        cpp: `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`,
+        cpp,
         hasColor: colorFormat !== undefined,
+        ...(surface ? { surface } : {}),
         signature: {
             surfaceFormat,
             hasColor: colorFormat !== undefined,
-            ...(depth && ts.isStringLiteral(depth)
-                ? { depthFormat: depth.text }
-                : {}),
+            ...(depth ? { depthFormat: depth } : {}),
             samples: Number.parseInt(sampleCount),
         },
     };
@@ -152,8 +221,10 @@ export function compileRenderTaskOptions(
             "cs",
             "autoMirror",
             "depth",
+            "depthClear",
+            "sharedRt",
         ],
-        "Reached render tasks support name, rt, rst, clrColor, clr, cam, cs, autoMirror, and depth.",
+        "Reached render tasks support name, rt, rst, clrColor, clr, cam, cs, autoMirror, depth, depthClear, and sharedRt.",
     );
     const nameExpression = context.objectProperty(object, "name");
     const targetExpression = context.objectProperty(object, "rt");
@@ -193,6 +264,8 @@ export function compileRenderTaskOptions(
     }
     const canvasSize = context.objectProperty(object, "cs");
     const autoMirror = context.objectProperty(object, "autoMirror");
+    const depthClear = context.objectProperty(object, "depthClear");
+    const sharedTarget = context.objectProperty(object, "sharedRt");
     // An external depth attachment: the pin binds that target's depth view
     // instead of the task target's own, and loads it because a geometry
     // task's output is eager. Which attachment a target hands a SAMPLER is
@@ -213,11 +286,13 @@ export function compileRenderTaskOptions(
             { sources: ["geometry-depth"] },
         );
     }
-    return `bbl::RenderTaskOptions{${context.cppString(
+    const options = `bbl::RenderTaskOptions{${context.cppString(
         nameExpression
             ? context.compileStringLiteral(nameExpression)
             : "render-task",
     )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
+    if (!depthClear && !sharedTarget) return options;
+    return `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`;
 }
 
 export function compileGeometryTaskOptions(
@@ -489,12 +564,15 @@ export function optionalRenderTarget(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     property: string,
+    nullable = false,
 ): { cpp: string; value?: Value } {
     const expression = context.objectProperty(object, property);
     if (!expression) {
         return { cpp: "bbl::RenderTargetHandle{}" };
     }
     const value = context.compileValue(expression);
+    if (nullable && value.kind === "json-null")
+        return { cpp: "bbl::RenderTargetHandle{}" };
     context.expectKind(value, "render-target", expression);
     return { cpp: value.cpp, value };
 }

@@ -1,7 +1,13 @@
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
+
+/** Reached mutable query state invalidates earlier deployment-query folds. */
+export class RuntimeSearchParamsRequired extends Error {
+    constructor(readonly location = false) {
+        super("Query state requires retained runtime storage.");
+    }
+}
 
 /** The runtime query bag over `input`: the one spelling every URLSearchParams value shares. */
 export function searchParamsValue(lowerer: DataLowerer, input: string): Value {
@@ -70,29 +76,33 @@ export function compileSearchParamsMethod(
     method: string,
 ): Value {
     const context = lowerer.context;
-    if (method !== "get" && method !== "has")
+    if (method === "set" && !context.options.runtimeSearchParams)
+        throw new RuntimeSearchParamsRequired();
+    if (!["get", "has", "set", "toString"].includes(method))
         return context.fail(
             call,
             `Runtime URLSearchParams.${method} is not lowered.`,
         );
-    context.expectArgumentCount(call, 1, method === "has" ? 2 : 1);
+    const minimum = method === "toString" ? 0 : method === "set" ? 2 : 1;
+    context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
     const receiver = context.pinValueToTemporary(owner, "query_receiver");
     const arguments_ = call.arguments.map((argument) => {
         const compiled = context.compileValue(argument);
-        // A plain name is already stable; only a computed key needs a pin.
-        const value = cppIdentifierPattern.test(compiled.cpp)
-            ? compiled
-            : context.pinValueToTemporary(compiled, "query_argument");
+        const value = context.pinValueToTemporary(compiled, "query_argument");
         return lowerer.compileKnownValueForSink(
             value,
             { kind: "string" },
             argument,
         );
     });
+    const cpp = `(${receiver.cpp}).${method === "toString" ? "to_string" : method}(${arguments_.join(", ")})`;
+    if (method === "set") return { kind: "void", cpp };
     return lowerer.leafValue(
-        `(${receiver.cpp}).${method}(${arguments_.join(", ")})`,
+        cpp,
         method === "has"
             ? { kind: "boolean" }
-            : { kind: "optional", inner: { kind: "string" } },
+            : method === "toString"
+              ? { kind: "string" }
+              : { kind: "optional", inner: { kind: "string" } },
     );
 }

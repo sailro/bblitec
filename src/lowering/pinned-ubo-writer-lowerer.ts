@@ -102,6 +102,8 @@ interface UboWriterRequest {
     absentHooks?: readonly string[];
     /** Installed resolver calls whose numeric lanes map to a record property. */
     vectorHooks?: Readonly<Record<string, { property: string; lanes: number }>>;
+    /** Source-lowered helpers that write a fixed number of contiguous float lanes. */
+    bufferWriters?: Readonly<Record<string, { cpp: string; lanes: number }>>;
     /** Preserve JavaScript numeric intermediates for writers with live f64 inputs. */
     scalarPrecision?: "float" | "double";
 }
@@ -500,7 +502,11 @@ function aliasesRecord(state: WriterState, expression: ts.Expression): boolean {
         return false;
     }
     const source = state.request.propertySources[node.name.getText()];
-    return typeof source === "string" && !source.includes(".");
+    return (
+        typeof source === "string" &&
+        !source.includes(".") &&
+        state.request.vectorProperties?.[node.name.getText()] === undefined
+    );
 }
 
 /** The property name a vector local was bound from. */
@@ -816,6 +822,11 @@ function emitRecordExpression(
     }
     if (ts.isIdentifier(node)) {
         if (state.locals.has(node.text)) return node.text;
+        const origin = state.vectorLocalOrigins.get(node.text);
+        const vector = origin
+            ? state.request.propertySources[origin]
+            : undefined;
+        if (typeof vector === "string") return vector;
         // A closure variable the factory computed and the writer captured — the
         // spot light's `_cosHalfAngle` is one — is a value our record carries,
         // so it resolves the same way a property read does.
@@ -1342,6 +1353,35 @@ function emitPlainStatement(
     ) {
         const call = statement.expression;
         const callee = (call.expression as ts.Identifier).text;
+        const bufferWriter = state.request.bufferWriters?.[callee];
+        if (bufferWriter) {
+            const [data, offset, ...args] = call.arguments;
+            if (
+                !data ||
+                !ts.isIdentifier(data) ||
+                data.text !== "data" ||
+                !offset
+            ) {
+                throw new Error(
+                    `Pinned buffer writer ${callee} must receive data and an offset.`,
+                );
+            }
+            const baseLane = dataLane(state, offset);
+            return [
+                "    {",
+                `        std::array<float, ${bufferWriter.lanes}> values{};`,
+                `        ${bufferWriter.cpp}(values, 0, ${args.map((arg) => emitExpression(state, arg)).join(", ")});`,
+                ...Array.from({ length: bufferWriter.lanes }, (_, index) => {
+                    const slot = slotAtLane(state.request, baseLane + index);
+                    const target =
+                        slot.lanes === 1
+                            ? `out.${slot.field}`
+                            : `out.${slot.field}[${slot.lane}]`;
+                    return `        ${target} = values[${index}];`;
+                }),
+                "    }",
+            ];
+        }
         const nestedSources = state.request.nestedWriters?.[callee];
         if (nestedSources !== undefined) {
             // The pin passes the transform's base name as a string literal.

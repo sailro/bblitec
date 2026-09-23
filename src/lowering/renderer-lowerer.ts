@@ -1,7 +1,8 @@
 import { typeComponents } from "../shader-ir.js";
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
+import { CameraLowerer } from "./camera-lowerer.js";
+import { LightLowerer } from "./light-lowerer.js";
 import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
@@ -58,6 +59,7 @@ import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
+    readPinnedRawShader,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
@@ -121,16 +123,14 @@ function pinnedFogInfosPacking(): string {
 }
 
 function liftedImageSkyboxWgsl() {
-    const module = readPinnedLibraryModule(
-        "material/standard/skybox-cubemap.js",
-    );
+    const module = "material/standard/skybox-cubemap.js";
     return specializeImageSkybox(
-        extractPackagedStringLiteral(module, "skyVertSrc"),
-        extractPackagedStringLiteral(module, "skyFragSrc"),
+        readPinnedRawShader(module, "shaders/skybox-cubemap.vertex.wgsl"),
+        readPinnedRawShader(module, "shaders/skybox-cubemap.fragment.wgsl"),
     );
 }
 
-const renderTaskModule = "src/frame-graph/render-task.ts";
+const renderTaskModule = "src/frame-graph/render-task-base.ts";
 
 // Markers the formula table asserts AND a fidelity record names, spelled
 // once so the record cannot drift from the assertion.
@@ -218,6 +218,29 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
             current;
             current = current.parent
         ) {
+            if (
+                ts.isVariableDeclaration(current) &&
+                ts.isIdentifier(current.name)
+            ) {
+                const name = current.name.text;
+                const scope = current.parent.parent.parent;
+                const values = new Set<boolean>();
+                const findUse = (candidate: ts.Node): void => {
+                    if (
+                        ts.isObjectLiteralExpression(candidate) &&
+                        candidate.properties.some(
+                            (property) =>
+                                ts.isShorthandPropertyAssignment(property) &&
+                                property.name.text === name,
+                        )
+                    ) {
+                        const value = literalTransparency(candidate);
+                        if (value !== undefined) values.add(value);
+                    } else ts.forEachChild(candidate, findUse);
+                };
+                ts.forEachChild(scope, findUse);
+                return values.size === 1 ? [...values][0] : undefined;
+            }
             if (!ts.isObjectLiteralExpression(current)) continue;
             for (const property of current.properties) {
                 if (
@@ -477,7 +500,7 @@ export class RendererLowerer {
 
         return {
             modulePath: renderTaskModule,
-            symbolName: "buildBindings",
+            symbolName: "_buildBindings",
             header: this.renderPlanHeaderCpp(options, systemMatrixEnumerators),
             source: this.renderPlanSourceCpp(options, {
                 viewMatrixBody,
@@ -682,7 +705,7 @@ export class RendererLowerer {
         background?: boolean;
     }): void {
         for (const symbol of [
-            "buildBindings",
+            "_buildBindings",
             "sortTransparentBindings",
             "drawList",
         ]) {
@@ -1488,7 +1511,7 @@ bool pick_candidate(const MeshRecord& mesh);
 bool mesh_draws(const MeshRecord& mesh);
 bool render_item_material_draws(const RenderItem& item, const Engine& engine);
 bool render_item_draws_now(const RenderItem& item, const Engine& engine);
-// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
+// src/render/mesh-light-selection.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
@@ -1609,10 +1632,11 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             `: (environment.tone_mapping_enabled ? 1.0f : 0.0f)`;
         return `// ${this.context.provenance(
             renderTaskModule,
-            "buildBindings",
+            "_buildBindings",
             `${renderTaskModule}#sortTransparentBindings`,
         )}
 #include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/js_data.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
@@ -1887,7 +1911,7 @@ RenderFeatures build_render_features(
     for (const FrameTaskRecord& task : engine.frame_tasks) {
         for (const RenderTaskMesh& entry : task.render_meshes) {
             include_material_features(
-                result, engine, entry.material,
+                result, engine, render_task_mesh_material(engine, entry),
                 task.render.shadow_generator.value != invalid_handle);
         }
     }
@@ -1981,6 +2005,8 @@ ${
     result.opaque.commands.reserve(task.render_meshes.size());
     result.transparent.commands.reserve(task.render_meshes.size());
     for (const RenderTaskMesh& entry : task.render_meshes) {
+        const auto material = render_task_mesh_material(engine, entry);
+        if (material.value == invalid_handle) continue;
         const auto found = std::find_if(
             items.begin(),
             items.end(),
@@ -1993,7 +2019,7 @@ ${
         const std::uint32_t item_index =
             static_cast<std::uint32_t>(
                 std::distance(items.begin(), found));
-        auto overridden = bind_render_item(*found, engine, entry.material);
+        auto overridden = bind_render_item(*found, engine, material);
         overridden.material_override = true;
         append_draw(
             result,
@@ -2067,7 +2093,7 @@ void sort_transparent_draws(
                 parent[10] * mesh.position.z + parent[14]),
         };
         const Vec3 center = transform_position(
-            outer_transform_matrix(mesh.outer_position, mesh.outer_rotation),
+            outer_transform_matrix(mesh),
             local_center);
         const Vec3 delta{
             center.x - eye.x,
@@ -2145,6 +2171,12 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         item.topology = engine.geometries[mesh.geometry].topology;
         RenderItem bound =
             bind_render_item(item, engine, material);
+        if (bound.material_kind == RenderMaterialKind::pbr && mesh.primitive_override) {
+            const auto& primitive = *mesh.primitive_override;
+            bound.topology = primitive.topology;
+            if (primitive.cull_none) bound.cull_mode = *primitive.cull_none ? RenderCullMode::none : RenderCullMode::back;
+            if (primitive.clockwise_front_face) bound.clockwise_front_face = *primitive.clockwise_front_face;
+        }
         bound.material_guard = guard;
         bound.order = mesh.has_render_order
             ? mesh.render_order
@@ -2206,24 +2238,8 @@ std::array<float, 16> build_scene_projection(
 ${
     options.orthographicCamera
         ? `    if (camera.orthographic) {
-        // src/camera/orthographic.ts writeOrthoProjection: every plane
-        // derives from the half-extent (the derivation and all seven
-        // call arguments are shape-asserted where the single-extent
-        // record is emitted), and the writer itself is the pinned
-        // writeOrthoOffCenterMat4LHIntoBuffer translated whole above.
-        const double half_height =
-            static_cast<double>(camera.ortho_half_height);
-        const double half_width =
-            half_height * static_cast<double>(aspect);
         std::array<float, 16> projection{};
-        mat4_ortho_off_center_lh_to_ref(
-            projection,
-            -half_width,
-            half_width,
-            -half_height,
-            half_height,
-            camera.near_plane,
-            camera.far_plane);
+${new CameraLowerer(this.context).lowerOrthographicProjection()}
         return projection;
     }
 `
@@ -2327,7 +2343,8 @@ ${
         // is the equivalent baseline. XORing the live parent transform with
         // it preserves imported winding and still flips procedural geometry.
         const bool transform_mirrored =
-            pinned_mat4_determinant3(mesh_world_matrix(engine, mesh)) < 0.0;
+            pinned_mat4_determinant3(matrix_product(
+                outer_transform_matrix(mesh), mesh_world_matrix(engine, mesh))) < 0.0;
         const bool clockwise_front_face =
             mesh.authored_clockwise_front_face != transform_mirrored;
         if (
@@ -2362,8 +2379,7 @@ ${
 std::array<double, 16> apply_mesh_outer_transform(
     const MeshRecord& mesh,
     std::array<double, 16> world) {
-    return outer_transform_product(
-        mesh.outer_position, mesh.outer_rotation, world);
+    return outer_transform_product(mesh, world);
 }
 
 ${
@@ -2462,7 +2478,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
         !engine.meshes.at(item.mesh.value).thin_instance_gpu_culling) || render_item_material_draws(item, engine);
 }
 
-// src/render/lights-ubo.ts affectsMesh.
+// src/render/mesh-light-selection.ts affectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
     std::uint32_t mesh_index) {
@@ -2498,17 +2514,10 @@ PbrUniforms build_pbr_uniforms(
             return;
         }
         const LightRecord& light = engine.lights[handle.value];
-        // Every pinned light with an orientation writes its lane as its
-        // world matrix's third column, as stored (src/light/directional-light.ts,
-        // src/light/spot-light.ts and src/light/hemispheric.ts _writeLightUbo:
-        // \`data[o] = w[8]\`): localMatrixFromDirection already normalized
-        // that column, and the pin neither renormalizes it nor substitutes
-        // the record's direction for it.
-        const Vec3 direction{
-            light.local_matrix[8],
-            light.local_matrix[9],
-            light.local_matrix[10],
-        };
+        const auto light_world = light_world_matrix(light);
+        std::array<float, 3> world_direction{};
+${new LightLowerer(this.context).lowerDirectionBody("world_direction", "0", "light_world", "light.direction")}
+        const Vec3 direction{world_direction[0], world_direction[1], world_direction[2]};
         // The kind tag this struct encodes -- 0 hemispheric, 1 point,
         // 2 directional -- is the retired transcribed fragment's own, and it
         // has no spot: that fragment is gone and every PBR draw now binds the
@@ -2519,9 +2528,9 @@ PbrUniforms build_pbr_uniforms(
         light_direction =
             light.kind == LightKind::point
                 ? std::array<float, 4>{
-                      light.position.x,
-                      light.position.y,
-                      light.position.z,
+                      light_world[12],
+                      light_world[13],
+                      light_world[14],
                       1.0f,
                   }
                 : std::array<float, 4>{
@@ -2535,10 +2544,10 @@ PbrUniforms build_pbr_uniforms(
                               : 0.0f,
                   };
         light_color = {
-            light.diffuse_color.r,
-            light.diffuse_color.g,
-            light.diffuse_color.b,
-            light.intensity,
+            static_cast<float>(light.diffuse_color.r),
+            static_cast<float>(light.diffuse_color.g),
+            static_cast<float>(light.diffuse_color.b),
+            static_cast<float>(light.intensity),
         };
         ground_color = {
             light.ground_color.r,
@@ -3505,7 +3514,7 @@ ${pinnedFogInfosPacking()}    };
                     packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
                     packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
                     // The template's own placeholders, kept as above.
-                    packagedWgsl`@location(\${i}) \${attr}: \${attributeWgslType(attr)}`,
+                    packagedWgsl`@location(\${i}) \${attr}: \${vbSupport?._wgslType(material, attr) ?? _attributeInfo(attr)._type}`,
                 ]) {
                     if (!shaderPipeline.includes(marker)) {
                         throw new Error(
@@ -3535,27 +3544,12 @@ ${pinnedFogInfosPacking()}    };
         if (cached !== undefined) {
             return cached;
         }
-        const file = ts.createSourceFile(
-            path,
-            readFileSync(path, "utf8"),
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.JS,
+        const text = extractPackagedStringLiteral(
+            readPinnedLibraryModule("shader/scene-uniforms.js"),
+            "SCENE_UBO_WGSL",
         );
-        const initializer = this.context.unwrapExpression(
-            this.context.variableInitializer(file, "sceneUniformsWgsl"),
-        );
-        if (
-            !ts.isStringLiteral(initializer) &&
-            !ts.isNoSubstitutionTemplateLiteral(initializer)
-        ) {
-            this.context.contractError(
-                initializer,
-                "Expected compiled scene-uniform WGSL text.",
-            );
-        }
-        compiledSceneUniformsWgslCache.set(path, initializer.text);
-        return initializer.text;
+        compiledSceneUniformsWgslCache.set(path, text);
+        return text;
     }
 
     public shaderMaterialReflections(
@@ -3873,7 +3867,7 @@ ${pinnedFogInfosPacking()}    };
      */
     private assertPinnedAffectsMesh(): void {
         const { declaration } = this.context.functionDeclaration(
-            "src/render/lights-ubo.ts",
+            "src/render/mesh-light-selection.ts",
             "affectsMesh",
         );
         this.context.assertExpressionShape(
@@ -4142,7 +4136,7 @@ ${pinnedFogInfosPacking()}    };
     private assertPinnedDrawListRules(): void {
         const { declaration: buildBindings } = this.context.functionDeclaration(
             renderTaskModule,
-            "buildBindings",
+            "_buildBindings",
         );
         const bucketFork = this.context.findNodes(
             buildBindings,
@@ -4157,7 +4151,7 @@ ${pinnedFogInfosPacking()}    };
         }
         this.context.assertExpressionShape(
             bucketFork.expression,
-            "r.isTransparent || r._transmissive",
+            "renderable.isTransparent || renderable._transmissive",
             "Pinned transparent bucket predicate",
         );
         const bucketStore = (
@@ -4193,7 +4187,7 @@ ${pinnedFogInfosPacking()}    };
         }
         this.context.assertExpressionShape(
             directFork.expression,
-            "r._direct",
+            "renderable._direct",
             "Pinned direct bucket predicate",
         );
         bucketStore(directFork.thenStatement, "direct.push(binding)");
@@ -4239,12 +4233,12 @@ ${pinnedFogInfosPacking()}    };
         // cull/winding forks `render_pipeline_kind` enumerates.
         for (const [modulePath, marker, label] of [
             [
-                "src/frame-graph/render-task.ts",
+                "src/frame-graph/render-task-base.ts",
                 "draws += drawList(pass, task._transparentBindings, eng);",
                 "transparent draws execute each frame",
             ],
             [
-                "src/frame-graph/render-task.ts",
+                "src/frame-graph/render-task-base.ts",
                 "if (mesh && mesh.visible === false) {",
                 "draw-time visibility predicate",
             ],
@@ -4306,7 +4300,7 @@ ${pinnedFogInfosPacking()}    };
             ],
             [
                 "src/material/shader/shader-renderable.ts",
-                "const isTransparent = material.needAlphaBlending;",
+                "if (material.needAlphaBlending) {",
                 "shader-material transparency stamp",
             ],
             [
@@ -4381,7 +4375,7 @@ ${pinnedFogInfosPacking()}    };
      * loop fails generation here before a PAL can walk them differently.
      */
     private assertPinnedLightSlotPacking(): void {
-        const lightsUboModule = "src/render/lights-ubo.ts";
+        const lightsUboModule = "src/render/mesh-light-selection.ts";
         const { declaration: affects } = this.context.functionDeclaration(
             lightsUboModule,
             "affectsMesh",
@@ -4517,7 +4511,7 @@ ${pinnedFogInfosPacking()}    };
         );
 
         const { declaration: fill } = this.context.functionDeclaration(
-            lightsUboModule,
+            "src/render/scene-lights-ubo.ts",
             "fillLightsData",
         );
         this.context.assertExpressionShape(
@@ -4961,27 +4955,16 @@ ${pinnedFogInfosPacking()}    };
      */
     private pinnedSolidSkyboxSource(): PinnedSolidSkyboxSource {
         const packageRoot = this.context.store.packageRoot;
-        const modulePath = resolve(
-            packageRoot,
-            "lib/material/pbr/background-solid-skybox.js",
-        );
-        const module = readFileSync(modulePath, "utf8");
-        const chunk =
-            /import \{ s as skyboxVertSrc \} from '(\.\.\/\.\.\/_chunks\/[^']+)'/.exec(
-                module,
-            );
-        if (!chunk) {
-            throw new Error(
-                "Pinned Babylon Lite solid skybox no longer imports the shared skybox vertex chunk.",
-            );
-        }
-        const vertexModule = readFileSync(
-            resolve(packageRoot, "lib/material/pbr", chunk[1]!),
-            "utf8",
-        );
+        const modulePath = "material/pbr/background-solid-skybox.js";
         return {
-            vertex: extractPackagedStringLiteral(vertexModule, "skyboxVertSrc"),
-            fragment: extractPackagedStringLiteral(module, "skyboxFragSrc"),
+            vertex: readPinnedRawShader(
+                modulePath,
+                "shaders/skybox.vertex.wgsl",
+            ),
+            fragment: readPinnedRawShader(
+                modulePath,
+                "shaders/skybox.fragment.wgsl",
+            ),
             sceneUniforms: this.compiledSceneUniformsWgsl(),
             dither: readPinnedDitherWgsl(packageRoot).dither,
         };

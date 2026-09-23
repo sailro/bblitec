@@ -8,6 +8,25 @@ namespace bbl::pal {
  * only weak native inboxes, never realm callbacks or JavaScript state. */
 class AnimationFrameSource {
 public:
+    class Batch {
+    public:
+        Batch() = default;
+        bool ready() const {
+            return std::all_of(receipts_.begin(), receipts_.end(), [](const auto& receipt) {
+                const auto inbox = receipt.inbox.lock();
+                return !inbox || inbox->animation_frame_complete(receipt.serial);
+            });
+        }
+
+    private:
+        friend class AnimationFrameSource;
+        struct Receipt {
+            std::weak_ptr<EventLoop::Inbox> inbox;
+            std::uint64_t serial;
+        };
+        std::vector<Receipt> receipts_;
+    };
+
     void subscribe(const std::shared_ptr<EventLoop::Inbox>& inbox) {
         if (!inbox)
             throw std::invalid_argument("Animation frames require a realm inbox.");
@@ -17,15 +36,19 @@ public:
                 return;
         subscribers_.push_back(inbox);
     }
-    void tick(EventLoop::Clock::time_point timestamp) {
+    Batch tick(EventLoop::Clock::time_point timestamp) {
+        Batch batch;
         std::lock_guard lock(mutex_);
+        batch.receipts_.reserve(subscribers_.size());
         std::erase_if(subscribers_, [&](const auto& subscriber) {
             if (const auto inbox = subscriber.lock()) {
-                inbox->animation_frame(timestamp);
+                if (const auto serial = inbox->animation_frame(timestamp))
+                    batch.receipts_.push_back({inbox, serial});
                 return false;
             }
             return true;
         });
+        return batch;
     }
 
 private:

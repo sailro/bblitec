@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
+import { compileSource } from "../src/compiler.js";
 
 const vertexSource = `
     struct VertexOutput {
@@ -19,6 +20,41 @@ const renderState = {
     backFaceCulling: true,
     depthWrite: true,
 } as const;
+
+test("WGSL float shorthand types have the same typed shader identity", () => {
+    const source = {
+        name: "shorthand-types",
+        vertexSource,
+        fragmentSource:
+            "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+        attributes: ["position"],
+        uniforms: [],
+        ...renderState,
+    };
+    assert.deepEqual(
+        lowerWgslShaderProgram({
+            ...source,
+            vertexSource: source.vertexSource.replaceAll("vec4<f32>", "vec4f"),
+            fragmentSource: source.fragmentSource.replaceAll(
+                "vec4<f32>",
+                "vec4f",
+            ),
+        }),
+        lowerWgslShaderProgram(source),
+    );
+});
+
+test("shader material depth comparison survives dynamic material construction", () => {
+    const result =
+        compileSource(`import {createEngine,createShaderMaterial} from '@babylonjs/lite';
+async function main(){const engine=await createEngine(document.createElement('canvas'));
+const material=createShaderMaterial({vertexSource:${JSON.stringify(vertexSource)},fragmentSource:'@fragment fn mainFragment()->@location(0) vec4f{return vec4f(1.0);}',attributes:['position'],uniforms:[],depthCompare:'always'});
+}void main();`);
+    assert.equal(
+        result.manifest.customShaderPrograms?.[0]?.depthCompare,
+        "always",
+    );
+});
 
 test("raw shader reflection refuses an unsupported struct member type", () => {
     assert.throws(

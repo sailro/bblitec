@@ -16,8 +16,13 @@ import {
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import type { DataType } from "./data-types.js";
+import {
+    propertyIsReadOnly,
+    type DataType,
+    type DataStructField,
+} from "./data-types.js";
 import { errorValue } from "./error-values.js";
+import { isPromiseResultUsed } from "./promises.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -29,6 +34,8 @@ interface AsyncContext extends Pick<
     | "compileCallbackWithValues"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
+    | "withAsyncInvocation"
+    | "withEngineBootstrap"
     | "allocateTemporaryCppName"
     | "registerNativeBinding"
     | "emit"
@@ -134,17 +141,6 @@ export class AsyncLowerer {
                     node,
                     "This await needs an asynchronous realm activation.",
                 );
-            for (
-                let parent: ts.Node | undefined = node.parent;
-                parent && !ts.isFunctionLike(parent);
-                parent = parent.parent
-            ) {
-                if (ts.isCatchClause(parent))
-                    return context.fail(
-                        node,
-                        "Await in catch requires suspended exception handling.",
-                    );
-            }
             const erasedVoid =
                 context.isBrowserOnlyExpression(node.expression) &&
                 ((context.checker.getAwaitedType(
@@ -203,9 +199,42 @@ export class AsyncLowerer {
             ts.isPropertyAccessExpression(callee) &&
             browserGlobalNamed(context, callee.expression)?.text ===
                 "Promise" &&
-            callee.name.text === "all"
+            callee.name.text === "reject"
         ) {
-            return this.compileAll(node);
+            if (node.arguments.length !== 1)
+                return context.fail(
+                    node,
+                    "Promise.reject requires a represented rejection reason.",
+                );
+            const reason = context.compileValue(argumentAt(node, 0));
+            if (reason.dataType?.kind !== "error")
+                return context.fail(
+                    node,
+                    "Promise.reject requires an owned Error reason.",
+                );
+            const type = context.dataLowerer.dataTypeAt(node);
+            if (type?.kind !== "promise")
+                return context.fail(
+                    node,
+                    "Promise.reject requires a concrete owned result type.",
+                );
+            return {
+                ...context.dataLowerer.leafValue(
+                    `${context.dataTypes.cppType(type)}::rejected(${reason.cpp})`,
+                    type,
+                ),
+                ...(reason.nativeCaptures
+                    ? { nativeCaptures: reason.nativeCaptures }
+                    : {}),
+            };
+        }
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            browserGlobalNamed(context, callee.expression)?.text ===
+                "Promise" &&
+            ["all", "allSettled"].includes(callee.name.text)
+        ) {
+            return this.compileAll(node, callee.name.text === "allSettled");
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
@@ -294,6 +323,19 @@ export class AsyncLowerer {
                 node,
             );
             if (rejection && first.cppType !== promise.promiseType) {
+                if (
+                    first.output.kind === "void" &&
+                    !isPromiseResultUsed(node)
+                ) {
+                    // Only the reaction is observable when the complete chain is discarded.
+                    // Keep its scheduling/adoption while dropping the unused fulfillment value.
+                    return {
+                        kind: "promise",
+                        cpp: `${promise.cpp}.then([](const ${promise.promiseType}&){return bbl::js::PromiseVoid{};}, ${first.cpp})`,
+                        promiseResult: { kind: "void", cpp: "" },
+                        promiseType: "bbl::js::PromiseVoid",
+                    };
+                }
                 return context.fail(
                     argumentAt(node, 0),
                     "A value promise's recovery must preserve its admitted result type.",
@@ -434,41 +476,47 @@ export class AsyncLowerer {
             : undefined;
         let compiled: CapturedClosure;
         try {
-            compiled = this.withActivation(() =>
-                context.withOwnedCallbackBody(() =>
-                    context.captureManagedClosureLines(() => {
-                        const callable = ts.isFunctionDeclaration(callback)
-                            ? (callback.name ??
-                              context.fail(
-                                  callback,
-                                  "Async function requires a name.",
-                              ))
-                            : callback;
-                        result.value = context.compileCallbackWithValues(
-                            callable,
-                            values,
-                            node,
-                            false,
-                            { coroutine: true },
-                        );
-                        const signature =
-                            context.checker.getSignatureFromDeclaration(
-                                declaration,
+            compiled = context.withEngineBootstrap(declaration, () =>
+                this.withActivation(() =>
+                    context.withAsyncInvocation(node, () =>
+                        context.captureManagedClosureLines(() => {
+                            const callable = ts.isFunctionDeclaration(callback)
+                                ? (callback.name ??
+                                  context.fail(
+                                      callback,
+                                      "Async function requires a name.",
+                                  ))
+                                : callback;
+                            result.value = context.compileCallbackWithValues(
+                                callable,
+                                values,
+                                node,
+                                false,
+                                { coroutine: true },
                             );
-                        if (signature)
-                            result.value = this.normalizeUndefined(
-                                result.value,
-                                context.checker.getReturnTypeOfSignature(
-                                    signature,
-                                ),
-                            );
-                        if (result.value.kind === "void" && result.value.cpp)
-                            context.emit(`${result.value.cpp};`);
-                        if (!rejectsOnly && !result.value.abruptCompletion)
-                            context.emit(
-                                `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
-                            );
-                    }),
+                            const signature =
+                                context.checker.getSignatureFromDeclaration(
+                                    declaration,
+                                );
+                            if (signature)
+                                result.value = this.normalizeUndefined(
+                                    result.value,
+                                    context.checker.getReturnTypeOfSignature(
+                                        signature,
+                                    ),
+                                );
+                            result.value = this.ownResult(result.value, node);
+                            if (
+                                result.value.kind === "void" &&
+                                result.value.cpp
+                            )
+                                context.emit(`${result.value.cpp};`);
+                            if (!rejectsOnly && !result.value.abruptCompletion)
+                                context.emit(
+                                    `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
+                                );
+                        }),
+                    ),
                 ),
             );
         } finally {
@@ -661,23 +709,110 @@ export class AsyncLowerer {
         };
     }
 
-    private compileAll(call: ts.CallExpression): Value {
+    private settledHandlers(
+        result: DataType | undefined,
+        site: ts.Node,
+    ): {
+        type: DataType;
+        fulfilled: string;
+        rejected: string;
+    } {
         const context = this.context;
+        // A void fulfillment owns an undefined `value` property. Its nullable
+        // carrier is always absent, so no numeric payload is ever exposed.
+        const valueType: DataType = result ?? {
+            kind: "optional",
+            inner: { kind: "number" },
+            undefinedOnly: true,
+        };
+        const type = context.dataTypes.ownedRecordType([
+            { sourceName: "status", type: { kind: "string" } },
+            {
+                sourceName: "value",
+                type: valueType,
+                defaultWhenMissing: true,
+                presentForTags: [
+                    [
+                        {
+                            discriminant: "status",
+                            value: "fulfilled",
+                        },
+                    ],
+                ],
+            },
+            {
+                sourceName: "reason",
+                type: { kind: "error" },
+                defaultWhenMissing: true,
+                presentForTags: [
+                    [
+                        {
+                            discriminant: "status",
+                            value: "rejected",
+                        },
+                    ],
+                ],
+            },
+        ]);
+        const input = result
+            ? context.dataTypes.cppType(result)
+            : "bbl::js::PromiseVoid";
+        const converted = result
+            ? context.dataLowerer.compileKnownValueForSink(
+                  context.dataLowerer.leafValue("value", result),
+                  valueType,
+                  site,
+              )
+            : "";
+        const create = `auto result = bbl::js::make_ref<bblscene::${type.name}Data>();`;
+        return {
+            type,
+            fulfilled: `[]([[maybe_unused]] const ${input}& value) { ${create} result->status = "fulfilled"; ${result ? `result->value = ${converted};` : ""} return result; }`,
+            rejected: `[](std::exception_ptr error) { ${create} result->status = "rejected"; result->reason = bbl::js::Error(error); return result; }`,
+        };
+    }
+
+    private compileAll(call: ts.CallExpression, settled = false): Value {
+        const context = this.context;
+        const operation = settled ? "allSettled" : "all";
         if (call.arguments.length !== 1)
             context.fail(
                 call,
-                "Promise.all requires one represented iterable.",
+                `Promise.${operation} requires one represented iterable.`,
             );
         const argument = unwrapExpression(argumentAt(call, 0));
-        const pin = (value: Value): Value =>
-            this.pinArgument(this.asPromise(value, call), "all_input");
+        const pin = (value: Value): Value => {
+            const promise = this.pinArgument(
+                this.asPromise(value, call),
+                "all_input",
+            );
+            if (!settled) return promise;
+            const output = promise.promiseResult!;
+            const type =
+                output.dataType ??
+                (output.kind === "number" ||
+                output.kind === "boolean" ||
+                output.kind === "string"
+                    ? { kind: output.kind }
+                    : undefined);
+            if (!type && output.kind !== "void")
+                return context.fail(
+                    call,
+                    "Promise.allSettled requires an owned settlement value.",
+                );
+            const handlers = this.settledHandlers(type, call);
+            return context.dataLowerer.leafValue(
+                `(${promise.cpp}).then(${handlers.fulfilled}, ${handlers.rejected})`,
+                { kind: "promise", result: handlers.type },
+            );
+        };
         let promises: Value[];
         if (ts.isArrayLiteralExpression(argument)) {
             promises = argument.elements.map((element) => {
                 if (ts.isSpreadElement(element))
                     context.fail(
                         element,
-                        "Promise.all literal spreads require a represented array first.",
+                        `Promise.${operation} literal spreads require a represented array first.`,
                     );
                 return pin(
                     ts.isOmittedExpression(element)
@@ -694,14 +829,24 @@ export class AsyncLowerer {
                 if (type?.kind !== "vector")
                     return context.fail(
                         argument,
-                        "Promise.all requires an array or a represented tuple.",
+                        `Promise.${operation} requires an array or a represented tuple.`,
                     );
                 if (type.element.kind !== "promise")
                     return context.fail(
                         argument,
-                        "Promise.all stored arrays currently require promise elements.",
+                        `Promise.${operation} stored arrays currently require promise elements.`,
                     );
                 const element = type.element.result;
+                if (settled) {
+                    const handlers = this.settledHandlers(element, call);
+                    return context.dataLowerer.leafValue(
+                        `bbl::js::promise_all_settled(${value.cpp}, ${handlers.fulfilled}, ${handlers.rejected})`,
+                        {
+                            kind: "promise",
+                            result: { kind: "vector", element: handlers.type },
+                        },
+                    );
+                }
                 if (!element)
                     return context.fail(
                         argument,
@@ -820,6 +965,12 @@ export class AsyncLowerer {
                                   },
                                   "Error",
                                   (text) => context.cppString(text),
+                                  {
+                                      kind: "data",
+                                      cpp: `bbl::js::Error(${name})`,
+                                      dataType: { kind: "error" },
+                                      nativeCaptures: [binding],
+                                  },
                               )
                             : {
                                   ...this.resultAt(
@@ -997,6 +1148,11 @@ export class AsyncLowerer {
     }
     private normalizeUndefined(value: Value, type: ts.Type): Value {
         const result = this.context.checker.getAwaitedType(type) ?? type;
+        if (
+            value.kind === "browser" &&
+            (result.flags & ts.TypeFlags.Void) !== 0
+        )
+            return { kind: "void", cpp: "" };
         return value.kind === "json-null" &&
             (value.cpp === "std::nullopt" ||
                 (result.flags & ts.TypeFlags.Undefined) !== 0)
@@ -1013,29 +1169,15 @@ export class AsyncLowerer {
             this.context.checker.getTypeAtLocation(node),
         );
         this.refuseThenable(value, node);
-        if (value.kind === "record") {
-            const declared = this.context.dataLowerer.dataTypeAt(node);
-            const result =
-                declared?.kind === "promise" ? declared.result : declared;
-            if (result?.kind === "struct") {
-                const owned =
-                    this.context.dataTypes.markStoredObjectReferences(result);
-                value = this.context.dataLowerer.leafValue(
-                    this.context.dataLowerer.compileKnownValueForSink(
-                        value,
-                        owned,
-                        node,
-                    ),
-                    owned,
-                );
-            }
-        }
+        value = this.ownResult(value, node);
         const type = this.cppType(value, node);
+        if (value.kind === "void") {
+            this.context.emitDiscardedValue(value);
+            value = { ...value, cpp: "" };
+        }
         const cpp =
             value.kind === "void"
-                ? value.cpp
-                    ? `(${value.cpp}, bbl::js::PromiseVoid{})`
-                    : "bbl::js::PromiseVoid{}"
+                ? "bbl::js::PromiseVoid{}"
                 : this.resultCpp(value, node);
         return {
             kind: "promise",
@@ -1043,6 +1185,66 @@ export class AsyncLowerer {
             promiseResult: value,
             promiseType: type,
         };
+    }
+    private ownResult(value: Value, node: ts.Node): Value {
+        if (value.kind === "texture" && value.dataType?.kind !== "handle") {
+            const type = { kind: "handle", handle: "texture" } as const;
+            return {
+                ...value,
+                cpp: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    node,
+                ),
+                dataType: type,
+                textureStorage: "stored",
+            };
+        }
+        if (value.kind !== "record") return value;
+        this.refuseThenable(value, node);
+        const declared = this.context.dataLowerer.dataTypeAt(node);
+        let result = declared?.kind === "promise" ? declared.result : declared;
+        if (!result) {
+            const source = this.context.checker.getTypeAtLocation(node);
+            const awaited =
+                this.context.checker.getAwaitedType(source) ?? source;
+            const fields: Omit<DataStructField, "name">[] = [];
+            for (const property of this.context.checker.getPropertiesOfType(
+                awaited,
+            )) {
+                const fieldType =
+                    this.context.checker.getTypeOfSymbolAtLocation(
+                        property,
+                        node,
+                    );
+                const mapped = this.context.dataTypes.fromSharedReturnType(
+                    fieldType,
+                    node,
+                );
+                if (!mapped || (property.flags & ts.SymbolFlags.Optional) !== 0)
+                    return this.context.fail(
+                        node,
+                        `Asynchronous result property '${property.name}' has no owned representation.`,
+                    );
+                fields.push({
+                    sourceName: property.name,
+                    type: mapped,
+                    ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
+                });
+            }
+            if (fields.length)
+                result = this.context.dataTypes.ownedRecordType(fields);
+        }
+        if (result?.kind !== "struct") return value;
+        const owned = this.context.dataTypes.markStoredObjectReferences(result);
+        return this.context.dataLowerer.leafValue(
+            this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                owned,
+                node,
+            ),
+            owned,
+        );
     }
     private refuseThenable(value: Value, node: ts.Node): void {
         const property = value.recordProperties?.then;

@@ -36,6 +36,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
+import { pinnedNodeBlockDescriptor } from "../pinned-node-block-loader.js";
 import {
     staticGraphDocument,
     type ExecutedModuleReferenceContext,
@@ -74,6 +75,7 @@ export interface NodeMaterialContext
             | "resolveStaticExpression"
             | "compileStaticString"
             | "compileValue"
+            | "knownValueWithoutEvaluation"
             | "expectKind"
             | "expectStaticArrayLiteral"
             | "shadowGeneratorLight"
@@ -135,12 +137,82 @@ function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
  * arbitrary callback choose graph semantics at generation and therefore
  * remains refused.
  */
-function compileBlockLoader(
+export function compileBlockLoader(
     context: NodeMaterialContext,
     expression: ts.Expression | undefined,
+    active: ReadonlySet<ts.Node> = new Set(),
 ): Pick<CompiledNodeMaterial, "blockEmitters" | "pinnedBlockLoader"> {
     if (!expression) return {};
-    const loader = unwrapLoaderExpression(expression);
+    const known =
+        context.knownValueWithoutEvaluation(expression)?.nodeBlockLoader;
+    if (known) return known;
+    const loader = unwrapLoaderExpression(
+        context.resolveStaticExpression(expression),
+    );
+    if (ts.isCallExpression(loader) && ts.isIdentifier(loader.expression)) {
+        if (
+            context.symbols.babylonImportName(loader.expression) ===
+            "createNodeMaterialBlockLoader"
+        ) {
+            if (loader.arguments.length !== 1)
+                context.fail(
+                    loader,
+                    "A node block loader requires one selection array.",
+                );
+            const blocks = context.expectStaticArrayLiteral(
+                argumentAt(loader, 0),
+            );
+            const emitters = blocks.elements.map((element) => {
+                const name = ts.isIdentifier(element)
+                    ? context.symbols.babylonImportName(element)
+                    : undefined;
+                if (!name)
+                    context.fail(
+                        element,
+                        "A node block selection must name an exported block descriptor.",
+                    );
+                return pinnedNodeBlockDescriptor(name);
+            });
+            const names = new Set(emitters.map((emitter) => emitter.className));
+            if (names.size !== emitters.length)
+                context.fail(
+                    loader,
+                    "A node block loader cannot select a class twice.",
+                );
+            return { blockEmitters: emitters };
+        }
+        const factory = resolveFunctionDeclaration(
+            context.checker,
+            loader.expression,
+            (node, message) => context.fail(node, message),
+        );
+        if (
+            factory &&
+            loader.arguments.length === 0 &&
+            factory.parameters.length === 0 &&
+            factory.body &&
+            ts.isBlock(factory.body) &&
+            factory.body.statements.length === 1
+        ) {
+            const returned = factory.body.statements[0];
+            if (
+                returned &&
+                ts.isReturnStatement(returned) &&
+                returned.expression
+            ) {
+                if (active.has(factory))
+                    context.fail(
+                        loader,
+                        "Recursive node block loader factories are unsupported.",
+                    );
+                return compileBlockLoader(
+                    context,
+                    returned.expression,
+                    new Set([...active, factory]),
+                );
+            }
+        }
+    }
     if (
         ts.isIdentifier(loader) &&
         context.symbols.babylonImportName(loader) ===

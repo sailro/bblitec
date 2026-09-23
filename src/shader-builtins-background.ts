@@ -14,6 +14,8 @@ import { resolve } from "node:path";
 import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
+    readPinnedRawShader,
+    readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
 import { formatStatements, rehomeText } from "./shader-builtins-utility.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
@@ -119,12 +121,13 @@ export interface PinnedBackgroundGroundSource {
 export function readPinnedBackgroundGroundSource(
     packageRoot: string,
 ): PinnedBackgroundGroundSource {
-    const module = readFileSync(
-        resolve(packageRoot, "lib/material/pbr/background-ground.js"),
-        "utf8",
-    );
+    const modulePath = "material/pbr/background-ground.js";
+    const module = readPinnedLibraryModule(modulePath);
     return {
-        fragment: extractPackagedStringLiteral(module, "groundFragSrc"),
+        fragment: readPinnedRawShader(
+            modulePath,
+            "shaders/background.ground.fragment.wgsl",
+        ),
         imageProcessing: extractPackagedTemplateLiteral(
             module,
             "WGSL_IMAGE_PROCESSING",
@@ -146,25 +149,19 @@ export interface PinnedBackgroundSkyboxSource {
 export function readPinnedBackgroundSkyboxSource(
     packageRoot: string,
 ): PinnedBackgroundSkyboxSource {
-    const ddsModule = readFileSync(
-        resolve(packageRoot, "lib/material/pbr/background-dds-skybox.js"),
-        "utf8",
-    );
+    const ddsModule = "material/pbr/background-dds-skybox.js";
     return {
-        ddsVertex: extractPackagedStringLiteral(ddsModule, "ddsSkyboxVertSrc"),
-        ddsFragment: extractPackagedStringLiteral(
+        ddsVertex: readPinnedRawShader(
             ddsModule,
-            "ddsSkyboxFragSrc",
+            "shaders/skybox-dds.vertex.wgsl",
         ),
-        hdrFragment: extractPackagedStringLiteral(
-            readFileSync(
-                resolve(
-                    packageRoot,
-                    "lib/material/pbr/background-hdr-skybox.js",
-                ),
-                "utf8",
-            ),
-            "skyboxHdrFragSrc",
+        ddsFragment: readPinnedRawShader(
+            ddsModule,
+            "shaders/skybox-dds.fragment.wgsl",
+        ),
+        hdrFragment: readPinnedRawShader(
+            "material/pbr/background-hdr-skybox.js",
+            "shaders/skybox-hdr.fragment.wgsl",
         ),
         dither: readPinnedDitherWgsl(packageRoot),
     };

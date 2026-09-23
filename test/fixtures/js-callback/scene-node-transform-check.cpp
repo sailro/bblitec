@@ -44,24 +44,36 @@ void set_transform_node_rotation_quaternion(Engine& e, TransformNodeHandle h, Ve
     else
         ++node_dirty;
 }
-static float& axis(Vec3& p, std::size_t n) { return n == 0 ? p.x : n == 1 ? p.y : p.z; }
-void set_asset_root_position_component(Engine&, AssetHandle, std::size_t n, float v) {
+static double& axis(Vec3d& p, std::size_t n) { return n == 0 ? p.x : n == 1 ? p.y : p.z; }
+void set_asset_root_position_component(Engine&, AssetHandle, std::size_t n, double v) {
     axis(asset_root.root_position, n) = v;
     ++asset_writes;
 }
-void set_asset_root_rotation_component(Engine&, AssetHandle, std::size_t n, float v) {
+void set_asset_root_rotation_component(Engine&, AssetHandle, std::size_t n, double v) {
     axis(asset_root.root_rotation, n) = v;
     ++asset_writes;
 }
-void set_asset_root_position(Engine&, AssetHandle, Vec3 p) {
+void set_asset_root_position(Engine&, AssetHandle, Vec3d p) {
     asset_root.root_position = p;
     ++asset_writes;
 }
-void set_asset_root_rotation(Engine&, AssetHandle, Vec3 p) {
+void set_asset_root_rotation(Engine&, AssetHandle, Vec3d p) {
     asset_root.root_rotation = p;
     ++asset_writes;
 }
-void reset_asset_root_scaling(Engine&, AssetHandle) { asset_root.root_scaling_reset = true; }
+Vec3d asset_root_rotation(Engine&, AssetHandle) { return asset_root.root_rotation; }
+void set_asset_root_scaling(Engine&, AssetHandle, Vec3d value) { asset_root.root_scaling = value; }
+void set_asset_root_scaling_component(Engine&, AssetHandle, std::size_t component, double value) {
+    axis(asset_root.root_scaling, component) = value;
+}
+void set_asset_root_rotation_quaternion(Engine&, AssetHandle, Vec4d value) {
+    asset_root.root_rotation_quaternion = value;
+}
+void set_asset_root_rotation_quaternion_component(Engine&, AssetHandle, std::size_t component,
+                                                  double value) {
+    auto& q = asset_root.root_rotation_quaternion;
+    (component == 0 ? q.x : component == 1 ? q.y : component == 2 ? q.z : q.w) = value;
+}
 } // namespace bbl
 
 #include "scene-node-transforms.hpp"
@@ -111,12 +123,7 @@ int main() {
     set_scene_node_scaling(engine, asset, {1, 1, 1}, false);
     assert(scene_node_scaling(engine, asset).x == 1);
     set_scene_node_rotation_quaternion(engine, asset, {0, 0, 0, 1}, false);
-    bool refused = false;
-    try {
-        set_scene_node_scaling(engine, asset, {2, 1, 1}, false);
-    } catch (const std::runtime_error&) {
-        refused = true;
-    }
-    assert(refused);
+    set_scene_node_scaling(engine, asset, {2, 1, 1}, false);
+    assert(scene_node_scaling(engine, asset).x == 2);
     std::cout << "scene-node-transform-check: ok\n";
 }

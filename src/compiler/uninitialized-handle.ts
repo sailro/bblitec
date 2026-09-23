@@ -1,5 +1,63 @@
 import ts from "typescript";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
+
+/** An escaped Promise reject callback accepts the runtime's represented Error reason. */
+export function inferPromiseRejectStorage(
+    declaration: ts.VariableDeclaration,
+    checker: ts.TypeChecker,
+): DataType | undefined {
+    if (declaration.initializer || !ts.isIdentifier(declaration.name))
+        return undefined;
+    const symbol = checker.getSymbolAtLocation(declaration.name);
+    if (!symbol) return undefined;
+    let found = false;
+    let compatible = true;
+    const visit = (node: ts.Node): void => {
+        if (!compatible) return;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(node.left) &&
+            checker.getSymbolAtLocation(node.left) === symbol
+        ) {
+            const rhs = ts.isIdentifier(node.right)
+                ? checker.getSymbolAtLocation(node.right)
+                : undefined;
+            const parameter = rhs?.valueDeclaration;
+            const executor =
+                parameter && ts.isParameter(parameter)
+                    ? parameter.parent
+                    : undefined;
+            const creation = executor?.parent;
+            if (
+                !executor ||
+                !ts.isFunctionLike(executor) ||
+                executor.parameters[1] !== parameter ||
+                !creation ||
+                !ts.isNewExpression(creation) ||
+                creation.arguments?.[0] !== executor ||
+                !ts.isIdentifier(creation.expression) ||
+                creation.expression.text !== "Promise" ||
+                !isDefaultLibraryIdentifier(checker, creation.expression)
+            ) {
+                compatible = false;
+                return;
+            }
+            found = true;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(
+        ts.findAncestor(
+            declaration,
+            (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
+        )!,
+    );
+    return found && compatible
+        ? { kind: "function", parameters: [{ kind: "error" }] }
+        : undefined;
+}
 
 /** TypeScript's evolving-any declarations acquire storage only when all uses agree. */
 export function inferUninitializedHandle(

@@ -71,11 +71,23 @@ void display_animation_frames() {
     display.subscribe(main.inbox()); // Multiple engines in a realm share a tick.
     std::vector<double> main_frames;
     std::vector<double> worker_frames;
+    std::vector<bbl::pal::AnimationFrameSource::Batch> batches;
+    const auto all_pending = [&] {
+        return std::none_of(batches.begin(), batches.end(),
+                            [](const auto& batch) { return batch.ready(); });
+    };
     EventLoop::AnimationFrameId cancelled = 0;
     main.post([&] {
         main.request_animation_frame([&](double time) {
+            require(all_pending(), "Repaint completed before its callback");
             main_frames.push_back(time);
-            main.queue_microtask([&] { main.cancel_animation_frame(cancelled); });
+            main.queue_microtask([&] {
+                require(all_pending(), "Repaint completed before its microtasks");
+                main.queue_microtask([&] {
+                    require(all_pending(), "Repaint completed before its nested microtasks");
+                    main.cancel_animation_frame(cancelled);
+                });
+            });
             main.request_animation_frame([&](double next) { main_frames.push_back(next); });
         });
         cancelled = main.request_animation_frame(
@@ -89,13 +101,17 @@ void display_animation_frames() {
     // The main realm stays busy across many repaints. The worker dispatches
     // independently; the main receives one latest tick, never a catch-up burst.
     for (int tick = 1; tick <= 100; ++tick) {
-        display.tick(origin + tick * 1ms);
+        batches.push_back(display.tick(origin + tick * 1ms));
         worker.poll();
     }
     require(worker_frames == std::vector<double>{1},
             "Worker animation depended on main dispatch or repeated a one-shot request");
+    require(all_pending(), "Coalesced repaint ignored an unfinished subscriber");
     main.poll();
     require(main_frames == std::vector<double>{100}, "Busy realm accumulated animation frames");
+    require(std::all_of(batches.begin(), batches.end(),
+                        [](const auto& batch) { return batch.ready(); }),
+            "Coalesced repaint receipts did not complete together");
     require(!main.poll(), "New animation callback ran without a new repaint");
     display.tick(origin + 101ms);
     main.poll();
@@ -109,6 +125,130 @@ void display_animation_frames() {
     main.poll();
     display.tick(origin + 102ms);
     require(!main.poll(), "Closed realm received an animation frame");
+}
+
+void animation_receipt_next_batch() {
+    using Batch = bbl::pal::AnimationFrameSource::Batch;
+    bbl::pal::AnimationFrameSource display;
+    const auto origin = EventLoop::Clock::now();
+    EventLoop loop(std::make_shared<EventLoop::Inbox>(), origin);
+    display.subscribe(loop.inbox());
+    Batch first, active_only, next;
+    std::vector<int> order;
+    require(first.ready(), "Empty repaint receipt did not complete immediately");
+    loop.post([&] {
+        loop.request_animation_frame([&](double timestamp) {
+            require(timestamp == 1 && !first.ready(), "First repaint completed before dispatch");
+            order.push_back(1);
+            active_only = display.tick(origin + 1500us);
+            require(!active_only.ready(), "Tick ignored an active one-shot callback");
+            loop.request_animation_frame([&](double later) {
+                require(later == 2 && first.ready() && !next.ready(),
+                        "Next repaint lost its independent completion");
+                order.push_back(4);
+                loop.queue_microtask([&] {
+                    require(!next.ready(), "Next repaint completed before its microtask");
+                    order.push_back(5);
+                });
+            });
+            next = display.tick(origin + 2ms);
+            require(!next.ready(), "Tick during active repaint was prematurely completed");
+            loop.queue_microtask([&] {
+                require(!first.ready() && !active_only.ready() && !next.ready(),
+                        "Active repaint receipts changed early");
+                order.push_back(2);
+            });
+        });
+        loop.request_animation_frame([&](double) {
+            require(!first.ready() && !next.ready(), "Receipt ignored another callback in batch");
+            order.push_back(3);
+        });
+    });
+    loop.poll();
+    first = display.tick(origin + 1ms);
+    require(!first.ready(), "Queued repaint completed before dispatch");
+    loop.poll();
+    require(first.ready() && active_only.ready() && !next.ready(),
+            "First completion released a later queued repaint");
+    require(order == std::vector<int>({1, 2, 3}), "Next request ran in the current repaint batch");
+    loop.poll();
+    require(next.ready() && order == std::vector<int>({1, 2, 3, 4, 5}),
+            "Next repaint or microtasks did not finish");
+    require(display.tick(origin + 3ms).ready() && !loop.poll(),
+            "Unrequested repaint queued realm work");
+}
+
+void animation_receipt_cancellation() {
+    using Batch = bbl::pal::AnimationFrameSource::Batch;
+    bbl::pal::AnimationFrameSource display;
+    const auto timestamp = EventLoop::Clock::now();
+    EventLoop loop;
+    display.subscribe(loop.inbox());
+    require(display.tick(timestamp).ready() && !loop.poll(),
+            "Unrequested initial repaint queued realm work");
+    EventLoop::AnimationFrameId callback = 0;
+    loop.post([&] {
+        callback = loop.request_animation_frame(
+            [](double) { throw std::runtime_error("Cancelled repaint callback ran"); });
+    });
+    loop.poll();
+    const auto cancelled = display.tick(timestamp);
+    loop.cancel_animation_frame(callback);
+    require(!cancelled.ready(), "Accepted cancellation bypassed its queued batch");
+    loop.poll();
+    require(cancelled.ready(), "Empty cancelled batch stranded its receipt");
+    require(display.tick(timestamp).ready() && !loop.poll(),
+            "Cancelled one-shot request queued another repaint");
+
+    for (const bool terminate : {false, true}) {
+        EventLoop pending;
+        bbl::pal::AnimationFrameSource source;
+        source.subscribe(pending.inbox());
+        pending.request_animation_frame(
+            [](double) { throw std::runtime_error("Shutdown repaint callback ran"); });
+        const auto receipt = source.tick(timestamp);
+        require(!receipt.ready(), "Pending shutdown receipt started ready");
+        if (terminate)
+            pending.inbox()->terminate();
+        else
+            pending.close();
+        require(receipt.ready() && source.tick(timestamp).ready(),
+                "Closed or terminated inbox stranded a queued repaint");
+    }
+
+    Batch expired;
+    {
+        bbl::pal::AnimationFrameSource source;
+        EventLoop temporary;
+        source.subscribe(temporary.inbox());
+        temporary.request_animation_frame([](double) {});
+        expired = source.tick(timestamp);
+        require(!expired.ready(), "Temporary realm receipt started ready");
+    }
+    require(expired.ready(), "Destroyed inbox stranded a repaint receipt");
+
+    // Closing an active callback must not release its receipt before microtasks.
+    EventLoop closing;
+    bbl::pal::AnimationFrameSource source;
+    source.subscribe(closing.inbox());
+    Batch active, queued;
+    bool microtask_ran = false;
+    closing.request_animation_frame([&](double) {
+        closing.request_animation_frame(
+            [](double) { throw std::runtime_error("Queued repaint survived active close"); });
+        queued = source.tick(timestamp);
+        closing.close();
+        require(!active.ready() && !queued.ready(), "Active close released receipts before unwind");
+        closing.queue_microtask([&] {
+            require(!active.ready() && !queued.ready(),
+                    "Active close skipped microtask completion");
+            microtask_ran = true;
+        });
+    });
+    active = source.tick(timestamp);
+    closing.poll();
+    require(microtask_ran && active.ready() && queued.ready(),
+            "Active close did not settle cancelled and running receipts");
 }
 
 void computation_without_graphics() {
@@ -293,6 +433,8 @@ int main() {
     try {
         ordering_and_cancellation();
         display_animation_frames();
+        animation_receipt_next_batch();
+        animation_receipt_cancellation();
         computation_without_graphics();
         timers_and_errors();
         terminate_busy_and_release_on_owner();

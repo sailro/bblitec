@@ -33,7 +33,11 @@ import {
     asObject,
     type JsonRecord,
 } from "./gltf-document.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
+import { javascriptModuleUrl } from "./data-url.js";
 import { readUpstreamPin } from "./upstream-source.js";
 import { readGlb, writeGlb, type GlbChunks } from "./glb-container.js";
 
@@ -162,131 +166,79 @@ interface DracoModule {
 
 const dracoModules = new Map<string, Promise<DracoModule>>();
 
-interface MeshoptDecoderModule {
-    ready: Promise<void>;
-    decodeGltfBuffer(
-        target: Uint8Array,
-        count: number,
-        size: number,
-        source: Uint8Array,
-        mode: string,
-        filter?: string,
-    ): void;
-}
+const meshoptFeatures = new Map<string, Promise<PinnedPreParseFeature>>();
+let defaultMeshoptFeature: Promise<PinnedPreParseFeature> | undefined;
 
-let meshoptDecoder: Promise<MeshoptDecoderModule> | undefined;
-let meshoptFeatureDecoder: Promise<void> | undefined;
-
-/**
- * Instantiates the pin's meshoptimizer artifact without asking its browser
- * wrapper to inject a script.
- *
- * The pinned glTF feature remains the owner of the bufferView walk and every
- * decode call; this only supplies the exact global its lazy decoder module
- * would obtain from `/meshopt_decoder.js` in the reference page.
- */
-async function loadPinnedMeshoptDecoder(): Promise<MeshoptDecoderModule> {
-    if (!meshoptDecoder) {
-        const loading = (async () => {
-            const glue = await pinnedArtifact("meshopt_decoder.js");
-            const sandbox: Record<string, unknown> = {
-                console,
-                WebAssembly,
-                Blob,
-                URL,
-            };
-            sandbox.self = sandbox;
-            sandbox.globalThis = sandbox;
-            createContext(sandbox);
-            runInContext(glue.toString("utf8"), sandbox, {
-                filename: "meshopt_decoder.js",
+/** Each decoder owns its VM and injected module; concurrent assets cannot exchange decoders. */
+async function loadMeshoptFeature(
+    configured?: Uint8Array,
+): Promise<PinnedPreParseFeature> {
+    if (configured === undefined) {
+        if (!defaultMeshoptFeature) {
+            const loading =
+                pinnedArtifact("meshopt_decoder.js").then(loadMeshoptFeature);
+            defaultMeshoptFeature = loading;
+            void loading.catch(() => {
+                if (defaultMeshoptFeature === loading)
+                    defaultMeshoptFeature = undefined;
             });
-            const decoder = sandbox.MeshoptDecoder as
-                MeshoptDecoderModule | undefined;
-            if (!decoder || typeof decoder.decodeGltfBuffer !== "function") {
-                throw new Error(
-                    "The pinned meshopt_decoder.js did not define MeshoptDecoder.",
-                );
-            }
-            await decoder.ready;
-            return decoder;
-        })();
-        meshoptDecoder = loading;
-        void loading.catch(() => {
-            // Every concurrent caller shares `loading`. Only that rejected
-            // generation may evict itself: a retry could already have
-            // installed a newer promise by the time this reaction runs.
-            if (meshoptDecoder === loading) {
-                meshoptDecoder = undefined;
-            }
-        });
+        }
+        return defaultMeshoptFeature;
     }
-    return meshoptDecoder;
-}
-
-/**
- * Primes the pin's lazy browser wrapper with the exact pinned decoder.
- *
- * `meshopt-decode.ts` captures the global only on its first call and caches the
- * resulting module. Keep the global override inside that one call, restore its
- * full descriptor even on failure, and share the whole critical section across
- * concurrent assets. Later feature calls use the wrapper's cached module and
- * never observe or mutate process-global state.
- */
-async function preparePinnedMeshoptDecoder(): Promise<void> {
-    if (!meshoptFeatureDecoder) {
-        const loading = (async () => {
-            const decoder = await loadPinnedMeshoptDecoder();
-            const key = "MeshoptDecoder";
-            const previous = Object.getOwnPropertyDescriptor(globalThis, key);
-            if (previous && !previous.configurable) {
-                throw new Error(
-                    "Cannot install the pinned MeshoptDecoder over a " +
-                        "non-configurable global.",
-                );
-            }
-            Object.defineProperty(globalThis, key, {
-                configurable: true,
-                enumerable: previous?.enumerable ?? false,
-                value: decoder,
-                writable: true,
-            });
-            try {
-                const module = await importPinnedModule<{
-                    getMeshoptDecoder(
-                        this: void,
-                    ): Promise<MeshoptDecoderModule>;
-                }>("loader-gltf/meshopt-decode.js");
-                const captured = await module.getMeshoptDecoder();
-                if (captured !== decoder) {
-                    throw new Error(
-                        "The pinned meshopt loader had already captured a " +
-                            "different decoder.",
-                    );
-                }
-            } finally {
-                if (previous) {
-                    Object.defineProperty(globalThis, key, previous);
-                } else {
-                    delete (
-                        globalThis as typeof globalThis & {
-                            MeshoptDecoder?: MeshoptDecoderModule;
-                        }
-                    ).MeshoptDecoder;
-                }
-            }
-        })();
-        meshoptFeatureDecoder = loading;
-        void loading.catch(() => {
-            // As above, keep successful work shared but let a failed prime be
-            // retried. The identity guard prevents an old rejection from
-            // clearing a newer in-flight retry.
-            if (meshoptFeatureDecoder === loading) {
-                meshoptFeatureDecoder = undefined;
-            }
+    const glue = configured;
+    const key = createHash("sha256").update(glue).digest("hex");
+    const previous = meshoptFeatures.get(key);
+    if (previous) return previous;
+    const loading = (async () => {
+        const sandbox: Record<string, unknown> = {
+            console,
+            WebAssembly,
+            Blob,
+            URL,
+        };
+        sandbox.self = sandbox;
+        sandbox.globalThis = sandbox;
+        createContext(sandbox);
+        runInContext(Buffer.from(glue).toString("utf8"), sandbox, {
+            filename: "meshopt_decoder.js",
         });
-    }
-    await meshoptFeatureDecoder;
+        const value = sandbox.MeshoptDecoder;
+        if (
+            typeof value !== "object" ||
+            value === null ||
+            !("decodeGltfBuffer" in value) ||
+            typeof value.decodeGltfBuffer !== "function" ||
+            !("ready" in value)
+        )
+            throw new Error(
+                "The configured meshopt decoder did not define MeshoptDecoder.",
+            );
+        await value.ready;
+        const shim = javascriptModuleUrl(
+            "// decoder " +
+                key +
+                "\nlet decoder; export function install(value) { decoder = value; } export async function getMeshoptDecoder() { return decoder; }",
+        );
+        const transport: unknown = await import(shim);
+        if (
+            !transport ||
+            typeof transport !== "object" ||
+            !("install" in transport) ||
+            typeof transport.install !== "function"
+        )
+            throw new Error("The meshopt transport module has no installer.");
+        Reflect.apply(transport.install, undefined, [value]);
+        return importPinnedModuleWithExports<PinnedPreParseFeature>(
+            "loader-gltf/gltf-feature-meshopt.js",
+            [],
+            new Map([["./meshopt-decode.js", shim]]),
+        );
+    })();
+    meshoptFeatures.set(key, loading);
+    void loading.catch(() => {
+        if (meshoptFeatures.get(key) === loading) meshoptFeatures.delete(key);
+    });
+    return loading;
 }
 
 /**
@@ -673,8 +625,6 @@ interface PinnedPreParsePass {
     shape: string;
     /** Applied to the document after the hook, before it is written. */
     after?: (json: JsonRecord) => void;
-    /** Installs a browser-owned dependency before the pin's hook runs. */
-    prepare?: () => Promise<void>;
 }
 
 const preParseFeatures = new Map<
@@ -684,7 +634,10 @@ const preParseFeatures = new Map<
 
 async function loadPreParseFeature(
     pass: PinnedPreParsePass,
+    decoders: AssetDecoders,
 ): Promise<PinnedPreParseFeature["default"]> {
+    if (pass.id === MESHOPT_EXTENSION)
+        return (await loadMeshoptFeature(await decoders.meshopt?.())).default;
     let loading = preParseFeatures.get(pass.module);
     if (!loading) {
         loading = (async () => {
@@ -715,10 +668,10 @@ async function runPinnedPreParse(
     pass: PinnedPreParsePass,
     glb: GlbChunks,
     label: string,
+    decoders: AssetDecoders,
 ): Promise<boolean> {
     if (!pass.trigger(glb.json)) return false;
-    await pass.prepare?.();
-    const feature = await loadPreParseFeature(pass);
+    const feature = await loadPreParseFeature(pass, decoders);
     const rewritten = await feature.preParse?.(glb.json, binaryChunkView(glb));
     if (!rewritten) {
         throw new Error(
@@ -749,7 +702,6 @@ const meshoptPreParsePass: PinnedPreParsePass = {
     trigger: (json) => declaredExtensions(json).includes(MESHOPT_EXTENSION),
     verb: "Decompressed",
     shape: `declares ${MESHOPT_EXTENSION}`,
-    prepare: preparePinnedMeshoptDecoder,
     after: (json) => dropExtension(json, MESHOPT_EXTENSION),
 };
 
@@ -950,7 +902,8 @@ export async function resolveGlbGeometry(
 ): Promise<boolean> {
     let rewrote = false;
     for (const pass of pinnedPreParsePasses) {
-        rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
+        rewrote =
+            (await runPinnedPreParse(pass, glb, label, decoders)) || rewrote;
     }
     rewrote = (await convertGaussianSplats(glb, label)) || rewrote;
     rewrote = (await decodeDracoGlb(glb, label, decoders.draco)) || rewrote;

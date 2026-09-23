@@ -34,6 +34,13 @@ test("promise constructors own escaping resolvers and races preserve settlement 
         let finish:(value:number)=>void=()=>{};
         const later=new Promise<number>(resolve=>{finish=resolve;});
         finish(19);if(await later!==19)throw new Error("stored resolving function");
+        let failCleanup!:(reason:unknown)=>void;
+        const cleanup = new Promise<void>((_resolve,reject)=>{failCleanup=reject;});
+        let cleanupMessage="";
+        const cleanupResult = cleanup.catch(error=>{cleanupMessage=error.message;});
+        failCleanup(new Error("escaped cleanup"));
+        await cleanupResult;
+        if(cleanupMessage!=="escaped cleanup")throw new Error("stored rejecting function");
         await new Promise<void>(resolve=>resolve(Promise.resolve()));
         await Promise.resolve(undefined).then(()=>undefined);
         await Promise.race([undefined,undefined]);

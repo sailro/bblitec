@@ -1546,7 +1546,8 @@ MaterialHandle create_grid_material(
         // every arm below writes. `rtt.ts` is where only ONE of the sources
         // comes from, so naming it here attributed the pixels setter and the
         // enabler to a module that contains neither.
-        const materialModule = "src/material/standard/standard-material.ts";
+        const materialModule =
+            "src/material/standard/create-standard-material.ts";
         if (lightmapFile) {
             const declaration = this.context.functionDeclaration(
                 "src/material/standard/set-std-lightmap.ts",
@@ -1855,6 +1856,15 @@ void set_material_plugins(
     // Upstream a second \`material.plugins = [...]\` replaces the list the
     // bridge reads, so the textures the previous list bound go with it.
     record.plugin_textures.clear();
+    record.plugin_uniform_writers.reset();
+    record.plugin_uniform_states.clear();
+}
+
+void add_material_plugin_uniform_writer(
+    Engine& engine, MaterialHandle material, MaterialRecord::PluginUniformWriter writer) {
+    auto& writers = standard_slot_material(engine, material).plugin_uniform_writers;
+    if (!writers) writers = std::make_shared<std::vector<MaterialRecord::PluginUniformWriter>>();
+    writers->push_back(std::move(writer));
 }
 `
                     : ""
@@ -1871,7 +1881,9 @@ void set_material_plugins(
 void add_material_plugin_pixels_texture(
     Engine& engine,
     MaterialHandle material,
-    const PixelsTexture& texture) {
+    const PixelsTexture& texture,
+    std::string texture_name,
+    std::string sampler_name) {
     MaterialPluginTexture entry;
     entry.data.bytes = texture.rgba;
     entry.data.rgba_width = texture.width;
@@ -1880,6 +1892,8 @@ void add_material_plugin_pixels_texture(
     entry.data.uv_transform = texture.uv_transform;
     entry.data.uv_invert_y = texture.uv_invert_y;
     entry.srgb = texture.srgb;
+    entry.texture_name = std::move(texture_name);
+    entry.sampler_name = std::move(sampler_name);
     standard_slot_material(engine, material)
         .plugin_textures.push_back(entry);
 }
@@ -1890,9 +1904,11 @@ void add_material_plugin_pixels_texture(
 void add_material_plugin_file_texture(
     Engine& engine,
     MaterialHandle material,
-    const FileTexture& texture) {
+    const FileTexture& texture,
+    std::string texture_name,
+    std::string sampler_name) {
     standard_slot_material(engine, material).plugin_textures.push_back(
-        MaterialPluginTexture{texture.data, texture.srgb});
+        MaterialPluginTexture{texture.data, texture.srgb, std::move(texture_name), std::move(sampler_name)});
 }
 `
                     : ""

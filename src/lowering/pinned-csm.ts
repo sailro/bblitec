@@ -23,6 +23,7 @@ type Shape =
 interface Member {
     shape: Shape;
     cpp: (owner: string) => string;
+    temporary?: true;
 }
 
 interface Value {
@@ -92,6 +93,11 @@ const cameraShape = record({
     farPlane: field(number, "far_plane"),
 });
 const lightShape = record({
+    worldMatrix: {
+        shape: f32,
+        cpp: (owner) => `light_world_matrix(${owner})`,
+        temporary: true,
+    },
     direction: record({ x: number, y: number, z: number }),
 });
 const thinShape = record({ count: number, matrices: f32 });
@@ -241,7 +247,11 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                     node,
                     `Unmapped pinned CSM member '${node.name.text}'.`,
                 );
-            return { shape: member.shape, cpp: member.cpp(owner.cpp) };
+            return {
+                shape: member.shape,
+                cpp: member.cpp(owner.cpp),
+                ...(member.temporary ? { temporary: true } : {}),
+            };
         }
         if (ts.isElementAccessExpression(node)) {
             const owner = this.value(node.expression);

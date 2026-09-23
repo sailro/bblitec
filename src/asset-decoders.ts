@@ -6,6 +6,7 @@ export interface AssetDecoderConfiguration {
         wasmUrls?: Record<string, Record<string, string>>;
     };
     draco?: { javascript: string; wasm: string };
+    meshopt?: { javascript: string };
 }
 
 export interface DracoDecoderAssets {
@@ -20,6 +21,7 @@ export interface Ktx2DecoderAssets {
 export interface AssetDecoders {
     ktx2?: () => Promise<Ktx2DecoderAssets>;
     draco?: () => Promise<DracoDecoderAssets>;
+    meshopt?: () => Promise<Uint8Array>;
 }
 
 /** A configured decoder is read only when an asset actually reaches it. */
@@ -36,6 +38,10 @@ export function prepareAssetDecoders(
             }));
     };
     const result: AssetDecoders = {};
+    if (configuration?.meshopt) {
+        const { javascript } = configuration.meshopt;
+        result.meshopt = once(() => read(javascript));
+    }
     if (configuration?.draco) {
         const { javascript, wasm } = configuration.draco;
         result.draco = once(async () => {

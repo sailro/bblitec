@@ -1,20 +1,115 @@
 #pragma once
 
+#include <bblite/pal_compute_texture.hpp>
+#include <bblite/pal_compute_mipmaps.hpp>
+#include <bblite/pal_compute_pipeline.hpp>
+#include <bblite/pal_storage_buffer.hpp>
+#include <bblite/pal_gpu_timestamp.hpp>
+
 #include <algorithm>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <mutex>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
 namespace bbl::pal {
 
 class AnimationFrameSource;
+using ComputeCommand = std::variant<ComputeDispatch, ComputeMipmapDraw, GpuTimestampWrite>;
 
 /** Backend-owned handles; never contains scene or JavaScript state. */
+struct OffscreenCompletion {
+    virtual ~OffscreenCompletion() = default;
+};
+
 struct OffscreenDevice {
     virtual ~OffscreenDevice() = default;
+    virtual bool supports_gpu_timestamps() const { return false; }
+    virtual std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t) {
+        throw std::runtime_error("This device does not provide GPU timestamps.");
+    }
+    virtual std::shared_ptr<GpuTimestampReadback>
+    resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>&, std::uint32_t) {
+        throw std::runtime_error("This device does not provide GPU timestamp readback.");
+    }
+    virtual std::shared_ptr<ComputeGroupLayout>
+    create_compute_group_layout(const ComputeGroupLayoutDescriptor&) {
+        throw std::runtime_error("This device does not provide compute group layouts.");
+    }
+    virtual std::shared_ptr<ComputePipelineLayout>
+    create_compute_pipeline_layout(const ComputePipelineLayoutDescriptor&) {
+        throw std::runtime_error("This device does not provide compute pipeline layouts.");
+    }
+    virtual std::shared_ptr<ComputeShaderModule>
+    create_compute_shader_module(const ComputeShaderModuleDescriptor&, const std::string&) {
+        throw std::runtime_error("This device does not provide compute shader modules.");
+    }
+    virtual std::shared_ptr<ComputePipeline>
+    create_compute_pipeline(const ComputePipelineDescriptor&) {
+        throw std::runtime_error("This device does not provide compute pipelines.");
+    }
+    virtual std::shared_ptr<ComputeBindGroup>
+    create_compute_bind_group(const ComputeBindGroupDescriptor&) {
+        throw std::runtime_error("This device does not provide compute bind groups.");
+    }
+    virtual void dispatch_compute(const ComputeDispatch&) {
+        throw std::runtime_error("This device does not provide compute dispatch.");
+    }
+    /** Consume one ordered source command list at its queue submission boundary. */
+    virtual void submit_compute_commands(std::span<const ComputeCommand> commands) {
+        for (const auto& command : commands) {
+            if (const auto* dispatch = std::get_if<ComputeDispatch>(&command))
+                dispatch_compute(*dispatch);
+            else if (const auto* mip = std::get_if<ComputeMipmapDraw>(&command))
+                mip->level->submit(mip->vertices);
+            else
+                throw std::runtime_error("This device does not provide GPU timestamps.");
+        }
+    }
+    virtual ComputeShaderLimits compute_shader_limits() const {
+        throw std::runtime_error("This device does not provide compute shader limits.");
+    }
+    virtual double minimum_uniform_buffer_offset_alignment() const {
+        throw std::runtime_error("This device does not provide uniform buffer limits.");
+    }
+    virtual double maximum_storage_buffer_size() const {
+        throw std::runtime_error("This device does not provide storage buffers.");
+    }
+    virtual std::shared_ptr<StorageBufferAllocation>
+    create_storage_buffer(const StorageBufferDescriptor&,
+                          std::optional<std::span<const std::uint8_t>>) {
+        throw std::runtime_error("This device does not provide storage buffers.");
+    }
+    virtual std::shared_ptr<StorageReadback>
+    create_storage_readback(const StorageReadbackDescriptor&) {
+        throw std::runtime_error("This device does not provide storage readback.");
+    }
+    virtual ComputeTextureCapabilities compute_texture_capabilities() const {
+        throw std::runtime_error("This device does not provide compute textures.");
+    }
+    virtual void create_compute_texture(const ComputeTextureDescriptor&, ComputeTextureCreated) {
+        throw std::runtime_error("This device does not provide compute textures.");
+    }
+    virtual std::shared_ptr<ComputeMipmapPipeline>
+    prepare_compute_mipmap_pipeline(const std::string&, const std::string&) {
+        throw std::runtime_error("This device does not provide compute texture mipmaps.");
+    }
+    virtual std::shared_ptr<ComputeMipmapLevel>
+    prepare_compute_mipmap_level(const std::shared_ptr<ComputeMipmapPipeline>&,
+                                 const std::shared_ptr<ComputeTextureAllocation>&,
+                                 const ComputeTextureDescriptor&, std::uint32_t, std::uint32_t,
+                                 std::uint32_t) {
+        throw std::runtime_error("This device does not provide compute texture mipmaps.");
+    }
+    virtual std::unique_ptr<OffscreenCompletion>
+    on_submitted_work_done(std::function<void(std::exception_ptr)>) {
+        throw std::runtime_error("This device does not provide a GPU completion fence.");
+    }
 };
 
 struct OffscreenImage {
@@ -152,10 +247,20 @@ public:
     }
     OffscreenSurface::Extent extent() const { return surface_.extent(); }
     void resize(std::uint32_t width, std::uint32_t height) { surface_.resize(width, height); }
-    OffscreenDevice& device() const { return device_; }
+    OffscreenDevice& device() const {
+        require_live_device();
+        return device_;
+    }
+    void invalidate_device() {
+        device_disposed_ = true;
+        discard_pending();
+    }
     const std::shared_ptr<AnimationFrameSource>& animation_frames() const {
         return surface_.animation_frames_;
     }
+    /** Supplied RAF time, read and written only by the owning realm. */
+    void set_animation_frame_timestamp(double timestamp) { animation_frame_timestamp_ = timestamp; }
+    std::optional<double> animation_frame_timestamp() const { return animation_frame_timestamp_; }
     std::uint64_t capture_frame_count() const { return surface_.capture_frame_count_; }
 
     class Binding {
@@ -169,15 +274,20 @@ public:
         OffscreenRun* previous_;
     };
 
-    bool closed() const { return surface_.closed(); }
+    bool closed() const { return device_disposed_ || surface_.closed(); }
 
     void publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
+        require_live_device();
         surface_.publish(width, height, std::move(image));
     }
 
     void discard_pending() { surface_.take_frame(); }
 
 private:
+    void require_live_device() const {
+        if (device_disposed_)
+            throw std::runtime_error("The engine GPU device has been disposed.");
+    }
     template <typename T> static T& require_resource(const std::shared_ptr<T>& resource) {
         if (!resource)
             throw std::invalid_argument("Offscreen run requires a surface and device.");
@@ -188,6 +298,8 @@ private:
     OffscreenDevice& device_;
     std::shared_ptr<OffscreenSurface> surface_owner_;
     std::shared_ptr<OffscreenDevice> device_owner_;
+    std::optional<double> animation_frame_timestamp_;
+    bool device_disposed_ = false;
 };
 
 } // namespace bbl::pal

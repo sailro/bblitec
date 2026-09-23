@@ -1,3 +1,4 @@
+#include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_resources.hpp"
 #include "pal_texture_upload_cache.hpp"
 #include <cassert>

@@ -47,7 +47,7 @@ with its unrouted functions and pin gaps listed separately. See [collection comm
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
-| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, catch bound to an Error carrying the native message, bounded finally | Suspended catch/finally; arbitrary cleanup across `startEngine` |
+| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors | Inheritance, private brand checks (`#x in value`), static blocks; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
@@ -75,18 +75,22 @@ and represented generic returns. Source-backed record ownership can trigger comp
 earlier aliases and initializer counts. Optional-property presence, earlier class instances and mutations
 through erased native records/arrays remain limited. Getters permit statements before a final return;
 early returns refuse.
+Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
 
 | Promise operation | Contract |
 | --- | --- |
 | `resolve` / constructor | Object identity; synchronous executor; first settlement wins; represented promise adoption |
+| `reject` | Owned Error identity |
 | `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject; `catch` and rejection callbacks bind their parameter to the caught Error |
 | `finally` | Waits for cleanup; preserves original result unless cleanup throws/rejects |
 | `all` | Ordered literal tuples and stored arrays of value promises; first rejection wins |
+| `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |
 
 Custom thenables, arbitrary rejection values, heterogeneous race results and unrepresented aggregation
 shapes refuse. `all` excludes literal spreads, other iterables and stored void/value-only arrays.
-Async collection callbacks start synchronously and retain suspension; predicate promises are truthy.
+`allSettled` excludes literal spreads and other iterables. Async collection callbacks start synchronously
+and retain suspension; predicate promises are truthy.
 Timers/microtasks need no engine. RAF needs a Window repaint source. Unhandled rejections are reported
 in a subsequent task after microtasks. Worker cloning retains supported cycles/aliases and copied
 buffers; MessagePort, shared memory and broader transferable values refuse.
@@ -108,7 +112,7 @@ buffers; MessagePort, shared memory and broader transferable values refuse.
 | JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
-| URLSearchParams | String constructor, get/has, duplicate order, decoding, optional has value; deployment-query reads fold, and a runtime-key read parses the deployment query natively | Mutation, serialization, iteration and other constructors refuse; a deployment bag parsed for a runtime key is one per function, not one object, and a bag passed to a helper stays browser state |
+| URLSearchParams | String constructor, get/has/set/toString, duplicate order, decoding and form encoding; mutation retains object identity and invalidates deployment-query folds | Append/delete/sort, iteration and other constructors refuse |
 | Binary data | ArrayBuffer, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays | Unrepresented element/storage consumers refuse |
 
 Typed-array buffer views retain bytes, offset, length and identity. Constructors check ToIndex,
@@ -159,6 +163,10 @@ HDR uses pinned GGX prefiltering; DDS preserves specular mips; `.env` uploads de
 is baked. Static box/sphere local environments and blended probe sets support setup before registration.
 Live probe rebuilding/ORM rebinding refuse; direct intensity remains live.
 
+Procedural sky environments support packaged BRDF textures, GPU cube generation/mips and live
+atmosphere updates. Sun color and irradiance use pinned arithmetic; overlapping updates and disposal
+cancel stale publication. Custom yield hooks refuse.
+
 ### Drawn and computed assets
 
 Closed Chromium producers bake pixels/atlases. Pinned CSG/CSG2 bake geometry; CSG2 requires unchanged,
@@ -199,13 +207,36 @@ own extent refresh.
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`.
 Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
+`disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
+teardown after a disposer throws. It is independent of recovery.
+GPU task timing queries and enable requests expose the [native capability result](fidelity.md#semantic-contract).
 
 Same-engine canvases have independent targets, cameras, rectangles and input ownership.
 
+Compute tasks retain identity, writable names/execution gates and replaceable disposers.
+Stored functions admit `bind(thisArg)` without partial arguments or dynamic `this` rebinding.
+Compute uniform layouts require generation-known field names/types and retain source packing,
+validation and distinct object identity. Uniform buffers and task-owned arenas retain padded staging,
+aligned slots and disposal. Typed writers admit f32/u32/i32 scalars and numeric vector/matrix arrays;
+f16 writers remain outside the admitted surface. Binding declarations and shader descriptors retain
+source validation and disposal; WGSL and entry points must be generation-known. Async pipeline
+preparation, binding sets, dynamic offsets and ordered task submission run on both backends.
+Bindings admit uniform/storage buffers, sampled/storage textures and samplers; optional record
+own-property presence refuses. Frame-graph compute tasks may follow system shadows and must precede
+user render tasks.
+One-shot completion waits for submitted GPU work and preserves rearming/disposal semantics.
+Storage readback validates byte ranges, coalesces identical requests and serializes differing ranges.
+Compute outputs can feed sampled material slots and storage-backed geometry. Mipmap tasks preserve
+source execution gates and command order. Six-layer storage views with cube sampling are qualified
+on Dawn and patched SDL D3D12; other SDL drivers refuse this combination.
+
 ## Cameras and input
 
-ArcRotate/Free cameras, framing, bounded orthographic projection, viewports and supported SDL controls
-are live. Geospatial input, off-center orthographic planes and broader camera combinations refuse.
+ArcRotate/Free cameras, framing, orthographic projection, viewports and supported SDL controls are live.
+Orthographic options admit halfHeight and optional left/right/bottom/top planes; later plane writes refuse.
+World matrices admit copied typed-array reads and constant indices 0–15. Tracked transforms and
+configurable FreeCamera controls retain worldMatrixVersion; mutable matrix aliases refuse.
+Geospatial input and broader camera combinations remain limited.
 
 ## Android
 
@@ -247,18 +278,22 @@ Reached primitives, data factories, ribbons/extrusions/polyhedra, lines, CSG and
 admitted option sets. Box/sphere data is mutable and shared through aliases. Unknown-count mesh/Standard/
 shader factories require compatible profiles. Static expansion is capped at 4,096 iterations/1 MiB;
 parameterized composition tables at 65,536 records each. Wider dynamic geometry updates remain limited.
+Owned data meshes support geometry resizing and shared-family rebinding; omitted clones retain their
+existing geometry. Imported geometry resizing refuses.
 
 ## Scene hierarchy
 
 Local/world transforms, visibility, parenting and bounded imported walks/cloning are represented.
 Meshes may parent to meshes or transform nodes; transform nodes require transform-node parents.
-Parent assignment and child insertion are separate. Imported roots expose position/Y rotation;
-scaling, other rotations and broader cloning refuse. Detached imported leaves share geometry.
+Parent assignment and child insertion are separate. Synthetic glTF roots expose position, scaling,
+Euler/quaternion rotation and copied world matrices. Broader imported hierarchy cloning refuses.
+Detached imported leaves share geometry.
 Opaque cached lists require visibility invalidation; transparent/transmissive visibility is live.
 
 ## Lights
 
 Directional, hemispheric, point and spot lights support reached setters and per-mesh selection.
+Intensity and diffuse-color setters retain validation and unchanged-value behavior.
 
 ### Clustered lights
 
@@ -290,8 +325,9 @@ transform mutation/cloning refuse. Missing normals and used strided attributes r
 
 ### Material plugins
 
-Explicit enablement supports custom code and Standard sampler/texture bridges. Broader uniform writers,
-runtime signatures and PBR sampler plugins refuse.
+Explicit enablement supports custom code, Standard/PBR texture bridges and retained typed uniform
+writers for the admitted scalar/vector/matrix surface. Source callbacks update their scratch storage
+and vertex/fragment bindings. Dynamic shader signatures and broader plugin hooks refuse.
 
 ## Animation playback
 
@@ -368,6 +404,7 @@ unavailable; supported capability guards expose absence. Closed-context graph op
 
 PCF spot/directional, ESM directional and CSM support reached receivers/casters, layers, blur and morph
 bounds. receiveShadows needs a known supported value. Broader options and thin-instance contracts refuse.
+Generator enable changes retain resources and update receiver darkness; CSM callbacks retain source order.
 
 ## Navigation
 
@@ -381,8 +418,9 @@ resolve. Default tasks retain source ordering; authored tasks use explicit lists
 
 ### Post-process passes
 
-Leaf/composite passes support live uniforms, output identity and resize-relative targets. TAA needs one
-scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8 and single-sample inputs.
+Leaf/composite passes support live uniforms, output identity and resize-relative targets.
+Bloom weight reads/writes preserve the explicit updateUniforms boundary. TAA needs one scene, explicit
+Standard color tasks, engine-format color, depth24plus-stencil8 and single-sample inputs.
 Non-Standard draws, implicit/geometry/copy/shadow tasks, clustered lights, transmission, unprepared
 renderer/UI contexts and post-registration topology changes refuse. Tracked camera writes retain versions;
 untracked/reflective mutation, environment rotation and authored exposure/contrast changes refuse.

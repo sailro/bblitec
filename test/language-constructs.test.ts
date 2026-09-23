@@ -432,6 +432,23 @@ check(
 );
 
 check(
+    "unshift-callback-snapshots",
+    `
+    function first():number {return 1;}
+    function second():number {return 2;}
+    let selected:()=>number=first;
+    function replace():()=>number {selected=second;return second;}
+    const callbacks:(()=>number)[]=[];
+    callbacks.unshift(selected,replace());
+    if(callbacks[0]!()!==1 || callbacks[1]!()!==2 || selected()!==2)
+        throw new Error("unshift snapshots before later effects");
+    callbacks.unshift(selected);
+    if(callbacks[0]!()!==2 || callbacks[1]!()!==1)
+        throw new Error("unshift borrows until insertion");
+    `,
+);
+
+check(
     "mixed-tuple-dynamic-reads",
     `
     let pair: [string, number] = ["value", 7];

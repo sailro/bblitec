@@ -27,7 +27,9 @@ test(
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 struct Handle { std::uint32_t value; };
 using TaskHandle = Handle;
@@ -47,6 +49,7 @@ struct Scene {
     Scene* state = this;
     std::vector<LightHandle> lights{{0}};
     std::vector<TaskHandle> tasks;
+    std::optional<std::string> shadow_task_name;
 };
 unsigned registrations = 0;
 void build_shadow_task(Scene&, ShadowGeneratorHandle) {
@@ -57,6 +60,7 @@ void register_scene(Scene&) { ++registrations; }
 void rebuild_scene_renderables(Scene&) {}
 ${cppFunction(source, "void register_scene_with_shadow_support(Scene& scene)")}
 void check(Scene& scene) {
+    assert(scene.shadow_task_name == "shadow");
     assert(scene.tasks.size() == 4);
     for (unsigned i = 0; i < 4; ++i) {
         assert(scene.tasks[i].value == i);
@@ -82,6 +86,13 @@ int main() {
     register_scene_with_shadow_support(race);
     check(race);
     assert(registrations == 4);
+    Scene empty{&engine};
+    empty.lights.clear();
+    assert(!empty.shadow_task_name);
+    register_scene_with_shadow_support(empty);
+    assert(empty.shadow_task_name == "shadow");
+    assert(empty.tasks.empty());
+    assert(registrations == 5);
 }
 `,
         );

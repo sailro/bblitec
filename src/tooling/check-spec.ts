@@ -189,6 +189,8 @@ export interface ObserveHook {
 }
 
 export interface ObserveSpec {
+    /** Explicit page query; an empty string selects the no-query source. */
+    search?: string;
     /** Source injections into the corpus module before it is served. */
     hooks?: ObserveHook[];
     /** A page init script file (relative to the repository root). */
@@ -797,6 +799,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
         value,
         [
             "hooks",
+            "search",
             "initScriptFile",
             "state",
             "ready",
@@ -831,6 +834,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
         );
     }
     const initScriptFile = optionalString(value, "initScriptFile", location);
+    const search = optionalString(value, "search", location);
     const state = optionalString(value, "state", location);
     const ready = optionalString(value, "ready", location);
     const captureReady = optionalString(value, "captureReady", location);
@@ -840,6 +844,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     const golden = optionalBoolean(value, "golden", location);
     const notes = optionalString(value, "notes", location);
     return {
+        ...(search !== undefined ? { search } : {}),
         ...(hooks !== undefined
             ? {
                   hooks: (hooks as unknown[]).map((hook, index) => {

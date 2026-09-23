@@ -29,6 +29,7 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
         (node) =>
             ts.isCallExpression(node) ||
             ts.isNewExpression(node) ||
+            ts.isAwaitExpression(node) ||
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node) ||
             isUpdateExpression(node) ||

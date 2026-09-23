@@ -3,6 +3,29 @@
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
+#include "pal_dawn_completion.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include "pal_dawn_gpu_timestamp.hpp"
+#endif
+#if BBLITE_COMPUTE_SHADERS
+#include "pal_dawn_compute_pipeline.hpp"
+#endif
+#if BBLITE_COMPUTE_TEXTURES
+#include "pal_dawn_compute_texture.hpp"
+#endif
+#if BBLITE_COMPUTE_MIPMAPS
+#include "pal_dawn_compute_mipmaps.hpp"
+#endif
+
+#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
+#include "pal_dawn_compute_commands.hpp"
+#endif
+#if BBLITE_COMPUTE_BUFFERS
+#include "pal_dawn_storage_buffer.hpp"
+#if BBLITE_STORAGE_READBACK
+#include "pal_dawn_storage_readback.hpp"
+#endif
+#endif
 
 // Dawn mechanics shared by the renderers that draw through it.
 //
@@ -103,13 +126,6 @@ inline WGPUBlendState blend_state_from(const BlendFactors& factors) {
     blend.alpha.srcFactor = dawn_blend_factor(factors.src_alpha);
     blend.alpha.dstFactor = dawn_blend_factor(factors.dst_alpha);
     return blend;
-}
-
-inline std::string view_text(WGPUStringView view) {
-    if (!view.data)
-        return {};
-    return view.length == WGPU_STRLEN ? std::string(view.data)
-                                      : std::string(view.data, view.length);
 }
 
 inline WGPUStringView string_view(const char* text) { return WGPUStringView{text, WGPU_STRLEN}; }
@@ -230,9 +246,154 @@ private:
 };
 
 struct DawnOffscreenDevice final : OffscreenDevice {
+#if BBLITE_GPU_TASK_TIMING
+    bool supports_gpu_timestamps() const override {
+        return wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
+    }
+    std::shared_ptr<GpuTimestampQuerySet>
+    create_gpu_timestamp_query_set(std::uint32_t count) override {
+        return std::make_shared<DawnGpuTimestampQuerySet>(instance, device, queue, count);
+    }
+    std::shared_ptr<GpuTimestampReadback>
+    resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>& query_set,
+                           std::uint32_t count) override {
+        const auto queries = std::dynamic_pointer_cast<DawnGpuTimestampQuerySet>(query_set);
+        if (!queries || queries->device != device)
+            throw std::runtime_error("GPU timestamp query set belongs to a different device.");
+        return std::make_shared<DawnGpuTimestampReadback>(queries, count);
+    }
+#endif
+#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
+    void submit_compute_commands(std::span<const ComputeCommand> commands) override {
+        submit_dawn_compute_commands(device, queue, commands);
+    }
+#endif
+#if BBLITE_COMPUTE_MIPMAPS
+    std::map<std::string, std::shared_ptr<ComputeMipmapPipeline>> mipmap_pipelines;
+    std::shared_ptr<ComputeMipmapPipeline>
+    prepare_compute_mipmap_pipeline(const std::string& format, const std::string& code) override {
+        auto& result = mipmap_pipelines[format];
+        if (!result)
+            result = create_dawn_compute_mipmap_pipeline(device, format, code);
+        return result;
+    }
+    std::shared_ptr<ComputeMipmapLevel>
+    prepare_compute_mipmap_level(const std::shared_ptr<ComputeMipmapPipeline>& pipeline,
+                                 const std::shared_ptr<ComputeTextureAllocation>& allocation,
+                                 const ComputeTextureDescriptor&, std::uint32_t source_mip,
+                                 std::uint32_t target_mip,
+                                 std::uint32_t base_array_layer) override {
+        return create_dawn_compute_mipmap_level(device, queue, pipeline, allocation, source_mip,
+                                                target_mip, base_array_layer);
+    }
+#endif
+#if BBLITE_STORAGE_READBACK
+    std::shared_ptr<StorageReadback>
+    create_storage_readback(const StorageReadbackDescriptor& descriptor) override {
+        return std::make_shared<DawnStorageReadback>(instance, device, queue, descriptor);
+    }
+#endif
     explicit DawnOffscreenDevice(const DawnDevice& value)
         : instance(value.instance), adapter(value.adapter), device(value.device),
           queue(value.queue), surface_format(value.surface_format) {}
+    ComputeShaderLimits compute_shader_limits() const override {
+        WGPULimits limits = WGPU_LIMITS_INIT;
+        if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success)
+            throw std::runtime_error("Dawn compute shader limits are unavailable.");
+        return {static_cast<double>(limits.maxBindGroups),
+                static_cast<double>(limits.maxBindingsPerBindGroup),
+                static_cast<double>(limits.maxUniformBuffersPerShaderStage),
+                static_cast<double>(limits.maxStorageBuffersPerShaderStage),
+                static_cast<double>(limits.maxDynamicUniformBuffersPerPipelineLayout),
+                static_cast<double>(limits.maxDynamicStorageBuffersPerPipelineLayout),
+                static_cast<double>(limits.maxSampledTexturesPerShaderStage),
+                static_cast<double>(limits.maxSamplersPerShaderStage),
+                static_cast<double>(limits.maxStorageTexturesPerShaderStage),
+                static_cast<double>(limits.minStorageBufferOffsetAlignment),
+                static_cast<double>(limits.maxStorageBufferBindingSize),
+                static_cast<double>(limits.maxUniformBufferBindingSize),
+                static_cast<double>(limits.maxComputeWorkgroupsPerDimension)};
+    }
+#if BBLITE_COMPUTE_SHADERS
+    std::shared_ptr<ComputeGroupLayout>
+    create_compute_group_layout(const ComputeGroupLayoutDescriptor& descriptor) override {
+        return create_dawn_compute_group_layout(device, descriptor);
+    }
+    std::shared_ptr<ComputePipelineLayout>
+    create_compute_pipeline_layout(const ComputePipelineLayoutDescriptor& descriptor) override {
+        return create_dawn_compute_pipeline_layout(device, descriptor);
+    }
+    std::shared_ptr<ComputeShaderModule>
+    create_compute_shader_module(const ComputeShaderModuleDescriptor& descriptor,
+                                 const std::string&) override {
+        return create_dawn_compute_shader_module(device, descriptor);
+    }
+    std::shared_ptr<ComputePipeline>
+    create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
+        return create_dawn_compute_pipeline(device, descriptor);
+    }
+    std::shared_ptr<ComputeBindGroup>
+    create_compute_bind_group(const ComputeBindGroupDescriptor& descriptor) override {
+        return create_dawn_compute_bind_group(device, descriptor);
+    }
+    void dispatch_compute(const ComputeDispatch& dispatch) override {
+        dispatch_dawn_compute(device, queue, dispatch);
+    }
+#endif
+#if BBLITE_COMPUTE_BUFFERS
+    double minimum_uniform_buffer_offset_alignment() const override {
+        WGPULimits limits = WGPU_LIMITS_INIT;
+        if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success)
+            throw std::runtime_error("Dawn uniform buffer limits are unavailable.");
+        return static_cast<double>(limits.minUniformBufferOffsetAlignment);
+    }
+    double maximum_storage_buffer_size() const override {
+        WGPULimits limits = WGPU_LIMITS_INIT;
+        if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success)
+            throw std::runtime_error("Dawn storage buffer limits are unavailable.");
+        return static_cast<double>(limits.maxBufferSize);
+    }
+    std::shared_ptr<StorageBufferAllocation>
+    create_storage_buffer(const StorageBufferDescriptor& options,
+                          std::optional<std::span<const std::uint8_t>> initial) override {
+        return create_dawn_storage_buffer(device, queue, options, initial);
+    }
+#endif
+#if BBLITE_COMPUTE_TEXTURES
+    ComputeTextureCapabilities compute_texture_capabilities() const override {
+        WGPULimits limits = WGPU_LIMITS_INIT;
+        if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success)
+            throw std::runtime_error("Dawn compute texture limits are unavailable.");
+        return {{static_cast<double>(limits.maxTextureDimension1D),
+                 static_cast<double>(limits.maxTextureDimension2D),
+                 static_cast<double>(limits.maxTextureDimension3D),
+                 static_cast<double>(limits.maxTextureArrayLayers)},
+                wgpuDeviceHasFeature(device, WGPUFeatureName_Float32Filterable) != 0,
+                wgpuDeviceHasFeature(device, WGPUFeatureName_TextureFormatsTier1) != 0};
+    }
+    void create_compute_texture(const ComputeTextureDescriptor& options,
+                                ComputeTextureCreated complete) override {
+        create_dawn_compute_texture(device, options, std::move(complete));
+    }
+#endif
+    std::unique_ptr<OffscreenCompletion>
+    on_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
+        auto state = std::make_shared<DawnCompletionState>(std::move(complete));
+        WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+        callback.mode = WGPUCallbackMode_WaitAnyOnly;
+        callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
+        callback.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message,
+                               void* userdata, void*) {
+            const std::unique_ptr<std::shared_ptr<DawnCompletionState>> handler(
+                static_cast<std::shared_ptr<DawnCompletionState>*>(userdata));
+            (*handler)->deliver(status == WGPUQueueWorkDoneStatus_Success
+                                    ? std::exception_ptr{}
+                                    : std::make_exception_ptr(std::runtime_error(
+                                          "GPU queue completion failed: " + view_text(message))));
+        };
+        const auto future = wgpuQueueOnSubmittedWorkDone(queue, callback);
+        return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+    }
     const WGPUInstance instance;
     const WGPUAdapter adapter;
     const WGPUDevice device;
@@ -340,6 +501,26 @@ inline void configure_dawn_surface(DawnDevice& state, std::uint32_t width, std::
     wgpuSurfaceConfigure(state.surface, &configuration);
     state.surface_width = width;
     state.surface_height = height;
+}
+
+/** An external display clock paces rendering; mailbox avoids a second FIFO display wait. */
+inline void set_dawn_display_paced(DawnDevice& state, bool display_paced) {
+    auto mode = WGPUPresentMode_Fifo;
+    if (display_paced) {
+        WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
+        if (wgpuSurfaceGetCapabilities(state.surface, state.adapter, &capabilities) !=
+            WGPUStatus_Success)
+            dawn_error("surface presentation capabilities are unavailable.");
+        auto free_capabilities = js::finally(
+            [&capabilities]() noexcept { wgpuSurfaceCapabilitiesFreeMembers(capabilities); });
+        for (std::size_t index = 0; index < capabilities.presentModeCount; ++index)
+            if (capabilities.presentModes[index] == WGPUPresentMode_Mailbox)
+                mode = WGPUPresentMode_Mailbox;
+    }
+    if (mode == state.present_mode)
+        return;
+    state.present_mode = mode;
+    configure_dawn_surface(state, state.surface_width, state.surface_height);
 }
 
 inline bool resize_dawn_surface(DawnDevice& state, std::uint32_t width, std::uint32_t height) {
@@ -593,10 +774,9 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     // `enable primitive_index` directive (attribution captures only), and
     // BC/ASTC are the compressed formats used by packaged texture candidates.
     constexpr std::array optional_features{
-        WGPUFeatureName_Float32Filterable,
-        WGPUFeatureName_PrimitiveIndex,
-        WGPUFeatureName_TextureCompressionBC,
-        WGPUFeatureName_TextureCompressionASTC,
+        WGPUFeatureName_Float32Filterable,    WGPUFeatureName_PrimitiveIndex,
+        WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TextureCompressionASTC,
+        WGPUFeatureName_TimestampQuery,
     };
     std::array<WGPUFeatureName, optional_features.size() + 1> device_features{};
     std::size_t device_feature_count = 0;

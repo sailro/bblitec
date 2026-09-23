@@ -57,7 +57,7 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
                 shared,
                 "inline constexpr std::uint32_t vertex_stream_slot(",
             ),
-            `std::size_t features(const Engine& engine) { struct { struct { MeshHandle mesh{0}; } item; } draw;
+            `std::size_t features(const Engine& engine) { const Scene scene{}; struct { struct { MeshHandle mesh{0}; } item; } draw;
             struct { std::size_t mesh_features = 0; unsigned material_view = 0; } key;
             ${cppFunction(key.slice(start), "if (")} return key.mesh_features; }`,
             cppFunction(sdl, "void bind_composed_mesh_vertex_buffers("),

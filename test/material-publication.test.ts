@@ -34,7 +34,7 @@ test("material output publication and captured draw identity follow source frame
             .declaration.getText()
             .replace(/^export /, "");
     const swap = "src/scene/scene-material-swap.ts";
-    const renderTask = "src/frame-graph/render-task.ts";
+    const renderTask = "src/frame-graph/render-task-base.ts";
     const pbr = context.functionDeclaration(
         "src/material/pbr/pbr-renderable.ts",
         "buildPbrRenderables",
@@ -72,6 +72,8 @@ test("material output publication and captured draw identity follow source frame
         ${moduleSource("src/scene/scene-rebuild.ts", true)}
         ${declaration("src/mesh/thin-instance.ts", "buildRuntimeThinMesh")}
         ${declaration("src/engine/engine.ts", "renderFrame")}
+        ${declaration("src/engine/engine.ts", "_renderFrame")}
+        ${declaration("src/camera/camera.ts", "_applyCameraViewport")}
         ${declaration(renderTask, "executePassBody")}
         ${declaration(renderTask, "drawList")}
         let scene, task, draws, pending;
@@ -110,6 +112,8 @@ test("material output publication and captured draw identity follow source frame
                     task._opaqueBindings = opaque ? bindings : [];
                     task._directBindings = direct ? bindings : [];
                     task._transparentBindings = opaque || direct ? [] : bindings;
+                    task._ob = [];
+                    task._lastVersion = scene._renderableVersion;
                 }
                 return executePassBody(task, pass);
             };

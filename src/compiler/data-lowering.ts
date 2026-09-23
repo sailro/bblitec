@@ -27,7 +27,7 @@ import { compileDateNew } from "./dates.js";
 import { requireDynamicBindingStorage } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
-import { thrownMessage } from "./error-values.js";
+import { errorValue, thrownMessage } from "./error-values.js";
 import { renderClosure } from "./closure-captures.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
@@ -230,6 +230,7 @@ export interface DataLoweringContext
             | "reachJsRandom"
             | "defaultEngine"
             | "requireDefaultEngine"
+            | "requireEngine"
             | "refuseBorrowedPlatformEventEscape"
             | "fail"
         >,
@@ -408,7 +409,11 @@ export class DataLowerer {
                     node,
                     "Promise rejection requires a represented Error or string reason.",
                 );
-            cpp = `${callback.cpp}.reject(std::make_exception_ptr(std::runtime_error(${this.compileKnownValueForSink(message, { kind: "string" }, node)})))`;
+            const reason =
+                value.dataType?.kind === "error"
+                    ? value.cpp
+                    : `std::make_exception_ptr(std::runtime_error(${this.compileKnownValueForSink(message, { kind: "string" }, node)}))`;
+            cpp = `${callback.cpp}.reject(${reason})`;
         } else if (value.kind === "promise") {
             if (value.promiseType !== settlement.type)
                 this.context.fail(
@@ -960,6 +965,11 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            if (mode === "write" && owner.nativeError)
+                this.context.fail(
+                    unwrapped,
+                    "Mutation of represented Error properties is not supported.",
+                );
             if (mode === "write" && owner.kind === "record") {
                 if (
                     owner.recordGetters?.[unwrapped.name.text] ||
@@ -2477,9 +2487,7 @@ export class DataLowerer {
                 dataType.element,
             );
         }
-        // A caught Error is its message string and carries `.message` and
-        // `.name` beside it; nothing else in the data model carries
-        // record properties past its own type.
+        // Error views expose their message and dynamic constructor name.
         const carried = owner.nativeError
             ? owner.recordProperties?.[property]
             : undefined;
@@ -3613,6 +3621,7 @@ export class DataLowerer {
                 "dataview",
                 "bufferview",
                 "numberindex",
+                "function",
                 "handle",
                 "number",
                 "boolean",
@@ -3705,6 +3714,17 @@ export class DataLowerer {
     }
 
     public leafValue(cpp: string, dataType: DataType): Value {
+        if (dataType.kind === "error")
+            return errorValue(
+                {
+                    kind: "data",
+                    cpp: `bbl::js::error_message(${cpp})`,
+                    dataType: { kind: "string" },
+                },
+                "Error",
+                (text) => this.context.cppString(text),
+                { kind: "data", cpp, dataType },
+            );
         if (dataType.kind === "promise")
             return {
                 kind: "promise",
@@ -4773,6 +4793,7 @@ export class DataLowerer {
         callback: ts.Expression,
         label: string,
     ): Value | undefined {
+        const boundary = this.context.nativeBindingCheckpoint();
         const local =
             ts.isIdentifier(callback) ||
             ts.isArrowFunction(callback) ||
@@ -4796,7 +4817,7 @@ export class DataLowerer {
             kind: "declaration",
             type: "const auto",
             name,
-            initializer: cpp,
+            initializer: this.context.takeNativeTemporary(cpp, boundary),
         });
         return {
             ...this.leafValue(name, type),
@@ -5625,11 +5646,19 @@ export class DataLowerer {
             const length = arguments_[2]
                 ? `, ${numericArgument(arguments_[2])}`
                 : "";
-            return {
-                kind: "data",
-                cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
-                dataType,
-            };
+            // Construction owns a view now, even when a static tuple or
+            // record retains its final element as a delayed expression.
+            // Capturing that view also retains its backing buffer without
+            // exposing the constructor's temporary arguments to a closure.
+            return this.context.pinValueToTemporary(
+                {
+                    kind: "data",
+                    cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
+                    dataType,
+                },
+                "typed_view",
+                expression,
+            );
         }
         if ((expression.arguments?.length ?? 0) > 1) {
             this.context.fail(
@@ -5699,6 +5728,10 @@ export class DataLowerer {
             ts.isPropertyAccessExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        if (staticSource?.kind === "camera-world-matrix") {
+            const engine = this.context.requireEngine(staticSource, unwrapped);
+            return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${engine}.cameras[${staticSource.cpp}.value]))`;
+        }
         if (
             keepKind !== undefined &&
             staticSource?.kind === "data" &&
@@ -7174,6 +7207,11 @@ export class DataLowerer {
             owner.kind === "data"
                 ? this.narrowOptional(owner, ownerNode)
                 : owner;
+        // LightBase's discriminator is absent on loadGltf's synthetic SceneNode.
+        if (operator === "in" && key.staticString === "lightType") {
+            if (narrowed.kind === "asset-root") return "false";
+            if (narrowed.kind === "light") return "true";
+        }
         if (narrowed.kind === "record") {
             const keys = [
                 ...new Set(
@@ -9201,6 +9239,7 @@ export class DataLowerer {
             dataType?.kind === "optional" &&
             ([
                 "event-target",
+                "function",
                 "number",
                 "boolean",
                 "string",
@@ -9265,7 +9304,9 @@ export class DataLowerer {
                 // Flow narrowing changes checker types, while nullable storage
                 // keeps its declared element representation (including enums).
                 return this.context.probeEmission(() => {
-                    const value = this.compileDataPath(unwrapped, "read");
+                    const value =
+                        this.compileDataPath(unwrapped, "read") ??
+                        this.context.compileValue(unwrapped);
                     return value?.kind === "data" &&
                         optionalComparable(value.dataType)
                         ? value
@@ -9294,7 +9335,12 @@ export class DataLowerer {
                       ),
                       dataType: { kind: "string" },
                   }
-                : value;
+                : value.dataType.kind === "function"
+                  ? {
+                        ...value,
+                        dataType: { ...value.dataType, identity: true },
+                    }
+                  : value;
         const bindOptional = (
             operand: ts.Expression,
             expected: Extract<DataType, { kind: "optional" }>,
@@ -9542,13 +9588,17 @@ export class DataLowerer {
             (isOpaqueReference(value.dataType) ||
                 value.dataType.kind === "event-target" ||
                 value.dataType.kind === "iterator" ||
+                value.dataType.kind === "function" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||
                 value.dataType?.kind === "boolean")
         ) {
             return {
                 cpp: value.cpp,
-                dataType: value.dataType,
+                dataType:
+                    value.dataType.kind === "function"
+                        ? { ...value.dataType, identity: true }
+                        : value.dataType,
                 ...(value.staticString === undefined
                     ? {}
                     : { staticString: value.staticString }),
@@ -9788,8 +9838,16 @@ export class DataLowerer {
     }
 
     private callSpanValue(expression: ts.Expression): Value | undefined {
-        const unwrapped = this.context.unwrap(expression);
-        if (!ts.isCallExpression(unwrapped)) {
+        // Keep the await boundary: its resolved array can carry a richer
+        // represented element type than the checker's promise annotation.
+        const awaited = unwrapExpression(expression);
+        const unwrapped = ts.isAwaitExpression(awaited)
+            ? awaited
+            : this.context.unwrap(expression);
+        if (
+            !ts.isCallExpression(unwrapped) &&
+            !ts.isAwaitExpression(unwrapped)
+        ) {
             return undefined;
         }
         const value = this.context.compileValue(unwrapped);

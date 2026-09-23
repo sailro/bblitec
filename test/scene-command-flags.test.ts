@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parseParityArguments } from "../src/parity-scene.js";
 import { flagNumber, parseFlags } from "../src/tooling/flags.js";
@@ -7,6 +9,24 @@ import {
     canonicalBackend,
     resolveBackend,
 } from "../src/tooling/artifacts.js";
+
+test("process exposes one normal deployment without a live mode", () => {
+    const command = fileURLToPath(
+        new URL("../src/scene-command.js", import.meta.url),
+    );
+    const help = spawnSync(process.execPath, [command, "help"], {
+        encoding: "utf8",
+    });
+    assert.equal(help.status, 0, help.stderr);
+    assert.doesNotMatch(help.stdout, /--live/);
+    const live = spawnSync(
+        process.execPath,
+        [command, "process", "ocean", "--live", "--backend", "both"],
+        { encoding: "utf8" },
+    );
+    assert.equal(live.status, 1);
+    assert.match(live.stderr, /Unknown process argument '--live'/);
+});
 
 // The strict parser every scene subcommand shares. These are the
 // behaviors that were each a silent failure before it existed: an

@@ -6,17 +6,13 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedQuaternionMath } from "./pinned-euler-proxy.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import type { CompiledTextData, TextBlob } from "../pinned-text-data.js";
 import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 import { assertAsyncSceneBuilder } from "./scene-deferred.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import {
-    lowerMat4MultiplyWriterCpp,
-    lowerPinnedFunction,
-    lowerTupleComponents,
-} from "./pinned-function-lowerer.js";
+import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 
 const module = "src/text/text-renderable.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -213,54 +209,7 @@ inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.
     }
 
     private quaternionMath(): string {
-        const calls = pinnedNumericMathCalls();
-        calls.set("Math.asin", (args) => `std::asin(${args.join(", ")})`);
-        return (
-            [
-                ["eulerXYZToQuatTuple", "euler_to_quat", ["rx", "ry", "rz"], 4],
-                [
-                    "quatToEulerXYZTuple",
-                    "quat_to_euler_xyz",
-                    ["qx", "qy", "qz", "qw"],
-                    3,
-                ],
-            ] as const
-        )
-            .map(([symbol, cppName, parameters, arity]) =>
-                lowerPinnedFunction(
-                    this.context,
-                    "src/math/quat-euler.ts",
-                    symbol,
-                    parameters.map((pinned) => ({
-                        pinned,
-                        cpp: pinned,
-                        kind: "number",
-                    })),
-                    {
-                        cppName,
-                        inline: true,
-                        calls,
-                        returns: {
-                            type: `std::array<double, ${arity}>`,
-                            value: (lowerer, expression) =>
-                                `{${lowerTupleComponents(
-                                    this.context,
-                                    lowerer,
-                                    expression,
-                                    {
-                                        arity,
-                                        at:
-                                            expression ??
-                                            this.context.sourceFile(
-                                                "src/math/quat-euler.ts",
-                                            ),
-                                    },
-                                ).join(", ")}}`,
-                        },
-                    },
-                ),
-            )
-            .join("\n");
+        return pinnedQuaternionMath(this.context);
     }
 
     private factory(): string {
@@ -631,11 +580,11 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
         ).composeWorldBody;
         const composeLocal = c.functionDeclaration(
             "src/scene/world-matrix-state.ts",
-            "composeTrsLocalMatrix",
+            "composeTrsLocalMatrixIntoBuffer",
         );
         c.expectShapeCount(
             composeLocal.declaration,
-            "isIdentity ? createIdentityMat4() : composeMat4(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
+            "composeMat4IntoBuffer(local, 0, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
             "Text local matrix dispatch",
         );
         const localBindings = new Map<string, PinnedBinding>();

@@ -3,6 +3,7 @@
 #include <bblite/js_promise.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/pal_canvas.hpp>
+#include <bblite/pal_gpu_retirement.hpp>
 
 namespace bbl::pal {
 
@@ -24,9 +25,16 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
     options.width = extent.width;
     options.height = extent.height;
     auto engine = std::make_shared<Engine>(bbl::create_engine(std::move(options)));
+    engine->realm_owner = engine;
     engine->offscreen_run = std::move(context);
     bind_canvas_engine(canvas, engine);
     EventLoop::current().defer_cleanup([engine] {
+        if (engine->dispose_storage_buffers)
+            engine->dispose_storage_buffers(*engine);
+        if (engine->dispose_compute_textures)
+            engine->dispose_compute_textures();
+        if (engine->dispose_gpu_retirements)
+            engine->dispose_gpu_retirements();
         // Renderer activations have retired first. Drop source callbacks and
         // native resource owners before the last external engine reference.
         *engine = Engine{};
@@ -35,6 +43,59 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
 }
 
 js::Promise<js::PromiseVoid> start_realm_engine(std::shared_ptr<Engine> engine);
+
+inline GpuCompletion submitted_gpu_work(const std::shared_ptr<OffscreenRun>& run) {
+    struct Completion final : CompletionEvent {
+        std::exception_ptr error;
+        Completion(std::uint64_t id, std::exception_ptr failure)
+            : CompletionEvent(id), error(failure) {}
+    };
+    struct Pending {
+        std::shared_ptr<OffscreenRun> run;
+        std::unique_ptr<OffscreenCompletion> operation;
+    };
+    GpuCompletion result;
+    auto& loop = EventLoop::current();
+    auto pending = std::make_shared<Pending>(Pending{run, {}});
+    const auto id =
+        loop.register_completion([result, pending](std::unique_ptr<ExternalEvent> event) {
+            auto* completion = dynamic_cast<Completion*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect GPU completion payload.");
+            if (completion->error)
+                result.reject(completion->error);
+            else
+                result.resolve(js::PromiseVoid{});
+        });
+    try {
+        if (!run)
+            throw InvalidCanvasState("Engine has no GPU device.");
+        pending->operation = run->device().on_submitted_work_done(
+            [inbox = loop.inbox(), id](std::exception_ptr error) {
+                inbox->post(std::make_unique<Completion>(id, std::move(error)));
+            });
+    } catch (...) {
+        loop.cancel_completion(id);
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+
+inline std::shared_ptr<GpuRetirementState> gpu_retirement_state(Engine& engine) {
+    if (!engine.gpu_retirements) {
+        auto state = std::make_shared<GpuRetirementState>();
+        state->submitted_work_done = [run = engine.offscreen_run] {
+            return submitted_gpu_work(run);
+        };
+        engine.gpu_retirements = state;
+        engine.flush_gpu_retirements = [state] {
+            if (state->flush)
+                state->flush(state);
+        };
+        engine.dispose_gpu_retirements = [state] { dispose_gpu_resource_retirements(state); };
+    }
+    return engine.gpu_retirements;
+}
 
 inline void resize_realm_surface(Engine& engine, std::uint32_t width, std::uint32_t height) {
     if (!engine.offscreen_run)

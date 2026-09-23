@@ -65,19 +65,16 @@ export class CameraMutationLowerer {
                 ts.isMethodDeclaration(node) &&
                 this.context.propertyName(node.name) === "markLocalDirty",
         )[0];
-        if (
-            !mark?.body ||
-            mark.body.statements.length !== 1 ||
-            !ts.isExpressionStatement(mark.body.statements[0]!)
-        ) {
+        if (!mark?.body) {
             this.context.contractError(
                 declaration,
                 "Camera dirty entry changed.",
             );
         }
-        this.context.assertExpressionShape(
-            mark.body.statements[0].expression,
-            "invalidate()",
+        this.context.assertStatementShapes(
+            mark,
+            mark.body.statements,
+            "_cachedLocal = null; invalidate();",
             "Camera dirty entry",
         );
         const inventory = ts.createSourceFile(
@@ -240,6 +237,58 @@ export class CameraMutationLowerer {
                 ["this._onDirty", () => "dirty_camera_transform(camera)"],
             ]),
         );
+        const freeModule = "src/camera/free-camera.ts";
+        const { file: freeFile, declaration: freeFactory } =
+            this.context.functionDeclaration(freeModule, "_createFreeCamera");
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(freeFactory, "onDirty"),
+            "() => wm.markLocalDirty()",
+            "Free camera dirty callback",
+        );
+        const freeSetters = ["_yaw", "_pitch"].map((field) => {
+            const define = this.context.findNodes(
+                freeFactory,
+                (node): node is ts.CallExpression =>
+                    ts.isCallExpression(node) &&
+                    this.context.propertyPath(node.expression)?.join(".") ===
+                        "Object.defineProperty" &&
+                    node.arguments[1]?.getText(freeFile) ===
+                        JSON.stringify(field),
+            )[0];
+            const descriptor = define?.arguments[2];
+            if (!descriptor || !ts.isObjectLiteralExpression(descriptor))
+                this.context.contractError(
+                    freeFactory,
+                    `Expected free camera ${field} descriptor.`,
+                );
+            const setter = descriptor.properties.find(
+                (node): node is ts.MethodDeclaration =>
+                    ts.isMethodDeclaration(node) &&
+                    this.context.propertyName(node.name) === "set",
+            );
+            if (!setter?.body)
+                this.context.contractError(
+                    descriptor,
+                    `Expected free camera ${field} setter.`,
+                );
+            return this.lower(
+                freeFile,
+                setter.body,
+                new Map([
+                    [
+                        field,
+                        { cpp: "camera.*field", type: "scalar", mutable: true },
+                    ],
+                    ["v", { cpp: "value", type: "scalar" }],
+                ]),
+                new Map([["onDirty", () => "dirty_camera_transform(camera)"]]),
+            );
+        });
+        if (freeSetters[0] !== freeSetters[1])
+            this.context.contractError(
+                freeFactory,
+                "Free camera scalar setters differ.",
+            );
         return `// ${this.context.provenance(ARC, "createArcRotateCamera", OBSERVABLE)}
 void dirty_camera_transform(CameraRecord& camera) {
 ${this.dirty()}
@@ -248,6 +297,10 @@ void clamp_installed_camera_limits(CameraRecord& camera) {
     if (camera.limits_installed) clamp_camera_to_limits(camera);
 }
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value) {
+    if (field == &CameraRecord::free_yaw || field == &CameraRecord::free_pitch) {
+${freeSetters[0]}
+        return;
+    }
     if (field != &CameraRecord::alpha && field != &CameraRecord::beta && field != &CameraRecord::radius) {
         camera.*field = value;
         return;

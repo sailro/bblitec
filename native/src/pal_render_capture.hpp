@@ -264,6 +264,14 @@ public:
         value(color.b);
         end_array();
     }
+    void field(const char* name, const Color3d& color) {
+        key(name);
+        begin_array();
+        value(color.r);
+        value(color.g);
+        value(color.b);
+        end_array();
+    }
     void field(const char* name, const Color4& color) {
         key(name);
         begin_array();

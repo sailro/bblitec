@@ -1,4 +1,5 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
+import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import {
     dataTypeCppType,
@@ -74,6 +75,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     EngineContext: "engine",
     DeviceLostRecoveryHandle: "device-recovery",
     EnvironmentTextures: "gpu-environment",
+    ProceduralSkyEnvironment: "procedural-sky-environment",
     NodeInputHandle: "node-input",
     NodeMaterial: "material",
     TextData: "text-data",
@@ -105,6 +107,19 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ShadowGenerator: "shadow-generator",
     HierarchyInstancePool: "hierarchy-instance-pool",
     StorageBuffer: "storage-buffer",
+    ComputeStorageTexture: "compute-storage-texture",
+    ComputeTask: "compute-task",
+    ComputeOneShot: "compute-one-shot",
+    UniformBuffer: "uniform-buffer",
+    ComputeUniformArena: "compute-uniform-arena",
+    ComputeUniformWriter: "compute-uniform-writer",
+    ComputeShader: "compute-shader",
+    ComputeDispatch: "compute-dispatch",
+    ComputeTextureResource: "compute-texture-resource",
+    ComputeSampler: "compute-sampler",
+    ComputeBindingDecl: "compute-binding-decl",
+    ComputeBindingSet: "compute-binding-set",
+    ComputeUniformLayout: "compute-uniform-layout",
     Material: "material",
     PhysicsBody: "physics-body",
     PhysicsAggregate: "physics-aggregate",
@@ -249,7 +264,7 @@ export interface DataStructField {
     uncheckedProperty?: boolean;
 }
 
-function propertyIsReadOnly(property: ts.Symbol): boolean {
+export function propertyIsReadOnly(property: ts.Symbol): boolean {
     return (property.declarations ?? []).some(
         (declaration) =>
             (ts.isPropertySignature(declaration) ||
@@ -796,6 +811,48 @@ export class DataTypeRegistry {
         return mapped;
     }
 
+    /** A checked object can use its declared layout only when no source field is lost or widened. */
+    public fromCheckedObjectInitializer(
+        initializer: ts.Expression,
+    ): DataType | undefined {
+        while (ts.isParenthesizedExpression(initializer))
+            initializer = initializer.expression;
+        if (
+            !ts.isSatisfiesExpression(initializer) ||
+            !ts.isObjectLiteralExpression(
+                unwrapExpression(initializer.expression),
+            )
+        )
+            return undefined;
+        const target = this.fromTsType(
+            this.checker.getTypeFromTypeNode(initializer.type),
+            initializer.type,
+        );
+        if (target?.kind !== "struct") return undefined;
+        const properties = this.checker.getPropertiesOfType(
+            this.checker.getTypeAtLocation(initializer.expression),
+        );
+        const fields = this.structFields(target.name, initializer);
+        if (properties.length !== fields.length) return undefined;
+        for (const field of fields) {
+            const property = properties.find(
+                ({ name }) => name === field.sourceName,
+            );
+            if (!property) return undefined;
+            const node =
+                property.valueDeclaration ??
+                property.declarations?.[0] ??
+                initializer;
+            const actual = this.fromTsType(
+                this.checker.getTypeOfSymbolAtLocation(property, node),
+                node,
+            );
+            if (!actual || !dataTypesEqual(actual, field.type))
+                return undefined;
+        }
+        return this.markStoredObjectReferences(target);
+    }
+
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
         if (
             type.isUnion() &&
@@ -1003,6 +1060,12 @@ export class DataTypeRegistry {
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
+        if (
+            type.symbol &&
+            ERROR_CONSTRUCTORS.has(type.symbol.name) &&
+            declaredInDefaultLibrary(type.symbol)
+        )
+            return { kind: "error" };
         if (
             type.symbol?.name === "Storage" &&
             declaredInDomLibrary(type.symbol)
@@ -2606,6 +2669,35 @@ export class DataTypeRegistry {
         }
         const mapped = this.fromTsType(type, node);
         if (mapped) return this.ownReturnedArray(mapped);
+        if (
+            (concrete.flags & ts.TypeFlags.Object) !== 0 &&
+            ((concrete as ts.ObjectType).objectFlags &
+                ts.ObjectFlags.Reference) !==
+                0 &&
+            (concrete.symbol?.name === "Array" ||
+                concrete.symbol?.name === "ReadonlyArray") &&
+            declaredInDefaultLibrary(concrete.symbol)
+        ) {
+            const [element] = this.checker.getTypeArguments(
+                concrete as ts.TypeReference,
+            );
+            if (
+                element &&
+                isPinnedType(element, [
+                    "PbrMaterialProps",
+                    "StandardMaterialProps",
+                    "AssetContainer",
+                ])
+            ) {
+                const stored = this.fromSharedReturnType(element, node);
+                if (stored) {
+                    const array: DataType = { kind: "vector", element: stored };
+                    return concrete === type
+                        ? array
+                        : { kind: "optional", inner: array };
+                }
+            }
+        }
         const symbol = concrete.symbol;
         const declaration = symbol?.declarations?.find(ts.isClassDeclaration);
         if (
@@ -2920,6 +3012,32 @@ export class DataTypeRegistry {
     ): void {
         this.structsByKey.set(key, definition);
         this.structsByName.set(definition.name, definition);
+    }
+
+    /** An owned result's field layout, without changing how its source type specializes elsewhere. */
+    public ownedRecordType(
+        fields: readonly Omit<DataStructField, "name">[],
+    ): DataType<"struct"> {
+        const stored = fields.map((field) => ({
+            ...field,
+            name: sanitizeIdentifier(field.sourceName),
+            type: this.markStoredObjectReferences(field.type),
+        }));
+        const key = `owned-result:${stored
+            .map(
+                (field) =>
+                    `${field.sourceName}:${this.typeKey(field.type)}:${field.readOnly ? "readonly" : "mutable"}:${field.defaultWhenMissing ? "default" : "required"}:${field.optionalProperty ? "optional" : "present"}:${JSON.stringify(field.presentForTags)}`,
+            )
+            .join(",")}`;
+        const existing = this.structsByKey.get(key);
+        if (existing) return { kind: "struct", name: existing.name };
+        const name = this.uniqueName(
+            `Record${++this.anonymousStructIndex}`,
+            this.structNames,
+        );
+        this.registerStructDefinition(key, { name, fields: stored });
+        this.referenceStructNames.add(name);
+        return { kind: "struct", name };
     }
 
     /** Whether a data shape contains a stored native closure. */

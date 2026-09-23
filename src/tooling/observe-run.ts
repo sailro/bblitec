@@ -38,6 +38,23 @@ export interface ObserveRunOptions {
     spec: ObserveSpec;
     /** Show the browser window (a cadence measurement needs the display). */
     headed?: boolean;
+    /** Match a declared check's unchanged no-query native twin. */
+    noQueryTwin?: boolean;
+}
+
+export function observationSearch(
+    scene: SceneDefinition,
+    spec: ObserveSpec,
+    noQueryTwin = false,
+    frame?: number,
+): string {
+    const search =
+        spec.search ??
+        (noQueryTwin ? "" : (scene.parity?.referenceSearch ?? ""));
+    if (frame === undefined) return search;
+    const query = new URLSearchParams(search);
+    query.set("captureFrame", String(frame));
+    return `?${query.toString()}`;
 }
 
 const sha256 = (bytes: Buffer | string): string =>
@@ -165,6 +182,7 @@ async function navigateReady(
 
 export async function runObserve(options: ObserveRunOptions): Promise<string> {
     const { checkId, scene, spec } = options;
+    const search = observationSearch(scene, spec, options.noQueryTwin);
     const outputDirectory = resolve(defaultCheckDirectory(checkId), "browser");
     mkdirSync(outputDirectory, { recursive: true });
     const source = readFileSync(scene.source, "utf8");
@@ -221,6 +239,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
         {
             serverName: `${checkId} observer`,
             browserArgs: screenshotCaptureBrowserArgs,
+            showScrollbars: scene.parity?.referenceScrollbars ?? false,
             viewport: { width: viewport[0], height: viewport[1] },
             headless: !(options.headed ?? spec.headless === false),
             pageErrorPrefix: `observe ${checkId}`,
@@ -237,7 +256,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     page,
                     origin,
                     spec.captureReady ?? spec.ready,
-                    `?captureFrame=${frame}`,
+                    observationSearch(scene, spec, options.noQueryTwin, frame),
                 );
                 const state: unknown = await page.evaluate(stateExpression);
                 const name = `frame-${frame}.png`;
@@ -272,7 +291,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                             );
                         await route.fulfill({ response, body: html });
                     });
-                    await navigateReady(page, origin, spec.ready);
+                    await navigateReady(page, origin, spec.ready, search);
                     await page.unroute("**/scene.html");
                     ready = true;
                 } else if (!ready || spec.reloadEachStep) {
@@ -280,7 +299,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                         width: viewport[0],
                         height: viewport[1],
                     });
-                    await navigateReady(page, origin, spec.ready);
+                    await navigateReady(page, origin, spec.ready, search);
                     ready = true;
                     await checkGolden(page, "observed.png");
                 }
@@ -340,6 +359,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
             scene: scene.id,
             sourceSha256: sha256(source),
             moduleSha256: sha256(module),
+            referenceSearch: search,
             ...(goldenPath !== undefined
                 ? { referenceSha256: sha256(readFileSync(resolve(goldenPath))) }
                 : {}),

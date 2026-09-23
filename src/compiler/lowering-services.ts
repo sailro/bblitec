@@ -42,6 +42,7 @@ import type {
     CompiledNodeMaterial,
     CompiledNodeParticles,
     CompiledShaderProgram,
+    CompiledComputeProgram,
     Feature,
     GeometryOutputTaskManifest,
     LightKind,
@@ -101,6 +102,7 @@ export interface NativeFunctionBodyOptions {
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
     withAsyncActivation<T>(work: () => T): T;
+    withEngineBootstrap<T>(declaration: SupportedFunction, work: () => T): T;
     compileAsyncCall(
         declaration: SupportedFunction,
         arguments_: readonly Value[],
@@ -111,7 +113,11 @@ export interface LoweringServices {
         type: DataType | undefined,
         compileResult?: NativeReturnValueCompiler,
     ): string;
-    emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void;
+    emitNativeThrow(
+        errorCpp: string,
+        node?: ts.ThrowStatement,
+        rethrow?: boolean,
+    ): void;
     isInFrameCallback(): boolean;
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
@@ -152,6 +158,7 @@ export interface LoweringServices {
     ): void;
     readonly assetPayloads: Map<string, string>;
     readonly reachedTextData: CompiledTextData[];
+    readonly reachedComputePrograms: CompiledComputeProgram[];
     readonly reachedShaderPrograms: CompiledShaderProgram[];
     readonly reachedNodeMaterials: CompiledNodeMaterial[];
     readonly meshWalks: CompiledMeshWalk[];
@@ -217,6 +224,7 @@ export interface LoweringServices {
     compileWorkerValue(expression: ts.Expression): Value | undefined;
     emitAwaitExpression(expression: ts.Expression): boolean;
     withOwnedCallbackBody<T>(body: () => T): T;
+    withAsyncInvocation<T>(node: ts.Node, body: () => T): T;
     isNativeWorkerExpression(expression: ts.Expression): boolean;
     workerCheckpointCpp(): string | undefined;
     workerAbortCpp(): string | undefined;
@@ -665,7 +673,10 @@ export interface LoweringServices {
         mode?: "runtime" | "registration" | "always",
         scene?: Value,
     ): void;
-    noteTemporalCameraControl(node: ts.Node): void;
+    noteTemporalCameraControl(
+        node: ts.Node,
+        tracksWorldMatrixVersion?: boolean,
+    ): void;
     assignOptionalResourceValue(
         target: Value,
         value: Value,
@@ -1035,6 +1046,7 @@ export interface LoweringServices {
     ): void;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     gltfAlreadyLoaded(): boolean;
+    compileSceneRegistration(scene: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,

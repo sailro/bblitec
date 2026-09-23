@@ -1,0 +1,475 @@
+{
+  "scene": "ocean",
+  "base": "registry",
+  "env": {
+    "BBLITE_CAPTURE_UI": "1"
+  },
+  "capture": false,
+  "timeoutMs": 120000,
+  "notes": "Pointer-driven disclosure, scrollbar and color-picker checks use the original1280x720 host. Color picker appearance is platform UI; resulting colors and canvas are compared.",
+  "phases": [
+    {
+      "id": "baseline",
+      "frame": 180
+    },
+    {
+      "id": "general-collapsed",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100"
+      ]
+    },
+    {
+      "id": "general-restored",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:100"
+      ]
+    },
+    {
+      "id": "sections-collapsed",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:133",
+        "-*5",
+        "UiClick@980:166"
+      ]
+    },
+    {
+      "id": "shader-open",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:133",
+        "-*5",
+        "UiClick@980:166",
+        "-*5",
+        "UiClick@980:233"
+      ]
+    },
+    {
+      "id": "color-red",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:133",
+        "-*5",
+        "UiClick@980:166",
+        "-*5",
+        "UiClick@980:233",
+        "-*5",
+        "UiClick@1207:263",
+        "-*5",
+        "UiClick@580:392",
+        "UiKey@Ctrl+A",
+        "UiText@23643032303230",
+        "-*5",
+        "UiClick@550:434"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "color-cancelled",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:133",
+        "-*5",
+        "UiClick@980:166",
+        "-*5",
+        "UiClick@980:233",
+        "-*5",
+        "UiClick@1207:263",
+        "-*5",
+        "UiClick@580:392",
+        "UiKey@Ctrl+A",
+        "UiText@23643032303230",
+        "-*5",
+        "UiClick@646:434"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "color-restored",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "UiClick@980:100",
+        "-*5",
+        "UiClick@980:133",
+        "-*5",
+        "UiClick@980:166",
+        "-*5",
+        "UiClick@980:233",
+        "-*5",
+        "UiClick@1207:263",
+        "-*5",
+        "UiClick@580:392",
+        "UiKey@Ctrl+A",
+        "UiText@23643032303230",
+        "-*5",
+        "UiClick@550:434",
+        "-*5",
+        "UiClick@1207:263",
+        "-*5",
+        "UiClick@580:392",
+        "UiKey@Ctrl+A",
+        "UiText@23323134353539",
+        "-*5",
+        "UiClick@550:434"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "scrolled",
+      "frame": 180,
+      "tape": [
+        "-*60",
+        "+UiMouseLeft@1253:90",
+        "-*5",
+        "UiMove@1253:600",
+        "-*5",
+        "-UiMouseLeft@1253:600"
+      ]
+    }
+  ],
+  "expect": [
+    {
+      "kind": "image-mad",
+      "phase": "baseline",
+      "vs": "browser:baseline",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "general-collapsed",
+      "vs": "browser:general-collapsed",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "general-restored",
+      "vs": "browser:general-restored",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "sections-collapsed",
+      "vs": "browser:sections-collapsed",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "shader-open",
+      "vs": "browser:shader-open",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "color-red",
+      "vs": "browser:color-red",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "color-cancelled",
+      "vs": "browser:color-cancelled",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "color-restored",
+      "vs": "browser:color-restored",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "scrolled",
+      "vs": "baseline",
+      "changedPixelsMin": 10000
+    },
+    {
+      "kind": "image-mad",
+      "phase": "color-red",
+      "vs": "color-restored",
+      "changedPixelsMin": 100,
+      "min": 0.001
+    },
+    {
+      "kind": "image-mad",
+      "phase": "color-cancelled",
+      "vs": "color-restored",
+      "maxDiff": 0
+    },
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/ocean-ui.mjs"
+    }
+  ],
+  "observe": {
+    "viewport": [
+      1280,
+      720
+    ],
+    "golden": false,
+    "reloadEachStep": true,
+    "state": "(() => { const root=document.getElementById('ocean-controls'); return { search:location.search, dataset:{...document.getElementById('renderCanvas').dataset}, sections:Object.fromEntries([...root.querySelectorAll('details')].map(e=>[e.querySelector('summary').textContent,e.open])), colors:[...root.querySelectorAll('input[type=color]')].map(e=>e.value), scrollTop:root.scrollTop, scrollHeight:root.scrollHeight, clientHeight:root.clientHeight, resolution:root.querySelector('select').value }; })()",
+    "steps": [
+      {
+        "id": "baseline",
+        "actions": [],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "general-collapsed",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "general-restored",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              100
+            ]
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "sections-collapsed",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              133
+            ]
+          },
+          {
+            "click": [
+              980,
+              166
+            ]
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "shader-open",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              133
+            ]
+          },
+          {
+            "click": [
+              980,
+              166
+            ]
+          },
+          {
+            "click": [
+              980,
+              233
+            ]
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "color-red",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              133
+            ]
+          },
+          {
+            "click": [
+              980,
+              166
+            ]
+          },
+          {
+            "click": [
+              980,
+              233
+            ]
+          },
+          {
+            "fill": {
+              "selector": "#ocean-controls details:nth-of-type(5) > label:first-of-type input[type=color]",
+              "text": "#d02020"
+            }
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "color-cancelled",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              133
+            ]
+          },
+          {
+            "click": [
+              980,
+              166
+            ]
+          },
+          {
+            "click": [
+              980,
+              233
+            ]
+          },
+          {
+            "fill": {
+              "selector": "#ocean-controls details:nth-of-type(5) > label:first-of-type input[type=color]",
+              "text": "#d02020"
+            }
+          },
+          {
+            "fill": {
+              "selector": "#ocean-controls details:nth-of-type(5) > label:first-of-type input[type=color]",
+              "text": "#214559"
+            }
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "color-restored",
+        "actions": [
+          {
+            "click": [
+              980,
+              100
+            ]
+          },
+          {
+            "click": [
+              980,
+              133
+            ]
+          },
+          {
+            "click": [
+              980,
+              166
+            ]
+          },
+          {
+            "click": [
+              980,
+              233
+            ]
+          },
+          {
+            "fill": {
+              "selector": "#ocean-controls details:nth-of-type(5) > label:first-of-type input[type=color]",
+              "text": "#d02020"
+            }
+          },
+          {
+            "fill": {
+              "selector": "#ocean-controls details:nth-of-type(5) > label:first-of-type input[type=color]",
+              "text": "#214559"
+            }
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "scrolled",
+        "actions": [
+          {
+            "drag": [
+              1253,
+              90,
+              1253,
+              600
+            ],
+            "steps": 5
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      }
+    ]
+  }
+}

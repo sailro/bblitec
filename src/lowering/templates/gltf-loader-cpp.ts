@@ -880,7 +880,11 @@ ${
             throw std::runtime_error("Invalid glTF light world storage.");
         const auto matrix = read_matrix(world, 0);
         light.position = Vec3{matrix[12], matrix[13], matrix[14]};
-        light.direction = Vec3{matrix[8], matrix[9], matrix[10]};
+        if (light.kind != LightKind::point) {
+            const auto& direction = required(prepared, "direction").as_array();
+            if (direction.size() != 3) throw std::runtime_error("Invalid glTF light direction.");
+            light.direction = Vec3{static_cast<float>(direction[0].as_number()), static_cast<float>(direction[1].as_number()), static_cast<float>(direction[2].as_number())};
+        }
         const auto color = [&](const char* name) {
             const auto& values = required(prepared, name).as_array();
             if (values.size() != 3) throw std::runtime_error("Invalid glTF light color.");

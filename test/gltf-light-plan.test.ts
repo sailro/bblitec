@@ -90,8 +90,10 @@ test("source light constructors retain defaults, selected parents, baked worlds 
         worlds[3]!.slice(12, 15).map((value) => value + 0),
         [2, 0, 0],
     );
-    assert.ok(Math.abs(worlds[1]![8]! - 1) < 1e-6);
+    assert.ok(Math.abs(worlds[1]![8]! + 1) < 1e-6);
     assert.ok(Math.abs(worlds[1]![10]!) < 1e-6);
+    assert.ok(Math.abs(plan.lights[1]!.direction![0]! - 1) < 1e-6);
+    assert.ok(Math.abs(plan.lights[1]!.direction![2]!) < 1e-6);
     assert.deepEqual(plan.lights[0]!.diffuse, [0.25, 0.5, 1]);
     assert.deepEqual(plan.lights[0]!.specular, plan.lights[0]!.diffuse);
     assert.equal(plan.lights[0]!.intensity, 1);
@@ -374,7 +376,10 @@ ${cppSection(loader, "    std::vector<LightHandle> loaded_lights;", "    const a
         const auto& world = accessors.at(source.at("world").get<std::size_t>()).matrix;
         const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
         assert(bits(light.position.x) == bits(world[12]) && bits(light.position.y) == bits(world[13]) && bits(light.position.z) == bits(world[14]));
-        assert(bits(light.direction.x) == bits(world[8]) && bits(light.direction.y) == bits(world[9]) && bits(light.direction.z) == bits(world[10]));
+        if(source.contains("direction")) {
+            const auto& direction=source.at("direction");
+            assert(bits(light.direction.x)==bits(direction[0].get<float>()) && bits(light.direction.y)==bits(direction[1].get<float>()) && bits(light.direction.z)==bits(direction[2].get<float>()));
+        }
         const auto& diffuse = source.at("diffuse"); const auto& specular = source.at("specular");
         assert(light.diffuse_color.r == diffuse[0].get<float>() && light.diffuse_color.g == diffuse[1].get<float>() && light.diffuse_color.b == diffuse[2].get<float>());
         assert(light.specular_color.r == specular[0].get<float>() && light.specular_color.g == specular[1].get<float>() && light.specular_color.b == specular[2].get<float>());

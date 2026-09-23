@@ -193,7 +193,7 @@ const resourceMetadataFields = {
     ],
     "sprite-2d-handle": ["spriteLayerCpp"],
     "clustered-light-container": ["clusteredContainerState"],
-    browser: ["browserValue"],
+    browser: ["browserValue", "nodeBlockLoader"],
     surface: ["surfaceCanvas", "msaaSamples"],
     engine: ["surfaceCanvas", "msaaSamples"],
     "offscreen-canvas": ["surfaceCanvas", "msaaSamples"],

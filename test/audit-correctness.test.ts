@@ -110,6 +110,7 @@ test(
             std::string events;
             int live = 0;
             bool fail_create = false, fail_update = false;
+            std::shared_ptr<Buffer> borrowed;
             const auto sync = [&] {
                 bbl::pal::sync_storage_records(sources, targets,
                     [&] { events += 'i'; },
@@ -121,6 +122,10 @@ test(
                     [&](Buffer* buffer, const unsigned char* bytes, std::size_t size) {
                         events += 'u'; if (fail_update) throw std::runtime_error("update");
                         buffer->assign(bytes, bytes + size);
+                    },
+                    [&](const Source& source) -> bbl::pal::VersionedGpuBuffer<Buffer*> {
+                        if(!borrowed || source.disposed) return {};
+                        return {borrowed.get(), borrowed->size(), source.version, borrowed};
                     });
             };
             sync(); assert(events == "ic" && live == 1 && targets[0].version == 1);
@@ -144,6 +149,13 @@ test(
             assert(events.empty());
             sources[0].bytes.push_back(9); sync(); sources.clear(); events.clear(); sync();
             assert(events == "ir" && targets.empty() && live == 0);
+            borrowed = std::make_shared<Buffer>(8, static_cast<unsigned char>(42));
+            sources.push_back({false, {}, 1}); events.clear(); sync();
+            assert(events == "i" && targets[0].buffer == borrowed.get() && live == 0);
+            ++sources[0].version; events.clear(); sync();
+            assert(events.empty() && targets[0].version == 2 && (*targets[0].buffer)[0] == 42);
+            sources[0].disposed = true; events.clear(); sync();
+            assert(events == "i" && !targets[0].buffer && borrowed.use_count() == 1);
         }
     `,
         );
@@ -926,23 +938,43 @@ test(
     },
 );
 
+function uiTextMutationFixture(source: string): string {
+    const functions = [
+        "UiElementRecord& ui_element(",
+        "void mark_ui_changed(Engine& engine)",
+        "void mark_ui_changed(Engine& engine,",
+        "void ui_replace_children(",
+        "void ui_set_text(",
+    ]
+        .map((signature) => cppFunction(source, signature))
+        .join("\n");
+    return `
+        namespace bbl::pal {
+        // Revision fixtures use ASCII; Unicode projection is covered by ui-font-spacing.
+        bool ui_text_needs_emoji_normalization(std::string_view text) {
+            assert(std::all_of(text.begin(), text.end(), [](unsigned char byte) { return byte < 0x80; }));
+            return false;
+        }
+        }
+        namespace bbl { ${functions} }
+    `;
+}
+
 test(
     "stylesheet revisions track rules, text and attachment order independently of ordinary UI changes",
     { skip: !nativeTools },
     () => {
         const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
         const functions = [
-            "UiElementRecord& ui_element(",
-            "void mark_ui_changed(Engine& engine)",
-            "void mark_ui_changed(Engine& engine,",
-            "void ui_set_text(",
+            "bool ui_get_selected(",
+            "void ui_set_selected(",
+            "void normalize_select_selection(",
             "void ui_set_inner_rml(",
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
             "void ui_add_host_style_rule(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
-            "void ui_replace_children(",
             "void ui_remove(",
         ]
             .map((signature) => cppFunction(source, signature))
@@ -953,6 +985,7 @@ test(
         #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
+        ${uiTextMutationFixture(source)}
         namespace bbl { ${functions} }
         int main() {
             using namespace bbl;
@@ -964,6 +997,7 @@ test(
             for (int i = 0; i < 100; ++i) ui_set_text(engine, label, std::to_string(i));
             ui_append_to_root(engine, label);
             assert(engine.ui_style_revision == 0 && engine.ui_revision == 101);
+            assert(engine.ui_text_revision == 99);
             ui_set_text(engine, first, "@keyframes pulse{}");
             assert(engine.ui_style_revision == 1);
             ui_set_text(engine, first, "@keyframes pulse{}");
@@ -999,10 +1033,21 @@ test(
 );
 
 test(
-    "window document snapshots preserve stylesheet revisions across ordinary UI updates",
+    "window document snapshots preserve stylesheet revisions and capture form state by value",
     { skip: !nativeTools },
     () => {
         const source = readFileSync("native/src/pal_window_realm.cpp", "utf8");
+        const uiSource = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+        const colorSource = readFileSync("native/src/pal_ui_color.hpp", "utf8");
+        const uiGetters = [
+            "std::string ui_get_attribute(",
+            "bool ui_has_attribute(",
+            "bool ui_get_checked(",
+            "bool ui_get_selected(",
+            "std::string ui_get_form_value(",
+        ]
+            .map((signature) => cppFunction(uiSource, signature))
+            .join("\n");
         const declarations = [
             "struct WindowEvent final",
             "struct WindowDomEvent final",
@@ -1019,7 +1064,13 @@ test(
         #include <bblite/runtime.hpp>
         #include <bblite/pal_event_loop.hpp>
         #include <bblite/pal_dom_events.hpp>
+        #include <bblite/pal_ui.hpp>
         #include <cassert>
+        namespace bbl::pal {
+        ${cppFunction(colorSource, "inline std::optional<std::string> ui_simple_color(")}
+        }
+        ${uiTextMutationFixture(uiSource)}
+        namespace bbl { ${uiGetters} }
         namespace bbl::pal {
         ${declarations}
         ${cppFunction(source, "std::unique_ptr<DocumentSnapshot> snapshot_document(")}
@@ -1043,6 +1094,61 @@ test(
             pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
+            const auto text_since = source.ui_text_revision;
+            const auto target_text_revision = target.ui_text_revision;
+            ui_set_text(source, UiElementHandle{0}, "text-only update");
+            auto text_snapshot = pal::snapshot_document(source, text_since);
+            assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
+            assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
+            pal::apply_document(target, std::move(*text_snapshot), inbox);
+            assert(target.ui_elements[0].text == "text-only update");
+            assert(target.ui_style_revision == 8);
+            assert(target.ui_text_revision == target_text_revision + 1);
+            source.ui_elements.resize(6);
+            source.ui_elements[0].tag = "input";
+            source.ui_elements[0].attributes["type"] = "checkbox";
+            source.ui_elements[0].checked = false;
+            source.ui_elements[1].tag = "input";
+            source.ui_elements[1].attributes["type"] = "range";
+            source.ui_elements[1].attributes["value"] = "12.5";
+            source.ui_elements[2].tag = "select";
+            source.ui_elements[2].children = {UiElementHandle{3}, UiElementHandle{4}};
+            for (unsigned index : {3u, 4u}) {
+                source.ui_elements[index].tag = "option";
+                source.ui_elements[index].parent = UiElementHandle{2};
+                source.ui_elements[index].selected = index == 4;
+            }
+            source.ui_elements[5].tag = "details";
+            source.ui_elements[5].attributes["open"] = "";
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            js::RealmScope realm;
+            pal::EventLoop loop(inbox);
+            unsigned delivered = 0;
+            loop.on_event([&](std::unique_ptr<pal::ExternalEvent> packet) {
+                const auto* event = dynamic_cast<pal::WindowEvent*>(packet.get());
+                assert(event);
+                switch (event->element.value) {
+                case 0: assert(event->checked.has_value() && !*event->checked); break;
+                case 1: assert(event->form_value == "12.5"); break;
+                case 2: assert(event->selected_option == UiElementHandle{4}); break;
+                case 5: assert(event->open.has_value() && *event->open); break;
+                default: assert(false);
+                }
+                if (++delivered == 4) loop.close();
+            });
+            loop.run([&] {
+                for (unsigned index : {0u, 1u, 2u, 5u}) {
+                    const auto& callbacks = target.ui_elements[index].event_callbacks.at(index == 5 ? "toggle" : "input");
+                    for (const auto& callback : callbacks) callback(PlatformMouseEvent{});
+                }
+                target.ui_elements[0].checked = true;
+                target.ui_elements[1].attributes["value"] = "99";
+                target.ui_elements[3].selected = true;
+                target.ui_elements[4].selected = false;
+                target.ui_elements[5].attributes.erase("open");
+                loop.set_timeout([] { throw std::runtime_error("Form-state mailbox timed out"); }, 1000);
+            });
+            assert(delivered == 4);
         }
     `,
         );

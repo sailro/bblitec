@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { assetRootTransformSource } from "./asset-root-transform.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
@@ -153,7 +154,7 @@ export class SceneLowerer {
         const { declaration: createSceneNodeCore } =
             this.context.functionDeclaration(
                 "src/scene/scene-node.ts",
-                "createSceneNodeCore",
+                "initSceneNodeTransform",
             );
         const parentSetters = this.context.findNodes(
             createSceneNodeCore,
@@ -229,7 +230,7 @@ export class SceneLowerer {
                 this.context.propertyPath(node.expression)?.join(".") ===
                     "clone.children.push",
         );
-        if (cloneChildPushes.length !== 2) {
+        if (cloneChildPushes.length !== 1) {
             this.context.contractError(
                 cloneTransformNode,
                 "Expected cloneTransformNode to append each cloned child to the traversal list.",
@@ -241,7 +242,7 @@ export class SceneLowerer {
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(cloneMeshNode, "meshClone"),
-            `initMeshTransform({...mesh, name: mesh.name + "_clone", children: [], _gpu: mesh._gpu},
+            `initMeshTransform({...mesh, name: mesh.name + "_clone", children: [], _gpu: mesh._gpu, _localMatrix: undefined, _localMatrixLocked: undefined},
         mesh.position.x, mesh.position.y, mesh.position.z, 0, 0, 0,
         mesh.scaling.x, mesh.scaling.y, mesh.scaling.z)`,
             "Mesh cloning starts a fresh transform state over shared geometry",
@@ -670,6 +671,7 @@ export class SceneLowerer {
 #include <bblite/runtime.hpp>
 ${options.text ? "#include <bblite/text.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 ${options.geometryAccess || options.parenting || options.pbrSceneHooks ? "#include <bblite/js_data.hpp>" : ""}
 ${
     options.mirroredMeshes || options.geometryAccess || options.parenting
@@ -1145,8 +1147,10 @@ void apply_parent_local(
     // leaf. Once setParent writes a decomposed local TRS, that override has
     // served the same purpose as the pin's raw local matrix and must be
     // cleared before the observable TRS becomes authoritative.
-    record.outer_position = Vec3{};
-    record.outer_rotation = Vec3{};
+    record.outer_position = Vec3d{};
+    record.outer_rotation = Vec3d{};
+    record.outer_scaling = {1, 1, 1};
+    record.outer_has_rotation_quaternion = false;
     record.position = Vec3d{
         local.translation.x,
         local.translation.y,
@@ -1173,27 +1177,8 @@ std::array<float, 16> parenting_world_matrix(
     const MeshRecord& record) {
     const std::array<float, 16> local_world =
         upstream::mesh_world_matrix(engine, record);
-    if (
-        record.outer_position.x == 0.0f &&
-        record.outer_position.y == 0.0f &&
-        record.outer_position.z == 0.0f &&
-        record.outer_rotation.x == 0.0f &&
-        record.outer_rotation.y == 0.0f &&
-        record.outer_rotation.z == 0.0f) {
-        return local_world;
-    }
-
-    // Asset-root position/rotation is an outer scene-node transform in the
-    // flattened loader. Fold it into the snapshot before clearing it, so
-    // reparenting after addToScene preserves the same visible world.
-    MeshRecord outer;
-    outer.position = Vec3d{
-        record.outer_position.x,
-        record.outer_position.y,
-        record.outer_position.z};
-    outer.rotation = record.outer_rotation;
-    const std::array<float, 16> outer_world =
-        upstream::mesh_local_matrix(outer);
+    if (upstream::outer_transform_is_identity(record)) return local_world;
+    const auto outer_world = upstream::outer_transform_matrix(record);
     std::array<float, 16> result{};
     mat4_multiply_into(result, 0, outer_world, 0, local_world, 0);
     return result;
@@ -1309,8 +1294,10 @@ void apply_preserved_parent_local(
         // The pin cannot preserve a full transform beneath a singular
         // parent. It keeps the new link, clears a raw matrix override, copies
         // the old world position, and retains the existing rotation/scale.
-        child_record.outer_position = Vec3{};
-        child_record.outer_rotation = Vec3{};
+        child_record.outer_position = Vec3d{};
+        child_record.outer_rotation = Vec3d{};
+        child_record.outer_scaling = {1, 1, 1};
+        child_record.outer_has_rotation_quaternion = false;
         child_record.gpu_world_transform = true;
         child_record.position = Vec3d{
             child_world[12], child_world[13], child_world[14]};
@@ -1573,8 +1560,15 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
             throw std::runtime_error(
                 "createHierarchyInstancePool source mesh already has thin instances");
         }
+        // The pin snapshots mesh.worldMatrix, including edits to the imported
+        // root. The instance conjugation must use the same complete world as
+        // the draw, so root edits precede each authored instance transform.
         const std::array<float, 16> mesh_world =
-            mesh.instance_parent_matrix;
+            upstream::outer_transform_is_identity(mesh)
+                ? mesh.instance_parent_matrix
+                : upstream::matrix_product(
+                    upstream::outer_transform_matrix(mesh),
+                    mesh.instance_parent_matrix);
         const std::optional<std::array<float, 16>> inverse =
             mat4_invert(mesh_world);
         if (!inverse) {
@@ -1725,6 +1719,11 @@ std::vector<std::uint32_t> mesh_cpu_indices(
     MeshHandle mesh) {
     return engine.geometries.at(
         engine.meshes.at(mesh.value).geometry).indices;
+}
+
+js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset) {
+    const auto world = asset_root_world_matrix(engine, asset);
+    return js::Array<double>(world.begin(), world.end());
 }
 
 js::Array<double> mesh_world_matrix_array(
@@ -2102,7 +2101,10 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     clone.source_mesh_walks = source.source_mesh_walks;
     clone.root_position = source.root_position;
     clone.root_rotation = source.root_rotation;
-    clone.root_scaling_reset = source.root_scaling_reset;
+    clone.root_scaling = source.root_scaling;
+    clone.root_rotation_quaternion = source.root_rotation_quaternion;
+    clone.root_quaternion_version = source.root_quaternion_version;
+    clone.root_synced_quaternion_version = source.root_synced_quaternion_version;
     clone.clone_mesh_animation = clone_animation;
     clone.meshes.reserve(source_meshes.size());
     for (const MeshHandle source_mesh : source_meshes) {
@@ -2158,7 +2160,8 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = engine.meshes[mesh.value];
-    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) && !record.detached_imported_mesh) {
+    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) &&
+        !record.detached_imported_mesh && !engine.geometries.at(record.geometry).owned_packed_geometry) {
         const ModelGeometry& geometry = engine.geometries.at(record.geometry);
         if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
             geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
@@ -2201,6 +2204,8 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
     record.transform_parent = {};
     record.outer_position = {};
     record.outer_rotation = {};
+    record.outer_scaling = {1, 1, 1};
+    record.outer_has_rotation_quaternion = false;
     record.parented_meshes.clear();
     record.feature_source_mesh =
         record.feature_source_mesh != invalid_handle
@@ -2216,131 +2221,7 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
     }
 
     private assetRootSource(): string {
-        return `void set_asset_root_position_component(
-    Engine& engine,
-    AssetHandle asset,
-    std::size_t component,
-    float value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const auto component_ref = [component](Vec3& vector) -> float& {
-        switch (component) {
-            case 0: return vector.x;
-            case 1: return vector.y;
-            case 2: return vector.z;
-            default:
-                throw std::runtime_error(
-                    "Imported root position component is out of range.");
-        }
-    };
-    float& root_component = component_ref(root.root_position);
-    const float delta = value - root_component;
-    root_component = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        component_ref(record.outer_position) += delta;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_rotation_component(
-    Engine& engine,
-    AssetHandle asset,
-    std::size_t component,
-    float value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const auto component_ref = [component](Vec3& vector) -> float& {
-        switch (component) {
-            case 0: return vector.x;
-            case 1: return vector.y;
-            case 2: return vector.z;
-            default:
-                throw std::runtime_error(
-                    "Imported root rotation component is out of range.");
-        }
-    };
-    float& root_component = component_ref(root.root_rotation);
-    const float delta = value - root_component;
-    root_component = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        component_ref(record.outer_rotation) += delta;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_position(
-    Engine& engine,
-    AssetHandle asset,
-    Vec3 value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const Vec3 delta{
-        value.x - root.root_position.x,
-        value.y - root.root_position.y,
-        value.z - root.root_position.z};
-    root.root_position = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        record.outer_position.x += delta.x;
-        record.outer_position.y += delta.y;
-        record.outer_position.z += delta.z;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_rotation(
-    Engine& engine,
-    AssetHandle asset,
-    Vec3 value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const Vec3 delta{
-        value.x - root.root_rotation.x,
-        value.y - root.root_rotation.y,
-        value.z - root.root_rotation.z};
-    root.root_rotation = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        record.outer_rotation.x += delta.x;
-        record.outer_rotation.y += delta.y;
-        record.outer_rotation.z += delta.z;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void reset_asset_root_scaling(
-    Engine& engine,
-    AssetHandle asset) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    if (root.root_scaling_reset) return;
-    root.root_scaling_reset = true;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        // load-gltf.ts creates the public synthetic root with scale (-1,1,1).
-        // Native glTF matrices fold that root convention into the leading X
-        // reflection. Replacing its scale with identity therefore removes the
-        // reflection by multiplying the recorded parent world on the left.
-        for (std::size_t column = 0; column < 4; ++column) {
-            record.instance_parent_matrix[column * 4] =
-                -record.instance_parent_matrix[column * 4];
-        }
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
+        return `${assetRootTransformSource(this.context)}
 void add_asset_meshes(Scene& scene, const AssetRecord& record) {
     if (record.source_mesh_walks && record.source_mesh_walks->scene) {
         for (const auto index : *record.source_mesh_walks->scene) {
@@ -2595,6 +2476,27 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
         vatSeek: string,
         options: SceneCoreOptions,
     ): string {
+        const { file, declaration: buildScene } =
+            this.context.functionDeclaration(
+                "src/scene/scene-core.ts",
+                "buildScene",
+            );
+        const built = this.context.findNodes(
+            buildScene,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                node.left.getText(file) === "ctx._built",
+        );
+        if (built.length !== 1)
+            this.context.contractError(
+                buildScene,
+                "Expected one scene build completion flag.",
+            );
+        const builtValue = new PinnedNumericLowerer(file, {
+            bindings: new Map(),
+            calls: new Map(),
+        }).expression(built[0]!.right);
         return `void drain_scene_deferred_builders(Scene& scene) {
     while (!scene.deferred_builders.empty()) {
         auto builders = std::move(scene.deferred_builders);
@@ -2626,6 +2528,7 @@ void register_scene(Scene& scene) {
 ${options.pbrSceneHooks ? "    prepare_pbr_scene_build(scene);\n" : ""}\
     drain_scene_deferred_builders(scene);
 ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
+    scene.state->source_built = ${builtValue};
     // The source builders read public material arrays when registration
     // creates their UBOs; direct later array writes do not bump _uboVersion.
     for (const auto mesh : scene.meshes) {

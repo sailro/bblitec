@@ -244,6 +244,8 @@ public:
 
     struct promise_type {
         Promise result;
+        using Adoption = Callback<void(const Promise&)>;
+        std::variant<std::monostate, T, Promise, Adoption> completion;
         pal::EventLoop* loop = &pal::EventLoop::current();
         pal::EventLoop::ContinuationId continuation = 0;
         Promise get_return_object() {
@@ -252,14 +254,34 @@ public:
             return result;
         }
         std::suspend_never initial_suspend() const noexcept { return {}; }
-        std::suspend_never final_suspend() const noexcept { return {}; }
-        void return_value(T value) { result.resolve(std::move(value)); }
-        void return_value(const Promise& value) { result.resolve(value); }
+        // co_return evaluates its value before destroying locals. Publish only
+        // after those destructors have run, so a finally throw can replace it.
+        std::suspend_never final_suspend() noexcept {
+            try {
+                if (auto* value = std::get_if<1>(&completion))
+                    result.resolve(std::move(*value));
+                else if (const auto* adopted = std::get_if<2>(&completion))
+                    result.resolve(*adopted);
+                else if (auto* converted = std::get_if<3>(&completion))
+                    (*converted)(result);
+            } catch (const pal::WorkerTerminated&) {
+            } catch (...) {
+                result.reject(std::current_exception());
+            }
+            return {};
+        }
+        void return_value(T value) { completion.template emplace<1>(std::move(value)); }
+        void return_value(const Promise& value) { completion.template emplace<2>(value); }
         template <typename U, typename Convert>
         void return_value(PromiseAdoption<U, Convert> value) {
-            result.adopt(value.source, std::move(value.convert));
+            completion.template emplace<3>(make_closure(
+                std::tuple{std::move(value.source), std::move(value.convert)},
+                [](auto& captured, const Promise& result) {
+                    result.adopt(std::get<0>(captured), std::move(std::get<1>(captured)));
+                }));
         }
         void unhandled_exception() {
+            completion.template emplace<0>();
             try {
                 throw;
             } catch (const pal::WorkerTerminated&) {

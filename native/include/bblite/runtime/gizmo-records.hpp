@@ -86,6 +86,7 @@ struct EditGizmoRecord {
     bool dragging = false;
     bool hovering = false;
     bool plane_drag = false;
+    bool update_drag_plane = true;
     bool rotation_drag = false;
     MaterialHandle colored_material{};
     MaterialHandle hover_material{};

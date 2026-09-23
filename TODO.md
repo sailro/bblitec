@@ -8,7 +8,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] Classify remaining API implementation routes and member adapters; qualify untested overloads/forms through the [coverage workflow](docs/development.md#api-coverage).
 - [ ] Dynamic values: optional own-property presence, earlier class instances, erased record/array mutation (`data-types.ts`, `json-record-views.ts`, `user-functions.ts`, `js_json.hpp`).
 - [ ] Embedded NUL strings truncate at native value sinks (`cpp-literals.ts`, `data-sinks/scalars.ts`).
-- [ ] URLSearchParams: non-string constructors, mutation, serialization and iteration (`search-params.ts`).
+- [ ] URLSearchParams: non-string constructors, append/delete/sort and iteration (`search-params.ts`).
 - [ ] Distinct null/undefined storage for destructuring/parameter defaults (`data-lowering.ts`, `js_data.hpp`).
 - [ ] Custom thenable resolution and ownership (`async.ts`).
 - [ ] Early-return getters (`compiler.ts`).
@@ -17,20 +17,20 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] Browser GPU requests, constructors/prototypes and diagnostics (`browser-erasure.ts`, `pal_window_realm.cpp`).
 - [ ] Dynamic typeof values in inferred string-literal fields (`data-sinks/structures.ts`).
 - [ ] Promise.all spreads/iterables, stored void/value-only arrays and changed recovery representations (`async.ts`).
-- [ ] Suspended catch/finally completion (`async.ts`, `statements.ts`).
-- [ ] Recursive record/function initializer types (`compiler.ts`, `data-types.ts`).
+- [ ] Await inside catch/finally and broader abrupt cleanup completion (`async.ts`, `statements.ts`).
+- [ ] Recursive record/function initializers without matching owned layouts (`compiler.ts`, `data-types.ts`).
 - [ ] Transitive mutable dependencies in imported constant initializers (`module-initializers.ts`).
 - [ ] textContent/innerText compound writes with descendant-text reads (`ui-projection.ts`).
 - [ ] Transitions initiated by inline style writes (`pal_ui_rml.cpp`).
 - [ ] Reuse RmlUi for live selector metadata; preserve authored queries, generated nodes and input state (`ui_selector.hpp`, `ui_selector_match.hpp`).
-- [ ] Grid spans/names/placement, percentage tracks/heights, intrinsic functions and baseline/replaced-item alignment (`ui-grid.ts`).
+- [ ] Intrinsic grid spanning contributions, names/alternate placement, percentage tracks/heights, intrinsic functions and baseline/replaced-item alignment (`ui-grid.ts`).
 - [ ] Named/minimum/block/style/scroll-state container queries, relative units and containment types (`ui-projection.ts`).
 - [ ] List marker types, counters and images (`ui-projection.ts`, `pal_ui_defaults.hpp`).
-- [ ] Constructed checkbox/radio/number/date controls and file-input type transitions (`ui-projection.ts`).
+- [ ] Constructed radio/number/date controls and file-input type transitions (`ui-projection.ts`).
 - [ ] Vertical ranges, tick marks and Firefox control semantics (`pal_ui_range.hpp`).
 - [ ] Scroll edge handoff, bounce/navigation, both-edge/vertical/viewport gutters (RmlUi scroll patches).
 - [ ] Authored innerHTML query trees, interaction snapshots, :scope and computed selectors (`platform-calls.ts`).
-- [ ] Class inheritance/static blocks/static mutation; one member table for the class lowerers' nine name loops; Error names and causes (`classes.ts`, `native-functions.ts`, `error-values.ts`).
+- [ ] Class inheritance/static blocks/static mutation; one member table for the class lowerers' nine name loops; Error cause/errors property reads (`classes.ts`, `native-functions.ts`, `error-values.ts`).
 - [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
 - [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
 - [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks; derived identity and presence spellings marked at the leaf instead of compared against a second leaf; a string leaf given the number/boolean treatment so plain and data strings share one kind, and plain-string `=` through the string sink with the original expression (`data-lowering.ts`, `statements.ts`).
@@ -51,19 +51,20 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 | Area | Open gaps |
 | --- | --- |
-| Engine | Render-function wrapping; shared Window/worker recovery; additional lifecycle/diagnostic APIs |
-| Cameras | Off-center orthographic planes, geospatial input, control restoration |
-| Hierarchy | Imported-root scaling/non-Y rotation; descendant/child-mesh queries |
+| Engine | Render-function wrapping; shared Window/worker recovery; SDL Vulkan/Metal timestamp queries; additional lifecycle/diagnostic APIs |
+| Compute | f16 uniform writers; whole-array storage views on SDL Vulkan/Metal |
+| Cameras | Live orthographic plane writes, geospatial input, control restoration, mutable world-matrix aliases |
+| Hierarchy | Broader imported hierarchy cloning; descendant/child-mesh queries |
 | Morphs | Multiple/replaced/late targets and thin-instance combinations |
 | PBR/Standard | Textured environment rotation, live local probes, wider metallic-reflectance fields, post-registration lightmaps |
 | Node materials | Numeric/reflective inputs, later textures, strided/non-FLOAT/deformed imported geometry |
-| Plugins/shaders | Broader system matrices, uniform writers/defines/priority, PBR samplers and pipeline state |
+| Plugins/shaders | Broader system matrices, uniform types/defines/priority and pipeline state |
 | Effects | Custom vertex/blend/layouts, per-binding uniform records, wider textures, update/dispose/unregister |
 | Sprites | Coverage gamma, handle APIs, atlas options and mixed transparent order |
 | Picking | Eight-influence/deformed-instance/VAT detail, filter/discard/ignore and wider hit records |
 | Splats | Multiple fragment sets and broader buffer-view methods |
 | Shadows | PCF normalBias/spot refresh, CSM stabilization/bias, dynamic receiveShadows, thin-instance qualification |
-| Geometry/instances | Runtime geometry capacity/topology/color/normal/UV updates; line topology/colors/dashes; dynamic draw counts |
+| Geometry/instances | Imported geometry resizing; wider partial attribute updates; line topology/colors/dashes; dynamic draw counts |
 | VAT | Broader bake, storage/time setters and deformation queries |
 | Particles | Evaluators/local shapes, providers, snippets, flipped textures and mixed generation sets |
 | Navigation | Tiled builds without obstacles, reach radius, broader path/point/ray queries and disposal |
@@ -101,6 +102,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Backend and performance
 
+- [ ] Reduce Minecraft chunk-streaming CPU update spikes; separate meshing, lighting, water settling and allocation costs.
 - [ ] Scene290: sustain 100 FPS uncapped through impact and settling; Bullet stepping remains the bottleneck (`pal_physics_bullet.cpp`).
 - [ ] Compare compiled slots with PAL binding tables; consolidate duplicated layout caches.
 - [ ] Gate morph-shadow and light/camera gizmo emission on reach.

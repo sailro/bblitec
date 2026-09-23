@@ -38,6 +38,7 @@ test(
             `/Fe:${executable}`,
             "/I",
             "native/src",
+            `/I${resolve("native/include")}`,
             `/I${output}`,
             `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
             "/external:W0",

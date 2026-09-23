@@ -438,11 +438,8 @@ export function pinnedNodeVariantsHeader(
     if (variants.length === 0) {
         throw new Error("A node scene composed no graphs.");
     }
-    // `buildMeshStruct` takes no arguments, so every graph declares the same
-    // block and the PAL uploads one struct. Compared as the pin's own text
-    // rather than as generated C++: the check is that the pin did not start
-    // varying it, and the text is what would have varied. Every emitted
-    // module joins, geometry views included -- they run the same builder.
+    // Optional node features append fields. One allocation serves compatible
+    // prefixes; a reordered or incompatible field layout refuses.
     const meshBodies = [
         ...variants.map((variant) => ({
             label: `node-${variant.index}`,
@@ -459,8 +456,13 @@ export function pinnedNodeVariantsHeader(
             ),
         })),
     ];
+    const meshBody = meshBodies.reduce(
+        (longest, entry) =>
+            entry.body.length > longest.length ? entry.body : longest,
+        "",
+    );
     for (const { label, body } of meshBodies) {
-        if (body !== meshBodies[0]!.body) {
+        if (!meshBody.startsWith(body)) {
             throw new Error(
                 `Node module ${label} declares a mesh block the others do ` +
                     "not; the PAL uploads one struct.",
@@ -788,7 +790,7 @@ ${cpp.table("float", "node_variant_uniform_floats", uniformFloats.length, `${uni
 
 ${mirroredStructFromWgsl(
     "NodeMeshUniforms",
-    meshBodies[0]!.body,
+    meshBody,
     "src/material/node/node-pipeline.ts buildMeshStruct",
 )}
 

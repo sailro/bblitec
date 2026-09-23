@@ -27,6 +27,7 @@
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_ui_backdrop_sdl.hpp"
 #include "pal_ui_filter_sdl.hpp"
+#include "pal_ui_texture_cache.hpp"
 
 namespace bbl::pal {
 
@@ -39,9 +40,17 @@ struct SpriteUiSdlResources {
     SDL_GPUSampler* nearest_sampler = nullptr;
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
-    std::unordered_map<std::uint64_t, SDL_GPUTexture*> textures;
+    std::unordered_map<std::uint64_t, UiCachedTexture<SDL_GPUTexture*>> textures;
     std::uint32_t vertex_capacity = 0;
     std::uint32_t index_capacity = 0;
+};
+
+struct SpriteUiSdlCpuSample {
+    double resources_ms = 0, geometry_upload_ms = 0, texture_upload_ms = 0;
+    double upload_cleanup_ms = 0, record_ms = 0;
+    std::size_t geometry_buffers_created = 0, pipelines_created = 0;
+    std::size_t textures_created = 0, textures_released = 0, texture_bytes = 0;
+    std::size_t vertex_bytes = 0, index_bytes = 0, draws = 0, segments = 0;
 };
 
 enum class SpriteUiSdlShader {
@@ -255,9 +264,23 @@ template <typename ExternalTexture = std::nullptr_t>
 inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
                                        SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
                                        SpriteUiSdlResources& ui, const UiRenderFrame& frame,
-                                       ExternalTexture external_texture = nullptr) {
-    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0)
+                                       ExternalTexture external_texture = nullptr,
+                                       SpriteUiSdlCpuSample* cpu_sample = nullptr) {
+    const double started = cpu_sample ? monotonic_milliseconds() : 0;
+    const auto released = prune_ui_texture_cache(
+        ui.textures, [device](SDL_GPUTexture* texture) { SDL_ReleaseGPUTexture(device, texture); });
+    if (cpu_sample)
+        cpu_sample->textures_released += released;
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 ||
+        frame.height == 0) {
+        if (cpu_sample)
+            cpu_sample->resources_ms = monotonic_milliseconds() - started;
         return;
+    }
+    if (cpu_sample) {
+        cpu_sample->pipelines_created += ui.color_pipeline ? 0 : 2;
+        cpu_sample->pipelines_created += !frame.backdrops.empty() && !ui.backdrop.pipeline ? 1 : 0;
+    }
     create_sprite_ui_sdl_resources(device, target_format, ui);
     if (!frame.backdrops.empty()) {
         ensure_sprite_ui_sdl_backdrop_pipeline(device, ui);
@@ -267,19 +290,18 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
         static_cast<std::uint32_t>(frame.vertices.size() * sizeof(UiRenderVertex));
     const std::uint32_t index_bytes =
         static_cast<std::uint32_t>(frame.indices.size() * sizeof(std::uint32_t));
+    if (cpu_sample) {
+        cpu_sample->vertex_bytes = vertex_bytes;
+        cpu_sample->index_bytes = index_bytes;
+        cpu_sample->geometry_buffers_created += !ui.vertices || ui.vertex_capacity < vertex_bytes;
+        cpu_sample->geometry_buffers_created += !ui.indices || ui.index_capacity < index_bytes;
+    }
     ensure_sprite_ui_sdl_buffer(device, ui.vertices, ui.vertex_capacity, vertex_bytes,
                                 SDL_GPU_BUFFERUSAGE_VERTEX);
     ensure_sprite_ui_sdl_buffer(device, ui.indices, ui.index_capacity, index_bytes,
                                 SDL_GPU_BUFFERUSAGE_INDEX);
 
-    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
-        if (ui_frame_uses_texture(frame, texture->first)) {
-            ++texture;
-            continue;
-        }
-        SDL_ReleaseGPUTexture(device, texture->second);
-        texture = ui.textures.erase(texture);
-    }
+    const double resources_finished = cpu_sample ? monotonic_milliseconds() : 0;
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     if (!copy)
         gpu_error("SDL_BeginGPUCopyPass sprite UI");
@@ -288,6 +310,7 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
                                                     frame.vertices.data(), vertex_bytes));
     transfers.push_back(
         upload_sprite_ui_sdl_buffer(device, copy, ui.indices, frame.indices.data(), index_bytes));
+    const double geometry_uploaded = cpu_sample ? monotonic_milliseconds() : 0;
     for (const UiRenderTexture& source_texture : frame.textures) {
         if (ui.textures.contains(source_texture.id) || !source_texture.rgba) {
             continue;
@@ -325,16 +348,25 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
             texture, 0, 0, 0, 0, 0, source_texture.width, source_texture.height, 1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
         transfers.push_back(std::move(transfer_owner));
-        ui.textures.emplace(source_texture.id, texture);
+        ui.textures.emplace(source_texture.id,
+                            UiCachedTexture<SDL_GPUTexture*>{texture, source_texture.rgba});
         static_cast<void>(texture_owner.release());
+        if (cpu_sample) {
+            ++cpu_sample->textures_created;
+            cpu_sample->texture_bytes += source_texture.rgba->size();
+        }
     }
+    const double textures_uploaded = cpu_sample ? monotonic_milliseconds() : 0;
     copy.end();
     transfers.clear();
+    const double upload_finished = cpu_sample ? monotonic_milliseconds() : 0;
 
     ui.filters.begin_frame();
     for_each_ui_segment(
         frame,
         [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
+            if (cpu_sample)
+                ++cpu_sample->segments;
             auto* draw_target =
                 ui.filters.target(device, command, target, target_format, frame, layer);
             SDL_GPUColorTargetInfo color_target{};
@@ -377,7 +409,8 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
                 SDL_SetGPUScissor(pass, &clip);
                 if (draw.texture_id) {
                     const auto owned = ui.textures.find(draw.texture_id);
-                    SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
+                    SDL_GPUTexture* texture =
+                        owned == ui.textures.end() ? nullptr : owned->second.resource;
                     if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
                         if (!texture)
                             texture = external_texture(draw.texture_id);
@@ -392,6 +425,8 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
                     SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
                 }
                 SDL_DrawGPUIndexedPrimitives(pass, draw.index_count, 1, draw.first_index, 0, 0);
+                if (cpu_sample)
+                    ++cpu_sample->draws;
             }
             pass.end();
         },
@@ -409,6 +444,13 @@ inline void render_sprite_ui_sdl_frame(SDL_GPUDevice* device, SDL_GPUCommandBuff
             }
         });
     ui.filters.finish_frame(device, frame.composites.size());
+    if (cpu_sample) {
+        cpu_sample->resources_ms = resources_finished - started;
+        cpu_sample->geometry_upload_ms = geometry_uploaded - resources_finished;
+        cpu_sample->texture_upload_ms = textures_uploaded - geometry_uploaded;
+        cpu_sample->upload_cleanup_ms = upload_finished - textures_uploaded;
+        cpu_sample->record_ms = monotonic_milliseconds() - upload_finished;
+    }
 }
 
 inline void release_sprite_ui_sdl_resources(SDL_GPUDevice* device, SpriteUiSdlResources& ui) {
@@ -416,7 +458,7 @@ inline void release_sprite_ui_sdl_resources(SDL_GPUDevice* device, SpriteUiSdlRe
     ui.filters.release(device);
     for (const auto& [id, texture] : ui.textures) {
         static_cast<void>(id);
-        SDL_ReleaseGPUTexture(device, texture);
+        SDL_ReleaseGPUTexture(device, texture.resource);
     }
     if (ui.vertices)
         SDL_ReleaseGPUBuffer(device, ui.vertices);

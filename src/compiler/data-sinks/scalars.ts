@@ -4,6 +4,7 @@ import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
+import { thrownMessage } from "../error-values.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -223,6 +224,7 @@ function valueString(
 }
 
 export const scalarsSinks: DataSinkOperations<
+    | "error"
     | "event-target"
     | "search-params"
     | "http-response"
@@ -236,6 +238,26 @@ export const scalarsSinks: DataSinkOperations<
     | "json"
     | "borrowed-platform-event"
 > = {
+    error: {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value, node) => {
+            if (value.dataType?.kind === "error") return value.cpp;
+            if (!value.nativeError) return undefined;
+            const message = thrownMessage(value);
+            return message
+                ? `bbl::js::make_error("Error", ${lowerer.compileKnownValueForSink(
+                      message,
+                      { kind: "string" },
+                      node,
+                  )})`
+                : undefined;
+        },
+    },
     "search-params": {
         expression: (type, lowerer, _expression, unwrapped) =>
             lowerer.compileKnownValueForSink(

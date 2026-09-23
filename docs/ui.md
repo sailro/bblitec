@@ -35,8 +35,8 @@ needs performance and semantic verification. The easing/steps mapping is approxi
   operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
   short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
   time, parses the deployment query natively. Conditions over browser values the deployment does not answer
-  refuse. Reload completes the task/microtasks then
-  recreates realms, retaining durable storage. Other navigation refuses. Screen/viewport metrics use CSS
+  refuse. Reload and location.search assignment complete the task/microtasks then
+  recreate realms, retaining durable storage and the current query. Other navigation refuses. Screen/viewport metrics use CSS
   pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 
@@ -52,7 +52,8 @@ canvas at its page position. Build switches are in [development](development.md#
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
-| Focus/forms | Focus, activeElement, button navigation, text/password inputs, textarea, range values/input | Full browser form behavior and broader constructed input types |
+| Focus/forms | Focus, activeElement, button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Full browser form behavior and broader constructed input types |
+| Disclosure | details.open and summary activation | Broader disclosure-group behavior |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
 Queries use current attributes/order, including detached subtrees. Single queries return null; lists
@@ -66,16 +67,24 @@ Touch contacts retain independent IDs and their initial targets through release 
 only the primary contact emits compatibility mouse events. Focus loss cancels active contacts.
 Window keyboard listeners precede default actions. Focus/form callbacks use per-element dispatch.
 
+Checkbox activation updates checked before input/change. Programmatic control writes are silent.
+Color inputs use an RGB/hex popup: preview emits input, Apply emits change, Cancel restores the value.
+Values are six-digit opaque RGB; changing an input to or from color refuses.
+Native select keyboard navigation requires opening the menu first.
+
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
 Copy owned fields before dispatch ends. Optional element calls snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
+Queued form events copy value, checked, selected option and disclosure state before application callbacks.
 
 Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
 It uses shared listener ordering and microtask checkpoints, with the [HTML page-transition flags](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-pagetransitionevent-interface).
 Beforeunload and page-history caching are unsupported; native pagehide has persisted=false.
 
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
-removes prior children. Source append arguments finish before insertion. Canvas backing dimensions are
+removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
+across the Window mailbox; structural and special text changes rebuild projection.
+Source append arguments finish before insertion. Canvas backing dimensions are
 drawable pixels; client dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
 ### File transfer controls
@@ -108,15 +117,15 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 
 | Area | Supported | Limits |
 | --- | --- | --- |
-| Position/box | Reached defaults, fixed/inset/calc, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; unrepresented math/shorthands |
+| Position/box | Reached defaults, fixed/inset, viewport/px calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/font-relative math and unrepresented shorthands |
 | Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
-| Grid | Row-major grid/inline-grid; auto/px/fr, minmax(px,fr), integer repeat, implicit rows, gaps/alignment | 256 explicit tracks; no spans, named/alternate placement, percentage tracks or broader intrinsic functions |
+| Grid | Row-major grid/inline-grid; auto/px/fr, minmax(px,fr), integer repeat, implicit rows, gaps/alignment; positive grid-column start/end; intrinsic flexible spans | 256 explicit tracks; flexible spans require percentage width; span minimum-track growth, named/alternate placement, percentage tracks and broader intrinsic functions |
 | Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width and reduced-motion rules | Reduced motion uses Windows preference polling; other platforms refuse that preference |
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
-| Borders/backgrounds | Solid sides, px/em/rem widths, rounded corners, gradients, solid border/padding/content clipping | Gradient/image clipping and broader border composition |
+| Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
 | Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
 | Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
@@ -124,8 +133,8 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Overscroll | Per-axis auto/contain/none through the native scroll path | Browser edge handoff/bounce/navigation; contain and none share behavior |
 | Lists | Unmarked block lists with default margins/indentation | Marker types, counters and images |
 
-Grid retains authored parents and structural selectors. Track sizing follows non-spanning layout;
-source/style/inline order, responsive changes and child mutations update it. Container queries settle
+Grid retains authored parents and structural selectors; source/style/inline order, responsive changes
+and child mutations update it. Container queries settle
 before synchronous measurements and report nonconverging layouts.
 
 Custom properties preserve case, inherit and support var fallbacks; `--bbl-` is reserved. Quoted values
@@ -145,12 +154,15 @@ styles admit color/opacity only.
 
 Horizontal range widgets support appearance:none and WebKit thumb/track styles, including state,
 size/margins/borders/gradients/shadows. Input behavior remains native. Vertical/tick/Firefox semantics
-are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 16/8
+are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 15/8
 CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
 
 Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive
 sources, load/error events and distinct DOMException values are unsupported.
+
+Normal line height uses the current font's metrics and inherits as a keyword; explicit numeric and
+length values retain their respective inheritance rules.
 
 Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
 on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named families
@@ -162,10 +174,11 @@ differ from Chromium. Relative transition units resolve at transition start.
 
 | Maintained RmlUi patch | Contract |
 | --- | --- |
-| `rmlui-css-box-model.patch` | Background painting, shadow bounds and shrink-to-fit |
+| `rmlui-css-box-model.patch` | Background painting, shadow bounds, shrink-to-fit and descendant bottom-margin collapse |
 | `rmlui-css-declarations.patch` | Quoted/nested declarations |
 | `rmlui-visibility.patch` | Visibility inheritance/transitions |
 | `rmlui-zero-track-grid.patch` | Native grid formatting |
+| `rmlui-zz-grid-column.patch` | Explicit column placement and intrinsic flexible spans |
 | `rmlui-zz-container-queries.patch` | Inline containment/max-width queries |
 | `rmlui-fragment-root.patch` | Fragment roots |
 | `rmlui-generated-content.patch` | Generated-box ownership |
@@ -178,11 +191,12 @@ differ from Chromium. Relative transition units resolve at transition start.
 | `rmlui-textured-borders.patch` | Raster border slices |
 | `rmlui-premultiplied-rounding.patch` | Color rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional advances |
-| `rmlui-line-leading.patch` | Leading/textarea metrics |
+| `rmlui-line-leading.patch` | Font-derived normal line height and leading/textarea metrics |
 | `rmlui-object-fit.patch` | Image fitting |
 | `rmlui-overflow-wrap.patch` | Emergency wrapping |
 | `rmlui-transform-key-ownership.patch` | Transition key lifetime |
 | `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with Android/macOS libc++ |
+| `rmlui-zzzz-percentage-radius.patch` | Border-box percentage radii, elliptical border geometry and shadow/outline radii |
 
 ## Rendering
 

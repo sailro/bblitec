@@ -1,0 +1,89 @@
+{
+  "scene": "ocean",
+  "base": "registry",
+  "env": { "BBLITE_CAPTURE_UI": "0", "BBLITE_RUNTIME_TRACE": "1" },
+  "capture": false,
+  "timeoutMs": 120000,
+  "notes": "Resolution changes use the authored select change callback and query reload. The native replay selects 128 again after reload; the source ignores the unchanged resolution.",
+  "phases": [
+    { "id": "resolution-256", "frame": 180 },
+    {
+      "id": "resolution-128",
+      "frame": 180,
+      "tape": ["-*60", "UiClick@1213:132", "-*5", "UiClick@1190:177"]
+    },
+    {
+      "id": "resolution-128-idle",
+      "frame": 240,
+      "tape": ["-*60", "UiClick@1213:132", "-*5", "UiClick@1190:177"]
+    }
+  ],
+  "expect": [
+    {
+      "kind": "image-mad",
+      "phase": "resolution-256",
+      "vs": "browser:resolution-256",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "resolution-128",
+      "vs": "browser:resolution-128",
+      "max": 0.5
+    },
+    {
+      "kind": "image-mad",
+      "phase": "resolution-128-idle",
+      "vs": "resolution-128",
+      "maxDiff": 0
+    },
+    {
+      "kind": "image-mad",
+      "phase": "resolution-128",
+      "vs": "resolution-256",
+      "changedPixelsMin": 100,
+      "min": 0.001
+    },
+    {
+      "kind": "log-match",
+      "phase": "resolution-128",
+      "pattern": "ui-event type=click element=[0-9]+ tag=select",
+      "count": 2
+    },
+    { "kind": "plugin", "module": "checks/plugins/ocean-resolution.mjs" }
+  ],
+  "observe": {
+    "viewport": [1280, 720],
+    "golden": false,
+    "state": "(() => { const canvas=document.getElementById('renderCanvas'); const select=document.querySelector('#ocean-controls select'); const rect=select.getBoundingClientRect(); return {search:location.search,timeOrigin:performance.timeOrigin,dataset:{...canvas.dataset},viewport:{width:canvas.width,height:canvas.height},resolution:select.value,options:[...select.options].map(e=>e.value),selectRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}}; })()",
+    "steps": [
+      {
+        "id": "resolution-256",
+        "settleFrames": 8,
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "resolution-128",
+        "actions": [
+          {
+            "evaluate": "(() => { const select=document.querySelector('#ocean-controls select'); select.value='128'; select.dispatchEvent(new Event('change',{bubbles:true})); })()"
+          },
+          {
+            "waitFor": "location.search==='?seekTime=0.1&resolution=128' && document.getElementById('renderCanvas')?.dataset.ready==='true'",
+            "timeoutMs": 120000
+          }
+        ],
+        "settleFrames": 30,
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      },
+      {
+        "id": "resolution-128-idle",
+        "actions": [{ "frames": 60 }],
+        "screenshot": "canvas",
+        "hideStyle": ".badge,.controls,.gpu-timing{visibility:hidden!important}#renderCanvas{outline:none!important}"
+      }
+    ]
+  }
+}

@@ -1,7 +1,34 @@
+import { compileComputeUniformArenaIntrinsic } from "./compute-uniform-arena.js";
+import {
+    compileProceduralSkyIntrinsic,
+    type ProceduralSkyIntrinsicContext,
+} from "./procedural-sky.js";
+import { compileComputeUniformWriterIntrinsic } from "./compute-uniform-writer.js";
+import { compileComputeBindingDeclIntrinsic } from "./compute-binding-decl.js";
+import { compileComputeBindingsIntrinsic } from "./compute-bindings.js";
+import { compileComputeOneShotIntrinsic } from "./compute-one-shot.js";
+import { compileComputeDispatchIntrinsic } from "./compute-dispatch.js";
+import { compileStorageReadbackIntrinsic } from "./storage-readback.js";
+import {
+    compileComputeShaderIntrinsic,
+    type ComputeShaderIntrinsicContext,
+} from "./compute-shader.js";
 import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { CompileError } from "../compile-error.js";
 import { compileCharacterIntrinsic } from "./character-controller.js";
+import {
+    compileUniformBufferIntrinsic,
+    type UniformBufferIntrinsicContext,
+} from "./uniform-buffer.js";
+import {
+    compileComputeUniformIntrinsic,
+    type ComputeUniformIntrinsicContext,
+} from "./compute-uniform.js";
+import {
+    compileComputeTaskIntrinsic,
+    type ComputeTaskIntrinsicContext,
+} from "./compute-task.js";
 import {
     compileAnimationIntrinsic,
     type AnimationIntrinsicContext,
@@ -76,14 +103,24 @@ import { compileAudioIntrinsic, type AudioIntrinsicContext } from "./audio.js";
 import { compileVatIntrinsic, type VatIntrinsicContext } from "./vat.js";
 import type { Value } from "../types.js";
 import { compileTextIntrinsic, type TextIntrinsicContext } from "./text.js";
+import {
+    compileComputeTextureIntrinsic,
+    type ComputeTextureIntrinsicContext,
+} from "./compute-texture.js";
 
 export interface IntrinsicContext
     extends
+        ProceduralSkyIntrinsicContext,
         AnimationIntrinsicContext,
         AssetIntrinsicContext,
         AudioIntrinsicContext,
         CameraIntrinsicContext,
         EngineIntrinsicContext,
+        ComputeTextureIntrinsicContext,
+        ComputeTaskIntrinsicContext,
+        ComputeShaderIntrinsicContext,
+        ComputeUniformIntrinsicContext,
+        UniformBufferIntrinsicContext,
         ClusteredLightIntrinsicContext,
         LightIntrinsicContext,
         LineIntrinsicContext,
@@ -158,6 +195,19 @@ type IntrinsicCompiler = (
 ) => Value | undefined;
 
 const intrinsicCompilers: readonly IntrinsicCompiler[] = [
+    compileProceduralSkyIntrinsic,
+    compileStorageReadbackIntrinsic,
+    compileComputeDispatchIntrinsic,
+    compileComputeShaderIntrinsic,
+    compileComputeBindingDeclIntrinsic,
+    compileComputeBindingsIntrinsic,
+    compileComputeOneShotIntrinsic,
+    compileUniformBufferIntrinsic,
+    compileComputeUniformArenaIntrinsic,
+    compileComputeUniformWriterIntrinsic,
+    compileComputeUniformIntrinsic,
+    compileComputeTaskIntrinsic,
+    compileComputeTextureIntrinsic,
     compileTextIntrinsic,
     compileEngineIntrinsic,
     compileCameraIntrinsic,

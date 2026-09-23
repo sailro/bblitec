@@ -19,6 +19,7 @@ export interface ShadowIntrinsicContext
             LoweringServices,
             | "noteTemporalRecordBoundary"
             | "compileNumber"
+            | "compileBoolean"
             | "compileF32ArrayCallback"
             | "allocateTemporaryCppName"
             | "emit"
@@ -390,6 +391,20 @@ export function compileShadowIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "setShadowGeneratorEnabled": {
+            context.expectArgumentCount(call, 2, 2);
+            const generator = context.compileValue(argumentAt(call, 0));
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                argumentAt(call, 0),
+            );
+            context.reachFeature("shadow:pcf", call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::set_shadow_generator_enabled(${context.requireEngine(generator, call)}, ${generator.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
+            };
+        }
         case "createPcfSpotlightShadowGenerator":
         case "createPcfDirectionalShadowGenerator":
         case "createCsmDirectionalShadowGenerator":

@@ -67,14 +67,10 @@ export interface CompileOptions extends DeploymentOptions {
     title?: string;
     width?: number;
     height?: number;
-    /**
-     * The query string the scene's reference pose is captured at
-     * (`"?seekTime=0"`). `window.location.search` folds to it, so a scene
-     * that branches on a query parameter takes the same branch natively
-     * that the reference page takes. Empty when the pin serves the scene
-     * bare, which is every scene that does not read the query.
-     */
+    /** Generation query for statically specialized source; empty by default. */
     search?: string;
+    /** Initial query for a runtime Window; defaults to the generation query. */
+    initialSearch?: string;
     /** Optional audited host-page UI companion for a registered native scene. */
     nativeHostUi?: NativeHostUi;
 }
@@ -112,6 +108,7 @@ export interface CompileManifest {
     assets: CompileAsset[];
     shaderVariants: string[];
     customShaderPrograms: CompiledShaderProgram[];
+    computePrograms?: readonly CompiledComputeProgram[];
     /** Every node-material graph the scene parsed, in reach order. */
     nodeMaterials: CompiledNodeMaterial[];
     /** Ordered collectors projected separately from native document-order meshes. */
@@ -714,6 +711,12 @@ export interface ScenePbrMaterialManifest {
  * scene-local programs carry the equivalent fields plus the typed
  * uniform defaults the pinned createShaderMaterial applies at creation.
  */
+export interface CompiledComputeProgram {
+    name: string;
+    source: string;
+    entryPoint: string;
+}
+
 export interface CompiledShaderProgram {
     name: string;
     vertexSource: string;
@@ -1135,6 +1138,8 @@ export interface PostProcessCompositeManifest {
     options: Record<string, PostProcessOptionValue>;
     /** Whether the scene named a target, which a composite branches on. */
     hasTarget: boolean;
+    /** Scalar accessor pairs actually reached by scene code. */
+    scalarAccesses?: string[];
 }
 
 export interface PostProcessTaskManifest {
@@ -1337,6 +1342,7 @@ export type ValueKind =
     | "gpu-texture"
     | "device-recovery"
     | "gpu-environment"
+    | "procedural-sky-environment"
     | "static-fetch-response"
     | "json-null"
     | "light"
@@ -1350,6 +1356,19 @@ export type ValueKind =
     | "gamepad"
     | "gamepad-button"
     | "storage-buffer"
+    | "compute-storage-texture"
+    | "compute-texture-resource"
+    | "compute-sampler"
+    | "compute-binding-decl"
+    | "compute-binding-set"
+    | "compute-shader"
+    | "compute-dispatch"
+    | "compute-task"
+    | "compute-one-shot"
+    | "uniform-buffer"
+    | "compute-uniform-arena"
+    | "compute-uniform-writer"
+    | "compute-uniform-layout"
     /**
      * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
      * view of the pool rather than a handle of its own: the only member the
@@ -1996,6 +2015,8 @@ export interface ValueFields {
     repeatedCallbackEvaluation?: true;
     /** Distinguishes one statically emitted evaluation of a function expression. */
     callbackEvaluationIdentity?: object;
+    /** One runtime identity per evaluation of a named local function literal. */
+    runtimeCallbackIdentityCpp?: string;
     /** JavaScript function identity retained by a materialized native callback. */
     platformCallbackIdentity?: number;
     /** Constructed class identity, retained when an inlined return wraps Value. */
@@ -2499,9 +2520,13 @@ export interface ValueFields {
         | { kind: "number"; value: number }
         | { kind: "null" }
         | { kind: "dom-rect" }
-        | { kind: "object"; primaryCanvas?: true }
+        | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
         | { kind: "search-params"; search: string }
         | { kind: "string"; value: string };
+    nodeBlockLoader?: Pick<
+        CompiledNodeMaterial,
+        "blockEmitters" | "pinnedBlockLoader"
+    >;
     cameraKind?: "arc-rotate" | "free" | "geospatial";
     msaaSamples?: 1 | 4 | "runtime";
     directMorphCompatible?: boolean;
@@ -2538,15 +2563,39 @@ export type Feature =
     | "core"
     | "backend:sdl"
     | "engine:device-recovery"
+    | "engine:dispose"
+    | "engine:gpu-retirement"
+    | "engine:gpu-task-timing"
+    | "compute:storage-texture"
+    | "compute:texture-mipmaps"
+    | "compute:binding-decl"
+    | "compute:shader"
+    | "compute:dispatch"
+    | "compute:bindings"
+    | "compute:one-shot"
+    | "compute:task"
+    | "compute:task-execution"
+    | "compute:frame-graph"
+    | "compute:uniform-buffer"
+    | "compute:uniform-arena"
+    | "compute:uniform-writer"
+    | "compute:uniform-layout"
+    | "compute:storage-buffer"
+    | "compute:storage-readback"
     | "input:gamepad"
     | "input:dom"
     | "camera:arc-rotate"
     | "camera:default"
     | "camera:free"
+    | "camera:configurable-free"
     | "camera:geospatial"
     | "camera:orthographic"
+    | "camera:world-matrix-version"
     | "camera:view-projection"
     | "environment:ibl"
+    | "environment:sky-atmosphere"
+    | "light:parameters"
+    | "environment:procedural-sky"
     | "environment:env"
     | "environment:hdr"
     | "environment:dds"
@@ -2605,6 +2654,7 @@ export type Feature =
     | "mesh:csg2"
     | "mesh:from-data"
     | "mesh:update-positions"
+    | "mesh:resize-geometry"
     | "mesh:ground"
     | "mesh:ground-heightmap"
     | "mesh:lines"
@@ -2677,6 +2727,7 @@ export type Feature =
     // carrying the translated declaration is emitted only where one of the
     // two reaches it.
     | "math:normalize-vec3"
+    | "math:quaternion"
     | "math:mat4-invert"
     | "math:mat4-create"
     // `src/math/create-quat-from-look-direction-rh.ts` and its rotation-basis helper,
@@ -2746,6 +2797,7 @@ export type Feature =
     | "material:standard-diffuse-solid-texture"
     | "material:standard-uv-transform"
     | "material:plugins"
+    | "material:pbr-plugin-vertex-data"
     | "material:plugin-index"
     | "material:plugin-textures"
     | "material:standard-emissive-render-texture"
@@ -2763,6 +2815,7 @@ export type Feature =
     | "renderer:canvas"
     | "renderer:effect"
     | "frame-graph:resources"
+    | "frame-graph:surface-target"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:task"
@@ -2821,10 +2874,15 @@ export interface WorkerCompilation {
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
     workers?: WorkerCompilation;
+    /** Reached query mutation requires native identities throughout this realm. */
+    runtimeSearchParams?: boolean;
+    /** Reached navigation makes location.search observable across reloads. */
+    runtimeLocationSearch?: boolean;
     fileName: string;
     title: string;
     width: number;
     height: number;
     search: string;
+    initialSearch?: string;
     nativeHostUi?: NativeHostUi;
 }

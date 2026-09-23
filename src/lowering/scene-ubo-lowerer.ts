@@ -8,7 +8,7 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 
 const TAA_MODULE = "src/post-process/taa.ts";
-const SCENE_MODULE = "src/frame-graph/render-task.ts";
+const SCENE_MODULE = "src/frame-graph/render-task-base.ts";
 const PACK_MODULE = "src/frame-graph/scene-uniforms-pack.ts";
 const EXTRAS_MODULE = "src/scene/scene-ubo-extras.ts";
 
@@ -557,7 +557,7 @@ ${this.writeScene()}
     public storageHeader(): string {
         const { file, declaration } = this.context.functionDeclaration(
             SCENE_MODULE,
-            "createRenderTask",
+            "_createAutomaticRenderTask",
         );
         const task = this.context.objectInitializer(declaration, "task");
         const clean = this.context.propertyInitializer(task, "_suData");
@@ -599,7 +599,7 @@ ${this.writeScene()}
                 "TAA Halton/scratch initialization changed.",
             );
         }
-        return `// ${this.context.provenance(SCENE_MODULE, "createRenderTask", "task-owned scene UBO storage")}
+        return `// ${this.context.provenance(SCENE_MODULE, "_createAutomaticRenderTask", "task-owned scene UBO storage")}
 namespace bbl::upstream {
 inline std::shared_ptr<PersistentSceneUniforms> create_persistent_scene_uniforms() {
     // The pin's cache starts empty. A native null camera cannot match the

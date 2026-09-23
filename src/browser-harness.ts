@@ -82,6 +82,8 @@ export const canvasBakeBrowserArgs: readonly string[] =
 export interface BrowserPageOptions {
     /** A separate visible test window can measure the display's real cadence. */
     headless?: boolean;
+    /** Preserve scrollbar layout and painting in headless UI captures. */
+    showScrollbars?: boolean;
     /** What a failed ephemeral listen names:
      *  "Unable to start the <serverName>." */
     serverName: string;
@@ -133,6 +135,9 @@ export async function withBrowserPage<T>(
             // Linux needs a graphical session for reliable WebGPU external
             // image uploads and canvas presentation, including under SSH.
             headless: options.headless ?? process.platform !== "linux",
+            ...(options.showScrollbars
+                ? { ignoreDefaultArgs: ["--hide-scrollbars"] }
+                : {}),
             ...(options.browserArgs ? { args: [...options.browserArgs] } : {}),
         });
         const page = await browser.newPage(

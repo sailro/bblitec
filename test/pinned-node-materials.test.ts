@@ -283,11 +283,10 @@ test("emits the variant table and the pin's own mesh block", async () => {
     );
     assert.match(header, /node_variants_data\{\{/);
     assert.match(header, /"node-0\.vert", "node-0\.frag"/);
-    // The mesh block is mirrored field for field, with the light-index array
-    // where the pin's own layout puts it.
+    // This unlit graph omits the optional light-selection fields.
     assert.match(header, /struct NodeMeshUniforms \{/);
-    assert.match(header, /offsetof\(NodeMeshUniforms, li\) == 96/);
-    assert.match(header, /sizeof\(NodeMeshUniforms\) == 160/);
+    assert.doesNotMatch(header, /offsetof\(NodeMeshUniforms, li\)/);
+    assert.match(header, /sizeof\(NodeMeshUniforms\) == 80/);
     // The block's bytes, folded from the graph's own defaults.
     assert.match(header, /0\.8500000238418579f/);
 });
