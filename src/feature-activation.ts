@@ -2752,8 +2752,8 @@ function emitOptionRows(
             "emit-option",
             emit.punctualLights,
             emit.punctualLights
-                ? "an asset uses KHR_lights_punctual"
-                : "no asset uses KHR_lights_punctual",
+                ? "an asset's executed light plan registers punctual light nodes"
+                : "no asset registers a punctual light node",
             "src/loader-gltf/gltf-feature-lights-punctual.ts " +
                 "(KHR_lights_punctual)",
             ["renderer plan"],

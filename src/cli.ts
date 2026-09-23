@@ -75,7 +75,10 @@ import {
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
-import { emitAssetSpecializations } from "./asset-specializer.js";
+import {
+    emitAssetSpecializations,
+    gltfAssetDocuments,
+} from "./asset-specializer.js";
 import {
     joinAssetFeatures,
     sceneTransmission,
@@ -880,9 +883,16 @@ async function main(): Promise<void> {
     );
     const splatSpzRotation = splatContainerRotations.get("spz");
     const splatSogRotation = splatContainerRotations.get("sog");
+    // Each packaged glTF document, parsed once for the specializer and the
+    // join alike.
+    const gltfDocuments = gltfAssetDocuments(
+        outputPath,
+        result.manifest.assets,
+    );
     const specializationFeatures = emitAssetSpecializations(
         outputPath,
         result.manifest.assets,
+        gltfDocuments,
     );
     // Everything past this point reads the finished feature list: the join
     // adds what the assets carry, re-projects the list, and decides the
@@ -890,6 +900,7 @@ async function main(): Promise<void> {
     const assetJoin = await joinAssetFeatures({
         result,
         outputPath,
+        documents: gltfDocuments,
         specialization: specializationFeatures,
         splatHarmonics: result.manifest.assets.find(
             (_, index) =>
@@ -973,7 +984,7 @@ async function main(): Promise<void> {
         });
     }
     tree.keep("upstream/gltf-specialization.json");
-    if (specializationFeatures.imageBasedLighting) {
+    if (assetJoin.imageBasedLight) {
         const brdfAsset: CompileAsset = {
             source: "generated:pinned-ibl-brdf-lut",
             output: "gltf-ibl-brdf-lut.rgba16f",
@@ -1428,12 +1439,15 @@ async function main(): Promise<void> {
                 (asset) => asset.selectedVariant !== undefined,
             )?.selectedVariant ?? "",
         textureTransform: specializationFeatures.textureTransform,
-        imageBasedLighting: specializationFeatures.imageBasedLighting,
+        imageBasedLighting: assetJoin.imageBasedLight,
         gpuInstancing,
         gpuInstanceColors: result.manifest.features.includes(
             "mesh:thin-instance-colors",
         ),
-        punctualLights: specializationFeatures.punctualLights,
+        // The lights the asset's executed light plan registers, not the
+        // extension's declaration: a declared light no node instances
+        // creates nothing upstream.
+        punctualLights: assetJoin.assetLightNodes !== undefined,
         // The arms the composed set carries, read off the composition
         // itself: a glTF material's, a scene-code material's and a caster
         // view's variants all report through `pinnedVariantArms`, so what

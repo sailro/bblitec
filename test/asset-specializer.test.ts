@@ -5,11 +5,25 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     emitAssetSpecializations,
+    gltfAssetDocuments,
     specializeGltf,
 } from "../src/asset-specializer.js";
+import { parseGlbJson } from "../src/gltf-document.js";
 import { writeGlbFixture } from "./glb-fixture.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packageGltfTransmissionPlan } from "../src/pinned-material-arms.js";
+
+/** Specialize packaged assets the way generation does: parsed once. */
+function specialize(
+    directory: string,
+    assets: Parameters<typeof emitAssetSpecializations>[1],
+): ReturnType<typeof emitAssetSpecializations> {
+    return emitAssetSpecializations(
+        directory,
+        assets,
+        gltfAssetDocuments(directory, assets),
+    );
+}
 
 function writeGlb(path: string, document: Record<string, unknown>): void {
     writeGlbFixture(path, document, Buffer.alloc(4));
@@ -42,36 +56,16 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
             ],
             skins: [{}],
         });
-        const specialization = specializeGltf(path, "asset.glb");
+        const specialization = specializeGltf(parseGlbJson(path), "asset.glb");
         assert.deepEqual(specialization.extensionsUsed, [
             "KHR_texture_transform",
         ]);
-        assert.ok(
-            specialization.staticModules.includes("./gltf-ext-uv-transform.js"),
-        );
-        assert.ok(
-            specialization.staticModules.includes(
-                "./gltf-feature-animations.js",
-            ),
-        );
-        assert.ok(
-            specialization.staticModules.includes("./gltf-feature-morph.js"),
-        );
+        assert.equal(specialization.features.morphTargets, true);
         // The pinned skeleton predicate needs BOTH conjuncts —
         // `!!j.skins?.length && anyPrimitive(j, p.attributes?.JOINTS_0 !==
         // void 0)` (gltf-feature-registry.ts) — so a skins array with no
         // skinned primitive imports nothing upstream and records nothing.
-        assert.ok(
-            !specialization.staticModules.includes(
-                "./gltf-feature-skeleton.js",
-            ),
-        );
         assert.equal(specialization.features.skins, false);
-        assert.ok(
-            specialization.staticModules.includes(
-                "./gltf-feature-primitive.js",
-            ),
-        );
         assert.equal(specialization.features.animations, true);
         // The same predicate gates the generated loader's topology
         // handling, so a document that pulls upstream's primitive feature
@@ -145,7 +139,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
             meshes: [],
             nodes: [],
         });
-        const features = emitAssetSpecializations(scratch, [
+        const features = specialize(scratch, [
             {
                 source: "https://example.invalid/extensions.glb",
                 output: "extensions.glb",
@@ -156,7 +150,6 @@ test("accepts the pin-implemented material extensions and records the loader fac
         // the composed variants' own answer, so the record carries only
         // the facts the loader lowering keys on.
         assert.equal(features.textureTransform, false);
-        assert.equal(features.punctualLights, false);
         assert.equal(features.assetTransmission, false);
 
         await writePackaged("dispersive.glb", {
@@ -178,7 +171,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
             meshes: [],
             nodes: [],
         });
-        const dispersive = emitAssetSpecializations(scratch, [
+        const dispersive = specialize(scratch, [
             {
                 source: "https://example.invalid/dispersive.glb",
                 output: "dispersive.glb",
@@ -199,7 +192,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
             nodes: [],
         });
         assert.doesNotThrow(() =>
-            emitAssetSpecializations(scratch, [
+            specialize(scratch, [
                 {
                     source: "https://example.invalid/spec-gloss.glb",
                     output: "spec-gloss.glb",
@@ -213,7 +206,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
             meshes: [],
             nodes: [],
         });
-        const plain = emitAssetSpecializations(scratch, [
+        const plain = specialize(scratch, [
             {
                 source: "https://example.invalid/plain.glb",
                 output: "plain.glb",
@@ -221,7 +214,6 @@ test("accepts the pin-implemented material extensions and records the loader fac
             },
         ]);
         assert.equal(plain.assetTransmission, false);
-        assert.equal(plain.punctualLights, false);
     } finally {
         rmSync(scratch, { recursive: true, force: true });
     }
@@ -249,9 +241,9 @@ test("the skeleton module needs skins and a JOINTS_0 primitive", () => {
             nodes: [{ mesh: 0 }],
             skins: [{}],
         });
-        const specialization = specializeGltf(path, "skinned.glb");
-        assert.ok(
-            specialization.staticModules.includes("./gltf-feature-skeleton.js"),
+        const specialization = specializeGltf(
+            parseGlbJson(path),
+            "skinned.glb",
         );
         assert.equal(specialization.features.skins, true);
     } finally {
@@ -291,7 +283,8 @@ test("records the largest skin, which bounds the palette transport", () => {
         });
         // The largest skin, not the first and not the sum.
         assert.equal(
-            specializeGltf(path, "skinned.glb").features.maxSkinJoints,
+            specializeGltf(parseGlbJson(path), "skinned.glb").features
+                .maxSkinJoints,
             70,
         );
     } finally {
@@ -309,7 +302,8 @@ test("an asset with no skins bounds nothing", () => {
             nodes: [{ mesh: 0 }],
         });
         assert.equal(
-            specializeGltf(path, "static.glb").features.maxSkinJoints,
+            specializeGltf(parseGlbJson(path), "static.glb").features
+                .maxSkinJoints,
             0,
         );
     } finally {
@@ -326,7 +320,10 @@ test("refuses asset content the pinned loader implements and this port does not"
             pattern: RegExp,
         ): void => {
             writeGlb(path, document);
-            assert.throws(() => specializeGltf(path, "asset.glb"), pattern);
+            assert.throws(
+                () => specializeGltf(parseGlbJson(path), "asset.glb"),
+                pattern,
+            );
         };
 
         // A pin-implemented extension composes a different fragment upstream,
@@ -339,17 +336,17 @@ test("refuses asset content the pinned loader implements and this port does not"
                 "KHR_materials_diffuse_transmission",
             ],
         });
-        assert.deepEqual(specializeGltf(path, "asset.glb").extensionsUsed, [
-            "KHR_materials_anisotropy",
-            "KHR_materials_diffuse_transmission",
-        ]);
+        assert.deepEqual(
+            specializeGltf(parseGlbJson(path), "asset.glb").extensionsUsed,
+            ["KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"],
+        );
 
         // Metadata-only extensions have no rendering effect on either side.
         writeGlb(path, { extensionsUsed: ["KHR_xmp_json_ld", "KHR_xmp"] });
-        assert.deepEqual(specializeGltf(path, "asset.glb").extensionsUsed, [
-            "KHR_xmp_json_ld",
-            "KHR_xmp",
-        ]);
+        assert.deepEqual(
+            specializeGltf(parseGlbJson(path), "asset.glb").extensionsUsed,
+            ["KHR_xmp_json_ld", "KHR_xmp"],
+        );
 
         // Eight-influence skinning: the pin reads JOINTS_1/WEIGHTS_1
         // (MSH_HAS_SKELETON_8); this port reads four influences and records
@@ -372,7 +369,8 @@ test("refuses asset content the pinned loader implements and this port does not"
             ],
         });
         assert.equal(
-            specializeGltf(path, "asset.glb").features.eightInfluenceSkinning,
+            specializeGltf(parseGlbJson(path), "asset.glb").features
+                .eightInfluenceSkinning,
             true,
         );
 
@@ -390,7 +388,8 @@ test("refuses asset content the pinned loader implements and this port does not"
             ],
         });
         assert.equal(
-            specializeGltf(path, "asset.glb").features.eightInfluenceSkinning,
+            specializeGltf(parseGlbJson(path), "asset.glb").features
+                .eightInfluenceSkinning,
             false,
         );
 
@@ -453,7 +452,9 @@ test("refuses asset content the pinned loader implements and this port does not"
                 },
             ],
         });
-        assert.doesNotThrow(() => specializeGltf(path, "asset.glb"));
+        assert.doesNotThrow(() =>
+            specializeGltf(parseGlbJson(path), "asset.glb"),
+        );
 
         // One shared image through two texture objects stays the supported
         // orm-unpack shape and passes.
@@ -468,7 +469,7 @@ test("refuses asset content the pinned loader implements and this port does not"
                 },
             ],
         });
-        specializeGltf(path, "asset.glb");
+        specializeGltf(parseGlbJson(path), "asset.glb");
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }

@@ -71,7 +71,8 @@ test("scene morph attachment records its exact PBR row and keeps weight updates 
         assetJoin: await joinAssetFeatures({
             result,
             outputPath,
-            specialization: emitAssetSpecializations(outputPath, []),
+            documents: new Map(),
+            specialization: emitAssetSpecializations(outputPath, [], new Map()),
             splatHarmonics: undefined,
         }),
     });

@@ -10,7 +10,6 @@
 // `features.cmake`, and its feature-keyed adaptation rows. The capabilities
 // an asset and a scene call can both activate are decided here once, with
 // their reasons, as the activation plan every consumer reads.
-import { resolve } from "node:path";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { Feature } from "./compiler/types.js";
 import {
@@ -23,13 +22,14 @@ import {
     projectFeatures,
 } from "./compiler/output-projection.js";
 import {
+    gltfAssetDocument,
     gltfHasCompressedImages,
     gltfHasGaussianSplats,
     type AssetSpecializationFeatures,
 } from "./asset-specializer.js";
 import { babylonLights, type BabylonLight } from "./babylon-asset-features.js";
 import { SPLAT_CONTAINERS } from "./compiler/assets.js";
-import { parseGlbJson } from "./gltf-document.js";
+import type { JsonRecord } from "./gltf-document.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,
@@ -122,6 +122,8 @@ export interface AssetFeatureJoin {
 export interface AssetFeatureJoinInputs {
     result: CompileResult;
     outputPath: string;
+    /** Each glTF asset's packaged document, parsed once for generation. */
+    documents: ReadonlyMap<string, JsonRecord>;
     specialization: AssetSpecializationFeatures;
     /** The splat container whose parse answered spherical harmonics. */
     splatHarmonics: CompileAsset | undefined;
@@ -138,6 +140,7 @@ export interface AssetFeatureJoinInputs {
 export async function joinAssetFeatures({
     result,
     outputPath,
+    documents,
     specialization,
     splatHarmonics,
 }: AssetFeatureJoinInputs): Promise<AssetFeatureJoin> {
@@ -162,9 +165,7 @@ export async function joinAssetFeatures({
     let imageBasedLight = false;
     for (const asset of manifest.assets) {
         if (asset.kind !== "gltf") continue;
-        const document = parseGlbJson(
-            resolve(outputPath, "assets", asset.output),
-        );
+        const document = gltfAssetDocument(documents, asset);
         const nodeLights = gltfNodeLights(document);
         if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
             assetLightNodes = { count: nodeLights.count, asset: asset.output };

@@ -35,10 +35,8 @@ function specialization(
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
-        imageBasedLighting: false,
         textureTransform: false,
         gpuInstancing: false,
-        punctualLights: false,
         eightInfluenceSkinning: false,
         gaussianSplats: false,
         compressedImages: false,
@@ -205,7 +203,6 @@ function scene33Inputs(): FeatureActivationInputs {
             "material:pbr-linear-image-processing": "scene33.ts:24",
         },
         specialization: specialization({
-            punctualLights: true,
             assetTransmission: true,
         }),
         activation: activationPlan({
@@ -304,10 +301,8 @@ function everythingOnInputs(): FeatureActivationInputs {
             animationPointerMaterials: true,
             assetTransmission: true,
             materialSpecular: true,
-            imageBasedLighting: true,
             textureTransform: true,
             gpuInstancing: true,
-            punctualLights: true,
             eightInfluenceSkinning: true,
         }),
         activation: activationPlan({
