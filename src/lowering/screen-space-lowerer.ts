@@ -339,21 +339,8 @@ void pack_mat4_into_f32(
      * never a lowered write past the array.
      */
     private uniformSizeContract(): string {
-        const floats = (module: string, name: string): number => {
-            const initializer = this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    this.context.sourceFile(module),
-                    name,
-                ),
-            );
-            if (!ts.isNumericLiteral(initializer)) {
-                this.context.contractError(
-                    initializer,
-                    `Expected ${name} to be a numeric literal.`,
-                );
-            }
-            return Number(initializer.text);
-        };
+        const floats = (module: string, name: string): number =>
+            this.context.pinnedNumber(module, name);
         const temporalBytes =
             4 * floats(TEMPORAL_MODULE, SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS);
         let producerBytes: number | undefined;
@@ -1949,19 +1936,14 @@ class FrameWalker {
             ts.isBinaryExpression,
         )) {
             const split = this.context.nullishDefault(candidate);
-            if (!split) continue;
-            const key = split.left.getText(file);
-            if (!key.startsWith("inputs.") || resolveBindings.has(key))
-                continue;
-            const literal = this.context.unwrapExpression(split.right);
-            if (!ts.isNumericLiteral(literal)) {
-                this.context.contractError(
-                    literal,
-                    `Expected the resolve default of ${key} to be a number.`,
-                );
-            }
+            const path = split && this.context.propertyPath(split.left);
+            if (!split || path?.[0] !== "inputs" || path.length < 2) continue;
+            const key = path.join(".");
+            if (resolveBindings.has(key)) continue;
             resolveBindings.set(key, {
-                cpp: doubleLiteral(Number(literal.text)),
+                cpp: doubleLiteral(
+                    this.context.numericValue(split.right, file),
+                ),
                 type: "scalar",
             });
         }

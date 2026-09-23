@@ -45,17 +45,10 @@ export function lowerCharacterControllerKernel(
     context: LoweringContext,
     full = false,
 ): string {
-    const file = context.sourceFile(characterControllerModule);
-    const controller = file.statements.find(
-        (node): node is ts.ClassDeclaration =>
-            ts.isClassDeclaration(node) &&
-            node.name?.text === "PhysicsCharacterController",
+    const { file, declaration: controller } = context.classDeclaration(
+        characterControllerModule,
+        "PhysicsCharacterController",
     );
-    if (!controller)
-        return context.contractError(
-            file,
-            "Pinned character controller class is missing.",
-        );
     const records = new Map<string, Map<string, string>>();
     const vector = context.functionDeclaration(
         characterControllerModule,
@@ -184,16 +177,10 @@ export function lowerCharacterControllerKernel(
             records
                 .get("PhysicsCharacterControllerOptions")!
                 .set(name, `optional:${type}`);
-    const status = file.statements.find(
-        (node): node is ts.EnumDeclaration =>
-            ts.isEnumDeclaration(node) &&
-            node.name.text === "InteractionStatus",
+    const { declaration: status } = context.enumDeclaration(
+        characterControllerModule,
+        "InteractionStatus",
     );
-    if (!status)
-        return context.contractError(
-            file,
-            "Pinned interaction status enum is missing.",
-        );
     for (const member of status.members) {
         if (!ts.isIdentifier(member.name) || !member.initializer)
             return context.contractError(
@@ -211,12 +198,12 @@ export function lowerCharacterControllerKernel(
             ["src/physics/havok.ts", "PhysicsMotionType"],
             ["src/physics/havok.ts", "PhysicsShapeType"],
         ]) {
-            const value = context.unwrapExpression(
-                context.variableInitializer(context.sourceFile(module!), name!),
-            );
-            if (!ts.isObjectLiteralExpression(value))
+            const constant = context.pinnedConstant(module!, name!);
+            const value =
+                constant && context.unwrapExpression(constant.initializer);
+            if (!value || !ts.isObjectLiteralExpression(value))
                 return context.contractError(
-                    value,
+                    value ?? context.sourceFile(module!),
                     "Pinned controller state constants must be an object.",
                 );
             for (const property of value.properties) {

@@ -190,20 +190,7 @@ export class SplatLowerer {
      * rather than repeated: a changed stride changes every offset below it.
      */
     private rowLength(): number {
-        return this.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
-    }
-
-    /** A module-local numeric constant, read from its own declaration. */
-    private pinnedNumber(modulePath: string, name: string): number {
-        const file = this.context.sourceFile(modulePath);
-        const initializer = this.context.variableInitializer(file, name);
-        if (!ts.isNumericLiteral(initializer)) {
-            return this.context.contractError(
-                initializer,
-                `Expected ${name} to be a numeric literal.`,
-            );
-        }
-        return Number(initializer.text);
+        return this.context.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
     }
 
     /**
@@ -702,7 +689,7 @@ ${body}
      * next bump.
      */
     private sortEpsilon(): string {
-        return String(this.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
+        return String(this.context.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
     }
 
     /**
@@ -1839,7 +1826,10 @@ ${writes.join("\n")}
     public lowerBake(): LoweredSource {
         const symbolName = "bakeTransformIntoVertices";
         const { file, declaration } = this.declaration(BAKE_MODULE, symbolName);
-        const bakeRowLength = this.pinnedNumber(BAKE_MODULE, "ROW_LENGTH");
+        const bakeRowLength = this.context.pinnedNumber(
+            BAKE_MODULE,
+            "ROW_LENGTH",
+        );
         if (bakeRowLength !== this.rowLength()) {
             this.context.contractError(
                 declaration,

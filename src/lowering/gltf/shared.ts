@@ -5,6 +5,7 @@ import {
     findNodes,
     nullishDefault,
     numericValue,
+    topLevelFunctionDeclaration,
     unwrapExpression,
 } from "../context.js";
 
@@ -112,19 +113,14 @@ export function topLevelFunction(
     file: ts.SourceFile,
     symbolName: string,
 ): ts.FunctionDeclaration & { body: ts.Block } {
-    const declaration = file.statements.find(
-        (statement): statement is ts.FunctionDeclaration =>
-            ts.isFunctionDeclaration(statement) &&
-            statement.name?.text === symbolName &&
-            statement.body !== undefined,
-    );
-    if (!declaration?.body) {
+    const declaration = topLevelFunctionDeclaration(file, symbolName);
+    if (!declaration) {
         throw new Error(
             `Pinned function '${symbolName}' with a body was not found ` +
                 `in ${file.fileName}.`,
         );
     }
-    return declaration as ts.FunctionDeclaration & { body: ts.Block };
+    return declaration;
 }
 
 /**

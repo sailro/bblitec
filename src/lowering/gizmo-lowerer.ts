@@ -1052,30 +1052,7 @@ export class GizmoLowerer {
         scope: ts.Node | readonly ts.Node[],
         name: string,
     ): ts.Expression {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                !found &&
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === name &&
-                node.initializer
-            ) {
-                found = node.initializer;
-            }
-            ts.forEachChild(node, visit);
-        };
-        const roots = Array.isArray(scope)
-            ? (scope as readonly ts.Node[])
-            : [scope as ts.Node];
-        for (const root of roots) visit(root);
-        return (
-            found ??
-            this.context.contractError(
-                roots[0]!,
-                `Expected the pinned body to declare '${name}'.`,
-            )
-        );
+        return this.context.variableInitializer(scope, name);
     }
 
     /**

@@ -5,7 +5,6 @@ import {
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
-import ts from "typescript";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
 import type { ShaderModuleDeclaration } from "./shader-composition.js";
 import {
@@ -210,27 +209,15 @@ import {
 } from "./pinned-shader-composer.js";
 
 /**
- * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
- * Read rather than assumed, so the mirrored layout is checked against the pin's
- * own allocation.
+ * The pin's own MAX_LIGHTS, so the lights buffer is sized by it. The pin
+ * declares it `let` because `setMaxLights` grows it at run time; its
+ * initial value is the capacity this port freezes, and activation refuses
+ * the growth.
  */
-/**
- * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
- * the mirrored mesh block is checked against the pin's own constant.
- */
-/** The pin's own MAX_LIGHTS, so the lights buffer is sized by it. */
 function pinnedMaxLights(context: LoweringContext): number {
-    const file = context.sourceFile("src/light/types.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "MAX_LIGHTS"),
-    );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected MAX_LIGHTS to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
+    return context.pinnedNumber("src/light/types.ts", "MAX_LIGHTS", {
+        frozen: true,
+    });
 }
 
 /** The pin's frozen MAX_LIGHTS, read for the activation inventory's
@@ -240,32 +227,27 @@ export function readPinnedMaxLights(): number {
     return pinnedMaxLights(new LoweringContext(sharedUpstreamStore()));
 }
 
+/**
+ * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
+ * the mirrored mesh block is checked against the pin's own constant.
+ */
 function meshLightIndexWordOffset(context: LoweringContext): number {
-    const file = context.sourceFile("src/render/mesh-light-selection.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "MSH_LIGHT_INDEX_WORD_OFFSET"),
+    return context.pinnedNumber(
+        "src/render/mesh-light-selection.ts",
+        "MSH_LIGHT_INDEX_WORD_OFFSET",
     );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected MSH_LIGHT_INDEX_WORD_OFFSET to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
 }
 
+/**
+ * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
+ * Read rather than assumed, so the mirrored layout is checked against the pin's
+ * own allocation.
+ */
 function sceneUboBytes(context: LoweringContext): number {
-    const file = context.sourceFile("src/shader/scene-uniforms-size.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "SCENE_UBO_BYTES"),
+    return context.pinnedNumber(
+        "src/shader/scene-uniforms-size.ts",
+        "SCENE_UBO_BYTES",
     );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected SCENE_UBO_BYTES to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
 }
 
 /** The light kinds the pin writes an entry for, in its own order. */
