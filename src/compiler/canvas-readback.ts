@@ -355,7 +355,7 @@ function runCanvasReadback(input: string): Uint8Array {
             response.end("<!doctype html><title>Canvas readback</title>");
         });
         const value = await withBrowserPage(server, {
-            serverName: "Canvas readback server", browserRequirement: "Canvas readback requires Chromium.",
+            serverName: "Canvas readback server", browserRequirement: "Canvas readback requires Chromium.", shared: true,
         }, async (page, origin) => {
             await page.route("**/*", route => {
                 const url = route.request().url();

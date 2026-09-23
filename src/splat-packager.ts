@@ -743,6 +743,7 @@ export async function packageSog(
                 SOG_PAGE_GLOBAL,
                 {
                     serverName: "SOG package server",
+                    shared: true,
                     browserRequirement:
                         "Packaging a SOG container requires Chrome or Edge.",
                     // The golden capture's flags, because this run reproduces

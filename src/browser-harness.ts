@@ -54,11 +54,23 @@
 // - Teardown is `await browser?.close()` then an awaited `server.close`
 //   whose error propagates; a close error is only reachable when closing
 //   a server that is not running, which none of these paths can produce.
+//
+// Generation bakes (`shared`) differ in one respect: they do not launch.
+// Every bake of one generation, in the compile process or in a generation
+// child, opens its own browser context in the generation's one Chromium
+// per launch configuration, which a detached host process owns and closes
+// when the generation exits; their teardown closes the connection, and
+// with it only that bake's context.
 import type { Server } from "node:http";
-import { chromium, type Page } from "playwright-core";
+import { chromium, type Browser, type Page } from "playwright-core";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
+import {
+    generationBrowserEndpoint,
+    launchOptions,
+    type GenerationBrowserLaunch,
+} from "./generation-browser.js";
 
 /** Enable WebGPU, with Vulkan on Linux. Baked bytes depend on the browser
  *  and GPU; enabling another host does not repin their golden hashes. */
@@ -103,6 +115,10 @@ export interface BrowserPageOptions {
     /** Log console error messages as `<prefix>: <text>`; silent
      *  without. */
     consoleErrorPrefix?: string;
+    /** A generation bake: run in a browser context of the generation's
+     *  shared Chromium (`generation-browser.ts`) rather than in a
+     *  browser launched for this page alone. */
+    shared?: boolean;
 }
 
 /**
@@ -128,26 +144,37 @@ export async function withBrowserPage<T>(
         throw new Error(`Unable to start the ${options.serverName}.`);
     }
     const origin = `http://127.0.0.1:${address.port}`;
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    let browser: Browser | undefined;
     try {
-        browser = await chromium.launch({
+        const launch: GenerationBrowserLaunch = {
             executablePath: resolveBrowserPath(options.browserRequirement),
             // Linux needs a graphical session for reliable WebGPU external
             // image uploads and canvas presentation, including under SSH.
             headless: options.headless ?? process.platform !== "linux",
-            ...(options.showScrollbars
-                ? { ignoreDefaultArgs: ["--hide-scrollbars"] }
-                : {}),
-            ...(options.browserArgs ? { args: [...options.browserArgs] } : {}),
-        });
-        const page = await browser.newPage(
-            options.viewport
-                ? {
-                      viewport: options.viewport,
-                      deviceScaleFactor: options.deviceScaleFactor ?? 1,
-                  }
-                : undefined,
-        );
+            args: [...(options.browserArgs ?? [])],
+            ignoreDefaultArgs: options.showScrollbars
+                ? ["--hide-scrollbars"]
+                : [],
+        };
+        const pageOptions = options.viewport
+            ? {
+                  viewport: options.viewport,
+                  deviceScaleFactor: options.deviceScaleFactor ?? 1,
+              }
+            : undefined;
+        let page: Page;
+        if (options.shared) {
+            // Closing this connection closes the context opened through it,
+            // and only that: the page's own crash or failure stays its own.
+            browser = await chromium.connect(
+                await generationBrowserEndpoint(launch),
+                { timeout: 60_000 },
+            );
+            page = await (await browser.newContext(pageOptions)).newPage();
+        } else {
+            browser = await chromium.launch(launchOptions(launch));
+            page = await browser.newPage(pageOptions);
+        }
         const pageErrorPrefix = options.pageErrorPrefix;
         if (pageErrorPrefix !== undefined) {
             page.on("pageerror", (error) => {

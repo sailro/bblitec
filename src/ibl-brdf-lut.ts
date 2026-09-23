@@ -136,6 +136,7 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
         server,
         {
             serverName: "BRDF LUT server",
+            shared: true,
             browserRequirement:
                 "Exact IBL BRDF LUT generation requires Chrome or Edge.",
             browserArgs: webgpuComputeBrowserArgs,

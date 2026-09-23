@@ -221,6 +221,7 @@ export async function executeCsg2Bake(
     });
     return runPageGlobal(server, "__bakeCsg2", {
         serverName: "pinned CSG2 bake",
+        shared: true,
         browserRequirement:
             "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
     });

@@ -827,6 +827,7 @@ function runBrowserTextureFunctionInChromium(
             server,
             {
                 serverName: "browser texture bake server",
+                shared: true,
                 browserRequirement:
                     "Baking a scene function's browser-produced textures requires Chromium.",
                 browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
