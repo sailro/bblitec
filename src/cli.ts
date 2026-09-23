@@ -76,7 +76,11 @@ import {
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
-import { joinAssetFeatures } from "./asset-feature-join.js";
+import {
+    joinAssetFeatures,
+    sceneTransmission,
+    type ActivationPlan,
+} from "./asset-feature-join.js";
 import {
     reachedDiffuseUv2,
     reachedStandardLightLists,
@@ -892,7 +896,6 @@ async function main(): Promise<void> {
                 (materializedFacts[index]?.splatHarmonicDegree ?? 0) > 0,
         ),
     });
-    const activationPlan = assetJoin.plan;
     // KHR_interactivity is the asset's feature, as the pinned loader's
     // document predicate makes it: the join parsed each interactive asset's
     // graphs through the pin; the adaptation the attach records is stated
@@ -1151,6 +1154,12 @@ async function main(): Promise<void> {
         assetJoin,
         tree,
     });
+    // The plan the join decided, completed by the one capability the
+    // composition decides: whether the transmission renderer compiles.
+    const activationPlan: ActivationPlan = {
+        ...assetJoin.plan,
+        transmission: sceneTransmission(result.manifest.features, composedArms),
+    };
     const gpuDeformation = activationPlan.gpuDeformation.value;
     const morphStorage = activationPlan.morphStorage.value;
     const gpuInstancing = activationPlan.gpuInstancing.value;
@@ -1323,8 +1332,7 @@ async function main(): Promise<void> {
     // corpus asset pairs them.
     if (
         specializationFeatures.pointOrLinePrimitives &&
-        (result.manifest.features.includes("renderer:transmission") ||
-            specializationFeatures.assetTransmission ||
+        (activationPlan.transmission.value ||
             result.manifest.geometryOutputTasks.length > 0)
     ) {
         refuseGeneration(
@@ -1411,6 +1419,7 @@ async function main(): Promise<void> {
         animationPointerMaterials:
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
+        transmission: activationPlan.transmission.value,
         materialSpecular: specializationFeatures.materialSpecular,
         // The one static `selectVariant` a scene reaches: the loader reads
         // the variant order and the per-primitive mappings out of the
@@ -1547,6 +1556,7 @@ ${imageCodecLines || '    ""'}
                 featureSites: recorded.featureSites,
                 assetJoinedFeatures: assetJoin.joined,
                 specialization: specializationFeatures,
+                activation: activationPlan,
                 emit: emitOptions,
                 imageCodecs,
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),

@@ -462,6 +462,23 @@ function compileCreatePbrMaterial(
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
+    // Babylon Lite's PbrMaterialProps has neither field: the pin's
+    // createPbrMaterial spreads its props, and refraction lives on
+    // `_transmissive`/`_subsurface`, which only `setPbrTransmission` writes
+    // -- the call that also registers the scene transmission hook. Neither
+    // option reaches anything upstream, so neither may reach it here.
+    const props = context.expectObjectLiteral(argumentAt(call, 0));
+    for (const name of ["transmissive", "subsurface"] as const) {
+        const option = context.objectProperty(props, name);
+        if (option) {
+            context.fail(
+                option,
+                `createPbrMaterial takes no '${name}' option: Babylon Lite ` +
+                    "stores refraction through setPbrTransmission and " +
+                    "subsurface state through setPbrSubsurface.",
+            );
+        }
+    }
     const {
         baseColor,
         baseColorFactor,
@@ -495,17 +512,6 @@ function compileCreatePbrMaterial(
     context.expectSameEngine(baseColor, orm, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
-    const linearImageProcessing =
-        transmission !== "0.0f" ||
-        thickness !== "0.0f" ||
-        attenuationColor !== "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
-        attenuationDistance !== "1.0f";
-    if (skyboxMode !== "false" || linearImageProcessing) {
-        context.reachFeature("renderer:transmission", call);
-    }
-    if (linearImageProcessing) {
-        context.reachFeature("material:pbr-linear-image-processing", call);
-    }
     if (orm.textureFile?.srgb) {
         context.fail(call, "PBR ORM maps must be linear textures.");
     }
@@ -1236,12 +1242,9 @@ function compileSetPbrSkybox(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     context.reachFeature("material:pbr", call);
+    // The pin's setter registers the skybox extension alone; the composed
+    // variant carries the arm, and no transmission unit is reached.
     context.recordScenePbrSkybox(material.scenePbrMaterialIndex);
-    // Skybox mode is composed by the transmission-capable renderer
-    // (its uniform block carries the skybox option), which the
-    // createPbrMaterial `skyboxMode` option used to reach before it
-    // became a setter.
-    context.reachFeature("renderer:transmission", call);
     return {
         kind: "void",
         cpp:

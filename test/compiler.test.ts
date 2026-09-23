@@ -5497,7 +5497,7 @@ test("refuses an sRGB file texture in PBR's linear ORM slot", () => {
     );
 });
 
-test("separates transmission-capable PBR from linear image processing", () => {
+test("reaches scene transmission only from the pin's transmission calls", () => {
     const compile = (activation: string) =>
         compileSource(`
             import {
@@ -5520,13 +5520,36 @@ test("separates transmission-capable PBR from linear image processing", () => {
             }
         `).manifest.features;
 
+    // The pin's setPbrSkybox registers the skybox extension alone.
     const skybox = compile("setPbrSkybox(material);");
-    assert.ok(skybox.includes("renderer:transmission"));
+    assert.ok(!skybox.includes("renderer:transmission"));
     assert.ok(!skybox.includes("material:pbr-linear-image-processing"));
 
     const retargeted = compile("enableSceneTransmission(scene, engine);");
     assert.ok(retargeted.includes("renderer:transmission"));
     assert.ok(retargeted.includes("material:pbr-linear-image-processing"));
+
+    // PbrMaterialProps has no transmissive or subsurface field: the pin's
+    // createPbrMaterial would carry either inertly, so neither may reach
+    // the transmission renderer here.
+    for (const option of [
+        "transmissive: true",
+        "subsurface: { refraction: { intensity: 1 } }",
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import { createEngine, createPbrMaterial } from "@babylonjs/lite";
+                    async function main() {
+                        await createEngine({});
+                        createPbrMaterial({ ${option} });
+                    }
+                `),
+            (error: unknown) =>
+                error instanceof CompileError &&
+                /createPbrMaterial takes no/.test(error.message),
+        );
+    }
 });
 
 test("carries scene-code PBR occlusion strength into composition and runtime", () => {

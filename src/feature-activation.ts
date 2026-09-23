@@ -26,6 +26,7 @@
 //   "none" (an unmapped unit) is asserted against by the test suite, so
 //   a new activation unit cannot land without naming what it mirrors.
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
+import type { Activation, ActivationPlan } from "./asset-feature-join.js";
 import type { Feature } from "./compiler/types.js";
 import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
@@ -112,6 +113,8 @@ export interface FeatureActivationInputs {
     assetJoinedFeatures: ReadonlyMap<string, string>;
     /** The asset specializer's per-scene summary. */
     specialization: AssetSpecializationFeatures;
+    /** The capabilities a scene call and an asset can both turn on. */
+    activation: ActivationPlan;
     /** The exact options handed to `emitUpstreamGenerated`. */
     emit: UpstreamEmitOptions;
     /** Codecs reached by packaged assets; capture is a build option. */
@@ -1578,6 +1581,28 @@ function row(
 }
 
 /**
+ * A row the activation plan decided, recorded with the plan's own reasons
+ * rather than derived again here.
+ */
+function plannedRow(
+    name: string,
+    mechanism: FeatureActivationMechanism,
+    decided: Activation,
+    inactive: string,
+    upstreamProvenance: string,
+    consumers: readonly FeatureActivationConsumer[],
+): FeatureActivationRow {
+    return row(
+        name,
+        mechanism,
+        decided.value,
+        decided.value ? decided.reasons.join("; ") : inactive,
+        upstreamProvenance,
+        consumers,
+    );
+}
+
+/**
  * What an asset carried that joined a runtime feature the scene source never
  * named.
  *
@@ -1703,19 +1728,6 @@ function capabilityRows(
     const composedArm = (fragment: string, feature: Feature): string =>
         `a composed PBR variant carries the pin's ${fragment} fragment` +
         (has(feature) ? `; scene source reached ${feature}` : "");
-    const transmission = activation(
-        [
-            [
-                has("renderer:transmission"),
-                "scene source reached renderer:transmission",
-            ],
-            [
-                spec.assetTransmission,
-                "a glTF material carries transmissionFactor > 0",
-            ],
-        ],
-        "no scene or asset transmission",
-    );
     return [
         checkedRow(
             "BBLITE_LOCAL_CUBEMAP",
@@ -1773,19 +1785,18 @@ function capabilityRows(
                 ],
             ),
         ),
-        // A plain row: the define is this disjunction and nothing else, so
-        // a checked row here would compare the expression against itself.
-        row(
+        plannedRow(
             "BBLITE_RENDERER_TRANSMISSION",
             "capability",
-            transmission.active,
-            transmission.activatedBy,
-            "src/frame-graph/transmission.ts (enableSceneTransmission / " +
-                "markPbrMaterialsLinear); asset half: registerPbrTransmission " +
-                "accepts any material set _transmissive with refraction " +
-                "intensity > 0 (src/material/pbr/pbr-transmission-ext.ts, " +
-                "set from transmissionFactor by " +
-                "src/loader-gltf/gltf-ext-dielectric.ts)",
+            inputs.activation.transmission,
+            "no scene transmission and no composed refraction fragment",
+            "src/frame-graph/transmission.ts enableSceneTransmission, which " +
+                "src/material/pbr/pbr-transmission-ext.ts " +
+                "registerPbrTransmission also reaches for a material " +
+                "setPbrTransmission made transmissive (the glTF " +
+                "KHR_materials_transmission handler calls the same setter); " +
+                "the refraction fragment it registers is read off the " +
+                "composed variants",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

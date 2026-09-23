@@ -526,6 +526,12 @@ export interface UpstreamEmitOptions {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
+    /**
+     * The transmission renderer (`BBLITE_RENDERER_TRANSMISSION`): the scene
+     * reaches scene transmission, or a composed variant carries the pin's
+     * refraction fragment -- `sceneTransmission` in asset-feature-join.ts.
+     */
+    transmission: boolean;
     materialSpecular: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
@@ -809,15 +815,7 @@ class GeneratedSourceWriter {
             options.nodeParticleSprite2d ?? [],
             options.nodeParticleRegistrations ?? [],
         );
-        // Scene transmission is reached from the scene's own code and from a
-        // loaded asset alike: the pin's `registerPbrTransmission` enables it for
-        // any transmissive surface the asset carries, without the scene naming
-        // it. That makes it an asset capability like the material extensions
-        // beside it, so the compiled define lives here rather than being derived
-        // from the reached-feature list alone.
-        const transmission =
-            features.includes("renderer:transmission") ||
-            options.assetTransmission;
+        const transmission = options.transmission;
         // Every binding-derived material capability -- a composed Standard
         // variant binding the pin's 2D reflection pair (`rT`) or bump pair
         // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
@@ -970,7 +968,13 @@ class GeneratedSourceWriter {
             "upstream/include/bblite/upstream/material_texture_slots.hpp",
             materialTextureSlotsHeader(
                 {
-                    transmission,
+                    // The pair after the base slots serves the refraction
+                    // map and the thickness map. The translucency fragment
+                    // binds the same thickness pair without refracting, so
+                    // a composed thickness binding reaches the pair too.
+                    transmission:
+                        transmission ||
+                        pbrBindingNames.has("thicknessTexture_"),
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
@@ -4286,6 +4290,7 @@ export function emitUpstreamGenerated(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,

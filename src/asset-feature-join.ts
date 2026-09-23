@@ -31,8 +31,13 @@ import { babylonLights, type BabylonLight } from "./babylon-asset-features.js";
 import { SPLAT_CONTAINERS } from "./compiler/assets.js";
 import { parseGlbJson } from "./gltf-document.js";
 import {
+    packagedGltfTransmissionPlan,
+    selectedGltfTransmission,
+} from "./gltf-transmission-plan.js";
+import {
     gltfHasImageBasedLight,
     gltfNodeLights,
+    type PinnedMaterialArms,
 } from "./pinned-material-arms.js";
 import {
     parseFlowGraphs,
@@ -67,6 +72,37 @@ export interface ActivationPlan {
     nodeVisibility: Activation;
     /** `_linearImageProcessing` on every composed material. */
     linearImageProcessing: Activation;
+    /**
+     * The transmission renderer: the linear retarget, the image-processing
+     * resolve and the scene-colour grab. Decided after composition by
+     * `sceneTransmission`.
+     */
+    transmission: Activation;
+}
+
+/** The plan as the join decides it, before composition has run. */
+export type JoinedActivationPlan = Omit<ActivationPlan, "transmission">;
+
+/**
+ * The transmission renderer, from the pin's two ways in: the scene
+ * transmission unit (`enableSceneTransmission`, which a loaded transmissive
+ * material's scene hook reaches too), and a composed variant carrying the
+ * refraction fragment that samples the grab.
+ */
+export function sceneTransmission(
+    features: readonly string[],
+    composedArms: Pick<PinnedMaterialArms, "transmission">,
+): Activation {
+    return activation([
+        [
+            features.includes("renderer:transmission"),
+            "the scene reaches renderer:transmission (enableSceneTransmission)",
+        ],
+        [
+            composedArms.transmission,
+            "a composed PBR variant carries the pin's refraction fragment",
+        ],
+    ]);
 }
 
 export interface AssetFeatureJoin {
@@ -80,7 +116,7 @@ export interface AssetFeatureJoin {
     imageBasedLight: boolean;
     /** Every `.babylon` asset's own lights, in asset order. */
     babylonLights: BabylonLight[];
-    plan: ActivationPlan;
+    plan: JoinedActivationPlan;
 }
 
 export interface AssetFeatureJoinInputs {
@@ -147,6 +183,16 @@ export async function joinAssetFeatures({
             flowGraphs.push({ asset: asset.output, graphs });
             join("flow-graph:interactivity", asset.output);
         }
+        // A material the loader makes transmissive calls setPbrTransmission,
+        // whose scene hook enables scene transmission exactly as
+        // enableSceneTransmission does -- the selection packaging recorded
+        // by running the pin's own loader over this document.
+        const transmission = packagedGltfTransmissionPlan(document);
+        if (
+            transmission !== undefined &&
+            selectedGltfTransmission(transmission, asset.selectedVariant)
+        )
+            join("renderer:transmission", asset.output);
     }
     // A splat container that parsed to a non-zero degree is what
     // `attachParsedSplat` forks on; no scene API names it. The row names the

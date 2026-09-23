@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import type { AssetSpecializationFeatures } from "../src/asset-specializer.js";
+import type { Activation, ActivationPlan } from "../src/asset-feature-join.js";
 import type { CompiledShaderProgram } from "../src/compiler/types.js";
 import type { NodeParticleSystemEmit } from "../src/lowering/node-particle-lowerer.js";
 import type { NodeVariantManifestEntry } from "../src/pinned-node-material-cpp.js";
@@ -43,6 +44,25 @@ function specialization(
     };
 }
 
+/** A capability the plan decided, with the reasons that turned it on. */
+function decided(...reasons: string[]): Activation {
+    return { value: reasons.length > 0, reasons };
+}
+
+function activationPlan(
+    overrides: Partial<ActivationPlan> = {},
+): ActivationPlan {
+    return {
+        gpuDeformation: decided(),
+        morphStorage: decided(),
+        gpuInstancing: decided(),
+        nodeVisibility: decided(),
+        linearImageProcessing: decided(),
+        transmission: decided(),
+        ...overrides,
+    };
+}
+
 function emitOptions(
     overrides: Partial<UpstreamEmitOptions> = {},
 ): UpstreamEmitOptions {
@@ -68,6 +88,7 @@ function emitOptions(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
@@ -123,6 +144,7 @@ function metallicReflectanceMapInputs(
         features: ["material:metallic-reflectance"],
         assetJoinedFeatures: new Map(),
         specialization: specialization(),
+        activation: activationPlan(),
         emit: emitOptions({
             pinnedVariants: [
                 {
@@ -184,9 +206,20 @@ function scene33Inputs(): FeatureActivationInputs {
             punctualLights: true,
             assetTransmission: true,
         }),
+        activation: activationPlan({
+            linearImageProcessing: decided(
+                "scene source reached linear PBR image processing",
+                "asset-carried KHR_materials_transmission enables the " +
+                    "runtime's transmission exactly like the feature",
+            ),
+            transmission: decided(
+                "the scene reaches renderer:transmission (enableSceneTransmission)",
+            ),
+        }),
         emit: emitOptions({
             punctualLights: true,
             assetTransmission: true,
+            transmission: true,
             assetLightNodes: { count: 5, asset: lamp },
             pinnedVariants: variants(18),
         }),
@@ -227,10 +260,20 @@ function dispersiveInputs(): FeatureActivationInputs {
         specialization: specialization({
             assetTransmission: true,
         }),
+        activation: activationPlan({
+            linearImageProcessing: decided(
+                "asset-carried KHR_materials_transmission enables the " +
+                    "runtime's transmission exactly like the feature",
+            ),
+            transmission: decided(
+                "a composed PBR variant carries the pin's refraction fragment",
+            ),
+        }),
         emit: emitOptions({
             iridescence: true,
             dispersion: true,
             assetTransmission: true,
+            transmission: true,
             pinnedVariants: variants(2, {
                 fragmentKey: "ibl|iridescence|refraction",
             }),
@@ -267,6 +310,21 @@ function everythingOnInputs(): FeatureActivationInputs {
             punctualLights: true,
             eightInfluenceSkinning: true,
         }),
+        activation: activationPlan({
+            gpuDeformation: decided("a glTF asset carries animations"),
+            morphStorage: decided(
+                "a glTF primitive carries morph targets (maxMorphTargets > 0)",
+            ),
+            gpuInstancing: decided("an asset uses EXT_mesh_gpu_instancing"),
+            nodeVisibility: decided("an asset uses KHR_node_visibility"),
+            linearImageProcessing: decided(
+                "scene source reached linear PBR image processing",
+            ),
+            transmission: decided(
+                "the scene reaches renderer:transmission (enableSceneTransmission)",
+                "a composed PBR variant carries the pin's refraction fragment",
+            ),
+        }),
         emit: emitOptions({
             idDiagnostics: true,
             geometryOutputTasks: [
@@ -280,6 +338,7 @@ function everythingOnInputs(): FeatureActivationInputs {
             animationPointer: true,
             animationPointerMaterials: true,
             assetTransmission: true,
+            transmission: true,
             materialSpecular: true,
             standardLightLists: true,
             standardDiffuseUv2: true,
@@ -428,6 +487,7 @@ function familyInputs(): FeatureActivationInputs {
         ],
         assetJoinedFeatures: new Map(),
         specialization: specialization(),
+        activation: activationPlan(),
         emit: emitOptions({
             spriteCustomShaders: [
                 { family: "sprite", fragment: "", extraTextures: [] },
@@ -559,12 +619,12 @@ test("capability rows carry the composed set's activation", () => {
         /scene source reached material:iridescence/,
     );
 
-    // The transmission define reports the asset half only: the scene
-    // never named the feature.
+    // The transmission define reports the composed refraction fragment
+    // only: the scene never reached scene transmission.
     const transmission = named(rows, "BBLITE_RENDERER_TRANSMISSION");
     assert.equal(transmission.active, true);
-    assert.match(transmission.activatedBy, /transmissionFactor > 0/);
-    assert.doesNotMatch(transmission.activatedBy, /scene source/);
+    assert.match(transmission.activatedBy, /refraction fragment/);
+    assert.doesNotMatch(transmission.activatedBy, /renderer:transmission/);
 });
 
 test("a graph-only MorphTargetsBlock activates native empty morph storage", () => {
