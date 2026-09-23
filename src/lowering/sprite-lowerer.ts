@@ -25,6 +25,10 @@ import {
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -38,6 +42,7 @@ const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 // Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 const ySortModule = "src/sprite/sprite-2d-y-sort.ts";
+const pickSpriteModule = "src/sprite/picking/pick-sprite-2d.ts";
 const ySortHandleModule = "src/sprite/sprite-2d-handle-y-sort.ts";
 
 /** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
@@ -159,7 +164,6 @@ export class SpriteLowerer {
     private static readonly ySortInventory: ReadonlyArray<
         readonly [string, readonly string[]]
     > = [
-        ["keyAt", ["return statement"]],
         ["allocateSerial", ["return statement"]],
         [
             "ensureStorage",
@@ -173,16 +177,6 @@ export class SpriteLowerer {
         [
             "syncCount",
             ["expression statement", "if statement", "expression statement"],
-        ],
-        [
-            "comesBefore",
-            [
-                "variable statement",
-                "variable statement",
-                "if statement",
-                "if statement",
-                "return statement",
-            ],
         ],
         [
             "ensureSorted",
@@ -282,85 +276,15 @@ export class SpriteLowerer {
     ];
 
     /**
-     * `sprite-2d-y-sort.ts`: the two things about the extension that are
-     * arithmetic rather than shape, read off the pin instead of typed here.
-     *
-     * The draw KEY is which instance lane the order is taken from plus the
-     * slot's bias, and the TIE is the insertion serial. Everything else the
-     * module does -- allocating the permutation, packing, mapping a logical
-     * dirty range through the inverse -- is bookkeeping around those two,
-     * and a bump that moved either would silently reorder every Y-sorted
-     * layer, so both are asserted where they are read.
+     * `sprite-2d-y-sort.ts`: the draw KEY (`keyAt`, a stored instance lane
+     * plus the slot's bias) and the TIE (`comesBefore`, the insertion
+     * serial), translated from the pin. Everything else the module does --
+     * allocating the permutation, packing, mapping a logical dirty range
+     * through the inverse -- is bookkeeping around those two, restated in
+     * C++ and held to the pin by `assertYSortInventory`.
      */
-    private ySortContract(): number {
+    private ySortOrderCpp(): string {
         this.assertYSortInventory();
-        const { file, declaration } = this.context.functionDeclaration(
-            ySortModule,
-            "keyAt",
-        );
-        const returned = this.context.findNodes(
-            declaration,
-            ts.isReturnStatement,
-        )[0]?.expression;
-        if (
-            !returned ||
-            !ts.isBinaryExpression(returned) ||
-            returned.operatorToken.kind !== ts.SyntaxKind.PlusToken
-        ) {
-            return this.context.contractError(
-                declaration,
-                "Pinned Sprite2D Y-sort keyAt no longer adds a bias to a stored lane.",
-            );
-        }
-        const lane = this.elementIndexAddend(
-            this.context.unwrapExpression(returned.left),
-            "_instanceData",
-        );
-        if (
-            lane === undefined ||
-            this.elementAccessName(
-                this.context.unwrapExpression(returned.right),
-            ) !== "_biases"
-        ) {
-            return this.context.contractError(
-                declaration,
-                "Pinned Sprite2D Y-sort keyAt no longer reads _instanceData plus _biases.",
-            );
-        }
-        const comparator = this.context.functionDeclaration(
-            ySortModule,
-            "comesBefore",
-        );
-        const returns = this.context.findNodes(
-            comparator.declaration,
-            ts.isReturnStatement,
-        );
-        const tie = returns[returns.length - 1]?.expression;
-        if (
-            !tie ||
-            !ts.isBinaryExpression(tie) ||
-            tie.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-            this.elementAccessName(tie.left) !== "_serials" ||
-            this.elementAccessName(tie.right) !== "_serials"
-        ) {
-            return this.context.contractError(
-                comparator.declaration,
-                "Pinned Sprite2D Y-sort no longer breaks equal keys by ascending insertion serial.",
-            );
-        }
-        if (
-            !this.context.hasNode(
-                comparator.declaration,
-                (node) =>
-                    ts.isElementAccessExpression(node) &&
-                    this.elementAccessName(node) === "_keys",
-            )
-        ) {
-            return this.context.contractError(
-                comparator.declaration,
-                "Pinned Sprite2D Y-sort no longer orders by the cached key.",
-            );
-        }
         // The handle companion is the one entry point scene code reaches
         // the bias through; it resolving the slot rather than taking one is
         // why a removal cannot leave a scene biasing another sprite.
@@ -382,40 +306,100 @@ export class SpriteLowerer {
                 "Pinned setSprite2DYSortHandleBias no longer resolves the handle's current slot.",
             );
         }
-        if (lane !== 1) {
-            // The emitted key reads the lane the pin names, but the writer
-            // that PUTS positionPx.y there spells its own offset, so the
-            // two have to agree or a Y-sorted layer would order by whatever
-            // lane 1 now holds without anything saying so.
-            this.context.contractError(
-                file,
-                `Pinned Sprite2D Y-sort orders by instance lane ${lane}, ` +
-                    "which is not the lane write_sprite_instance stores " +
-                    "positionPx.y into.",
-            );
-        }
-        return lane;
+        const state = {
+            pinned: "state",
+            kind: "record" as const,
+            cpp: "state",
+            cppType: "YSortState",
+            annotation: "Sprite2DYSortState",
+        };
+        const stateBuffers = new Map<string, PinnedBinding>([
+            ["state._biases", { cpp: "state.biases", type: "f64-buffer" }],
+            ["state._keys", { cpp: "state.keys", type: "f64-buffer" }],
+            ["state._serials", { cpp: "state.serials", type: "f64-buffer" }],
+        ]);
+        const keyAt = lowerPinnedFunction(
+            this.context,
+            ySortModule,
+            "keyAt",
+            [
+                {
+                    pinned: "layer",
+                    kind: "record",
+                    cpp: "layer",
+                    cppType: "Sprite2DLayerRecord",
+                    annotation: "Sprite2DLayer",
+                },
+                state,
+                { pinned: "index", kind: "number", cpp: "index" },
+            ],
+            {
+                cppName: "y_sort_key_at",
+                returns: "double",
+                memberBindings: new Map<string, PinnedBinding>([
+                    ...stateBuffers,
+                    [
+                        "layer._instanceData",
+                        { cpp: "layer.instance_data", type: "f32" },
+                    ],
+                    [
+                        "layer._instanceFloatsPerSprite",
+                        {
+                            cpp: "static_cast<double>(layer.instance_floats_per_sprite)",
+                            type: "scalar",
+                        },
+                    ],
+                ]),
+            },
+        );
+        const comesBefore = lowerPinnedFunction(
+            this.context,
+            ySortModule,
+            "comesBefore",
+            [
+                state,
+                { pinned: "left", kind: "number", cpp: "left" },
+                { pinned: "right", kind: "number", cpp: "right" },
+            ],
+            {
+                cppName: "y_sort_comes_before",
+                returns: {
+                    type: "bool",
+                    value: (lowerer, expression) => {
+                        if (!expression) {
+                            return this.context.contractError(
+                                this.context.functionDeclaration(
+                                    ySortModule,
+                                    "comesBefore",
+                                ).declaration,
+                                "Expected pinned comesBefore to return an order.",
+                            );
+                        }
+                        return lowerer.expression(expression);
+                    },
+                },
+                memberBindings: stateBuffers,
+            },
+        );
+        return `${keyAt}\n\n${comesBefore}`;
     }
 
     /**
      * Every pinned Y-sort body this module restates, by statement kind.
      *
-     * The two expression anchors above pin the draw key and its tie, which
-     * is what decides ORDER. They say nothing about the rest of the module,
-     * and the rest of the module is restated in C++ rather than lowered
-     * from its AST -- a mirror, which `docs/fidelity.md` records as the
-     * weaker form precisely because it can silently omit an arm where a
-     * lowering refuses one it cannot express. A bump that adds a branch to
-     * `syncCount`'s grow/shrink arms, to `uploadSorted`'s dirty-range
-     * mapping, or to the enabler's guards would reorder every Y-sorted
-     * layer with generation staying green.
+     * The draw key and its tie, which decide ORDER, are translated from the
+     * pin (`ySortOrderCpp`). The rest of the module is restated in C++
+     * rather than lowered from its AST -- a mirror, which `docs/fidelity.md`
+     * records as the weaker form precisely because it can silently omit an
+     * arm where a lowering refuses one it cannot express. A bump that adds a
+     * branch to `syncCount`'s grow/shrink arms, to `uploadSorted`'s
+     * dirty-range mapping, or to the enabler's guards would reorder every
+     * Y-sorted layer with generation staying green.
      *
-     * So the inventory is the third anchor, the same technique
+     * So the inventory is the anchor, the same technique
      * `physics-lowerer.ts` applies to the bodies it restates whole: an
      * added, removed or reordered statement fails generation by name
-     * instead. It is a count of shapes, not of behaviour -- it cannot see a
-     * changed expression inside a statement, which is what the two anchors
-     * above are for.
+     * instead. It is a count of shapes, not of behaviour.
      */
     private assertYSortInventory(): void {
         for (const [symbolName, kinds] of SpriteLowerer.ySortInventory) {
@@ -431,47 +415,6 @@ export class SpriteLowerer {
                 kinds,
             );
         }
-    }
-
-    /**
-     * The `_name` an `x._name[i]` element access reads, if it is one.
-     *
-     * The pinned source spells every one of these with a non-null assertion
-     * (`state._serials[left]!`), so the expression is unwrapped first.
-     */
-    private elementAccessName(node: ts.Node): string | undefined {
-        const unwrapped = ts.isExpression(node)
-            ? this.context.unwrapExpression(node)
-            : node;
-        return ts.isElementAccessExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression)
-            ? unwrapped.expression.name.text
-            : undefined;
-    }
-
-    /**
-     * The literal added to the row base in an `x._name[i * stride + N]`
-     * read: the lane the expression addresses.
-     */
-    private elementIndexAddend(
-        node: ts.Node,
-        name: string,
-    ): number | undefined {
-        if (
-            !ts.isElementAccessExpression(node) ||
-            this.elementAccessName(node) !== name
-        ) {
-            return undefined;
-        }
-        const argument = this.context.unwrapExpression(node.argumentExpression);
-        if (
-            !ts.isBinaryExpression(argument) ||
-            argument.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-            !ts.isNumericLiteral(argument.right)
-        ) {
-            return undefined;
-        }
-        return this.context.numericValue(argument.right, node.getSourceFile());
     }
 
     /**
@@ -579,6 +522,7 @@ export class SpriteLowerer {
         }
         return row;
     }
+
     /** Scene-hosted bucket, growth, and hidden-update contracts. */
     private assertDepthHostedRenderable(): void {
         const { declaration: build } = this.context.functionDeclaration(
@@ -1014,66 +958,20 @@ export class SpriteLowerer {
     }
 
     /**
-     * The slot expressions a pinned writer fills, checked against the pin.
+     * `writeSpriteFxUbo`, translated from `custom-shader-core.ts`, and
+     * `SPRITE_FX_UBO_BYTES`, the size the block is bound as.
      *
-     * Both pinned writers this lowerer reads state their layout the same
-     * way — an assignment per float into a named array — so the walk is
-     * written once and each caller says which array and what it expects.
+     * The module is shared between the two families, so the writer is
+     * emitted once here and the billboard system reads it out of the same
+     * header, the way it already does for `resolveSpriteFrame`. The pin's
+     * trailing `writeBuffer` is the backend's upload, which each PAL makes
+     * with the block this fills; the caller's `Vec4` always carries four
+     * parameters, which is the pin's `params[i] ?? 0` over a full list.
      */
-    private assertSlotWrites(
-        declaration: ts.FunctionDeclaration,
-        symbolName: string,
-        arrayName: string,
-        expected: ReadonlyArray<[number, string]>,
-    ): void {
-        const writes = this.context.pinnedElementStores(declaration, arrayName);
-        for (const [slot, source] of expected) {
-            const write = writes.find(
-                (node) => elementIndexText(node.left) === String(slot),
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned ${symbolName} no longer writes float ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `${symbolName} float ${slot}`,
-            );
-        }
-    }
-
-    /**
-     * `writeSpriteFxUbo` fills eight floats in a fixed order, and
-     * `SPRITE_FX_UBO_BYTES` is what the block is bound as.
-     *
-     * The module is shared between the two families, so the check and the
-     * function it guards are stated once here and the billboard system
-     * reads them out of the same header, the way it already does for
-     * `resolveSpriteFrame`.
-     */
-    private assertFxUbo(): number {
+    private fxUboCpp(): { bytes: number; cpp: string } {
         const { declaration, file } = this.context.functionDeclaration(
             customShaderCoreModule,
             "writeSpriteFxUbo",
-        );
-        const expected: readonly string[] = [
-            "timeSeconds",
-            "0",
-            "0",
-            "0",
-            "params[0] ?? 0",
-            "params[1] ?? 0",
-            "params[2] ?? 0",
-            "params[3] ?? 0",
-        ];
-        this.assertSlotWrites(
-            declaration,
-            "writeSpriteFxUbo",
-            "scratch",
-            expected.map((source, slot) => [slot, source]),
         );
         const bytes = this.context.numericValue(
             this.context.variableInitializer(
@@ -1082,57 +980,83 @@ export class SpriteLowerer {
             ),
             file,
         );
-        if (bytes !== expected.length * 4) {
+        const stores = this.context.pinnedElementStores(
+            declaration,
+            "scratch",
+        ).length;
+        if (bytes !== stores * 4) {
             this.context.contractError(
                 declaration,
-                `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${expected.length} floats written.`,
+                `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${stores} floats written.`,
             );
         }
-        return bytes;
-    }
-
-    /** `buildSpriteLayerUbo` fills sixteen floats in a fixed order. */
-    private assertLayerUbo(): void {
-        const { declaration, file } = this.context.functionDeclaration(
-            pipelineModule,
-            "buildSpriteLayerUbo",
+        const parameters = ["device", "fxBuffer", "timeSeconds", "params"];
+        const pinned = declaration.parameters.map((parameter) =>
+            parameter.name.getText(file),
         );
-        const expected: ReadonlyArray<[number, string]> = [
-            [0, "layer.view.positionPx[0]"],
-            [1, "layer.view.positionPx[1]"],
-            [2, "layer.view.zoom"],
-            [3, "layer.view.rotation"],
-            [4, "screenWidth"],
-            [5, "screenHeight"],
-            [6, "layer.pivot[0]"],
-            [7, "layer.pivot[1]"],
-        ];
-        this.assertSlotWrites(
-            declaration,
-            "buildSpriteLayerUbo",
-            "ubo",
-            expected,
-        );
-        // Straight alpha scales only A; premultiplied scales RGB too. Only
-        // the straight arm is reached, and it has to be the `else`.
-        const branch = this.context.findNodes(
-            declaration,
-            (node): node is ts.IfStatement => ts.isIfStatement(node),
-        )[0];
         if (
-            !branch?.elseStatement ||
-            !this.context.hasNode(
-                branch.expression,
-                (node) =>
-                    ts.isPropertyAccessExpression(node) &&
-                    node.name.text === "_premultipliedOpacity",
-            )
+            pinned.length !== parameters.length + 1 ||
+            parameters.some((name, index) => pinned[index] !== name) ||
+            pinned[parameters.length] !== "scratch"
         ) {
             this.context.contractError(
                 declaration,
-                "Pinned buildSpriteLayerUbo no longer branches on premultiplied opacity.",
+                "Expected pinned writeSpriteFxUbo(device, fxBuffer, timeSeconds, params, scratch).",
             );
         }
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["timeSeconds", { cpp: "time_seconds", type: "scalar" }],
+                ["scratch", { cpp: "ubo", type: "f32" }],
+                ...(["x", "y", "z", "w"] as const).map(
+                    (lane, index): [string, PinnedBinding] => [
+                        `params[${index}]`,
+                        {
+                            cpp: `static_cast<double>(params.${lane})`,
+                            type: "scalar",
+                        },
+                    ],
+                ),
+            ]),
+            calls: new Map(),
+            statement: (statement) => {
+                if (
+                    ts.isExpressionStatement(statement) &&
+                    this.context.expressionMatchesShape(
+                        statement.expression,
+                        "device.queue.writeBuffer(fxBuffer, 0, scratch.buffer, scratch.byteOffset, SPRITE_FX_UBO_BYTES)",
+                    )
+                ) {
+                    return [];
+                }
+                return undefined;
+            },
+        });
+        return {
+            bytes,
+            cpp: `// ${this.context.provenance(customShaderCoreModule, "writeSpriteFxUbo")}
+inline void build_sprite_fx_ubo(
+    double time_seconds,
+    const Vec4& params,
+    std::array<float, sprite_fx_ubo_bytes / 4u>& ubo) {
+${body}
+}`,
+        };
+    }
+
+    /**
+     * `buildSpriteLayerUbo`, translated from `sprite-pipeline.ts`: the view,
+     * the screen size, the pivot and the opacity multiplier. The coverage
+     * gamma hook it calls last is installed only by
+     * `setSprite2DCoverageGamma`, which no reached layer takes, so its lanes
+     * keep the zeroes the caller's block starts with -- the pin's own
+     * zero-initialized scratch.
+     */
+    private layerUboCpp(): string {
+        const { file } = this.context.functionDeclaration(
+            pipelineModule,
+            "buildSpriteLayerUbo",
+        );
         const bytes = this.context.numericValue(
             this.context.variableInitializer(file, "LAYER_UBO_BYTES"),
             file,
@@ -1143,6 +1067,239 @@ export class SpriteLowerer {
                 `Pinned sprite layer UBO is ${bytes} bytes, expected 64.`,
             );
         }
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp: `static_cast<double>(${cpp})`,
+            type: "scalar",
+        });
+        return lowerPinnedFunction(
+            this.context,
+            pipelineModule,
+            "buildSpriteLayerUbo",
+            [
+                {
+                    pinned: "layer",
+                    kind: "record",
+                    cpp: "layer",
+                    cppType: "Sprite2DLayerRecord",
+                    annotation: "Sprite2DLayer",
+                },
+                { pinned: "screenWidth", kind: "number", cpp: "screen_width" },
+                {
+                    pinned: "screenHeight",
+                    kind: "number",
+                    cpp: "screen_height",
+                },
+                {
+                    pinned: "ubo",
+                    kind: "f32Buffer",
+                    cpp: "ubo",
+                    cppType: `std::array<float, ${bytes / 4}>`,
+                    mutableRecord: true,
+                },
+            ],
+            {
+                cppName: "build_sprite_layer_ubo",
+                returns: "void",
+                inline: true,
+                memberBindings: new Map<string, PinnedBinding>([
+                    [
+                        "layer.view.positionPx[0]",
+                        scalar("layer.view.position_px.x"),
+                    ],
+                    [
+                        "layer.view.positionPx[1]",
+                        scalar("layer.view.position_px.y"),
+                    ],
+                    ["layer.view.zoom", scalar("layer.view.zoom")],
+                    ["layer.view.rotation", scalar("layer.view.rotation")],
+                    ["layer.pivot[0]", scalar("layer.pivot.x")],
+                    ["layer.pivot[1]", scalar("layer.pivot.y")],
+                    ["layer.opacity", scalar("layer.opacity")],
+                    [
+                        "layer.blendMode._premultipliedOpacity",
+                        {
+                            cpp: "layer.blend.premultiplied_opacity",
+                            type: "bool",
+                        },
+                    ],
+                    ["_getSpriteCoverageGammaHook()", absentBinding()],
+                ]),
+            },
+        );
+    }
+
+    /**
+     * `compareLayers`, the comparator `spriteRendererUpdate` sorts a
+     * renderer's layers by, translated from `sprite-renderer.ts`.
+     */
+    private compareLayersCpp(): string {
+        const layer = (name: string) => ({
+            pinned: name,
+            kind: "record" as const,
+            cpp: name,
+            cppType: "Sprite2DLayerRecord",
+            annotation: "Sprite2DLayer",
+        });
+        return lowerPinnedFunction(
+            this.context,
+            rendererModule,
+            "compareLayers",
+            [layer("a"), layer("b")],
+            {
+                cppName: "compare_sprite_layers",
+                returns: "double",
+                inline: true,
+                memberBindings: new Map<string, PinnedBinding>(
+                    ["a", "b"].map((name): [string, PinnedBinding] => [
+                        `${name}.order`,
+                        {
+                            cpp: `static_cast<double>(${name}.order)`,
+                            type: "scalar",
+                        },
+                    ]),
+                ),
+            },
+        );
+    }
+
+    /**
+     * `pickSprite2D`, translated from `sprite/picking/pick-sprite-2d.ts`.
+     *
+     * The pin walks sprite LAYER records; this port holds handles, so the
+     * record each one names is resolved where the pin reads `layers[li]`,
+     * and the handle is what the answer carries. The optional Y-sort hook
+     * is the engine's own, empty until a layer enables the extension -- the
+     * pin's `_getSprite2DYSortHook()?.drawOrder(layer)`.
+     */
+    private pickSprite2DCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            pickSpriteModule,
+            "pickSprite2D",
+        );
+        const signature = declaration.parameters.map(
+            (parameter) =>
+                `${parameter.name.getText(file)}: ${parameter.type?.getText(file)}`,
+        );
+        const expected = [
+            "layers: ReadonlyArray<Sprite2DLayer>",
+            "xPx: number",
+            "yPx: number",
+        ];
+        if (signature.join(", ") !== expected.join(", ")) {
+            this.context.contractError(
+                declaration,
+                `Expected pinned pickSprite2D(${expected.join(", ")}).`,
+            );
+        }
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp: `static_cast<double>(${cpp})`,
+            type: "scalar",
+        });
+        const bindings = new Map<string, PinnedBinding>([
+            ["layers.length", scalar("layers.size()")],
+            ["xPx", { cpp: "x_px", type: "scalar" }],
+            ["yPx", { cpp: "y_px", type: "scalar" }],
+            ["layer.visible", { cpp: "layer.visible", type: "bool" }],
+            [
+                "layer._instanceData",
+                { cpp: "layer.instance_data", type: "f32" },
+            ],
+            [
+                "layer._instanceFloatsPerSprite",
+                scalar("layer.instance_floats_per_sprite"),
+            ],
+            ["layer.pivot[0]", scalar("layer.pivot.x")],
+            ["layer.pivot[1]", scalar("layer.pivot.y")],
+            ["layer.count", scalar("layer.count")],
+        ]);
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings,
+            calls: pinnedNumericMathCalls(),
+            booleanAnd: true,
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const local = statement.declarationList.declarations[0]!;
+                const name = local.name.getText(file);
+                if (name === "layer") {
+                    const read = this.context.unwrapExpression(
+                        local.initializer!,
+                    );
+                    if (
+                        !ts.isElementAccessExpression(read) ||
+                        read.expression.getText(file) !== "layers"
+                    ) {
+                        return this.context.contractError(
+                            local,
+                            "Expected pickSprite2D to read its layer as layers[li].",
+                        );
+                    }
+                    return [
+                        `${indent}const Sprite2DLayerHandle layer_handle = ` +
+                            `layers[static_cast<std::size_t>(${lowerer.expression(read.argumentExpression)})];`,
+                        `${indent}const Sprite2DLayerRecord& layer = ` +
+                            "engine.sprite_layers[layer_handle.value];",
+                    ];
+                }
+                if (name === "drawOrder") {
+                    this.context.assertExpressionShape(
+                        local.initializer!,
+                        "_getSprite2DYSortHook()?.drawOrder(layer)",
+                        "pickSprite2D draw order",
+                    );
+                    bindings.set("drawOrder", {
+                        cpp: "draw_order",
+                        type: "u32",
+                        absentCpp: "draw_order == nullptr",
+                    });
+                    return [
+                        `${indent}const std::uint32_t* draw_order = ` +
+                            "engine.sprite_y_sort_hook.draw_order ? " +
+                            "engine.sprite_y_sort_hook.draw_order(layer) : nullptr;",
+                    ];
+                }
+                return undefined;
+            },
+            returnValue: (expression, lowerer) => {
+                const returned = expression
+                    ? this.context.unwrapExpression(expression)
+                    : undefined;
+                if (returned?.kind === ts.SyntaxKind.NullKeyword) {
+                    return "std::nullopt";
+                }
+                if (
+                    !returned ||
+                    !ts.isObjectLiteralExpression(returned) ||
+                    returned.properties.length !== 4
+                ) {
+                    return this.context.contractError(
+                        expression ?? declaration,
+                        "Expected pickSprite2D to return null or its four-field hit.",
+                    );
+                }
+                this.context.assertExpressionShape(
+                    this.context.propertyInitializer(returned, "layer"),
+                    "layer",
+                    "pickSprite2D hit layer",
+                );
+                const member = (name: string): string =>
+                    lowerer.expression(
+                        this.context.propertyInitializer(returned, name),
+                    );
+                return (
+                    `Sprite2DPickResult{layer_handle, ` +
+                    `static_cast<std::uint32_t>(${member("spriteIndex")}), ` +
+                    `${member("u")}, ${member("v")}}`
+                );
+            },
+        });
+        return `// ${this.context.provenance(pickSpriteModule, "pickSprite2D")}
+[[nodiscard]] inline std::optional<Sprite2DPickResult> pick_sprite_2d(
+    const Engine& engine,
+    const std::vector<Sprite2DLayerHandle>& layers,
+    double x_px,
+    double y_px) {
+${body}
+}`;
     }
 
     /** The shared quad: four corners, six indices, one instanced draw. */
@@ -1287,7 +1444,6 @@ export class SpriteLowerer {
         // its enabler -- upstream registers its hook from inside that call
         // and leaves every other layer on the canonical logical order, so
         // the enabler is the whole opt-in and nothing else detects it.
-        const ySortKeyLane = ySort ? this.ySortContract() : 0;
         const blends = readPinnedBlendTable(
             this.context,
             blendModule,
@@ -1317,15 +1473,14 @@ export class SpriteLowerer {
         this.assertUpdateArm();
         this.assertClearLayer();
         this.assertRendererMembership();
-        this.assertLayerUbo();
-        const fxUboBytes = this.assertFxUbo();
+        const fxUbo = this.fxUboCpp();
         this.assertQuad();
 
         // sprite-2d-y-sort.ts, emitted whole or not at all. Everything in
         // it is file-local but the three entry points scene code names, so
         // the always-loaded paths below reach it through the layer's own
         // state pointer and the engine's one lazily-installed hook.
-        const ySortSource = this.ySortSource(ySort, ySortKeyLane);
+        const ySortSource = this.ySortSource(ySort);
         const ySortEntryPoints = this.ySortEntryPoints(ySort);
 
         const provenance = this.context.provenance(
@@ -1353,7 +1508,10 @@ export class SpriteLowerer {
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace bbl::upstream {
 
@@ -1403,21 +1561,9 @@ inline std::uint32_t resolve_sprite_frame(
  * The clock is seconds since the layer's first frame, which the caller
  * accumulates; a body that never names it still has the block bound.
  */
-inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUboBytes}u;
+inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUbo.bytes}u;
 
-inline void build_sprite_fx_ubo(
-    float time_seconds,
-    const Vec4& params,
-    std::array<float, sprite_fx_ubo_bytes / 4u>& ubo) {
-    ubo[0] = time_seconds;
-    ubo[1] = 0.0f;
-    ubo[2] = 0.0f;
-    ubo[3] = 0.0f;
-    ubo[4] = params.x;
-    ubo[5] = params.y;
-    ubo[6] = params.z;
-    ubo[7] = params.w;
-}
+${fxUbo.cpp}
 
 ${vertexAttributeTableCpp("SpriteInstanceAttribute", "sprite_instance_attributes", attributeRows)}
 
@@ -1441,41 +1587,13 @@ inline constexpr std::uint32_t sprite_depth_instance_stride_bytes =
     ${layout.depthInstanceFloats * 4}u;
 
 /**
- * The sixteen floats of the per-layer UBO, in the pinned order:
- *   [0..1] viewPos.xy  [2] viewScale  [3] viewRot
- *   [4..5] screenSize.xy  [6..7] pivot.xy
- *   [8..11] opacityMul.rgba  [12..15] aa (coverage gamma, unreached)
- *
- * Premultiplied sources scale RGB and A together for a correct fade;
- * straight alpha scales only A, because the blend stage already uses
- * source alpha as the colour factor.
+ * The per-layer UBO: [0..1] viewPos.xy  [2] viewScale  [3] viewRot
+ *   [4..5] screenSize.xy  [6..7] pivot.xy  [8..11] opacityMul.rgba
+ *   [12..15] aa (coverage gamma, unreached).
  */
-inline void build_sprite_layer_ubo(
-    const Sprite2DLayerRecord& layer,
-    float screen_width,
-    float screen_height,
-    std::array<float, 16>& ubo) {
-    ubo[0] = layer.view.position_px.x;
-    ubo[1] = layer.view.position_px.y;
-    ubo[2] = layer.view.zoom;
-    ubo[3] = layer.view.rotation;
-    ubo[4] = screen_width;
-    ubo[5] = screen_height;
-    ubo[6] = layer.pivot.x;
-    ubo[7] = layer.pivot.y;
-    const float opacity = layer.opacity;
-    if (layer.blend.premultiplied_opacity) {
-        ubo[8] = opacity;
-        ubo[9] = opacity;
-        ubo[10] = opacity;
-        ubo[11] = opacity;
-    } else {
-        ubo[8] = 1.0f;
-        ubo[9] = 1.0f;
-        ubo[10] = 1.0f;
-        ubo[11] = opacity;
-    }
-}
+${this.layerUboCpp()}
+
+${this.compareLayersCpp()}
 
 } // namespace bbl::upstream
 
@@ -1487,6 +1605,29 @@ namespace bbl {
  * blend is the pin's opaque replacement, which is blending disabled.
  */
 ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
+/**
+ * sprite-renderer.ts spriteRendererUpdate's \`rr._layers.sort(compareLayers)\`:
+ * the order both backends draw a renderer's layers in and the capture walks
+ * them in, by the pin's own comparator under JavaScript's stable sort. It is
+ * a permutation of the renderer's list, decided here once.
+ */
+inline std::vector<std::size_t> sprite_layer_draw_order(
+    const Engine& engine,
+    const SpriteRendererRecord& renderer) {
+    std::vector<std::size_t> draw_order(renderer.layers.size());
+    std::iota(draw_order.begin(), draw_order.end(), std::size_t{0});
+    std::stable_sort(
+        draw_order.begin(),
+        draw_order.end(),
+        [&](std::size_t left, std::size_t right) {
+            return upstream::compare_sprite_layers(
+                       engine.sprite_layers[renderer.layers[left].value],
+                       engine.sprite_layers[renderer.layers[right].value]) < 0.0;
+        });
+    return draw_order;
+}
+
+${this.pickSprite2DCpp()}
 } // namespace bbl
 `,
             source: `// ${provenance}
@@ -2523,7 +2664,7 @@ void sprite_renderer_before_update(
         };
     }
 
-    private ySortSource(ySort: boolean, ySortKeyLane: number): string {
+    private ySortSource(ySort: boolean): string {
         return ySort
             ? `
 // ── sprite-2d-y-sort.ts ─────────────────────────────────────────────────
@@ -2580,19 +2721,10 @@ bool y_sort_same_key(double left, double right) {
 }
 
 // keyAt: the slot's own stored ordering lane plus its bias, summed at the
-// width the pin's F64 bias array gives it. Lane ${ySortKeyLane} is
-// positionPx.y, read off the pin rather than typed here.
-double y_sort_key_at(
-    const Sprite2DLayerRecord& layer,
-    const YSortState& state,
-    std::uint32_t index) {
-    const std::size_t base =
-        static_cast<std::size_t>(index) *
-        layer.instance_floats_per_sprite;
-    return static_cast<double>(
-               layer.instance_data[base + ${ySortKeyLane}u]) +
-        state.biases[index];
-}
+// width the pin's F64 bias array gives it. comesBefore: ascending key, then
+// ascending insertion serial -- the serials are unique, so the order is
+// total and equal keys keep the order they entered in.
+${this.ySortOrderCpp()}
 
 // ensureStorage: the metadata follows the layer's capacity, and the packed
 // buffer additionally follows its instance stride -- a UV-scroll widening
@@ -2658,20 +2790,6 @@ void sync_y_sort_count(
         state.full_upload = true;
     }
     state.active_count = layer.count;
-}
-
-// comesBefore: ascending key, then ascending insertion serial. The serials
-// are unique, so the order is total and equal keys keep the order they
-// entered in even after unrelated removals moved their slots.
-bool y_sort_comes_before(
-    const YSortState& state,
-    std::uint32_t left,
-    std::uint32_t right) {
-    const double left_key = state.keys[left];
-    const double right_key = state.keys[right];
-    if (left_key < right_key) return true;
-    if (left_key > right_key) return false;
-    return state.serials[left] < state.serials[right];
 }
 
 // ensureSorted: a bottom-up stable merge over the cached keys.

@@ -10,6 +10,11 @@ import {
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import {
+    type PinnedBinding,
+    PinnedNumericLowerer,
+} from "./pinned-numeric-lowerer.js";
 import {
     type PinnedVertexAttribute,
     pinnedVertexAttributeRows,
@@ -22,6 +27,7 @@ const blendModule = "src/sprite/billboard-blend.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const customShaderModule = "src/sprite/billboard-custom-shader.ts";
+const pickPipelineModule = "src/picking/billboard-pick-pipeline.ts";
 // The particle family owns its own Multiply module, deliberately outside
 // the two sprite composers: it declares no SpriteFx block at all.
 const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
@@ -159,6 +165,7 @@ export class BillboardLowerer {
             instanceFloats,
         );
     }
+
     /** `writeInstance` writes each slot from the source the pin names. */
     private assertInstanceSlots(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -350,74 +357,157 @@ export class BillboardLowerer {
         );
     }
 
-    /** The eight floats of the per-system UBO, in the pinned order. */
-    private assertSystemUbo(): void {
-        const { declaration } = this.context.functionDeclaration(
+    /**
+     * `buildBillboardSystemUbo`, translated from `billboard-pipeline.ts`:
+     * the opacity multiplier (straight alpha scales only A; a premultiplied
+     * source scales RGB too), the lock axis and the alpha cutoff.
+     */
+    private systemUboCpp(systemUboBytes: number): string {
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp: `static_cast<double>(${cpp})`,
+            type: "scalar",
+        });
+        return lowerPinnedFunction(
+            this.context,
             pipelineModule,
             "buildBillboardSystemUbo",
+            [
+                {
+                    pinned: "system",
+                    kind: "record",
+                    cpp: "system",
+                    cppType: "BillboardSystemRecord",
+                    annotation: "BillboardSpriteSystem",
+                },
+                {
+                    pinned: "ubo",
+                    kind: "f32Buffer",
+                    cpp: "ubo",
+                    cppType: `std::array<float, ${systemUboBytes / 4}>`,
+                    mutableRecord: true,
+                },
+            ],
+            {
+                cppName: "build_billboard_system_ubo",
+                returns: "void",
+                inline: true,
+                memberBindings: new Map<string, PinnedBinding>([
+                    ["system.opacity", scalar("system.opacity")],
+                    [
+                        "system.blendMode._premultipliedOpacity",
+                        {
+                            cpp: "system.blend.premultiplied_opacity",
+                            type: "bool",
+                        },
+                    ],
+                    ["system._axis[0]", scalar("system.axis.x")],
+                    ["system._axis[1]", scalar("system.axis.y")],
+                    ["system._axis[2]", scalar("system.axis.z")],
+                    ["system.alphaCutoff", scalar("system.alpha_cutoff")],
+                ]),
+            },
         );
-        const writes = this.context.pinnedElementStores(declaration, "ubo");
-        // Slots 0..3 are written twice (premultiplied and straight arms);
-        // the straight arm is the one this path reaches.
-        for (const slot of [0, 1, 2, 3]) {
-            const found = writes.filter(
-                (node) => elementIndexText(node.left) === `${slot}`,
-            );
-            if (found.length !== 2) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned billboard UBO slot ${slot} has ${found.length} writers, expected 2.`,
-                );
-            }
-        }
-        for (const [slot, source] of [
-            [4, "system._axis[0]"],
-            [5, "system._axis[1]"],
-            [6, "system._axis[2]"],
-            [7, "system.alphaCutoff"],
-        ] as const) {
-            const write = writes.find(
-                (node) => elementIndexText(node.left) === `${slot}`,
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned billboard UBO no longer writes slot ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `billboard UBO slot ${slot}`,
-            );
-        }
     }
 
     /**
-     * The transparent draw is back-to-front by view-space depth. The sort is
-     * not an optimisation: with depth writes off, the order the instances
-     * are drawn in IS the composite, so this expression decides the image.
+     * The two expressions of `uploadSortedBillboardInstances` that decide a
+     * transparent system's draw order, translated from the pin: the view
+     * depth each anchor is keyed by (stored through the pin's `F32` depth
+     * scratch), and the comparator the index list is sorted with -- far to
+     * near, ties by logical index.
+     *
+     * The transparent draw is back to front; with depth writes off, the
+     * order the instances are drawn in IS the composite, so these two decide
+     * the image.
      */
-    private assertSortDepth(): void {
-        const { declaration } = this.context.functionDeclaration(
+    private sortKeyCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
             pipelineModule,
             "uploadSortedBillboardInstances",
         );
-        const write = this.context.pinnedElementStores(
-            declaration,
-            "depths",
-        )[0];
-        if (!write) {
-            this.context.contractError(
+        const stores = this.context.pinnedElementStores(declaration, "depths");
+        const depth = stores[0];
+        if (stores.length !== 1 || !depth) {
+            return this.context.contractError(
                 declaration,
-                "Pinned billboard sort no longer writes a depth.",
+                "Pinned billboard sort no longer writes one depth per anchor.",
+            );
+        }
+        const sorts = this.context.findNodes(
+            declaration,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "sort",
+        );
+        const sort = sorts[0];
+        const comparator = sort?.arguments[0]
+            ? this.context.unwrapExpression(sort.arguments[0])
+            : undefined;
+        if (
+            sorts.length !== 1 ||
+            !sort ||
+            !comparator ||
+            !ts.isArrowFunction(comparator) ||
+            ts.isBlock(comparator.body) ||
+            comparator.parameters
+                .map((parameter) => parameter.name.getText(file))
+                .join(",") !== "left,right"
+        ) {
+            return this.context.contractError(
+                declaration,
+                "Pinned billboard sort no longer orders its indices by one (left, right) comparator.",
             );
         }
         this.context.assertExpressionShape(
-            write.right,
-            "cameraViewMatrix[2] * anchorX + cameraViewMatrix[6] * anchorY + cameraViewMatrix[10] * anchorZ + cameraViewMatrix[14]",
-            "billboard sort depth",
+            sort.expression,
+            "indices.subarray(0, count).sort",
+            "billboard sort range",
         );
+        const lane = (name: string): PinnedBinding => ({
+            cpp: name,
+            type: "scalar",
+        });
+        const depthLowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["cameraViewMatrix", { cpp: "view", type: "f32" }],
+                ["anchorX", lane("anchor_x")],
+                ["anchorY", lane("anchor_y")],
+                ["anchorZ", lane("anchor_z")],
+            ]),
+            calls: new Map(),
+        });
+        const compareLowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["depths", { cpp: "depths", type: "f32" }],
+                ["left", lane("left")],
+                ["right", lane("right")],
+            ]),
+            calls: new Map(),
+        });
+        const provenance = this.context.provenance(
+            pipelineModule,
+            "uploadSortedBillboardInstances",
+        );
+        return `// ${provenance}
+// The view depth an anchor sorts by (\`depths[index] = ...\`).
+inline double billboard_sort_depth(
+    const std::array<float, 16>& view,
+    double anchor_x,
+    double anchor_y,
+    double anchor_z) {
+    return ${depthLowerer.expression(depth.right)};
+}
+
+// ${provenance}
+// The index comparator (\`indices.subarray(0, count).sort(...)\`): negative
+// when \`left\` draws first.
+inline double billboard_sort_compare(
+    const std::vector<float>& depths,
+    double left,
+    double right) {
+    return ${compareLowerer.expression(comparator.body)};
+}`;
     }
 
     /** The quad the vertex stage expands, and the draw that issues it. */
@@ -597,6 +687,84 @@ export class BillboardLowerer {
         };
     }
 
+    /**
+     * `packBillboardPickUbo`, translated from `billboard-pick-pipeline.ts`.
+     *
+     * The pin packs the 48-byte `BB` block through two aliased views of one
+     * buffer -- `f32` for the camera basis, cutoff and axis, `u32` for the
+     * base id -- so both views bind the caller's one block, and each lane
+     * the body stores names the member the WGSL struct puts there. It rides
+     * the billboard header because only a billboard system's pick draws it.
+     */
+    private packPickUboCpp(): string {
+        const members: ReadonlyArray<readonly [string, string]> = [
+            ["f32[0]", "out.cam_right[0]"],
+            ["f32[1]", "out.cam_right[1]"],
+            ["f32[2]", "out.cam_right[2]"],
+            ["u32[3]", "out.base_id"],
+            ["f32[4]", "out.cam_up[0]"],
+            ["f32[5]", "out.cam_up[1]"],
+            ["f32[6]", "out.cam_up[2]"],
+            ["f32[7]", "out.cutoff"],
+            ["f32[8]", "out.axis[0]"],
+            ["f32[9]", "out.axis[1]"],
+            ["f32[10]", "out.axis[2]"],
+        ];
+        return lowerPinnedFunction(
+            this.context,
+            pickPipelineModule,
+            "packBillboardPickUbo",
+            [
+                { pinned: "view", kind: "mat4Const", cpp: "view" },
+                { pinned: "baseId", kind: "number", cpp: "base_id" },
+                { pinned: "cutoff", kind: "number", cpp: "cutoff" },
+                {
+                    pinned: "axis",
+                    kind: "record",
+                    cpp: "axis",
+                    cppType: "Vec3",
+                    annotation: "readonly [number, number, number]",
+                },
+                {
+                    pinned: "f32",
+                    kind: "f32Buffer",
+                    cpp: "out",
+                    specialized: true,
+                    binding: { cpp: "out", type: "f32" },
+                },
+                {
+                    pinned: "u32",
+                    kind: "u32Buffer",
+                    cpp: "out",
+                    specialized: true,
+                    binding: { cpp: "out", type: "u32" },
+                },
+            ],
+            {
+                cppName: "pack_billboard_pick_ubo",
+                returns: "void",
+                inline: true,
+                templateParameters: ["typename PickBlock"],
+                trailingParameters: ["PickBlock& out"],
+                memberBindings: new Map<string, PinnedBinding>([
+                    ...(["x", "y", "z"] as const).map(
+                        (axis, lane): [string, PinnedBinding] => [
+                            `axis[${lane}]`,
+                            {
+                                cpp: `static_cast<double>(axis.${axis})`,
+                                type: "scalar",
+                            },
+                        ],
+                    ),
+                    ...members.map(([pinned, cpp]): [string, PinnedBinding] => [
+                        pinned,
+                        { cpp, type: "scalar", mutable: true },
+                    ]),
+                ]),
+            },
+        );
+    }
+
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -612,8 +780,6 @@ export class BillboardLowerer {
         );
         this.assertDepthMode();
         this.assertInstanceSlots();
-        this.assertSystemUbo();
-        this.assertSortDepth();
         this.assertQuad();
         this.assertSceneRegistration();
 
@@ -629,6 +795,7 @@ export class BillboardLowerer {
             header: `#pragma once
 
 // ${this.context.provenance(pipelineModule, "billboard vertex layout")}
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
@@ -657,6 +824,10 @@ inline constexpr std::uint32_t billboard_instance_stride_bytes =
     ${layout.instanceFloats * 4}u;
 
 inline constexpr std::uint32_t billboard_system_ubo_bytes = ${layout.systemUboBytes}u;
+#if BBLITE_HAS_PICKING
+
+${this.packPickUboCpp()}
+#endif
 
 } // namespace bbl::upstream
 
@@ -679,46 +850,13 @@ inline constexpr std::array<std::uint16_t, 6> billboard_index_data{
 
 
 /**
- * buildBillboardSystemUbo: a premultiplied source scales RGB and A together
- * for a correct fade; straight alpha scales only A, because the blend stage
- * already weights colour by source alpha.
- * The axis is the facing system's zero vector, which the facing basis
- * ignores; the cutoff rides slot 7 unread by the transparent arm.
+ * The per-system block: the opacity multiplier, the lock axis (the facing
+ * system's zero vector, which the facing basis ignores) and the cutoff,
+ * which the transparent arm leaves unread.
  */
-inline void build_billboard_system_ubo(
-    const BillboardSystemRecord& system,
-    std::array<float, ${layout.systemUboBytes / 4}>& ubo) {
-    const float opacity = system.opacity;
-    if (system.blend.premultiplied_opacity) {
-        ubo[0] = opacity;
-        ubo[1] = opacity;
-        ubo[2] = opacity;
-        ubo[3] = opacity;
-    } else {
-        ubo[0] = 1.0f;
-        ubo[1] = 1.0f;
-        ubo[2] = 1.0f;
-        ubo[3] = opacity;
-    }
-    ubo[4] = system.axis.x;
-    ubo[5] = system.axis.y;
-    ubo[6] = system.axis.z;
-    ubo[7] = system.alpha_cutoff;
-}
+${this.systemUboCpp(layout.systemUboBytes)}
 
-/**
- * uploadSortedBillboardInstances: view-space depth of an anchor. With depth
- * writes off the draw order IS the composite, so the transparent pass sorts
- * back to front on this value every frame.
- */
-inline float billboard_sort_depth(
-    const std::array<float, 16>& view,
-    float anchor_x,
-    float anchor_y,
-    float anchor_z) {
-    return view[2] * anchor_x + view[6] * anchor_y +
-           view[10] * anchor_z + view[14];
-}
+${this.sortKeyCpp()}
 
 /**
  * uploadSortedBillboardInstances: the instance data, reordered back to front
@@ -726,9 +864,9 @@ inline float billboard_sort_depth(
  *
  * Both backends upload the result verbatim, and neither may decide the
  * order: with depth writes off it IS the composite, so a per-backend copy of
- * this would be a per-backend copy of the image. A stable sort over an index
- * sequence keeps the pin's own left-minus-right tie-break without spelling
- * it.
+ * this would be a per-backend copy of the image. The depth and the
+ * comparator are the pin's own (above); the depths are stored at the pin's
+ * float width before the comparator reads them.
  */
 inline void billboard_sorted_instances(
     const BillboardSystemRecord& system,
@@ -745,17 +883,17 @@ inline void billboard_sorted_instances(
     for (std::uint32_t index = 0; index < system.count; ++index) {
         const std::size_t base =
             static_cast<std::size_t>(index) * floats;
-        depths[index] = billboard_sort_depth(
+        depths[index] = static_cast<float>(billboard_sort_depth(
             view,
             system.instance_data[base],
             system.instance_data[base + 1u],
-            system.instance_data[base + 2u]);
+            system.instance_data[base + 2u]));
     }
-    std::stable_sort(
+    std::sort(
         order.begin(),
         order.end(),
         [&](std::uint32_t left, std::uint32_t right) {
-            return depths[left] > depths[right];
+            return billboard_sort_compare(depths, left, right) < 0.0;
         });
     for (std::uint32_t slot = 0; slot < system.count; ++slot) {
         const std::size_t source =
