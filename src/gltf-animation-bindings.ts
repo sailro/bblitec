@@ -196,28 +196,6 @@ export function gltfAnimationBindingsSourceUrl(
     );
 }
 
-/** Translate only identities and storage; source loops select every binding and exclusion. */
-export function packageAnimationBindings(
-    source: SourceAnimationBindings,
-    document: JsonObject,
-    bin: DataView,
-    meshes: RecordedMeshDeformation[],
-    parents: Map<number, number>,
-    worlds: Map<number, Float32Array>,
-    nodes: readonly (object | undefined)[],
-    packer: GltfGeometryPacker,
-): GltfAnimationBindings {
-    const result = source.__animationBindings(
-        document,
-        bin,
-        meshes,
-        parents,
-        worlds,
-        nodes,
-    );
-    return packSourceAnimationBindings(result, meshes, nodes, packer);
-}
-
 /** Reuse full parse's actual target objects without executing their construction a second time. */
 export function packSourceAnimationBindings(
     result: SourceBindings,

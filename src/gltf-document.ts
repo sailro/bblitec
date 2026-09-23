@@ -112,14 +112,6 @@ export const isGaussianSplatPrimitive = (primitive: JsonObject): boolean => {
     );
 };
 
-/**
- * Any number. `asset-specializer.ts` keeps a deliberately stricter local
- * reading — a non-negative integer — for glTF index fields; that is a second
- * semantic, not a second copy of this one.
- */
-export const asNumber = (value: unknown): number | undefined =>
-    typeof value === "number" ? value : undefined;
-
 export const asNumbers = (value: unknown): number[] | undefined =>
     Array.isArray(value) && value.every((entry) => typeof entry === "number")
         ? value
