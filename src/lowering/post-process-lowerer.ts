@@ -15,7 +15,11 @@ import {
 } from "../pinned-post-process.js";
 import { doubleLiteral as dvalue, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { blendSide, nativeBlendFactor } from "./pinned-blend-table.js";
+import {
+    blendSide,
+    nativeBlendFactor,
+    pinnedBlendSwitchArms,
+} from "./pinned-blend-table.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -282,38 +286,33 @@ export class PostProcessLowerer {
      * bump. A factor with no enumerator on this side fails generation.
      */
     private readBlendModes(): Map<number, readonly string[]> {
-        const { declaration: alphaModeToBlend } =
-            this.context.functionDeclaration(TASK_MODULE, "alphaModeToBlend");
+        const { declaration: alphaModeToBlend, arms } = pinnedBlendSwitchArms(
+            this.context,
+            TASK_MODULE,
+            "alphaModeToBlend",
+        );
         const modes = new Map<number, readonly string[]>();
-        for (const clause of this.context.findNodes(
-            alphaModeToBlend,
-            (node): node is ts.CaseClause => ts.isCaseClause(node),
-        )) {
-            const mode = this.context.numericValue(
-                this.context.unwrapExpression(clause.expression),
-                clause.getSourceFile(),
-            );
-            const state = this.context.findNodes(
-                clause,
-                (node): node is ts.ObjectLiteralExpression =>
-                    ts.isObjectLiteralExpression(node) &&
-                    node.properties.some(
-                        (property) =>
-                            property.name !== undefined &&
-                            this.context.propertyName(property.name) ===
-                                "color",
-                    ),
-            )[0];
-            if (!state) {
-                this.context.contractError(
+        for (const { mode, clause, returned } of arms) {
+            // The default arm returns no state: an unblended mode.
+            if (mode === undefined) continue;
+            if (
+                !returned ||
+                !ts.isObjectLiteralExpression(returned) ||
+                !returned.properties.some(
+                    (property) =>
+                        property.name !== undefined &&
+                        this.context.propertyName(property.name) === "color",
+                )
+            ) {
+                return this.context.contractError(
                     clause,
                     `Post-process alpha mode ${mode} names no blend state.`,
                 );
             }
             const label = `post-process alpha mode ${mode}`;
             modes.set(mode, [
-                ...blendSide(this.context, state, "color", label),
-                ...blendSide(this.context, state, "alpha", label),
+                ...blendSide(this.context, returned, "color", label),
+                ...blendSide(this.context, returned, "alpha", label),
             ]);
         }
         if (modes.size === 0) {

@@ -13,6 +13,14 @@ import {
 } from "./pinned-grid-atlas.js";
 import { assertFrameAtlasRule } from "./pinned-frame-atlas.js";
 import {
+    type PinnedVertexAttribute,
+    pinnedVertexAttribute,
+    pinnedVertexAttributeRows,
+    vertexAttributeCpp,
+    vertexAttributeTableCpp,
+    vertexFormatFloats,
+} from "./pinned-vertex-attributes.js";
+import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
@@ -471,11 +479,7 @@ export class SpriteLowerer {
      * widened layout, read rather than typed. Its offset is the narrow
      * stride, which is the one part the pin computes at run time.
      */
-    private uvScrollAttribute(instanceFloats: number): {
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    } {
+    private uvScrollAttribute(instanceFloats: number): PinnedVertexAttribute {
         const { declaration } = this.context.functionDeclaration(
             uvScrollModule,
             "ensureWide",
@@ -510,13 +514,6 @@ export class SpriteLowerer {
             this.context.propertyInitializer(literal, "format"),
             file,
         );
-        const match = /^float32(?:x([234]))?$/.exec(format);
-        if (!match) {
-            this.context.contractError(
-                literal,
-                `Unsupported uvScroll attribute format '${format}'.`,
-            );
-        }
         // The pin writes the offset as `oldStride * 4`, which is the narrow
         // stride in bytes -- so it is asserted rather than read.
         this.context.assertExpressionShape(
@@ -532,120 +529,31 @@ export class SpriteLowerer {
         return {
             location,
             offsetBytes: instanceFloats * 4,
-            floatCount: match[1] === undefined ? 1 : Number(match[1]),
+            floatCount: vertexFormatFloats(this.context, format, literal),
         };
     }
 
     /**
      * `sprite-pipeline.ts`: the pure-2D per-instance vertex attributes at
-     * the pin's own byte offsets. The offsets are the module's named
-     * constants and the rows are `instanceAttributes`' base literal (the
-     * depth and uv-scroll rows append behind opt-ins the pure-2D slice
-     * never takes), so a moved slot or widened format fails generation
-     * instead of drifting inside two hand-written PAL tables.
+     * the pin's own byte offsets. The rows are `instanceAttributes`' base
+     * literal (the depth and uv-scroll rows append behind opt-ins the
+     * pure-2D slice never takes).
      */
-    private instanceAttributeRows(instanceFloats: number): Array<{
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    }> {
-        const file = this.context.sourceFile(pipelineModule);
-        const array = this.context.unwrapExpression(
-            this.context.variableInitializer(file, "instanceAttributes"),
+    private instanceAttributeRows(
+        instanceFloats: number,
+    ): PinnedVertexAttribute[] {
+        return pinnedVertexAttributeRows(
+            this.context,
+            this.context.variableInitializer(
+                this.context.sourceFile(pipelineModule),
+                "instanceAttributes",
+            ),
+            instanceFloats,
         );
-        if (!ts.isArrayLiteralExpression(array)) {
-            return this.context.contractError(
-                array,
-                "Expected the pinned instanceAttributes array literal.",
-            );
-        }
-        const rows = array.elements.map((element) => {
-            const literal = this.context.unwrapExpression(element);
-            if (!ts.isObjectLiteralExpression(literal)) {
-                return this.context.contractError(
-                    literal,
-                    "Expected a pinned sprite attribute object literal.",
-                );
-            }
-            let location: number | undefined;
-            let offsetBytes: number | undefined;
-            let floatCount: number | undefined;
-            for (const property of literal.properties) {
-                if (!ts.isPropertyAssignment(property)) continue;
-                const name = this.context.propertyName(property.name);
-                if (name === "shaderLocation") {
-                    location = this.context.numericValue(
-                        property.initializer,
-                        file,
-                    );
-                } else if (name === "offset") {
-                    const reference = this.context.unwrapExpression(
-                        property.initializer,
-                    );
-                    if (!ts.isIdentifier(reference)) {
-                        return this.context.contractError(
-                            reference,
-                            "Expected a named sprite offset constant.",
-                        );
-                    }
-                    offsetBytes = this.context.numericValue(
-                        this.context.variableInitializer(file, reference.text),
-                        file,
-                    );
-                } else if (name === "format") {
-                    const format = this.context.unwrapExpression(
-                        property.initializer,
-                    );
-                    if (!ts.isStringLiteral(format)) {
-                        return this.context.contractError(
-                            format,
-                            "Expected a sprite attribute format string.",
-                        );
-                    }
-                    const match = /^float32(?:x([234]))?$/.exec(format.text);
-                    if (!match) {
-                        return this.context.contractError(
-                            format,
-                            `Unsupported sprite attribute format '${format.text}'.`,
-                        );
-                    }
-                    floatCount = match[1] === undefined ? 1 : Number(match[1]);
-                }
-            }
-            if (
-                location === undefined ||
-                offsetBytes === undefined ||
-                floatCount === undefined
-            ) {
-                return this.context.contractError(
-                    literal,
-                    "Pinned sprite attribute misses shaderLocation, offset or format.",
-                );
-            }
-            return { location, offsetBytes, floatCount };
-        });
-        // The base rows must tile the pure-2D stride exactly: the last
-        // attribute ends where PURE_2D_INSTANCE_FLOATS_PER_SPRITE says the
-        // instance does, or the two pinned modules disagree.
-        const lastEnd = rows.reduce(
-            (max, row) => Math.max(max, row.offsetBytes + row.floatCount * 4),
-            0,
-        );
-        if (lastEnd !== instanceFloats * 4) {
-            this.context.contractError(
-                array,
-                `Pinned sprite attributes end at ${lastEnd} bytes, expected ${instanceFloats * 4}.`,
-            );
-        }
-        return rows;
     }
 
     /** The optional depth row appended by `buildSpritePipeline`. */
-    private depthAttribute(): {
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    } {
+    private depthAttribute(): PinnedVertexAttribute {
         const file = this.context.sourceFile(pipelineModule);
         const push = this.context.findNodes(
             file,
@@ -662,43 +570,15 @@ export class SpriteLowerer {
                 "Pinned sprite pipeline no longer appends one depth attribute.",
             );
         }
-        const literal = this.context.unwrapExpression(push.arguments[0]!);
-        if (!ts.isObjectLiteralExpression(literal)) {
+        const row = pinnedVertexAttribute(this.context, push.arguments[0]!);
+        if (row.floatCount !== 1) {
             return this.context.contractError(
-                literal,
-                "Expected the pinned sprite depth attribute literal.",
+                push,
+                `Pinned sprite depth attribute carries ${row.floatCount} floats, expected one.`,
             );
         }
-        const location = this.context.numericValue(
-            this.context.propertyInitializer(literal, "shaderLocation"),
-            file,
-        );
-        const offset = this.context.unwrapExpression(
-            this.context.propertyInitializer(literal, "offset"),
-        );
-        if (!ts.isIdentifier(offset)) {
-            return this.context.contractError(
-                offset,
-                "Expected the named sprite depth offset constant.",
-            );
-        }
-        const offsetBytes = this.context.numericValue(
-            this.context.variableInitializer(file, offset.text),
-            file,
-        );
-        const format = this.context.stringValue(
-            this.context.propertyInitializer(literal, "format"),
-            file,
-        );
-        if (format !== "float32") {
-            return this.context.contractError(
-                literal,
-                `Pinned sprite depth attribute uses '${format}', expected float32.`,
-            );
-        }
-        return { location, offsetBytes, floatCount: 1 };
+        return row;
     }
-
     /** Scene-hosted bucket, growth, and hidden-update contracts. */
     private assertDepthHostedRenderable(): void {
         const { declaration: build } = this.context.functionDeclaration(
@@ -824,15 +704,7 @@ export class SpriteLowerer {
             [7, "vMax"],
             [8, "rotation"],
         ];
-        const writes = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === "data",
-        );
+        const writes = this.context.pinnedElementStores(declaration, "data");
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) => elementIndexText(node.left) === `base + ${slot}`,
@@ -1154,15 +1026,7 @@ export class SpriteLowerer {
         arrayName: string,
         expected: ReadonlyArray<[number, string]>,
     ): void {
-        const writes = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === arrayName,
-        );
+        const writes = this.context.pinnedElementStores(declaration, arrayName);
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) => elementIndexText(node.left) === String(slot),
@@ -1555,25 +1419,17 @@ inline void build_sprite_fx_ubo(
     ubo[7] = params.w;
 }
 
-inline constexpr std::array<SpriteInstanceAttribute, ${attributeRows.length}>
-    sprite_instance_attributes{{
-${attributeRows
-    .map(
-        (row) =>
-            `        {${row.location}u, ${row.offsetBytes}u, ${row.floatCount}u},`,
-    )
-    .join("\n")}
-    }};
+${vertexAttributeTableCpp("SpriteInstanceAttribute", "sprite_instance_attributes", attributeRows)}
 
 // sprite-pipeline.ts: appended when \`hasDepth\` selects the scene-hosted
 // layout. Slot 13 is one float at shader location 6.
 inline constexpr SpriteInstanceAttribute sprite_depth_attribute{
-    ${depthRow.location}u, ${depthRow.offsetBytes}u, ${depthRow.floatCount}u};
+    ${vertexAttributeCpp(depthRow)}};
 
 // sprite-2d-uvscroll.ts ensureWide: the uvOffset attribute the widened
 // layout adds, at the byte offset the narrow stride ends on.
 inline constexpr SpriteInstanceAttribute sprite_uvscroll_attribute{
-    ${uvScrollRow.location}u, ${uvScrollRow.offsetBytes}u, ${uvScrollRow.floatCount}u};
+    ${vertexAttributeCpp(uvScrollRow)}};
 
 inline constexpr std::uint32_t sprite_uvscroll_stride_bytes =
     ${(layout.pureInstanceFloats + this.uvScrollExtraFloats()) * 4}u;

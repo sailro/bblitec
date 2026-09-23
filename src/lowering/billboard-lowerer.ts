@@ -10,6 +10,11 @@ import {
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
+import {
+    type PinnedVertexAttribute,
+    pinnedVertexAttributeRows,
+    vertexAttributeTableCpp,
+} from "./pinned-vertex-attributes.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -67,13 +72,6 @@ export interface BillboardShaderSource {
      * per texture is the pin's.
      */
     extraTextureBindings: string;
-}
-
-/** One per-instance vertex attribute, at the pin's own byte offset. */
-interface AttributeRow {
-    location: number;
-    offsetBytes: number;
-    floatCount: number;
 }
 
 /**
@@ -137,64 +135,30 @@ export class BillboardLowerer {
     }
 
     /**
-     * The vertex attributes, at the byte offsets the pin declares. Reading
-     * the offsets rather than deriving them from the slot order is what
-     * makes a reordered pin fail loudly instead of drawing garbage.
+     * The vertex attributes, as the pinned render pipeline's own `attributes`
+     * literal declares them. Reading the offsets rather than deriving them
+     * from the slot order is what makes a reordered pin fail loudly instead
+     * of drawing garbage.
      */
-    private attributeRows(instanceFloats: number): AttributeRow[] {
-        const file = this.context.sourceFile(pipelineModule);
-        const offset = (name: string): number =>
-            this.context.numericValue(
-                this.context.variableInitializer(file, name),
-                file,
-            );
-        const rows: AttributeRow[] = [
-            {
-                location: 0,
-                offsetBytes: offset("BILLBOARD_POSITION_OFFSET_BYTES"),
-                floatCount: 3,
-            },
-            {
-                location: 1,
-                offsetBytes: offset("BILLBOARD_SIZE_OFFSET_BYTES"),
-                floatCount: 2,
-            },
-            {
-                location: 2,
-                offsetBytes: offset("BILLBOARD_UV_MIN_OFFSET_BYTES"),
-                floatCount: 2,
-            },
-            {
-                location: 3,
-                offsetBytes: offset("BILLBOARD_UV_MAX_OFFSET_BYTES"),
-                floatCount: 2,
-            },
-            {
-                location: 4,
-                offsetBytes: offset("BILLBOARD_ROTATION_OFFSET_BYTES"),
-                floatCount: 1,
-            },
-            {
-                location: 5,
-                offsetBytes: offset("BILLBOARD_PIVOT_OFFSET_BYTES"),
-                floatCount: 2,
-            },
-            {
-                location: 6,
-                offsetBytes: offset("BILLBOARD_COLOR_OFFSET_BYTES"),
-                floatCount: 4,
-            },
-        ];
-        const covered = rows.reduce((total, row) => total + row.floatCount, 0);
-        if (covered !== instanceFloats) {
-            this.context.contractError(
+    private attributeRows(instanceFloats: number): PinnedVertexAttribute[] {
+        const literals = this.context.findNodes(
+            this.context.sourceFile(pipelineModule),
+            (node): node is ts.PropertyAssignment =>
+                ts.isPropertyAssignment(node) &&
+                this.context.propertyName(node.name) === "attributes",
+        );
+        if (literals.length !== 1) {
+            return this.context.contractError(
                 this.context.sourceFile(pipelineModule),
-                `Pinned billboard attributes cover ${covered} floats, but an instance holds ${instanceFloats}.`,
+                `Expected one pinned billboard vertex attribute list, found ${literals.length}.`,
             );
         }
-        return rows;
+        return pinnedVertexAttributeRows(
+            this.context,
+            literals[0]!.initializer,
+            instanceFloats,
+        );
     }
-
     /** `writeInstance` writes each slot from the source the pin names. */
     private assertInstanceSlots(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -215,7 +179,7 @@ export class BillboardLowerer {
             [10, "pivotX"],
             [11, "pivotY"],
         ];
-        const writes = this.elementAssignments(declaration, "data");
+        const writes = this.context.pinnedElementStores(declaration, "data");
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) => elementIndexText(node.left) === `base + ${slot}`,
@@ -392,7 +356,7 @@ export class BillboardLowerer {
             pipelineModule,
             "buildBillboardSystemUbo",
         );
-        const writes = this.elementAssignments(declaration, "ubo");
+        const writes = this.context.pinnedElementStores(declaration, "ubo");
         // Slots 0..3 are written twice (premultiplied and straight arms);
         // the straight arm is the one this path reaches.
         for (const slot of [0, 1, 2, 3]) {
@@ -439,7 +403,10 @@ export class BillboardLowerer {
             pipelineModule,
             "uploadSortedBillboardInstances",
         );
-        const write = this.elementAssignments(declaration, "depths")[0];
+        const write = this.context.pinnedElementStores(
+            declaration,
+            "depths",
+        )[0];
         if (!write) {
             this.context.contractError(
                 declaration,
@@ -630,22 +597,6 @@ export class BillboardLowerer {
         };
     }
 
-    /** Every `<arrayName>[...] = ...` store in a declaration, in order. */
-    private elementAssignments(
-        declaration: ts.Node,
-        arrayName: string,
-    ): ts.BinaryExpression[] {
-        return this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === arrayName,
-        );
-    }
-
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -700,15 +651,7 @@ struct BillboardInstanceAttribute {
     std::uint32_t float_count;
 };
 
-inline constexpr std::array<BillboardInstanceAttribute, ${rows.length}>
-    billboard_instance_attributes{{
-${rows
-    .map(
-        (row) =>
-            `        {${row.location}u, ${row.offsetBytes}u, ${row.floatCount}u},`,
-    )
-    .join("\n")}
-    }};
+${vertexAttributeTableCpp("BillboardInstanceAttribute", "billboard_instance_attributes", rows)}
 
 inline constexpr std::uint32_t billboard_instance_stride_bytes =
     ${layout.instanceFloats * 4}u;

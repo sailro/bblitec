@@ -126,6 +126,58 @@ function blendState(
     return objectLiteral(context, unwrapped, `blend '${key}'`);
 }
 
+/** One arm of a pinned `switch (mode)` that returns each mode's blend. */
+export interface PinnedBlendArm {
+    /** The case label's number; `undefined` for the `default` arm. */
+    mode: number | undefined;
+    clause: ts.CaseOrDefaultClause;
+    /** What the arm returns, unwrapped; `undefined` for a bare return. */
+    returned: ts.Expression | undefined;
+}
+
+/**
+ * The arms of a pinned blend selector, in source order.
+ *
+ * Upstream maps a serialized mode to its blend in a switch whose arms each
+ * return the state -- the particle family's `createParticleBlend` through a
+ * `createBlend(...)` call, the post-process task's `alphaModeToBlend` as an
+ * object literal -- so the walk over the arms is stated once here and each
+ * reader says only what an arm's returned expression must be.
+ */
+export function pinnedBlendSwitchArms(
+    context: LoweringContext,
+    modulePath: string,
+    functionName: string,
+): {
+    file: ts.SourceFile;
+    declaration: ts.FunctionDeclaration;
+    arms: PinnedBlendArm[];
+} {
+    const { file, declaration } = context.functionDeclaration(
+        modulePath,
+        functionName,
+    );
+    const arms = context
+        .findNodes(declaration.body!, ts.isCaseOrDefaultClause)
+        .map((clause): PinnedBlendArm => {
+            const returned = context.findNodes(clause, ts.isReturnStatement)[0]
+                ?.expression;
+            return {
+                mode: ts.isDefaultClause(clause)
+                    ? undefined
+                    : context.numericValue(
+                          context.unwrapExpression(clause.expression),
+                          file,
+                      ),
+                clause,
+                returned: returned
+                    ? context.unwrapExpression(returned)
+                    : undefined,
+            };
+        });
+    return { file, declaration, arms };
+}
+
 /** One side of a blend state, which the pin always writes as an add. */
 export function blendSide(
     context: LoweringContext,

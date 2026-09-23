@@ -19,7 +19,11 @@ import {
     floatLiteral,
 } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { blendFactorySymbol, nativeBlendFactor } from "./pinned-blend-table.js";
+import {
+    blendFactorySymbol,
+    nativeBlendFactor,
+    pinnedBlendSwitchArms,
+} from "./pinned-blend-table.js";
 import {
     decodeAtlasImageCpp,
     gridSpriteAtlasFramesCpp,
@@ -239,40 +243,55 @@ export class NodeParticleLowerer {
      * beside the wrong shader set.
      */
     public particlePassesByMode(): ReadonlyMap<number, number> {
-        const { file, declaration } = this.context.functionDeclaration(
-            blendModule,
-            "createParticleBlend",
-        );
+        const { file, arms } = this.createBlendArms();
         const passes = new Map<number, number>();
-        for (const clause of this.context.findNodes(
-            declaration.body!,
-            ts.isCaseOrDefaultClause,
-        )) {
-            if (ts.isDefaultClause(clause)) continue;
-            const returned = this.context.findNodes(
-                clause,
-                ts.isReturnStatement,
-            )[0]?.expression;
-            if (!returned || !ts.isCallExpression(returned)) {
-                this.context.contractError(
-                    clause,
-                    "createParticleBlend's arms are createBlend calls.",
-                );
-            }
-            const count = returned.arguments[5];
+        for (const { mode, call } of arms) {
+            if (mode === undefined) continue;
+            const count = call.arguments[5];
             passes.set(
-                this.context.numericValue(clause.expression, file),
+                mode,
                 count ? this.context.numericValue(count, file) : 0,
             );
         }
         return passes;
     }
 
-    private particleBlendCpp(): string {
-        const { file, declaration } = this.context.functionDeclaration(
+    /**
+     * `createParticleBlend`'s arms, each asserted to be the `createBlend`
+     * call both readers above and below take their data from.
+     */
+    private createBlendArms(): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration;
+        arms: { mode: number | undefined; call: ts.CallExpression }[];
+    } {
+        const { file, declaration, arms } = pinnedBlendSwitchArms(
+            this.context,
             blendModule,
             "createParticleBlend",
         );
+        return {
+            file,
+            declaration,
+            arms: arms.map(({ mode, clause, returned }) => {
+                if (
+                    !returned ||
+                    !ts.isCallExpression(returned) ||
+                    !ts.isIdentifier(returned.expression) ||
+                    returned.expression.text !== "createBlend"
+                ) {
+                    return this.context.contractError(
+                        clause,
+                        "createParticleBlend's arms are createBlend calls.",
+                    );
+                }
+                return { mode, call: returned };
+            }),
+        };
+    }
+
+    private particleBlendCpp(): string {
+        const { file, declaration, arms } = this.createBlendArms();
         const factory = this.context.functionDeclaration(
             blendModule,
             "createBlend",
@@ -340,34 +359,16 @@ export class NodeParticleLowerer {
             "    blend.premultiplied_opacity = false;",
         ];
         let fallback: string | undefined;
-        for (const clause of this.context.findNodes(
-            declaration.body!,
-            ts.isCaseOrDefaultClause,
-        )) {
-            const returned = this.context.findNodes(
-                clause,
-                ts.isReturnStatement,
-            )[0]?.expression;
-            if (
-                !returned ||
-                !ts.isCallExpression(returned) ||
-                !ts.isIdentifier(returned.expression) ||
-                returned.expression.text !== "createBlend"
-            ) {
-                this.context.contractError(
-                    clause,
-                    "createParticleBlend's arms are createBlend calls.",
-                );
-            }
+        for (const { mode, call } of arms) {
             const [, colorSrc, colorDst, alphaSrc, alphaDst, passes] =
-                returned.arguments;
+                call.arguments;
             const factor = (
                 expression: ts.Expression | undefined,
                 what: string,
             ): string => {
                 if (!expression) {
                     this.context.contractError(
-                        returned,
+                        call,
                         `createParticleBlend arm is missing its ${what}.`,
                     );
                 }
@@ -385,11 +386,10 @@ export class NodeParticleLowerer {
                 };`,
                 "        return blend;",
             ].join("\n");
-            if (ts.isDefaultClause(clause)) {
+            if (mode === undefined) {
                 fallback = body;
                 continue;
             }
-            const mode = this.context.numericValue(clause.expression, file);
             lines.push(`    if (mode == ${mode}) {`, body, "    }");
         }
         if (fallback === undefined) {
