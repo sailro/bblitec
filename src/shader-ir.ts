@@ -46,7 +46,7 @@ export interface ShaderStruct {
     members: ShaderStructMember[];
 }
 
-export type ShaderBinaryOperator =
+type ShaderBinaryOperator =
     | "+"
     | "-"
     | "*"
@@ -66,9 +66,9 @@ export type ShaderBinaryOperator =
     | "<<"
     | ">>";
 
-export type ShaderUnaryOperator = "-" | "!" | "~" | "&" | "*";
+type ShaderUnaryOperator = "-" | "!" | "~" | "&" | "*";
 
-export type ShaderCompoundOperator =
+type ShaderCompoundOperator =
     "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=";
 
 export type ShaderExpression =
@@ -91,7 +91,7 @@ export type ShaderExpression =
     | { kind: "path"; parts: string[] };
 
 /** One arm of a `switch`: its case selectors (`default` among them) and body. */
-export interface ShaderSwitchClause {
+interface ShaderSwitchClause {
     selectors: Array<ShaderExpression | "default">;
     statements: ShaderStatement[];
 }
@@ -264,13 +264,13 @@ export interface ShaderIrProgram {
 // ---------------------------------------------------------------------------
 
 /** A WGSL attribute: `@location(0)`, `@builtin(position)`, `@vertex`, ... */
-export interface WgslAttribute {
+interface WgslAttribute {
     name: string;
     arguments: ShaderExpression[];
 }
 
 /** A type as declared: normalized, as spelled in the source, and structured. */
-export interface WgslTypeReference {
+interface WgslTypeReference {
     /** Whitespace-free, float shorthands expanded (`vec3f` -> `vec3<f32>`). */
     text: string;
     /** The declaration's own spelling, whitespace included. */
@@ -286,7 +286,7 @@ export interface WgslMemberSyntax {
 }
 
 /** Source offsets of a declaration, for splicing a module by position. */
-export interface WgslSpan {
+interface WgslSpan {
     start: number;
     end: number;
 }
@@ -310,7 +310,7 @@ export interface WgslVariableDeclaration extends WgslSpan {
     head: WgslSpan;
 }
 
-export interface WgslValueDeclaration extends WgslSpan {
+interface WgslValueDeclaration extends WgslSpan {
     kind: "const" | "override";
     attributes: WgslAttribute[];
     name: string;
@@ -318,13 +318,13 @@ export interface WgslValueDeclaration extends WgslSpan {
     value?: ShaderExpression;
 }
 
-export interface WgslAliasDeclaration extends WgslSpan {
+interface WgslAliasDeclaration extends WgslSpan {
     kind: "alias";
     name: string;
     type: WgslTypeReference;
 }
 
-export interface WgslFunctionDeclaration extends WgslSpan {
+interface WgslFunctionDeclaration extends WgslSpan {
     kind: "fn";
     attributes: WgslAttribute[];
     name: string;
@@ -336,17 +336,17 @@ export interface WgslFunctionDeclaration extends WgslSpan {
     body: WgslSpan;
 }
 
-export interface WgslDirective extends WgslSpan {
+interface WgslDirective extends WgslSpan {
     kind: "enable" | "requires" | "diagnostic";
     arguments: string[];
 }
 
-export interface WgslAssertDeclaration extends WgslSpan {
+interface WgslAssertDeclaration extends WgslSpan {
     kind: "assert";
     value: ShaderExpression;
 }
 
-export type WgslDeclaration =
+type WgslDeclaration =
     | WgslStructDeclaration
     | WgslVariableDeclaration
     | WgslValueDeclaration
@@ -355,7 +355,7 @@ export type WgslDeclaration =
     | WgslDirective
     | WgslAssertDeclaration;
 
-export interface WgslModuleSyntax {
+interface WgslModuleSyntax {
     declarations: WgslDeclaration[];
 }
 
@@ -1501,7 +1501,7 @@ export function reflectWgslStruct(
 }
 
 /** The `@group(g) @binding(b)` numbers of a resource variable. */
-export function wgslBindingPoint(
+function wgslBindingPoint(
     declaration: WgslVariableDeclaration,
 ): { group: number; binding: number } | undefined {
     const number = (name: string): number | undefined => {
@@ -2249,7 +2249,7 @@ export function mapShaderModule(
 }
 
 /** Whether any sub-expression, the expression itself included, satisfies `test`. */
-export function expressionSome(
+function expressionSome(
     expression: ShaderExpression,
     test: (expression: ShaderExpression) => boolean,
 ): boolean {
