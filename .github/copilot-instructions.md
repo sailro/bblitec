@@ -1,8 +1,9 @@
 # Repository instructions
 
 Read [README](../README.md#documentation) and its canonical pages before feature
-work. Use its ownership table: support in Features, adaptations in Fidelity,
-unfinished work in TODO.
+work. Use its ownership table: support and capability gaps in Features/UI,
+adaptations in Fidelity, internal work in TODO. Status is reference data; read
+only the rows you touch.
 
 **Documentation is not a developer log.** State current facts and limitations
 in the minimum text. Replace stale content; never append session history,

@@ -28,6 +28,7 @@ needs performance and semantic verification. The easing/steps mapping is approxi
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution and reduced-motion matchMedia queries retain identity/current matches and zero-argument change
   listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
+  Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
   hints are absent. Async graphics guards expose the existing Window service; adapter requests and
   GPU API instrumentation are unsupported.
@@ -153,7 +154,7 @@ Counters/images/typed attr fallbacks and adaptations requiring authored handles 
 styles admit color/opacity only.
 
 Horizontal range widgets support appearance:none and WebKit thumb/track styles, including state,
-size/margins/borders/gradients/shadows. Input behavior remains native. Vertical/tick/Firefox semantics
+size/margins/borders/gradients/shadows. Input behavior remains native. Vertical ranges and tick marks
 are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 15/8
 CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
 

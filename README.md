@@ -32,14 +32,14 @@ Canonical facts and current state. One owner per fact; no session logs.
 | --- | --- |
 | [Repository instructions](.github/copilot-instructions.md) | Working rules |
 | [Architecture](docs/architecture.md) | Pipeline, code ownership and memory |
-| [Features](docs/features.md) | Supported source surface and admission limits |
+| [Features](docs/features.md) | Supported source surface; capability gaps (Limits) |
 | [Development](docs/development.md) | Setup, commands, builds and validation |
 | [Debugging](docs/debugging.md) | Diagnosis, capture tools and observation limits |
 | [Fidelity](docs/fidelity.md) | Source/native adaptations and semantic boundaries |
 | [Backends](docs/backends.md) | GPU resource/binding/encoding implementation |
-| [UI](docs/ui.md) | DOM/CSS/Canvas2D support and browser compatibility |
+| [UI](docs/ui.md) | DOM/CSS/Canvas2D support, limits and browser compatibility |
 | [Status](docs/status.md) | Published measurements and scene previews |
-| [TODO](TODO.md) | Unfinished work |
+| [TODO](TODO.md) | Internal work, qualification, performance and refusal defects |
 | [Audit](audit.md) | Open audit findings |
 
 ## Acknowledgements
