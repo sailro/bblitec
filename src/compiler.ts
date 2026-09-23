@@ -375,7 +375,7 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
-import { ClassLowerer } from "./compiler/classes.js";
+import { ClassLowerer, staticClassMember } from "./compiler/classes.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import {
     assertDeterministicRandomUnreached,
@@ -8606,25 +8606,14 @@ class Compiler implements LoweringServices {
     ): boolean {
         const callee = this.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
-        const owner = this.unwrap(callee.expression);
-        if (!ts.isIdentifier(owner)) return false;
-        const symbol = this.symbols.valueSymbol(owner);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(symbol)
-                : symbol;
-        const declaration = target?.declarations?.find(ts.isClassDeclaration);
-        if (!declaration) return false;
-        const method = declaration.members.find(
-            (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === callee.name.text &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) !==
-                    0,
+        const found = staticClassMember(
+            this.checker,
+            this.unwrap(callee.expression),
+            callee.name,
         );
-        if (!method?.body) return false;
+        const method = found?.table.staticMethods.get(found.name);
+        if (!found || !method?.body) return false;
+        const { declaration } = found.table;
 
         const result = this.checker.getAwaitedType(
             this.checker.getTypeAtLocation(call),

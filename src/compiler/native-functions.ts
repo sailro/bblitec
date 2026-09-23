@@ -23,6 +23,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
+import { classMemberTable } from "./classes.js";
 import type { Value } from "./types.js";
 import {
     borrowsReferenceParameter,
@@ -969,13 +970,11 @@ export class NativeFunctionLowerer {
                     ? this.context.dataTypes.classStruct(value.dataType.name)
                           ?.declaration
                     : undefined));
-        return declaration?.members.find(
-            (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === callee.name.text &&
-                member.body !== undefined,
+        if (!declaration) return undefined;
+        const method = classMemberTable(declaration).methods.get(
+            callee.name.text,
         );
+        return method?.body ? method : undefined;
     }
 
     private nodeCannotRunUserCode(
@@ -1348,7 +1347,7 @@ export class NativeFunctionLowerer {
         if (
             classDeclaration.heritageClauses?.length ||
             classDeclaration.typeParameters?.length ||
-            classDeclaration.members.some(ts.isSetAccessorDeclaration)
+            Object.keys(classMemberTable(classDeclaration).setters).length > 0
         ) {
             return reject();
         }
@@ -1392,12 +1391,9 @@ export class NativeFunctionLowerer {
         // Field channels, in class declaration order so the emitted
         // signature is deterministic.
         const fields: MethodFieldChannel[] = [];
-        for (const member of classDeclaration.members) {
-            if (
-                !ts.isPropertyDeclaration(member) ||
-                !ts.isMemberName(member.name) ||
-                !closure.fieldNames.has(member.name.text)
-            ) {
+        for (const [name, member] of classMemberTable(classDeclaration)
+            .fields) {
+            if (!closure.fieldNames.has(name)) {
                 continue;
             }
             const mappedFieldType = this.context.dataLowerer.dataTypeAt(
@@ -1421,10 +1417,7 @@ export class NativeFunctionLowerer {
             ) {
                 return reject();
             }
-            fields.push({
-                name: member.name.text,
-                type: fieldType,
-            });
+            fields.push({ name, type: fieldType });
         }
         if (fields.length !== closure.fieldNames.size) {
             // A touched name without a plain property declaration —
@@ -1463,15 +1456,7 @@ export class NativeFunctionLowerer {
         ) {
             return reject();
         }
-        const getters: Record<string, ts.GetAccessorDeclaration> = {};
-        for (const member of classDeclaration.members) {
-            if (
-                ts.isGetAccessorDeclaration(member) &&
-                ts.isMemberName(member.name)
-            ) {
-                getters[member.name.text] = member;
-            }
-        }
+        const getters = { ...classMemberTable(classDeclaration).getters };
         const signature: NativeMethodSignature = {
             cppName: this.uniqueName(
                 `${classDeclaration.name?.text ?? "Class"}_${method.name.getText()}`,
@@ -1581,47 +1566,21 @@ export class NativeFunctionLowerer {
         method: ts.MethodDeclaration,
         classDeclaration: ts.ClassDeclaration,
     ): MethodClosure | undefined {
-        const membersByName = new EmissionMap<
-            string,
+        const table = classMemberTable(classDeclaration);
+        const memberNamed = (
+            name: string,
+        ):
             | { kind: "method"; member: ts.MethodDeclaration }
-            | {
-                  kind: "getter";
-                  member: ts.GetAccessorDeclaration;
-              }
+            | { kind: "getter"; member: ts.GetAccessorDeclaration }
             | { kind: "field" }
-        >();
-        for (const member of classDeclaration.members) {
-            if (
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) ===
-                    0
-            ) {
-                membersByName.set(member.name.text, {
-                    kind: "method",
-                    member,
-                });
-            } else if (
-                ts.isGetAccessorDeclaration(member) &&
-                ts.isMemberName(member.name)
-            ) {
-                membersByName.set(member.name.text, {
-                    kind: "getter",
-                    member,
-                });
-            } else if (
-                ts.isPropertyDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) ===
-                    0
-            ) {
-                membersByName.set(member.name.text, {
-                    kind: "field",
-                });
+            | undefined => {
+            const called = table.methods.get(name);
+            if (called) return { kind: "method", member: called };
+            if (Object.hasOwn(table.getters, name)) {
+                return { kind: "getter", member: table.getters[name]! };
             }
-        }
+            return table.fields.has(name) ? { kind: "field" } : undefined;
+        };
         const methods = new EmissionSet<ts.MethodDeclaration>();
         const getters = new EmissionSet<ts.GetAccessorDeclaration>();
         const fieldNames = new EmissionSet<string>();
@@ -1660,7 +1619,7 @@ export class NativeFunctionLowerer {
                         ) {
                             return true;
                         }
-                        const entry = membersByName.get(access.name.text);
+                        const entry = memberNamed(access.name.text);
                         if (!entry) {
                             return true;
                         }

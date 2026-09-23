@@ -40,13 +40,140 @@ type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
     name: ts.MemberName;
 };
 
-/** The instance property declarations a class body writes, in order. */
-function instanceProperties(
-    declaration: ts.ClassDeclaration,
-): InstanceProperty[] {
-    return classInstanceProperties(declaration).filter(
-        (member): member is InstanceProperty => ts.isMemberName(member.name),
+/**
+ * One class body's members by name, resolved once per declaration.
+ *
+ * Every lookup of a class member by name reads this table, so a method,
+ * accessor or field is found by one rule: instance and static members are
+ * separate namespaces, as they are in JavaScript, and an overloaded name
+ * resolves to the declaration that carries the body.
+ */
+export interface ClassMemberTable {
+    readonly declaration: ts.ClassDeclaration;
+    /** The constructor implementation, or its only declaration. */
+    readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
+    readonly methods: ReadonlyMap<string, ts.MethodDeclaration>;
+    readonly staticMethods: ReadonlyMap<string, ts.MethodDeclaration>;
+    readonly getters: Readonly<Record<string, ts.GetAccessorDeclaration>>;
+    readonly setters: Readonly<Record<string, ts.SetAccessorDeclaration>>;
+    /** Instance property declarations, in declaration order. */
+    readonly fields: ReadonlyMap<string, ts.PropertyDeclaration>;
+    /** Instance properties including constructor parameter properties, in order. */
+    readonly instanceProperties: readonly InstanceProperty[];
+    /** `static readonly` properties with an initializer: generation-time constants. */
+    readonly staticConstants: ReadonlyMap<string, ts.PropertyDeclaration>;
+}
+
+/** A pure function of the declaration, so it outlives any emission transaction. */
+const classMemberTables = new WeakMap<ts.ClassDeclaration, ClassMemberTable>();
+
+function isStaticMember(member: ts.ClassElement): boolean {
+    return (
+        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0
     );
+}
+
+/** Keeps the implementation of an overloaded name: the declaration with a body. */
+function recordImplementation<T extends ts.FunctionLikeDeclaration>(
+    members: Map<string, T>,
+    name: string,
+    member: T,
+): void {
+    const existing = members.get(name);
+    if (!existing || (!existing.body && member.body)) {
+        members.set(name, member);
+    }
+}
+
+export function classMemberTable(
+    declaration: ts.ClassDeclaration,
+): ClassMemberTable {
+    const cached = classMemberTables.get(declaration);
+    if (cached) return cached;
+    let constructorDeclaration: ts.ConstructorDeclaration | undefined;
+    const methods = new Map<string, ts.MethodDeclaration>();
+    const staticMethods = new Map<string, ts.MethodDeclaration>();
+    const getters: Record<string, ts.GetAccessorDeclaration> = {};
+    const setters: Record<string, ts.SetAccessorDeclaration> = {};
+    const fields = new Map<string, ts.PropertyDeclaration>();
+    const staticConstants = new Map<string, ts.PropertyDeclaration>();
+    for (const member of declaration.members) {
+        if (ts.isConstructorDeclaration(member)) {
+            if (
+                !constructorDeclaration ||
+                (!constructorDeclaration.body && member.body)
+            ) {
+                constructorDeclaration = member;
+            }
+            continue;
+        }
+        if (!member.name || !ts.isMemberName(member.name)) continue;
+        const name = member.name.text;
+        if (ts.isMethodDeclaration(member)) {
+            recordImplementation(
+                isStaticMember(member) ? staticMethods : methods,
+                name,
+                member,
+            );
+        } else if (isStaticMember(member)) {
+            if (
+                ts.isPropertyDeclaration(member) &&
+                member.initializer &&
+                (ts.getCombinedModifierFlags(member) &
+                    ts.ModifierFlags.Readonly) !==
+                    0 &&
+                !staticConstants.has(name)
+            ) {
+                staticConstants.set(name, member);
+            }
+        } else if (ts.isGetAccessorDeclaration(member)) {
+            getters[name] = member;
+        } else if (ts.isSetAccessorDeclaration(member)) {
+            setters[name] = member;
+        } else if (ts.isPropertyDeclaration(member) && !fields.has(name)) {
+            fields.set(name, member);
+        }
+    }
+    const table: ClassMemberTable = {
+        declaration,
+        constructorDeclaration,
+        methods,
+        staticMethods,
+        getters,
+        setters,
+        fields,
+        instanceProperties: classInstanceProperties(declaration).filter(
+            (member): member is InstanceProperty =>
+                ts.isMemberName(member.name),
+        ),
+        staticConstants,
+    };
+    classMemberTables.set(declaration, table);
+    return table;
+}
+
+/**
+ * The class a static member access `Owner.name` reads, with the member's
+ * name, resolved by the checker so imports, aliases and inherited statics
+ * resolve as TypeScript resolves them. The owner must be a plain name: a
+ * static member read through `this` is not this shape.
+ */
+export function staticClassMember(
+    checker: ts.TypeChecker,
+    owner: ts.Expression,
+    name: ts.MemberName,
+): { table: ClassMemberTable; name: string } | undefined {
+    if (!ts.isIdentifier(owner)) return undefined;
+    const member = checker
+        .getSymbolAtLocation(name)
+        ?.declarations?.find(
+            (candidate): candidate is ts.ClassElement =>
+                ts.isClassElement(candidate) &&
+                ts.isClassDeclaration(candidate.parent) &&
+                isStaticMember(candidate),
+        );
+    if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
+    return { table: classMemberTable(member.parent), name: name.text };
 }
 
 /**
@@ -70,30 +197,6 @@ export function rejectClassStaticBlocks(
                 "class lowering emits nothing there.",
         );
     }
-}
-
-/** A class body's accessors, by property name. */
-function accessorsOf(declaration: ts.ClassDeclaration): {
-    getters: Record<string, ts.GetAccessorDeclaration>;
-    setters: Record<string, ts.SetAccessorDeclaration>;
-} {
-    const getters: Record<string, ts.GetAccessorDeclaration> = {};
-    const setters: Record<string, ts.SetAccessorDeclaration> = {};
-    for (const member of declaration.members) {
-        if (
-            ts.isGetAccessorDeclaration(member) &&
-            ts.isMemberName(member.name)
-        ) {
-            getters[member.name.text] = member;
-        }
-        if (
-            ts.isSetAccessorDeclaration(member) &&
-            ts.isMemberName(member.name)
-        ) {
-            setters[member.name.text] = member;
-        }
-    }
-    return { getters, setters };
 }
 
 interface ClassLoweringContext extends Pick<
@@ -216,59 +319,34 @@ export class ClassLowerer {
         return declaration;
     }
 
+    /** The class a static member access reads, refusing a class the subset cannot evaluate. */
+    private staticMember(
+        access: ts.PropertyAccessExpression,
+    ): { table: ClassMemberTable; name: string } | undefined {
+        const found = staticClassMember(
+            this.context.checker,
+            this.context.unwrap(access.expression),
+            access.name,
+        );
+        if (found)
+            rejectClassStaticBlocks(this.context, found.table.declaration);
+        return found;
+    }
+
     /** Resolve `ClassName.staticFactory(...)` to its local method body. */
     public resolveStaticMethod(
         callee: ts.PropertyAccessExpression,
     ): ts.MethodDeclaration | undefined {
-        const owner = this.context.unwrap(callee.expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const symbol = this.context.checker.getSymbolAtLocation(owner);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.context.checker.getAliasedSymbol(symbol)
-                : symbol;
-        const declaration = (target?.declarations ?? []).find(
-            ts.isClassDeclaration,
-        );
-        if (!declaration) return undefined;
-        rejectClassStaticBlocks(this.context, declaration);
-        return declaration.members.find(
-            (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === callee.name.text &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) !==
-                    0,
-        );
+        const found = this.staticMember(callee);
+        return found?.table.staticMethods.get(found.name);
     }
 
     /** Resolve a generation-time `static readonly` scalar field. */
     public resolveStaticField(
         access: ts.PropertyAccessExpression,
     ): ts.PropertyDeclaration | undefined {
-        const owner = this.context.unwrap(access.expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const symbol = this.context.checker.getSymbolAtLocation(owner);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.context.checker.getAliasedSymbol(symbol)
-                : symbol;
-        const declaration = (target?.declarations ?? []).find(
-            ts.isClassDeclaration,
-        );
-        if (!declaration) return undefined;
-        rejectClassStaticBlocks(this.context, declaration);
-        return declaration.members.find(
-            (member): member is ts.PropertyDeclaration =>
-                ts.isPropertyDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === access.name.text &&
-                member.initializer !== undefined &&
-                (ts.getCombinedModifierFlags(member) &
-                    (ts.ModifierFlags.Static | ts.ModifierFlags.Readonly)) ===
-                    (ts.ModifierFlags.Static | ts.ModifierFlags.Readonly),
-        );
+        const found = this.staticMember(access);
+        return found?.table.staticConstants.get(found.name);
     }
 
     /**
@@ -326,9 +404,7 @@ export class ClassLowerer {
         ) {
             return undefined;
         }
-        const constructorDeclaration = owner.members.find(
-            ts.isConstructorDeclaration,
-        );
+        const { constructorDeclaration } = classMemberTable(owner);
         if (
             !constructorDeclaration ||
             constructorDeclaration.parameters.length !==
@@ -476,9 +552,8 @@ export class ClassLowerer {
         declaration: ts.ClassDeclaration,
     ): Value {
         this.rejectUnsupportedMembers(declaration);
-        const constructorDeclaration = declaration.members.find(
-            ts.isConstructorDeclaration,
-        );
+        const members = classMemberTable(declaration);
+        const { constructorDeclaration } = members;
         if (
             !constructorDeclaration &&
             (expression.arguments?.length ?? 0) > 0
@@ -500,7 +575,6 @@ export class ClassLowerer {
               )
             : [];
         const fields: Record<string, Value> = {};
-        const { getters, setters } = accessorsOf(declaration);
         const instanceType = this.context.checker.getTypeAtLocation(expression);
         const instanceTypeArguments = this.context.dataTypes.typeArgumentsOf(
             declaration,
@@ -510,8 +584,8 @@ export class ClassLowerer {
             kind: "record",
             cpp: "",
             recordProperties: fields,
-            recordGetters: getters,
-            recordSetters: setters,
+            recordGetters: { ...members.getters },
+            recordSetters: { ...members.setters },
             ...(instanceTypeArguments
                 ? { classTypeArguments: instanceTypeArguments }
                 : {}),
@@ -575,7 +649,7 @@ export class ClassLowerer {
         try {
             // Field declarations with initializers bind first, so the
             // constructor body can already read them.
-            for (const member of instanceProperties(declaration)) {
+            for (const member of members.instanceProperties) {
                 if (ts.isParameter(member)) continue;
                 const stored = fields[member.name.text];
                 // A slot the layout already allocated inside the shared
@@ -713,7 +787,7 @@ export class ClassLowerer {
         structName: string,
     ): readonly StoredClassField[] {
         const layout: StoredClassField[] = [];
-        for (const member of instanceProperties(declaration)) {
+        for (const member of classMemberTable(declaration).instanceProperties) {
             const source = member.name.text;
             const field = this.context.dataTypes.classStructField(
                 structName,
@@ -757,7 +831,9 @@ export class ClassLowerer {
         });
         const stored = new EmissionSet(layout.map((field) => field.source));
         const declared = new EmissionSet(
-            instanceProperties(declaration).map((member) => member.name.text),
+            classMemberTable(declaration).instanceProperties.map(
+                (member) => member.name.text,
+            ),
         );
         for (const statement of constructorDeclaration.body?.statements ?? []) {
             if (
@@ -907,7 +983,8 @@ export class ClassLowerer {
         }
         const fields: Record<string, Value> = {};
         const hoisted = this.hoistedClassFields.get(structName);
-        for (const member of instanceProperties(binding.declaration)) {
+        const members = classMemberTable(binding.declaration);
+        for (const member of members.instanceProperties) {
             const source = member.name.text;
             const stored = this.context.dataTypes.classStructField(
                 structName,
@@ -920,7 +997,6 @@ export class ClassLowerer {
                 fields[source] = bound;
             }
         }
-        const { getters, setters } = accessorsOf(binding.declaration);
         const typeArguments = this.context.dataTypes.typeArgumentsOf(
             binding.declaration,
             binding.type,
@@ -940,8 +1016,8 @@ export class ClassLowerer {
             cpp: instanceCpp,
 
             recordProperties: fields,
-            recordGetters: getters,
-            recordSetters: setters,
+            recordGetters: { ...members.getters },
+            recordSetters: { ...members.setters },
             classDeclaration: binding.declaration,
             ...(typeArguments ? { classTypeArguments: typeArguments } : {}),
         });
@@ -982,12 +1058,7 @@ export class ClassLowerer {
         call: ts.CallExpression,
         declaration: ts.ClassDeclaration,
     ): Value {
-        const method = declaration.members.find(
-            (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === methodName,
-        );
+        const method = classMemberTable(declaration).methods.get(methodName);
         if (!method) {
             this.context.fail(
                 call,
@@ -1485,16 +1556,7 @@ export class ClassLowerer {
     ): boolean {
         const cached = this.recursiveMethods.get(method);
         if (cached !== undefined) return cached;
-        const methods = new EmissionMap<string, ts.MethodDeclaration>();
-        for (const member of declaration.members) {
-            if (
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.body
-            ) {
-                methods.set(member.name.text, member);
-            }
-        }
+        const { methods } = classMemberTable(declaration);
         const callees = (
             candidate: ts.MethodDeclaration,
         ): ts.MethodDeclaration[] => {
@@ -1508,7 +1570,7 @@ export class ClassLowerer {
                         ts.SyntaxKind.ThisKeyword
                 ) {
                     const called = methods.get(node.expression.name.text);
-                    if (called) found.add(called);
+                    if (called?.body) found.add(called);
                 }
                 ts.forEachChild(node, visit);
             };
