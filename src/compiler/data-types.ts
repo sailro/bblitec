@@ -37,9 +37,13 @@ import {
     stringLiteral,
 } from "../cpp-literals.js";
 import {
+    declaredIn,
     declaredInDefaultLibrary,
+    declaredInDomLibrary,
     isDefaultLibraryIdentifier,
 } from "./symbols.js";
+export { declaredInDomLibrary } from "./symbols.js";
+import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
@@ -219,7 +223,7 @@ export function opaqueEngineValue(
             ? type.aliasSymbol
             : type.symbol;
     const entry = symbol ? opaqueEngineTypes[symbol.name] : undefined;
-    return entry && declaredInBabylonLite(symbol) ? entry : undefined;
+    return entry && declaredIn(symbol, "babylon") ? entry : undefined;
 }
 
 /**
@@ -305,45 +309,21 @@ interface DataTableDefinition {
     values: string;
 }
 
-/**
- * A union member standing for an absent value: `null`, `undefined`, or an
- * intersection the checker distributed one of them into (`S & undefined`,
- * from narrowing `S | null` past a null check).
- */
-function isAbsentMember(member: ts.Type): boolean {
-    const absent = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
-    return (
-        (member.flags & absent) !== 0 ||
-        (member.isIntersection() &&
-            member.types.some((part) => (part.flags & absent) !== 0))
-    );
-}
-
 const numberType: DataType = { kind: "number" };
 const booleanType: DataType = { kind: "boolean" };
 
 /**
- * True when a symbol is declared by the pinned Babylon Lite typings, so
- * a scene's own interface named `Mesh` is never mistaken for the engine
- * resource type.
+ * Classify an opaque pinned handle without materializing any data types.
+ * Gated on the pinned typings, so a scene's own interface named `Mesh` is
+ * never mistaken for the engine resource type.
  */
-function declaredInBabylonLite(symbol: ts.Symbol): boolean {
-    return (symbol.declarations ?? []).some((declaration) =>
-        declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/")
-            .includes("@babylonjs/lite/"),
-    );
-}
-
-/** Classify an opaque pinned handle without materializing any data types. */
 export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
     const symbol =
         type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
             ? type.aliasSymbol
             : type.symbol;
     const kind = symbol ? pinnedHandleTypes[symbol.name] : undefined;
-    return kind && declaredInBabylonLite(symbol) ? kind : undefined;
+    return kind && declaredIn(symbol, "babylon") ? kind : undefined;
 }
 
 export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
@@ -351,7 +331,7 @@ export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
         (symbol) =>
             symbol !== undefined &&
             names.includes(symbol.name) &&
-            declaredInBabylonLite(symbol),
+            declaredIn(symbol, "babylon"),
     );
 }
 
@@ -363,15 +343,6 @@ function isSceneGraphNode(type: ts.Type): boolean {
     return (
         type.getProperty("children") !== undefined &&
         type.getProperty("worldMatrix") !== undefined
-    );
-}
-
-export function declaredInDomLibrary(symbol: ts.Symbol): boolean {
-    return (symbol.declarations ?? []).some((declaration) =>
-        declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/")
-            .endsWith("/lib.dom.d.ts"),
     );
 }
 
@@ -404,16 +375,7 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
 export function platformHandleKind(
     type: ts.Type,
 ): "gamepad" | "gamepad-button" | "gpu-device" | "gpu-texture" | undefined {
-    if (
-        type.symbol &&
-        (declaredInDomLibrary(type.symbol) ||
-            type.symbol.declarations?.some((declaration) =>
-                declaration
-                    .getSourceFile()
-                    .fileName.replace(/\\/g, "/")
-                    .includes("/@webgpu/types/"),
-            ))
-    ) {
+    if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
         if (type.symbol.name === "GPUTexture") return "gpu-texture";
     }
@@ -856,64 +818,24 @@ export class DataTypeRegistry {
     }
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
-        if (
-            type.isUnion() &&
-            type.types.some(
-                (member) => (member.flags & ts.TypeFlags.Void) !== 0,
-            )
-        ) {
-            const present = type.types.filter(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Void |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined)) ===
-                    0,
-            );
-            const inner =
-                present.length === 1
-                    ? this.fromTsType(present[0]!, node)
-                    : undefined;
-            return inner
-                ? this.nullableType(
-                      inner,
-                      !type.types.some(
-                          (member) => (member.flags & ts.TypeFlags.Null) !== 0,
-                      ),
-                  )
-                : undefined;
+        if (!type.isUnion() || !isNullable(type)) {
+            return this.fromNonNullableType(type, node);
         }
-        if (
-            (type.flags & ts.TypeFlags.Union) !== 0 &&
-            (type.flags & ts.TypeFlags.Boolean) === 0 &&
-            (type as ts.UnionType).types.some((member) =>
-                isAbsentMember(member),
-            )
-        ) {
-            // A lone member maps as itself, which also registers it as its own
-            // record source; the checker's NonNullable<T> intersection would map
-            // through the intersection arm of `fromNonNullableType` instead.
-            const present = (type as ts.UnionType).types.filter(
-                (member) => !isAbsentMember(member),
-            );
-            const inner =
-                present.length === 1
-                    ? this.fromTsType(present[0]!, node)
-                    : this.fromNonNullableType(
-                          this.checker.getNonNullableType(type),
-                          node,
-                      );
-            if (!inner) {
-                return undefined;
-            }
-            return this.nullableType(
-                inner,
-                !(type as ts.UnionType).types.some(
-                    (member) => (member.flags & ts.TypeFlags.Null) !== 0,
-                ),
-            );
-        }
-        return this.fromNonNullableType(type, node);
+        const absent = nullability(type);
+        // A lone member maps as itself, which also registers it as its own
+        // record source; the checker's NonNullable<T> intersection would map
+        // through the intersection arm of `fromNonNullableType` instead.
+        const present = presentMembers(type);
+        const inner =
+            present.length === 1
+                ? this.fromTsType(present[0]!, node)
+                : absent.void
+                  ? undefined
+                  : this.fromNonNullableType(
+                        this.checker.getNonNullableType(type),
+                        node,
+                    );
+        return inner ? this.nullableType(inner, !absent.null) : undefined;
     }
 
     /** Callbacks and shared objects already carry their own absent state. */
@@ -1093,10 +1015,13 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "date-time-format" };
-        if (type.symbol?.name === "ArrayBuffer") {
+        // Every name below is the library's own type only when the library
+        // declares it: a program's `interface DataView` is its own record.
+        const library = declaredInDefaultLibrary(type.symbol);
+        if (library && type.symbol.name === "ArrayBuffer") {
             return { kind: "arraybuffer" };
         }
-        if (type.symbol?.name === "DataView") {
+        if (library && type.symbol.name === "DataView") {
             return { kind: "dataview" };
         }
         if (
@@ -1120,8 +1045,9 @@ export class DataTypeRegistry {
             };
         }
         if (
-            type.symbol?.name === "RegExpExecArray" ||
-            type.symbol?.name === "RegExpMatchArray"
+            library &&
+            (type.symbol.name === "RegExpExecArray" ||
+                type.symbol.name === "RegExpMatchArray")
         ) {
             return {
                 kind: "vector",
@@ -1169,7 +1095,7 @@ export class DataTypeRegistry {
             type.symbol &&
             (type.symbol.declarations ?? []).some(ts.isClassDeclaration)
         ) {
-            if (declaredInBabylonLite(type.symbol)) {
+            if (declaredIn(type.symbol, "babylon")) {
                 return undefined;
             }
             // Reached local classes keep their methods and identity in the
@@ -1183,7 +1109,7 @@ export class DataTypeRegistry {
         if (recordMap) {
             return recordMap;
         }
-        const typedArray = type.symbol
+        const typedArray = library
             ? TYPED_ARRAY_KINDS.get(type.symbol.name)
             : undefined;
         if (typedArray) {
@@ -1201,7 +1127,7 @@ export class DataTypeRegistry {
         }
         if (
             type.symbol &&
-            declaredInBabylonLite(type.symbol) &&
+            declaredIn(type.symbol, "babylon") &&
             isSceneGraphNode(type)
         ) {
             // A pinned scene-graph entity outside the handle table (Camera's
@@ -1214,7 +1140,7 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (type.symbol?.name === "Promise") {
+            if (library && type.symbol.name === "Promise") {
                 const [resolvedType] = this.checker.getTypeArguments(reference);
                 if (!resolvedType) return undefined;
                 if (this.asynchronous) {
@@ -1245,15 +1171,10 @@ export class DataTypeRegistry {
             if ((target.objectFlags & ts.ObjectFlags.Tuple) !== 0) {
                 return this.fromTupleType(reference, node);
             }
-            const symbolName = type.symbol?.name;
+            const symbolName = library ? type.symbol.name : undefined;
             // Iterable describes a protocol, not a record with a callable iterator
             // field. Reached helpers specialize to their actual collection storage.
-            if (
-                symbolName === "Iterable" &&
-                type.symbol &&
-                declaredInDefaultLibrary(type.symbol)
-            )
-                return undefined;
+            if (symbolName === "Iterable") return undefined;
             if (
                 symbolName &&
                 [
@@ -1261,9 +1182,7 @@ export class DataTypeRegistry {
                     "IterableIterator",
                     "IteratorObject",
                     "Iterator",
-                ].includes(symbolName) &&
-                type.symbol &&
-                declaredInDefaultLibrary(type.symbol)
+                ].includes(symbolName)
             ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 const element = elementType
@@ -2705,7 +2624,7 @@ export class DataTypeRegistry {
         if (
             !symbol ||
             !declaration ||
-            declaredInBabylonLite(symbol) ||
+            declaredIn(symbol, "babylon") ||
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Abstract) !==
                 0 ||
@@ -2818,7 +2737,9 @@ export class DataTypeRegistry {
     }
 
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
-        const directRecordAlias = type.aliasSymbol?.name === "Record";
+        const directRecordAlias =
+            type.aliasSymbol?.name === "Record" &&
+            declaredInDefaultLibrary(type.aliasSymbol);
         const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(
             (declaration) =>
                 ts.isTypeAliasDeclaration(declaration) &&
