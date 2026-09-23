@@ -55,9 +55,10 @@ $gamepadSetting = if ($EnableGamepad) { "ON" } else { "OFF" }
 $dialogSetting = if ($IosSdk) { 'OFF' } else { 'ON' }
 $variantFeatures = @("video", "events") + $(if (-not $IosSdk) { @("dialogs") } else { @() }) + $enabledFeatures + @("gpu")
 
-# Keep in lockstep with the vcpkg baseline's sdl3 version
-# (native/vcpkg.json builtin-baseline).
-$sdlVersion = "3.4.14"
+# The version the overlay port pins, so the trimmed library stays
+# ABI-identical to the one SDL3_image was compiled against.
+$sdlVersion = (Get-Content (Join-Path $root "native/vcpkg-overlay-ports/sdl3/vcpkg.json") -Raw |
+    ConvertFrom-Json).version
 $repository = "https://github.com/libsdl-org/SDL.git"
 $tag = "release-$sdlVersion"
 
@@ -81,62 +82,21 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
         if ($LASTEXITCODE -ne 0) {
             throw "Unable to fetch SDL tag $tag."
         }
-        git -C $source checkout --force --detach $tag
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to check out SDL tag $tag."
-        }
     }
+}
+# A forced checkout returns a warm workspace to the stock tag before the
+# series is applied again.
+git -C $source checkout --force --detach $tag
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to check out SDL tag $tag."
 }
 
-# The project patches the vcpkg overlay port applies
-# (native/vcpkg-overlay-ports/sdl3/portfile.cmake). Stock release-3.4.14
-# does not carry them, and a minimal build without them would diverge
-# from the vcpkg-installed SDL3 the parity numbers were measured against
-# (multisample reads, line rasterization and descriptor heap rollover).
-# The overlay's fix-freebsd.patch only rewires the FreeBSD
-# pkgconfig install path — vcpkg packaging infrastructure with no effect
-# on these Windows/Linux builds — so it is deliberately not applied here.
-# Idempotent: a patch that already sits in the working tree (a re-run on
-# a warm workspace) reverse-applies cleanly and is skipped; anything
-# else fails loudly rather than building unpatched sources.
-# The static-no-dynapi patch is this build's own, kept beside the other script-only
-# patch under tools/patches rather than in the overlay port (whose whole
-# directory keys the development vcpkg install); its header says why the
-# static shipping SDL turns the dynamic API off, and docs/development.md
-# carries what it measured.
-$patches = @(
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\sdl-multisample-read.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-multisample-lines.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-descriptor-heaps.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-storage-array.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-storage-buffer-sizes.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-fence-query.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\gpu-timestamp-queries.patch"),
-    (Join-Path $root "tools\patches\sdl-static-no-dynapi.patch")
-)
-foreach ($patch in $patches) {
-    $patchName = Split-Path -Leaf $patch
-    if (-not (Test-Path $patch)) {
-        throw "SDL patch not found: $patch"
-    }
-    git -C $source apply --check $patch 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        git -C $source apply $patch
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to apply SDL patch $patchName."
-        }
-        Write-Output "Applied SDL patch $patchName."
-    } else {
-        git -C $source apply --check --reverse $patch 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw (
-                "SDL patch $patchName neither applies to $source nor is " +
-                "already applied. Delete the workspace and rerun."
-            )
-        }
-        Write-Output "SDL patch $patchName is already applied."
-    }
-}
+# The `trimmed` series of native/patches/manifest.json: the overlay port's
+# own patches (the vcpkg-installed SDL3 the parity numbers were measured
+# against carries them) except vcpkg's FreeBSD packaging fix, plus the
+# static build's dynamic-API switch.
+$patches = Get-MaintainedPatches sdl3 @("trimmed")
+Install-MaintainedPatches $source $patches "SDL"
 
 # One table drives the configure and the check after it: every entry is
 # passed as "-D<name>=<value>" and read back from the cache CMake wrote,
@@ -240,21 +200,22 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
 # Native configuration reads this before project() to reject a generated
 # scene whose reached feature set is incompatible with the selected trimmed
 # dependency. Keep the capability machine-readable rather than inferring it
-# from an install-directory name or from a prose provenance field.
-@(
+# from an install-directory name or from a prose provenance field. The patch
+# record is compared with the pin and the manifest the same way
+# (native/patches/patch-identity.cmake).
+$record = @(
     "set(BBLITE_SDL_AUDIO $audioSetting)"
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
     "set(BBLITE_SDL_DIALOG $dialogSetting)"
     "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
     "set(BBLITE_SDL_METAL $($sdlOptions.SDL_METAL))"
-) -join "`n" |
-    Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
+) + @(Get-PatchRecord sdl3 $sdlVersion $patches)
+$record -join "`n" | Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
 
 @{
     repository = $repository
     tag = $tag
     version = $sdlVersion
-    patches = @($patches | ForEach-Object { Split-Path -Leaf $_ })
     variant = "static, MinSizeRel, $($variantFeatures -join '+') only"
     vulkan = $IsLinux
     metal = $IsMacOS

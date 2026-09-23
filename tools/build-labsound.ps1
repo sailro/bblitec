@@ -98,22 +98,8 @@ Sync-PinnedCheckout `
     "libnyquist"
 
 $coreOnlyBuild = $CoreOnly -or ($minimalBuild -and -not $EnableCodecs)
-$decoderPatch = Join-Path $root "tools\patches\labsound-lazy-decoders.patch"
-git -C $source apply --check $decoderPatch
-if ($LASTEXITCODE -ne 0) { throw "The maintained LabSound decoder patch no longer applies to the pin." }
-git -C $source apply $decoderPatch
-if ($LASTEXITCODE -ne 0) { throw "Unable to apply the maintained LabSound decoder patch." }
-if ($coreOnlyBuild) {
-    $corePatch = Join-Path $root "tools\patches\labsound-core-only.patch"
-    git -C $source apply --check $corePatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "The maintained LabSound core-only patch no longer applies to the pin."
-    }
-    git -C $source apply $corePatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to apply the maintained LabSound core-only patch."
-    }
-}
+$patches = Get-MaintainedPatches labsound @(if ($coreOnlyBuild) { "core-only" })
+Install-MaintainedPatches $source $patches "LabSound"
 
 $configureArguments = @(
     "-S", $source,
@@ -214,7 +200,13 @@ if ($coreOnlyBuild) {
 $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $coreOnlySetting = if ($coreOnlyBuild) { "ON" } else { "OFF" }
-"set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)`nset(BBLITE_LABSOUND_MINSIZE $minSizeSetting)`nset(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)`n" |
-    Set-Content (Join-Path $output "bblite-labsound-features.cmake") -Encoding Ascii
+# Native configuration and development setup compare the patch record with the
+# pin and the manifest (native/patches/patch-identity.cmake).
+$record = @(
+    "set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)"
+    "set(BBLITE_LABSOUND_MINSIZE $minSizeSetting)"
+    "set(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)"
+) + @(Get-PatchRecord labsound $pin.commit $patches)
+$record -join "`n" | Set-Content (Join-Path $output "bblite-labsound-features.cmake") -Encoding Ascii
 
 Write-Host "LabSound installed to $output (commit $($pin.commit))."

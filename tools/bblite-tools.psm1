@@ -168,6 +168,66 @@ function Sync-PinnedCheckout(
     }
 }
 
+function Get-PatchManifest {
+    return Get-Content (Join-Path (Get-RepositoryRoot) "native/patches/manifest.json") -Raw |
+        ConvertFrom-Json
+}
+
+# The maintained patches of one library that a build applies, in application
+# order: those marked `all` or carrying one of $Variants
+# (native/patches/manifest.json).
+function Get-MaintainedPatches([string]$Library, [string[]]$Variants = @()) {
+    $manifest = Get-PatchManifest
+    $definition = $manifest.libraries.PSObject.Properties[$Library]
+    if (-not $definition) { throw "native/patches/manifest.json lists no library '$Library'." }
+    foreach ($variant in $Variants) {
+        if ($variant -notin @($definition.Value.variants)) {
+            throw "native/patches/manifest.json defines no $Library variant '$variant'."
+        }
+    }
+    $root = Get-RepositoryRoot
+    $selected = foreach ($patch in $manifest.patches) {
+        if ($patch.library -ne $Library) { continue }
+        $applies = @($patch.variants | Where-Object { $_ -eq "all" -or $_ -in $Variants }).Count -gt 0
+        if (-not $applies) { continue }
+        [pscustomobject]@{
+            Name = Split-Path -Leaf $patch.file
+            Path = Join-Path $root $patch.file
+            Order = [int]$patch.order
+        }
+    }
+    return @($selected | Sort-Object Order)
+}
+
+# Applies patches to a checkout its builder has just reset to the pin. Each
+# one is staged, so the next forced checkout also removes files an earlier
+# version of a patch added; a patch that does not apply is a refusal.
+function Install-MaintainedPatches([string]$Source, [object[]]$Patches, [string]$Label) {
+    foreach ($patch in $Patches) {
+        if (-not (Test-Path -LiteralPath $patch.Path)) { throw "$Label patch not found: $($patch.Path)" }
+        & git -C $Source apply --index --check $patch.Path
+        if ($LASTEXITCODE -ne 0) { throw "$Label patch $($patch.Name) does not apply to the pinned source at $Source." }
+        & git -C $Source apply --index $patch.Path
+        if ($LASTEXITCODE -ne 0) { throw "Unable to apply $Label patch $($patch.Name)." }
+        Write-Host "Applied $Label patch $($patch.Name)."
+    }
+}
+
+# The CMake lines an artifact's record file carries: the pinned source it was
+# built from and each applied patch as name=sha256, in application order.
+# native/patches/patch-identity.cmake and src/development-tools.ts recompute
+# both from the manifest and the pin.
+function Get-PatchRecord([string]$Library, [string]$Source, [object[]]$Patches) {
+    $prefix = (Get-PatchManifest).libraries.$Library.record.prefix
+    if (-not $prefix) { throw "native/patches/manifest.json names no record for '$Library'." }
+    # foreach, not the pipeline: an empty series arrives as $null, which a
+    # pipeline would still hand to its script block once.
+    $digests = foreach ($patch in $Patches) {
+        "$($patch.Name)=$((Get-FileHash -LiteralPath $patch.Path -Algorithm SHA256).Hash.ToLowerInvariant())"
+    }
+    return @("set(${prefix}_SOURCE `"$Source`")", "set(${prefix}_PATCHES `"$(@($digests) -join ';')`")")
+}
+
 # The `NAME:TYPE=value` entries of a CMakeCache.txt as a hashtable -- the
 # PowerShell twin of `readCacheConfiguration` (src/build-stamp.ts).
 function Read-CMakeCache([string]$Path) {
@@ -259,6 +319,10 @@ Export-ModuleMember -Function @(
     "Find-CMake",
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
+    "Get-PatchManifest",
+    "Get-MaintainedPatches",
+    "Install-MaintainedPatches",
+    "Get-PatchRecord",
     "Read-CMakeCache",
     "Read-CMakeCacheTypes"
     "Get-BuildParallelArguments"

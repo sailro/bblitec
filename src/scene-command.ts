@@ -1297,6 +1297,11 @@ function runDevelopmentSetup(): void {
             environment,
         );
     }
+    // A stale source/patch record makes its artifact count as not installed,
+    // so it is rebuilt below; an unrecorded one is reported and kept.
+    for (const record of tools.dependencyPatchRecords) {
+        if (record.message) console.log(`setup: ${record.message}`);
+    }
     const buildPinned = (installed: boolean, script: string): void => {
         if (!installed) {
             run(

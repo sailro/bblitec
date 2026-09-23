@@ -48,9 +48,8 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
 - Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 
-Maintained patches cover SDL descriptor-heap rollover, D3D12 multisampled lines/storage reads,
-opt-in whole-array storage views and barriers,
-Metal buffer lengths/fence queries and Dawn Metal primitive-index capability.
+SDL and Dawn carry maintained patches; [`native/patches/manifest.json`](../native/patches/manifest.json)
+lists each with the builds that apply it, its purpose and upstream state.
 Dawn disables texture swizzling on iOS Simulator and uses its non-swizzle depth/stencil path.
 Dawn uses SDL's Android native window and selects a supported BGRA8/RGBA8 surface format;
 worker images retain that format. Resume replaces the presentation surface when SDL's native

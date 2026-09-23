@@ -172,31 +172,9 @@ Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType 
 PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
 differ from Chromium. Relative transition units resolve at transition start.
 
-| Maintained RmlUi patch | Contract |
-| --- | --- |
-| `rmlui-css-box-model.patch` | Background painting, shadow bounds, shrink-to-fit and descendant bottom-margin collapse |
-| `rmlui-css-declarations.patch` | Quoted/nested declarations |
-| `rmlui-visibility.patch` | Visibility inheritance/transitions |
-| `rmlui-zero-track-grid.patch` | Native grid formatting |
-| `rmlui-zz-grid-column.patch` | Explicit column placement and intrinsic flexible spans |
-| `rmlui-zz-container-queries.patch` | Inline containment/max-width queries |
-| `rmlui-fragment-root.patch` | Fragment roots |
-| `rmlui-generated-content.patch` | Generated-box ownership |
-| `rmlui-selector-functions.patch` | Functional selectors/placeholder |
-| `rmlui-range-layout.patch` | Horizontal range layout |
-| `rmlui-overscroll-axes.patch` | Independent scroll axes |
-| `rmlui-scrollbar-gutter.patch` | Stable gutter |
-| `rmlui-flex-layout.patch` | Flex defaults/alignment |
-| `rmlui-solid-background-clip.patch` | Solid clipping |
-| `rmlui-textured-borders.patch` | Raster border slices |
-| `rmlui-premultiplied-rounding.patch` | Color rounding |
-| `rmlui-fractional-letter-spacing.patch` | Fractional advances |
-| `rmlui-line-leading.patch` | Font-derived normal line height and leading/textarea metrics |
-| `rmlui-object-fit.patch` | Image fitting |
-| `rmlui-overflow-wrap.patch` | Emergency wrapping |
-| `rmlui-transform-key-ownership.patch` | Transition key lifetime |
-| `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with Android/macOS libc++ |
-| `rmlui-zzzz-percentage-radius.patch` | Border-box percentage radii, elliptical border geometry and shadow/outline radii |
+The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in number order.
+[`native/patches/manifest.json`](../native/patches/manifest.json) states the contract each adds
+(`purpose`) and its upstream state; each patch opens with its rationale.
 
 ## Rendering
 

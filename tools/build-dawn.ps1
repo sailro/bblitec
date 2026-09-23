@@ -45,22 +45,13 @@ $metal = if ($IsMacOS -and -not $AndroidAbi) { "ON" } else { "OFF" }
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
-$patches = @()
-$patchNames = @()
-if ($AndroidAbi) {
-    $patchNames = @("dawn-android-surface-loss.patch")
-} elseif ($metal -eq 'ON') {
-    $patchNames = @("dawn-metal-sdk-compat.patch", "dawn-metal-primitive-index.patch")
-    if ($IosSdk) { $patchNames += "dawn-metal-simulator-capabilities.patch" }
-}
-foreach ($name in $patchNames) {
-    $patch = Join-Path $root "tools/patches/$name"
-    & git -C $source apply --check $patch
-    if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name does not apply." }
-    & git -C $source apply $patch
-    if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name failed." }
-    $patches += @{ file = $name; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
-}
+$variants = @(
+    if ($AndroidAbi) { "android" }
+    if ($metal -eq 'ON') { "metal" }
+    if ($IosSdk) { "ios" }
+)
+$patches = Get-MaintainedPatches dawn $variants
+Install-MaintainedPatches $source $patches "Dawn"
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though
 # CMake cannot scan that compiler's module dependencies.
@@ -148,12 +139,15 @@ if ($d3d12 -eq 'ON') {
 # can redistribute it without the source checkout.
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
 
+# Native configuration and development setup compare this record with the
+# pin and the manifest (native/patches/patch-identity.cmake).
+@(Get-PatchRecord dawn $pin.commit $patches) -join "`n" |
+    Set-Content (Join-Path $output "bblite-dawn-features.cmake") -Encoding Ascii
 @{
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
     androidAbi = $AndroidAbi
-    patches = $patches
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

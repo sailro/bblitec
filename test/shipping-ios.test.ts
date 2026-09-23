@@ -95,7 +95,11 @@ test(
         );
         t.after(() => rmSync(directory, { recursive: true, force: true }));
         const sdl = readFileSync("tools/build-sdl-min.ps1", "utf8");
-        const flags = cppSection(sdl, "$audioSetting =", "# Keep in lockstep");
+        const flags = cppSection(
+            sdl,
+            "$audioSetting =",
+            "# The version the overlay port pins",
+        );
         const options = cppSection(
             sdl,
             "$sdlOptions =",

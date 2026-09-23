@@ -10,8 +10,12 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { jsonObject, jsonRecords } from "./json.js";
+import { jsonObject } from "./json.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
+import {
+    expectedPatchRecord,
+    readPatchManifest,
+} from "../src/patch-inventory.js";
 import {
     cppFunction,
     cppRecord,
@@ -38,7 +42,7 @@ test(
                 "apply",
                 "--cached",
                 "--check",
-                resolve("tools/patches/dawn-android-surface-loss.patch"),
+                resolve("native/patches/dawn/0001-android-surface-loss.patch"),
             ],
             { stdio: "pipe", windowsHide: true },
         );
@@ -203,18 +207,20 @@ $global:LASTEXITCODE = 0
                 ["webgpu_dawn"],
             );
             assert.ok(existsSync(join(output, "LICENSE.txt")));
-            const provenance: unknown = JSON.parse(
-                readFileSync(join(output, "provenance.json"), "utf8"),
+            // The artifact records the Android series the manifest selects.
+            const expected = expectedPatchRecord(readPatchManifest(), "dawn", [
+                "android",
+            ]);
+            assert.match(
+                expected.patches,
+                /^0001-android-surface-loss\.patch=[0-9a-f]{64}$/,
             );
-            assert.ok(
-                provenance &&
-                    typeof provenance === "object" &&
-                    "patches" in provenance &&
-                    Array.isArray(provenance.patches),
-            );
-            assert.deepEqual(
-                jsonRecords(provenance.patches).map((patch) => patch.file),
-                ["dawn-android-surface-loss.patch"],
+            assert.equal(
+                readFileSync(
+                    join(output, "bblite-dawn-features.cmake"),
+                    "utf8",
+                ).trim(),
+                `set(BBLITE_DAWN_SOURCE "${expected.source}")\nset(BBLITE_DAWN_PATCHES "${expected.patches}")`,
             );
             const incompatible = spawnSync(
                 tools.powershell!,

@@ -748,47 +748,8 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     if(BBLITE_MINSIZE AND UNIX AND NOT BBLITE_RMLUI_MINSIZE)
         message(FATAL_ERROR "Minimal UI builds require RmlUi built with -MinSize: ${BBLITE_RMLUI_BUILD_COMMAND}.")
     endif()
-    # The artifact records the commit and the patch set (name=sha256, in
-    # name order) it was built from; the pin and native/patches say what
-    # they are now. An artifact that predates a patch would ship UI
-    # behaviour the development validation never saw, so a difference is
-    # a refusal naming the rebuild.
-    file(READ "${BBLITE_NATIVE_ROOT}/../upstream/rmlui.json" BBLITE_RMLUI_PIN)
-    string(JSON BBLITE_RMLUI_PINNED_COMMIT GET "${BBLITE_RMLUI_PIN}" commit)
-    file(GLOB BBLITE_RMLUI_PATCH_FILES "${BBLITE_NATIVE_ROOT}/patches/rmlui-*.patch")
-    list(SORT BBLITE_RMLUI_PATCH_FILES)
-    set(BBLITE_RMLUI_EXPECTED_PATCHES "")
-    foreach(bblite_rmlui_patch IN LISTS BBLITE_RMLUI_PATCH_FILES)
-        get_filename_component(bblite_rmlui_patch_name "${bblite_rmlui_patch}" NAME)
-        file(SHA256 "${bblite_rmlui_patch}" bblite_rmlui_patch_digest)
-        list(APPEND BBLITE_RMLUI_EXPECTED_PATCHES "${bblite_rmlui_patch_name}=${bblite_rmlui_patch_digest}")
-    endforeach()
-    if(NOT DEFINED BBLITE_RMLUI_COMMIT OR NOT DEFINED BBLITE_RMLUI_PATCHES)
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} records neither the "
-            "commit nor the patch set it was built from. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
-    if(NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT)
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built from commit "
-            "${BBLITE_RMLUI_COMMIT}; upstream/rmlui.json pins "
-            "${BBLITE_RMLUI_PINNED_COMMIT}. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
-    if(NOT "${BBLITE_RMLUI_PATCHES}" STREQUAL "${BBLITE_RMLUI_EXPECTED_PATCHES}")
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built with the patch "
-            "set [${BBLITE_RMLUI_PATCHES}], but native/patches now holds "
-            "[${BBLITE_RMLUI_EXPECTED_PATCHES}]. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
+    # The artifact's source and patch record is verified with the other
+    # prebuilt dependencies (bblite_verify_dependency_artifacts, below).
     # The package config resolves Freetype::Freetype and lunasvg::lunasvg
     # itself (RmlUi's own Dependencies.cmake), against this tree's vcpkg
     # install via the ui manifest feature -- so both linked libraries follow
@@ -1182,6 +1143,11 @@ if(BBLITE_MINSIZE)
         target_link_options(bblite_native PRIVATE /STACK:8388608)
     endif()
 endif()
+
+# Every prebuilt dependency artifact this tree consumes must carry the source
+# and patch record the pin and native/patches/manifest.json select.
+include("${BBLITE_NATIVE_ROOT}/patches/patch-identity.cmake")
+bblite_verify_dependency_artifacts()
 
 # Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp
 # and their standard-library closure before its own text; a small generated

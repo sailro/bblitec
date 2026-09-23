@@ -1,0 +1,501 @@
+{
+  "$comment": "Every upstream patch this repository applies. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the application order; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`; LabSound `core-only`). Builders read this file, record `<prefix>_SOURCE` and `<prefix>_PATCHES` (name=sha256 in order) in the artifact's record file, and native/patches/patch-identity.cmake refuses an artifact whose record differs. `npm run patches:check` verifies files, headers, order and the portfile lists. Each owned patch file opens with its rationale; `upstream.state` is unsubmitted, open, merged, closed or vcpkg (the port's own patch, copied verbatim).",
+  "libraries": {
+    "rmlui": {
+      "pin": { "file": "upstream/rmlui.json", "field": "commit" },
+      "builder": "tools/build-rmlui.ps1",
+      "record": { "prefix": "BBLITE_RMLUI", "file": "bblite-rmlui-features.cmake" },
+      "variants": []
+    },
+    "dawn": {
+      "pin": { "file": "upstream/tint.json", "field": "commit" },
+      "builder": "tools/build-dawn.ps1",
+      "record": { "prefix": "BBLITE_DAWN", "file": "bblite-dawn-features.cmake" },
+      "variants": ["android", "metal", "ios"]
+    },
+    "labsound": {
+      "pin": { "file": "upstream/labsound.json", "field": "commit" },
+      "builder": "tools/build-labsound.ps1",
+      "record": { "prefix": "BBLITE_LABSOUND", "file": "bblite-labsound-features.cmake" },
+      "variants": ["core-only"]
+    },
+    "sdl3": {
+      "pin": { "file": "native/vcpkg-overlay-ports/sdl3/vcpkg.json", "field": "version" },
+      "port": "native/vcpkg-overlay-ports/sdl3",
+      "builder": "tools/build-sdl-min.ps1",
+      "record": { "prefix": "BBLITE_SDL", "file": "bblite-sdl-features.cmake" },
+      "variants": ["vcpkg", "trimmed"]
+    },
+    "sdl3-image": {
+      "pin": { "file": "native/vcpkg-overlay-ports/sdl3-image/vcpkg.json", "field": "version" },
+      "port": "native/vcpkg-overlay-ports/sdl3-image",
+      "variants": ["vcpkg"]
+    },
+    "freetype": {
+      "pin": { "file": "native/vcpkg-overlay-ports/freetype/vcpkg.json", "field": "version" },
+      "port": "native/vcpkg-overlay-ports/freetype",
+      "variants": ["vcpkg"]
+    },
+    "recastnavigation": {
+      "pin": { "file": "native/vcpkg-overlay-ports/recastnavigation/vcpkg.json", "field": "version" },
+      "port": "native/vcpkg-overlay-ports/recastnavigation",
+      "variants": ["vcpkg"]
+    }
+  },
+  "patches": [
+    {
+      "library": "rmlui",
+      "order": 1,
+      "file": "native/patches/rmlui/0001-css-box-model.patch",
+      "purpose": "Background painting, shadow bounds, shrink-to-fit and descendant bottom-margin collapse",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 2,
+      "file": "native/patches/rmlui/0002-css-declarations.patch",
+      "purpose": "Quoted/nested declarations",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 3,
+      "file": "native/patches/rmlui/0003-flex-layout.patch",
+      "purpose": "Flex defaults/alignment",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 4,
+      "file": "native/patches/rmlui/0004-fractional-letter-spacing.patch",
+      "purpose": "Fractional advances",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 5,
+      "file": "native/patches/rmlui/0005-fragment-root.patch",
+      "purpose": "Fragment roots",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 6,
+      "file": "native/patches/rmlui/0006-generated-content.patch",
+      "purpose": "Generated-box ownership",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 7,
+      "file": "native/patches/rmlui/0007-line-leading.patch",
+      "purpose": "Font-derived normal line height and leading/textarea metrics",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 8,
+      "file": "native/patches/rmlui/0008-object-fit.patch",
+      "purpose": "Image fitting",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 9,
+      "file": "native/patches/rmlui/0009-overflow-wrap.patch",
+      "purpose": "Emergency wrapping",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 10,
+      "file": "native/patches/rmlui/0010-overscroll-axes.patch",
+      "purpose": "Independent scroll axes",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 11,
+      "file": "native/patches/rmlui/0011-premultiplied-rounding.patch",
+      "purpose": "Color rounding",
+      "upstream": { "state": "closed", "link": "https://github.com/mikke89/RmlUi/pull/1000" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 12,
+      "file": "native/patches/rmlui/0012-range-layout.patch",
+      "purpose": "Horizontal range layout",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 13,
+      "file": "native/patches/rmlui/0013-scrollbar-gutter.patch",
+      "purpose": "Stable gutter",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 14,
+      "file": "native/patches/rmlui/0014-selector-functions.patch",
+      "purpose": "Functional selectors/placeholder",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 15,
+      "file": "native/patches/rmlui/0015-solid-background-clip.patch",
+      "purpose": "Solid clipping",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 16,
+      "file": "native/patches/rmlui/0016-textured-borders.patch",
+      "purpose": "Raster border slices",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 17,
+      "file": "native/patches/rmlui/0017-transform-key-ownership.patch",
+      "purpose": "Transition key lifetime",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 18,
+      "file": "native/patches/rmlui/0018-visibility.patch",
+      "purpose": "Visibility inheritance/transitions",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 19,
+      "file": "native/patches/rmlui/0019-grid-layout.patch",
+      "purpose": "Native grid formatting",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 20,
+      "file": "native/patches/rmlui/0020-container-queries.patch",
+      "purpose": "Inline containment/max-width queries",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 21,
+      "file": "native/patches/rmlui/0021-grid-column.patch",
+      "purpose": "Explicit column placement and intrinsic flexible spans",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 22,
+      "file": "native/patches/rmlui/0022-portable-number-parsing.patch",
+      "purpose": "Locale-independent CSS number parsing with Android/macOS libc++",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "rmlui",
+      "order": 23,
+      "file": "native/patches/rmlui/0023-percentage-radius.patch",
+      "purpose": "Border-box percentage radii, elliptical border geometry and shadow/outline radii",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "dawn",
+      "order": 1,
+      "file": "native/patches/dawn/0001-android-surface-loss.patch",
+      "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["android"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "dawn",
+      "order": 2,
+      "file": "native/patches/dawn/0002-metal-sdk-compat.patch",
+      "purpose": "Apple9 family detection when building with older Apple SDKs",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["metal"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "dawn",
+      "order": 3,
+      "file": "native/patches/dawn/0003-metal-primitive-index.patch",
+      "purpose": "Metal primitive-index capability on Apple7 and Mac2 families",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["metal"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "dawn",
+      "order": 4,
+      "file": "native/patches/dawn/0004-metal-simulator-capabilities.patch",
+      "purpose": "Non-swizzle depth/stencil views on iOS Simulator",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["ios"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "labsound",
+      "order": 1,
+      "file": "native/patches/labsound/0001-lazy-decoders.patch",
+      "purpose": "Construct the libnyquist decoder registry on first use",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "labsound",
+      "order": 2,
+      "file": "native/patches/labsound/0002-core-only.patch",
+      "purpose": "LABSOUND_CORE_ONLY leaves out the node registry, HRTF loader and debug encoder",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["core-only"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 1,
+      "file": "native/vcpkg-overlay-ports/sdl3/fix-freebsd.patch",
+      "purpose": "vcpkg's FreeBSD pkg-config install path; no effect on the trimmed builds",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "sdl3",
+      "order": 2,
+      "file": "native/vcpkg-overlay-ports/sdl3/sdl-multisample-read.patch",
+      "purpose": "Read usage on multisample textures and D3D12 TEXTURE2DMS shader-resource views",
+      "upstream": {
+        "state": "merged",
+        "link": "https://github.com/libsdl-org/SDL/pull/15838",
+        "retire": "Drop at the first SDL release carrying it; 3.4.16 does not."
+      },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 3,
+      "file": "native/vcpkg-overlay-ports/sdl3/d3d12-multisample-lines.patch",
+      "purpose": "D3D12 MultisampleEnable for multisampled line pipelines",
+      "upstream": { "state": "closed", "link": "https://github.com/libsdl-org/SDL/pull/16183" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 4,
+      "file": "native/vcpkg-overlay-ports/sdl3/d3d12-descriptor-heaps.patch",
+      "purpose": "D3D12 descriptor-heap rollover reserves complete bindings and republishes root tables",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 5,
+      "file": "native/vcpkg-overlay-ports/sdl3/d3d12-storage-array.patch",
+      "purpose": "Opt-in whole-array D3D12 compute storage views with matching barriers",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 6,
+      "file": "native/vcpkg-overlay-ports/sdl3/metal-storage-buffer-sizes.patch",
+      "purpose": "Metal storage-buffer lengths for Tint robust accesses",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 7,
+      "file": "native/vcpkg-overlay-ports/sdl3/metal-fence-query.patch",
+      "purpose": "Metal fence queries report completion, not pending work",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 8,
+      "file": "native/vcpkg-overlay-ports/sdl3/gpu-timestamp-queries.patch",
+      "purpose": "Optional GPU timestamp queries, implemented on the D3D12 direct queue",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3",
+      "order": 9,
+      "file": "native/patches/sdl3/0009-static-no-dynapi.patch",
+      "purpose": "Dynamic API off in the trimmed static SDL",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "sdl3-image",
+      "order": 1,
+      "file": "native/vcpkg-overlay-ports/sdl3-image/dependencies.diff",
+      "purpose": "vcpkg's dependency discovery for SDL_image codecs",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "sdl3-image",
+      "order": 2,
+      "file": "native/vcpkg-overlay-ports/sdl3-image/pkgconfig-libname.diff",
+      "purpose": "vcpkg's pkg-config library name",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "sdl3-image",
+      "order": 3,
+      "file": "native/vcpkg-overlay-ports/sdl3-image/png-grey-ramp-last-index.patch",
+      "purpose": "Palette-less greyscale PNG ramp reaches 255 at its last index",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "freetype",
+      "order": 1,
+      "file": "native/vcpkg-overlay-ports/freetype/0003-Fix-UWP.patch",
+      "purpose": "vcpkg's UWP build fix",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "freetype",
+      "order": 2,
+      "file": "native/vcpkg-overlay-ports/freetype/brotli-static.patch",
+      "purpose": "vcpkg's static Brotli discovery",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "freetype",
+      "order": 3,
+      "file": "native/vcpkg-overlay-ports/freetype/bzip2.patch",
+      "purpose": "vcpkg's bzip2 discovery",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "freetype",
+      "order": 4,
+      "file": "native/vcpkg-overlay-ports/freetype/fix-exports.patch",
+      "purpose": "vcpkg's export fix",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "freetype",
+      "order": 5,
+      "file": "native/vcpkg-overlay-ports/freetype/configurable-modules.patch",
+      "purpose": "BBLITE_FREETYPE_MODULES selects ftmodule.h; static Windows packages register only SFNT drivers",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "freetype",
+      "order": 6,
+      "file": "native/vcpkg-overlay-ports/freetype/subpixel-rendering.patch",
+      "purpose": "vcpkg's subpixel-rendering feature, applied only when that port feature is selected",
+      "upstream": { "state": "vcpkg" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": true
+    },
+    {
+      "library": "recastnavigation",
+      "order": 1,
+      "file": "native/vcpkg-overlay-ports/recastnavigation/walkable-threshold-libm.patch",
+      "purpose": "Walkable-slope thresholds take cos in double precision, as the pinned WASM's libm does",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "recastnavigation",
+      "order": 2,
+      "file": "native/vcpkg-overlay-ports/recastnavigation/optional-components.patch",
+      "purpose": "Optional DebugUtils, DetourCrowd and DetourTileCache components",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "recastnavigation",
+      "order": 3,
+      "file": "native/vcpkg-overlay-ports/recastnavigation/checked-allocations.patch",
+      "purpose": "Allocation-failure handling that keeps partial Recast/Detour objects destructible",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg"],
+      "inheritedFromVcpkg": false
+    }
+  ]
+}
