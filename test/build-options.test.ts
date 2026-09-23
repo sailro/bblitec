@@ -231,6 +231,7 @@ test("canonicalizes the build-time backend flag", () => {
     assert.equal(canonicalCompiledBackend("sdl_gpu", "build"), "SDL_GPU");
     assert.equal(canonicalCompiledBackend("DAWN", "process"), "DAWN");
     assert.equal(canonicalCompiledBackend("both", "process"), "BOTH");
+    assert.equal(canonicalCompiledBackend("gpu", "build"), "SDL_GPU");
     assert.throws(
         () => canonicalCompiledBackend("vulkan", "build"),
         /--backend must be sdl_gpu\|dawn\|both/,
