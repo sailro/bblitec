@@ -233,7 +233,9 @@ function Get-BuildParallelArguments([int]$Jobs = 0) {
         if ($Jobs -lt 1) { throw "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer." }
     }
     if ($Jobs) { return @("--parallel", "$Jobs") }
-    return @("--parallel")
+    # The comma keeps a one-element array an array: a bare @("--parallel")
+    # unrolls to a string, and splatting a string passes one character each.
+    return , @("--parallel")
 }
 
 Export-ModuleMember -Function @(
