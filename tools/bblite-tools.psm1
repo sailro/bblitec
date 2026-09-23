@@ -180,6 +180,18 @@ function Read-CMakeCache([string]$Path) {
     return $cache
 }
 
+# The TYPE of each `NAME:TYPE=value` entry: BOOL, STRING, INTERNAL, or
+# UNINITIALIZED for a -D the project never declared.
+function Read-CMakeCacheTypes([string]$Path) {
+    $types = @{}
+    foreach ($line in Get-Content $Path) {
+        if ($line -match '^([A-Za-z0-9_]+):([A-Z]+)=') {
+            $types[$Matches[1]] = $Matches[2]
+        }
+    }
+    return $types
+}
+
 # Match Unix scene builds; explicit CC/CXX select a compatible host toolchain.
 function Get-PosixCompilerArguments([ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '') {
     if ($MacArchitecture -and -not $IsMacOS) { throw '-MacArchitecture requires macOS.' }
@@ -247,7 +259,8 @@ Export-ModuleMember -Function @(
     "Find-CMake",
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
-    "Read-CMakeCache"
+    "Read-CMakeCache",
+    "Read-CMakeCacheTypes"
     "Get-BuildParallelArguments"
     "Get-PosixCompilerArguments"
     "Get-AndroidCompilerArguments"

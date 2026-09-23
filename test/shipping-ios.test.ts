@@ -122,7 +122,7 @@ foreach ($IosSdk in @('', 'iphoneos')) {
             ${flags}
             ${options}
             foreach ($name in @('SDL_RENDER', 'SDL_RENDER_GPU', 'SDL_OPENGL', 'SDL_OPENGLES',
-                'SDL_VULKAN', 'SDL_HAPTIC', 'SDL_SENSOR', 'SDL_CAMERA', 'SDL_POWER', 'SDL_MISC', 'SDL_LOCALE', 'SDL_SHARED')) {
+                'SDL_VULKAN', 'SDL_HAPTIC', 'SDL_SENSOR', 'SDL_CAMERA', 'SDL_POWER', 'SDL_SHARED')) {
                 if ($sdlOptions[$name] -ne 'OFF') { throw "Untrimmed subsystem: $name" }
             }
             foreach ($name in @('SDL_GPU', 'SDL_METAL', 'SDL_VIDEO', 'SDL_STATIC')) {

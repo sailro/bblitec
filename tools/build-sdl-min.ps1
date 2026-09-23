@@ -14,8 +14,8 @@ param(
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
 # and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux, Metal on macOS).
-# Unreached joystick/HIDAPI, haptic, sensor, camera, power, misc, locale,
-# GL plumbing and the SDL_Renderer core are compiled out entirely.
+# Unreached joystick/HIDAPI, haptic, sensor, camera, power, GL plumbing
+# and the SDL_Renderer core are compiled out entirely.
 # SDL's portable dialog subsystem remains available for desktop browser:file scenes;
 # iOS file dialogs use UIKit in PAL and do not need SDL_DIALOG.
 # static dead stripping removes it from executables that do not reach the PAL.
@@ -142,7 +142,10 @@ foreach ($patch in $patches) {
 # passed as "-D<name>=<value>" and read back from the cache CMake wrote,
 # so an option that reached CMake as PowerShell text instead of its value
 # is refused before anything is compiled -- CMake's if() treats any
-# non-false string as true, which would silently keep the subsystem.
+# non-false string as true, which would silently keep the subsystem. Each
+# entry must also be one of SDL's own options: BOOL, or INTERNAL for a
+# dependent option SDL forces on this platform. A name the pinned SDL does
+# not declare stays UNINITIALIZED in the cache and trims nothing.
 $sdlOptions = [ordered]@{
     SDL_SHARED = "OFF"
     SDL_STATIC = "ON"
@@ -156,8 +159,6 @@ $sdlOptions = [ordered]@{
     SDL_CAMERA = "OFF"
     SDL_POWER = "OFF"
     SDL_DIALOG = $dialogSetting
-    SDL_MISC = "OFF"
-    SDL_LOCALE = "OFF"
     SDL_OPENGL = "OFF"
     SDL_OPENGLES = "OFF"
     SDL_VULKAN = $(if ($IsLinux) { "ON" } else { "OFF" })
@@ -196,6 +197,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt")
+$cacheTypes = Read-CMakeCacheTypes (Join-Path $build "CMakeCache.txt")
 foreach ($option in $sdlOptions.GetEnumerator()) {
     $actual = $cache[$option.Key]
     if ($actual -ne $option.Value) {
@@ -203,6 +205,13 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
             "The SDL cache records $($option.Key)=$actual where " +
             "$($option.Value) was requested; the option did not reach " +
             "CMake as a value. Refusing to build a mis-trimmed SDL."
+        )
+    }
+    if ($cacheTypes[$option.Key] -notin @("BOOL", "INTERNAL")) {
+        throw (
+            "The SDL cache records $($option.Key) as $($cacheTypes[$option.Key]), " +
+            "not an option: SDL $sdlVersion declares no such setting, so it " +
+            "trims nothing. Remove it from the option table."
         )
     }
 }

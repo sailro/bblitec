@@ -319,6 +319,10 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /Contains\('\$'\)/);
     assert.match(script, /BBLITE_SDL_DIALOG \$dialogSetting/);
     assert.match(script, /bblite-sdl-features\.cmake/);
+    // Only SDL's own options (BOOL, or INTERNAL when SDL forces a dependent
+    // one) are admitted to the trim table.
+    assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
+    assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
     // The script-only patch lives beside the LabSound one, outside the
     // overlay port directory that keys the development vcpkg install.
     assert.match(script, /tools\\patches\\sdl-static-no-dynapi\.patch/);
