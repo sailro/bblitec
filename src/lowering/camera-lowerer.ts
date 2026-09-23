@@ -541,6 +541,93 @@ ${invalidation}
         };
     }
 
+    /**
+     * The initial orientation `_createFreeCamera` derives from position and
+     * target: the `_yaw`/`_pitch` closure variables its accessors back, and
+     * the locals they are computed from, lowered in source order. The
+     * accessors' storage is the record's, so each initializer is stored
+     * there.
+     */
+    private lowerFreeOrientation(
+        file: ts.SourceFile,
+        factory: ts.FunctionDeclaration,
+    ): string {
+        const storage = new Map([
+            ["_yaw", "camera.free_yaw"],
+            ["_pitch", "camera.free_pitch"],
+        ]);
+        const declared = new Map<string, ts.VariableStatement>();
+        for (const statement of factory.body!.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations)
+                if (ts.isIdentifier(declaration.name))
+                    declared.set(declaration.name.text, statement);
+        }
+        const selected = new Set<ts.VariableStatement>();
+        const include = (name: string): void => {
+            const statement =
+                declared.get(name) ??
+                this.context.contractError(
+                    factory,
+                    `Expected _createFreeCamera to declare '${name}'.`,
+                );
+            if (selected.has(statement)) return;
+            selected.add(statement);
+            for (const identifier of this.context.findNodes(
+                statement,
+                ts.isIdentifier,
+            ))
+                if (
+                    identifier.text !== name &&
+                    declared.has(identifier.text) &&
+                    !(
+                        ts.isPropertyAccessExpression(identifier.parent) &&
+                        identifier.parent.name === identifier
+                    )
+                )
+                    include(identifier.text);
+        };
+        for (const name of storage.keys()) include(name);
+        const bindings = new Map<string, PinnedBinding>([
+            ["position", { cpp: "position", type: "vec3" }],
+            ["target", { cpp: "target", type: "vec3" }],
+            ...[...storage].map(([name, cpp]): [string, PinnedBinding] => [
+                name,
+                { cpp, type: "scalar" },
+            ]),
+        ]);
+        return lowerPinnedBody(
+            file,
+            factory.body!.statements.filter(
+                (statement): statement is ts.VariableStatement =>
+                    ts.isVariableStatement(statement) &&
+                    selected.has(statement),
+            ),
+            {
+                bindings,
+                calls: pinnedNumericMathCalls(),
+                statement: (statement, lowerer, indent) => {
+                    if (!ts.isVariableStatement(statement)) return undefined;
+                    const [declaration] =
+                        statement.declarationList.declarations;
+                    const field =
+                        declaration && ts.isIdentifier(declaration.name)
+                            ? storage.get(declaration.name.text)
+                            : undefined;
+                    if (
+                        !field ||
+                        statement.declarationList.declarations.length !== 1 ||
+                        !declaration!.initializer
+                    )
+                        return undefined;
+                    return [
+                        `${indent}${field} = ${lowerer.expression(declaration!.initializer)};`,
+                    ];
+                },
+            },
+        );
+    }
+
     public lowerFreeFactory(): LoweredSource {
         const modulePath = "src/camera/free-camera.ts";
         const symbolName = "createFreeCamera";
@@ -588,17 +675,11 @@ CameraHandle create_free_camera(
     Engine& engine,
     Vec3d position,
     Vec3d target) {
-    const double dx = target.x - position.x;
-    const double dy = target.y - position.y;
-    const double dz = target.z - position.z;
     CameraRecord camera;
     camera.kind = CameraKind::free;
     camera.position = position;
     camera.target = target;
-    camera.free_yaw = std::atan2(dx, dz);
-    camera.free_pitch = std::atan2(
-        dy,
-        std::sqrt(dx * dx + dz * dz));
+${this.lowerFreeOrientation(file, declaration)}
     camera.fov = ${number("fov")};
     camera.near_plane = ${number("nearPlane")};
     camera.far_plane = ${number("farPlane")};
