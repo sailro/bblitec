@@ -168,14 +168,18 @@ export function commonJsModuleGraph(
 
 type CompileModule = (module: ClosureModule) => (...args: unknown[]) => void;
 
-/** Evaluated modules by key; null while a module is still evaluating. */
-type LoadedModules = Map<string, { exports: unknown } | null>;
+/** Evaluated modules by key, with the CommonJS they evaluated; null while
+ *  a module is still evaluating. */
+type LoadedModules = Map<
+    string,
+    { javascript: string; exports: unknown } | null
+>;
 
 /**
  * Evaluate a graph's entry and return its exports. A package import refuses
  * where it is required, and so does a cycle: a graph module is plain data.
- * A module already in `loaded` is not evaluated again; one that throws
- * leaves no entry, so a later load throws again.
+ * A module already in `loaded` from the same CommonJS is not evaluated
+ * again; one that throws leaves no entry, so a later load throws again.
  */
 function evaluateGraph(
     graph: CommonJsModuleGraph,
@@ -183,6 +187,7 @@ function evaluateGraph(
     loaded: LoadedModules,
 ): unknown {
     const load = (key: string): unknown => {
+        const record = graph.modules[key]!;
         const existing = loaded.get(key);
         if (existing === null) {
             throw new Error(
@@ -190,9 +195,8 @@ function evaluateGraph(
                     "is plain data and cannot be cyclic.",
             );
         }
-        if (existing) return existing.exports;
+        if (existing?.javascript === record.javascript) return existing.exports;
         loaded.set(key, null);
-        const record = graph.modules[key]!;
         const module: { exports: unknown } = { exports: {} };
         const require = (specifier: string): unknown => {
             if (Object.hasOwn(record.resolved, specifier))
@@ -208,7 +212,10 @@ function evaluateGraph(
             loaded.delete(key);
             throw error;
         }
-        loaded.set(key, module);
+        loaded.set(key, {
+            javascript: record.javascript,
+            exports: module.exports,
+        });
         return module.exports;
     };
     return load(graph.entry);
