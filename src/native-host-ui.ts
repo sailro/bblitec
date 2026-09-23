@@ -92,7 +92,7 @@ export function nativeHostUiElement(
     };
 }
 
-/** The generation options a registry scene's reference pose needs. */
+/** Registry generation options, including the runtime Window's live startup. */
 export function registrySceneCompileOptions(
     scene: SceneDefinition,
 ): CompileOptions {
@@ -100,6 +100,7 @@ export function registrySceneCompileOptions(
         fileName: resolve(scene.source),
         title: scene.title,
         search: scene.parity?.referenceSearch ?? "",
+        initialSearch: "",
         ...(scene.nativeHostUi
             ? { nativeHostUi: readNativeHostUi(scene.nativeHostUi) }
             : {}),

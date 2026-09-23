@@ -82,7 +82,9 @@ It uses shared listener ordering and microtask checkpoints, with the [HTML page-
 Beforeunload and page-history caching are unsupported; native pagehide has persisted=false.
 
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
-removes prior children. Source append arguments finish before insertion. Canvas backing dimensions are
+removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
+across the Window mailbox; structural and special text changes rebuild projection.
+Source append arguments finish before insertion. Canvas backing dimensions are
 drawable pixels; client dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
 ### File transfer controls
@@ -123,7 +125,7 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Media | Reached max-width and reduced-motion rules | Reduced motion uses Windows preference polling; other platforms refuse that preference |
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
-| Borders/backgrounds | Solid sides, px/em/rem widths, rounded corners, gradients, solid border/padding/content clipping | Gradient/image clipping and broader border composition |
+| Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
 | Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
 | Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
@@ -194,6 +196,7 @@ differ from Chromium. Relative transition units resolve at transition start.
 | `rmlui-overflow-wrap.patch` | Emergency wrapping |
 | `rmlui-transform-key-ownership.patch` | Transition key lifetime |
 | `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with Android/macOS libc++ |
+| `rmlui-zzzz-percentage-radius.patch` | Border-box percentage radii, elliptical border geometry and shadow/outline radii |
 
 ## Rendering
 

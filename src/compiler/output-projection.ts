@@ -35,6 +35,7 @@ export const featureSources: Record<Feature, string[]> = {
     "engine:device-recovery": [],
     "engine:dispose": [],
     "engine:gpu-retirement": [],
+    "engine:gpu-task-timing": [],
     "compute:storage-texture": [],
     "compute:texture-mipmaps": [],
     "compute:storage-buffer": [],
@@ -681,6 +682,7 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
 ${(
     [
         ["compute:storage-texture", "pal_compute_storage_texture"],
+        ["engine:gpu-task-timing", "pal_gpu_task_timing"],
         ["compute:texture-mipmaps", "pal_compute_texture_mipmaps"],
         ["environment:procedural-sky", "pal_procedural_sky_environment"],
         ["environment:sky-atmosphere", "upstream/procedural_sky_atmosphere"],

@@ -72,6 +72,10 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#include "pal_sdl_gpu_timestamp.hpp"
+#endif
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
 #include "pal_sdl_gpu_temporal.hpp"
 #include "pal_temporal_shared.hpp"
@@ -8552,6 +8556,9 @@ public:
             }
             return FramePreparation::restart;
         }
+#if BBLITE_GPU_TASK_TIMING
+        begin_gpu_task_timing_frame(engine);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
@@ -9970,6 +9977,12 @@ public:
                         }
                     }
 #endif
+#if BBLITE_GPU_TASK_TIMING
+                    GpuTaskTimingSequence timing_sequence(
+                        engine,
+                        [&](const auto& write) { encode_sdl_gpu_timestamp(command, write); },
+                        &graph_scene);
+#endif
                     for (const TaskHandle handle : graph_scene.tasks) {
                         if (handle.value >= engine.frame_tasks.size()) {
                             throw std::runtime_error("Scene frame task handle is invalid.");
@@ -9978,6 +9991,9 @@ public:
                             handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
+#if BBLITE_GPU_TASK_TIMING
+                        const auto timing_scope = timing_sequence.scoped_task(engine, handle);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
                         if (task.kind == FrameTaskKind::compute) {
                             if (surface_command) {
@@ -11776,6 +11792,9 @@ public:
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
         }
+#if BBLITE_GPU_TASK_TIMING
+        finish_gpu_task_timing_frame(engine);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif
@@ -11833,7 +11852,7 @@ public:
         const double end = monotonic_milliseconds();
         const long completed_frame = frame - 1;
         data_.frame_rate_profile.complete(completed_frame);
-        if (cpu_profile && completed_frame % 30 == 0) {
+        if (cpu_profile && frame_profile_due(completed_frame, end - start)) {
             std::size_t draw_commands = render_plan.draw_lists.opaque.commands.size() +
                                         render_plan.draw_lists.transparent.commands.size();
             for (const upstream::RenderDrawLists& lists : task_draw_lists) {

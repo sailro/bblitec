@@ -130,6 +130,7 @@ export interface PluginOutcome {
 }
 
 const MEASUREMENT_VARIABLES = [
+    "BBLITE_LOCATION_SEARCH",
     "BBLITE_SCREENSHOT",
     "BBLITE_SCREENSHOT_FRAME",
     "BBLITE_SCREENSHOT_FRAMES",
@@ -156,7 +157,10 @@ export function checkEnvironmentBase(
     scene: SceneDefinition,
     spec: CheckSpec,
 ): Record<string, string> {
-    const registry = scene.parity?.nativeEnvironment ?? {};
+    const registry = {
+        ...scene.parity?.nativeEnvironment,
+        ...(spec.twin ? { BBLITE_LOCATION_SEARCH: "?" } : {}),
+    };
     switch (spec.base ?? "registry") {
         case "registry":
             return { ...registry };

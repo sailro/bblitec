@@ -19,13 +19,38 @@ test("error property writes refuse without mutable error storage", () => {
     );
 });
 
+test("catch binding reassignment retains its ownership refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const replacement = new Error("replacement");
+                try { throw new Error("original"); }
+                catch (error) { error = replacement; }
+            `),
+        /'error' holds a error; rebinding/,
+    );
+});
+
 test("cleanup error arrays retain conditional pushes, order, identity and causes", (t) => {
     const result = compileSource(`
         function run(): void {
+        try { throw new RangeError("property-only"); }
+        catch (error) {
+            if (error.message !== "property-only" || error.name !== "RangeError")
+                throw new Error("caught error properties");
+        }
         const flags:boolean[] = [false, true, true];
         const errors:unknown[] = [];
         const first = new RangeError("first");
         const second = new TypeError("second");
+        try { throw first; }
+        catch (error) {
+            try { throw second; }
+            catch (error) {
+                if (error !== second) throw new Error("inner catch identity");
+            }
+            if (error !== first) throw new Error("outer catch identity");
+        }
         let attempts = 0;
         for (const fail of flags) {
             try {
@@ -73,6 +98,98 @@ test("cleanup error arrays retain conditional pushes, order, identity and causes
                 }
             }
             catch (const std::exception& error) { std::cerr << error.what(); return 2; }
+        }
+    `,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+});
+
+test("callbacks retain catch bindings after the handler exits", (t) => {
+    const result = compileSource(`
+        const retained:(()=>Error)[]=[];
+        const first=new Error("first");
+        const second=new Error("second");
+        const errors:Error[]=[first,second];
+        for(const thrown of errors) {
+            try {throw thrown;}
+            catch(error) {retained.push(()=>error as Error);}
+        }
+        if(retained[0]!()!==first || retained[1]!()!==second)
+            throw new Error("catch binding outlives its handler");
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/catch-binding-callbacks");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+});
+
+test("AggregateError selects its iterable before later arguments rebind it", (t) => {
+    const result = compileSource(`
+        function run():void {
+            let errors:Error[]=[new Error("selected")];
+            const original=errors;
+            function message():string {errors=[new Error("rebound")];return "snapshot";}
+            function cause():Error {original.push(new Error("later"));return new Error("cause");}
+            throw new AggregateError(errors,message(),{cause:cause()});
+        }
+        run();
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/aggregate-error-arguments");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#define main generated_main\n${result.cpp}\n#undef main
+        #include <cassert>
+        int main() {
+            const bbl::js::CollectOnExit collect_on_exit;
+            try { bblscene::run(); return 1; }
+            catch (const bbl::js::AggregateError& error) {
+                assert(std::string(error.what())=="snapshot");
+                assert(error.errors.size()==2);
+                assert(bbl::js::error_message(error.errors[0])=="selected");
+                assert(bbl::js::error_message(error.errors[1])=="later");
+                assert(bbl::js::error_message(error.cause)=="cause");
+            }
         }
     `,
     );

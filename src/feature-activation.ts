@@ -284,6 +284,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/engine/gpu-resource-retirement.ts",
         consumers: CMAKE,
     },
+    "engine:gpu-task-timing": {
+        provenance:
+            "src/engine/gpu-task-timing.ts + src/engine/gpu-task-timer.ts",
+        consumers: CMAKE,
+    },
     "engine:dispose": {
         provenance: "src/engine/engine-dispose.ts",
         consumers: CMAKE,

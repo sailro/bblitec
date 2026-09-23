@@ -2241,7 +2241,13 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
     }
     lowerer.invalidateAliases(narrowed.cpp);
     const receiver = captureArrayReceiver(lowerer, narrowed);
-    const values = call.arguments.map((argument) => {
+    let lastEffect = call.arguments.length - 1;
+    while (
+        lastEffect >= 0 &&
+        !expressionMayRunCode(call.arguments[lastEffect]!)
+    )
+        --lastEffect;
+    const values = call.arguments.map((argument, index) => {
         const cpp = lowerer.compileForRetainedSink(
             argument,
             dataType.element,
@@ -2251,9 +2257,10 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
             lowerer.context.allocateTemporaryCppName("unshift_argument");
         lowerer.context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: index < lastEffect ? "const auto" : "const auto&",
             name,
-            initializer: cpp,
+            initializer:
+                index < lastEffect ? `bbl::js::snapshot_value(${cpp})` : cpp,
         });
         return name;
     });

@@ -20,6 +20,9 @@
 #endif
 #include "pal_platform_events.hpp"
 #include "pal_dawn_shared.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#endif
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
@@ -507,6 +510,9 @@ public:
     }
     FramePreparation update() {
         (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+#if BBLITE_GPU_TASK_TIMING
+        begin_gpu_task_timing_frame(engine);
+#endif
         return FramePreparation::ready;
     }
     bool acquire() {
@@ -521,8 +527,17 @@ public:
     }
     void encode() {
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+#if BBLITE_GPU_TASK_TIMING
+        GpuTaskTimingSequence timing_sequence(
+            engine, [&](const auto& write) { encode_dawn_gpu_timestamp(encoder, write); });
+#endif
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            if (task.execution_enabled == false)
+                continue;
+#if BBLITE_GPU_TASK_TIMING
+            const auto timing_scope = timing_sequence.scoped_task(engine, handle);
+#endif
 #if BBLITE_HAS_EFFECT_TASK
             if (task.kind == FrameTaskKind::effect) {
                 DawnEffectPass& pass = state.effects.at(handle.value);
@@ -582,6 +597,9 @@ public:
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
+#if BBLITE_GPU_TASK_TIMING
+        finish_gpu_task_timing_frame(engine);
+#endif
         if (capture_frame) {
             finish_dawn_surface_capture(state, capture, width, height,
                                         frame_options.screenshot_path);

@@ -4,6 +4,9 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_dawn_completion.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include "pal_dawn_gpu_timestamp.hpp"
+#endif
 #if BBLITE_COMPUTE_SHADERS
 #include "pal_dawn_compute_pipeline.hpp"
 #endif
@@ -243,6 +246,23 @@ private:
 };
 
 struct DawnOffscreenDevice final : OffscreenDevice {
+#if BBLITE_GPU_TASK_TIMING
+    bool supports_gpu_timestamps() const override {
+        return wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
+    }
+    std::shared_ptr<GpuTimestampQuerySet>
+    create_gpu_timestamp_query_set(std::uint32_t count) override {
+        return std::make_shared<DawnGpuTimestampQuerySet>(instance, device, queue, count);
+    }
+    std::shared_ptr<GpuTimestampReadback>
+    resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>& query_set,
+                           std::uint32_t count) override {
+        const auto queries = std::dynamic_pointer_cast<DawnGpuTimestampQuerySet>(query_set);
+        if (!queries || queries->device != device)
+            throw std::runtime_error("GPU timestamp query set belongs to a different device.");
+        return std::make_shared<DawnGpuTimestampReadback>(queries, count);
+    }
+#endif
 #if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
     void submit_compute_commands(std::span<const ComputeCommand> commands) override {
         submit_dawn_compute_commands(device, queue, commands);
@@ -481,6 +501,26 @@ inline void configure_dawn_surface(DawnDevice& state, std::uint32_t width, std::
     wgpuSurfaceConfigure(state.surface, &configuration);
     state.surface_width = width;
     state.surface_height = height;
+}
+
+/** An external display clock paces rendering; mailbox avoids a second FIFO display wait. */
+inline void set_dawn_display_paced(DawnDevice& state, bool display_paced) {
+    auto mode = WGPUPresentMode_Fifo;
+    if (display_paced) {
+        WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
+        if (wgpuSurfaceGetCapabilities(state.surface, state.adapter, &capabilities) !=
+            WGPUStatus_Success)
+            dawn_error("surface presentation capabilities are unavailable.");
+        auto free_capabilities = js::finally(
+            [&capabilities]() noexcept { wgpuSurfaceCapabilitiesFreeMembers(capabilities); });
+        for (std::size_t index = 0; index < capabilities.presentModeCount; ++index)
+            if (capabilities.presentModes[index] == WGPUPresentMode_Mailbox)
+                mode = WGPUPresentMode_Mailbox;
+    }
+    if (mode == state.present_mode)
+        return;
+    state.present_mode = mode;
+    configure_dawn_surface(state, state.surface_width, state.surface_height);
 }
 
 inline bool resize_dawn_surface(DawnDevice& state, std::uint32_t width, std::uint32_t height) {
@@ -734,10 +774,9 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     // `enable primitive_index` directive (attribution captures only), and
     // BC/ASTC are the compressed formats used by packaged texture candidates.
     constexpr std::array optional_features{
-        WGPUFeatureName_Float32Filterable,
-        WGPUFeatureName_PrimitiveIndex,
-        WGPUFeatureName_TextureCompressionBC,
-        WGPUFeatureName_TextureCompressionASTC,
+        WGPUFeatureName_Float32Filterable,    WGPUFeatureName_PrimitiveIndex,
+        WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TextureCompressionASTC,
+        WGPUFeatureName_TimestampQuery,
     };
     std::array<WGPUFeatureName, optional_features.size() + 1> device_features{};
     std::size_t device_feature_count = 0;

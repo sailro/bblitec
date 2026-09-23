@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
+import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import {
     paritySceneTarget,
     validateReferenceCapture,
@@ -503,6 +504,21 @@ test("spells the measured pose once: the native seek derives from referenceTimeS
     // The derivation is live, not vacuous: the registry holds animated
     // scenes.
     assert.ok(derived >= 20, `only ${derived} scenes derive a seek.`);
+});
+
+test("registered reference queries belong to measurement environments", () => {
+    for (const scene of scenes) {
+        const query = scene.parity?.referenceSearch;
+        if (query === undefined) continue;
+        assert.equal(
+            scene.parity?.nativeEnvironment?.BBLITE_LOCATION_SEARCH,
+            query || "?",
+            scene.id,
+        );
+        const options = registrySceneCompileOptions(scene);
+        assert.equal(options.search, query, scene.id);
+        assert.equal(options.initialSearch, "", scene.id);
+    }
 });
 
 test("derives defaults for an unregistered scene source", () => {

@@ -51,7 +51,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 | Area | Open gaps |
 | --- | --- |
-| Engine | Render-function wrapping; shared Window/worker recovery; timestamp-query timing; additional lifecycle/diagnostic APIs |
+| Engine | Render-function wrapping; shared Window/worker recovery; SDL Vulkan/Metal timestamp queries; additional lifecycle/diagnostic APIs |
 | Compute | f16 uniform writers; whole-array storage views on SDL Vulkan/Metal |
 | Cameras | Live orthographic plane writes, geospatial input, control restoration, mutable world-matrix aliases |
 | Hierarchy | Broader imported hierarchy cloning; descendant/child-mesh queries |
@@ -102,6 +102,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Backend and performance
 
+- [ ] Reduce Minecraft chunk-streaming CPU update spikes; separate meshing, lighting, water settling and allocation costs.
 - [ ] Scene290: sustain 100 FPS uncapped through impact and settling; Bullet stepping remains the bottleneck (`pal_physics_bullet.cpp`).
 - [ ] Compare compiled slots with PAL binding tables; consolidate duplicated layout caches.
 - [ ] Gate morph-shadow and light/camera gizmo emission on reach.

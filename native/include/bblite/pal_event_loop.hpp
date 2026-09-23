@@ -10,6 +10,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -60,16 +61,29 @@ public:
     public:
         /** Coalesce display ticks while this realm is busy. Only the owner
          * stores/invokes animation callbacks; the host supplies native time. */
-        void animation_frame(Clock::time_point timestamp) {
+        std::uint64_t animation_frame(Clock::time_point timestamp) {
+            std::uint64_t serial;
             {
                 std::lock_guard lock(mutex_);
-                if (closed_ || terminated() || !animation_requested_)
-                    return;
-                if (!animation_timestamp_)
+                if (closed_ || terminated())
+                    return animation_active_serial_;
+                if (!animation_requested_)
+                    return animation_active_serial_;
+                if (!animation_timestamp_) {
+                    if (animation_serial_ == std::numeric_limits<std::uint64_t>::max())
+                        throw std::overflow_error("Animation batch identifiers exhausted.");
                     tasks_.emplace_back(AnimationTick{});
+                    ++animation_serial_;
+                }
                 animation_timestamp_ = timestamp;
+                serial = animation_serial_;
             }
             wake_.notify_one();
+            return serial;
+        }
+
+        bool animation_frame_complete(std::uint64_t serial) const noexcept {
+            return animation_completed_serial_.load(std::memory_order_acquire) >= serial;
         }
 
         bool post(std::unique_ptr<ExternalEvent> event) {
@@ -91,6 +105,7 @@ public:
             {
                 std::lock_guard lock(mutex_);
                 terminated_.store(true, std::memory_order_relaxed);
+                cancel_animation_frames();
             }
             wake_.notify_one();
         }
@@ -109,6 +124,21 @@ public:
         bool attached_ = false;
         bool animation_requested_ = false;
         std::optional<Clock::time_point> animation_timestamp_;
+        std::uint64_t animation_serial_ = 0, animation_active_serial_ = 0;
+        std::atomic<std::uint64_t> animation_completed_serial_ = 0;
+
+        // Called under mutex_. An active callback may still submit work while closing.
+        void cancel_animation_frames() noexcept {
+            if (!animation_active_serial_)
+                animation_completed_serial_.store(animation_serial_, std::memory_order_release);
+        }
+
+        void finish_animation_frame(std::uint64_t serial) noexcept {
+            std::lock_guard lock(mutex_);
+            animation_active_serial_ = 0;
+            animation_completed_serial_.store(closed_ || terminated() ? animation_serial_ : serial,
+                                              std::memory_order_release);
+        }
     };
 
     explicit EventLoop(std::shared_ptr<Inbox> inbox = std::make_shared<Inbox>(),
@@ -316,6 +346,7 @@ public:
             inbox_->closed_ = true;
             inbox_->animation_requested_ = false;
             inbox_->animation_timestamp_.reset();
+            inbox_->cancel_animation_frames();
             discarded.swap(inbox_->tasks_);
         }
         timers_.clear();
@@ -511,12 +542,22 @@ private:
     }
     void fire_animation_frame() {
         Clock::time_point timestamp;
+        std::uint64_t serial;
         {
             std::lock_guard lock(inbox_->mutex_);
+            if (!inbox_->animation_timestamp_)
+                return;
             timestamp = *inbox_->animation_timestamp_;
+            serial = inbox_->animation_serial_;
+            inbox_->animation_active_serial_ = serial;
             inbox_->animation_timestamp_.reset();
             inbox_->animation_requested_ = false;
         }
+        struct Complete {
+            Inbox& inbox;
+            std::uint64_t serial;
+            ~Complete() { inbox.finish_animation_frame(serial); }
+        } complete{*inbox_, serial};
         // A callback requested during this batch belongs to the next repaint.
         std::vector<AnimationFrameId> batch;
         batch.reserve(animation_callbacks_.size());

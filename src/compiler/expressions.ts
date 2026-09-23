@@ -339,7 +339,7 @@ export function stringConcatPart(
             value.preserveUncheckedLookup || value.dataType.undefinedOnly
                 ? "undefined"
                 : "null";
-        return `([&]() -> std::string { const auto character = ${value.cpp}; return character.has_value() ? *character : std::string("${absent}"); }())`;
+        return `([&]() -> std::string { const auto& character = ${value.cpp}; return character.has_value() ? *character : std::string("${absent}"); }())`;
     }
     if (
         value.dataType?.kind === "union" &&
@@ -2980,7 +2980,7 @@ export class ExpressionLowerer {
                 return {
                     kind: "number",
                     cpp:
-                        `([&]() { auto v = ${optional.cpp}; ` +
+                        `([&]() { const auto& v = ${optional.cpp}; ` +
                         `return v.has_value() ? ${present} : ${fallback.cpp}; }())`,
                     dataType: { kind: "number" },
                 };
@@ -3013,7 +3013,7 @@ export class ExpressionLowerer {
             return {
                 kind: "number",
                 cpp:
-                    `([&]() { auto v = ${value.cpp}; ` +
+                    `([&]() { const auto& v = ${value.cpp}; ` +
                     `return v.has_value() ? ${present} : ` +
                     `std::numeric_limits<double>::quiet_NaN(); }())`,
                 dataType: { kind: "number" },

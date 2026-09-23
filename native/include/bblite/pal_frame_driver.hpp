@@ -29,9 +29,13 @@ class FrameDriver {
         js::Promise<bool> finished;
         bool started = false;
         std::uint64_t capture_remaining = 0;
+        std::shared_ptr<OffscreenRun> offscreen_run;
         void schedule() const {
             loop->request_animation_frame(
-                [loop = loop, id = continuation](double) { loop->resume_continuation(id); });
+                [loop = loop, id = continuation, run = offscreen_run](double timestamp) {
+                    run->set_animation_frame_timestamp(timestamp);
+                    loop->resume_continuation(id);
+                });
         }
     };
 
@@ -55,6 +59,7 @@ public:
                 throw std::logic_error(
                     "A realm renderer requires its owner Window's animation frame source.");
             frames->subscribe(state->loop->inbox());
+            state->offscreen_run = engine.offscreen_run;
             state->capture_remaining = engine.offscreen_run->capture_frame_count();
             context = std::make_shared<OffscreenContinuation>(engine.offscreen_run);
         }

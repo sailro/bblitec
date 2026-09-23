@@ -111,6 +111,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["engine:gpu-retirement"],
     },
     {
+        source: "upstream/src/gpu_task_timing.cpp",
+        features: ["engine:gpu-task-timing"],
+    },
+    {
         source: "upstream/src/device_recovery.cpp",
         features: ["engine:device-recovery"],
     },

@@ -1,11 +1,15 @@
 #pragma once
 #include <bblite/pal_compute_task_execution.hpp>
+#include <span>
+#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#endif
 
 namespace bbl {
 void prepend_compute_frame_task(Engine&, std::vector<TaskHandle>&, TaskHandle);
 void append_compute_frame_task(std::vector<TaskHandle>&, TaskHandle);
 void record_compute_frame_task(const std::shared_ptr<ComputeTask>&);
-double execute_compute_frame_tasks(const std::vector<std::shared_ptr<ComputeTask>>&);
+double execute_compute_frame_tasks(std::span<const std::shared_ptr<ComputeTask>>);
 inline std::string compute_frame_task_name(const Engine& engine, TaskHandle handle) {
     if (handle.value == invalid_handle)
         return {};
@@ -81,6 +85,11 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
     for (const auto& scene : engine.registered_scenes) {
         if (!scene)
             continue;
+#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+        if (prefix.tasks.empty() && !render_started && scene->state->shadow_task_name &&
+            pal::active_gpu_task_timer(engine))
+            prefix.leading_shadows = true;
+#endif
         for (const auto handle : scene->tasks) {
             const auto& record = engine.frame_tasks.at(handle.value);
             if (record.execution_enabled == false)
@@ -137,7 +146,23 @@ inline void begin_compute_frame_prefix(Engine& engine, bool shadows_submitted = 
         for (const auto& task : prefix.tasks)
             if (!task->pass && !task->execute)
                 record_compute_frame_task(task);
-        (void)execute_compute_frame_tasks(prefix.tasks);
+#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+        if (const auto timer = pal::active_gpu_task_timer(engine)) {
+            for (const auto& task : prefix.tasks) {
+                if (!task->execution_enabled)
+                    continue;
+                const auto timed = timer->begin_task(task->name);
+                if (timed)
+                    encoder->commands.emplace_back(timed->begin);
+                (void)execute_compute_frame_tasks(std::span(&task, 1));
+                if (timed) {
+                    timer->end_task(timed->end, task->name);
+                    encoder->commands.emplace_back(timed->end);
+                }
+            }
+        } else
+#endif
+            (void)execute_compute_frame_tasks(prefix.tasks);
         encoder->finish();
         encoder->submit();
     } catch (...) {

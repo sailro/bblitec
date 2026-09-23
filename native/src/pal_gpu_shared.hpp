@@ -14,6 +14,9 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <bblite/pal_offscreen.hpp>
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
 #endif
@@ -4918,15 +4921,9 @@ inline void require_effect_uniform_size(const EffectWrapperRecord& wrapper,
  *
  * A scene that sets `fixedDeltaMs` pins it, which is how the measured
  * animated scenes stay deterministic. Everything else advances by the
- * time the previous frame actually took, so an interactive run animates
- * at real speed. The first frame has no previous time and reports zero,
- * matching the pinned engine's first callback.
- *
- * Both backends drive callbacks from this: SDL_GPU measured the elapsed
- * time while Dawn passed a hardcoded 16 ms and never read the clock, so
- * a scene that integrated over the delta would have animated at a
- * different rate on each backend -- a divergence the differential would
- * have reported as a GPU-side difference.
+ * elapsed frame time. Window realms use their supplied RAF timestamp,
+ * matching the pinned engine; direct renderers sample the wall clock.
+ * The first frame reports zero.
  */
 class FrameClock {
 public:
@@ -4937,9 +4934,14 @@ public:
     // part in ten million short. Scene callbacks still take the float the
     // engine API declares.
     [[nodiscard]] double advance(double fixed_delta_ms) {
-        const double now = monotonic_milliseconds();
-        const bool first_frame = previous_ == 0.0;
-        const double measured = previous_ > 0.0 ? now - previous_ : 0.0;
+        std::optional<double> frame_timestamp;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        if (const auto* run = OffscreenRun::current())
+            frame_timestamp = run->animation_frame_timestamp();
+#endif
+        const double now = frame_timestamp ? *frame_timestamp : monotonic_milliseconds();
+        const bool first_frame = !previous_;
+        const double measured = previous_ ? now - *previous_ : 0.0;
         previous_ = now;
         const double delta_ms = fixed_delta_ms > 0.0 && !first_frame ? fixed_delta_ms : measured;
         if (fixed_delta_ms > 0.0) {
@@ -4949,7 +4951,7 @@ public:
     }
 
 private:
-    double previous_ = 0.0;
+    std::optional<double> previous_;
 };
 
 /**
@@ -6271,12 +6273,16 @@ private:
 
 /**
  * The per-frame BBLITE_CPU_PROFILE line, printed by both scene frame
- * loops every 30th frame and parsed against each other, so the field
+ * loops every 30th frame and on frames taking at least 10 ms, so the field
  * order lives once. `write_ms` is Dawn's own phase -- the per-draw
  * uniform writes WebGPU's no-push-constants model forces -- and the
  * field appears only when the caller measured one, so each backend's
  * line keeps exactly the bytes it always printed.
  */
+inline bool frame_profile_due(long frame, double elapsed_ms) {
+    return frame % 30 == 0 || elapsed_ms >= 10;
+}
+
 inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_ms,
                                     double update_ms, double upload_ms,
                                     const std::optional<double>& write_ms, double encode_submit_ms,

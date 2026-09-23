@@ -3,6 +3,7 @@
 #include <bblite/pal_animation_frame.hpp>
 #include <bblite/pal_location.hpp>
 #include "pal_window_presenter.hpp"
+#include "pal_window_frame_clock.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
@@ -92,6 +93,11 @@ struct ClipboardWrite final : CompletionEvent {
         : CompletionEvent(id), text(std::move(value)) {}
 };
 struct DocumentSnapshot {
+    struct TextUpdate {
+        UiElementHandle element;
+        std::string text;
+    };
+    std::optional<std::vector<TextUpdate>> text_updates;
     Engine::DocumentRoots document_roots;
     std::vector<UiElementRecord> elements;
     std::vector<ListenerNames> listeners;
@@ -188,6 +194,7 @@ struct WindowDocument {
     std::shared_ptr<WindowServices> host;
     Engine engine;
     std::uint64_t published_revision = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t published_text_revision = 0;
     std::uint64_t published_input_revision = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasElement>> canvases;
@@ -211,12 +218,23 @@ WindowDocument& current_document() {
     return *document;
 }
 
-std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
+std::unique_ptr<DocumentSnapshot>
+snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since = std::nullopt) {
     auto snapshot = std::make_unique<DocumentSnapshot>();
+    if (text_since) {
+        auto& updates = snapshot->text_updates.emplace();
+        for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
+            const auto& record = engine.ui_elements[index];
+            if (record.text_revision > *text_since)
+                updates.push_back({UiElementHandle{index}, record.text});
+        }
+        return snapshot;
+    }
     snapshot->elements.reserve(engine.ui_elements.size());
     snapshot->listeners.reserve(engine.ui_elements.size());
     for (const auto& source : engine.ui_elements) {
         auto& native = snapshot->elements.emplace_back(source);
+        native.text_revision = 0;
         native.image_request.reset();
         ListenerNames names;
         names.click = !native.click_callbacks.empty();
@@ -255,6 +273,11 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
 
 void apply_document(Engine& engine, DocumentSnapshot snapshot,
                     const std::shared_ptr<EventLoop::Inbox>& inbox) {
+    if (snapshot.text_updates) {
+        for (auto& update : *snapshot.text_updates)
+            ui_set_text(engine, update.element, std::move(update.text));
+        return;
+    }
     engine.ui_elements = std::move(snapshot.elements);
     engine.ui_root_children = std::move(snapshot.roots);
     engine.ui_document_roots = snapshot.document_roots;
@@ -427,7 +450,12 @@ void window_location_reload() {
     EventLoop::current().close();
 }
 std::string window_location_search(const std::string& initial) {
-    return current_document().host->location->search(initial);
+    auto& location = *current_document().host->location;
+    if (!location.current_search) {
+        const auto measured_query = environment_variable("BBLITE_LOCATION_SEARCH");
+        return location.search(measured_query.empty() ? initial : measured_query);
+    }
+    return location.search(initial);
 }
 void window_location_set_search(const std::string& value) {
     current_document().host->location->navigate(value);
@@ -470,9 +498,14 @@ void update_window_document() {
     auto& host = *doc.host;
     // Snapshot source state on its owner before taking the presentation lock.
     const auto input_revision = doc.engine.dom_input ? doc.engine.dom_input->revision : 0;
+    const auto text_since = doc.published_input_revision == input_revision &&
+                                    doc.engine.ui_only_text_changed_since(
+                                        doc.published_revision, doc.published_text_revision)
+                                ? std::optional(doc.published_text_revision)
+                                : std::nullopt;
     auto snapshot = doc.published_revision != doc.engine.ui_revision ||
                             doc.published_input_revision != input_revision
-                        ? snapshot_document(doc.engine)
+                        ? snapshot_document(doc.engine, text_since)
                         : nullptr;
     std::unique_lock lock(host.mutex);
     if (host.stopping)
@@ -481,7 +514,9 @@ void update_window_document() {
         host.pending = std::move(snapshot);
         const auto revision = ++host.requested;
         doc.published_revision = doc.engine.ui_revision;
+        doc.published_text_revision = doc.engine.ui_text_revision;
         doc.published_input_revision = input_revision;
+        host.wake.notify_all();
         host.wake.wait(lock, [&] { return host.stopping || host.completed >= revision; });
         if (host.stopping)
             throw WorkerTerminated{};
@@ -660,6 +695,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
 #endif
         if (!presenter)
             throw std::runtime_error("Requested Window GPU backend is unavailable.");
+        const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
+        WindowFrameClock compositor_clock(cpu_profile);
+        presenter->set_display_paced(compositor_clock.available());
         // Reload replaces realm-owned state while keeping the native window and device.
         const auto location = std::make_shared<WindowLocation>();
         for (;;) {
@@ -687,8 +725,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     WorkerRealm realm(loop, {}, services);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
-                    realm.on_platform_event([](std::unique_ptr<ExternalEvent> packet) {
+                    realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
                         if (const auto* event = dynamic_cast<WindowDomEvent*>(packet.get())) {
+                            const auto notify = js::finally([&] {
+                                const std::lock_guard lock(services->mutex);
+                                services->wake.notify_all();
+                            });
                             event->batch->dispatch(window_document_engine(),
                                                    [](auto& callback, const auto& payload) {
                                                        EventLoop::current().dispatch_callback(
@@ -751,7 +793,11 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 } catch (...) {
                     application_error = std::current_exception();
                 }
-                finished = true;
+                {
+                    const std::lock_guard lock(services->mutex);
+                    finished = true;
+                }
+                services->wake.notify_all();
             });
             // Shutdown uses the realm inbox rather than a C++ stop token. Keep
             // the join exception-safe without requiring libc++'s newer jthread.
@@ -782,13 +828,69 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             UiElementHandle pointer_capture{};
             std::map<std::pair<std::uint64_t, std::uint64_t>, UiElementHandle> touch_captures;
             SDL_MouseButtonFlags pointer_buttons = 0;
-            std::optional<SDL_Event> pending_input;
-            std::shared_ptr<DomEventBatch> pending_dispatch;
+            int width = 0, height = 0;
+            const auto update_layout = [&] {
+                if (!SDL_GetWindowSizeInPixels(window.get(), &width, &height))
+                    throw std::runtime_error(SDL_GetError());
+                if (width <= 0 || height <= 0)
+                    return false;
+                std::unique_ptr<DocumentSnapshot> snapshot;
+                std::uint64_t revision = 0;
+                {
+                    std::lock_guard lock(services->mutex);
+                    snapshot = std::move(services->pending);
+                    revision = services->requested;
+                }
+                if (snapshot)
+                    apply_document(display, std::move(*snapshot), services->inbox);
+                update_ui_rml_runtime(*ui, width, height);
+                next_layout.width = width;
+                next_layout.height = height;
+                const auto density = SDL_GetWindowDisplayScale(window.get());
+                next_layout.pixel_ratio = density > 0 ? density : 1;
+                const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
+                update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
+                                             pixel_density > 0 ? pixel_density : 1);
+                if (services->screen_requested.load()) {
+                    const auto display_id = SDL_GetDisplayForWindow(window.get());
+                    SDL_Rect bounds{}, available{};
+                    const auto* mode = SDL_GetCurrentDisplayMode(display_id);
+                    int bits = 0;
+                    Uint32 red = 0, green = 0, blue = 0, alpha = 0;
+                    if (!SDL_GetDisplayBounds(display_id, &bounds) ||
+                        !SDL_GetDisplayUsableBounds(display_id, &available) || !mode ||
+                        !SDL_GetMasksForPixelFormat(mode->format, &bits, &red, &green, &blue,
+                                                    &alpha))
+                        throw std::runtime_error(std::string("Unable to query display metrics: ") +
+                                                 SDL_GetError());
+                    const auto scale = next_layout.pixel_ratio;
+                    next_layout.screen = {
+                        std::round(bounds.w / scale), std::round(bounds.h / scale),
+                        std::round(available.w / scale), std::round(available.h / scale),
+                        static_cast<double>(std::popcount(red) + std::popcount(green) +
+                                            std::popcount(blue))};
+                }
+                next_layout.rectangles.resize(display.ui_elements.size());
+                for (std::size_t index = 0; index < display.ui_elements.size(); ++index)
+                    next_layout.rectangles[index] = display.ui_elements[index].client_rect;
+                if (!layout || !layout->equals(next_layout))
+                    layout = std::make_shared<LayoutSnapshot>(next_layout);
+                {
+                    const std::lock_guard lock(services->mutex);
+                    services->layout = layout;
+                    services->completed = revision;
+                }
+                services->wake.notify_all();
+                return true;
+            };
             long presented = 0;
             const bool trace_window =
                 runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
+            std::optional<EventLoop::Clock::time_point> next_repaint;
+            std::optional<AnimationFrameSource::Batch> repaint_batch;
             bool running = true;
             while (running && !finished) {
+                const double started = cpu_profile ? monotonic_milliseconds() : 0;
                 std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
                 {
                     std::lock_guard lock(services->mutex);
@@ -804,39 +906,35 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 }
                 SDL_Event event;
                 for (;;) {
-                    if (pending_input) {
-                        if (!pending_dispatch->ready())
-                            break;
-                        event = *pending_input;
-                        pending_input.reset();
-                        const bool prevented = pending_dispatch->default_prevented;
-                        pending_dispatch.reset();
-                        if (prevented)
-                            continue;
-                    } else {
-                        if (!SDL_PollEvent(&event))
-                            break;
-                        if (is_emulated_pointer_event(event))
-                            continue;
-                        if (event.type == SDL_EVENT_QUIT ||
-                            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
-                            running = false;
-                        if (frame_options.test_pass && is_platform_input_event(event) &&
-                            !is_replayed_ui_event(event))
-                            continue;
-                        if (auto batch = prepare_dom_platform_input(display, event)) {
-                            dispatch_dom_batch(display, batch);
-                            if (!batch->ready()) {
-                                // prepare_dom_platform_input only admits SDL payloads
-                                // containing no borrowed pointers. Other events remain
-                                // in SDL's queue until this default action is resolved.
-                                pending_input = event;
-                                pending_dispatch = std::move(batch);
-                                break;
-                            }
-                            if (batch->default_prevented)
-                                continue;
+                    if (!SDL_PollEvent(&event))
+                        break;
+                    if (is_emulated_pointer_event(event))
+                        continue;
+                    if (event.type == SDL_EVENT_QUIT ||
+                        event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+                        running = false;
+                    if (frame_options.test_pass && is_platform_input_event(event) &&
+                        !is_replayed_ui_event(event))
+                        continue;
+                    if (auto batch = prepare_dom_platform_input(display, event)) {
+                        dispatch_dom_batch(display, batch);
+                        // Source callbacks can synchronously request layout. Service
+                        // those requests before the native default, without spending
+                        // a presentation or repaint tick on the acknowledgement.
+                        while (!batch->ready() && !finished) {
+                            std::unique_lock lock(services->mutex);
+                            services->wake.wait(lock, [&] {
+                                return batch->ready() || finished || services->pending;
+                            });
+                            const bool needs_layout = services->pending != nullptr;
+                            lock.unlock();
+                            if (needs_layout && !update_layout())
+                                SDL_Delay(1);
                         }
+                        if (finished)
+                            break;
+                        if (batch->default_prevented)
+                            continue;
                     }
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -930,60 +1028,35 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     }
                     services->inbox->post(std::move(packet));
                 }
-                int width = 0, height = 0;
-                if (!SDL_GetWindowSizeInPixels(window.get(), &width, &height))
-                    throw std::runtime_error(SDL_GetError());
-                if (width <= 0 || height <= 0) {
+                if (finished)
+                    break;
+                const double input_finished = cpu_profile ? monotonic_milliseconds() : 0;
+                if (!update_layout()) {
                     SDL_Delay(1);
                     continue;
                 }
-                std::unique_ptr<DocumentSnapshot> snapshot;
-                std::uint64_t revision = 0;
-                {
-                    std::lock_guard lock(services->mutex);
-                    snapshot = std::move(services->pending);
-                    revision = services->requested;
+                const double layout_finished = cpu_profile ? monotonic_milliseconds() : 0;
+                // Release completed image leases before waking their producers.
+                const bool presenter_ready = presenter->can_present();
+                if (compositor_clock.available()) {
+                    if (const auto timestamp = compositor_clock.take_latest())
+                        next_repaint = timestamp;
+                    if (!repaint_batch && next_repaint) {
+                        repaint_batch = services->animation_frames->tick(*next_repaint);
+                        next_repaint.reset();
+                    }
+                    // RAF callbacks can synchronously request layout. Keep pumping
+                    // the host until their submissions finish, or the next display
+                    // heartbeat bounds the wait for a slow realm.
+                    if (!repaint_batch || (!repaint_batch->ready() && !next_repaint)) {
+                        compositor_clock.wait_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
                 }
-                if (snapshot)
-                    apply_document(display, std::move(*snapshot), services->inbox);
-                update_ui_rml_runtime(*ui, width, height);
-                next_layout.width = width;
-                next_layout.height = height;
-                const auto density = SDL_GetWindowDisplayScale(window.get());
-                next_layout.pixel_ratio = density > 0 ? density : 1;
-                const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
-                update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
-                                             pixel_density > 0 ? pixel_density : 1);
-                if (services->screen_requested.load()) {
-                    const auto display_id = SDL_GetDisplayForWindow(window.get());
-                    SDL_Rect bounds{}, available{};
-                    const auto* mode = SDL_GetCurrentDisplayMode(display_id);
-                    int bits = 0;
-                    Uint32 red = 0, green = 0, blue = 0, alpha = 0;
-                    if (!SDL_GetDisplayBounds(display_id, &bounds) ||
-                        !SDL_GetDisplayUsableBounds(display_id, &available) || !mode ||
-                        !SDL_GetMasksForPixelFormat(mode->format, &bits, &red, &green, &blue,
-                                                    &alpha))
-                        throw std::runtime_error(std::string("Unable to query display metrics: ") +
-                                                 SDL_GetError());
-                    const auto scale = next_layout.pixel_ratio;
-                    next_layout.screen = {
-                        std::round(bounds.w / scale), std::round(bounds.h / scale),
-                        std::round(available.w / scale), std::round(available.h / scale),
-                        static_cast<double>(std::popcount(red) + std::popcount(green) +
-                                            std::popcount(blue))};
-                }
-                next_layout.rectangles.resize(display.ui_elements.size());
-                for (std::size_t index = 0; index < display.ui_elements.size(); ++index)
-                    next_layout.rectangles[index] = display.ui_elements[index].client_rect;
-                if (!layout || !layout->equals(next_layout))
-                    layout = std::make_shared<LayoutSnapshot>(next_layout);
                 std::vector<WindowCanvasFrame> frames;
                 bool canvases_ready = false;
                 {
                     std::lock_guard lock(services->mutex);
-                    services->layout = layout;
-                    services->completed = revision;
                     for (const auto& [index, canvas] : services->canvases) {
                         if (auto frame = canvas->surface->take_frame())
                             latest.insert_or_assign(index, std::move(*frame));
@@ -992,7 +1065,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             frames.push_back({UiElementHandle{index}, found->second});
                         }
                     }
-                    canvases_ready = revision > 0 && frames.size() == services->canvases.size();
+                    canvases_ready =
+                        services->completed > 0 && frames.size() == services->canvases.size();
                 }
                 services->wake.notify_all();
                 const bool capture_ready =
@@ -1006,12 +1080,15 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     screenshot_checkpoints.begin(), screenshot_checkpoints.end(),
                     [presented](const auto& value) { return value.frame == presented; });
                 const bool checkpoint_ready = checkpoint != screenshot_checkpoints.end();
-                const bool capture = !pending_input && canvases_ready &&
-                                     !frame_options.screenshot_path.empty() &&
+                const bool capture = canvases_ready && !frame_options.screenshot_path.empty() &&
                                      (capture_ready || checkpoint_ready);
                 bool did_present = false;
-                if (presenter->can_present()) {
+                double record_ms = 0, present_ms = 0;
+                if (presenter_ready) {
+                    const double record_started = cpu_profile ? monotonic_milliseconds() : 0;
                     const auto& recorded = record_ui_rml_frame(*ui, width, height);
+                    if (cpu_profile)
+                        record_ms = monotonic_milliseconds() - record_started;
                     std::optional<UiRenderFrame> canvas_capture;
                     if (capture && !frame_options.capture_ui) {
                         canvas_capture = recorded;
@@ -1034,8 +1111,11 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     if (capture)
                         screenshot_path =
                             checkpoint_ready ? checkpoint->path : frame_options.screenshot_path;
+                    const double present_started = cpu_profile ? monotonic_milliseconds() : 0;
                     did_present = presenter->present(
                         frames, canvas_capture ? *canvas_capture : recorded, screenshot_path);
+                    if (cpu_profile)
+                        present_ms = monotonic_milliseconds() - present_started;
                     if (did_present && capture && checkpoint_ready) {
                         const std::string_view stamp = bblite_build_stamp();
                         detail::write_file_atomically(
@@ -1043,12 +1123,22 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             stamp.size(), "Screenshot checkpoint build stamp");
                     }
                 }
-                // A source input callback may synchronously request layout.
-                // Continue serving/presenting that layout above, but finish
-                // its dispatch and default action before the next repaint tick.
-                if (did_present && !pending_input)
-                    services->animation_frames->tick(EventLoop::Clock::now());
-                if (did_present && canvases_ready && !pending_input) {
+                if (did_present) {
+                    if (compositor_clock.available()) {
+                        repaint_batch.reset();
+                    } else {
+                        services->animation_frames->tick(EventLoop::Clock::now());
+                    }
+                }
+                if (did_present && canvases_ready) {
+                    if (cpu_profile &&
+                        (presented % 30 == 0 || monotonic_milliseconds() - started >= 4))
+                        std::fprintf(stderr,
+                                     "[cpu][window] frame=%ld input_ms=%.3f layout_ms=%.3f "
+                                     "ui_record_ms=%.3f present_ms=%.3f total_ms=%.3f\n",
+                                     presented, input_finished - started,
+                                     layout_finished - input_finished, record_ms, present_ms,
+                                     monotonic_milliseconds() - started);
                     input_replay.dispatch(presented, window.get(), display);
                     if (trace_window && presented % runtime_trace_interval() == 0) {
                         std::ostringstream trace;
@@ -1070,7 +1160,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             : frame_options.max_frames > 0 && presented >= frame_options.max_frames)
                         running = false;
                 }
-                SDL_Delay(1);
+                if (compositor_clock.available()) {
+                    if (!did_present || !next_repaint)
+                        compositor_clock.wait_for(std::chrono::milliseconds(1));
+                } else {
+                    SDL_Delay(1);
+                }
             }
             services->stop();
             application.join();

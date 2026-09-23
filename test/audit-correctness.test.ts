@@ -938,26 +938,43 @@ test(
     },
 );
 
+function uiTextMutationFixture(source: string): string {
+    const functions = [
+        "UiElementRecord& ui_element(",
+        "void mark_ui_changed(Engine& engine)",
+        "void mark_ui_changed(Engine& engine,",
+        "void ui_replace_children(",
+        "void ui_set_text(",
+    ]
+        .map((signature) => cppFunction(source, signature))
+        .join("\n");
+    return `
+        namespace bbl::pal {
+        // Revision fixtures use ASCII; Unicode projection is covered by ui-font-spacing.
+        bool ui_text_needs_emoji_normalization(std::string_view text) {
+            assert(std::all_of(text.begin(), text.end(), [](unsigned char byte) { return byte < 0x80; }));
+            return false;
+        }
+        }
+        namespace bbl { ${functions} }
+    `;
+}
+
 test(
     "stylesheet revisions track rules, text and attachment order independently of ordinary UI changes",
     { skip: !nativeTools },
     () => {
         const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
         const functions = [
-            "UiElementRecord& ui_element(",
-            "void mark_ui_changed(Engine& engine)",
-            "void mark_ui_changed(Engine& engine,",
             "bool ui_get_selected(",
             "void ui_set_selected(",
             "void normalize_select_selection(",
-            "void ui_set_text(",
             "void ui_set_inner_rml(",
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
             "void ui_add_host_style_rule(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
-            "void ui_replace_children(",
             "void ui_remove(",
         ]
             .map((signature) => cppFunction(source, signature))
@@ -968,6 +985,7 @@ test(
         #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
+        ${uiTextMutationFixture(source)}
         namespace bbl { ${functions} }
         int main() {
             using namespace bbl;
@@ -979,6 +997,7 @@ test(
             for (int i = 0; i < 100; ++i) ui_set_text(engine, label, std::to_string(i));
             ui_append_to_root(engine, label);
             assert(engine.ui_style_revision == 0 && engine.ui_revision == 101);
+            assert(engine.ui_text_revision == 99);
             ui_set_text(engine, first, "@keyframes pulse{}");
             assert(engine.ui_style_revision == 1);
             ui_set_text(engine, first, "@keyframes pulse{}");
@@ -1021,7 +1040,6 @@ test(
         const uiSource = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
         const colorSource = readFileSync("native/src/pal_ui_color.hpp", "utf8");
         const uiGetters = [
-            "UiElementRecord& ui_element(",
             "std::string ui_get_attribute(",
             "bool ui_has_attribute(",
             "bool ui_get_checked(",
@@ -1051,6 +1069,7 @@ test(
         namespace bbl::pal {
         ${cppFunction(colorSource, "inline std::optional<std::string> ui_simple_color(")}
         }
+        ${uiTextMutationFixture(uiSource)}
         namespace bbl { ${uiGetters} }
         namespace bbl::pal {
         ${declarations}
@@ -1075,6 +1094,16 @@ test(
             pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
+            const auto text_since = source.ui_text_revision;
+            const auto target_text_revision = target.ui_text_revision;
+            ui_set_text(source, UiElementHandle{0}, "text-only update");
+            auto text_snapshot = pal::snapshot_document(source, text_since);
+            assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
+            assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
+            pal::apply_document(target, std::move(*text_snapshot), inbox);
+            assert(target.ui_elements[0].text == "text-only update");
+            assert(target.ui_style_revision == 8);
+            assert(target.ui_text_revision == target_text_revision + 1);
             source.ui_elements.resize(6);
             source.ui_elements[0].tag = "input";
             source.ui_elements[0].attributes["type"] = "checkbox";

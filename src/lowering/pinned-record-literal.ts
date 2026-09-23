@@ -40,6 +40,7 @@ export function pinnedRecordLiteral(
     lowerer: PinnedNumericLowerer,
     expression: ts.Expression,
     schema: PinnedRecordSchema,
+    localName = "record",
 ): string {
     const statements: string[] = [];
     const append = (input: ts.Expression): void => {
@@ -58,7 +59,7 @@ export function pinnedRecordLiteral(
                     node,
                     "A native record copy must precede field assignments.",
                 );
-            statements.push(`record = ${lowerer.expression(node)};`);
+            statements.push(`${localName} = ${lowerer.expression(node)};`);
             return;
         }
         for (const property of node.properties) {
@@ -89,13 +90,19 @@ export function pinnedRecordLiteral(
                 ? property.name
                 : property.initializer;
             const lowered = field.record
-                ? pinnedRecordLiteral(context, lowerer, value, field.record)
+                ? pinnedRecordLiteral(
+                      context,
+                      lowerer,
+                      value,
+                      field.record,
+                      localName,
+                  )
                 : lowerer.expression(value);
             statements.push(
-                `record.${field.cpp} = ${field.convert ? field.convert(lowered) : lowered};`,
+                `${localName}.${field.cpp} = ${field.convert ? field.convert(lowered) : lowered};`,
             );
         }
     };
     append(expression);
-    return `([&]() { ${schema.cpp} record{}; ${statements.join(" ")} return record; })()`;
+    return `([&]() { ${schema.cpp} ${localName}{}; ${statements.join(" ")} return ${localName}; })()`;
 }

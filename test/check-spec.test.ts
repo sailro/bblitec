@@ -293,7 +293,10 @@ test("spreads the registry pose before a check's own clock", () => {
             phases: [],
             expect: [],
         }),
-        { BBLITE_SCREENSHOT_FRAME: "20" },
+        {
+            BBLITE_SCREENSHOT_FRAME: "20",
+            BBLITE_LOCATION_SEARCH: "?captureFrame=10",
+        },
     );
     assert.deepEqual(
         checkEnvironmentBase(scene, {
@@ -304,6 +307,7 @@ test("spreads the registry pose before a check's own clock", () => {
         }),
         {
             BBLITE_SCREENSHOT_FRAME: "20",
+            BBLITE_LOCATION_SEARCH: "?captureFrame=10",
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
         },
     );
@@ -315,6 +319,25 @@ test("spreads the registry pose before a check's own clock", () => {
             expect: [],
         }),
         {},
+    );
+});
+
+test("checks apply registered capture queries without changing no-query twins", () => {
+    const scene = getScene("ocean");
+    const spec = { scene: scene.id, phases: [], expect: [] };
+    assert.equal(
+        checkEnvironmentBase(scene, spec).BBLITE_LOCATION_SEARCH,
+        "?seekTime=0.1",
+    );
+    assert.equal(
+        checkEnvironmentBase(scene, { ...spec, twin: true })
+            .BBLITE_LOCATION_SEARCH,
+        "?",
+    );
+    assert.equal(
+        checkEnvironmentBase(scene, { ...spec, base: "none" })
+            .BBLITE_LOCATION_SEARCH,
+        undefined,
     );
 });
 

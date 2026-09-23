@@ -10,7 +10,7 @@ import {
     resolveBackend,
 } from "../src/tooling/artifacts.js";
 
-test("process advertises and accepts a single-scene live deployment without starting a build", () => {
+test("process exposes one normal deployment without a live mode", () => {
     const command = fileURLToPath(
         new URL("../src/scene-command.js", import.meta.url),
     );
@@ -18,36 +18,14 @@ test("process advertises and accepts a single-scene live deployment without star
         encoding: "utf8",
     });
     assert.equal(help.status, 0, help.stderr);
-    assert.match(help.stdout, /process[^\n]*--live/);
-    const all = spawnSync(
+    assert.doesNotMatch(help.stdout, /--live/);
+    const live = spawnSync(
         process.execPath,
-        [command, "process", "all", "--live"],
-        {
-            encoding: "utf8",
-        },
-    );
-    assert.equal(all.status, 1);
-    assert.match(
-        all.stderr,
-        /process --live requires one scene or TypeScript source/,
-    );
-    const missing = spawnSync(
-        process.execPath,
-        [
-            command,
-            "process",
-            "missing-live-fixture",
-            "--live",
-            "--backend",
-            "both",
-        ],
+        [command, "process", "ocean", "--live", "--backend", "both"],
         { encoding: "utf8" },
     );
-    assert.equal(missing.status, 1);
-    assert.match(
-        missing.stderr,
-        /Unknown scene or TypeScript source 'missing-live-fixture'/,
-    );
+    assert.equal(live.status, 1);
+    assert.match(live.stderr, /Unknown process argument '--live'/);
 });
 
 // The strict parser every scene subcommand shares. These are the

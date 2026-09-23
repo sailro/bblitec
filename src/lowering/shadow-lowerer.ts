@@ -33,7 +33,7 @@ import {
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
-import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
+import { doubleLiteral, floatLiteral, stringLiteral } from "../cpp-literals.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
@@ -48,6 +48,7 @@ const esmModule = "src/shadow/esm-directional-shadow-generator.ts";
 const csmModule = "src/shadow/csm-directional-shadow-generator.ts";
 const csmHooksModule = "src/shadow/csm-shadow-task-hooks.ts";
 const sceneModule = "src/scene/scene-core.ts";
+const shadowTaskModule = "src/frame-graph/shadow-task.ts";
 
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
 const mathCalls = pinnedNumericMathCalls();
@@ -2275,6 +2276,22 @@ export function shadowFactorySource(
                 "frame-graph task list.",
         );
     }
+    const { file: shadowTaskFile, declaration: shadowTaskDeclaration } =
+        context.functionDeclaration(shadowTaskModule, "createShadowTask");
+    const shadowTask = context.variableInitializer(
+        shadowTaskDeclaration,
+        "task",
+    );
+    if (!ts.isObjectLiteralExpression(shadowTask)) {
+        context.contractError(
+            shadowTask,
+            "Expected the source shadow task record.",
+        );
+    }
+    const shadowTaskName = context.stringValue(
+        context.propertyInitializer(shadowTask, "name"),
+        shadowTaskFile,
+    );
     const { declaration: stateDeclaration } = context.functionDeclaration(
         hooksModule,
         "ensurePcfShadowTaskState",
@@ -2371,7 +2388,7 @@ export function shadowFactorySource(
         source: `// ${context.provenance(
             spotModule,
             "createPcfSpotlightShadowGenerator",
-            `${baseModule}#createShadowRenderTarget, ${hooksModule}#ensurePcfShadowTaskState, and ${sceneModule}#registerSceneWithShadowSupport`,
+            `${baseModule}#createShadowRenderTarget, ${hooksModule}#ensurePcfShadowTaskState, ${sceneModule}#registerSceneWithShadowSupport, and ${shadowTaskModule}#createShadowTask`,
         )}
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_shadow.hpp>
@@ -2673,6 +2690,7 @@ void register_scene_with_shadow_support(Scene& scene) {
     if (!scene.engine) {
         throw std::runtime_error("Scene is not associated with an engine.");
     }
+    scene.state->shadow_task_name = ${stringLiteral(shadowTaskName)};
     // The pin installs its shadow scheduler on each scene. A persistent
     // generator can outlive a disposed scene, so existing caster passes
     // still have to be scheduled by the scene that now uses it.

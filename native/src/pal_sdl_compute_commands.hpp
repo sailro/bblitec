@@ -1,6 +1,9 @@
 #pragma once
 #include <bblite/pal_offscreen.hpp>
 #include "pal_sdl_gpu_shared.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include "pal_sdl_gpu_timestamp.hpp"
+#endif
 #if BBLITE_COMPUTE_SHADERS
 #include "pal_sdl_compute_pipeline.hpp"
 #endif
@@ -27,6 +30,13 @@ inline void submit_sdl_compute_commands(SDL_GPUDevice* device,
 #else
             (void)dispatch;
             throw std::runtime_error("This build does not provide compute dispatch.");
+#endif
+        } else if (const auto* timestamp = std::get_if<GpuTimestampWrite>(&command)) {
+#if BBLITE_GPU_TASK_TIMING
+            encode_sdl_gpu_timestamp(encoder, *timestamp);
+#else
+            (void)timestamp;
+            throw std::runtime_error("This build does not provide GPU timestamps.");
 #endif
         } else {
 #if BBLITE_COMPUTE_MIPMAPS

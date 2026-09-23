@@ -1,6 +1,9 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#endif
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 #include <bblite/pal_offscreen.hpp>
 #endif
@@ -29,6 +32,17 @@ inline void dispose_engine_storage_buffers(Engine& engine) {
         engine.dispose_storage_buffers(engine);
 }
 inline void destroy_engine_device(Engine& engine) {
+#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+    if (engine.gpu_task_timing) {
+        auto& timing = *engine.gpu_task_timing;
+        if (timing.disable)
+            timing.disable();
+        timing.disable = {};
+        timing.timer.reset();
+        timing.device.reset();
+        timing.supported = false;
+    }
+#endif
     engine.device_disposed = true;
     engine.renderer_restart_requested = false;
     engine.native_resource_owners.clear();

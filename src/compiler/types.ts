@@ -67,14 +67,10 @@ export interface CompileOptions extends DeploymentOptions {
     title?: string;
     width?: number;
     height?: number;
-    /**
-     * The query string the scene's reference pose is captured at
-     * (`"?seekTime=0"`). `window.location.search` folds to it, so a scene
-     * that branches on a query parameter takes the same branch natively
-     * that the reference page takes. Empty when the pin serves the scene
-     * bare, which is every scene that does not read the query.
-     */
+    /** Generation query for statically specialized source; empty by default. */
     search?: string;
+    /** Initial query for a runtime Window; defaults to the generation query. */
+    initialSearch?: string;
     /** Optional audited host-page UI companion for a registered native scene. */
     nativeHostUi?: NativeHostUi;
 }
@@ -2569,6 +2565,7 @@ export type Feature =
     | "engine:device-recovery"
     | "engine:dispose"
     | "engine:gpu-retirement"
+    | "engine:gpu-task-timing"
     | "compute:storage-texture"
     | "compute:texture-mipmaps"
     | "compute:binding-decl"
@@ -2886,5 +2883,6 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     width: number;
     height: number;
     search: string;
+    initialSearch?: string;
     nativeHostUi?: NativeHostUi;
 }

@@ -25,6 +25,7 @@
     "rmlui-zero-track-grid.patch",
     "rmlui-zz-container-queries.patch",
     "rmlui-zz-grid-column.patch",
-    "rmlui-zzz-android-charconv.patch"
+    "rmlui-zzz-android-charconv.patch",
+    "rmlui-zzzz-percentage-radius.patch"
   ]
 }

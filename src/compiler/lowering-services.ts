@@ -1046,6 +1046,7 @@ export interface LoweringServices {
     ): void;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     gltfAlreadyLoaded(): boolean;
+    compileSceneRegistration(scene: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,

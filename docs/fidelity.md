@@ -35,7 +35,7 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |
 | Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
 | Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
-| GPU task timing | Native devices do not enable timestamp-query; pinned queries report unsupported and no durations are synthesized |
+| GPU task timing | Pinned frame-graph task snapshots use asynchronous hardware timestamp readback; [backend capability](backends.md#backend-comparison) determines availability |
 | iOS Simulator | Explicit Dawn/Metal target with SDL UIKit hosting; no emulation of an iPhone GPU's capabilities |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |

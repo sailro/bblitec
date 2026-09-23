@@ -1,5 +1,10 @@
 {
-  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
   "findings": [
     {
       "summary": "Share flat pinned record schemas across compute binding declarations, binding sets and one-shot lowering.",
@@ -39,6 +44,34 @@
     },
     {
       "summary": "Reuse the same-process Ocean pause checkpoint instead of launching a redundant paused native phase.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse shared pinned record emission for GPU timing records and snapshots, with an explicit local name to avoid source-variable shadowing.",
+      "applied": true
+    },
+    {
+      "summary": "Borrow compute task spans instead of allocating single-task vectors while collecting GPU timings.",
+      "applied": true
+    },
+    {
+      "summary": "Move final-use timing task arrays and owning snapshot fields instead of copying them during readback publication.",
+      "applied": true
+    },
+    {
+      "summary": "Share task timing scope cleanup across scene and standalone frame-graph renderers.",
+      "applied": true
+    },
+    {
+      "summary": "Represent an outstanding Window repaint with optional batch state instead of a separate pending flag.",
+      "applied": true
+    },
+    {
+      "summary": "Remove the unused compositor-clock callback interface and use its existing condition-variable notifications.",
+      "applied": true
+    },
+    {
+      "summary": "Reserve known native and public GPU timing task-array capacities before filling them.",
       "applied": true
     }
   ]

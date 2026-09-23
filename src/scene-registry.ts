@@ -23,9 +23,9 @@ export interface SceneParityDefinition {
     /**
      * The query string the pinned parity spec serves this scene at, when it
      * serves one (`"?seekTime=0"`). The reference page is navigated with it
-     * and the compiler folds `window.location.search` to the same text, so
-     * both sides take the branch the pin's own test takes. A scene the pin
-     * serves bare leaves this unset, and the query reads as empty.
+     * and native measurements receive the same text. Static scenes fold it
+     * during generation; runtime Window applications start without a query
+     * and use it only during measurements.
      */
     referenceSearch?: string;
     // The native actual lands in `outputDirectory` as
@@ -4922,6 +4922,14 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
         ...resolved,
         parity: {
             ...parityWithFrame,
+            ...(parity.referenceSearch !== undefined
+                ? {
+                      nativeEnvironment: {
+                          ...parityWithFrame.nativeEnvironment,
+                          BBLITE_LOCATION_SEARCH: parity.referenceSearch || "?",
+                      },
+                  }
+                : {}),
             reference: parity.reference ?? {
                 kind: "source",
                 path: `reference/${scene.id}/babylon-lite-golden.png`,

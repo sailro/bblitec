@@ -137,7 +137,7 @@ export function compileWindowIdentity(
         requireWindowHost(context, expression);
         return {
             kind: "string",
-            cpp: `bbl::pal::window_location_search(${context.cppString(context.referenceSearch())})`,
+            cpp: `bbl::pal::window_location_search(${context.cppString(context.options.initialSearch ?? context.referenceSearch())})`,
             dataType: { kind: "string" },
         };
     }

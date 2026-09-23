@@ -14,6 +14,7 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | iOS Simulator | Unsupported by pinned SDL | Metal |
 | iOS device | Metal, unqualified | Metal, unqualified |
 | Lifetime | SDL objects and fences | WebGPU objects and submission retention |
+| GPU task timestamps | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
 
 Backend agreement does not establish browser parity. Measurements live in [status](status.md).
 Runtime selection prefers SDL_GPU when compiled, otherwise Dawn. Explicit invalid or uncompiled
@@ -84,6 +85,12 @@ and engine records do not. Canvas transfer validates before detachment. Renderin
 `close` completes the active callback and microtasks. `terminate` wakes waits and uses compiled
 cancellation points; arbitrary native calls are not preemptible. RAF notifications coalesce per realm.
 Computation workers need no GPU; worker-free builds omit worker scheduling.
+
+Window engines use the supplied RAF timestamp. Windows hosts with the compositor clock API pace
+repaint from its heartbeat and prefer supported mailbox presentation, with FIFO fallback. Other hosts
+use presentation completion. Input callbacks and native defaults finish before repaint. The host services
+input and layout while awaiting RAF callback submissions, bounded by the next heartbeat, then selects
+the latest canvas frames. Completion receipts contain weak native inbox references, never JS values.
 
 `platform:window` selects the host and presenters. A three-image mailbox retains the latest frame;
 consumer fences prevent overwriting sampled images. Normal presentation uses GPU textures; captures

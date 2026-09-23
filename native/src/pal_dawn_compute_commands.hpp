@@ -1,6 +1,9 @@
 #pragma once
 #include <bblite/pal_offscreen.hpp>
 #include "pal_dawn_resources.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include "pal_dawn_gpu_timestamp.hpp"
+#endif
 #if BBLITE_COMPUTE_SHADERS
 #include "pal_dawn_compute_pipeline.hpp"
 #endif
@@ -24,15 +27,21 @@ inline void submit_dawn_compute_commands(WGPUDevice device, WGPUQueue queue,
             (void)dispatch;
             throw std::runtime_error("This build does not provide compute dispatch.");
 #endif
-        } else {
+        } else if (const auto* mip = std::get_if<ComputeMipmapDraw>(&command)) {
 #if BBLITE_COMPUTE_MIPMAPS
-            const auto& mip = std::get<ComputeMipmapDraw>(command);
-            const auto* level = dynamic_cast<const DawnComputeMipmapLevel*>(mip.level.get());
+            const auto* level = dynamic_cast<const DawnComputeMipmapLevel*>(mip->level.get());
             if (!level || level->device != device)
                 throw std::runtime_error("Mipmap level belongs to a different GPU device.");
-            level->encode(encoder, mip.vertices);
+            level->encode(encoder, mip->vertices);
 #else
+            (void)mip;
             throw std::runtime_error("This build does not provide compute texture mipmaps.");
+#endif
+        } else {
+#if BBLITE_GPU_TASK_TIMING
+            encode_dawn_gpu_timestamp(encoder, std::get<GpuTimestampWrite>(command));
+#else
+            throw std::runtime_error("This build does not provide GPU timestamps.");
 #endif
         }
     }

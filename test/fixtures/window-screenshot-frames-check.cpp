@@ -5,6 +5,7 @@
 #define BBLITE_HAS_DAWN 0
 #define BBLITE_HAS_PBR_RENDERER 0
 #include "pal_ui_rml.cpp"
+#include "window-frame-clock-fixture.hpp"
 #include <cassert>
 #include <fstream>
 
@@ -12,7 +13,9 @@ static SDL_Window* hidden_window(const char* title, int width, int height, SDL_W
     return SDL_CreateWindow(title, width, height, flags | SDL_WINDOW_HIDDEN);
 }
 #define SDL_CreateWindow hidden_window
+#define WindowFrameClock FixtureWindowFrameClock
 #include "pal_window_realm.cpp"
+#undef WindowFrameClock
 #undef SDL_CreateWindow
 #include "pal_media_query.cpp"
 
@@ -67,6 +70,7 @@ std::string environment_variable(const char* name) {
     return {};
 }
 double performance_milliseconds() { return 0; }
+double monotonic_milliseconds() { return 0; }
 const char* bblite_build_stamp() { return "fixture-build-stamp"; }
 
 struct ScreenshotPresenter final : WindowPresenter {
@@ -141,10 +145,6 @@ int main() {
     }
 
     std::filesystem::create_directories("artifacts/window-screenshot-frames");
-    for (const auto& checkpoint : parsed) {
-        write_file(checkpoint.path, "stale");
-        write_file(checkpoint.path + ".build-stamp", "stale-stamp");
-    }
     const std::string unrequested = "artifacts/window-screenshot-frames/final.frame-3.png";
     write_file(unrequested, "keep");
     write_file(final_path + ".build-stamp", "final-stamp-owned-by-engine");
@@ -158,26 +158,38 @@ int main() {
     EngineOptions engine_options;
     engine_options.width = 320;
     engine_options.height = 200;
-    checkpoint_frames = "0,2,4";
-    reject_first_checkpoint = true;
-    assert(run_window_application(initialize, engine_options) == 0);
-    assert(checked_cleanup && !reject_first_checkpoint);
-    assert((captures ==
-            std::vector<std::string>{parsed[0].path, parsed[1].path, parsed[2].path, final_path}));
-    assert(presentation_count == final_presentation + 2);
-    for (const auto& checkpoint : parsed) {
-        assert(read_file(checkpoint.path) == "fresh");
-        assert(read_file(checkpoint.path + ".build-stamp") == bblite_build_stamp());
-    }
-    assert(read_file(unrequested) == "keep");
-    assert(read_file(final_path + ".build-stamp") == "final-stamp-owned-by-engine");
+    for (const bool display_clock : {false, true}) {
+        FixtureWindowFrameClock::enabled = display_clock;
+        for (const auto& checkpoint : parsed) {
+            write_file(checkpoint.path, "stale");
+            write_file(checkpoint.path + ".build-stamp", "stale-stamp");
+        }
+        checked_cleanup = false;
+        captures.clear();
+        capture_ui = false;
+        presentation_count = 0;
+        final_presentation = 0;
+        checkpoint_frames = "0,2,4";
+        reject_first_checkpoint = true;
+        assert(run_window_application(initialize, engine_options) == 0);
+        assert(checked_cleanup && !reject_first_checkpoint);
+        assert((captures == std::vector<std::string>{parsed[0].path, parsed[1].path, parsed[2].path,
+                                                     final_path}));
+        assert(presentation_count == final_presentation + 2);
+        for (const auto& checkpoint : parsed) {
+            assert(read_file(checkpoint.path) == "fresh");
+            assert(read_file(checkpoint.path + ".build-stamp") == bblite_build_stamp());
+        }
+        assert(read_file(unrequested) == "keep");
+        assert(read_file(final_path + ".build-stamp") == "final-stamp-owned-by-engine");
 
-    checkpoint_frames.clear();
-    capture_ui = true;
-    captures.clear();
-    presentation_count = 0;
-    final_presentation = 0;
-    assert(run_window_application(initialize, engine_options) == 0);
-    assert(captures == std::vector<std::string>{final_path});
-    assert(presentation_count == final_presentation + 2);
+        checkpoint_frames.clear();
+        capture_ui = true;
+        captures.clear();
+        presentation_count = 0;
+        final_presentation = 0;
+        assert(run_window_application(initialize, engine_options) == 0);
+        assert(captures == std::vector<std::string>{final_path});
+        assert(presentation_count == final_presentation + 2);
+    }
 }

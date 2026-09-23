@@ -26,6 +26,8 @@ vcpkg_from_github(
         # Supply buffer lengths for Tint's robust Metal storage accesses.
         metal-storage-buffer-sizes.patch
         metal-fence-query.patch
+        # Optional hardware timestamp queries; D3D12 direct-queue implementation.
+        gpu-timestamp-queries.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

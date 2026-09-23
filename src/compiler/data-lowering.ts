@@ -4793,6 +4793,7 @@ export class DataLowerer {
         callback: ts.Expression,
         label: string,
     ): Value | undefined {
+        const boundary = this.context.nativeBindingCheckpoint();
         const local =
             ts.isIdentifier(callback) ||
             ts.isArrowFunction(callback) ||
@@ -4816,7 +4817,7 @@ export class DataLowerer {
             kind: "declaration",
             type: "const auto",
             name,
-            initializer: cpp,
+            initializer: this.context.takeNativeTemporary(cpp, boundary),
         });
         return {
             ...this.leafValue(name, type),

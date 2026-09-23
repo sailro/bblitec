@@ -17,6 +17,8 @@ class WindowPresenter {
 public:
     virtual ~WindowPresenter() = default;
     virtual OffscreenDevice& device() = 0;
+    /** Select presentation pacing before the first frame; the host owns the display clock. */
+    virtual void set_display_paced(bool) {}
     virtual bool can_present() = 0;
     virtual bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame& ui,
                          const std::string& capture) = 0;

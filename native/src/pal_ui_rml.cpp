@@ -564,11 +564,25 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     UiElementRecord& record = ui_element(engine, element);
     if (record.text == text && record.inner_rml.empty() && record.children.empty())
         return;
+    // Nonempty plain leaf text cannot change structural selectors or the
+    // anonymous flex/grid wrapper. All other writes retain full projection.
+    const auto plain_text = [](const std::string& value) {
+        return value.find_first_not_of(" \t\r\n\f") != std::string::npos &&
+               !pal::ui_text_needs_emoji_normalization(value);
+    };
+    const bool text_only =
+        record.children.empty() && record.markup_children.empty() && record.inner_rml.empty() &&
+        record.markup_owner.value == invalid_handle && record.tag != "style" &&
+        record.tag != "input" && record.tag != "textarea" && record.tag != "select" &&
+        record.tag != "option" && record.tag != "canvas" && record.tag != "#text" &&
+        plain_text(record.text) && plain_text(text);
     if (!record.children.empty())
         ui_replace_children(engine, element);
     record.text = std::move(text);
     record.inner_rml.clear();
     mark_ui_changed(engine, record);
+    if (text_only)
+        record.text_revision = ++engine.ui_text_revision;
 }
 
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup) {
@@ -2635,6 +2649,8 @@ struct ProjectedUiElement {
     std::unordered_map<std::string, std::string> style_properties;
     std::vector<std::string> style_property_order;
     std::string resolved_style;
+    std::string outline;
+    std::string outline_offset;
     std::vector<UiElementHandle> child_order;
     std::string intrinsic_min_width;
     std::string crosshair_color;
@@ -2658,6 +2674,51 @@ struct ProjectedGradientText {
     double scale = 1.0;
 };
 
+struct UiCpuProfile {
+    const bool enabled = environment_variable("BBLITE_CPU_PROFILE") == "1";
+    std::uint64_t frame = 0;
+    struct Sample {
+        std::uint32_t updates = 0, changed = 0, text_batches = 0, text_nodes = 0;
+        std::uint32_t full = 0, reproject = 0, compiled = 0, draws = 0, clips = 0;
+        std::uint32_t released_geometry = 0, textures = 0, released_textures = 0;
+        std::uint32_t masks = 0, snapshots = 0, gradients = 0;
+        std::uint64_t triangles = 0, clip_pairs = 0;
+        std::uint64_t texture_bytes = 0, compiled_bytes = 0;
+        const char* text_path = "none";
+        std::uint32_t fallback_node = invalid_handle;
+        double projection = 0, context = 0, decorations = 0, intrinsic = 0;
+        double rectangles = 0, outlines = 0, clipping = 0;
+        double compile_ms = 0, release_geometry_ms = 0, texture_ms = 0, release_texture_ms = 0;
+        double mask_ms = 0, snapshot_ms = 0, gradient_ms = 0, draw_ms = 0;
+    } sample;
+
+    double now() const {
+        if (!enabled)
+            return 0;
+        static const double milliseconds_per_tick =
+            1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
+        return static_cast<double>(SDL_GetPerformanceCounter()) * milliseconds_per_tick;
+    }
+    void split(double& elapsed, double& previous) const {
+        if (!enabled)
+            return;
+        const double current = now();
+        elapsed += current - previous;
+        previous = current;
+    }
+    struct Timer {
+        const UiCpuProfile& cpu;
+        double& elapsed;
+        const double started;
+        Timer(const UiCpuProfile& cpu, double& elapsed)
+            : cpu(cpu), elapsed(elapsed), started(cpu.now()) {}
+        ~Timer() {
+            if (cpu.enabled)
+                elapsed += cpu.now() - started;
+        }
+    };
+};
+
 /**
  * CPU-side RmlUi renderer. It deliberately owns no graphics API objects:
  * RmlUi compiles retained geometry here and each PAL renderer consumes the
@@ -2666,6 +2727,7 @@ struct ProjectedGradientText {
  */
 class UiRenderRecorder final : public Rml::RenderInterface {
 public:
+    UiCpuProfile cpu;
     ~UiRenderRecorder() override {
         for (const auto& [key, cached] : retained_canvas_textures) {
             static_cast<void>(key);
@@ -2710,6 +2772,12 @@ public:
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                 Rml::Span<const int> indices) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.compile_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.compiled;
+            cpu.sample.compiled_bytes +=
+                vertices.size() * sizeof(Rml::Vertex) + indices.size() * sizeof(int);
+        }
         auto geometry = std::make_unique<Geometry>();
         geometry->vertices.assign(vertices.begin(), vertices.end());
         geometry->indices.assign(indices.begin(), indices.end());
@@ -2720,6 +2788,9 @@ public:
 
     void RenderToClipMask(Rml::ClipMaskOperation operation, Rml::CompiledGeometryHandle handle,
                           Rml::Vector2f translation) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.mask_ms);
+        if (cpu.enabled)
+            ++cpu.sample.masks;
         const auto& geometry = *reinterpret_cast<const Geometry*>(handle);
         std::vector<UiClipTriangle> triangles;
         triangles.reserve(geometry.indices.size() / 3);
@@ -2873,6 +2944,11 @@ public:
         const Geometry& geometry = *reinterpret_cast<const Geometry*>(handle);
         if (geometry.vertices.empty() || geometry.indices.empty())
             return;
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.draw_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.draws;
+            cpu.sample.triangles += geometry.indices.size() / 3;
+        }
 
         const std::uint32_t base_vertex = static_cast<std::uint32_t>(frame.vertices.size());
         const std::uint32_t first_index = static_cast<std::uint32_t>(frame.indices.size());
@@ -2897,8 +2973,17 @@ public:
             frame.indices.push_back(base_vertex + static_cast<std::uint32_t>(index));
         }
 
-        if (clip_mask_enabled)
+        if (clip_mask_enabled) {
+            const double started = cpu.now();
+            if (cpu.enabled) {
+                ++cpu.sample.clips;
+                cpu.sample.clip_pairs +=
+                    static_cast<std::uint64_t>(geometry.indices.size() / 3) * clip_mask.size();
+            }
             clip_ui_geometry(frame, base_vertex, first_index, clip_mask);
+            if (cpu.enabled)
+                cpu.sample.clipping += cpu.now() - started;
+        }
 
         std::uint64_t texture_id = 0;
         if (texture_handle) {
@@ -2966,6 +3051,9 @@ public:
     }
 
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.release_geometry_ms);
+        if (cpu.enabled)
+            ++cpu.sample.released_geometry;
         delete reinterpret_cast<Geometry*>(handle);
     }
 
@@ -3055,6 +3143,11 @@ public:
         if (source_dimensions.x <= 0 || source_dimensions.y <= 0 || source.empty()) {
             return {};
         }
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.texture_ms);
+        if (cpu.enabled) {
+            ++cpu.sample.textures;
+            cpu.sample.texture_bytes += source.size();
+        }
         auto texture = std::make_unique<Texture>();
         texture->id = next_texture_id++;
         texture->width = static_cast<std::uint32_t>(source_dimensions.x);
@@ -3065,6 +3158,9 @@ public:
     }
 
     Rml::TextureHandle SaveLayerAsTexture() override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.snapshot_ms);
+        if (cpu.enabled)
+            ++cpu.sample.snapshots;
         if (layers.empty())
             throw std::runtime_error("Saving a retained UI texture requires an owned layer.");
         const auto region = scissor.Intersect(Rml::Rectanglei::FromSize(
@@ -3084,6 +3180,9 @@ public:
     }
 
     void ReleaseTexture(Rml::TextureHandle handle) override {
+        const UiCpuProfile::Timer timer(cpu, cpu.sample.release_texture_ms);
+        if (cpu.enabled)
+            ++cpu.sample.released_textures;
         delete reinterpret_cast<Texture*>(handle);
     }
 
@@ -3153,6 +3252,9 @@ public:
 
         if (!shader.texture || shader.minimum != minimum || shader.extent != extent ||
             shader.dimensions.x != int(width) || shader.dimensions.y != int(height)) {
+            const UiCpuProfile::Timer timer(cpu, cpu.sample.gradient_ms);
+            if (cpu.enabled)
+                ++cpu.sample.gradients;
             if (shader.texture)
                 ReleaseTexture(shader.texture);
             std::vector<Rml::byte> pixels(static_cast<std::size_t>(width) * height * 4);
@@ -4543,6 +4645,63 @@ struct UiRmlRuntime {
         project_select_selection(raw, handle);
     }
 
+    bool sync_text_updates() {
+        auto& cpu = render_interface.cpu;
+        const auto fallback = [&](const char* reason, std::uint32_t node = invalid_handle) {
+            if (cpu.enabled) {
+                cpu.sample.text_path = reason;
+                cpu.sample.fallback_node = node;
+            }
+            return false;
+        };
+        if (!engine.ui_only_text_changed_since(projected_revision, projected_text_revision))
+            return fallback("mixed");
+        struct Update {
+            ProjectedUiElement* projected;
+            Rml::ElementText* text;
+            const std::string* value;
+        };
+        std::vector<Update> updates;
+        for (std::size_t index = 0; index < engine.ui_elements.size(); ++index) {
+            const auto& record = engine.ui_elements[index];
+            if (record.text_revision <= projected_text_revision)
+                continue;
+            auto& projected = projected_elements.at(index);
+            auto* element = projected.element;
+            if (!element)
+                continue;
+            // Generated content, gradients and control internals may own text
+            // children. Only an unchanged, single authored text child is safe.
+            if (element->GetNumChildren() != 1)
+                return fallback("children", static_cast<std::uint32_t>(index));
+            if (element->GetProperty<Rml::String>("bbl-text-gradient").find('|') !=
+                Rml::String::npos)
+                return fallback("gradient", static_cast<std::uint32_t>(index));
+            auto* child = element->GetChild(0);
+            if (projected.text_wrapped) {
+                if (child->GetTagName() != "span" || child->GetNumChildren() != 1)
+                    return fallback("wrapper", static_cast<std::uint32_t>(index));
+                child = child->GetChild(0);
+            }
+            auto* text = dynamic_cast<Rml::ElementText*>(child);
+            if (!text || text->GetText() != projected.text)
+                return fallback("text", static_cast<std::uint32_t>(index));
+            updates.push_back({&projected, text, &record.text});
+        }
+        for (const auto& update : updates) {
+            update.text->SetText(*update.value);
+            update.projected->text = *update.value;
+        }
+        projected_revision = engine.ui_revision;
+        projected_text_revision = engine.ui_text_revision;
+        if (cpu.enabled) {
+            ++cpu.sample.text_batches;
+            cpu.sample.text_nodes += static_cast<std::uint32_t>(updates.size());
+            cpu.sample.text_path = "retained";
+        }
+        return true;
+    }
+
     void sync_tree() {
         ensure_projection_size();
         if (engine.ui_document_roots.active()) {
@@ -4642,6 +4801,7 @@ struct UiRmlRuntime {
             if (auto* element = projected_elements[index].element)
                 event_targets.emplace(element, DomEventTarget::node(index));
         projected_revision = engine.ui_revision;
+        projected_text_revision = engine.ui_text_revision;
     }
 
     bool has_active_authored_width(UiElementHandle handle, const UiElementRecord& record) const {
@@ -4777,16 +4937,22 @@ struct UiRmlRuntime {
         return changed;
     }
 
-    void sync_outlines() {
+    void sync_outlines(bool styles_changed = true) {
         for (std::uint32_t index = 0; index < projected_elements.size(); ++index) {
             auto& projected = projected_elements[index];
             auto* parent = projected.element;
             if (!parent)
                 continue;
-            std::string style =
-                resolved_style_attribute(UiElementHandle{index}, engine.ui_elements[index]);
-            const std::string outline = take_css_declaration(style, "--bbl-outline");
-            const std::string offset_text = take_css_declaration(style, "--bbl-outline-offset");
+            if (styles_changed) {
+                std::string style =
+                    resolved_style_attribute(UiElementHandle{index}, engine.ui_elements[index]);
+                projected.outline = take_css_declaration(style, "--bbl-outline");
+                projected.outline_offset = take_css_declaration(style, "--bbl-outline-offset");
+            } else if (projected.outline.empty() || projected.outline == "none") {
+                continue;
+            }
+            const auto& outline = projected.outline;
+            const auto& offset_text = projected.outline_offset;
             auto* ring = parent->QuerySelector("bbl-outline");
             if (outline.empty() || outline == "none") {
                 if (ring)
@@ -4817,22 +4983,23 @@ struct UiRmlRuntime {
                 return std::string(side) + ":" + std::to_string(-extent - border / density_ratio) +
                        "dp;";
             };
-            const auto radius = [&](const char* corner, double value) {
-                return std::string("border-") + corner +
-                       "-radius:" + std::to_string(value / density_ratio + extent) + "dp;";
-            };
             ring->SetAttribute("style",
                                "position:absolute;pointer-events:none;box-sizing:border-box;" +
                                    inset("top", computed.border_top_width()) +
                                    inset("right", computed.border_right_width()) +
                                    inset("bottom", computed.border_bottom_width()) +
-                                   inset("left", computed.border_left_width()) +
-                                   radius("top-left", computed.border_top_left_radius()) +
-                                   radius("top-right", computed.border_top_right_radius()) +
-                                   radius("bottom-left", computed.border_bottom_left_radius()) +
-                                   radius("bottom-right", computed.border_bottom_right_radius()) +
-                                   "border:" + std::to_string(width) + "dp " +
-                                   outline.substr(solid + 7) + ";");
+                                   inset("left", computed.border_left_width()) + "border:" +
+                                   std::to_string(width) + "dp " + outline.substr(solid + 7) + ";");
+            const auto radii = parent->GetRenderBox(Rml::BoxArea::Border).GetBorderRadius();
+            constexpr std::array corner_properties{
+                Rml::PropertyId::BorderTopLeftRadius, Rml::PropertyId::BorderTopRightRadius,
+                Rml::PropertyId::BorderBottomRightRadius, Rml::PropertyId::BorderBottomLeftRadius};
+            for (std::size_t corner = 0; corner < radii.size(); ++corner)
+                ring->SetProperty(
+                    corner_properties[corner],
+                    Rml::Property(radii[corner] +
+                                      Rml::Vector2f(static_cast<float>(extent) * density_ratio),
+                                  Rml::Unit::PX));
         }
     }
 
@@ -5311,7 +5478,8 @@ struct UiRmlRuntime {
     bool style_trace_written = false;
     std::vector<Rml::Element*> current_color_svg_elements;
     std::vector<std::uint32_t> projected_root_order;
-    std::uint64_t projected_revision = invalid_handle;
+    std::uint64_t projected_revision = ~std::uint64_t{0};
+    std::uint64_t projected_text_revision = 0;
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
     std::string css_font_family;
@@ -5492,6 +5660,10 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
 }
 
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height) {
+    auto& cpu = runtime.render_interface.cpu;
+    double checkpoint = cpu.now();
+    if (cpu.enabled)
+        ++cpu.sample.updates;
     runtime.sync_native_focus();
     UiProjectionScope projection_scope(runtime.projecting);
     const bool dimensions_changed =
@@ -5503,11 +5675,18 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     const bool density_changed = runtime.update_density_ratio();
     const bool viewport_changed = dimensions_changed || density_changed;
     const bool tree_changed = runtime.projected_revision != runtime.engine.ui_revision;
+    if (cpu.enabled && tree_changed)
+        ++cpu.sample.changed;
     if (tree_changed || viewport_changed)
         runtime.sync_style_sheet(viewport_changed);
     const bool motion_changed = runtime.sync_motion_preference();
-    if (tree_changed || motion_changed || viewport_changed)
+    const bool text_only =
+        tree_changed && !motion_changed && !viewport_changed && runtime.sync_text_updates();
+    if ((tree_changed && !text_only) || motion_changed || viewport_changed) {
+        if (cpu.enabled)
+            ++cpu.sample.full;
         runtime.sync_tree();
+    }
     if (viewport_changed) {
         for (std::size_t index = 0; index < runtime.projected_elements.size(); ++index) {
             auto* element = runtime.projected_elements[index].element;
@@ -5518,7 +5697,9 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                 runtime.set_projected_property(*element, name, record.style_properties.at(name));
         }
     }
+    cpu.split(cpu.sample.projection, checkpoint);
     runtime.context->Update();
+    cpu.split(cpu.sample.context, checkpoint);
     if (runtime.sync_text_form_metrics())
         runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
@@ -5529,6 +5710,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     const bool hover_changed = runtime.sync_hover_states();
     const bool containers_changed = runtime.sync_container_queries();
     if (hover_changed || containers_changed) {
+        if (cpu.enabled)
+            ++cpu.sample.reproject;
         // Public conditional declarations are handled by RmlUi itself. Re-run the
         // private projection so intrinsic widths and decorators observe the
         // same active selector set.
@@ -5561,25 +5744,34 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     const bool layout_changed = tree_changed || density_changed || dimensions_changed ||
                                 motion_changed || generated_changed || containers_changed ||
                                 hover_changed;
+    cpu.split(cpu.sample.decorations, checkpoint);
     if (layout_changed)
         runtime.update_intrinsic_widths();
+    cpu.split(cpu.sample.intrinsic, checkpoint);
     runtime.sync_client_rects(layout_changed);
+    cpu.split(cpu.sample.rectangles, checkpoint);
     if (layout_changed || focus_changed) {
-        runtime.sync_outlines();
+        runtime.sync_outlines(!text_only || focus_changed || hover_changed || containers_changed ||
+                              generated_changed);
         runtime.context->Update();
     }
     if (runtime.update_gradient_text())
         runtime.context->Update();
+    cpu.split(cpu.sample.outlines, checkpoint);
 }
 
 const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t width,
                                          std::uint32_t height) {
+    auto& cpu = runtime.render_interface.cpu;
+    const double started = cpu.now();
     runtime.render_interface.begin_frame(width, height);
     // Canvas overlays are below the regular retained DOM controls in the
     // racer (speed lines at z=9, HUD/minimap at z=10). Queue their geometry
     // first, then let RmlUi draw the interactive tree above it.
     runtime.render_canvases();
+    const double canvases_finished = cpu.now();
     runtime.context->Render();
+    const double render_finished = cpu.now();
     if (!runtime.style_trace_written && std::getenv("BBLITE_UI_STYLE_TRACE")) {
         Rml::ElementList elements;
         runtime.document->QuerySelectorAll(
@@ -5602,6 +5794,66 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
         append_canvas_focus_outline(runtime.render_interface.frame);
     }
     runtime.render_interface.append_composite_quad();
+    if (cpu.enabled) {
+        const auto& sample = cpu.sample;
+#if defined(_WIN32)
+        if (runtime.platform_fonts) {
+            const auto font = runtime.platform_fonts->take_cpu_sample();
+            if (sample.changed || cpu.frame % 30 == 0)
+                std::fprintf(
+                    stderr,
+                    "[cpu][font] frame=%llu width_calls=%llu width_ms=%.3f "
+                    "mapping_calls=%llu mapping_ms=%.3f shape_calls=%llu shape_ms=%.3f "
+                    "generate_calls=%llu generate_ms=%.3f glyph_misses=%llu glyph_ms=%.3f "
+                    "width_fallback=%llu generate_fallback=%llu "
+                    "shape_cache_hits=%llu shape_cache_evictions=%llu shape_oversized=%llu\n",
+                    static_cast<unsigned long long>(cpu.frame),
+                    static_cast<unsigned long long>(font.widths), font.width_ms,
+                    static_cast<unsigned long long>(font.mapping), font.mapping_ms,
+                    static_cast<unsigned long long>(font.shapes), font.shape_ms,
+                    static_cast<unsigned long long>(font.generated), font.generate_ms,
+                    static_cast<unsigned long long>(font.glyphs), font.glyph_ms,
+                    static_cast<unsigned long long>(font.width_fallback),
+                    static_cast<unsigned long long>(font.generate_fallback),
+                    static_cast<unsigned long long>(font.cache_hits),
+                    static_cast<unsigned long long>(font.cache_evictions),
+                    static_cast<unsigned long long>(font.cache_oversized));
+        }
+#endif
+        if (sample.changed || cpu.frame % 30 == 0) {
+            std::fprintf(stderr,
+                         "[cpu][rml] frame=%llu revision=%llu updates=%u changed=%u "
+                         "text_batches=%u text_nodes=%u full=%u reproject=%u text_path=%s "
+                         "fallback_node=%u projection_ms=%.3f context_ms=%.3f decorations_ms=%.3f "
+                         "intrinsic_ms=%.3f rectangles_ms=%.3f outlines_ms=%.3f "
+                         "canvas_ms=%.3f render_ms=%.3f compiled=%u draws=%u triangles=%llu "
+                         "clips=%u clip_pairs=%llu clip_ms=%.3f\n",
+                         static_cast<unsigned long long>(cpu.frame),
+                         static_cast<unsigned long long>(runtime.engine.ui_revision),
+                         sample.updates, sample.changed, sample.text_batches, sample.text_nodes,
+                         sample.full, sample.reproject, sample.text_path, sample.fallback_node,
+                         sample.projection, sample.context, sample.decorations, sample.intrinsic,
+                         sample.rectangles, sample.outlines, canvases_finished - started,
+                         render_finished - canvases_finished, sample.compiled, sample.draws,
+                         static_cast<unsigned long long>(sample.triangles), sample.clips,
+                         static_cast<unsigned long long>(sample.clip_pairs), sample.clipping);
+            std::fprintf(stderr,
+                         "[cpu][rml-resources] frame=%llu compile_ms=%.3f compiled_bytes=%llu "
+                         "released_geometry=%u release_geometry_ms=%.3f textures=%u "
+                         "texture_bytes=%llu texture_ms=%.3f released_textures=%u "
+                         "release_texture_ms=%.3f masks=%u mask_ms=%.3f snapshots=%u "
+                         "snapshot_ms=%.3f gradients=%u gradient_ms=%.3f draw_ms=%.3f\n",
+                         static_cast<unsigned long long>(cpu.frame), sample.compile_ms,
+                         static_cast<unsigned long long>(sample.compiled_bytes),
+                         sample.released_geometry, sample.release_geometry_ms, sample.textures,
+                         static_cast<unsigned long long>(sample.texture_bytes), sample.texture_ms,
+                         sample.released_textures, sample.release_texture_ms, sample.masks,
+                         sample.mask_ms, sample.snapshots, sample.snapshot_ms, sample.gradients,
+                         sample.gradient_ms, sample.draw_ms);
+        }
+        cpu.sample = {};
+        ++cpu.frame;
+    }
     return runtime.render_interface.frame;
 }
 

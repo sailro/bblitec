@@ -25,6 +25,10 @@
 #include "pal_sdl_gpu_effect.hpp"
 #endif
 #include "pal_sdl_gpu_shared.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#include "pal_sdl_gpu_timestamp.hpp"
+#endif
 
 namespace bbl::pal {
 
@@ -456,6 +460,9 @@ public:
     }
     FramePreparation update() {
         (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+#if BBLITE_GPU_TASK_TIMING
+        begin_gpu_task_timing_frame(engine);
+#endif
         return FramePreparation::ready;
     }
     bool acquire() {
@@ -477,8 +484,17 @@ public:
     void synchronize() { build_graph(state, engine, width, height); }
     void encode() {
         capture_texture = nullptr;
+#if BBLITE_GPU_TASK_TIMING
+        GpuTaskTimingSequence timing_sequence(
+            engine, [&](const auto& write) { encode_sdl_gpu_timestamp(command, write); });
+#endif
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            if (task.execution_enabled == false)
+                continue;
+#if BBLITE_GPU_TASK_TIMING
+            const auto timing_scope = timing_sequence.scoped_task(engine, handle);
+#endif
 #if BBLITE_HAS_EFFECT_TASK
             if (task.kind == FrameTaskKind::effect) {
                 EffectPass& pass = state.effects.at(handle.value);
@@ -542,6 +558,9 @@ public:
         } else if (!command.submit()) {
             gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
         }
+#if BBLITE_GPU_TASK_TIMING
+        finish_gpu_task_timing_frame(engine);
+#endif
     }
     void complete() {
         finish_frame(engine);

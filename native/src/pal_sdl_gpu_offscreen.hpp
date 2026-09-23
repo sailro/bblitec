@@ -2,6 +2,9 @@
 
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_offscreen_gpu.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include "pal_sdl_gpu_timestamp.hpp"
+#endif
 #if BBLITE_COMPUTE_SHADERS
 #include "pal_sdl_compute_pipeline.hpp"
 #endif
@@ -12,7 +15,7 @@
 #include "pal_sdl_compute_mipmaps.hpp"
 #endif
 
-#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
+#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS || BBLITE_GPU_TASK_TIMING
 #include "pal_sdl_compute_commands.hpp"
 #endif
 #if BBLITE_COMPUTE_BUFFERS
@@ -58,7 +61,24 @@ private:
 
 /** The host retains the device until all producers and image leases end. */
 struct SdlOffscreenDevice final : OffscreenDevice {
-#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
+#if BBLITE_GPU_TASK_TIMING
+    bool supports_gpu_timestamps() const override {
+        return SDL_BBLiteGetGPUTimestampFrequency(device) != 0;
+    }
+    std::shared_ptr<GpuTimestampQuerySet>
+    create_gpu_timestamp_query_set(std::uint32_t count) override {
+        return std::make_shared<SdlGpuTimestampQuerySet>(device, count);
+    }
+    std::shared_ptr<GpuTimestampReadback>
+    resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>& queries,
+                           std::uint32_t count) override {
+        const auto native = std::dynamic_pointer_cast<SdlGpuTimestampQuerySet>(queries);
+        if (!native || native->device != device)
+            throw std::runtime_error("Timestamp queries belong to a different GPU device.");
+        return std::make_shared<SdlGpuTimestampReadback>(native, count);
+    }
+#endif
+#if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS || BBLITE_GPU_TASK_TIMING
     void submit_compute_commands(std::span<const ComputeCommand> commands) override {
         submit_sdl_compute_commands(device, commands);
     }

@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { expressionMayRunCode } from "./syntax.js";
 
 /**
  * The default-library Error constructors a scene throws, holds and
@@ -37,7 +38,11 @@ export function errorConstructor(
 export function caughtErrorValue(
     context: Pick<
         LoweringServices,
-        "emit" | "allocateTemporaryCppName" | "cppString" | "reachJsData"
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "cppString"
+        | "reachJsData"
+        | "registerNativeConstBinding"
     >,
     exceptionCpp: string,
 ): Value {
@@ -45,6 +50,7 @@ export function caughtErrorValue(
     context.reachJsData();
     context.emit(`(void)${exceptionCpp};`);
     context.emit(`const bbl::js::Error ${pinned} = std::current_exception();`);
+    context.registerNativeConstBinding(pinned);
     const message: Extract<Value, { kind: "data" }> = {
         kind: "data",
         cpp: `bbl::js::error_message(${pinned})`,
@@ -189,7 +195,12 @@ function compileAggregateError(
         element: { kind: "error" },
     });
     const list = context.allocateTemporaryCppName("aggregate_errors");
-    context.emit(`const auto ${list} = ${errors};`);
+    const snapshotsErrors = args.slice(1).some(expressionMayRunCode);
+    context.emit(
+        snapshotsErrors
+            ? `const auto ${list} = bbl::js::snapshot_value(${errors});`
+            : `const auto& ${list} = ${errors};`,
+    );
     const message = args[1]
         ? context.dataLowerer.compileForSink(args[1], { kind: "string" })
         : context.cppString("");

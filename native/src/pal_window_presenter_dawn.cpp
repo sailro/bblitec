@@ -32,6 +32,16 @@ public:
     }
     OffscreenDevice& device() override { return *shared_; }
 
+    void set_display_paced(bool display_paced) override {
+        errors_.check();
+        set_dawn_display_paced(state_, display_paced);
+        errors_.check();
+        if (environment_variable("BBLITE_CPU_PROFILE") == "1")
+            std::fprintf(stderr, "[window-present] backend=dawn display_paced=%d mode=%s\n",
+                         display_paced,
+                         state_.present_mode == WGPUPresentMode_Mailbox ? "mailbox" : "fifo");
+    }
+
     bool can_present() override {
         errors_.check();
         retire_frames();

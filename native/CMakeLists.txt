@@ -388,6 +388,7 @@ endfunction()
 
 set(BBLITE_OFFSCREEN_SURFACES OFF)
 bblite_feature_define(BBLITE_DEVICE_RECOVERY "engine:device-recovery")
+bblite_feature_define(BBLITE_GPU_TASK_TIMING "engine:gpu-task-timing")
 bblite_feature_define(BBLITE_COMPUTE_TEXTURES "compute:storage-texture")
 bblite_feature_define(BBLITE_COMPUTE_MIPMAPS "compute:texture-mipmaps")
 bblite_feature_define(BBLITE_COMPUTE_BUFFERS "compute:storage-buffer" "compute:uniform-buffer")

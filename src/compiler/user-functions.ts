@@ -3657,6 +3657,7 @@ export class UserFunctionLowerer {
                   closure,
                   parameters.map(({ type, cppName: name }) => ({
                       type: context.dataTypes.cppType(type),
+                      dataType: type,
                       name,
                   })),
                   returnCpp,
@@ -3687,6 +3688,7 @@ export class UserFunctionLowerer {
                 initializer: `bbl::js::retain_callback(${selfOwnerCpp})`,
             });
         }
+        context.registerNativeTemporary(cppName, dataType);
         return cppName;
     }
 

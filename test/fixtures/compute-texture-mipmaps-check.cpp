@@ -77,7 +77,7 @@ int main() {
     task->record();
     auto run = [&] {
         engine->current_compute_encoder = std::make_shared<bbl::pal::ComputeCommandEncoder>(device);
-        const auto count = bbl::execute_compute_frame_tasks({task});
+        const auto count = bbl::execute_compute_frame_tasks(std::span(&task, 1));
         engine->current_compute_encoder->finish();
         engine->current_compute_encoder->submit();
         return count;

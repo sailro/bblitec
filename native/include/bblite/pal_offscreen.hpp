@@ -4,6 +4,7 @@
 #include <bblite/pal_compute_mipmaps.hpp>
 #include <bblite/pal_compute_pipeline.hpp>
 #include <bblite/pal_storage_buffer.hpp>
+#include <bblite/pal_gpu_timestamp.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -19,7 +20,7 @@
 namespace bbl::pal {
 
 class AnimationFrameSource;
-using ComputeCommand = std::variant<ComputeDispatch, ComputeMipmapDraw>;
+using ComputeCommand = std::variant<ComputeDispatch, ComputeMipmapDraw, GpuTimestampWrite>;
 
 /** Backend-owned handles; never contains scene or JavaScript state. */
 struct OffscreenCompletion {
@@ -28,6 +29,14 @@ struct OffscreenCompletion {
 
 struct OffscreenDevice {
     virtual ~OffscreenDevice() = default;
+    virtual bool supports_gpu_timestamps() const { return false; }
+    virtual std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t) {
+        throw std::runtime_error("This device does not provide GPU timestamps.");
+    }
+    virtual std::shared_ptr<GpuTimestampReadback>
+    resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>&, std::uint32_t) {
+        throw std::runtime_error("This device does not provide GPU timestamp readback.");
+    }
     virtual std::shared_ptr<ComputeGroupLayout>
     create_compute_group_layout(const ComputeGroupLayoutDescriptor&) {
         throw std::runtime_error("This device does not provide compute group layouts.");
@@ -56,10 +65,10 @@ struct OffscreenDevice {
         for (const auto& command : commands) {
             if (const auto* dispatch = std::get_if<ComputeDispatch>(&command))
                 dispatch_compute(*dispatch);
-            else {
-                const auto& mip = std::get<ComputeMipmapDraw>(command);
-                mip.level->submit(mip.vertices);
-            }
+            else if (const auto* mip = std::get_if<ComputeMipmapDraw>(&command))
+                mip->level->submit(mip->vertices);
+            else
+                throw std::runtime_error("This device does not provide GPU timestamps.");
         }
     }
     virtual ComputeShaderLimits compute_shader_limits() const {
@@ -249,6 +258,9 @@ public:
     const std::shared_ptr<AnimationFrameSource>& animation_frames() const {
         return surface_.animation_frames_;
     }
+    /** Supplied RAF time, read and written only by the owning realm. */
+    void set_animation_frame_timestamp(double timestamp) { animation_frame_timestamp_ = timestamp; }
+    std::optional<double> animation_frame_timestamp() const { return animation_frame_timestamp_; }
     std::uint64_t capture_frame_count() const { return surface_.capture_frame_count_; }
 
     class Binding {
@@ -286,6 +298,7 @@ private:
     OffscreenDevice& device_;
     std::shared_ptr<OffscreenSurface> surface_owner_;
     std::shared_ptr<OffscreenDevice> device_owner_;
+    std::optional<double> animation_frame_timestamp_;
     bool device_disposed_ = false;
 };
 

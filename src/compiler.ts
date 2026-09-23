@@ -670,6 +670,9 @@ function compileSourceApplication(
             width: options.width ?? 1280,
             height: options.height ?? 720,
             search: options.search ?? "",
+            ...(options.initialSearch !== undefined
+                ? { initialSearch: options.initialSearch }
+                : {}),
             siteUrl: deploymentUrl(options).href,
             environment,
             ...(options.publicDir
@@ -1082,6 +1085,7 @@ class Compiler implements LoweringServices {
     private nextEmissionBlock = 1;
     private temporaryIndex = 0;
     public defaultRenderTaskAdapted = false;
+    private sceneRegistrationSite: ts.Node | undefined;
 
     public constructor(
         private readonly program: ts.Program,
@@ -1158,6 +1162,7 @@ class Compiler implements LoweringServices {
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
         this.emitEntryBody(entry);
+        this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
             if (
                 this.features.has("platform:workers") ||
@@ -3830,6 +3835,13 @@ class Compiler implements LoweringServices {
         ) {
             name = declaration.name;
         }
+        if (
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            ts.isCatchClause(declaration.parent) &&
+            name !== undefined
+        )
+            return !this.identifierIsRebound(name);
         return (
             declaration !== undefined &&
             ts.isVariableDeclaration(declaration) &&
@@ -15970,6 +15982,34 @@ class Compiler implements LoweringServices {
             this.useNativeValue(value);
             return value;
         }
+        if (value.kind === "engine" && value.ownedEngineCpp) {
+            const owner = this.allocateTemporaryCppName(`${label}_owner`);
+            this.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: owner,
+                initializer: value.ownedEngineCpp,
+                attributes: "[[maybe_unused]] ",
+            });
+            const binding = this.registerNativeConstBinding(owner);
+            const cpp = `(*${owner})`;
+            const pinned: Value = {
+                ...value,
+                cpp,
+                engineCpp: cpp,
+                ownedEngineCpp: owner,
+                stableOwnerCpp: owner,
+                nativeBinding: true,
+                nativeCaptures: [binding],
+                nativeCompanionCaptures: {
+                    ...value.nativeCompanionCaptures,
+                    engineCpp: [binding],
+                    ownedEngineCpp: [binding],
+                },
+            };
+            this.describeNativeValue(pinned);
+            return pinned;
+        }
         if (
             ["text-data", "text-renderable", "text-vector"].includes(value.kind)
         ) {
@@ -16893,6 +16933,15 @@ class Compiler implements LoweringServices {
             this.defineVariable(identifier, value);
             return;
         }
+        if (value.kind === "engine" && value.ownedEngineCpp) {
+            // Escaping callbacks copy their tuple storage. Retain the owner,
+            // then dereference it at each use instead of copying an Engine& alias.
+            this.defineVariable(
+                identifier,
+                this.pinValueToTemporary(value, "engine"),
+            );
+            return;
+        }
         if (value.uiRoot) {
             // document.body is a compile-time mount sentinel. Its inlined
             // parameter must retain that identity rather than materializing
@@ -16932,6 +16981,12 @@ class Compiler implements LoweringServices {
             (parameter
                 ? !reboundParameter
                 : this.isImmutableVariable(identifier.parent));
+        if (!parameter && borrowsImmutableBinding && value.nativeError) {
+            // Error properties already read the owned exception. An immutable
+            // source name can share that binding without an unused native alias.
+            this.defineVariable(identifier, value);
+            return;
+        }
         const platformEvent =
             value.kind === "platform-keyboard-event" ||
             value.kind === "platform-mouse-event";
@@ -18352,6 +18407,35 @@ class Compiler implements LoweringServices {
      */
     public gltfAlreadyLoaded(): boolean {
         return this.features.has("loader:gltf");
+    }
+
+    public compileSceneRegistration(scene: Value, node: ts.Node): string {
+        if (scene.surfaceCanvas) {
+            const task = this.ensureDefaultRenderTask(scene, node);
+            return `${task.setup};\n        bbl::register_scene(${task.sceneCpp})`;
+        }
+        this.sceneRegistrationSite ??= node;
+        return `bblscene::bbl_register_scene(${scene.cpp})`;
+    }
+
+    private finalizeSceneRegistration(): void {
+        if (!this.sceneRegistrationSite) return;
+        // Timing can be reached after registration, including inside callbacks.
+        const task = this.features.has("engine:gpu-task-timing")
+            ? this.ensureDefaultRenderTask(
+                  { kind: "scene", cpp: "scene" },
+                  this.sceneRegistrationSite,
+              )
+            : undefined;
+        this.registerNativeFunction(
+            "void bbl_register_scene(bbl::Scene& scene);",
+            [
+                "void bbl_register_scene(bbl::Scene& scene) {",
+                ...(task ? [`    ${task.setup};`] : []),
+                `    bbl::register_scene(${task?.sceneCpp ?? "scene"});`,
+                "}",
+            ],
+        );
     }
 
     public ensureDefaultRenderTask(

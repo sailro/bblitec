@@ -123,6 +123,12 @@ test("runtime query reads and mutations match URLSearchParams ordering, identity
         deployment.set("present","hello");
         if(\`value=\${deployment.get("present")}\`!=="value=hello")
             throw new Error("present query interpolation");
+        deployment.set("number","12.5");
+        const numeric=deployment.get("number");
+        if(Number(numeric)!==12.5 || Number(numeric??"7")!==12.5 || Number(deployment.get("absent")??"7")!==7)
+            throw new Error("nullable number conversion");
+        if(\`value=\${numeric}\`!=="value=12.5")
+            throw new Error("borrowed nullable interpolation");
     `,
         { search: "?first=1&second=2&first=3" },
     );

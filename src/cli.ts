@@ -142,6 +142,7 @@ interface CliOptions {
     width?: number;
     height?: number;
     search?: string;
+    initialSearch?: string;
     publicDir?: string;
     siteUrl?: string;
     environment: Record<string, string>;
@@ -176,6 +177,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let width: number | undefined;
     let height: number | undefined;
     let search: string | undefined;
+    let initialSearch: string | undefined;
     let publicDir: string | undefined;
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
@@ -212,6 +214,11 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--search":
                 if (!value) usage();
                 search = value;
+                index += 1;
+                break;
+            case "--initial-search":
+                if (value === undefined) usage();
+                initialSearch = value;
                 index += 1;
                 break;
             case "--host-ui":
@@ -263,6 +270,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
         ...(search ? { search } : {}),
+        ...(initialSearch !== undefined ? { initialSearch } : {}),
         ...(publicDir ? { publicDir } : {}),
         ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
@@ -715,6 +723,9 @@ async function main(): Promise<void> {
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),
         ...(options.search ? { search: options.search } : {}),
+        ...(options.initialSearch !== undefined
+            ? { initialSearch: options.initialSearch }
+            : {}),
         ...(options.publicDir ? { publicDir: options.publicDir } : {}),
         ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
         ...(options.hostUi

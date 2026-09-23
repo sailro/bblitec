@@ -54,6 +54,7 @@ class OffscreenRun;
 struct ComputeTextureAllocation;
 struct ComputeCommandEncoder;
 struct GpuRetirementState;
+struct GpuTaskTimingState;
 } // namespace pal
 
 namespace js {
@@ -3531,6 +3532,8 @@ struct UiElementRecord {
     };
     std::string tag;
     std::string text;
+    /** Last plain-text change in the owning engine's UI text sequence. */
+    std::uint64_t text_revision = 0;
     /** Static markup assigned through the reached element.innerHTML surface. */
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
@@ -3761,6 +3764,7 @@ struct Engine {
     struct DeviceRecoveryState;
     std::shared_ptr<DeviceRecoveryState> device_recovery;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
+    std::shared_ptr<pal::GpuTaskTimingState> gpu_task_timing;
     std::weak_ptr<ComputeStorageTextureRegistry> compute_storage_textures;
     std::function<void()> dispose_compute_textures;
     std::weak_ptr<UniformBufferRegistry> uniform_buffers;
@@ -3893,7 +3897,12 @@ struct Engine {
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
+    std::uint64_t ui_text_revision = 0;
     std::uint64_t ui_style_revision = 0;
+    bool ui_only_text_changed_since(std::uint64_t revision, std::uint64_t text_revision) const {
+        return revision <= ui_revision && text_revision <= ui_text_revision &&
+               ui_revision - revision == ui_text_revision - text_revision;
+    }
 #endif
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
     /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
@@ -4677,6 +4686,8 @@ struct SceneState {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
+    /** Source shadow scheduler identity, including scenes with no caster passes. */
+    std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
 #if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;

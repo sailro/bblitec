@@ -38,6 +38,7 @@ import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { lowerDeviceRecovery } from "./lowering/device-recovery-lowerer.js";
 import { lowerEngineDisposal } from "./lowering/engine-dispose-lowerer.js";
 import { lowerGpuRetirement } from "./lowering/gpu-retirement-lowerer.js";
+import { lowerGpuTaskTiming } from "./lowering/gpu-task-timing-lowerer.js";
 import { lowerComputeTexture } from "./lowering/compute-texture-lowerer.js";
 import { lowerComputeTextureMipmaps } from "./lowering/compute-texture-mipmaps-lowerer.js";
 import { lowerStorageBuffer } from "./lowering/storage-buffer-lowerer.js";
@@ -1003,6 +1004,12 @@ class GeneratedSourceWriter {
             ),
             generated,
         );
+        if (features.includes("engine:gpu-task-timing"))
+            this.writeSource(
+                "upstream/src/gpu_task_timing.cpp",
+                lowerGpuTaskTiming(context),
+                generated,
+            );
         if (features.includes("engine:gpu-retirement"))
             this.writeSource(
                 "upstream/src/gpu_retirement.cpp",

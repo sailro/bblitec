@@ -43,6 +43,7 @@ export interface SceneIntrinsicContext
             | "removeSceneLight"
             | "requireEngine"
             | "ensureDefaultRenderTask"
+            | "compileSceneRegistration"
             | "fail"
         > {}
 
@@ -496,14 +497,9 @@ export function compileSceneIntrinsic(
                 "registration",
                 scene,
             );
-            const defaultTask = scene.surfaceCanvas
-                ? context.ensureDefaultRenderTask(scene, call)
-                : undefined;
             return {
                 kind: "void",
-                cpp: defaultTask
-                    ? `${defaultTask.setup};\n        bbl::register_scene(${defaultTask.sceneCpp})`
-                    : `bbl::register_scene(${scene.cpp})`,
+                cpp: context.compileSceneRegistration(scene, call),
             };
         }
 

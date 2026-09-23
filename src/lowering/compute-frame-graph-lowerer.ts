@@ -155,7 +155,7 @@ export function lowerComputeFrameGraph(
         },
     );
     output.push(
-        `// ${context.provenance(graph, "fg.execute")}\ndouble execute_compute_frame_tasks(const std::vector<std::shared_ptr<ComputeTask>>& tasks) {\n${body}\n}\n`,
+        `// ${context.provenance(graph, "fg.execute")}\ndouble execute_compute_frame_tasks(std::span<const std::shared_ptr<ComputeTask>> tasks) {\n${body}\n}\n`,
     );
     return {
         modulePath: graph,

@@ -34,6 +34,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
+#if BBLITE_GPU_TASK_TIMING
+#include <bblite/pal_gpu_task_timing.hpp>
+#endif
 #include "pal_dawn_compute_texture.hpp"
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_dawn_offscreen.hpp"
@@ -11147,6 +11150,9 @@ public:
         if (request_renderer_restart_if_scene_set_changed(engine, active_registered_scenes)) {
             return FramePreparation::restart;
         }
+#if BBLITE_GPU_TASK_TIMING
+        begin_gpu_task_timing_frame(engine);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
@@ -12788,6 +12794,12 @@ public:
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     pass_scene = &graph_scene;
                     pass_meshes = &graph_meshes;
+#if BBLITE_GPU_TASK_TIMING
+                    GpuTaskTimingSequence timing_sequence(
+                        engine,
+                        [&](const auto& write) { encode_dawn_gpu_timestamp(encoder, write); },
+                        &graph_scene);
+#endif
                     for (const TaskHandle handle : graph_scene.tasks) {
                         if (handle.value >= engine.frame_tasks.size()) {
                             throw std::runtime_error("Scene frame task handle is invalid.");
@@ -12795,6 +12807,9 @@ public:
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
+#if BBLITE_GPU_TASK_TIMING
+                        const auto timing_scope = timing_sequence.scoped_task(engine, handle);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
                         if (task.kind == FrameTaskKind::compute) {
                             if (surface_encoder) {
@@ -13981,6 +13996,9 @@ public:
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
+#if BBLITE_GPU_TASK_TIMING
+        finish_gpu_task_timing_frame(engine);
+#endif
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif
@@ -14135,7 +14153,7 @@ public:
             print_memory_frame_profile(completed_frame, engine, scene, state.meshes,
                                        state.shared_shader_geometries);
         }
-        if (cpu_profile && completed_frame % 30 == 0) {
+        if (cpu_profile && frame_profile_due(completed_frame, end - benchmark_start)) {
             std::size_t draw_commands = render_plan.draw_lists.opaque.commands.size() +
                                         render_plan.draw_lists.transparent.commands.size();
             for (const DawnRenderTask& profiled : state.render_tasks) {

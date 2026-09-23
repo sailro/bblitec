@@ -11,7 +11,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("Location search navigation commits retained query changes into a fresh realm", (t) => {
+test("Window startup separates capture queries and retains navigation across fresh realms", (t) => {
     const directory = resolve("artifacts/window-navigation-check");
     mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "worker.ts"), "self.close();");
@@ -21,13 +21,15 @@ test("Location search navigation commits retained query changes into a fresh rea
         worker.terminate();
         void (async () => {
         const query = new URLSearchParams(location.search);
+        const initialSearch = location.search;
         const step = query.get("step");
         if(step === null) {
-            if(query.get("keep") !== "first") throw new Error("initial query");
+            if(query.has("keep") && query.get("keep") !== "first") throw new Error("initial query");
             setTimeout(() => {
+                query.set("keep", "first");
                 query.set("step", "two");
                 location.search = query.toString();
-                if(location.search !== "?keep=first") throw new Error("navigation commits after this task");
+                if(location.search !== initialSearch) throw new Error("navigation commits after this task");
             },0);
         } else if(step === "two") {
             if(query.get("keep") !== "first") throw new Error("retained query");
@@ -40,10 +42,15 @@ test("Location search navigation commits retained query changes into a fresh rea
         }
         })();
     `,
-        { search: "?keep=first", fileName: resolve(directory, "entry.ts") },
+        {
+            search: "?keep=first",
+            initialSearch: "",
+            fileName: resolve(directory, "entry.ts"),
+        },
     );
     assert.ok(generated.manifest.features.includes("platform:window"));
-    assert.match(generated.cpp, /window_location_search/);
+    assert.match(generated.cpp, /window_location_search\(""\)/);
+    assert.doesNotMatch(generated.cpp, /\?keep=first/);
     assert.match(generated.cpp, /window_location_set_search/);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -94,10 +101,21 @@ test("Location search navigation commits retained query changes into a fresh rea
             };
             struct TestDocument { std::shared_ptr<TestServices> host = std::make_shared<TestServices>(); };
             TestDocument& current_document() { static TestDocument document; return document; }
+            std::string capture_search;
+            std::string environment_variable(const char* name) {
+                assert(std::string(name) == "BBLITE_LOCATION_SEARCH");
+                return capture_search;
+            }
             ${functions}
             int run_window_application(WorkerEntry initialize, EngineOptions) {
                 ${queryCases}
                 auto& services=*current_document().host;
+                for(const auto& query : {std::string{}, std::string("?keep=first")}) {
+                capture_search=query;
+                services.location=std::make_shared<WindowLocation>();
+                assert(window_location_search("") == query);
+                capture_search="?keep=changed-after-startup";
+                assert(window_location_search("?ignored=1") == query);
                 int runs=0;
                 do {
                     services.reload_requested=false;
@@ -111,6 +129,13 @@ test("Location search navigation commits retained query changes into a fresh rea
                 } while(services.reload_requested);
                 assert(runs == 3);
                 assert(services.location->search("?ignored=1") == "?keep=new+value&step=three");
+                }
+                capture_search.clear();
+                services.location=std::make_shared<WindowLocation>();
+                assert(window_location_search("?deployment=custom") == "?deployment=custom");
+                capture_search="?";
+                services.location=std::make_shared<WindowLocation>();
+                assert(window_location_search("?deployment=custom").empty());
                 return 0;
             }
         }

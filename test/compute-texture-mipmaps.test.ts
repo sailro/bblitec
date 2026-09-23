@@ -58,6 +58,7 @@ test("source mip task validates, prepares once, records ordered levels, and reta
         "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_GPU_TASK_TIMING=1",
         `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,

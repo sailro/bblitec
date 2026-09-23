@@ -1,5 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import { cppIdentifiers } from "./cpp-identifiers.js";
+import type { DataType } from "./data-types/model.js";
 
 /** An emitted native binding, shared by every expression that reads it. */
 export interface NativeCaptureBinding {
@@ -65,7 +66,11 @@ export function renderCoroutineInvocation(
 
 export function renderAsyncClosure(
     closure: CapturedClosure,
-    parameters: readonly { type: string; name: string }[],
+    parameters: readonly {
+        type: string;
+        dataType: DataType;
+        name: string;
+    }[],
     returnType: string,
     discard: boolean,
 ): string {
@@ -80,7 +85,11 @@ export function renderAsyncClosure(
         returnType,
         declarations,
         parameters
-            .map((parameter) => `std::move(${parameter.name})`)
+            .map((parameter) =>
+                copiesScalarParameter(parameter.dataType)
+                    ? parameter.name
+                    : `std::move(${parameter.name})`,
+            )
             .join(", "),
         closure.environment,
     );
@@ -95,6 +104,17 @@ export function renderAsyncClosure(
         },
         declarations,
         discard ? "void" : returnType,
+    );
+}
+
+/** Scalar payloads stay trivial through nullable and variant wrappers. */
+function copiesScalarParameter(type: DataType): boolean {
+    if (type.kind === "optional") return copiesScalarParameter(type.inner);
+    if (type.kind === "union") return type.members.every(copiesScalarParameter);
+    return (
+        type.kind === "number" ||
+        type.kind === "boolean" ||
+        type.kind === "enum"
     );
 }
 

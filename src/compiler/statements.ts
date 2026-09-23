@@ -108,6 +108,7 @@ export interface StatementLoweringContext extends Pick<
     | "emitFinallyGuard"
     | "emitEngineFinally"
     | "nativeBindingCheckpoint"
+    | "registerNativeConstBinding"
     | "captureHoistedLines"
     | "probeEmission"
     | "allocateTemporaryCppName"
