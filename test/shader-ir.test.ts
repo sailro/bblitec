@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { lowerWgslShaderProgram, parseWgslFunction } from "../src/shader-ir.js";
-import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
+import {
+    emitNativeWgslProgram,
+    emitWgslFunction,
+} from "../src/shader-wgsl-emitter.js";
 import { compileSource } from "../src/compiler.js";
 
 const vertexSource = `
@@ -205,3 +208,49 @@ test("parses a direct identifier comparison as an expression", () => {
 
     assert.equal(program.fragment.entryPoint.statements[1]?.kind, "if");
 });
+
+test("every statement form emits text that parses back to itself", () => {
+    const helpers = `
+        fn bump(p: ptr<function, f32>, amount: f32) { *p += amount; }
+        fn pick(i: i32) -> f32 {
+            switch (i) {
+                case 0, 1: { return 1.0; }
+                default { return 0.0; }
+            }
+        }
+        fn weigh(n: i32) -> f32 {
+            var total = 0.0;
+            var k = 0;
+            loop {
+                if k >= n { break; }
+                total += pick(k % 3);
+                continuing { k++; break if k > 100; }
+            }
+            var j = n;
+            while (j > 0) { j--; if (j == 2) { continue; } total -= -0.25; }
+            for (;;) { break; }
+            for (var m = 0u; m < 2u; m = m + 1u) { bump(&total, f32(m)); }
+            { let bits = (bitcast<u32>(total) >> 1u) & ~0u; _ = bits; }
+            return total * array<f32, 3>(1.0, 2.0, 3.0)[1];
+        }`;
+    const once = parseWgslStatementsModule(helpers);
+    assert.equal(parseWgslStatementsModule(once), once);
+});
+
+/** Emits a module of helper functions through the typed IR. */
+function parseWgslStatementsModule(source: string): string {
+    const program = lowerWgslShaderProgram({
+        name: "statement-forms",
+        vertexSource,
+        fragmentSource: `${source}
+            @fragment fn mainFragment() -> @location(0) vec4<f32> {
+                return vec4<f32>(weigh(3));
+            }`,
+        attributes: ["position"],
+        uniforms: [],
+        ...renderState,
+    });
+    return (program.fragment.functions ?? [])
+        .map((fn) => emitWgslFunction(fn))
+        .join("\n");
+}
