@@ -1467,9 +1467,15 @@ test("generates ArcRotate and default camera factories from upstream constants",
     assert.doesNotMatch(precise.source, /static_cast<float>/);
     assert.match(arc.header, /arc_rotate_eye_position/);
     assert.match(arc.header, /camera_world_matrix/);
-    assert.match(framing.source, /radius = diagonal \* 1\.5f/);
-    assert.match(framing.source, /record\.near_plane = radius \* 0\.01;/);
-    assert.match(framing.source, /record\.far_plane = radius \* 1000\.0;/);
+    assert.match(framing.source, /double radius = \(diag \* 1\.5\);/);
+    assert.match(
+        framing.source,
+        /engine\.cameras\[cam\.value\]\.near_plane = \(radius \* 0\.01\);/,
+    );
+    assert.match(
+        framing.source,
+        /engine\.cameras\[cam\.value\]\.far_plane = \(radius \* 1000\.0\);/,
+    );
     assert.match(free.source, /camera\.kind = CameraKind::free/);
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);
     assert.match(controls.source, /rotation_epsilon = 0\.001;/);

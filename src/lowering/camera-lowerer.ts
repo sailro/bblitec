@@ -2,6 +2,10 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
+import {
+    lowerWorldAabbHelpers,
+    worldAabbLaneBindings,
+} from "./world-bounds-lowerer.js";
 
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
@@ -631,233 +635,177 @@ CameraHandle create_banked_free_camera(
             modulePath,
             symbolName,
         );
-        const radiusExpression = this.context.variableInitializer(
-            declaration,
-            "radius",
-        );
-        this.context.assertExpressionShape(
-            radiusExpression,
-            "diag * 1.5",
-            "Default camera radius",
-        );
-        const radiusBinary = this.context.unwrapExpression(radiusExpression);
-        if (!ts.isBinaryExpression(radiusBinary)) {
-            this.context.contractError(
-                radiusExpression,
-                "Expected computed default camera radius.",
-            );
-        }
-        const radiusScale = this.context.numericValue(radiusBinary.right, file);
-        const assignments = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-        );
-        const assignment = (path: string): ts.BinaryExpression => {
-            const result = assignments.find(
-                (candidate) =>
-                    this.context.propertyPath(candidate.left)?.join(".") ===
-                    path,
-            );
-            if (!result) {
-                this.context.contractError(
-                    declaration,
-                    `Expected assignment to '${path}'.`,
-                );
-            }
-            return result;
-        };
-        const fallbackRadiusExpression = assignment("radius").right;
-        const fallbackRadius = this.context.numericValue(
-            fallbackRadiusExpression,
-            file,
-        );
-        const createCamera = this.context.callExpression(
-            declaration,
-            "createArcRotateCamera",
-        );
-        const expectedArguments = [
-            "-(Math.PI / 2)",
-            "Math.PI / 2",
-            "radius",
-            "center",
-        ];
-        if (createCamera.arguments.length !== expectedArguments.length) {
-            this.context.contractError(
-                createCamera,
-                "Unexpected default camera arguments.",
-            );
-        }
-        createCamera.arguments.forEach((argument, index) =>
-            this.context.assertExpressionShape(
-                argument,
-                expectedArguments[index]!,
-                `Default camera argument ${index}`,
-            ),
-        );
-        const nearExpression = assignment("cam.nearPlane").right;
-        const farExpression = assignment("cam.farPlane").right;
-        this.context.assertExpressionShape(
-            nearExpression,
-            "radius * 0.01",
-            "Default camera near plane",
-        );
-        this.context.assertExpressionShape(
-            farExpression,
-            "radius * 1000",
-            "Default camera far plane",
-        );
-        if (
-            !ts.isBinaryExpression(nearExpression) ||
-            !ts.isBinaryExpression(farExpression)
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected scaled default camera planes.",
-            );
-        }
-        const nearScale = this.context.numericValue(nearExpression.right, file);
-        const farScale = this.context.numericValue(farExpression.right, file);
-        const value = (input: number): string =>
-            this.context.floatLiteral(input);
-        const dvalue = (input: number): string =>
-            this.context.doubleLiteral(input);
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["scene", { cpp: "scene", type: "opaque" }],
+                ["scene.camera", { cpp: "scene.camera", type: "opaque" }],
+                ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                ["cam", { cpp: "cam", type: "opaque" }],
+                [
+                    "cam.nearPlane",
+                    {
+                        cpp: "engine.cameras[cam.value].near_plane",
+                        type: "scalar",
+                    },
+                ],
+                [
+                    "cam.farPlane",
+                    {
+                        cpp: "engine.cameras[cam.value].far_plane",
+                        type: "scalar",
+                    },
+                ],
+                ...worldAabbLaneBindings(this.context, "acc", "acc"),
+            ]),
+            calls: new Map([
+                ...pinnedNumericMathCalls(),
+                ["emptyWorldAabb", () => "empty_world_aabb()"],
+                [
+                    "expandWorldAabbForMesh",
+                    (args: readonly string[]) =>
+                        `expand_world_aabb_for_mesh(${args[0]}, ` +
+                        `default_camera_world_aabb_mesh(engine, ${args[1]}))`,
+                ],
+                [
+                    "isFinite",
+                    (args: readonly string[]) =>
+                        `std::isfinite(${args.join(", ")})`,
+                ],
+                [
+                    "vec3",
+                    (args: readonly string[]) => `Vec3d{${args.join(", ")}}`,
+                ],
+            ]),
+            callShapes: new Map<string, PinnedBinding["type"]>([
+                ["emptyWorldAabb", "f64-buffer"],
+                ["vec3", "vec3"],
+            ]),
+            booleanOr: true,
+            forOf: (iterated, element) =>
+                iterated === "scene.meshes"
+                    ? {
+                          range: "scene.meshes",
+                          bindings: new Map<string, PinnedBinding>([
+                              [element, { cpp: element, type: "opaque" }],
+                              [
+                                  `${element}.visible === false`,
+                                  nodeVisibility
+                                      ? {
+                                            cpp:
+                                                `(${element}.value < engine.meshes.size() && ` +
+                                                `!engine.meshes[${element}.value].visible)`,
+                                            type: "bool",
+                                        }
+                                      : // Nothing writes `visible` in a
+                                        // scene without the feature.
+                                        {
+                                            cpp: "false",
+                                            type: "bool",
+                                            staticBoolean: false,
+                                        },
+                              ],
+                          ]),
+                      }
+                    : undefined,
+            // `createArcRotateCamera` returns the native camera's handle.
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const [camera] = statement.declarationList.declarations;
+                if (
+                    !camera ||
+                    !ts.isIdentifier(camera.name) ||
+                    camera.name.text !== "cam"
+                )
+                    return undefined;
+                const call = camera.initializer
+                    ? this.context.unwrapExpression(camera.initializer)
+                    : undefined;
+                if (
+                    !call ||
+                    !ts.isCallExpression(call) ||
+                    call.expression.getText(file) !== "createArcRotateCamera"
+                )
+                    return this.context.contractError(
+                        camera,
+                        "Expected the default camera from createArcRotateCamera.",
+                    );
+                return [
+                    `${indent}const CameraHandle cam = create_arc_rotate_camera(engine, ${call.arguments
+                        .map((argument) => lowerer.expression(argument))
+                        .join(", ")});`,
+                ];
+            },
+            returnValue: (node, lowerer) =>
+                node
+                    ? lowerer.expression(node)
+                    : this.context.contractError(
+                          declaration,
+                          "Expected createDefaultCamera to return its camera.",
+                      ),
+        });
+        const bounds = animatedWorldBounds ? "world_bounds" : "bounds";
         return {
             modulePath,
             symbolName,
             header: "",
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 namespace bbl {
 namespace {
 
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh takes each
-// object-local box through mesh.worldMatrix. The record splits that world
-// into the mesh's own TRS and an imported clone root's outer transform,
-// applied in the order the draw path applies them, each through the
-// vertex stage's own f32 multiply.
-Vec3 transform_bounds_point(
-    Vec3 point,
-    const std::array<float, 16>& local,
-    const std::array<float, 16>& outer) {
-    return upstream::transform_position(
-        outer, upstream::transform_position(local, point));
-}
+${lowerWorldAabbHelpers(this.context)}
 
-void extend_bounds(Vec3 point, Vec3& minimum, Vec3& maximum) {
-    minimum.x = std::min(minimum.x, point.x);
-    minimum.y = std::min(minimum.y, point.y);
-    minimum.z = std::min(minimum.z, point.z);
-    maximum.x = std::max(maximum.x, point.x);
-    maximum.y = std::max(maximum.y, point.y);
-    maximum.z = std::max(maximum.z, point.z);
+// The Mesh members the framing reads, off the native record. A loaded glTF
+// primitive keeps its node world baked into its vertices, so its box is
+// that world box (the live one an animated asset records) under the
+// record's own identity transform; a factory mesh's box is its extent
+// about its origin. A scene may replace either public bound. The world
+// matrix is the record's composition under its parents, with an imported
+// clone root's outer transform on the left, as the draw path applies it.
+WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle handle) {
+    WorldAabbMesh result{};
+    if (handle.value >= engine.meshes.size()) return result;
+    const MeshRecord& mesh = engine.meshes[handle.value];
+    Vec3 local_min{};
+    Vec3 local_max{};
+    if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
+        local_min = engine.geometries[mesh.geometry].${bounds}_min;
+        local_max = engine.geometries[mesh.geometry].${bounds}_max;
+    } else {
+        local_min = Vec3{
+            -mesh.dimensions.x * 0.5f,
+            -mesh.dimensions.y * 0.5f,
+            -mesh.dimensions.z * 0.5f,
+        };
+        local_max = Vec3{
+            mesh.dimensions.x * 0.5f,
+            mesh.dimensions.y * 0.5f,
+            mesh.dimensions.z * 0.5f,
+        };
+    }
+    apply_mesh_bound_overrides(mesh, local_min, local_max);
+    result.bound_min = std::array<float, 3>{local_min.x, local_min.y, local_min.z};
+    result.bound_max = std::array<float, 3>{local_max.x, local_max.y, local_max.z};
+    const std::array<float, 16> world = upstream::mesh_world_matrix(engine, mesh);
+    result.world_matrix = upstream::outer_transform_is_identity(mesh)
+        ? world
+        : upstream::matrix_product(upstream::outer_transform_matrix(mesh), world);
+    return result;
 }
 
 } // namespace
 
 CameraHandle create_default_camera(Engine& engine, Scene& scene) {
-    Vec3 minimum{
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-    };
-    Vec3 maximum{
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-    };
-    bool has_bounds = false;
-    for (const MeshHandle handle : scene.meshes) {
-        if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = engine.meshes[handle.value];${
-            nodeVisibility
-                ? `
-        // The pinned framing pass skips \`visible === false\` meshes, whether
-        // scene source wrote the field or KHR_node_visibility materialized it.
-        if (!mesh.visible) continue;`
-                : ""
-        }
-        Vec3 local_min{};
-        Vec3 local_max{};
-        if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
-            local_min = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_min;
-            local_max = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_max;
-        } else {
-            local_min = Vec3{
-                -mesh.dimensions.x * 0.5f,
-                -mesh.dimensions.y * 0.5f,
-                -mesh.dimensions.z * 0.5f,
-            };
-            local_max = Vec3{
-                mesh.dimensions.x * 0.5f,
-                mesh.dimensions.y * 0.5f,
-                mesh.dimensions.z * 0.5f,
-            };
-        }
-        // A reached scene may replace either public Mesh bound after the
-        // factory/loader created it. Those values are object-local in the
-        // pin and therefore take the same world-transform path as the
-        // factory bounds they replace.
-        apply_mesh_bound_overrides(mesh, local_min, local_max);
-        const std::array<Vec3, 8> corners{
-            Vec3{local_min.x, local_min.y, local_min.z},
-            Vec3{local_max.x, local_min.y, local_min.z},
-            Vec3{local_min.x, local_max.y, local_min.z},
-            Vec3{local_max.x, local_max.y, local_min.z},
-            Vec3{local_min.x, local_min.y, local_max.z},
-            Vec3{local_max.x, local_min.y, local_max.z},
-            Vec3{local_min.x, local_max.y, local_max.z},
-            Vec3{local_max.x, local_max.y, local_max.z},
-        };
-        const std::array<float, 16> local = upstream::trs_matrix(mesh);
-        const std::array<float, 16> outer = upstream::outer_transform_matrix(mesh);
-        for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, local, outer), minimum, maximum);
-        has_bounds = true;
-    }
-
-    Vec3 center{};
-    float radius = ${value(fallbackRadius)};
-    if (has_bounds) {
-        const float sx = maximum.x - minimum.x;
-        const float sy = maximum.y - minimum.y;
-        const float sz = maximum.z - minimum.z;
-        const float diagonal = std::sqrt(sx * sx + sy * sy + sz * sz);
-        radius = diagonal * ${value(radiusScale)};
-        center = Vec3{
-            minimum.x + sx * 0.5f,
-            minimum.y + sy * 0.5f,
-            minimum.z + sz * 0.5f,
-        };
-        if (!std::isfinite(radius) || radius == 0.0f) {
-            radius = ${value(fallbackRadius)};
-            center = Vec3{};
-        }
-    }
-    // The framing box above is still accumulated in float from the baked
-    // mesh bounds, where the pinned pass composes each object-local box
-    // through its world matrix in JavaScript doubles. That difference is
-    // the sizing entry in TODO.md; the camera scalars it feeds are
-    // doubles here so the pinned view/projection chain below is exact for
-    // every camera whose scalars the scene sets itself.
-    const CameraHandle camera = create_arc_rotate_camera(
-        engine,
-        -pi_double / 2.0,
-        pi_double / 2.0,
-        radius,
-        Vec3d{center.x, center.y, center.z});
-    CameraRecord& record = engine.cameras[camera.value];
-    record.near_plane = radius * ${dvalue(nearScale)};
-    record.far_plane = radius * ${dvalue(farScale)};
-    scene.camera = camera;
-    return camera;
+${body}
 }
 
 } // namespace bbl
