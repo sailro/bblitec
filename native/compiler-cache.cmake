@@ -5,7 +5,13 @@ if(BBLITE_NATIVE_CACHE AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles" AND NOT CMA
     if(BBLITE_CCACHE)
         set(BBLITE_NATIVE_CACHE_DIR "${BBLITE_NATIVE_ROOT}/../artifacts/native-cache" CACHE PATH "Shared native object cache")
         get_filename_component(BBLITE_NATIVE_CACHE_DIR "${BBLITE_NATIVE_CACHE_DIR}" ABSOLUTE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${BBLITE_CCACHE};cache_dir=${BBLITE_NATIVE_CACHE_DIR};namespace=bblite")
+        # Worktrees share this cache (tools/setup-worktree.ps1). base_dir makes
+        # every path under the checkout relative in the key, so another
+        # checkout of the same sources hits; the size covers several trees'
+        # populations instead of evicting them in turn.
+        get_filename_component(BBLITE_CACHE_BASE_DIR "${BBLITE_NATIVE_ROOT}/.." ABSOLUTE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER
+            "${BBLITE_CCACHE};cache_dir=${BBLITE_NATIVE_CACHE_DIR};namespace=bblite;base_dir=${BBLITE_CACHE_BASE_DIR};max_size=25G")
         if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             # ccache replays /showIncludes on a hit; it does not retain the
             # dependency file requested through CMake's -clang:-MF spelling.
