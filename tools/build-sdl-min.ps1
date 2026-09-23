@@ -197,6 +197,29 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -Force
 
+# The notices a package of this library owes: SDL's own licence plus the
+# third-party code the trimmed video core still compiles -- the YUV
+# converters and stb_image's decoder -- and, with -EnableGamepad, HIDAPI.
+# vcpkg's SDL3 copyright carries the same notices but embeds all of
+# stb_image.h; its licence is the block at the end of that header.
+$stbHeader = Get-Content (Join-Path $source "src/video/stb_image.h") -Raw
+$stbStart = $stbHeader.LastIndexOf("This software is available under 2 licenses")
+$stbStart = if ($stbStart -ge 0) { $stbHeader.LastIndexOf("`n----", $stbStart) } else { -1 }
+$stbEnd = if ($stbStart -ge 0) { $stbHeader.IndexOf("*/", $stbStart) } else { -1 }
+if ($stbEnd -lt 0) { throw "stb_image.h at SDL $sdlVersion no longer ends with its licence block." }
+$notices = @(
+    "SDL $sdlVersion (LICENSE.txt)", (Get-Content (Join-Path $source "LICENSE.txt") -Raw),
+    "src/video/yuv2rgb (LICENSE)", (Get-Content (Join-Path $source "src/video/yuv2rgb/LICENSE") -Raw),
+    "src/video/stb_image.h", $stbHeader.Substring($stbStart + 1, $stbEnd - $stbStart - 1)
+)
+if ($EnableGamepad) {
+    $notices += @("src/hidapi (LICENSE-bsd.txt)", (Get-Content (Join-Path $source "src/hidapi/LICENSE-bsd.txt") -Raw))
+}
+$noticeText = for ($index = 0; $index -lt $notices.Count; $index += 2) {
+    "$($notices[$index]):`n`n$($notices[$index + 1].Trim())`n"
+}
+($noticeText -join "`n") | Set-Content (Join-Path $output "NOTICES.txt") -Encoding utf8NoBOM
+
 # Native configuration reads this before project() to reject a generated
 # scene whose reached feature set is incompatible with the selected trimmed
 # dependency. Keep the capability machine-readable rather than inferring it

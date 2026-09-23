@@ -152,6 +152,8 @@ foreach ($buildPath in $buildPaths) {
     $uiReached = $featuresText -match '"ui:rml"'
     $uiSvgReached = $featuresText -match '"ui:inline-svg"'
     $textLayoutReached = $featuresText -match '"text:layout"'
+    # The features native/CMakeLists.txt links nlohmann-json for.
+    $jsonReached = $featuresText -match '"(?:loader:gltf|loader:babylon|data:json)"'
 
     $executable = @(
         (Join-Path $buildPath "bblite_native$exeExtension"),
@@ -330,10 +332,20 @@ $vcpkgShare = @(
 if (-not $vcpkgShare) {
     throw "vcpkg share directory with dependency licenses was not found for $BuildDirectory."
 }
-$licensePackages = @{
-    "SDL3.txt" = "sdl3"
-    "nlohmann-json.txt" = "nlohmann-json"
+$licensePackages = @{}
+# A trimmed SDL (BBLITE_SDL_DIR) carries the notices of exactly the code it
+# compiles (tools/build-sdl-min.ps1); vcpkg's sdl3 notice covers its own build.
+$sdlDir = if ($cache.ContainsKey("BBLITE_SDL_DIR")) { $cache["BBLITE_SDL_DIR"] } else { "" }
+if ($sdlDir) {
+    $sdlNotice = Join-Path $sdlDir "NOTICES.txt"
+    if (-not (Test-Path -LiteralPath $sdlNotice)) {
+        throw "Trimmed SDL notices not found: $sdlNotice. Rebuild it with tools/build-sdl-min.ps1."
+    }
+    Copy-Item -LiteralPath $sdlNotice (Join-Path $licenses "SDL3.txt")
+} else {
+    $licensePackages["SDL3.txt"] = "sdl3"
 }
+if ($jsonReached) { $licensePackages["nlohmann-json.txt"] = "nlohmann-json" }
 if ($IsMacOS) { $licensePackages["Boost.Charconv.txt"] = "boost-charconv" }
 foreach ($license in $imageCodecLicenses.GetEnumerator()) {
     $licensePackages[$license.Key] = $license.Value
