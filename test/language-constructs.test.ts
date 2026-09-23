@@ -855,6 +855,38 @@ function check(
     });
 }
 
+// Hoisted typed-array tables store their elements converted at generation;
+// every element must read back as the value the runtime store produces.
+const hoistedTableValues = [
+    -0.1555, 0.4098, 0.1, 0.3333333333333333, 1e-7, -2.5, 1e21, 16777217,
+    33565870, 33565872, 33565874, 3.4028234663852886e38, 1.1754943508222875e-38,
+    1.401298464324817e-45, 65504.5, 0.30000000000000004, -98765.4321,
+    4294967296.5, -1.9, 300,
+];
+for (let seed = 12345; hoistedTableValues.length < 132;) {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    const mantissa = (seed / 2147483648) * 2 - 1;
+    hoistedTableValues.push(
+        Number((mantissa * 10 ** ((seed % 13) - 6)).toPrecision(9)),
+    );
+}
+check(
+    "hoisted-typed-array-tables-store-converted-elements",
+    `
+    const raw: number[] = [${hoistedTableValues.join(", ")}];
+    const floats = new Float32Array([${hoistedTableValues.join(", ")}]);
+    const words = new Uint32Array([${hoistedTableValues.join(", ")}]);
+    const bytes = new Int8Array([${hoistedTableValues.join(", ")}]);
+    const expectedWords = new Uint32Array(raw);
+    const expectedBytes = new Int8Array(raw);
+    for (let index = 0; index < raw.length; ++index) {
+        if (floats[index] !== Math.fround(raw[index]!)) throw new Error("float " + index);
+        if (words[index] !== expectedWords[index]) throw new Error("word " + index);
+        if (bytes[index] !== expectedBytes[index]) throw new Error("byte " + index);
+    }
+`,
+);
+
 check(
     "constant-tables-use-literals-outside-local-scopes",
     `

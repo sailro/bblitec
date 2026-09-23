@@ -32,6 +32,7 @@ import { renderClosure } from "./closure-captures.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
@@ -5830,7 +5831,8 @@ export class DataLowerer {
      * identity is untouched either way — every evaluation still
      * constructs its own typed array, exactly as two `new Float32Array`
      * expressions construct two arrays; only the immutable source is shared.
-     * Float32 source tables apply the same narrowing as the destination store.
+     * The table stores each element already converted into the array's own
+     * element type (`typedArrayTable`), so the use site copies it unchanged.
      *
      * `constant` is the caller's structural fact that every element is a
      * generation-known number; an element referencing locals must keep
@@ -5849,14 +5851,21 @@ export class DataLowerer {
         ) {
             return `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`;
         }
+        // An element that is not a plain literal keeps the double table
+        // the runtime store converts.
+        const table = typedArrayTable(prefix, elements) ?? {
+            elementCppType: prefix === "f32" ? "float" : "double",
+            elements:
+                prefix === "f32"
+                    ? elements.map((element) =>
+                          typedArrayStoreExpression("f32array", element),
+                      )
+                    : [...elements],
+        };
         const name = this.context.dataTypes.registerSharedConstantArray(
             `${prefix}_values`,
-            prefix === "f32" ? "float" : "double",
-            prefix === "f32"
-                ? elements.map((element) =>
-                      typedArrayStoreExpression("f32array", element),
-                  )
-                : [...elements],
+            table.elementCppType,
+            table.elements,
             source,
         );
         return `bbl::js::${prefix}_array_from(bblscene::${name})`;
