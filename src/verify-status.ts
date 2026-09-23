@@ -220,10 +220,12 @@ function measured(
         existsSync(gpuPath) &&
         existsSync(dawnPath) &&
         Math.max(mtime(gpuPath), mtime(dawnPath)) > mtime(differentialPath);
-    const differential = singlesFresh
-        ? undefined
-        : readReport<DifferentialReportSummary>(differentialPath);
-    if (differential !== undefined) {
+    if (existsSync(differentialPath) && !singlesFresh) {
+        // An unreadable differential reads as unmeasured, never as a
+        // silent step down to older single-backend reports.
+        const differential =
+            readReport<DifferentialReportSummary>(differentialPath);
+        if (differential === undefined) return undefined;
         return {
             source: differentialPath,
             values: [

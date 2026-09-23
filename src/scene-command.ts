@@ -533,7 +533,6 @@ async function parity(
     parsed: ParityArguments,
     rest: readonly string[],
 ): Promise<void> {
-    if (parsed.gpuDebug) enableGpuDebug();
     if (idOrSource === "all") {
         const perScene = [
             ["--attribute", parsed.attribute],
@@ -915,10 +914,10 @@ function cacheMatchesConfiguration(
  * option of not depending on that reasoning at all.
  */
 async function withColdBuild(
-    rest: string[],
+    parsed: ParsedFlags,
     body: () => Promise<void>,
 ): Promise<void> {
-    if (!rest.includes("--cold")) {
+    if (!parsed.flags.has("--cold")) {
         await body();
         return;
     }
@@ -928,20 +927,9 @@ async function withColdBuild(
 /** Build/process flags which shape the compiled tree, not the runtime. */
 async function withBuildOptions(
     command: "build" | "process",
-    rest: string[],
+    parsed: ParsedFlags,
     body: () => Promise<void>,
 ): Promise<void> {
-    const parsed = parseFlags(
-        rest,
-        {
-            value:
-                command === "process"
-                    ? ["--backend", "--compiler", "--shader"]
-                    : ["--backend", "--compiler"],
-            boolean: ["--cold"],
-        },
-        command,
-    );
     const requestedBackend = parsed.values.get("--backend");
     const requestedCompiler = parsed.values.get("--compiler");
     const requestedShader = parsed.values.get("--shader");
@@ -970,7 +958,7 @@ async function withBuildOptions(
         );
     };
     await withBackend(() =>
-        withCompiler(() => withShader(() => withColdBuild(rest, body))),
+        withCompiler(() => withShader(() => withColdBuild(parsed, body))),
     );
 }
 
@@ -3328,16 +3316,16 @@ async function main(): Promise<void> {
                 process.exitCode = 1;
             return;
         case "compile":
-            await withColdBuild(rest, () => compile(id!));
+            await withColdBuild(parsed, () => compile(id!));
             return;
         case "build":
-            await withBuildOptions("build", rest, () => build(id!));
+            await withBuildOptions("build", parsed, () => build(id!));
             return;
         case "process":
-            await withBuildOptions("process", rest, () => processScene(id!));
+            await withBuildOptions("process", parsed, () => processScene(id!));
             return;
         case "validate":
-            await withColdBuild(rest, () => runValidate(id!));
+            await withColdBuild(parsed, () => runValidate(id!));
             return;
         case "clean":
             runClean({
