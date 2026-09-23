@@ -19,7 +19,12 @@
  * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
-import { hasNode, unwrapExpression, type LoweringContext } from "./context.js";
+import {
+    hasNode,
+    numericValue,
+    unwrapExpression,
+    type LoweringContext,
+} from "./context.js";
 import {
     pinnedDefaultForDiscard,
     type PinnedMaterialDefault,
@@ -639,38 +644,25 @@ type FoldedDefault =
 /**
  * Evaluates a discarded `?? default` right-hand side.
  *
- * The pin's defaults are numeric literals, small vectors of them, or — the
+ * The pin's defaults are numeric constants, small vectors of them, or — the
  * reflectance writer's `_specularWeight ?? _metallicF0Factor ?? 1.0` — a
  * chain over further record-carried properties; a chained fallback folds to
  * its all-absent ground state, which is the constant the chain terminates
- * in. Anything else returns undefined and fails at the assert.
+ * in. A number folds through `numericValue`, which refuses what it cannot
+ * evaluate.
  */
 function foldDiscardedDefault(
     state: WriterState,
     expression: ts.Expression,
-): FoldedDefault | undefined {
-    let node = expression;
-    if (ts.isParenthesizedExpression(node)) node = node.expression;
-    if (ts.isNumericLiteral(node)) {
-        return { kind: "number", value: Number(node.text) };
-    }
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken
-    ) {
-        const operand = foldDiscardedDefault(state, node.operand);
-        return operand?.kind === "number"
-            ? { kind: "number", value: -operand.value }
-            : undefined;
-    }
+): FoldedDefault {
+    const node = unwrapExpression(expression);
     if (ts.isArrayLiteralExpression(node)) {
-        const lanes: number[] = [];
-        for (const element of node.elements) {
-            const lane = foldDiscardedDefault(state, element);
-            if (lane?.kind !== "number") return undefined;
-            lanes.push(lane.value);
-        }
-        return { kind: "vector", value: lanes };
+        return {
+            kind: "vector",
+            value: node.elements.map((element) =>
+                numericValue(element, state.file),
+            ),
+        };
     }
     if (
         ts.isBinaryExpression(node) &&
@@ -689,7 +681,7 @@ function foldDiscardedDefault(
     ) {
         return { kind: "record" };
     }
-    return undefined;
+    return { kind: "number", value: numericValue(node, state.file) };
 }
 
 /** Whether a folded default is a plain `?? 0`/`?? 1` (per lane). */
@@ -703,8 +695,7 @@ function isZeroOrOne(folded: FoldedDefault): boolean {
     return false;
 }
 
-function foldedText(folded: FoldedDefault | undefined): string {
-    if (folded === undefined) return "<unfoldable>";
+function foldedText(folded: FoldedDefault): string {
     if (folded.kind === "number") return String(folded.value);
     if (folded.kind === "vector") {
         return `[${folded.value.join(", ")}]`;
@@ -754,14 +745,14 @@ function assertDiscardedPinnedDefault(
     node: ts.BinaryExpression,
 ): void {
     const folded = foldDiscardedDefault(state, node.right);
-    if (folded?.kind === "record") return;
+    if (folded.kind === "record") return;
     const property = discardedProperty(state, node.left);
     const key = `${state.request.modulePath}#${state.request.symbolName}#${
         property ?? "<unnamed>"
     }`;
     const entry = pinnedDefaultForDiscard(key);
     if (entry === undefined) {
-        if (folded !== undefined && isZeroOrOne(folded)) return;
+        if (isZeroOrOne(folded)) return;
         throw new Error(
             `Pinned ${state.request.symbolName} discards the default of ` +
                 `'${property ?? node.left.getText(state.file)}' ` +
@@ -772,7 +763,7 @@ function assertDiscardedPinnedDefault(
                 "the record seed and the pin cannot drift apart.",
         );
     }
-    if (folded === undefined || !matchesEntry(entry, folded)) {
+    if (!matchesEntry(entry, folded)) {
         throw new Error(
             `Pinned ${state.request.symbolName} defaults '${property}' to ` +
                 `${foldedText(folded)}, but PINNED_MATERIAL_DEFAULTS ` +

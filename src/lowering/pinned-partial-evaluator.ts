@@ -21,6 +21,11 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import {
+    foldNumericBinary,
+    foldNumericComparison,
+    foldNumericUnary,
+} from "./pinned-operators.js";
 
 /** A lexical environment: bindings by name, resolved through the parents. */
 export class Env<B> {
@@ -569,14 +574,13 @@ export class PartialEvaluator<V, B> {
                     ? this.model.residual.not(known.cpp, node)
                     : this.fail(node, "negation of a run-time value");
             }
+            const classified = this.model.classify(operand);
+            const folded =
+                classified.k === "value" && typeof classified.raw === "number"
+                    ? foldNumericUnary(node.operator, classified.raw)
+                    : undefined;
+            if (folded !== undefined) return this.model.raw(folded);
             if (node.operator === ts.SyntaxKind.MinusToken) {
-                const classified = this.model.classify(operand);
-                if (
-                    classified.k === "value" &&
-                    typeof classified.raw === "number"
-                ) {
-                    return this.model.raw(-classified.raw);
-                }
                 return (
                     this.model.negate?.(operand, node) ??
                     this.fail(node, "prefix operator")
@@ -743,30 +747,12 @@ export class PartialEvaluator<V, B> {
             if (typeof a !== "number" || typeof b !== "number") {
                 this.fail(node, "operator over non-numbers");
             }
-            switch (kind) {
-                case ts.SyntaxKind.PlusToken:
-                    return this.model.raw(a + b);
-                case ts.SyntaxKind.MinusToken:
-                    return this.model.raw(a - b);
-                case ts.SyntaxKind.AsteriskToken:
-                    return this.model.raw(a * b);
-                case ts.SyntaxKind.SlashToken:
-                    return this.model.raw(a / b);
-                case ts.SyntaxKind.PercentToken:
-                    return this.model.raw(a % b);
-                case ts.SyntaxKind.LessThanToken:
-                    return this.model.raw(a < b);
-                case ts.SyntaxKind.LessThanEqualsToken:
-                    return this.model.raw(a <= b);
-                case ts.SyntaxKind.GreaterThanToken:
-                    return this.model.raw(a > b);
-                case ts.SyntaxKind.GreaterThanEqualsToken:
-                    return this.model.raw(a >= b);
-                case ts.SyntaxKind.BarToken:
-                    return this.model.raw(a | b);
-                default:
-                    return this.fail(node, "operator");
-            }
+            const folded =
+                foldNumericBinary(kind, a, b) ??
+                foldNumericComparison(kind, a, b);
+            return folded === undefined
+                ? this.fail(node, "operator")
+                : this.model.raw(folded);
         }
         return (
             this.model.binary?.(kind, left, right, node) ??

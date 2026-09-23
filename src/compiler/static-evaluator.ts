@@ -31,7 +31,7 @@ function objectIdentityCallArgument(
     }
     return expression.arguments[0];
 }
-import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
@@ -54,7 +54,11 @@ import {
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
-import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
+import {
+    JS_BITWISE_FUNCTIONS,
+    PINNED_ARITHMETIC_OPERATORS,
+    jsBitwiseCall,
+} from "../lowering/pinned-operators.js";
 import {
     MATH_CONSTANTS,
     MATH_MEMBERS,
@@ -99,18 +103,6 @@ type NarrowOptional = (
  * landed in. `Compiler.bindDataTuple` owns the rule.
  */
 type BindDataTuple = (value: Value, arity: number) => string;
-
-const bitwiseFunctions = new EmissionMap<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
-    [ts.SyntaxKind.BarToken, "bitwise_or"],
-    [ts.SyntaxKind.CaretToken, "bitwise_xor"],
-    [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
-    [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
-    [
-        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
-        "shift_right_unsigned",
-    ],
-]);
 
 /**
  * A value a number sink accepts: a native number, and a parsed document,
@@ -672,14 +664,12 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const bitwiseFunction = bitwiseFunctions.get(
-                unwrapped.operatorToken.kind,
-            );
-            if (bitwiseFunction) {
-                const compiled = `bbl::js::${bitwiseFunction}(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+            if (JS_BITWISE_FUNCTIONS.has(unwrapped.operatorToken.kind)) {
+                const compiled = jsBitwiseCall(
+                    unwrapped.operatorToken.kind,
+                    this.compileNumber(unwrapped.left, "double"),
+                    this.compileNumber(unwrapped.right, "double"),
+                )!;
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`

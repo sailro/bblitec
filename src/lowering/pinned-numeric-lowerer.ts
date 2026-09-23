@@ -48,6 +48,7 @@ import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
     PINNED_COMPARISON_OPERATORS,
+    foldNumericUnary,
 } from "./pinned-operators.js";
 
 /**
@@ -2707,12 +2708,11 @@ export class PinnedNumericLowerer {
     private staticNumberOf(expression: ts.Expression): number | undefined {
         const node = unwrapExpression(expression);
         if (ts.isNumericLiteral(node)) return Number(node.text);
-        if (
-            ts.isPrefixUnaryExpression(node) &&
-            node.operator === ts.SyntaxKind.MinusToken
-        ) {
+        if (ts.isPrefixUnaryExpression(node)) {
             const inner = this.staticNumberOf(node.operand);
-            return inner === undefined ? undefined : -inner;
+            return inner === undefined
+                ? undefined
+                : foldNumericUnary(node.operator, inner);
         }
         if (!ts.isIdentifier(node)) return undefined;
         const bound =

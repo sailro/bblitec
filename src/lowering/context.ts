@@ -10,6 +10,7 @@ import {
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
 import { sourceLocation } from "../source-location.js";
+import { foldNumericBinary, foldNumericUnary } from "./pinned-operators.js";
 
 export interface LoweredSource {
     header: string;
@@ -299,11 +300,12 @@ export function numericValue(
 ): number {
     const unwrapped = unwrapExpression(expression);
     if (ts.isNumericLiteral(unwrapped)) return Number(unwrapped.text);
-    if (
-        ts.isPrefixUnaryExpression(unwrapped) &&
-        unwrapped.operator === ts.SyntaxKind.MinusToken
-    ) {
-        return -numericValue(unwrapped.operand, file, options);
+    if (ts.isPrefixUnaryExpression(unwrapped)) {
+        const folded = foldNumericUnary(
+            unwrapped.operator,
+            numericValue(unwrapped.operand, file, options),
+        );
+        if (folded !== undefined) return folded;
     }
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
@@ -314,32 +316,12 @@ export function numericValue(
         return Math.PI;
     }
     if (ts.isBinaryExpression(unwrapped)) {
-        const left = numericValue(unwrapped.left, file, options);
-        const right = numericValue(unwrapped.right, file, options);
-        switch (unwrapped.operatorToken.kind) {
-            case ts.SyntaxKind.PlusToken:
-                return left + right;
-            case ts.SyntaxKind.MinusToken:
-                return left - right;
-            case ts.SyntaxKind.AsteriskToken:
-                return left * right;
-            case ts.SyntaxKind.SlashToken:
-                return left / right;
-            case ts.SyntaxKind.LessThanLessThanToken:
-                return left << right;
-            case ts.SyntaxKind.GreaterThanGreaterThanToken:
-                return left >> right;
-            case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-                return left >>> right;
-            case ts.SyntaxKind.BarToken:
-                return left | right;
-            case ts.SyntaxKind.AmpersandToken:
-                return left & right;
-            case ts.SyntaxKind.CaretToken:
-                return left ^ right;
-            default:
-                break;
-        }
+        const folded = foldNumericBinary(
+            unwrapped.operatorToken.kind,
+            numericValue(unwrapped.left, file, options),
+            numericValue(unwrapped.right, file, options),
+        );
+        if (folded !== undefined) return folded;
     }
     if (ts.isIdentifier(unwrapped)) {
         const bound = (options.constant ?? sameFileConstant)(
