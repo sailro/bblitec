@@ -151,7 +151,6 @@ need fresh nested literals. Configuration is per loading realm and must precede 
 KTX1 packages BC/ASTC candidates in source order and selects a supported format on the rendering device.
 Candidates require matching dimensions and sampler rules. Missing assets, unsupported families and
 uncompressed fallback refuse. Basis/KTX2 uses the pinned browser transcoder; upload checks device support.
-Decoder bytes key caches; local decoder inputs are tracked.
 
 ### Gaussian splat row updates
 
@@ -244,7 +243,7 @@ Control restoration, geospatial input and broader camera combinations remain lim
 
 ## Android
 
-ARM64/x86_64 APKs use SDL_GPU or Dawn over Vulkan on API 28+; retained UI requires API 29+.
+ARM64/x86_64 APKs use SDL_GPU or Dawn on API 28+; retained UI requires API 29+.
 RmlUi, LabSound/SDL audio and worker canvases sharing one native window are enabled.
 Authored maxDevicePixelRatio caps the render buffer independently of the full-screen view.
 Apps use landscape orientation and immersive fullscreen. Reveal navigation with a bottom-edge swipe;
@@ -340,8 +339,8 @@ and vertex/fragment bindings. Dynamic shader signatures and broader plugin hooks
 ## Animation playback
 
 GLTF supports LINEAR/STEP/CUBICSPLINE, TRS, skin/morph and admitted material/light/visibility pointers,
-seeks, speed, masks and weighted/additive mixing. Metallic-roughness texture-transform pointers are ignored
-by the pin. Property tracks support numeric leaves and linear/step interpolation; replacement does not retarget.
+seeks, speed, masks and weighted/additive mixing. Property tracks support numeric leaves and linear/step
+interpolation.
 
 Managers support fixed delta, onUpdate and autonomous RAF start/stop. First variable delta is zero;
 autonomous updates notify after evaluation. Autonomous managers cannot share a program with a persistent
@@ -396,7 +395,8 @@ Thin-instance physics uses one native body per matrix, shared shape/property fan
 ray/character/collision results. Collision callbacks retain removed bodies through after-step dispatch.
 Thin physics with floating origin, body-aware trigger callbacks and retained trigger disposers are unsupported.
 
-Heightfields require square ground-mesh grids/static bodies. Container construction precedes attachment;
+Heightfields require square ground-mesh grids/static bodies. Zero/degenerate shapes refuse. Container
+construction precedes attachment;
 convex children admit finite nonzero scale. Mixed child filters/materials/triggers and triangle children
 refuse. Proximity/casts require inline query bags and convex targets. Viewers need construction-known
 shape descriptors and a native toolchain; constraint overlays and observable startup membership refuse.
@@ -448,8 +448,7 @@ Contact shadows and one-bounce GI use single-sample color/depth, temporal resolv
 ### Fullscreen effects
 
 EffectWrapper/EffectRenderer, UniformEffectWrapper and tasks admit bounded layouts/uniforms/textures.
-Custom vertices, broader textures/descriptors and lifecycle/update APIs refuse. Retained UI with
-scene-less effect/frame-graph drivers is unsupported.
+Custom vertices, broader textures/descriptors and lifecycle/update APIs refuse.
 
 ### Image processing
 

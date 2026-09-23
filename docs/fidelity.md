@@ -35,10 +35,8 @@ Artifact paths are relative to `generated/<id>/`.
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
 | Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |
-| Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
 | Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
 | GPU task timing | Pinned frame-graph task snapshots use asynchronous hardware timestamp readback; [backend capability](backends.md#backend-comparison) determines availability |
-| iOS Simulator | Explicit Dawn/Metal target with SDL UIKit hosting; no emulation of an iPhone GPU's capabilities |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
@@ -48,8 +46,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Physics/audio | Bullet/LabSound replace Havok/browser audio |
 
 Live dataset readback and recovery hooks remain represented; write-only instrumentation can erase.
-Native drawCallCount includes transport draws. Native loops own canvas extent refresh;
-ResizeObserver installation/cancellation does not change that policy.
+Native drawCallCount includes transport draws.
 
 Uncaught ordinary callback exceptions reach the entry handler and exit with status 1. Realm tasks use
 the installed handler or rethrow. Local catches remain active. This differs from browser event-loop continuation.
@@ -59,7 +56,7 @@ the installed handler or rethrow. Local catches remain active. This differs from
 PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/builders. Composition
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
-Shared vertex transport uses baked worlds, fixed PAL bindings, four influences and a 64-matrix palette.
+Shared vertex transport uses baked worlds, fixed PAL bindings and a 64-matrix palette.
 Lifted skybox fog uses interpolated world position; HDR positionUVW is world position minus background
 center. SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
@@ -112,15 +109,14 @@ Decoder bytes key caches and local decoder files participate in input tracking.
 
 ### Gaussian splats
 
-Draw/sort/picking share cloud identity. Updates preserve old buffer aliases and refresh textures before
-same-turn draws/picks. Borrowed buffers without an owner refuse.
+Draw/sort/picking share cloud identity.
 
 ### Animation and hierarchy
 
 Pinned parsing/target resolution controls acceptance and source write order, masks and weighted/additive
 mixing. Native adapters retain source Float32 stores and shared deformation resources. Material pointer
 writers retain double arrays and captured owners; replacing a wrapper does not retarget an old writer.
-CPU-only VAT seeks do not upload temporary poses. Property and glTF tracks remain separate.
+CPU-only VAT seeks do not upload temporary poses.
 
 ### Frame graph and post-process passes
 
@@ -155,19 +151,19 @@ can dispatch one frame earlier than the browser promise.
 | Prestep | TELEPORT keeps zero kinematic velocity; ACTION uses immediate swept pose instead of Havok's deferred target |
 | Timing | Variable frame delta capped at 100 ms; explicit fixed steps once per rendered frame, including initial zero engine delta |
 | Triangle meshes | Static BVH; dynamic GImpact with approximate inertia |
-| Heightfields | Static triangle BVH with measured source grid orientation/diagonal; rectangular grids refuse |
-| Containers | Source relative transforms; Bullet convex children/inertia; mixed child material/filter/trigger state refuses |
+| Heightfields | Static triangle BVH with measured source grid orientation/diagonal |
+| Containers | Source relative transforms; Bullet convex children/inertia |
 | Floating origin | Separate worlds; no cross-region collisions |
 | Queries | GJK/EPA and convex sweep; measured cylinder/box margins and closest-feature tie selection |
 | Character contacts | Body sets can agree while contact order, instants and points differ |
 
 Cylinder margin is `min(0.015, 0.1 * minimumHalfExtent)`; box margin is 0.015 capped by its smallest
-half-extent. Shape storage outlives native shapes. Zero/degenerate shapes and unsupported ownership
-combinations refuse. Per-step traces and rest/shape checks measure different properties.
+half-extent. Shape storage outlives native shapes. Per-step traces and rest/shape checks measure
+different properties.
 
 ## Text contract
 
-Static shaping/atlas packing runs at generation. Live text uses HarfBuzz and pinned layout/packing over
+Live text uses HarfBuzz and pinned layout/packing over
 the packaged repertoire. TextData retains identity; shared data owns group caches and captured styles.
 Disposal releases GPU leases while CPU data follows source lifetime. Deferred registration publishes
 only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
@@ -175,9 +171,8 @@ only after successful construction. Arbitrary async builders refuse. Both backen
 ## Audio contract
 
 LabSound starts playback without a browser autoplay gate. Lifecycle promises settle after device
-transitions. Decode reads on the realm thread, rejects invalid bytes and retains attached ArrayBuffers.
-Output-device selection and browser recording streams are unavailable. Topology/scheduling agreement
-does not establish PCM fidelity; closed-context graph operations remain bounded.
+transitions. Decode reads on the realm thread and retains attached ArrayBuffers. Topology/scheduling
+agreement does not establish PCM fidelity.
 
 ## What is measured: the full page
 

@@ -23,15 +23,14 @@ needs performance and semantic verification. The easing/steps mapping is approxi
 - TypeScript owns live controls; reviewed `ui/*.json` companions describe static host chrome.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
-- RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine. Notifications coalesce.
+- RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution and reduced-motion matchMedia queries retain identity/current matches and zero-argument change
   listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
-- Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
-  hints are absent. Async graphics guards expose the existing Window service; adapter requests and
-  GPU API instrumentation are unsupported.
+- Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract). Heap
+  snapshots, GPU adapter requests and GPU API instrumentation are unsupported.
 - Location follows deployment. A query value the deployment answers is a constant: alone, beside native
   operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
   short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
@@ -204,7 +203,6 @@ differ from Chromium. Relative transition units resolve at transition start.
 Both backends composite premultiplied UI at scene sample count. Canvas overlays precede DOM chrome.
 Backdrop blur snapshots preceding UI into FP16 scratch. Filters retain nested layers and ordered color
 adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only capture excludes UI filters.
-Rebuild patched libraries before validation.
 
 ## Limits
 

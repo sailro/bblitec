@@ -96,9 +96,8 @@ the latest canvas frames. Completion receipts contain weak native inbox referenc
 consumer fences prevent overwriting sampled images. Normal presentation uses GPU textures; captures
 use readback. SDL submits on the acquiring thread; Dawn synchronizes the shared device.
 
-The first document snapshot follows initialization microtasks. Image decoding works before engine
-construction and keeps readiness on the application realm. Source callbacks remain on that realm.
-Shared-device recovery in worker/window applications is unsupported.
+The first document snapshot follows initialization microtasks. Image decode readiness and source
+callbacks remain on the application realm.
 
 ## Retained UI
 

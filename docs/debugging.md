@@ -1,7 +1,6 @@
 # Diagnosing a scene
 
-Preserve corpus inputs, goldens and thresholds. Match source/module hashes, query, pose, UI and
-[build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
+Match source/module hashes, query, pose, UI and [build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
 
 ## The ladder
 
@@ -44,8 +43,8 @@ iOS 16.2 WebKit has no WebGPU. Same-Mac Chrome comparisons are cross-platform di
 iOS-browser parity. Viewport, DPR and display dimensions must match; authored supersampling uses
 the browser compositor, never offline PNG resizing.
 
-`BBLITE_TEST_PASS` disables physical input but does not hide SDL windows. Run Windows regression
-captures on an inactive desktop when they must not appear on the user's desktop.
+`BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
+they must not appear on the user's desktop.
 
 ## Captured state and its limits
 
@@ -67,7 +66,7 @@ Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) 
 
 ## Before calling a scene done
 
-Run [validation](development.md#validation), then declared interaction checks on both backends:
+[Integration](development.md#integrating-a-curated-parity-scene) includes the declared interaction checks:
 
 ```powershell
 npm run scene -- observe <check-id>

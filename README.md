@@ -11,18 +11,9 @@ Source/package pin: [upstream/babylon-lite.json](upstream/babylon-lite.json).
 
 ## Quick start
 
-```powershell
-npm ci
-npm run dev:setup
-npm run doctor
-npm run scene -- process scene1
-npm run scene -- parity scene1 --differential
-```
-
-See [development](docs/development.md#setup) for Windows, Linux and macOS prerequisites
-and the Windows CMake path. A built scene requires a GPU.
-Build and package Android APKs with the [Android workflow](docs/development.md#android).
-iOS app bundles use the [iOS workflow](docs/development.md#ios).
+[Development setup](docs/development.md#setup) lists prerequisites and first commands.
+Android APKs and iOS app bundles use the [Android](docs/development.md#android) and
+[iOS](docs/development.md#ios) workflows.
 
 ## Documentation
 

@@ -47,7 +47,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL=3
 export VCPKG_MAX_CONCURRENCY=3
 ```
 
-Both backends use Vulkan. Generation/browser capture and native scenes need a graphical session,
+Generation/browser capture and native scenes need a graphical session,
 GPU-device access and X11/Wayland authorization. `SDL_VIDEODRIVER=x11|wayland` selects the display path.
 Set `CHROME_PATH` and `CC`/`CXX` as needed. Compiler changes require compatible dependency workspaces.
 Fontconfig/FreeType metrics can differ from Windows/browser references.
@@ -55,7 +55,7 @@ Fontconfig/FreeType metrics can differ from Windows/browser references.
 ### macOS prerequisites
 
 Install Apple's Command Line Tools, Clang 18+, CMake, Ninja, Node.js, PowerShell, Git, pkg-config and vcpkg.
-Both backends use Metal/Cocoa in a logged-in graphical session. DXC/offline metal compilation is unnecessary.
+Native scenes need a logged-in graphical session. DXC/offline metal compilation is unnecessary.
 
 ```sh
 export VCPKG_ROOT="$HOME/vcpkg"
@@ -112,7 +112,6 @@ The sweep completes source/shader generation and dependency preparation before b
 registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
 unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
 Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
--SkipGenerate -UseInstalledDependencies reuses prepared source, shaders and dependencies, not native binaries.
 For device-local rendering measurements instead of registered-reference comparisons, see
 [same-device diagnosis](debugging.md#same-device-rendering-comparisons).
 
@@ -124,7 +123,7 @@ avdmanager create avd -n bblite-api35 -k "system-images;android-35;google_apis;x
 emulator -avd bblite-api35 -gpu host -no-snapshot
 ```
 
-Emulator captures do not qualify physical-device performance. See [limits](features.md#android).
+See [limits](features.md#android).
 
 ### iOS
 
@@ -136,12 +135,13 @@ npm run ios -- -Scene scene1 -Device <simulator-udid> -Install
 ```
 
 The default is `iphonesimulator`, host architecture, Dawn/Metal. `-Install` launches the selected app;
-`-Smoke` requires a matching exit marker, build stamp and GPU readback. SDL_GPU/BOTH refuse on Simulator.
-`-Sdk iphoneos -Architecture arm64` selects an unsigned device bundle; SDL_GPU requires SDK 16.4+.
+`-Smoke` requires a matching exit marker, build stamp and GPU readback.
+`-Sdk iphoneos -Architecture arm64` selects a device bundle; SDL_GPU requires SDK 16.4+.
 `-MinSize` selects [trimmed device publishing](#minimal-size-shipping-builds).
 
 Static dependencies are SDK/architecture-specific. Generation and shared dependency preparation precede
-parallel builds; `-SkipGenerate -UseInstalledDependencies` reuses those inputs, not native binaries.
+parallel builds; on Android and iOS, `-SkipGenerate -UseInstalledDependencies` reuses those inputs, not
+native binaries.
 `-SweepGeneratedDirectoriesFile` selects the dependency union; `-DawnDirectory` selects a compatible Dawn install.
 `BBLITE_IOS_TEST_DEVICE=<udid>` enables the headless system-emoji fixture on a booted Simulator.
 
@@ -207,7 +207,7 @@ This measures verified delivery, not effort or remaining time. Keep private ledg
 | `checks/<id>.json` | Interaction phases/expectations; plugins in `checks/plugins/` |
 
 Match source queries, reference time/frame and canvas size. New scenes need full/foreground MAD below
-0.5 on both backends plus interaction checks. Canvas-only gates supplement UI-heavy scenes.
+0.5 on both backends plus interaction checks.
 Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
 `tools/create-status-preview.mjs`; ICU changes require `tools/generate-emoji-presentation.mjs`.
 
@@ -266,7 +266,6 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
 `docs/reviews/` holds the record of the most recent reviewed change. Status verification checks published measurements,
 registry names and canvas gates; measured repeatability exceptions live in the neutrality allowlist.
-There is no hosted CI.
 
 Documentation-only changes require link and affected metadata checks. Rendering checks are required
 when executable inputs or measurement contracts change. `lint:exports` is advisory.
@@ -367,9 +366,8 @@ npm run package:demo -- -Platform ios -Scene tetris -Jobs 3
 npm run demos:release -- --platform ios --scene tetris,platformer --jobs 3
 ```
 
-iOS publishing requires SDK 16.4+. Packages contain Metal shaders and reached static dependencies;
-capture is disabled. Each ZIP contains an unsigned iPhone/iPad app, not a Simulator binary.
-Receipts record hashes, sizes and `startup.status=not-run`; [device qualification](features.md#ios) is incomplete.
+iOS packages contain Metal shaders and reached static dependencies with capture disabled; each ZIP holds
+an iPhone/iPad device app. Receipts record hashes, sizes and `startup.status=not-run`.
 
 The desktop packager runs the staged executable for five frames with GPU validation, then publishes the ZIP
 only after success. CMake presets provide Windows developer-prompt recipes. Linker size attribution:
@@ -419,7 +417,6 @@ changed external toolchains/assets and other hosts require separate qualificatio
 | Failure | Action |
 | --- | --- |
 | Missing tools/dependencies | doctor; verify path overrides |
-| Patched dependency | Rebuild its installed artifact |
 | LNK1168 | Stop the executable holding the output |
 | Long vcpkg paths | Short --x-buildtrees-root |
 | Wrong compiler/generator | Recreate the affected disposable build tree |
