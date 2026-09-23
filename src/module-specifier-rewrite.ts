@@ -6,7 +6,7 @@ import { moduleSpecifiers } from "./typescript-module-specifiers.js";
  * original's quotes, or -- for a dynamic `import(...)` only -- an expression
  * that replaces the whole call.
  */
-export type SpecifierRewrite =
+type SpecifierRewrite =
     { readonly specifier: string } | { readonly expression: string };
 
 /**

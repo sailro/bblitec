@@ -217,7 +217,7 @@ export function pinnedDefaultForDiscard(
  * The property a `<read> ?? <default>` guards: the left-most read of its
  * left spine, as the UBO-writer lowerer's discard site names it.
  */
-export function nullishGuardedProperty(
+function nullishGuardedProperty(
     expression: ts.BinaryExpression,
 ): string | undefined {
     let node: ts.Expression = expression.left;
