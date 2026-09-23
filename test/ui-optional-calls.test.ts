@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -64,6 +65,8 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         }
         const query = new QueryPanel();
         query.build();
+        const selected = query.node?.querySelector(".swatch");
+        if (!selected) throw new Error("query lookup lost its result");
         query.visit();
         if (visits !== 1) throw new Error("query continuation");
         query.node = null;
@@ -79,6 +82,7 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
             },
         },
     );
+    assert.equal(result.cpp.match(/bbl::ui_query_element\(/g)?.length, 1);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-optional-calls");
 });

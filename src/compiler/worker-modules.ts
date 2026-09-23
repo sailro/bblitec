@@ -16,6 +16,7 @@ import {
 } from "./output-projection.js";
 import { reachedGeneratedSources } from "../generated-sources.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { commonSourceDirectory, sourceUnitStem } from "./source-units.js";
 
 function globalNamed(
     frontend: CompilerProgram,
@@ -205,9 +206,39 @@ export function compileWorkerApplication(
     const featureSites: CompileManifest["featureSites"] = {};
     for (const result of results)
         Object.assign(featureSites, result.manifest.featureSites);
+    const root = commonSourceDirectory(
+        frontend.sourceFile.fileName,
+        modules.keys(),
+    );
+    const cppFiles = new Map<string, string>();
+    const sourceUnits: CompileManifest["sourceUnits"] = [];
+    for (const result of results) {
+        const prefix =
+            result === application
+                ? ""
+                : `sources/workers/${sourceUnitStem(root, result.manifest.source)}/`;
+        for (const [path, cpp] of result.cppFiles) {
+            const output = prefix + path;
+            if (cppFiles.has(output))
+                throw new Error(`Generated source path collision: ${output}`);
+            cppFiles.set(output, cpp);
+        }
+        sourceUnits.push(
+            ...result.manifest.sourceUnits.map((unit) => ({
+                ...unit,
+                path: prefix + unit.path,
+            })),
+        );
+    }
     return {
         cpp: results.map((result) => result.cpp).join("\n"),
-        cmake: renderFeaturesCmake(features, runtimeSources, generatedSources),
+        cppFiles,
+        cmake: renderFeaturesCmake(
+            features,
+            runtimeSources,
+            generatedSources,
+            sourceUnits.map(({ path }) => path),
+        ),
         assetPayloads: new EmissionMap(
             results.flatMap((result) => [...result.assetPayloads]),
         ),
@@ -229,6 +260,7 @@ export function compileWorkerApplication(
             features,
             runtimeSources,
             generatedSources,
+            sourceUnits,
             featureSites,
         },
     };
@@ -242,6 +274,7 @@ function renderingProduct(manifest: CompileManifest): string {
         featureSites,
         runtimeSources,
         generatedSources,
+        sourceUnits,
         assets,
         adaptations,
         assetDecoders,
@@ -253,6 +286,7 @@ function renderingProduct(manifest: CompileManifest): string {
     void featureSites;
     void runtimeSources;
     void generatedSources;
+    void sourceUnits;
     void assets;
     void adaptations;
     void assetDecoders;

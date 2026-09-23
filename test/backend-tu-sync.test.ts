@@ -56,7 +56,10 @@ test("the CMake backend arm derives the Dawn twins from the SDL_GPU units featur
         cmake,
         /target_sources\(bblite_native PRIVATE \$\{BBLITE_DAWN_SOURCES\}\)/,
     );
-    assert.doesNotMatch(cmake, /REMOVE_ITEM/);
+    assert.doesNotMatch(
+        cmake,
+        /REMOVE_ITEM BBLITE_(?:RUNTIME|SDL_GPU|DAWN)_SOURCES/,
+    );
     assert.doesNotMatch(
         cmake,
         /PRIVATE "\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_dawn[^"]*\.cpp"/,

@@ -52,6 +52,13 @@ test("destructuring preserves generic identities, nested storage and lazy assign
         if(reads!==2||a!==3||b!==7)throw new Error("source effects and spreads");
         [a=fallback(),nullable=fallback(),b=fallback()]=[undefined,null,,];
         if(a!==13||nullable!==null||b!==13||calls!==6)throw new Error("literal absence defaults");
+        let source = [3, 7];
+        const rebinding = {set value(input: number) {a = input; source = [11, 13];}};
+        [rebinding.value, b] = source;
+        if(a!==3||b!==7||source[0]!==11)throw new Error("RHS identity across rebinding");
+        function pairFor(input: number): [number, number] {return [input, input + 1];}
+        [a, b] = pairFor(calls);
+        if(a!==6||b!==7)throw new Error("shared tuple result");
         let nestedDefault:number[]=[];[nestedDefault=[19]]=[];
         if(nestedDefault[0]!==19)throw new Error("missing array default");
         globalThis.close();

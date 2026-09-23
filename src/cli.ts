@@ -1250,6 +1250,7 @@ async function main(): Promise<void> {
             result.manifest.features as Feature[],
             result.manifest.runtimeSources,
             result.manifest.generatedSources,
+            result.manifest.sourceUnits.map(({ path }) => path),
         );
     }
     const {
@@ -1614,7 +1615,8 @@ async function main(): Promise<void> {
         emitOptions,
         tree,
     );
-    tree.write("main.cpp", result.cpp);
+    for (const [path, cpp] of result.cppFiles) tree.write(path, cpp);
+    tree.prune("sources");
     const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);
     const imageCodecLines = imageCodecs
         .map((codec) => `    "${codec}"`)

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { cppFunction } from "./native-fixture.js";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SkeletonLowerer } from "../src/lowering/skeleton-lowerer.js";
@@ -124,9 +125,11 @@ test("updateSkeletonBoneMatrices stays a live per-frame call", () => {
     assert.match(result.cpp, /bbl::update_scene_skeleton_bone_matrices\(/);
     // The pose is read where the scene writes it. A fold at creation would
     // put the call outside the callback, which is what this pins.
-    const callback = result.cpp.slice(
-        result.cpp.indexOf("bbl::on_before_render"),
+    const registered = result.cpp.match(
+        /bbl::on_before_render\([^\n]+bblscene::(v_bblite_closure_body_\d+)/,
     );
+    assert.ok(registered);
+    const callback = cppFunction(result.cpp, `void ${registered[1]}(`);
     assert.ok(
         callback.includes("update_scene_skeleton_bone_matrices"),
         "the palette update must stay inside the per-frame callback",

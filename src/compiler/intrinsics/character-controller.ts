@@ -25,6 +25,7 @@ export interface CharacterIntrinsicContext
             | "compilePhysicsCharacterCallback"
             | "compileVec3"
             | "compileBoolean"
+            | "registerNativeBinding"
         > {}
 
 function options(
@@ -47,14 +48,21 @@ function options(
     return `bbl::character::options(${field("capsuleHeight")}, ${field("capsuleRadius")})`;
 }
 
-export function characterVectorValue(cpp: string): Value<"record"> {
+export function characterVectorValue(
+    cpp: string,
+    nativeCaptures: Value["nativeCaptures"] = [],
+): Value<"record"> {
     return {
         kind: "record",
         cpp: "",
         recordProperties: Object.fromEntries(
             ["x", "y", "z"].map((axis) => [
                 axis,
-                { kind: "number", cpp: `${cpp}->${axis}` } satisfies Value,
+                {
+                    kind: "number",
+                    cpp: `${cpp}->${axis}`,
+                    nativeCaptures,
+                } satisfies Value,
             ]),
         ),
     };
@@ -62,18 +70,24 @@ export function characterVectorValue(cpp: string): Value<"record"> {
 
 /** Preserve the Vec3 reference returned by the pin before another expression can rebind its controller. */
 function retainCharacterVector(
-    context: Pick<LoweringServices, "allocateTemporaryCppName" | "emit">,
+    context: Pick<
+        LoweringServices,
+        "allocateTemporaryCppName" | "emit" | "registerNativeBinding"
+    >,
     cpp: string,
 ): Value {
     const owner = context.allocateTemporaryCppName("character_vector");
     context.emit({
         kind: "declaration",
-        type: "const auto",
+        type: "const bbl::js::Ref<bbl::character::Vec3>",
         name: owner,
         initializer: cpp,
         attributes: "[[maybe_unused]] ",
     });
-    return { ...characterVectorValue(owner), retainedNativeRecord: true };
+    return {
+        ...characterVectorValue(owner, [context.registerNativeBinding(owner)]),
+        retainedNativeRecord: true,
+    };
 }
 
 export function compileCharacterIntrinsic(

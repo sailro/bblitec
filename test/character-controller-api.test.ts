@@ -52,11 +52,11 @@ test("public character APIs transport collision values, vector aliases and dispo
     assert.match(result.cpp, /setShapeOptions/);
     assert.match(
         result.cpp,
-        /const auto v_bblite_character_vector_\d+ = v_controller->getPosition\(\)/,
+        /const bbl::js::Ref<bbl::character::Vec3> v_bblite_character_vector_\d+ = v_controller->getPosition\(\)/,
     );
     assert.match(
         result.cpp,
-        /const auto v_bblite_character_vector_\d+ = v_controller->getVelocity\(\)/,
+        /const bbl::js::Ref<bbl::character::Vec3> v_bblite_character_vector_\d+ = v_controller->getVelocity\(\)/,
     );
     assert.match(result.cpp, /v_bblite_character_vector_\d+->x/);
 });

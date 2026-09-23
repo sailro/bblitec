@@ -452,11 +452,15 @@ export function compileShadowIntrinsic(
             const disposer = context.allocateTemporaryCppName(
                 "csm_receiver_disposer",
             );
-            context.emit(
-                `auto ${disposer} = bbl::on_csm_receiver_update(` +
+            context.emit({
+                kind: "declaration",
+                type: "bbl::js::Callback<void()>",
+                name: disposer,
+                initializer:
+                    `bbl::on_csm_receiver_update(` +
                     `${context.requireEngine(generator, call)}, ` +
-                    `${generator.cpp}, ${callback});`,
-            );
+                    `${generator.cpp}, ${callback})`,
+            });
             return {
                 kind: "callback",
                 cpp: disposer,

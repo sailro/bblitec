@@ -79,7 +79,9 @@ function compiledGeneratedFiles(generatedDirectory: string): string[] {
                 (path) =>
                     path === "main.cpp" ||
                     path === "features.cmake" ||
-                    (path.startsWith("upstream/") && /\.(cpp|hpp)$/.test(path)),
+                    ((path.startsWith("upstream/") ||
+                        path.startsWith("sources/")) &&
+                        /\.(cpp|hpp)$/.test(path)),
             )
             // The listing is not a compiled file, so the filter above already
             // leaves it out; `isGenerationOutput` in generation-stamp.ts names

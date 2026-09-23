@@ -1016,12 +1016,16 @@ function bindBakedTexture(
             context.fail(call, message),
         );
         context.reachFeature("texture:pixels", call);
-        context.emit(
-            `const auto ${cppName} = bbl::create_texture_2d_from_pixels(` +
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::PixelsTexture",
+            name: cppName,
+            initializer:
+                `bbl::create_texture_2d_from_pixels(` +
                 `${engineCpp}, bbl::asset_path(${context.cppString(asset.output)}), ` +
                 `${doubleLiteral(texture.width)}, ${doubleLiteral(texture.height)}` +
-                `${options ? `, ${options}` : ""});`,
-        );
+                `${options ? `, ${options}` : ""})`,
+        });
         return {
             kind: "texture",
             textureStorage: "pixels",

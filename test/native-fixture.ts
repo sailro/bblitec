@@ -117,6 +117,30 @@ export function runNativeFixtureCompiler(
     }
 }
 
+/** Preserve object paths when distinct source folders contain equal basenames. */
+export function buildNativeFixture(
+    tools: WindowsBuildTools,
+    sources: readonly string[],
+    executable: string,
+    flags: readonly string[],
+): void {
+    const objects = sources.map((source) => {
+        const object = `${source}.obj`;
+        runNativeFixtureCompiler(tools, [
+            ...flags,
+            "/c",
+            source,
+            `/Fo${object}`,
+        ]);
+        return object;
+    });
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        ...objects,
+        `/Fe${executable}`,
+    ]);
+}
+
 /** Build a retained-UI fixture against the same pinned library and platform fonts. */
 export function runRmlUiFixture(
     t: TestContext,

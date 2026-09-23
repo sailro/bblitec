@@ -117,7 +117,7 @@ test("localStorage lowers to the PAL store behind its own feature", () => {
     assert.match(result.cpp, /#include <bblite\/js_json\.hpp>/);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
     );
     assert.match(
         result.cpp,
@@ -155,7 +155,7 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     `);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \1\(/,
     );
     // Absent AND empty are both falsy, which `has_value()` alone is not.
     assert.match(result.cpp, /if \(bbl::js::nullable_truthy\(\w+\)\)/);

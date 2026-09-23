@@ -10,7 +10,7 @@ interface SpriteAtlasRecordContext extends Pick<
     | "dataValue"
     | "requireDefaultEngine"
     | "allocateTemporaryCppName"
-    | "registerNativeFunction"
+    | "registerNativeTemplate"
     | "reachJsData"
     | "reachImageDecode"
     | "reachFeature"
@@ -235,14 +235,15 @@ export function compileSpriteAtlasRecord(
         let helper = helpers.get(key);
         if (helper === undefined) {
             helper = context.allocateTemporaryCppName("sprite_atlas_record");
-            context.registerNativeFunction(
-                `template <typename Texture> bbl::SpriteAtlasHandle ${helper}${parameters};`,
+            context.registerNativeTemplate(
+                helper,
                 [
                     `template <typename Texture>`,
                     `bbl::SpriteAtlasHandle ${helper}${parameters} {`,
                     ...bodyLines.map((line) => `    ${line}`),
                     `}`,
                 ],
+                `template <typename Texture> bbl::SpriteAtlasHandle ${helper}${parameters};`,
             );
             helpers.set(key, helper);
         }

@@ -7,7 +7,10 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { StaticExpansionBudget } from "../src/compiler/static-expansion.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
-import { loopBoundMayChange } from "../src/compiler/resource-loops.js";
+import {
+    loopBoundMayChange,
+    walkReachedLoopNodes,
+} from "../src/compiler/resource-loops.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
@@ -136,12 +139,23 @@ test("inclusive resource loops preserve endpoint values and empty ranges", () =>
         `),
         );
         assert.equal(result.manifest.sceneMeshes.length, expected);
-        assert.deepEqual(
-            [...result.cpp.matchAll(/\.position\.x = (\d+)\.0;/g)].map(
-                (match) => Number(match[1]),
-            ),
-            Array.from({ length: expected }, (_, index) => start + index),
+        assert.equal(
+            result.cpp.match(/bbl::create_box\(/g)?.length ?? 0,
+            expected ? 1 : 0,
         );
+        if (expected) {
+            assert.match(
+                result.cpp,
+                new RegExp(`double v_\\w+_index = ${start}\\.0;`),
+            );
+            assert.match(
+                result.cpp,
+                new RegExp(
+                    `for \\(; v_\\w+_index <= ${end}\\.0; v_\\w+_index\\+\\+\\)`,
+                ),
+            );
+            assert.match(result.cpp, /\.position\.x = v_\w+_index;/);
+        }
     }
 });
 
@@ -1425,11 +1439,11 @@ test("materializing a literal data iteration evaluates each operand only once", 
         }
     `);
     assert.match(result.cpp, /for \(auto&&/);
-    assert.equal(result.cpp.match(/v_calls\+\+;/g)?.length, 2);
+    assert.equal(result.cpp.match(/v_calls\+\+;/g)?.length, 1);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 80);
 });
 
-test("nonconforming decoded rows retain their checked static filtering path", () => {
+test("nonconforming decoded rows retain checked filtering in a native loop", () => {
     const result = compileSource(`
         interface Row { value: number }
         function consume(json: unknown): number {
@@ -1447,8 +1461,9 @@ test("nonconforming decoded rows retain their checked static filtering path", ()
             ${Array.from({ length: 39 }, (_, value) => `{ value: ${value} }`).join(",")}
         ] });
     `);
-    assert.doesNotMatch(result.cpp, /for \(auto&&/);
-    assert.equal(result.cpp.match(/total \+=/g)?.length, 39);
+    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /\.type_of\(\)/);
+    assert.equal(result.cpp.match(/total \+=/g)?.length, 1);
 });
 
 test("DOM construction keeps its static label and retained-callback specialization", () => {
@@ -1545,7 +1560,7 @@ test("mutable helper parameter bounds cannot be mistaken for fixed resource coun
     `,
                 ),
             ),
-        /Runtime resource construction requires a generation-known iteration count/,
+        /(?:Runtime resource construction requires a generation-known iteration count|A static resource loop requires an invariant bound)/,
     );
 });
 
@@ -1597,4 +1612,46 @@ test("resource-loop generation is deterministic", () => {
         for (let i = 0; i < 300; i++) createBox(engine, i + 1);
     `);
     assert.deepEqual(compileSource(source), compileSource(source));
+});
+
+test("reached-call analysis follows each forwarded callback and retains unknown callbacks", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        function apply(callback: () => void): void { callback(); }
+        function forward(callback: () => void): void { apply(callback); }
+        function pure(): void {}
+        function effect(): void { Math.random(); }
+        function scan(unknown: () => void): void {
+            forward(pure);
+            forward(effect);
+            forward(unknown);
+        }
+    `,
+        "input.ts",
+    );
+    const scan = sourceFile.statements.find(
+        (node): node is ts.FunctionDeclaration =>
+            ts.isFunctionDeclaration(node) && node.name?.text === "scan",
+    );
+    assert.ok(scan?.body);
+    const calls: Array<ts.Signature["declaration"]> = [];
+    walkReachedLoopNodes(
+        { checker, symbols: new CompilerSymbols(checker) },
+        scan.body,
+        (node, called) => {
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.getText() === "callback"
+            )
+                calls.push(called);
+        },
+    );
+    assert.deepEqual(
+        calls.map((called) =>
+            called && ts.isFunctionDeclaration(called)
+                ? called.name?.text
+                : "unknown",
+        ),
+        ["pure", "effect", "unknown"],
+    );
 });

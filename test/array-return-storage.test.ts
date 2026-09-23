@@ -108,10 +108,7 @@ test("native array signatures distinguish fresh results, stable table rows and r
         result.cpp,
         /\[\[maybe_unused\]\] bbl::js::Array<double>& v_unusedAlias = v_originalArray;/,
     );
-    assert.match(
-        result.cpp,
-        /auto v_fn\d+_state = bbl::js::snapshot_value\(v_originalState\);/,
-    );
+    assert.match(result.cpp, /auto v_fn\d+_state = fn\d+_recursive_arg_0;/);
 });
 
 const tools = optionalNativeFixtureTools(false);

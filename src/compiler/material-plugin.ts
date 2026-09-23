@@ -1225,12 +1225,16 @@ function foldTexturePushes(
                         root: identity.root,
                         path: [...identity.path, `[${index}]`],
                     });
-                    context.withBoundParameters([{ name, value }], () =>
-                        walk(
-                            ts.isBlock(statement.statement)
-                                ? statement.statement.statements
-                                : [statement.statement],
-                        ),
+                    // This fold accepts only pushes of existing texture
+                    // identities; no runtime iteration binding is needed.
+                    context.withBoundParameters(
+                        [{ name, value, compileTime: true }],
+                        () =>
+                            walk(
+                                ts.isBlock(statement.statement)
+                                    ? statement.statement.statements
+                                    : [statement.statement],
+                            ),
                     );
                 });
                 aliases.delete(symbol);

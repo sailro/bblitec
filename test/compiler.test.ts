@@ -1,3 +1,4 @@
+import { cppFunction } from "./native-fixture.js";
 import assert from "node:assert/strict";
 import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
 import { babylonPackages, isBabylonModule } from "../src/compiler/symbols.js";
@@ -432,7 +433,7 @@ test("returns a nullable audio context through early value returns", () => {
 
     assert.match(
         result.cpp,
-        /\[&\]\(\) -> bbl::js::Nullable<bbl::pal::AudioContextHandle>/,
+        /bbl::js::Nullable<bbl::pal::AudioContextHandle> bbl_recursive_\w+\(/,
     );
     assert.match(result.cpp, /audio_create_gain\(\(\*v_current\)\)/);
 });
@@ -1040,7 +1041,7 @@ test("materializes private module state observed by an exported function", () =>
     );
     assert.match(
         result.cpp,
-        new RegExp(`${values[1]}\\[bbl::js::array_index\\(1\\.0\\)\\]`),
+        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
     );
 });
 
@@ -1069,10 +1070,7 @@ test("materializes mutable module state used only at call time", () => {
     );
     assert.ok(active, "the imported module owns one native state slot");
     assert.match(result.cpp, new RegExp(`\\(\\*${active[1]}\\) = true`));
-    assert.match(
-        result.cpp,
-        new RegExp(`bool v_selected = \\(\\*${active[1]}\\)`),
-    );
+    assert.match(result.cpp, new RegExp(`return \\(\\*${active[1]}\\)`));
     assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointerdown"/);
     assert.match(
         result.cpp,
@@ -1142,7 +1140,7 @@ test("materializes state populated by a dependent registrar module", () => {
     );
     assert.match(
         result.cpp,
-        new RegExp(`${values[1]}\\[bbl::js::array_index\\(0\\.0\\)\\]`),
+        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
     );
 });
 
@@ -1271,7 +1269,7 @@ test("borrows stable Ref parameters and snapshots rebindable call arguments", ()
     assert.match(result.cpp, /bblscene::add\(v_stable, 2\.0\)/);
     assert.match(
         result.cpp,
-        /auto (v_bblite_function_argument_\d+) = bbl::js::snapshot_value\(v_current\);[\s\S]*v_current = bbl::js::make_ref<bblscene::StateData>[\s\S]*bblscene::add\(\1, 3\.0\)/,
+        /auto (v_bblite_function_argument_\d+) = bbl::js::snapshot_value\(v_current\);\s+\[\[maybe_unused\]\] const double (v_bblite_shared_result_\d+) = bbl::js::make_closure\(std::tuple\{std::ref\(v_current\)\}, bblscene::\w+\)\(\);[\s\S]*bblscene::add\(\1, \2\)/,
     );
 });
 
@@ -1436,7 +1434,7 @@ test("extracts methods whose stored-object arguments match exactly", () => {
     assert.equal((result.cpp.match(/total \+= /g) ?? []).length, 1);
 });
 
-test("keeps handle-touching methods on the inline path beside native siblings", () => {
+test("shares handle-touching methods beside native siblings", () => {
     const result = compileSource(`
         import {
             createBox,
@@ -1462,9 +1460,9 @@ test("keeps handle-touching methods on the inline path beside native siblings", 
         main();
     `);
 
-    // A handle parameter keeps spin inlined per call site.
+    // Handle parameters use a shared closure over their instance metadata.
     assert.doesNotMatch(result.cpp, /bblscene::Spinner_spin/);
-    assert.equal(result.cpp.match(/rotation\.y \+=/g)?.length, 2);
+    assert.equal(result.cpp.match(/rotation\.y \+=/g)?.length, 1);
     // The plain-data sibling on the same instance still emits once.
     assert.match(result.cpp, /bblscene::Spinner_rate\(/);
 });
@@ -1529,7 +1527,7 @@ test("native methods call sibling methods natively", () => {
     assert.match(result.cpp, /bblscene::Chain_half\(v_fn\d+_value\)/);
 });
 
-test("keeps closures over entry locals on the inline path", () => {
+test("shares closures over entry locals", () => {
     const result = compileSource(`
         import {
             createArcRotateCamera,
@@ -1559,7 +1557,7 @@ test("keeps closures over entry locals on the inline path", () => {
         result.cpp.match(
             /write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/g,
         )?.length,
-        2,
+        1,
     );
 });
 
@@ -1775,7 +1773,7 @@ test("lowers optional data property and element chains generically", () => {
 
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
+        /\[\[maybe_unused\]\] const bblscene::Def& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
     );
     assert.match(result.cpp, /bbl::js::Nullable<bblscene::Trigger>/);
     assert.match(result.cpp, /v_bblite_optional_compare_\d+\.has_value\(\) &&/);
@@ -1784,7 +1782,7 @@ test("lowers optional data property and element chains generically", () => {
     // (empty) reference, so the chain tests the reference it bound.
     assert.match(
         result.cpp,
-        /const auto& (v_bblite_optional_chain_\d+) = bbl::js::array_at_or_default\([\s\S]{0,200}static_cast<bool>\(\1\)/,
+        /const bblscene::Def& (v_bblite_optional_chain_\d+) = bbl::js::array_at_or_default\([\s\S]{0,200}static_cast<bool>\(\1\)/,
     );
 });
 
@@ -1804,7 +1802,7 @@ test("compares the value of an optional boolean from a dynamic record lookup", (
 
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto& (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
+        /\[\[maybe_unused\]\] const bblscene::Def& (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto& (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -1834,7 +1832,7 @@ test("owns retained Map.get records while immediate field reads borrow", () => {
     );
     assert.match(
         result.cpp,
-        /const auto& (v_bblite_optional_chain_\d+) = v_items\.get\("item"\);[\s\S]*\1->value/,
+        /const bblscene::Item& (v_bblite_optional_chain_\d+) = v_items\.get\("item"\);[\s\S]*\1->value/,
     );
 });
 
@@ -1948,7 +1946,8 @@ test("lowers nested Array.from length allocations", () => {
         result.cpp,
         /bbl::js::Array<double> v_bblite_array_from_result_\d+;/,
     );
-    assert.match(result.cpp, /\.push_back\(7\.0\);/);
+    assert.match(result.cpp, /return 7\.0;/);
+    assert.match(result.cpp, /\.push_back\(v_bblite_shared_result_\d+\);/);
 });
 
 test("owns readonly arrays stored inside native records", () => {
@@ -2112,8 +2111,8 @@ test("splits array writes between growth-proven and checked arms", () => {
 });
 
 test("emits a checked read for a dead-guarded static out-of-bounds index", () => {
-    // scene20's parent-chain shape: the unrolled first iteration folds
-    // chain[-1] behind an always-false runtime guard. That index must
+    // scene20's parent-chain shape keeps chain[-1] behind a runtime guard.
+    // That index must
     // compile (never a generation refusal) and must refuse by name only
     // if the guard ever let it run.
     const result = compileSource(`
@@ -2132,7 +2131,7 @@ test("emits a checked read for a dead-guarded static out-of-bounds index", () =>
 
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\([^,]+, \(0\.0 - 1\.0\), "[^"]+:\d+:\d+"\)/,
+        /bbl::js::array_index_checked\([^,]+, \(v_\w+_s - 1\.0\), "[^"]+:\d+:\d+"\)/,
     );
 });
 
@@ -2188,7 +2187,7 @@ test("snapshots a returned value the next call in the same expression moves", ()
 
     const snapshots = [
         ...result.cpp.matchAll(
-            /const double (v_bblite_return_\w+) = \(\(\*v_\w+_s\) \/ 4294967296\.0\);/g,
+            /const double (v_bblite_shared_result_\d+) = bbl::js::make_closure\([^\n]+\)\(\);/g,
         ),
     ].map(([, name]) => name);
     assert.equal(snapshots.length, 3);
@@ -2256,8 +2255,8 @@ test("folds string-literal comparisons in specialized callbacks", () => {
         result.cpp,
         /std::string\("(?:coin|flower)"\) == std::string\("flower"\)/,
     );
-    assert.match(result.cpp, /double v_coin = 0\.0;/);
-    assert.match(result.cpp, /double v_flower = 1\.0;/);
+    assert.match(result.cpp, /return 0\.0;/);
+    assert.match(result.cpp, /return 1\.0;/);
 });
 
 test("materializes mutable intersection-typed object locals", () => {
@@ -2320,8 +2319,9 @@ test("does not fold mutable reference-record fields into retained callbacks", ()
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_view\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& (\w+)\) -> double \{\s+auto& v_view = std::get<0>\(\1\);\s+return v_view->x;/,
+        /stored_callback = bbl::js::make_closure\(std::tuple\{v_view\}, bblscene::\w+/,
     );
+    assert.match(result.cpp, /return v_view->x;/);
     assert.doesNotMatch(result.cpp, /return 0\.0;/);
 });
 
@@ -2434,7 +2434,8 @@ test("keeps returned callbacks as compile-time bindings", () => {
     `);
 
     assert.doesNotMatch(result.cpp, /auto v_addTwo =\s*;/);
-    assert.match(result.cpp, /double v_total = \(3\.0 \+ 2\.0\);/);
+    assert.match(result.cpp, /return \(v_fn\d+_value \+ 2\.0\);/);
+    assert.match(result.cpp, /make_closure\([^\n]+\)\(3\.0\)/);
 });
 
 test("coerces missing partial Record numbers to NaN in arithmetic", () => {
@@ -2787,7 +2788,7 @@ test("evaluates constructor arguments with the caller's this", () => {
 
     assert.match(
         result.cpp,
-        /return \(\*v_bblite_class_field_value_\d+\);[\s\S]*double v_selected = bbl_class_fn\d+_result;/,
+        /return \(\*v_bblite_class_field_value_\d+\);[\s\S]*double v_selected = bbl::js::make_closure\(std::tuple\{v_bblite_class_field_value_\d+\}, bblscene::bbl_recursive_fn\d+_group\)\(\);/,
     );
 });
 
@@ -2923,7 +2924,7 @@ test("guards optional class method calls before evaluating their body", () => {
 
     assert.match(
         result.cpp,
-        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*\{\s*v_bblite_target_receiver_\d+->count \+= 1\.0;/,
+        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*bbl::js::make_closure\(std::tuple\{std::ref\(v_bblite_target_receiver_\d+\)\}, bblscene::bbl_recursive_fn\d+_group<decltype\(std::tuple\{std::ref\(v_bblite_target_receiver_\d+\)\}\)>\)\(\);/,
     );
     assert.match(
         result.cpp,
@@ -3981,7 +3982,7 @@ test("writes through a data struct returned by a reached call", () => {
         /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\([^\n]+2\.0[^\n]+\);\s+\1 = bbl::js::to_uint8\(7\.0\)/,
     );
     assert.equal(
-        (result.cpp.match(/auto bbl_fn_fn\d+_result/g) ?? []).length,
+        (result.cpp.match(/auto v_bblite_shared_result_\d+ =/g) ?? []).length,
         1,
         "probing an unchecked element must not evaluate its call-shaped owner twice",
     );
@@ -4269,7 +4270,7 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
     assert.match(result.cpp, /v_state->count = 1\.0;/);
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_state\}, \[\]/,
+        /stored_callback = bbl::js::make_closure\(std::tuple\{v_state\}, bblscene::\w+/,
     );
 });
 
@@ -4284,7 +4285,7 @@ test("stored callbacks may ignore arguments supplied by their container", () => 
 
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_calls\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] double \w+\) -> void/,
+        /make_closure\(std::tuple\{v_calls\}, bblscene::\w+/,
     );
 });
 
@@ -4304,7 +4305,11 @@ test("wires an optional callback field through nullish coalescing", () => {
         toolbar.fire();
     `);
 
-    assert.match(result.cpp, /\(\*v_total\) \+= 3\.0/);
+    assert.match(result.cpp, /\(\*v_total\) \+= v_fn\d+_value/);
+    assert.match(
+        result.cpp,
+        /make_closure\(std::tuple\{v_total\}, bblscene::\w+\)\(3\.0\)/,
+    );
 });
 
 test("class-field callbacks keep lexical this across another class", () => {
@@ -4411,7 +4416,7 @@ test("captures the live engine by reference in stored callbacks", () => {
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& (\w+)\) -> void \{\s+auto& v_engine = std::get<0>\(\1\)\.get\(\);/,
+        /stored_callback = bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /bbl::create_box\(v_engine,/);
 });
@@ -4774,11 +4779,12 @@ test("materializes a tuple bound through an unknown parameter for Array.every", 
         finiteVector([dynamic, 2, 3]);
     `);
 
-    assert.match(result.cpp, /bbl::js::Array<double>\{v_dynamic, 2\.0, 3\.0\}/);
+    assert.match(result.cpp, /JsonValue::from_tuple_view\([^\n]+, 3\)/);
+    assert.match(result.cpp, /json_value\(v_dynamic\)/);
     assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
 });
 
-test("folds a static tuple predicate through an unknown parameter", () => {
+test("shares a tuple predicate through an unknown parameter", () => {
     const result = compileSource(`
         function finiteVector(value: unknown): boolean {
             return Array.isArray(value) &&
@@ -4789,9 +4795,13 @@ test("folds a static tuple predicate through an unknown parameter", () => {
         const invalid = finiteVector([1, 1 / 0]);
     `);
 
-    assert.match(result.cpp, /v_valid = true/);
-    assert.match(result.cpp, /v_invalid = false/);
-    assert.doesNotMatch(result.cpp, /every_result/);
+    assert.equal(
+        result.cpp.match(/bool \w*_every_result_\d+ = true;/g)?.length,
+        1,
+    );
+    assert.match(result.cpp, /std::isfinite\(/);
+    assert.match(result.cpp, /auto& v_valid = v_bblite_shared_result_\d+;/);
+    assert.match(result.cpp, /auto& v_invalid = v_bblite_shared_result_\d+;/);
 });
 
 test("specializes a generation-known read-only scalar parameter", () => {
@@ -4802,8 +4812,8 @@ test("specializes a generation-known read-only scalar parameter", () => {
         const matches = sameLength([1, 2, 3], 3);
     `);
 
-    assert.match(result.cpp, /v_matches = true/);
-    assert.doesNotMatch(result.cpp, /expected/);
+    assert.match(result.cpp, /\.length\(\) == v_fn\d+_expected/);
+    assert.match(result.cpp, /\)\(v_bblite_dynamic_tuple_view_\d+, 3\.0\)/);
 });
 
 test("lowers typed arrays with storage-exact reads and writes", () => {
@@ -4902,11 +4912,11 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     assert.doesNotMatch(result.cpp, /v_bblite_view_buffer_\d+ = v_buffer;/);
     assert.match(
         result.cpp,
-        /auto (v_bblite_view_buffer_\d+) = bbl::js::snapshot_value\(v_holder->buffer\);\s+v_holder->buffer = v_replacement;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(\1, bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array& v_retained = \3;/,
+        /auto (v_bblite_view_buffer_\d+) = bbl::js::snapshot_value\(v_holder->buffer\);\s+\[\[maybe_unused\]\] const double v_bblite_shared_result_\d+ = bbl::js::make_closure\([^\n]+\)\(\);\s+const double (v_bblite_view_index_\d+) = v_bblite_shared_result_\d+;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(\1, bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array& v_retained = \3;/,
     );
     assert.match(
         result.cpp,
-        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+auto (v_bblite_constructed_receiver_\d+) = \3;\s+bbl::js::U8Array v_middle = \4\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(\4\.size\(\)\)\)\);/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array v_middle = \3\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(\3\.size\(\)\)\)\);/,
     );
 });
 
@@ -5042,8 +5052,8 @@ test("calls a string method on a parenthesized runtime conditional", () => {
         const value = clean("key=value ; comment");
     `);
 
-    assert.match(result.cpp, /const std::string \w+ = bbl::js::string_trim\(/);
-    assert.match(result.cpp, /std::string v_value = \w+;/);
+    assert.match(result.cpp, /return bbl::js::string_trim\(/);
+    assert.match(result.cpp, /auto& v_value = \w+;/);
     assert.match(result.cpp, /\? bbl::js::string_slice\(/);
     assert.match(result.cpp, /"key=value ; comment"/);
 });
@@ -5173,7 +5183,7 @@ test("refreshes array-backed material fields when the UBO is marked dirty", () =
     );
 });
 
-test("inlines function-valued parameters at their call sites", () => {
+test("calls function-valued parameters from native loops", () => {
     const result = compileSource(`
         function apply(count: number, producer: (index: number) => number): number {
             let total = 0;
@@ -5187,10 +5197,10 @@ test("inlines function-valued parameters at their call sites", () => {
         });
     `);
 
-    assert.doesNotMatch(result.cpp, /double v_fn\d+_index/);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 1);
     assert.equal(
-        result.cpp.match(/v_fn0_total \+= \(\d\.0 \* 2\.0\);/g)?.length,
-        3,
+        result.cpp.match(/return \(v_fn\d+_index \* 2\.0\);/g)?.length,
+        1,
     );
     const named = compileSource(`
         function apply(count: number, producer: (index: number) => number): number {
@@ -5204,9 +5214,10 @@ test("inlines function-valued parameters at their call sites", () => {
         const produce = (index: number): number => index + offset;
         const result = apply(2, produce);
     `);
+    assert.equal(named.cpp.match(/for \(;/g)?.length, 1);
     assert.equal(
-        named.cpp.match(/v_fn\d+_total \+= \(\d\.0 \+ 5\.0\);/g)?.length,
-        2,
+        named.cpp.match(/return \(v_fn\d+_index \+ 5\.0\);/g)?.length,
+        1,
     );
 });
 
@@ -5237,9 +5248,13 @@ test("lowers early bare returns of inlined closures through a wrapper", () => {
         record(2);
     `);
 
-    assert.match(result.cpp, /do \{/);
-    assert.match(result.cpp, /\} while \(false\);/);
-    assert.match(result.cpp, /break;/);
+    assert.match(result.cpp, /if \(v_fn\d+_value < 0\.0\) \{\s+return;/);
+    assert.equal(result.cpp.match(/v_values\.push_back/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(/make_closure\(std::tuple\{std::ref\(v_values\)\}/g)
+            ?.length,
+        2,
+    );
 });
 
 test("supports mutable tuple locals with runtime index writes", () => {
@@ -5836,9 +5851,10 @@ test("retains frame callback closure storage after its installer returns", () =>
     assert.match(
         result.cpp,
         new RegExp(
-            `bbl::on_before_render\\([^,]+, bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, \\[\\]\\([^\\n]*\\) \\{[\\s\\S]*?if \\(\\(\\*${disposed}\\)\\)`,
+            `bbl::on_before_render\\([^,]+, bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, bblscene::\\w+`,
         ),
     );
+    assert.match(result.cpp, new RegExp(`if \\(\\(\\*${disposed}\\)\\)`));
     assert.doesNotMatch(
         result.cpp,
         new RegExp(`bbl::on_before_render\\([^\\n]*std::ref\\(${disposed}\\)`),
@@ -5879,7 +5895,7 @@ test("retains an escaping recursive callback's closure and self reference", () =
     assert.match(
         result.cpp,
         new RegExp(
-            `\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, \\[\\]`,
+            `\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, bblscene::\\w+`,
         ),
     );
     const mouseCaptures = result.cpp.match(
@@ -5925,9 +5941,10 @@ test("shares mutable state between retained callbacks and returned disposers", (
     assert.match(
         result.cpp,
         new RegExp(
-            `= bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, \\[\\]\\([^\\n]*\\) \\{[\\s\\S]*?\\(\\*${disposed}\\) = true;`,
+            `= bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, bblscene::\\w+`,
         ),
     );
+    assert.match(result.cpp, new RegExp(`\\(\\*${disposed}\\) = true;`));
 });
 
 test("owns readonly arrays retained by class fields after construction", () => {
@@ -6398,12 +6415,9 @@ test("lowers numeric for and while loops", () => {
     );
 
     const writes = [
-        ...result.cpp.matchAll(/(v_fn\d+)_samples \+= ([012])\.0/g),
+        ...result.cpp.matchAll(/(v_fn\d+)_samples \+= v_\w+_index;/g),
     ];
-    assert.deepEqual(
-        writes.map((write) => write[2]),
-        ["0", "1", "2"],
-    );
+    assert.equal(writes.length, 1);
     const scope = writes[0]![1];
     assert.ok(writes.every((write) => write[1] === scope));
     assert.match(
@@ -6540,11 +6554,18 @@ test("does not carry a folded continue into the next static iteration", () => {
         const albedo = selected.albedo;
     `);
 
-    assert.match(result.cpp, /\.set\("albedo", "loaded"\);/);
-    assert.doesNotMatch(result.cpp, /\.set\("ignored",/);
+    assert.match(
+        result.cpp,
+        /strict_equals\("TextureBlock"\)\)\) \{\s+continue;/,
+    );
+    assert.match(
+        result.cpp,
+        /\.set\([^\n]+get\("name"\)\.to_string\(\), "loaded"\);/,
+    );
+    assert.equal(result.cpp.match(/\.set\(/g)?.length, 1);
 });
 
-test("keeps a nested runtime continue inside an unrolled outer loop", () => {
+test("keeps a nested continue inside native loops", () => {
     const result = compileSource(`
         const board = new Uint8Array(4);
         let total = 0;
@@ -6557,9 +6578,10 @@ test("keeps a nested runtime continue inside an unrolled outer loop", () => {
         }
     `);
 
-    assert.equal(result.cpp.match(/for \(; .*_x </g)?.length, 2);
-    assert.equal(result.cpp.match(/continue;/g)?.length, 2);
-    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 2);
+    assert.equal(result.cpp.match(/for \(; .*_x </g)?.length, 1);
+    assert.equal(result.cpp.match(/for \(; .*_y </g)?.length, 1);
+    assert.equal(result.cpp.match(/continue;/g)?.length, 1);
+    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
 
 test("lowers a labeled break out of nested loops", () => {
@@ -6622,7 +6644,7 @@ test("rejects switch cases that fall through with statements", () => {
     );
 });
 
-test("unrolls for-of over static arrays", () => {
+test("keeps for-of over static arrays native", () => {
     const result = compileSource(
         readFileSync(resolve("examples/control-flow-scene.ts"), "utf8"),
         {
@@ -6631,18 +6653,13 @@ test("unrolls for-of over static arrays", () => {
     );
 
     assert.equal(
-        result.cpp.match(/samples \+= v_fn\d+_block\d+_bonus/g)?.length,
-        3,
+        result.cpp.match(/samples \+= v_bblite_item_\d+;/g)?.length,
+        1,
     );
-    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 1\.0/);
-    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 3\.0/);
+    assert.match(result.cpp, /for \([^\n]*auto&&/);
 });
 
-test("unrolls a counted loop over a container it built and never resized", () => {
-    // The data model gives an annotated array literal a `vector`, whose
-    // length is a run-time read. A container nothing can resize has a length
-    // generation knows, and knowing it is what lets the loop unroll — which
-    // is the difference between three records and one made three times.
+test("keeps counted loops native even when their container has a known length", () => {
     const result = compileSource(`
         const rows: [number, number][] = [[1, 2], [3, 4], [5, 6]];
         let total = 0;
@@ -6652,8 +6669,8 @@ test("unrolls a counted loop over a container it built and never resized", () =>
         }
     `);
 
-    assert.doesNotMatch(result.cpp, /for \(/);
-    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 3);
+    assert.match(result.cpp, /for \(/);
+    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
 
 test("keeps large constant-count data loops at runtime", () => {
@@ -6783,10 +6800,7 @@ test("evaluates conditional data-branch preparation lazily", () => {
     assert.equal(result.cpp.match(/= v_selected->value;/g)?.length, 1);
 });
 
-test("emits an unrolled body flat, so what it declares outlives the loop", () => {
-    // Unrolling a loop IS writing its statements out. A C++ block would make
-    // each iteration's locals invisible to everything after it, and a scene
-    // that collects what its body creates names exactly those locals.
+test("keeps iteration locals scoped inside the native loop", () => {
     const result = compileSource(`
         const rows: [number, number][] = [[1, 2], [3, 4]];
         let total = 0;
@@ -6796,7 +6810,8 @@ test("emits an unrolled body flat, so what it declares outlives the loop", () =>
         }
     `);
 
-    assert.doesNotMatch(result.cpp, /^ *\{$/m);
+    assert.match(result.cpp, /for \([^]*double v_\w+_scaled =/);
+    assert.equal(result.cpp.match(/double v_\w+_scaled =/g)?.length, 1);
 });
 
 test("keeps the run-time length where the container is resized", () => {
@@ -6840,11 +6855,7 @@ test("withdraws the length fold from a container handed to a call", () => {
     );
 });
 
-test("a list a loop grows decides its shape at the first push", () => {
-    // The shape a scene writes to build a ribbon's paths: an empty
-    // annotated list, grown per iteration. The list has no element to take
-    // its kind from until the first push, and the loop unrolls, so the
-    // whole thing is complete at generation.
+test("builds ribbon paths through native nested loops", () => {
     const result = compileSource(`
         import { createEngine, createRibbon } from "@babylonjs/lite";
         const engine = await createEngine({});
@@ -6860,17 +6871,14 @@ test("a list a loop grows decides its shape at the first push", () => {
         createRibbon(engine, { pathArray: rows });
     `);
 
-    assert.doesNotMatch(result.cpp, /for \(/);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 2);
     assert.equal(
         result.cpp.match(
             /push_back\(bbl::js::make_ref<bblscene::Record\d+Data>/g,
         )?.length,
-        4,
+        1,
     );
-    assert.match(
-        result.cpp,
-        /bbl::create_ribbon\([^]*std::vector<std::vector<bbl::Vec3d>>\{\{/,
-    );
+    assert.match(result.cpp, /bbl::create_ribbon\(/);
 });
 
 test("spreads a runtime numeric tuple into a numeric array", () => {
@@ -7038,7 +7046,7 @@ test("shares a static element snapshot through a const array alias", () => {
     `);
 
     assert.match(result.cpp, /v_alias\.push_back/);
-    assert.doesNotMatch(result.cpp, /for \(auto&& .* : v_rows\) \{/);
+    assert.match(result.cpp, /for \(auto&& .* : v_rows\) \{/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
 
@@ -7059,11 +7067,11 @@ test("writes through native elements of a statically grown record list", () => {
     `);
 
     assert.doesNotMatch(result.cpp, /false = false|0\.0 = 0\.0/);
-    assert.equal(result.cpp.match(/->active = false;/g)?.length, 2);
-    assert.equal(result.cpp.match(/->count = 0\.0;/g)?.length, 2);
+    assert.equal(result.cpp.match(/->active = false;/g)?.length, 1);
+    assert.equal(result.cpp.match(/->count = 0\.0;/g)?.length, 1);
 });
 
-test("keeps an inferred static handle list available to render composition", () => {
+test("keeps an inferred loop-grown handle list available to render composition", () => {
     const result = compileSource(`
         import {
             addToScene,
@@ -7099,8 +7107,13 @@ test("keeps an inferred static handle list available to render composition", () 
         void main();
     `);
 
-    assert.equal(result.manifest.shadowGenerators[0]?.casters.length, 3);
-    assert.doesNotMatch(result.cpp, /Array<bbl::MeshHandle> v_casters/);
+    assert.equal(result.manifest.sceneMeshes.length, 3);
+    assert.equal(result.manifest.shadowGenerators[0]?.dynamicCasters, true);
+    assert.match(result.cpp, /Array<bbl::MeshHandle> v_casters/);
+    assert.match(
+        result.cpp,
+        /set_shadow_task_caster_meshes\([^;]+array_to_vector\(v_casters\)/,
+    );
 });
 
 test("binds a shadow generator created before its light to the eventual scene slot", () => {
@@ -7607,7 +7620,7 @@ test("retains recursive timer callbacks after their source scope returns", () =>
     );
     assert.match(
         result.cpp,
-        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w+_owner\}, \[\]/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w+_owner\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
 });
@@ -7634,7 +7647,7 @@ test("keeps synchronous recursive callbacks local to native data functions", () 
         main();
     `);
 
-    const definition = result.cpp.match(/double triangular\([^]*?\n\}/)?.[0];
+    const definition = cppFunction(result.cpp, "double triangular(");
     assert.ok(definition);
     assert.match(definition, /bbl::js::Callback<void\(double\)> v_fn\d+_visit/);
     assert.doesNotMatch(definition, /native_callback_owners|v_engine/);
@@ -7672,7 +7685,7 @@ test("keeps synchronous frame-local recursive callbacks in local storage", () =>
     );
     assert.match(
         result.cpp,
-        /v_fn\d+_drain = bbl::js::make_closure\(std::tuple\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, \[\]/,
+        /v_fn\d+_drain = bbl::js::make_closure\(std::tuple\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /drain_owner/);
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
@@ -7738,7 +7751,7 @@ test("owns only the timer-scheduled recursive callback beyond its scope", () => 
 
     assert.match(
         result.cpp,
-        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w*poll_owner\}, \[\]/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w*poll_owner\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /bbl::js::Callback<void\(double\)> v_countdown;/);
     assert.equal(
@@ -7780,9 +7793,9 @@ test("snapshots scalar members of records retained by classes", () => {
         result.cpp,
         /auto v_\w*return_makeVehicle_bodyRestY_\d+ = bbl::js::make_gc_shared<double>\(v_engine\.meshes\[v_\w*body\.value\]\.position\.y\);/,
     );
-    assert.equal(
-        (result.cpp.match(/return_makeVehicle_bodyRestY/g) ?? []).length,
-        2,
+    assert.match(
+        result.cpp,
+        /return \(\*v_\w*return_makeVehicle_bodyRestY_\d+\);/,
     );
 });
 
@@ -11008,7 +11021,7 @@ test("stores nullable retained UI callbacks as empty native functions", () => {
     );
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_button, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) -> void/,
+        /stored_callback = bbl::js::make_closure\(std::tuple\{v_button, std::ref\(v_bblite_inline_engine_\d+\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\(\*v_callback\) = \w+_stored_callback/);
 });
@@ -11197,7 +11210,7 @@ test("materializes a callback returned through its own closure cycle", () => {
     assert.match(result.cpp, /\(\*v_update_owner\)\(1\.0\)/);
     assert.match(
         result.cpp,
-        /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, double/,
+        /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /on_dom_pointer[^\n]*v_update\(1\.0\)/);
 });
@@ -11237,7 +11250,7 @@ test("reuses a stored callback while compiling its self-referential record", () 
     assert.match(
         result.cpp,
         new RegExp(
-            `\\(\\*${declaration[1]}\\) = bbl::js::make_closure\\(std::tuple\\{fn\\d+_stored_callback_weak\\}, \\[\\]\\(\\[\\[maybe_unused\\]\\] decltype\\(std::tuple\\{[^}\\n]*\\}\\)& \\w+\\) -> void`,
+            `\\(\\*${declaration[1]}\\) = bbl::js::make_closure\\(std::tuple\\{fn\\d+_stored_callback_weak\\}, bblscene::\\w+`,
         ),
     );
     assert.match(
@@ -11303,7 +11316,7 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
     assert.match(result.cpp, /on_dom_pointer[^\n]*"pointermove"/);
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] const bbl::PlatformMouseEvent&[^\n]*\)/,
+        /make_closure\(std::tuple\{std::ref\(v_bblite_inline_engine_\d+\), v_hit\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\.client_x/);
     const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
@@ -12003,7 +12016,11 @@ test("does not fold shadowed browser predicate names", () => {
         }
     `);
 
-    assert.match(result.cpp, /\.position\.x = 5\.0/);
+    assert.match(result.cpp, /return false;/);
+    assert.match(
+        result.cpp,
+        /\.position\.x = \(v_bblite_shared_result_\d+ \? 4\.0 : 5\.0\)/,
+    );
 });
 
 test("does not browser-fold ordinary parseFloat calls", () => {
@@ -13069,7 +13086,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
         result.cpp.match(
             /for \(const bbl::MeshHandle .*?\.assets\[.*?\.value\]\.meshes\)/g,
         )?.length,
-        3,
+        1,
     );
     assert.equal(result.cpp.match(/bbl::clone_asset_root\(/g)?.length, 2);
     assert.match(
@@ -13373,7 +13390,7 @@ test("lowers boolean negation in value position", () => {
         }
     `);
 
-    assert.match(result.cpp, /bool v_fn\d+_value = !\(v_muted\);/);
+    assert.match(result.cpp, /make_closure\([^\n]+\)\(!\(v_muted\)\)/);
     assert.match(result.cpp, /v_muted = v_fn\d+_value;/);
     assert.match(result.cpp, /if \(v_muted\)/);
 });
@@ -13421,7 +13438,8 @@ test("assigns a promised resource tuple into definite-assignment locals", () => 
     `);
 
     assert.equal(
-        (result.cpp.match(/std::optional<bbl::AssetHandle>/g) ?? []).length,
+        (result.cpp.match(/std::optional<bbl::AssetHandle> v_\w+;/g) ?? [])
+            .length,
         2,
     );
     assert.equal((result.cpp.match(/bbl::load_gltf/g) ?? []).length, 2);
@@ -13950,13 +13968,21 @@ test("registers a callback returned by a local factory as a platform listener", 
         }
     `);
 
-    assert.match(
-        result.cpp,
-        /on_dom_keyboard\([^;]*\{[\s\S]*\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*dom_event/,
+    const down = result.cpp.match(
+        /on_dom_keyboard\([^\n]+"keydown"[^\n]+std::tuple\{v_onDown_owner\}, (bblscene::\w+)/,
+    );
+    const up = result.cpp.match(
+        /on_dom_keyboard\([^\n]+"keyup"[^\n]+std::tuple\{v_onUp_owner\}, (bblscene::\w+)/,
+    );
+    assert.ok(down && up);
+    assert.equal(
+        down[1],
+        up[1],
+        "listeners share their adapter body with separate owners",
     );
     assert.match(
         result.cpp,
-        /on_dom_keyboard\([^;]*\{[\s\S]*\(\*v_onUp_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*dom_event/,
+        /\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\(v_bblite_dom_event_\d+\)\)/,
     );
 });
 
@@ -14040,7 +14066,7 @@ test("retained platform listeners keep live scene aliases", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_dom_pointer\([^;]*make_closure\(std::tuple\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, \[\]/,
+        /bbl::on_dom_pointer\([^;]*make_closure\(std::tuple\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, bblscene::\w+/,
     );
 });
 
@@ -14234,11 +14260,13 @@ test("keeps callback-local declarations inside platform listeners", () => {
     `);
 
     const listener = result.cpp.indexOf("bbl::on_dom_keyboard");
-    const toggleAssignment = result.cpp.search(
-        /\(\*v_(?:fn\d+_)?on\) = !\(\(\*v_(?:fn\d+_)?on\)\)/,
-    );
+    const localDeclaration = result.cpp.search(/bool v_\w*nowOn =/);
     assert.ok(listener >= 0);
-    assert.ok(toggleAssignment > listener);
+    assert.ok(localDeclaration < result.cpp.indexOf("int main()"));
+    assert.match(
+        result.cpp,
+        /bbl::on_dom_keyboard\([^\n]+bblscene::v_bblite_closure_body_\d+/,
+    );
 });
 
 test("lowers Uint16Array construction, mutation, and native references", () => {
@@ -15383,7 +15411,7 @@ test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
     assert.match(
         result.cpp,
-        /bbl::on_before_render\([^\n]*make_closure\(std::tuple\{[^}\n]*std::ref\(v_engine\)[^}\n]*\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] float /,
+        /bbl::on_before_render\([^\n]*make_closure\(std::tuple\{[^}\n]*std::ref\(v_engine\)[^}\n]*\}, bblscene::\w+/,
     );
     // The amber body's transmission, IOR, volume, and skybox-mode
     // material state arrive through the glTF loader; the scene's own
@@ -15402,7 +15430,11 @@ test("compiles Babylon Lite scene 52 scene-owned HUD disposal", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_scene_dispose\(v_scene, bbl::js::make_closure\(std::tuple\{std::ref\(v_hudRenderer\), std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) \{[\s\S]*bbl::dispose_sprite_renderer\(v_engine, v_hudRenderer\);[\s\S]*\}\)\)/,
+        /bbl::on_scene_dispose\(v_scene, bbl::js::make_closure\(std::tuple\{std::ref\(v_hudRenderer\), std::ref\(v_engine\)\}, bblscene::\w+/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::dispose_sprite_renderer\(v_engine, v_hudRenderer\);/,
     );
     assert.doesNotMatch(result.cpp, /onSceneDispose/);
     assert.ok(
@@ -15690,7 +15722,7 @@ test("lowers the Sprite2D handle and Y-sort entry points", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::sprite_renderer_before_update\(\w+, \w+, bbl::js::make_closure\(std::tuple\{std::ref\(v_hero\), std::ref\(v_engine\), std::ref\(v_layer\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, float\)/,
+        /bbl::sprite_renderer_before_update\(\w+, \w+, bbl::js::make_closure\(std::tuple\{std::ref\(v_hero\), std::ref\(v_engine\), std::ref\(v_layer\)\}, bblscene::\w+/,
     );
     // Both handle entry points resolve the slot the id names at the call,
     // never the slot the add returned.
@@ -16035,10 +16067,10 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
         /bbl::enable_orthographic_camera\(v_engine, v_camera, 6\.0\)/,
     );
     assert.equal(result.manifest.sceneMeshes.length, 10);
-    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 2);
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(
         result.cpp.match(/array_index_checked\(bblscene::COLORS/g)?.length,
-        2,
+        1,
     );
     // The URL override folds away: no query string reaches a native
     // build, so `Number.isFinite(NaN)` drops the branch.
@@ -17256,7 +17288,7 @@ test("keeps generated scene locals and equality conditions warning-clean", () =>
     const discardedMarker = compileScene("scene175");
     assert.match(
         discardedMarker,
-        /static_cast<void>\(bbl::js::make_closure\([^\n]+, bblscene::bbl_recursive_fn\d+_group\)\(/,
+        /static_cast<void>\(v_bblite_shared_result_\d+\);/,
     );
     assert.doesNotMatch(discardedMarker, /^\s*v_fn\d+_sphere;$/m);
 });
@@ -18038,7 +18070,7 @@ test("registers pre-start application animation loops before rendering", () => {
     );
     assert.match(
         result.cpp,
-        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{v_elapsed\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] double /,
+        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{v_elapsed\}, bblscene::\w+/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -18237,10 +18269,7 @@ test("retains mutable containers in records returned by factories", () => {
     );
     assert.ok(storage);
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.set\\(`));
-    assert.match(
-        result.cpp,
-        new RegExp(`\\(\\*${storage[1]}\\)\\.get_owned\\(`),
-    );
+    assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.get\\(`));
     assert.doesNotMatch(
         result.cpp,
         /bbl::js::Map<double, std::string>\{\}\.(?:set|get)\(/,
@@ -18277,7 +18306,7 @@ test("lowers recurring browser timers onto the frame conductor", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, \[\]/,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /v_\w*previous = \(\*v_\w*ticks\)/);
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
@@ -18308,7 +18337,7 @@ test("lets recurring timers read persistent factory closure state", () => {
 
     assert.match(
         result.cpp,
-        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_fn\d+_ticks\}, \[\]/,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_fn\d+_ticks\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
@@ -19752,7 +19781,7 @@ test("binds a colour helper's returned tuple instead of splicing the call", () =
             /const bbl::js::Tuple<3> (\w+) = bbl::js::snapshot_value\(bblscene::colorFor\(/g,
         ),
     ];
-    assert.equal(bindings.length, 8);
+    assert.equal(bindings.length, 4);
     for (const [, name] of bindings) {
         assert.equal(result.cpp.split(`${name}[`).length - 1, 3);
     }
@@ -20089,13 +20118,17 @@ test("shares one cell for entry-module state a stored callback rebinds", () => {
     // Both retained callbacks capture the same cell, so neither runs
     // against a by-value copy of the value the other last wrote.
     assert.equal(
-        (result.cpp.match(/make_closure\(std::tuple\{v_ticks\}/g) ?? []).length,
+        (
+            result.cpp.match(
+                /bbl::(?:on_dom_pointer|set_timeout)\([^\n]+make_closure\(std::tuple\{v_ticks\}/g,
+            ) ?? []
+        ).length,
         2,
     );
     assert.match(result.cpp, /\(\*v_ticks\) = 100\.0;/);
     assert.equal(
         (result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length,
-        2,
+        1,
     );
 });
 

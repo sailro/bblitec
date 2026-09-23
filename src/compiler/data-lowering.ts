@@ -169,6 +169,7 @@ export interface DataLoweringContext
             | "isDefaultLibraryIdentifier"
             | "useNativeValue"
             | "registerNativeBinding"
+            | "registerNativeBindingType"
             | "registerNativeTemporary"
             | "nativeBindingCheckpoint"
             | "takeNativeTemporary"
@@ -1103,6 +1104,7 @@ export class DataLowerer {
         let presentOwner: Value;
         let snapshotPresentOwner = false;
         if (owner.dataType?.kind === "optional") {
+            const ownerType = this.context.dataTypes.cppType(owner.dataType);
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
             const selected = ts.isCallExpression(access)
@@ -1118,7 +1120,7 @@ export class DataLowerer {
                           );
                       this.context.emit({
                           kind: "declaration",
-                          type: "const auto&",
+                          type: `const ${ownerType}&`,
                           name: temporary,
                           initializer: owner.cpp,
                           attributes: "[[maybe_unused]] ",
@@ -1143,7 +1145,7 @@ export class DataLowerer {
                     this.context.allocateTemporaryCppName("optional_chain");
                 this.context.emit({
                     kind: "declaration",
-                    type: "const auto&",
+                    type: `const ${this.context.dataTypes.cppType(owner.dataType)}&`,
                     name: temporary,
                     initializer: owner.cpp,
                     attributes: "[[maybe_unused]] ",
@@ -3714,6 +3716,11 @@ export class DataLowerer {
     }
 
     public leafValue(cpp: string, dataType: DataType): Value {
+        if (cppIdentifierPattern.test(cpp))
+            this.context.registerNativeBindingType(
+                cpp,
+                this.context.dataTypes.cppType(dataType),
+            );
         if (dataType.kind === "error")
             return errorValue(
                 {
@@ -3976,6 +3983,7 @@ export class DataLowerer {
             unwrapped.text,
             this.context.dataTypes.cppType(element),
             elements,
+            literal ?? unwrapped,
         );
         this.context.reachJsData();
         return {
@@ -4873,7 +4881,18 @@ export class DataLowerer {
             name: source,
             initializer: narrowed.cpp,
         });
-        const sourceCapture = this.context.registerNativeBinding(source);
+        const sourceType =
+            narrowed.nativeCollectionCppType ??
+            (dataType.kind === "vector" && !narrowed.nativeVectorData
+                ? this.context.dataTypes.cppType(dataType)
+                : undefined);
+        const sourceCapture = this.context.registerNativeBinding(
+            source,
+            false,
+            false,
+            sourceType &&
+                `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
+        );
         const storedCallback = this.prepareCallbackValue(callback, label);
         if (!local && !storedCallback)
             this.context.fail(
@@ -4899,7 +4918,12 @@ export class DataLowerer {
         );
         this.context.increaseIndent();
         this.context.pushScope(this.context.allocateBlockPrefix());
-        const indexCapture = this.context.registerNativeBinding(index);
+        const indexCapture = this.context.registerNativeBinding(
+            index,
+            false,
+            false,
+            "std::size_t",
+        );
         try {
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
@@ -5713,7 +5737,12 @@ export class DataLowerer {
                 (element) =>
                     staticNumberValue(this.context, element) !== undefined,
             );
-            return this.typedArrayFromElements(prefix, elements, constant);
+            return this.typedArrayFromElements(
+                prefix,
+                elements,
+                constant,
+                unwrapped,
+            );
         }
         const source =
             (ts.isAwaitExpression(unwrapped)
@@ -5758,6 +5787,7 @@ export class DataLowerer {
                 staticSource.tupleElements.every(
                     (entry) => entry.staticNumber !== undefined,
                 ),
+                unwrapped,
             );
         }
         // A single argument that is itself an array is never the length
@@ -5811,6 +5841,7 @@ export class DataLowerer {
         prefix: string,
         elements: readonly string[],
         constant: boolean,
+        source: ts.Node,
     ): string {
         if (
             elements.length < DataLowerer.HOISTED_TYPED_ARRAY_MIN_ELEMENTS ||
@@ -5826,6 +5857,7 @@ export class DataLowerer {
                       typedArrayStoreExpression("f32array", element),
                   )
                 : [...elements],
+            source,
         );
         return `bbl::js::${prefix}_array_from(bblscene::${name})`;
     }
@@ -8256,17 +8288,29 @@ export class DataLowerer {
                     right,
                     "Array destructuring assignment requires represented array storage.",
                 );
-            const source =
-                this.context.allocateTemporaryCppName("destructure_source");
-            const initializer =
-                value.kind === "tuple"
-                    ? this.compileKnownValueForSink(value, type, right)
-                    : value.cpp;
-            this.context.emit(`auto ${source} = ${initializer};`);
-            value = {
-                ...this.leafValue(source, type),
-                nativeCaptures: [this.context.registerNativeBinding(source)],
-            };
+            if (value.kind === "tuple") {
+                const source =
+                    this.context.allocateTemporaryCppName("destructure_source");
+                const initializer = this.compileKnownValueForSink(
+                    value,
+                    type,
+                    right,
+                );
+                this.context.emit(`auto ${source} = ${initializer};`);
+                value = {
+                    ...this.leafValue(source, type),
+                    nativeCaptures: [
+                        this.context.registerNativeBinding(source),
+                    ],
+                };
+            } else {
+                // Keep the RHS identity across writes to the assignment
+                // targets, reusing an already stable result when possible.
+                value = this.context.pinValueToTemporary(
+                    value,
+                    "destructure_source",
+                );
+            }
         }
         this.emitArrayAssignmentPattern(
             left,
@@ -9688,12 +9732,25 @@ export class DataLowerer {
             dataType.kind === "iterator" ||
             dataType.kind === "set"
         ) {
+            const elements =
+                value.staticElementsOwner?.staticElements ??
+                value.staticElements;
+            const template =
+                value.staticElementsOwner?.runtimeElementTemplate ??
+                value.runtimeElementTemplate ??
+                (dataType.element.kind === "handle" && elements?.length
+                    ? commonResourceValue(
+                          withNativeMetadata(
+                              this.leafValue("", dataType.element),
+                              elements[0],
+                          ),
+                          elements,
+                      )
+                    : undefined);
             return {
                 container: value,
                 element: dataType.element,
-                ...(value.runtimeElementTemplate
-                    ? { template: value.runtimeElementTemplate }
-                    : {}),
+                ...(template ? { template } : {}),
             };
         }
         if (isTypedArrayType(dataType)) {

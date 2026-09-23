@@ -44,7 +44,11 @@ import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
+import {
+    CompilerSymbols,
+    declarationInDefaultLibrary,
+    isDefaultLibraryIdentifier,
+} from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -85,11 +89,16 @@ function generationKnownStringArgument(value: Value): boolean {
         if (generationKnownPrimitive(candidate)) return true;
         const cached = completed.get(candidate);
         if (cached !== undefined) return cached;
-        if (candidate.kind !== "record" || !candidate.recordProperties)
-            return false;
+        const entries =
+            candidate.kind === "tuple"
+                ? candidate.tupleElements
+                : candidate.kind === "record" && candidate.recordProperties
+                  ? Object.values(candidate.recordProperties)
+                  : undefined;
+        if (!entries) return false;
         // An in-progress record is unknown; this also rejects cycles.
         completed.set(candidate, false);
-        const result = Object.values(candidate.recordProperties).every(known);
+        const result = entries.every(known);
         completed.set(candidate, result);
         return result;
     };
@@ -555,7 +564,9 @@ export function parameterIsReadOnly(
                     !rootNamesParameter(node.expression.expression) &&
                     storingDataMethods.has(node.expression.name.text)
                 ) {
-                    continue;
+                    const called =
+                        checker.getResolvedSignature(node)?.declaration;
+                    if (called && declarationInDefaultLibrary(called)) continue;
                 }
                 if (!callArgumentIsReadOnly(checker, node, index, active)) {
                     return true;
@@ -978,7 +989,7 @@ interface UserFunctionIr {
 }
 
 /** A value record cannot represent an alias into a retained native object. */
-class SharedReturnRequiresInline extends Error {}
+class SharedCallRequiresInline extends Error {}
 
 /** A represented dynamic result must keep its storage across every return path. */
 class DynamicReturnRequiresStorage extends Error {}
@@ -1040,10 +1051,15 @@ export interface UserFunctionContext
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
+            | "registerNativeBindingType"
+            | "registerNativeConstBinding"
+            | "invalidateRecordProperties"
             | "registerNativeTemporary"
             | "registerNativeFunction"
             | "registerSharedNativeFunction"
             | "captureManagedClosureLines"
+            | "renderSharedCoroutine"
+            | "renderSharedClosure"
             | "callbackIdentity"
             | "emit"
             | "increaseIndent"
@@ -1174,6 +1190,9 @@ export class UserFunctionLowerer {
         }
     >();
     private readonly active = new EmissionSet<SupportedFunction>();
+    private readonly scalarResults = new FunctionSpecializations<
+        Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
+    >();
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -1267,7 +1286,7 @@ export class UserFunctionLowerer {
                 ),
             );
         } catch (error) {
-            if (!(error instanceof SharedReturnRequiresInline)) throw error;
+            if (!(error instanceof SharedCallRequiresInline)) throw error;
             return undefined;
         }
     }
@@ -1438,6 +1457,33 @@ export class UserFunctionLowerer {
         argumentValues: readonly Value[],
         pinArguments = true,
     ): Value | undefined {
+        try {
+            return context.probeEmission(() =>
+                this.compileSharedCall(
+                    context,
+                    ir,
+                    call,
+                    argumentValues,
+                    pinArguments,
+                ),
+            );
+        } catch (error) {
+            if (
+                !(error instanceof SharedCallRequiresInline) &&
+                !(error instanceof CompileError)
+            )
+                throw error;
+            return undefined;
+        }
+    }
+
+    private compileSharedCall(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        call: ts.Node,
+        argumentValues: readonly Value[],
+        pinArguments: boolean,
+    ): Value | undefined {
         if (
             argumentValues.some(
                 (value) =>
@@ -1498,28 +1544,73 @@ export class UserFunctionLowerer {
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
             const group = this.recursiveGroup(ir.declaration);
-            const lowerShared = (): Value =>
-                this.lowerRecursiveGroup(
-                    context,
-                    ir,
-                    call,
-                    argumentValues,
-                    group ?? [ir.declaration],
-                    group !== undefined,
-                    pinArguments,
+            let result = this.lowerRecursiveGroup(
+                context,
+                ir,
+                call,
+                argumentValues,
+                group ?? [ir.declaration],
+                group !== undefined,
+                pinArguments,
+            );
+            if (result.kind !== "void")
+                result = context.pinValueToTemporary(
+                    result,
+                    "shared_result",
+                    ts.isExpression(call) ? call : undefined,
                 );
             if (
                 returnType &&
-                !context.dataTypes.carriesHandle(returnType) &&
-                (returnType.kind !== "struct" ||
-                    context.dataTypes.isReferenceStruct(returnType.name))
-            )
-                return lowerShared();
-            try {
-                return context.probeEmission(lowerShared);
-            } catch (error) {
-                if (!(error instanceof SharedReturnRequiresInline)) throw error;
+                ["number", "boolean", "string"].includes(returnType.kind) &&
+                argumentValues.every(
+                    returnType.kind === "string"
+                        ? generationKnownStringArgument
+                        : generationKnownPrimitive,
+                )
+            ) {
+                const key = this.scalarResults.key(
+                    context.functionEmissionScope(),
+                    [
+                        context.dataTypes.captureTypeArguments(),
+                        argumentValues,
+                        functionDependencies(context, [ir.declaration]),
+                        this.readsReceiver(ir.declaration)
+                            ? context.activeThis()
+                            : undefined,
+                    ],
+                );
+                let facts = this.scalarResults.get(ir.declaration, key);
+                if (!facts) {
+                    let folded: Value | undefined;
+                    try {
+                        context.probeEmission(() => {
+                            folded = this.lower(
+                                context,
+                                ir,
+                                argumentValues,
+                                call,
+                            );
+                            return undefined;
+                        });
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                    }
+                    facts = {
+                        ...(folded?.staticNumber !== undefined
+                            ? { staticNumber: folded.staticNumber }
+                            : {}),
+                        ...(folded?.staticBoolean !== undefined
+                            ? { staticBoolean: folded.staticBoolean }
+                            : {}),
+                        ...(folded?.staticString !== undefined
+                            ? { staticString: folded.staticString }
+                            : {}),
+                    };
+                    this.scalarResults.set(ir.declaration, key, facts);
+                }
+                return { ...result, ...facts };
             }
+            return result;
         }
         return undefined;
     }
@@ -1905,6 +1996,17 @@ export class UserFunctionLowerer {
             }
             const type = parameterTypes[index];
             if (type) {
+                if (
+                    type.kind === "struct" &&
+                    evaluated?.kind === "data" &&
+                    ts.isIdentifier(parameter.name) &&
+                    !parameterIsReadOnly(
+                        this.checker,
+                        declaration,
+                        parameter.name,
+                    )
+                )
+                    context.invalidateRecordProperties(evaluated);
                 const borrowedReference = borrowsReferenceParameter(
                     context,
                     parameter.name,
@@ -2155,6 +2257,15 @@ export class UserFunctionLowerer {
             const value = unwrapExpression(expression);
             if (ts.isConditionalExpression(value))
                 return dynamic(value.whenTrue) || dynamic(value.whenFalse);
+            if (
+                ts.isObjectLiteralExpression(value) &&
+                value.properties.some(
+                    (property) =>
+                        ts.isSpreadAssignment(property) &&
+                        dynamic(property.expression),
+                )
+            )
+                return true;
             const type = this.checker.getTypeAtLocation(value);
             return (
                 (type.flags & ts.TypeFlags.TypeParameter) === 0 &&
@@ -2294,11 +2405,10 @@ export class UserFunctionLowerer {
                       this.checker.getReturnTypeOfSignature(signature),
                       declaration,
                   );
-            const dynamicGenericReturn =
+            const dynamicReturn =
                 returnTsType &&
-                (returnTsType.flags & ts.TypeFlags.TypeParameter) !== 0 &&
                 this.hasDynamicReturnSource(context, declaration);
-            const mappedReturnType = dynamicGenericReturn
+            const mappedReturnType = dynamicReturn
                 ? ({ kind: "json" } as const)
                 : returnTsType
                   ? (context.dataTypes.dynamicJsonType(returnTsType) ??
@@ -2338,7 +2448,7 @@ export class UserFunctionLowerer {
             const parameterTypes = ir.parameters.map(
                 ({ type, declaration: parameter }) => {
                     let mapped =
-                        dynamicGenericReturn && type === returnTsType
+                        dynamicReturn && type === returnTsType
                             ? ({ kind: "json" } as const)
                             : (context.dataTypes.dynamicJsonType(type) ??
                               context.dataTypes.fromTsType(type, parameter));
@@ -2417,6 +2527,23 @@ export class UserFunctionLowerer {
         const rootEntry = entryByDeclaration.get(root.declaration)!;
         root.parameters.forEach((parameter, index) => {
             const argument = rootArguments[index];
+            const represented = argument?.dataType;
+            const argumentType =
+                represented?.kind === "optional"
+                    ? represented.inner
+                    : represented;
+            const declared = rootEntry.parameterTypes[index];
+            const parameterType =
+                declared?.kind === "optional" ? declared.inner : declared;
+            // A structural projection allocates a new record. Both shared
+            // methods and functions must retain the caller's object identity.
+            if (
+                !recursive &&
+                argumentType?.kind === "struct" &&
+                parameterType?.kind === "struct" &&
+                !dataTypesEqual(argumentType, parameterType)
+            )
+                throw new SharedCallRequiresInline();
             if (
                 rootEntry.returnType?.kind === "json" &&
                 argument?.kind === "record" &&
@@ -2442,6 +2569,7 @@ export class UserFunctionLowerer {
                 ? this.checker.getSymbolAtLocation(parameter.name)
                 : undefined;
             const loopBound =
+                callSiteEffects &&
                 argument?.staticNumber !== undefined &&
                 symbol &&
                 root.declaration.body &&
@@ -2466,13 +2594,15 @@ export class UserFunctionLowerer {
                     argument.staticElementsOwner?.staticElements ||
                     argument.staticElements);
             if (
-                (argument?.kind === "record" &&
+                ((argument?.kind === "record" ||
+                    argument?.dataType?.kind === "json") &&
                     rootEntry.parameterTypes[index]?.kind !== "json") ||
                 tupleFacts ||
                 (argument &&
                     rootEntry.parameterReadOnly[index] &&
                     (argument.staticString !== undefined ||
                         argument.staticBoolean !== undefined ||
+                        argument.kind === "json-null" ||
                         loopBound))
             ) {
                 rootEntry.parameterTypes[index] = undefined;
@@ -2718,7 +2848,7 @@ export class UserFunctionLowerer {
                     const field = fields.find(
                         (field) => field.sourceName === key,
                     );
-                    if (!field) throw new SharedReturnRequiresInline();
+                    if (!field) throw new SharedCallRequiresInline();
                     return [
                         key,
                         context.dataValue(
@@ -2874,8 +3004,18 @@ export class UserFunctionLowerer {
                     parameter.name,
                     type,
                 );
+                const parameterType = this.recursiveParameterCpp(
+                    context.dataTypes,
+                    type,
+                    entry.parameterReadOnly[index]!,
+                    borrowedReference,
+                );
                 parameterDeclarations.push(
-                    `[[maybe_unused]] ${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!, borrowedReference)} ${cppName}`,
+                    `[[maybe_unused]] ${parameterType} ${cppName}`,
+                );
+                context.registerNativeBindingType(
+                    cppName,
+                    parameterType.replace(/&+$/, "").trim(),
                 );
                 parameterBindings.push({
                     parameter,
@@ -2916,7 +3056,7 @@ export class UserFunctionLowerer {
                               value.kind !== resourceType.handle &&
                               value.kind !== "json-null"
                           ) {
-                              throw new SharedReturnRequiresInline();
+                              throw new SharedCallRequiresInline();
                           }
                           if (
                               value.retainedNativeRecord ||
@@ -2925,7 +3065,7 @@ export class UserFunctionLowerer {
                               value.borrowedData ||
                               value.materialUboArrayFields?.size
                           ) {
-                              throw new SharedReturnRequiresInline();
+                              throw new SharedCallRequiresInline();
                           }
                           returnedValues.push(value);
                           return context.dataLowerer.compileKnownValueForSink(
@@ -3114,20 +3254,14 @@ export class UserFunctionLowerer {
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 entry.value.nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
-                const parameters = [
-                    `[[maybe_unused]] auto& ${captured.environment}`,
-                    ...parameterDeclarations,
-                ];
-                const sharedName = context.registerSharedNativeFunction(
+                closure = context.renderSharedClosure(
+                    captured,
+                    returnCpp,
+                    entry.declaration,
+                    parameterDeclarations.join(", "),
+                    parameterNames,
                     localGroup.sharedName,
-                    [
-                        `inline constexpr auto ${localGroup.sharedName} = [](${parameters.join(", ")}) -> ${returnCpp} {`,
-                        ...captured.lines.map((line) => `    ${line}`),
-                        "};",
-                    ],
-                    [...captured.localBindings, ...parameterNames],
                 );
-                closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName})`;
                 entry.value.nativeCaptures = captured.nativeCaptures;
             } else
                 closure = renderClosure(
@@ -3335,7 +3469,9 @@ export class UserFunctionLowerer {
                         true,
                         false,
                     )
-                  : this.trySharedCall(context, ir, callNode, values, false);
+                  : body?.coroutine
+                    ? undefined
+                    : this.trySharedCall(context, ir, callNode, values, false);
         if (shared) {
             if (!discardReturn) return shared;
             context.emitDiscardedValue(shared);
@@ -3566,6 +3702,14 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        // Stored callbacks receive owned parameters by value.
+                        // Their separate source bindings can borrow that stable
+                        // storage until a source assignment requires a copy.
+                        context.registerNativeConstBinding(name);
+                        context.registerNativeBindingType(
+                            name,
+                            context.dataTypes.cppType(type),
+                        );
                         let value = this.nativeParameterValue(
                             context,
                             parameter.name,
@@ -3662,16 +3806,28 @@ export class UserFunctionLowerer {
                   })),
                   returnCpp,
                   !promiseType,
+                  (closure, type, declarations, args, environment) =>
+                      context.renderSharedCoroutine(
+                          closure,
+                          type,
+                          declaration,
+                          declarations,
+                          args,
+                          environment,
+                          parameters.map(({ cppName }) => cppName),
+                      ),
               )
-            : renderClosure(
+            : context.renderSharedClosure(
                   closure,
+                  returnCpp,
+                  declaration,
                   parameters
                       .map(
                           ({ type, cppName: name }) =>
                               `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`,
                       )
                       .join(", "),
-                  returnCpp,
+                  parameters.map(({ cppName }) => cppName),
               );
         context.emit(
             selfIdentifier

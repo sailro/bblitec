@@ -3,11 +3,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import {
-    renderClosure,
-    renderCoroutineInvocation,
-    type CapturedClosure,
-} from "./closure-captures.js";
+import { renderClosure, type CapturedClosure } from "./closure-captures.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import {
     tryResolveFunctionDeclaration,
@@ -38,6 +34,7 @@ interface AsyncContext extends Pick<
     | "withEngineBootstrap"
     | "allocateTemporaryCppName"
     | "registerNativeBinding"
+    | "renderSharedCoroutine"
     | "emit"
     | "emitDiscardedValue"
     | "unwrap"
@@ -162,7 +159,12 @@ export class AsyncLowerer {
                 initializer: `co_await ${awaited.cpp}`,
                 attributes: "[[maybe_unused]] ",
             });
-            const binding = context.registerNativeBinding(temporary);
+            const binding = context.registerNativeBinding(
+                temporary,
+                false,
+                false,
+                awaited.promiseType,
+            );
             if (awaited.promiseResult?.kind === "void")
                 return { kind: "json-null", cpp: "std::nullopt" };
             return {
@@ -422,9 +424,18 @@ export class AsyncLowerer {
         const context = this.context;
         if (!value.cpp || value.kind === "engine") return value;
         const temporary = context.allocateTemporaryCppName(label);
+        const type = value.dataType
+            ? context.dataTypes.cppType(value.dataType)
+            : value.kind === "number"
+              ? "double"
+              : value.kind === "boolean"
+                ? "bool"
+                : value.kind === "string"
+                  ? "std::string"
+                  : "auto";
         context.emit({
             kind: "declaration",
-            type: "auto",
+            type,
             name: temporary,
             initializer: value.cpp,
             attributes: "[[maybe_unused]] ",
@@ -547,9 +558,10 @@ export class AsyncLowerer {
         // this pointer or a borrowed environment must never enter its frame.
         // Terminal throws share the native coroutine completion path, including
         // when earlier statements suspend. No unreachable epilogue is emitted.
-        const cpp = renderCoroutineInvocation(
+        const cpp = context.renderSharedCoroutine(
             compiled,
             `bbl::js::Promise<${cppType}>`,
+            declaration,
         );
         return {
             kind: "promise",

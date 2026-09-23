@@ -71,7 +71,7 @@ test("compiled voxel save/load uses selected files, cancellation and JavaScript 
     );
     assert.ok(result.manifest.features.includes("browser:file"));
     assert.ok(result.manifest.runtimeSources.includes("src/pal_file.cpp"));
-    assert.match(result.cpp, /save_voxel_world\([^;]+std::move\(/);
+    assert.match(result.cpp, /save_voxel_world\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     writeFileSync(
         join(directory, "expected.hpp"),

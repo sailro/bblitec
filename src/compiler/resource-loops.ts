@@ -18,6 +18,7 @@ import {
     aliasedMutationScan,
     callArgumentIsReadOnly,
     isSupportedFunction,
+    parameterIsReadOnly,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
     type SupportedFunction,
@@ -161,39 +162,136 @@ function nativeTransformSet(
     return kind === "mesh" || kind === "transform-node";
 }
 
-/** Follow executed local calls, not merely the source nesting around a loop. */
+/** Follow reached calls with readonly callback parameters bound to their source bodies. */
 export function walkReachedLoopNodes(
     context: Pick<ResourceLoopContext, "checker" | "symbols">,
     root: ts.Node,
-    visit: (node: ts.Node) => boolean | void,
+    visit: (
+        node: ts.Node,
+        called?: ts.Signature["declaration"],
+    ) => boolean | void,
 ): void {
-    const functions = new EmissionSet<ts.Node>();
-    const walkFunction = (node: ts.Node): void => {
-        if (functions.has(node)) return;
-        functions.add(node);
+    type Callbacks = ReadonlyMap<ts.Symbol, SupportedFunction | undefined>;
+    const functions = new Map<ts.Node, Set<string>>();
+    const identities = new Map<ts.Node | ts.Symbol, number>();
+    const identity = (value: ts.Node | ts.Symbol): number => {
+        let id = identities.get(value);
+        if (id === undefined) {
+            id = identities.size;
+            identities.set(value, id);
+        }
+        return id;
+    };
+    const callback = (
+        expression: ts.Expression,
+        callbacks: Callbacks,
+    ): SupportedFunction | undefined => {
+        const value = unwrapExpression(expression);
+        if (isSupportedFunction(value)) return value;
+        if (!ts.isIdentifier(value)) return undefined;
+        const symbol = context.checker.getSymbolAtLocation(value);
+        if (symbol && callbacks.has(symbol)) return callbacks.get(symbol);
+        const target =
+            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? context.checker.getAliasedSymbol(symbol)
+                : symbol;
         if (
-            (isSupportedFunction(node) ||
+            target?.declarations?.some(
+                (declaration) =>
+                    ts.isVariableDeclaration(declaration) &&
+                    (declaration.parent.flags & ts.NodeFlags.Const) === 0,
+            )
+        )
+            return undefined;
+        return tryResolveFunctionDeclaration(context.checker, value);
+    };
+    const walkFunction = (node: ts.Node, callbacks: Callbacks): void => {
+        if (
+            !(
+                isSupportedFunction(node) ||
                 ts.isConstructorDeclaration(node) ||
                 ts.isGetAccessorDeclaration(node) ||
-                ts.isSetAccessorDeclaration(node)) &&
-            node.body
-        ) {
-            walk(node.body);
-        }
+                ts.isSetAccessorDeclaration(node)
+            ) ||
+            !node.body
+        )
+            return;
+        const key = [...callbacks]
+            .map(
+                ([symbol, value]) =>
+                    `${identity(symbol)}:${value ? identity(value) : "?"}`,
+            )
+            .sort()
+            .join(",");
+        let seen = functions.get(node);
+        if (!seen) functions.set(node, (seen = new Set()));
+        if (seen.has(key)) return;
+        seen.add(key);
+        walk(node.body, callbacks);
     };
-    const walk = (subtree: ts.Node): void =>
+    const walk = (subtree: ts.Node, callbacks: Callbacks): void =>
         forEachAnalysisNode(
             subtree,
             (node) => {
-                if (visit(node) === false) return "skip";
-                if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                    const callee = unwrapExpression(node.expression);
+                const invocation =
+                    ts.isCallExpression(node) || ts.isNewExpression(node);
+                const callee = invocation
+                    ? unwrapExpression(node.expression)
+                    : undefined;
+                const symbol =
+                    callee && ts.isIdentifier(callee)
+                        ? context.checker.getSymbolAtLocation(callee)
+                        : undefined;
+                const called = invocation
+                    ? symbol && callbacks.has(symbol)
+                        ? (callbacks.get(symbol) ??
+                          context.checker.getResolvedSignature(node)
+                              ?.declaration)
+                        : resolvedLoopCallee(context, node)
+                    : undefined;
+                if (visit(node, called) === false) return "skip";
+                if (invocation && callee) {
                     const imported = ts.isIdentifier(callee)
                         ? context.symbols.importedName(callee)
                         : undefined;
-                    if (!imported) {
-                        const called = resolvedLoopCallee(context, node);
-                        if (called) walkFunction(called);
+                    if (!imported && called) {
+                        let bound:
+                            | Map<ts.Symbol, SupportedFunction | undefined>
+                            | undefined;
+                        for (const [
+                            index,
+                            parameter,
+                        ] of called.parameters.entries()) {
+                            if (
+                                !ts.isParameter(parameter) ||
+                                !ts.isIdentifier(parameter.name) ||
+                                context.checker
+                                    .getTypeAtLocation(parameter)
+                                    .getCallSignatures().length === 0
+                            )
+                                continue;
+                            const symbol = context.checker.getSymbolAtLocation(
+                                parameter.name,
+                            );
+                            if (!symbol) continue;
+                            const argument =
+                                node.arguments?.[index] ??
+                                parameter.initializer;
+                            bound ??= new Map(callbacks);
+                            bound.set(
+                                symbol,
+                                argument &&
+                                    isSupportedFunction(called) &&
+                                    parameterIsReadOnly(
+                                        context.checker,
+                                        called,
+                                        parameter.name,
+                                    )
+                                    ? callback(argument, callbacks)
+                                    : undefined,
+                            );
+                        }
+                        walkFunction(called, bound ?? callbacks);
                     }
                     if (ts.isNewExpression(node)) {
                         const declaration =
@@ -209,14 +307,13 @@ export function walkReachedLoopNodes(
                                     ts.isPropertyDeclaration(member) &&
                                     member.initializer
                                 )
-                                    walk(member.initializer);
+                                    walk(member.initializer, callbacks);
                             }
                         }
                     }
                     for (const argument of node.arguments ?? []) {
-                        const unwrapped = unwrapExpression(argument);
-                        if (isSupportedFunction(unwrapped))
-                            walkFunction(unwrapped);
+                        const declaration = callback(argument, callbacks);
+                        if (declaration) walkFunction(declaration, callbacks);
                     }
                 }
                 if (ts.isPropertyAccessExpression(node)) {
@@ -227,13 +324,13 @@ export function walkReachedLoopNodes(
                             ts.isGetAccessorDeclaration(declaration) ||
                             ts.isSetAccessorDeclaration(declaration)
                         )
-                            walkFunction(declaration);
+                            walkFunction(declaration, callbacks);
                     }
                 }
             },
             { skip: (node) => node !== subtree && ts.isFunctionLike(node) },
         );
-    walk(root);
+    walk(root, new Map());
 }
 
 export function requiresStaticLoopIteration(
@@ -415,38 +512,16 @@ export function requiresStaticDataIteration(
     return required;
 }
 
-/** Shared bodies use native construction profiles and ordinary resource operations. */
+/** Share function bodies whose reached effects have native representations. */
 export function canShareFunctionBody(
     context: ResourceLoopContext,
     body: ts.Node,
     callEffects = false,
 ): boolean {
     if (requiresStaticDataIteration(context, body, callEffects)) return false;
-    let touchesHandle = false;
     let specializes = false;
-    walkReachedLoopNodes(context, body, (node) => {
-        if (
-            (ts.isIdentifier(node) ||
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node) ||
-                ts.isCallExpression(node)) &&
-            expressionHandleKind(context, node)
-        )
-            touchesHandle = true;
-        if (nativePlatformRead(context, node)) touchesHandle = true;
+    walkReachedLoopNodes(context, body, (node, resolved) => {
         if (!ts.isCallExpression(node)) return;
-        const callee = unwrapExpression(node.expression);
-        const imported = ts.isIdentifier(callee)
-            ? context.symbols.importedName(callee)
-            : undefined;
-        if (
-            callEffects &&
-            imported &&
-            (isMaterialCallEffectIntrinsic(imported) ||
-                isAssetCallEffectIntrinsic(imported))
-        )
-            touchesHandle = true;
-        const resolved = resolvedLoopCallee(context, node);
         if (
             resolved &&
             !resolved.getSourceFile().isDeclarationFile &&
@@ -454,7 +529,7 @@ export function canShareFunctionBody(
         )
             specializes = true;
     });
-    return touchesHandle && !specializes;
+    return !specializes;
 }
 
 /** Construction and generation-dependent operations replay their ordinary recorder effects. */
@@ -642,8 +717,6 @@ export function staticIndexLoopShape(
 
 export interface ParameterizedResourceLoop {
     iterations: number;
-    /** Static bodies avoided, including nested loops and called helpers. */
-    expansion: number;
 }
 
 export type ResourceLoop = ts.ForStatement | ts.ForOfStatement;
@@ -920,10 +993,10 @@ export function parameterizedResourceLoop(
         call: ts.CallExpression,
         fn: SupportedFunction,
         conditional: boolean,
-    ): number => {
+    ): void => {
         if (!fn.body || active.has(fn)) {
             safe = false;
-            return 0;
+            return;
         }
         active.add(fn);
         const previous = new EmissionMap(bindings);
@@ -936,7 +1009,6 @@ export function parameterizedResourceLoop(
                 );
             }
         });
-        let work = 0;
         const previousDataFunction = dataFunction;
         dataFunction = !requiresStaticLoopIteration(context, fn.body);
         if (ts.isBlock(fn.body)) {
@@ -945,24 +1017,22 @@ export function parameterizedResourceLoop(
                     ts.isReturnStatement(child) &&
                     index === fn.body.statements.length - 1
                 ) {
-                    if (child.expression)
-                        work += visit(child.expression, conditional);
+                    if (child.expression) visit(child.expression, conditional);
                 } else {
-                    work += visit(child, conditional);
+                    visit(child, conditional);
                 }
             }
         } else {
-            work += visit(fn.body, conditional);
+            visit(fn.body, conditional);
         }
         dataFunction = previousDataFunction;
         bindings.clear();
         for (const [symbol, expression] of previous)
             bindings.set(symbol, expression);
         active.delete(fn);
-        return work;
     };
-    const visit = (node: ts.Node, conditional: boolean): number => {
-        if (!safe || ts.isFunctionLike(node)) return 0;
+    const visit = (node: ts.Node, conditional: boolean): void => {
+        if (!safe || ts.isFunctionLike(node)) return;
         if (ts.isIfStatement(node) || ts.isConditionalExpression(node)) {
             const condition = resolve(
                 ts.isIfStatement(node) ? node.expression : node.condition,
@@ -987,7 +1057,8 @@ export function parameterizedResourceLoop(
                     : fixed
                       ? node.whenTrue
                       : node.whenFalse;
-                return selected ? visit(selected, conditional) : 0;
+                if (selected) visit(selected, conditional);
+                return;
             }
         }
         if (ts.isForStatement(node)) {
@@ -1002,13 +1073,13 @@ export function parameterizedResourceLoop(
                     : undefined;
             if (!shape || count === undefined) {
                 safe = false;
-                return 0;
+                return;
             }
             const symbol = context.symbols.valueSymbol(shape.indexBinding)!;
             indices.add(symbol);
-            const work = count === 0 ? 0 : visit(node.statement, conditional);
+            if (count !== 0) visit(node.statement, conditional);
             indices.delete(symbol);
-            return Math.max(1, work) * count;
+            return;
         }
         if (ts.isForOfStatement(node)) {
             const count = forOfCount(node);
@@ -1017,7 +1088,7 @@ export function parameterizedResourceLoop(
                 !ts.isVariableDeclarationList(node.initializer)
             ) {
                 safe = false;
-                return 0;
+                return;
             }
             const bound: ts.Symbol[] = [];
             const bind = (name: ts.BindingName): void => {
@@ -1034,12 +1105,13 @@ export function parameterizedResourceLoop(
                 }
             };
             bind(node.initializer.declarations[0]!.name);
-            const work = count === 0 ? 0 : visit(node.statement, conditional);
+            if (count !== 0) visit(node.statement, conditional);
             for (const symbol of bound) indices.delete(symbol);
-            return Math.max(1, work) * count;
+            return;
         }
         if (ts.isReturnStatement(node) && dataFunction) {
-            return node.expression ? visit(node.expression, conditional) : 0;
+            if (node.expression) visit(node.expression, conditional);
+            return;
         }
         if (
             ts.isWhileStatement(node) ||
@@ -1053,7 +1125,7 @@ export function parameterizedResourceLoop(
             ts.isNewExpression(node)
         ) {
             safe = false;
-            return 0;
+            return;
         }
         if (
             writesThroughTrackedRoot(
@@ -1064,7 +1136,7 @@ export function parameterizedResourceLoop(
             )
         ) {
             safe = false;
-            return 0;
+            return;
         }
         if (
             ts.isPropertyAccessExpression(node) &&
@@ -1078,7 +1150,7 @@ export function parameterizedResourceLoop(
                 )
         ) {
             safe = false;
-            return 0;
+            return;
         }
         const assignment = isAssignmentExpression(node)
             ? { target: node.left, value: node.right }
@@ -1094,7 +1166,7 @@ export function parameterizedResourceLoop(
                 expressionHandleKind(context, target)
             ) {
                 safe = false;
-                return 0;
+                return;
             }
             let lane = target;
             while (ts.isPropertyAccessExpression(lane)) {
@@ -1130,13 +1202,12 @@ export function parameterizedResourceLoop(
             const imported = ts.isIdentifier(callee)
                 ? context.symbols.importedName(callee)
                 : undefined;
-            let work = 0;
             for (const argument of node.arguments) {
                 if (ts.isFunctionLike(unwrapExpression(argument))) {
                     safe = false;
-                    return 0;
+                    return;
                 }
-                work += visit(argument, conditional);
+                visit(argument, conditional);
             }
             if (imported) {
                 const staticOptions = meshFactories.get(imported);
@@ -1192,11 +1263,12 @@ export function parameterizedResourceLoop(
                 ) {
                     safe = false;
                 }
-                return work + 1;
+                return;
             }
             const called = resolvedLoopCallee(context, node);
             if (isSupportedFunction(called) && called.body) {
-                return work + visitFunction(node, called, conditional);
+                visitFunction(node, called, conditional);
+                return;
             }
             // Native data/Math methods have library signatures. An unresolved
             // callback or opaque method might conceal generation-time effects.
@@ -1208,7 +1280,7 @@ export function parameterizedResourceLoop(
             ) {
                 safe = false;
             }
-            return work + 1;
+            return;
         }
         const guarded =
             conditional ||
@@ -1221,11 +1293,9 @@ export function parameterizedResourceLoop(
                     node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                     node.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken));
-        let work = 0;
         ts.forEachChild(node, (child) => {
-            work += visit(child, guarded);
+            visit(child, guarded);
         });
-        return work + (ts.isStatement(node) && !ts.isBlock(node) ? 1 : 0);
     };
     const shape = ts.isForStatement(statement)
         ? staticIndexLoopShape(context.symbols, statement)
@@ -1237,6 +1307,6 @@ export function parameterizedResourceLoop(
           ? staticIndexLoopIterations(shape, end)
           : undefined;
     if (iterations === undefined) return undefined;
-    const expansion = visit(statement, false);
-    return safe && reachesConstruction ? { iterations, expansion } : undefined;
+    visit(statement, false);
+    return safe && reachesConstruction ? { iterations } : undefined;
 }

@@ -266,7 +266,7 @@ test("carries a produced pixels texture into the Standard diffuse slot", () => {
     `);
     assert.match(
         result.cpp,
-        /const auto \w+ = bbl::create_texture_2d_from_pixels\(\w+, bbl::asset_path\("[^"]+\.rgba"\), 2\.0, 2\.0, bbl::PixelsTextureOptions\{bbl::TextureFilter::linear, true, bbl::TextureFilter::linear, true, \{\}, false, \{\}, false, false\}\);/,
+        /const bbl::PixelsTexture \w+ = bbl::create_texture_2d_from_pixels\(\w+, bbl::asset_path\("[^"]+\.rgba"\), 2\.0, 2\.0, bbl::PixelsTextureOptions\{bbl::TextureFilter::linear, true, bbl::TextureFilter::linear, true, \{\}, false, \{\}, false, false\}\);/,
     );
     // The metadata survived both hops; without it the slot falls through to
     // the render-texture-only arm and refuses.

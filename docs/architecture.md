@@ -44,6 +44,19 @@ initializers use the selected representation. Equivalent definitions share code;
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
 use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts.
 
+Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
+listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have
+separate units and namespaces. Shared types and declarations live in `sources/application.hpp`
+(one header per realm); template bodies appear only in units that use them. Paths mirror source folders
+from their common directory; worker realms live under `sources/workers/<module>/`. Single-source programs retain one file.
+Folded imports emit no unit; specialized inline bodies remain with their caller. Module initialization
+and shared bindings retain their ordered entry execution.
+
+Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
+composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
+callbacks and coroutines retain separate invocation state; equivalent bodies share a native specialization. Concrete
+capture types place those bodies in their owning source unit; unresolved capture types use templates.
+
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.
 Escaping callbacks capture copyable handles by value, including handles borrowed by local aliases or parameters.

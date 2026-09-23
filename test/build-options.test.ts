@@ -251,7 +251,10 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
     assert.match(block, /\/STACK:8388608/);
-    assert.match(cmake, /main\.cpp"\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/);
+    assert.match(
+        cmake,
+        /"\$\{BBLITE_ENTRY_SOURCE\}" \$\{BBLITE_APPLICATION_UNITS\}\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
+    );
     assert.match(block, /INTERFACE -Os -ffunction-sections/);
 });
 

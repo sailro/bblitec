@@ -96,7 +96,7 @@ test("member Ref arguments still snapshot for callbacks, getters, rebinds, and i
                 /bbl::js::snapshot_value\(v_holder(?:->|\.)ray\)/g,
             ) ?? []
         ).length,
-        4,
+        3,
     );
     assert.match(
         result.cpp,
