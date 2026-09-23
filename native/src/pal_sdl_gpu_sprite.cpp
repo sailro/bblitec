@@ -43,7 +43,7 @@ namespace bbl::pal {
 #if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER
 
 namespace {
-class SdlSpriteRun : public FrameSession {
+class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     SdlGpuDevice gpu{};
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
@@ -72,7 +72,7 @@ class SdlSpriteRun : public FrameSession {
 #endif
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
-    bool canvas_only = false, capture_ui = false, mem_profile = false;
+    bool canvas_only = false, capture_ui = false;
 #if BBLITE_HAS_TEXT_RENDERER
     std::optional<SdlStandaloneTextOps> text_operations;
 #endif
@@ -126,15 +126,11 @@ class SdlSpriteRun : public FrameSession {
         }
     }
 #endif
-    void discard_frame() {
-#if BBLITE_HAS_TEXT_RENDERER
-        text_operations.reset();
-#endif
-    }
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
-    explicit SdlSpriteRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "SDL_GPU";
+    explicit SdlSpriteRun(Engine& target) : RendererRun(target) {}
     ~SdlSpriteRun() {
         discard_frame();
         command.reset();
@@ -203,21 +199,24 @@ public:
         sync_render_textures();
         sync_renderer_passes();
 #endif
-        mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
         capture_ui = frame_options.capture_ui || canvas_only;
         capture_run = captures.requested();
     }
-    FramePreparation prepare() {
+    SDL_Window* sdl_window() const { return window; }
+    std::string driver() const { return SDL_GetGPUDeviceDriver(device); }
+    void poll_events() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
 #else
-        poll_platform_events(engine, running, frame_options.test_pass);
+        RendererRun::poll_events();
 #endif
-        input_replay.dispatch(frame, window, engine);
-        sync_engine_canvas_size(window, engine);
-        return FramePreparation::ready;
+    }
+    void discard_frame() {
+#if BBLITE_HAS_TEXT_RENDERER
+        text_operations.reset();
+#endif
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
@@ -255,8 +254,7 @@ public:
             discard_frame();
             return false;
         }
-        capture_frame = frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
-                        !frame_options.screenshot_path.empty();
+        capture_frame = screenshot_due();
 
         // Rendered offscreen and blitted only on a capture run,
         // because a swapchain texture cannot be read back for the
@@ -409,25 +407,10 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer sprite");
         }
     }
-    void complete() {
-        FrameSession::complete([&] {
-            if (mem_profile && frame % memory_profile_frames == 0)
-                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
-        });
-        discard_frame();
-    }
-    void report() { FrameSession::report("SDL_GPU", SDL_GetGPUDeviceDriver(device)); }
 };
 } // namespace
 
-bool run_sprite_gpu_engine(Engine& engine) {
-    SdlSpriteRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.report();
-    return true;
-}
+void run_sprite_gpu_engine(Engine& engine) { SdlSpriteRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

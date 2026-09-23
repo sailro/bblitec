@@ -31,7 +31,7 @@ namespace bbl::pal {
 #if BBLITE_HAS_DAWN && BBLITE_HAS_EFFECT_RENDERER
 
 namespace {
-class DawnEffectRun : public FrameSession {
+class DawnEffectRun : public RendererRun<DawnEffectRun> {
     DawnDevice state;
     std::vector<DawnEffectPass> passes;
     DawnTexture msaa_texture;
@@ -62,7 +62,8 @@ class DawnEffectRun : public FrameSession {
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit DawnEffectRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "Dawn";
+    explicit DawnEffectRun(Engine& target) : RendererRun(target) {}
     ~DawnEffectRun() {
         encoder.reset();
         surface_view.reset();
@@ -106,23 +107,15 @@ public:
                                                      state.surface_format, samples));
         }
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, state.window, engine);
-        sync_engine_canvas_size(state.window, engine);
+    SDL_Window* sdl_window() const { return state.window; }
+    std::string driver() const { return "D3D12"; }
+    FramePreparation prepare_surface() {
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
             recreate_msaa_target();
         }
-        if (!state.surface)
-            return FramePreparation::skip;
-        return FramePreparation::ready;
-    }
-    FramePreparation update() {
-        (void)advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
-        begin_measurement();
-        return FramePreparation::ready;
+        return state.surface ? FramePreparation::ready : FramePreparation::skip;
     }
     bool acquire() {
         if (!acquire_dawn_surface_texture(state, surface_texture))
@@ -163,9 +156,7 @@ public:
         render_pass.reset();
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame);
         DawnSurfaceCapture capture{};
         if (capture_frame) {
@@ -192,18 +183,10 @@ public:
             dawn_error(state.uncaptured_error);
         }
     }
-    void report() { FrameSession::report("Dawn", "D3D12"); }
 };
 } // namespace
 
-bool run_effect_dawn_engine(Engine& engine) {
-    DawnEffectRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.report();
-    return true;
-}
+void run_effect_dawn_engine(Engine& engine) { DawnEffectRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

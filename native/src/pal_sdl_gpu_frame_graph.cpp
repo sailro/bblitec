@@ -408,7 +408,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 } // namespace
 
 namespace {
-class SdlFrameGraphRun : public FrameSession {
+class SdlFrameGraphRun : public RendererRun<SdlFrameGraphRun> {
     State state;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
@@ -418,7 +418,8 @@ class SdlFrameGraphRun : public FrameSession {
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit SdlFrameGraphRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "SDL_GPU";
+    explicit SdlFrameGraphRun(Engine& target) : RendererRun(target) {}
     ~SdlFrameGraphRun() {
         command.reset();
         release(state);
@@ -452,14 +453,12 @@ public:
         }
 #endif
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, state.gpu.window, engine);
-        sync_engine_canvas_size(state.gpu.window, engine);
-        return FramePreparation::ready;
-    }
+    SDL_Window* sdl_window() const { return state.gpu.window; }
+    std::string driver() const { return SDL_GetGPUDeviceDriver(state.gpu.device); }
     FramePreparation update() {
-        (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+        static_cast<void>(
+            advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms));
+        begin_measurement();
 #if BBLITE_GPU_TASK_TIMING
         begin_gpu_task_timing_frame(engine);
 #endif
@@ -476,7 +475,8 @@ public:
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture frame graph");
         }
         if (!swapchain || width == 0 || height == 0) {
-            command.submit();
+            if (!command.submit())
+                gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             return false;
         }
         return true;
@@ -543,9 +543,7 @@ public:
         }
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
         if (capture_frame) {
             if (!capture_texture) {
@@ -562,25 +560,15 @@ public:
         finish_gpu_task_timing_frame(engine);
 #endif
     }
-    void complete() {
-        finish_frame(engine);
-        ++frame;
-    }
     void finish_run() {
         if (!SDL_WaitForGPUIdle(state.gpu.device))
             gpu_error("SDL_WaitForGPUIdle frame graph");
+        RendererRun::finish_run();
     }
 };
 } // namespace
 
-bool run_frame_graph_gpu_engine(Engine& engine) {
-    SdlFrameGraphRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.finish_run();
-    return true;
-}
+void run_frame_graph_gpu_engine(Engine& engine) { SdlFrameGraphRun::run(engine); }
 
 #endif
 

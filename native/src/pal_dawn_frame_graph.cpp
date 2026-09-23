@@ -442,7 +442,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 } // namespace
 
 namespace {
-class DawnFrameGraphRun : public FrameSession {
+class DawnFrameGraphRun : public RendererRun<DawnFrameGraphRun> {
     State state;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
@@ -453,7 +453,8 @@ class DawnFrameGraphRun : public FrameSession {
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit DawnFrameGraphRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "Dawn";
+    explicit DawnFrameGraphRun(Engine& target) : RendererRun(target) {}
     ~DawnFrameGraphRun() {
         encoder.reset();
         surface_view.reset();
@@ -495,21 +496,20 @@ public:
         }
         build_graph(state, engine, width, height);
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, state.window, engine);
-        sync_engine_canvas_size(state.window, engine);
+    SDL_Window* sdl_window() const { return state.window; }
+    std::string driver() const { return "D3D12"; }
+    FramePreparation prepare_surface() {
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
             build_graph(state, engine, width, height);
         }
-        if (!state.surface)
-            return FramePreparation::skip;
-        return FramePreparation::ready;
+        return state.surface ? FramePreparation::ready : FramePreparation::skip;
     }
     FramePreparation update() {
-        (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+        static_cast<void>(
+            advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms));
+        begin_measurement();
 #if BBLITE_GPU_TASK_TIMING
         begin_gpu_task_timing_frame(engine);
 #endif
@@ -584,9 +584,7 @@ public:
         }
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame);
         DawnSurfaceCapture capture{};
         if (capture_frame) {
@@ -613,20 +611,10 @@ public:
             dawn_error(state.uncaptured_error);
         }
     }
-    void complete() {
-        finish_frame(engine);
-        ++frame;
-    }
 };
 } // namespace
 
-bool run_frame_graph_dawn_engine(Engine& engine) {
-    DawnFrameGraphRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    return true;
-}
+void run_frame_graph_dawn_engine(Engine& engine) { DawnFrameGraphRun::run(engine); }
 
 #endif
 

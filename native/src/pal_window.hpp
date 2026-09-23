@@ -10,7 +10,9 @@
 #endif
 
 #include "pal_runtime_trace.hpp"
-#include "pal_gpu_backend.hpp"
+#ifdef __ANDROID__
+#include "pal_gpu_dispatch.hpp"
+#endif
 
 namespace bbl::pal {
 
@@ -74,12 +76,7 @@ inline void configure_run_surface(const EngineOptions& options) {
 inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags,
                                         [[maybe_unused]] const EngineOptions& options) {
 #ifdef __ANDROID__
-    flags |= SDL_WINDOW_FULLSCREEN;
-#if BBLITE_HAS_DAWN
-    // Mark Dawn's external Vulkan context so SDL does not restore an EGL context on resume.
-    if (use_dawn_backend())
-        flags |= SDL_WINDOW_VULKAN;
-#endif
+    flags |= SDL_WINDOW_FULLSCREEN | selected_gpu_backend().window_flags;
 #elif defined(SDL_PLATFORM_IOS)
     flags |= SDL_WINDOW_FULLSCREEN;
     if (options.max_device_pixel_ratio == 1.0)

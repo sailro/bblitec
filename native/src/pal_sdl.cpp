@@ -3,7 +3,6 @@
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
 #endif
@@ -22,6 +21,7 @@
 
 #include <SDL3/SDL.h>
 #include "pal_window.hpp"
+#include "pal_gpu_dispatch.hpp"
 
 namespace bbl {
 
@@ -257,41 +257,34 @@ const char* renderer_name(RendererKind kind) {
     return "A scene";
 }
 
-// Each entry point is a real function when its backend and its renderer
-// are both compiled in, and `pal_gpu.hpp`'s inline stub returning false
-// otherwise -- so "did this build compile it" is the only question these
-// return values answer.
-#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
-bool run_sdl_gpu(Engine& engine, RendererKind kind) {
-    switch (kind) {
-    case RendererKind::sprites:
-    case RendererKind::text:
-    case RendererKind::canvas:
-        return pal::run_sprite_gpu_engine(engine);
-    case RendererKind::effects:
-        return pal::run_effect_gpu_engine(engine);
-    case RendererKind::frame_graph:
-        return pal::run_frame_graph_gpu_engine(engine);
-    case RendererKind::scene:
-        break;
-    }
-    return pal::run_gpu_engine(engine);
+[[noreturn]] void refuse_uncompiled_renderer(RendererKind kind, const pal::GpuBackend& backend) {
+    throw std::runtime_error(std::string(renderer_name(kind)) + " is not compiled for the " +
+                             std::string(backend.name) + " backend.");
 }
 
-bool run_dawn(Engine& engine, RendererKind kind) {
+#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
+void run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
+    void (*context)(Engine&) = nullptr;
     switch (kind) {
     case RendererKind::sprites:
     case RendererKind::text:
     case RendererKind::canvas:
-        return pal::run_sprite_dawn_engine(engine);
-    case RendererKind::effects:
-        return pal::run_effect_dawn_engine(engine);
-    case RendererKind::frame_graph:
-        return pal::run_frame_graph_dawn_engine(engine);
-    case RendererKind::scene:
+        context = backend.run_2d;
         break;
+    case RendererKind::effects:
+        context = backend.run_effects;
+        break;
+    case RendererKind::frame_graph:
+        context = backend.run_frame_graph;
+        break;
+    case RendererKind::scene:
+        if (!backend.run_scene || !backend.run_scene(engine))
+            refuse_uncompiled_renderer(kind, backend);
+        return;
     }
-    return pal::run_dawn_engine(engine);
+    if (!context)
+        refuse_uncompiled_renderer(kind, backend);
+    context(engine);
 }
 #else
 js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
@@ -303,19 +296,16 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
                 throw std::runtime_error(std::string(renderer_name(kind)) +
                                          " does not yet support realm animation tasks.");
             engine->renderer_restart_requested = false;
-            const bool dawn = pal::use_dawn_backend();
-#if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
-            auto driver = dawn ? pal::run_dawn_engine(*engine) : pal::run_gpu_engine(*engine);
-#else
-            static_cast<void>(dawn);
-            auto driver = pal::run_dawn_engine(*engine);
-#endif
+            const pal::GpuBackend& backend = pal::selected_gpu_backend();
+            if (!backend.run_scene)
+                refuse_uncompiled_renderer(kind, backend);
+            auto driver = backend.run_scene(*engine);
             driver.ready().observe(
                 [ready](const js::PromiseVoid&) { ready.resolve(js::PromiseVoid{}); },
                 [](std::exception_ptr) {}); // The finished result owns the error path below.
             driver.start();
             if (!(co_await driver.finished()))
-                throw std::runtime_error("The selected realm rendering backend is not compiled.");
+                refuse_uncompiled_renderer(kind, backend);
             if (!engine->renderer_restart_requested)
                 break;
         }
@@ -365,12 +355,7 @@ void pal::run_engine(Engine& engine) {
         }
         engine.renderer_restart_requested = false;
         try {
-            const bool ran =
-                pal::use_dawn_backend() ? run_dawn(engine, kind) : run_sdl_gpu(engine, kind);
-            if (!ran) {
-                throw std::runtime_error(std::string(renderer_name(kind)) +
-                                         " is not compiled for the selected GPU backend.");
-            }
+            run_renderer(engine, kind, pal::selected_gpu_backend());
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
             if (engine.device_recovery && engine.device_recovery->requested)
                 begin_device_recovery(engine);
