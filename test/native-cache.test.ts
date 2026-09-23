@@ -92,5 +92,56 @@ target_compile_features(check PRIVATE cxx_std_20)
         writeFileSync(header(secondGenerated), "#define FIXTURE_VALUE 7\n");
         run(["--build", second]);
         assert.equal(execFileSync(executable, { encoding: "utf8" }), "7");
+
+        // Two checkouts of the same sources (worktrees), each building inside
+        // its own native/ tree, share the cache: paths under a checkout enter
+        // the key relative to it.
+        const checkoutBuild = (
+            name: string,
+        ): { build: string; log: string } => {
+            const native = join(root, name, "native");
+            mkdirSync(join(native, "src"), { recursive: true });
+            writeFileSync(
+                join(native, "CMakeLists.txt"),
+                readFileSync(join(source, "CMakeLists.txt"), "utf8").replace(
+                    source.replaceAll("\\", "/"),
+                    native.replaceAll("\\", "/"),
+                ),
+            );
+            writeFileSync(
+                join(native, "src/main.cpp"),
+                readFileSync(join(source, "src/main.cpp"), "utf8"),
+            );
+            writeFileSync(log, "");
+            const build = join(native, "build");
+            run([
+                "-S",
+                native,
+                "-B",
+                build,
+                "-G",
+                "Ninja",
+                `-DCMAKE_MAKE_PROGRAM=${windows.ninja}`,
+                `-DCMAKE_CXX_COMPILER=${windows.compiler}`,
+                `-DBBLITE_GENERATED_DIR=${firstGenerated}`,
+                `-DBBLITE_CCACHE=${tools.ccache}`,
+                `-DBBLITE_NATIVE_CACHE_DIR=${join(root, "cache")}`,
+                "-DCMAKE_BUILD_TYPE=Release",
+            ]);
+            run(["--build", build]);
+            return { build, log: readFileSync(log, "utf8") };
+        };
+        checkoutBuild("checkout-a");
+        const worktree = checkoutBuild("checkout-b");
+        assert.equal(
+            execFileSync(join(worktree.build, "check.exe"), {
+                encoding: "utf8",
+            }),
+            "2",
+        );
+        assert.ok(
+            /Result: (?:direct|preprocessed)_cache_hit/.test(worktree.log),
+            "another checkout of the same sources must reuse the cached object",
+        );
     });
 }

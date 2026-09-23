@@ -1167,9 +1167,14 @@ option(
     "Precompile the stable native headers once per build tree"
     ${BBLITE_PCH_DEFAULT}
 )
-# Cached builds reuse complete objects and do not allocate a PCH per scene.
-# Keeping PCH flags out of cache keys also avoids scene-specific PCH paths.
-if(BBLITE_PCH AND NOT BBLITE_NATIVE_CACHE_ACTIVE)
+# Under the native cache only Clang keeps the PCH: without a timestamp in it
+# (and with the PCH sloppiness compiler-cache.cmake sets) a rebuilt tree's PCH
+# and its users hit, and the checkout-relative PCH path is the same in every
+# tree. Other compilers under the cache build without one.
+if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+    if(BBLITE_NATIVE_CACHE_ACTIVE)
+        target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
+    endif()
     # The four repository headers bring the standard library they use; the
     # rest are what the PAL units include beyond them.
     set(
