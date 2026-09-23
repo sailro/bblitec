@@ -84,8 +84,35 @@ function requiredSpecifiers(javascript: string, fileName: string): string[] {
 }
 
 /**
- * The entry and every repository sibling its emitted code requires,
- * transpiled to CommonJS once each.
+ * Each module's CommonJS and the specifiers it requires, by path, reused for
+ * as long as the module's source is unchanged: every bake and pass of a
+ * generation that reaches a module shares one transpile of it.
+ */
+const transpiledModules = new Map<
+    string,
+    { source: string; javascript: string; required: readonly string[] }
+>();
+
+function transpiledModule(path: string): {
+    javascript: string;
+    required: readonly string[];
+} {
+    const source = readFileSync(path, "utf8");
+    const cached = transpiledModules.get(path);
+    if (cached?.source === source) return cached;
+    const javascript = transpileCommonJs(source, path);
+    const transpiled = {
+        source,
+        javascript,
+        required: requiredSpecifiers(javascript, path),
+    };
+    transpiledModules.set(path, transpiled);
+    return transpiled;
+}
+
+/**
+ * The entry and every repository sibling its emitted code requires, as
+ * CommonJS.
  *
  * A relative `require` must resolve through the suite server's resolver
  * (`resolveRepositoryModuleFile`), so a sibling spelled with `.js`, no
@@ -108,12 +135,9 @@ export function commonJsModuleGraph(
     const queue = [{ path: entryPath, key: entry }];
     const queued = new Set([entry]);
     for (let next = queue.shift(); next; next = queue.shift()) {
-        const javascript = transpileCommonJs(
-            readFileSync(next.path, "utf8"),
-            next.path,
-        );
+        const { javascript, required } = transpiledModule(next.path);
         const resolved: Record<string, string> = {};
-        for (const specifier of requiredSpecifiers(javascript, next.path)) {
+        for (const specifier of required) {
             if (
                 !isRelativeSpecifier(specifier) ||
                 Object.hasOwn(resolved, specifier)
