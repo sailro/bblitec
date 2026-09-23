@@ -103,9 +103,6 @@ namespace bbl::pal {
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
-// gpu_blend_factor / blend_state_from moved to pal_sdl_gpu_shared.hpp so
-// the family headers can translate the shared blend tuples too.
-
 /** The shared cull enum in this API's; the pipeline-kind facts come from
  *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
 /**
@@ -1392,7 +1389,6 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
 // Geometry-task helpers shared by the PBR and Standard variant
 // pipelines; the definitions sit with the transmission helpers below.
 SDL_GPUSampleCount task_sample_count(const GpuState& state, std::uint32_t requested);
-SDL_GPUTextureFormat texture_format(TextureFormatClass format);
 SDL_GPUTextureFormat geometry_texture_format(const GeometryTextureDescription& description);
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
@@ -4709,24 +4705,6 @@ void create_transmission_color(GpuState& state) {
 
 SDL_GPUSampleCount task_sample_count(const GpuState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : SDL_GPU_SAMPLECOUNT_1;
-}
-
-SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    case TextureFormatClass::r8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8_UNORM;
-    case TextureFormatClass::r16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    case TextureFormatClass::rg16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
-    case TextureFormatClass::r32_float:
-        return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-    case TextureFormatClass::rgba16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-    }
-    return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
 }
 
 SDL_GPUTextureFormat geometry_texture_format(const GeometryTextureDescription& description) {

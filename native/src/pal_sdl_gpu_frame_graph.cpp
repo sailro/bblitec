@@ -89,24 +89,6 @@ struct State {
     std::uint32_t height = 0;
 };
 
-SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    case TextureFormatClass::r8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8_UNORM;
-    case TextureFormatClass::r16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    case TextureFormatClass::rg16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
-    case TextureFormatClass::r32_float:
-        return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-    case TextureFormatClass::rgba16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-    }
-    return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-}
-
 SDL_GPUSampleCount target_samples(const State& state, std::uint32_t requested) {
     return requested == 4 ? state.samples : SDL_GPU_SAMPLECOUNT_1;
 }

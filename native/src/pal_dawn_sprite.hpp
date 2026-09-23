@@ -136,24 +136,6 @@ using DawnSceneSpritePass =
     OwnedGpuRecord<DawnSceneSpritePassResources, std::remove_pointer_t<WGPUDevice>,
                    release_dawn_scene_sprite_pass_resources>;
 
-inline WGPUBlendFactor dawn_sprite_blend_factor(SpriteBlendFactor factor) {
-    switch (factor) {
-    case SpriteBlendFactor::zero:
-        return WGPUBlendFactor_Zero;
-    case SpriteBlendFactor::one:
-        return WGPUBlendFactor_One;
-    case SpriteBlendFactor::src_alpha:
-        return WGPUBlendFactor_SrcAlpha;
-    case SpriteBlendFactor::one_minus_src_alpha:
-        return WGPUBlendFactor_OneMinusSrcAlpha;
-    case SpriteBlendFactor::dst:
-        return WGPUBlendFactor_Dst;
-    case SpriteBlendFactor::dst_alpha:
-        return WGPUBlendFactor_DstAlpha;
-    }
-    return WGPUBlendFactor_One;
-}
-
 inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device, std::uint64_t size = 64) {
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;

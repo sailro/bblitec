@@ -139,9 +139,6 @@ void release_dawn_shader_bindings(DawnShaderBindings& bindings) {
     bindings = {};
 }
 
-// dawn_blend_factor / blend_state_from moved to pal_dawn_shared.hpp so
-// the family headers can translate the shared blend tuples too.
-
 /** The shared cull enum in this API's; the pipeline-kind facts come from
  *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
 WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
@@ -3202,40 +3199,6 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
 
 std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : 1u;
-}
-
-WGPUTextureFormat depth_texture_format(const RenderTargetRecord& record) {
-    if (record.shadow_map)
-        return WGPUTextureFormat_Depth32Float;
-    switch (record.depth_format) {
-    case DepthTextureFormat::depth24_plus_stencil8:
-        return WGPUTextureFormat_Depth24PlusStencil8;
-    case DepthTextureFormat::depth16_unorm:
-        return WGPUTextureFormat_Depth16Unorm;
-    case DepthTextureFormat::depth24_plus:
-        return WGPUTextureFormat_Depth24Plus;
-    case DepthTextureFormat::depth32_float:
-        return WGPUTextureFormat_Depth32Float;
-    }
-    throw std::runtime_error("Unrepresented depth texture format.");
-}
-
-WGPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return WGPUTextureFormat_RGBA8Unorm;
-    case TextureFormatClass::r8_unorm:
-        return WGPUTextureFormat_R8Unorm;
-    case TextureFormatClass::r16_float:
-        return WGPUTextureFormat_R16Float;
-    case TextureFormatClass::rg16_float:
-        return WGPUTextureFormat_RG16Float;
-    case TextureFormatClass::r32_float:
-        return WGPUTextureFormat_R32Float;
-    case TextureFormatClass::rgba16_float:
-        return WGPUTextureFormat_RGBA16Float;
-    }
-    return WGPUTextureFormat_RGBA16Float;
 }
 
 WGPUTextureFormat geometry_texture_format(const GeometryTextureDescription& description) {
