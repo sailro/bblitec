@@ -49,6 +49,29 @@ function instanceProperties(
     );
 }
 
+/**
+ * Refuses a class body carrying `static { ... }` blocks.
+ *
+ * JavaScript runs a static block when the class declaration evaluates. The
+ * class subset emits nothing at the declaration -- construction and member
+ * calls lower where they are reached -- so the block's effects would vanish
+ * from the program without a word.
+ */
+export function rejectClassStaticBlocks(
+    context: Pick<LoweringServices, "fail">,
+    declaration: ts.ClassLikeDeclaration,
+): void {
+    const block = declaration.members.find(ts.isClassStaticBlockDeclaration);
+    if (block) {
+        context.fail(
+            block,
+            "Class static blocks are outside the supported subset: the " +
+                "block runs when the class declaration evaluates, and the " +
+                "class lowering emits nothing there.",
+        );
+    }
+}
+
 /** A class body's accessors, by property name. */
 function accessorsOf(declaration: ts.ClassDeclaration): {
     getters: Record<string, ts.GetAccessorDeclaration>;
@@ -208,6 +231,7 @@ export class ClassLowerer {
             ts.isClassDeclaration,
         );
         if (!declaration) return undefined;
+        rejectClassStaticBlocks(this.context, declaration);
         return declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
@@ -234,6 +258,7 @@ export class ClassLowerer {
             ts.isClassDeclaration,
         );
         if (!declaration) return undefined;
+        rejectClassStaticBlocks(this.context, declaration);
         return declaration.members.find(
             (member): member is ts.PropertyDeclaration =>
                 ts.isPropertyDeclaration(member) &&
@@ -1823,6 +1848,7 @@ export class ClassLowerer {
                 "Class inheritance is outside the supported subset.",
             );
         }
+        rejectClassStaticBlocks(this.context, declaration);
         for (const member of declaration.members) {
             if (
                 !ts.isMethodDeclaration(member) &&

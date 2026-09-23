@@ -2083,6 +2083,52 @@ test("private brand checks refuse explicitly", () => {
     );
 });
 
+test("class static blocks refuse explicitly", () => {
+    // Reached at the declaration: the block runs even though nothing
+    // constructs or calls the class.
+    assert.throws(
+        () =>
+            compileSource(`
+        let hits = 0;
+        class Counter { static { hits = 5; } }
+        if (hits !== 5) throw new Error("static block");
+    `),
+        /Class static blocks are outside the supported subset/,
+    );
+    // Reached through construction of a class declared beside `main`.
+    assert.throws(
+        () =>
+            compileSource(`
+        let hits = 0;
+        class Counter {
+            static { hits = 5; }
+            value(): number { return hits; }
+        }
+        async function main(): Promise<void> {
+            if (new Counter().value() !== 5) throw new Error("static block");
+        }
+        main();
+    `),
+        /Class static blocks are outside the supported subset/,
+    );
+    // Reached through a static member.
+    assert.throws(
+        () =>
+            compileSource(`
+        let hits = 0;
+        class Counter {
+            static readonly base = 2;
+            static { hits = 5; }
+        }
+        async function main(): Promise<void> {
+            if (Counter.base + hits !== 7) throw new Error("static block");
+        }
+        main();
+    `),
+        /Class static blocks are outside the supported subset/,
+    );
+});
+
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
     assert.throws(
         () =>
