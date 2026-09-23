@@ -3157,18 +3157,6 @@ ${
                             "static_cast<float>(" +
                             `${lowerer.expression(value)});`,
                     );
-                    if (member === "alpha") {
-                        // The pin reads `mat.alpha < 1` live when it
-                        // builds renderables, so writing the factor is
-                        // what moves the material between the opaque and
-                        // blended families -- through the same one home
-                        // every other alpha write goes through, which is
-                        // what makes the pin's zero-alpha body draw
-                        // nothing in the colour pass.
-                        lines.push(
-                            `    derive_material_alpha_mode(${target});`,
-                        );
-                    }
                 } else {
                     // A colour the pin spells out, or the resolved option
                     // it hands over whole. Diffuse colours retain the

@@ -2774,6 +2774,11 @@ struct MaterialRecord {
     bool grid_antialias = true;
     bool grid_pre_multiply_alpha = false;
     bool grid_use_max_line = false;
+    // The mode the factory or loader authored: blend for a PBR `alphaBlend`
+    // (the glTF BLEND arm, the shadow-only extension), a shader or node
+    // graph's own blending and a translucent grid; mask for a glTF MASK
+    // cutoff. The live alpha is not folded in: the renderer buckets PBR and
+    // Standard draws from the pin's own `isTransparent` over it.
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
@@ -2868,24 +2873,6 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
     if (record.standard_material)
         return material_family_standard;
     return material_family_pbr;
-}
-
-// The pin reads `mat.alpha < 1` live when it builds renderables, and the
-// PBR transmission extension forces blending regardless of alpha, so the
-// mode is a derivation of the two factors it is stored beside. One home
-// for that rule: the factor-driven families (Standard, PBR) derive here at
-// creation and at every alpha write; a shader, node, or grid material owns
-// its mode through its variant flag or opacity control instead, and an
-// alpha write leaves it with its factory. A glTF-authored mask mode is
-// alpha-testing, not factor-driven, and likewise stays.
-inline void derive_material_alpha_mode(MaterialRecord& material) {
-    if (material.shader_material || material.node_material || material.grid_material ||
-        material.alpha_mode == MaterialAlphaMode::mask) {
-        return;
-    }
-    material.alpha_mode = material.alpha < 1.0f || material.transmission_factor > 0.0f
-                              ? MaterialAlphaMode::blend
-                              : MaterialAlphaMode::opaque;
 }
 
 struct LightRecord {
