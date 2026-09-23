@@ -10,12 +10,15 @@ struct TextLayoutFont {
     double units_per_em = 0;
     double space_glyph = 0;
 };
+// `layoutText`'s options. The generated text factory writes all five from
+// the source options and the pin's own `??` defaults, so the members carry
+// no initializers of their own.
 struct TextLayoutOptions {
-    double max_width = std::numeric_limits<double>::infinity();
-    double line_height = 1.2;
-    std::string align = "left";
-    double letter_spacing = 0;
-    double tab_size = 4;
+    double max_width;
+    double line_height;
+    std::string align;
+    double letter_spacing;
+    double tab_size;
 };
 struct TextShapeInfo {
     double glyph_id = 0, codepoint = 0, cluster = 0;
