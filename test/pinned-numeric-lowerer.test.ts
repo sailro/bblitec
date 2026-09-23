@@ -348,30 +348,25 @@ test("lowers exponentiation to the pow the Math table already maps", () => {
     assert.match(emitted, /c = std::pow\(c, 2\.2\);/);
 });
 
-test("lowers the truncating bitwise-or the pin uses as a cast", () => {
-    const emitted = lower("const key = value | 0;", [
-        ["value", { cpp: "value", type: "scalar" }],
-    ]);
-    assert.match(emitted, /static_cast<std::int32_t>/);
-});
-
-test("keeps a bitwise-or on JavaScript's own int32 coercion", () => {
-    // `x | 0` stays the pin's one-term truncation, and a real OR -- the
-    // cluster tile mask's `maskData[i] | bit` -- coerces BOTH sides through
-    // ToInt32 before masking, which is what makes bit 31 negative there and
-    // the `Uint32Array` store wrap it back.
-    assert.match(
-        lower("const key = value | 0;", [
-            ["value", { cpp: "value", type: "scalar" }],
-        ]),
-        /static_cast<double>\(static_cast<std::int32_t>\(value\)\)/,
-    );
-    assert.match(
-        lower("const key = value | 7;", [
-            ["value", { cpp: "value", type: "scalar" }],
-        ]),
-        /bbl::js::bitwise_or\(value, 7/,
-    );
+test("keeps every bitwise operator on JavaScript's own int32 coercion", () => {
+    // `x | 0` truncates through ToInt32 like any OR; the cluster tile
+    // mask's `maskData[i] | bit` coerces BOTH sides before masking, which
+    // makes bit 31 negative there and the `Uint32Array` store wrap it back;
+    // a shift masks its count to five bits. None is a bare native cast.
+    const value: [string, { cpp: string; type: "scalar" }] = [
+        "value",
+        { cpp: "value", type: "scalar" },
+    ];
+    for (const [source, spelling] of [
+        ["value | 0", /bbl::js::bitwise_or\(value, 0/],
+        ["value | 7", /bbl::js::bitwise_or\(value, 7/],
+        ["1 << value", /bbl::js::shift_left\(1\.0, value\)/],
+        ["value ^ 3", /bbl::js::bitwise_xor\(value, 3/],
+    ] as const) {
+        const emitted = lower(`const key = ${source};`, [value]);
+        assert.match(emitted, spelling);
+        assert.doesNotMatch(emitted, /static_cast<std::int32_t>/);
+    }
 });
 
 test("refuses a value-selecting and, rather than guessing its meaning", () => {

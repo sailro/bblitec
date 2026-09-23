@@ -48,7 +48,9 @@ import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
     PINNED_COMPARISON_OPERATORS,
+    JS_BITWISE_FUNCTIONS,
     foldNumericUnary,
+    jsBitwiseCall,
 } from "./pinned-operators.js";
 
 /**
@@ -322,7 +324,10 @@ export interface PinnedNumericScope {
         lowerer: PinnedNumericLowerer,
         indent: string,
     ) => readonly string[] | undefined;
-    /** Unbounded platform inputs require the full JS ToInt32 conversion. */
+    /**
+     * Read by nothing: every scope takes JavaScript's ToInt32 conversion,
+     * so the scopes that still pass it may drop it.
+     */
     checkedBitwiseCoercions?: boolean;
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
@@ -3254,18 +3259,21 @@ export class PinnedNumericLowerer {
                 return this.booleanOperand(node.left);
             }
         }
-        if (
-            node.operatorToken.kind ===
-            ts.SyntaxKind.GreaterThanGreaterThanToken
-        ) {
-            // `emission >> 0` is the pin's truncation to a signed 32-bit
-            // integer; the shift count is masked to five bits as ECMAScript
-            // masks it.
-            return (
-                `bbl::js::shift_right(${this.expression(node.left)}, ` +
-                `${this.expression(node.right)})`
-            );
-        }
+        // Every bitwise operator through its `bbl::js` helper: JavaScript
+        // coerces both sides with ToInt32 (ToUint32 for `>>>`) and masks a
+        // shift count to five bits, so `x | 0` truncates, `1 << 31` is
+        // negative and a Uint32Array store wraps it back -- none of which a
+        // bare `static_cast<std::int32_t>` of a double outside int32 range,
+        // or a native shift by 32 or more, does. The cluster tile mask rides
+        // on exactly that sign bit.
+        const bitwise = JS_BITWISE_FUNCTIONS.has(node.operatorToken.kind)
+            ? jsBitwiseCall(
+                  node.operatorToken.kind,
+                  this.expression(node.left),
+                  this.expression(node.right),
+              )
+            : undefined;
+        if (bitwise !== undefined) return bitwise;
         if (
             node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
             node.operatorToken.kind ===
@@ -3300,8 +3308,6 @@ export class PinnedNumericLowerer {
             }
         }
         switch (node.operatorToken.kind) {
-            case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-                return `bbl::js::shift_right_unsigned(${this.expression(node.left)}, ${this.expression(node.right)})`;
             case ts.SyntaxKind.QuestionQuestionToken: {
                 // The pin resolves an absent optional read with its own
                 // default, so the right side IS the default -- read from the
@@ -3339,20 +3345,6 @@ export class PinnedNumericLowerer {
                 return this.propertyAccess(left, this.expression(node.right));
             }
 
-            case ts.SyntaxKind.AmpersandToken:
-                // A mask over an integral loop counter (`corner & 1` picks
-                // one AABB corner's axis, and the bounding-box cage's
-                // octant signs read the same way). Through the same helper
-                // the `|` arm below uses, for the reason its comment gives:
-                // JavaScript coerces both sides with ToInt32, and a bare
-                // `static_cast<std::int32_t>` of an out-of-range double is
-                // not that. Not gated -- it is ToInt32 for every caller,
-                // and putting it behind an opt-in refused fifteen scenes
-                // that had always lowered.
-                return (
-                    `bbl::js::bitwise_and(${this.expression(node.left)}, ` +
-                    `${this.expression(node.right)})`
-                );
             case ts.SyntaxKind.BarBarToken:
                 if (
                     this.scope.booleanOr ||
@@ -3402,41 +3394,6 @@ export class PinnedNumericLowerer {
                 // this translator serves uses it as a value yet, so it
                 // refuses rather than guessing which meaning is wanted.
                 return this.fail(node, "value-selecting '&&'");
-            case ts.SyntaxKind.BarToken: {
-                // `x | 0` is the pin's truncation to a 32-bit integer, and
-                // says so in one term rather than two.
-                const right = unwrapExpression(node.right);
-                if (
-                    ts.isNumericLiteral(right) &&
-                    Number(right.text) === 0 &&
-                    !this.scope.checkedBitwiseCoercions
-                ) {
-                    return (
-                        `static_cast<double>(static_cast<std::int32_t>(` +
-                        `${this.expression(node.left)}))`
-                    );
-                }
-                // A real bitwise OR, which the cluster tile mask needs:
-                // `maskData[i] = maskData[i] | bit`, where the bit is
-                // `1 << (lightIndex % 32)`. JavaScript coerces both sides
-                // through ToInt32 before masking -- so bit 31 is NEGATIVE
-                // there -- and the `Uint32Array` store then wraps it back.
-                // `bbl::js::bitwise_or` is that operator, ToUint32 and all;
-                // a bare `static_cast<std::int32_t>` of a double outside
-                // int32 range is not, which is precisely the sign bit the
-                // 32nd light in a batch rides on.
-                return (
-                    `bbl::js::bitwise_or(${this.expression(node.left)}, ` +
-                    `${this.expression(node.right)})`
-                );
-            }
-            case ts.SyntaxKind.LessThanLessThanToken:
-                return (
-                    `static_cast<double>(static_cast<std::int32_t>(` +
-                    `${this.expression(node.left)}) << ` +
-                    `static_cast<std::int32_t>(${this.expression(node.right)}))`
-                );
-
             default:
                 return undefined;
         }

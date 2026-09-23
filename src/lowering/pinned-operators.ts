@@ -8,8 +8,8 @@
  * and spellings here means an operator one of them learns is an operator
  * all of them know, with one meaning: a fold is the host engine's own
  * evaluation, and a spelling carries the specified semantics (`ToInt32`
- * and the five-bit shift count, `Math.max`'s NaN and signed zero) rather
- * than whatever the nearest C++ operator does.
+ * and the five-bit shift count) rather than whatever the nearest C++
+ * operator does.
  *
  * What is deliberately *not* here is `||`. Its meaning depends on what the
  * pinned expression is doing with it: a boolean guard lowers to C++'s `||`,
@@ -218,7 +218,7 @@ export function pinnedRemainderCall(left: string, right: string): string {
  * these takes and returns a double, which is what a pinned writer computes in
  * before it stores.
  */
-export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
+const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     pow: "std::pow",
     log: "std::log",
     max: "std::max",
@@ -255,7 +255,11 @@ export function pinnedMathSpelling(name: string): string {
 
 /**
  * Math calls for numeric scopes. min/max use double unless the scope requests
- * deduced arguments for its existing scalar width. Other semantics, including
+ * deduced arguments for its existing scalar width. They are `std::max`/
+ * `std::min`, which neither poison on NaN nor order -0 below +0 the way
+ * JavaScript's `mathExtremeCpp` does; that spelling needs
+ * `bblite/js_data.hpp` in every unit a pinned numeric scope lands in, and
+ * several emitters include it only conditionally. Other semantics, including
  * Math.round and Math.hypot, are supplied by their dedicated helpers.
  */
 export function pinnedNumericMathCalls(
