@@ -251,7 +251,7 @@ create_dawn_sprite_layer_layouts(WGPUDevice device, std::uint32_t custom_shader,
     vertex_entry.binding = 0;
     vertex_entry.visibility = WGPUShaderStage_Vertex;
     vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    vertex_entry.buffer.minBindingSize = 64;
+    vertex_entry.buffer.minBindingSize = sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
     WGPUBindGroupLayoutDescriptor vertex_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     vertex_layout.entryCount = 1;
     vertex_layout.entries = &vertex_entry;
@@ -275,7 +275,8 @@ create_dawn_sprite_layer_layouts(WGPUDevice device, std::uint32_t custom_shader,
     fragment_entries[0].binding = 0;
     fragment_entries[0].visibility = WGPUShaderStage_Fragment;
     fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    fragment_entries[0].buffer.minBindingSize = 64;
+    fragment_entries[0].buffer.minBindingSize =
+        sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
     fragment_entries[1].binding = 1;
     fragment_entries[1].visibility = WGPUShaderStage_Fragment;
     fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;

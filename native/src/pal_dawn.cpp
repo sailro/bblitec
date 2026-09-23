@@ -660,16 +660,13 @@ struct DawnScreenSpaceTask {
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_VARIANTS > 0
 /**
- * One composed family's cache released in dependents-first order:
- * pipelines, then the pipeline layouts built over the bind-group
- * layouts, then those layouts and the modules. The PBR, Standard and
- * node families each keep the same five containers, so the order lives
- * once instead of three times.
+ * One composed family's pipelines and modules, pipelines first. The PBR,
+ * Standard and node families keep the same containers, so the order lives
+ * once; their layouts live in the shared `DawnLayoutCache`.
  */
 void release_variant_family(
     std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>& pipelines,
-    std::vector<WGPUPipelineLayout>& pipeline_layouts,
-    std::vector<WGPUBindGroupLayout>& draw_layouts, std::vector<WGPUShaderModule>& fragment_modules,
+    std::vector<WGPUShaderModule>& fragment_modules,
     std::vector<WGPUShaderModule>& vertex_modules) {
     for (auto& [key, by_variant] : pipelines) {
         static_cast<void>(key);
@@ -678,14 +675,6 @@ void release_variant_family(
             if (pipeline)
                 wgpuRenderPipelineRelease(pipeline);
         }
-    }
-    for (WGPUPipelineLayout layout : pipeline_layouts) {
-        if (layout)
-            wgpuPipelineLayoutRelease(layout);
-    }
-    for (WGPUBindGroupLayout layout : draw_layouts) {
-        if (layout)
-            wgpuBindGroupLayoutRelease(layout);
     }
     for (WGPUShaderModule module : fragment_modules) {
         if (module)
@@ -698,7 +687,85 @@ void release_variant_family(
 }
 #endif
 
+/**
+ * Which layout a family built: the family, the variant row it reflects, and
+ * the flags that split one row into several layouts -- the Standard
+ * depth-emissive arm, a node draw slot, or the group index of a family laid
+ * out over several groups.
+ */
+enum class DawnLayoutFamily : std::uint8_t {
+    frame,
+    mesh,
+    shader,
+    pbr,
+    standard,
+    node,
+    pbr_shadow,
+    standard_shadow,
+};
+
+struct DawnLayoutKey {
+    DawnLayoutFamily family = DawnLayoutFamily::frame;
+    std::size_t variant = 0;
+    std::size_t flags = 0;
+    friend auto operator<=>(const DawnLayoutKey&, const DawnLayoutKey&) = default;
+};
+
+/**
+ * Every bind-group and pipeline layout the material families build, created
+ * on first use under one key and released together. Pipeline layouts are
+ * declared after the group layouts they name, so they are destroyed first.
+ */
+class DawnLayoutCache {
+public:
+    /** The group layout for `key`, created from `entries()` on first use. */
+    template <typename Entries>
+    WGPUBindGroupLayout group(WGPUDevice device, const DawnLayoutKey& key, Entries&& entries,
+                              const char* label = nullptr) {
+        if (const auto found = groups_.find(key); found != groups_.end())
+            return found->second;
+        const std::vector<WGPUBindGroupLayoutEntry> built = entries();
+        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        if (label)
+            descriptor.label = string_view(label);
+        descriptor.entryCount = built.size();
+        descriptor.entries = built.data();
+        DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
+        if (!layout)
+            dawn_error(failure("bind group layout", key));
+        return groups_.emplace(key, std::move(layout)).first->second;
+    }
+
+    /** The pipeline layout for `key` over the group layouts `groups()` names. */
+    template <typename Groups>
+    WGPUPipelineLayout pipeline(WGPUDevice device, const DawnLayoutKey& key, Groups&& groups) {
+        if (const auto found = pipelines_.find(key); found != pipelines_.end())
+            return found->second;
+        const std::vector<WGPUBindGroupLayout> built = groups();
+        WGPUPipelineLayoutDescriptor descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.bindGroupLayoutCount = built.size();
+        descriptor.bindGroupLayouts = built.data();
+        DawnPipelineLayout layout{wgpuDeviceCreatePipelineLayout(device, &descriptor)};
+        if (!layout)
+            dawn_error(failure("pipeline layout", key));
+        return pipelines_.emplace(key, std::move(layout)).first->second;
+    }
+
+private:
+    static std::string failure(const char* what, const DawnLayoutKey& key) {
+        return std::string(what) + " creation failed (family " +
+               std::to_string(static_cast<int>(key.family)) + ", variant " +
+               std::to_string(key.variant) + ", flags " + std::to_string(key.flags) + ").";
+    }
+
+    std::map<DawnLayoutKey, DawnBindGroupLayout> groups_;
+    std::map<DawnLayoutKey, DawnPipelineLayout> pipelines_;
+};
+
 struct DawnState : DawnDevice {
+    // Declared first so it is destroyed last: every pipeline and bind group
+    // built over these layouts is released before them.
+    DawnLayoutCache layouts;
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     NodeCaptureState node_capture;
 #endif
@@ -811,12 +878,6 @@ struct DawnState : DawnDevice {
     // Lazily loaded per generated shader variant, indexed by variant id.
     std::vector<WGPUShaderModule> shader_vertex_modules;
     std::vector<WGPUShaderModule> shader_fragment_modules;
-    // ShaderMaterial layouts follow the generated reflection exactly. The
-    // ordinary mesh layout cannot be a superset: custom storage bindings
-    // occupy group 0 and fragment resources may be depth arrays or storage
-    // buffers in group 2.
-    std::vector<std::array<WGPUBindGroupLayout, 4>> shader_group_layouts;
-    std::vector<WGPUPipelineLayout> shader_pipeline_layouts;
     using ShaderStorageBuffer = VersionedGpuBuffer<WGPUBuffer>;
     std::vector<ShaderStorageBuffer> shader_storage_buffers;
     WGPUBuffer view_projection = nullptr;
@@ -918,24 +979,8 @@ struct DawnState : DawnDevice {
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>, WGPURenderPipeline> blit_pipelines;
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
-    // Explicit bind group layouts shared by every mesh pipeline
-    // (main, task, and geometry): WebGPU allows layout bindings the
-    // shader does not use, so one superset layout keeps all mesh bind
-    // groups interchangeable across shader variants.
-    std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
-    WGPUPipelineLayout mesh_pipeline_layout = nullptr;
 
 #if BBLITE_PINNED_MATERIALS
-    // Babylon Lite's own grouping, which its composed fragments declare:
-    // group 0 carries the per-pass scene block and the lights array, group 1
-    // the per-draw mesh and material blocks followed by the material's texture
-    // pairs from binding 3. Kept beside the layouts above while the variant
-    // path is brought up, so both can be measured against the same goldens.
-    // Group 0 is shared by every variant of both composed families; group 1
-    // is not — the pin assigns its texture bindings densely per variant, so
-    // the same index names a different texture in two of them and each needs
-    // its own layout.
-    WGPUBindGroupLayout pinned_frame_layout = nullptr;
 #if BBLITE_SHADOW_RECEIVERS
     /**
      * The receiver side of the shadow family.
@@ -959,12 +1004,9 @@ struct DawnState : DawnDevice {
      */
     std::vector<WGPUBuffer> shadow_params;
 #endif
-    /** Per receiving variant: two variants can declare different rows. */
-    std::vector<WGPUBindGroupLayout> shadow_layouts;
-    std::vector<WGPUBindGroup> shadow_groups;
-    /** The same, over the PBR family's own variant table. */
-    std::vector<WGPUBindGroupLayout> pbr_shadow_layouts;
-    std::vector<WGPUBindGroup> pbr_shadow_groups;
+    /** Per receiving variant, keyed like its layout: two variants can
+     *  declare different rows. */
+    std::map<DawnLayoutKey, DawnBindGroup> shadow_groups;
 #if BBLITE_SHADOWS_ESM
     /**
      * One ESM generator's separable blur, built from what its own factory
@@ -1000,27 +1042,15 @@ struct DawnState : DawnDevice {
     WGPUBindGroup pinned_frame_group = nullptr;
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0
-    std::vector<WGPUBindGroupLayout> pinned_draw_layouts;
-    std::vector<WGPUPipelineLayout> pinned_pipeline_layouts;
-#endif
 #if BBLITE_NODE_VARIANTS > 0
-    // The node family's layouts, modules and pipelines. A graph's group-1
-    // bindings are its own, so each carries its own layout.
-    std::vector<WGPUBindGroupLayout> node_draw_layouts;
-    std::vector<WGPUPipelineLayout> node_pipeline_layouts;
+    // The node family's modules and pipelines.
     std::vector<WGPUShaderModule> node_vertex_modules;
     std::vector<WGPUShaderModule> node_fragment_modules;
     std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
         node_variant_pipelines;
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-    // The Standard family's composed layouts, modules and pipelines. The
-    // draw layout is keyed (variant * 2 + unfilterable-emissive): a
-    // depth-sampled emissive render texture binds eT as unfilterable-float
-    // with a non-filtering sampler, and the two arms cannot share a layout.
-    std::vector<WGPUBindGroupLayout> standard_draw_layouts;
-    std::vector<WGPUPipelineLayout> standard_pipeline_layouts;
+    // The Standard family's composed modules and pipelines.
     std::vector<WGPUShaderModule> standard_vertex_modules;
     std::vector<WGPUShaderModule> standard_fragment_modules;
     std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
@@ -1237,16 +1267,7 @@ struct DawnState : DawnDevice {
         // The receiver group holds a view of a shadow map's depth texture,
         // which the loop below is about to release; a resize rebuilds both.
         // The layout beside it is shape-only and survives.
-        for (WGPUBindGroup group : shadow_groups) {
-            if (group)
-                wgpuBindGroupRelease(group);
-        }
         shadow_groups.clear();
-        for (WGPUBindGroup group : pbr_shadow_groups) {
-            if (group)
-                wgpuBindGroupRelease(group);
-        }
-        pbr_shadow_groups.clear();
 #endif
         for (std::size_t index = 0; index < render_targets.size(); ++index) {
             if (preserve && index < preserve->render_targets.size() &&
@@ -1660,14 +1681,6 @@ struct DawnState : DawnDevice {
             if (buffer)
                 wgpuBufferRelease(buffer);
         }
-        for (WGPUBindGroupLayout layout : shadow_layouts) {
-            if (layout)
-                wgpuBindGroupLayoutRelease(layout);
-        }
-        for (WGPUBindGroupLayout layout : pbr_shadow_layouts) {
-            if (layout)
-                wgpuBindGroupLayoutRelease(layout);
-        }
         if (shadow_comparison_sampler) {
             wgpuSamplerRelease(shadow_comparison_sampler);
         }
@@ -1811,9 +1824,10 @@ struct DawnState : DawnDevice {
         esm_blurs.clear();
 #endif
 #endif
-        // The composed families' caches, each in the dependents-first
-        // order `release_variant_family` owns; the frame layout goes
-        // last because every family's pipeline layouts name it.
+        // The composed families' pipelines and modules. Their layouts stay
+        // with `layouts`, which outlives every dependent: Dawn's D3D12
+        // backend tears down layout-owned binding metadata eagerly, so a
+        // bind group dropped after its layout can dereference freed state.
 #if BBLITE_PINNED_MATERIALS
         if (pinned_geometry_frame_group) {
             wgpuBindGroupRelease(pinned_geometry_frame_group);
@@ -1843,44 +1857,16 @@ struct DawnState : DawnDevice {
         }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
-        release_variant_family(pinned_variant_pipelines, pinned_pipeline_layouts,
-                               pinned_draw_layouts, pinned_fragment_modules, pinned_vertex_modules);
+        release_variant_family(pinned_variant_pipelines, pinned_fragment_modules,
+                               pinned_vertex_modules);
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-        release_variant_family(standard_variant_pipelines, standard_pipeline_layouts,
-                               standard_draw_layouts, standard_fragment_modules,
+        release_variant_family(standard_variant_pipelines, standard_fragment_modules,
                                standard_vertex_modules);
 #endif
 #if BBLITE_NODE_VARIANTS > 0
-        release_variant_family(node_variant_pipelines, node_pipeline_layouts, node_draw_layouts,
-                               node_fragment_modules, node_vertex_modules);
+        release_variant_family(node_variant_pipelines, node_fragment_modules, node_vertex_modules);
 #endif
-#if BBLITE_PINNED_MATERIALS
-        if (pinned_frame_layout) {
-            wgpuBindGroupLayoutRelease(pinned_frame_layout);
-        }
-#endif
-        // Pipelines and bind groups depend on the shared pipeline/group
-        // layouts. Release every dependent first: Dawn's D3D12 backend
-        // tears down layout-owned binding metadata eagerly, so dropping a
-        // texture bind group after its layout can dereference freed state.
-        if (mesh_pipeline_layout) {
-            wgpuPipelineLayoutRelease(mesh_pipeline_layout);
-        }
-        for (WGPUBindGroupLayout layout : mesh_group_layouts) {
-            if (layout)
-                wgpuBindGroupLayoutRelease(layout);
-        }
-        for (WGPUPipelineLayout layout : shader_pipeline_layouts) {
-            if (layout)
-                wgpuPipelineLayoutRelease(layout);
-        }
-        for (auto& layouts : shader_group_layouts) {
-            for (WGPUBindGroupLayout layout : layouts) {
-                if (layout)
-                    wgpuBindGroupLayoutRelease(layout);
-            }
-        }
 #if BBLITE_SOLID_SKYBOX
         if (solid_skybox_material_group) {
             wgpuBindGroupRelease(solid_skybox_material_group);
@@ -2246,20 +2232,6 @@ WGPUTextureFormat compressed_texture_format(std::string_view name) {
                              "'.");
 }
 
-/**
- * One family's cache slot for a variant, grown to that family's table.
- *
- * The two receiver caches are indexed by variant and sized by whichever
- * variant table the family composes, so which vector and which count is the
- * caller's to say and the resize is not written twice.
- */
-template <typename T>
-T& shadow_cache_slot(std::vector<T>& cache, std::size_t variants, std::size_t variant) {
-    if (cache.size() < variants)
-        cache.resize(variants, nullptr);
-    return cache[variant];
-}
-
 #if BBLITE_PINNED_MATERIAL_VARIANTS
 /**
  * One reflected group-1 row as a layout entry.
@@ -2329,7 +2301,86 @@ WGPUBindGroupLayoutEntry variant_layout_entry(const upstream::PinnedVariantBindi
     }
     return layout_entry;
 }
+
+#if BBLITE_PBR_VARIANTS > 0
+/** One PBR variant's reflected group-1 rows. */
+std::span<const upstream::PinnedVariantBinding> pbr_variant_rows(std::size_t variant) {
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    return upstream::pbr_variant_bindings.subspan(entry.first_binding, entry.binding_count);
+}
 #endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/** One Standard variant's reflected group-1 rows. */
+std::span<const upstream::PinnedVariantBinding> standard_variant_rows(std::size_t variant) {
+    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
+    return upstream::standard_variant_bindings.subspan(entry.first_binding, entry.binding_count);
+}
+#endif
+
+/**
+ * Whether a reflected row claims `binding`.
+ *
+ * Bindings 0 and 1 are the hand-managed mesh and material blocks, except
+ * when the rows occupy them: a morph variant's storage pair claims bindings
+ * 1-2, which pushes `mat` out to a reflected uniform row of its own (scene
+ * 252's is at 3). A fixed entry under an occupied binding would duplicate
+ * it, which Dawn refuses at layout creation, so each fixed entry yields to
+ * the rows -- in the layout and in every group bound against it.
+ */
+bool rows_claim_binding(std::span<const upstream::PinnedVariantBinding> rows,
+                        std::uint32_t binding) {
+    return std::any_of(rows.begin(), rows.end(),
+                       [binding](const auto& row) { return row.binding == binding; });
+}
+
+/** Appends each fixed layout or group entry whose binding no row claims. */
+template <typename Entry>
+void append_unclaimed_entries(std::vector<Entry>& entries,
+                              std::span<const upstream::PinnedVariantBinding> rows,
+                              std::initializer_list<Entry> fixed) {
+    for (const Entry& entry : fixed) {
+        if (!rows_claim_binding(rows, entry.binding))
+            entries.push_back(entry);
+    }
+}
+
+/**
+ * A composed variant's group-1 layout: the fixed blocks no row claims, then
+ * every reflected row. `unfilterable` names the rows a depth-sampled emissive
+ * binds unfilterable, which only the Standard family reaches.
+ */
+template <typename Unfilterable>
+std::vector<WGPUBindGroupLayoutEntry>
+reflected_group_layout_entries(std::initializer_list<WGPUBindGroupLayoutEntry> fixed,
+                               std::span<const upstream::PinnedVariantBinding> rows,
+                               Unfilterable&& unfilterable) {
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(fixed.size() + rows.size());
+    append_unclaimed_entries(entries, rows, fixed);
+    for (const upstream::PinnedVariantBinding& row : rows)
+        entries.push_back(variant_layout_entry(row, unfilterable(row)));
+    return entries;
+}
+#endif
+
+/** A uniform block's layout entry. */
+WGPUBindGroupLayoutEntry uniform_layout_entry(std::uint32_t binding, WGPUShaderStage visibility) {
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entry.binding = binding;
+    entry.visibility = visibility;
+    entry.buffer.type = WGPUBufferBindingType_Uniform;
+    return entry;
+}
+
+/** A read-only storage buffer's layout entry. */
+WGPUBindGroupLayoutEntry storage_layout_entry(std::uint32_t binding, WGPUShaderStage visibility) {
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entry.binding = binding;
+    entry.visibility = visibility;
+    entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    return entry;
+}
 
 /**
  * A texture whose bytes are already blocks: the container's own mip chain,
@@ -3007,27 +3058,14 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
 // Group 0: the per-pass scene block, then the lights array. One layout for
 // every variant, because the pin declares the same two bindings in all of them.
 WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
-    if (state.pinned_frame_layout)
-        return state.pinned_frame_layout;
-    std::array<WGPUBindGroupLayoutEntry, 2> entries{};
-    for (std::uint32_t binding = 0; binding < entries.size(); ++binding) {
-        entries[binding] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entries[binding].binding = binding;
+    return state.layouts.group(state.device, {DawnLayoutFamily::frame}, [] {
         // The scene block is read by both stages; the pin's vertex template
         // takes its viewProjection from the same struct the fragment reads.
-        entries[binding].visibility = binding == 0
-                                          ? WGPUShaderStage_Vertex | WGPUShaderStage_Fragment
-                                          : WGPUShaderStage_Fragment;
-        entries[binding].buffer.type = WGPUBufferBindingType_Uniform;
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.pinned_frame_layout = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.pinned_frame_layout) {
-        dawn_error("pinned frame bind group layout creation failed.");
-    }
-    return state.pinned_frame_layout;
+        return std::vector{
+            uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment),
+            uniform_layout_entry(1, WGPUShaderStage_Fragment),
+        };
+    });
 }
 
 /**
@@ -3039,24 +3077,15 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
  * non-receiver simply declares two.
  */
 [[maybe_unused]] WGPUPipelineLayout composed_pipeline_layout(DawnState& state,
+                                                             const DawnLayoutKey& key,
                                                              WGPUBindGroupLayout draw_layout,
-                                                             WGPUBindGroupLayout shadow_layout,
-                                                             WGPUPipelineLayout& slot,
-                                                             const char* failure) {
-    if (slot)
-        return slot;
-    std::array<WGPUBindGroupLayout, 3> groups{
-        pinned_frame_layout_for(state),
-        draw_layout,
-        shadow_layout,
-    };
-    WGPUPipelineLayoutDescriptor descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = shadow_layout ? 3u : 2u;
-    descriptor.bindGroupLayouts = groups.data();
-    slot = wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!slot)
-        dawn_error(failure);
-    return slot;
+                                                             WGPUBindGroupLayout shadow_layout) {
+    return state.layouts.pipeline(state.device, key, [&] {
+        std::vector<WGPUBindGroupLayout> groups{pinned_frame_layout_for(state), draw_layout};
+        if (shadow_layout)
+            groups.push_back(shadow_layout);
+        return groups;
+    });
 }
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -3074,39 +3103,19 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& st
  * per-variant — would bind them at the wrong slots.
  */
 WGPUBindGroupLayout pinned_draw_layout_for(DawnState& state, std::size_t variant) {
-    if (state.pinned_draw_layouts.size() < upstream::pbr_variants.size()) {
-        state.pinned_draw_layouts.resize(upstream::pbr_variants.size(), nullptr);
-    }
-    if (state.pinned_draw_layouts[variant]) {
-        return state.pinned_draw_layouts[variant];
-    }
-    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(2 + entry.binding_count);
-    const auto uniform = [&](std::uint32_t binding, WGPUShaderStage visibility) {
-        WGPUBindGroupLayoutEntry layout_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        layout_entry.binding = binding;
-        layout_entry.visibility = visibility;
-        layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(layout_entry);
-    };
-    // `mesh.world` is read in the vertex stage and `mesh.li` in the fragment,
-    // so the mesh block is visible to both.
-    uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
-    uniform(1, WGPUShaderStage_Fragment |
-                   (entry.material_ubo_vertex ? WGPUShaderStage_Vertex : WGPUShaderStage_None));
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        entries.push_back(variant_layout_entry(
-            upstream::pbr_variant_bindings[entry.first_binding + index], false));
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.pinned_draw_layouts[variant] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.pinned_draw_layouts[variant]) {
-        dawn_error("pinned variant draw bind group layout creation failed.");
-    }
-    return state.pinned_draw_layouts[variant];
+    return state.layouts.group(state.device, {DawnLayoutFamily::pbr, variant}, [variant] {
+        const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+        // `mesh.world` is read in the vertex stage and `mesh.li` in the
+        // fragment, so the mesh block is visible to both.
+        return reflected_group_layout_entries(
+            {
+                uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment),
+                uniform_layout_entry(1, WGPUShaderStage_Fragment |
+                                            (entry.material_ubo_vertex ? WGPUShaderStage_Vertex
+                                                                       : WGPUShaderStage_None)),
+            },
+            pbr_variant_rows(variant), [](const upstream::PinnedVariantBinding&) { return false; });
+    });
 }
 
 #endif
@@ -3577,21 +3586,19 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
+    const std::span<const upstream::PinnedVariantBinding> rows = pbr_variant_rows(variant);
     std::vector<WGPUBindGroupEntry> entries;
-    entries.reserve(2 + entry.binding_count);
+    entries.reserve(2 + rows.size());
     WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     mesh_entry.binding = 0;
     mesh_entry.buffer = mesh_uniforms;
     mesh_entry.size = sizeof(upstream::MeshUniforms);
-    entries.push_back(mesh_entry);
     WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     material_entry.binding = 1;
     material_entry.buffer = material_uniforms;
     material_entry.size = entry.material_ubo_bytes;
-    entries.push_back(material_entry);
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PinnedVariantBinding& binding =
-            upstream::pbr_variant_bindings[entry.first_binding + index];
+    append_unclaimed_entries(entries, rows, {mesh_entry, material_entry});
+    for (const upstream::PinnedVariantBinding& binding : rows) {
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
 #if BBLITE_LOCAL_CUBEMAP
@@ -4302,36 +4309,41 @@ WGPUBindGroupEntry shadow_group_entry(DawnState& state, const Engine& engine,
 // none of this.
 #if BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS
 /**
- * Group 2 for a shadow-receiving Standard draw, from the composed rows.
+ * Group 2 for a shadow-receiving composed draw, from the composed rows.
  *
  * `createShadowFragment` numbers three bindings per shadow-casting light and
  * picks each one's TYPE from that light's own filter, so a scene mixing an
  * ESM directional with a PCF spot declares a float texture and a plain
  * sampler beside a depth texture and a comparison one -- in one group. The
- * generated `standard_shadow_bindings` rows are the reflection of that text,
- * exactly as group 1's are, so neither the shape nor the stage visibility is
- * decided here.
+ * generated shadow-binding rows are the reflection of that text, exactly as
+ * group 1's are, so neither the shape nor the stage visibility is decided
+ * here. `family` is `standard_shadow` or `pbr_shadow`.
  */
-WGPUBindGroupLayout
-shadow_layout_for(DawnState& state, std::span<const upstream::PinnedShadowBinding> rows,
-                  // The cache slot, so both material families share one builder: the rows
-                  // are the shadow family's whichever wrapper composed them.
-                  WGPUBindGroupLayout& slot) {
-    if (slot)
-        return slot;
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(rows.size());
-    for (const upstream::PinnedShadowBinding& row : rows) {
-        entries.push_back(shadow_layout_entry(row));
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    slot = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!slot) {
-        dawn_error("shadow receiver bind group layout creation failed.");
-    }
-    return slot;
+std::span<const upstream::PinnedShadowBinding> receiver_shadow_rows(DawnLayoutFamily family,
+                                                                    std::size_t variant) {
+#if BBLITE_STANDARD_SHADOWS
+    if (family == DawnLayoutFamily::standard_shadow)
+        return pal::standard_shadow_rows(variant);
+#endif
+#if BBLITE_PBR_SHADOWS
+    if (family == DawnLayoutFamily::pbr_shadow)
+        return pal::pbr_shadow_rows(variant);
+#endif
+    dawn_error("layout family " + std::to_string(static_cast<int>(family)) +
+               " composes no receiver rows.");
+}
+
+WGPUBindGroupLayout shadow_layout_for(DawnState& state, DawnLayoutFamily family,
+                                      std::size_t variant) {
+    return state.layouts.group(state.device, {family, variant}, [family, variant] {
+        const std::span<const upstream::PinnedShadowBinding> rows =
+            receiver_shadow_rows(family, variant);
+        std::vector<WGPUBindGroupLayoutEntry> entries;
+        entries.reserve(rows.size());
+        for (const upstream::PinnedShadowBinding& row : rows)
+            entries.push_back(shadow_layout_entry(row));
+        return entries;
+    });
 }
 
 /**
@@ -4341,69 +4353,42 @@ shadow_layout_for(DawnState& state, std::span<const upstream::PinnedShadowBindin
  * wants is a lookup rather than a name parse.
  */
 WGPUBindGroup shadow_group_for(DawnState& state, const Scene& scene, const Engine& engine,
-                               std::span<const upstream::PinnedShadowBinding> rows,
-                               WGPUBindGroupLayout& layout_slot, WGPUBindGroup& slot) {
-    if (slot)
-        return slot;
+                               DawnLayoutFamily family, std::size_t variant) {
+    const DawnLayoutKey key{family, variant};
+    if (const auto found = state.shadow_groups.find(key); found != state.shadow_groups.end())
+        return found->second;
     ensure_shadow_samplers(state);
     const std::vector<ShadowGeneratorHandle> generators =
         shadow_generators_in_light_order(scene, engine);
+    const std::span<const upstream::PinnedShadowBinding> rows =
+        receiver_shadow_rows(family, variant);
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(rows.size());
     for (const upstream::PinnedShadowBinding& row : rows) {
         entries.push_back(shadow_group_entry(state, engine, generators, row));
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = shadow_layout_for(state, rows, layout_slot);
+    descriptor.layout = shadow_layout_for(state, family, variant);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    slot = wgpuDeviceCreateBindGroup(state.device, &descriptor);
-    if (!slot) {
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
+    if (!group)
         dawn_error("shadow receiver bind group creation failed.");
-    }
-    return slot;
+    return state.shadow_groups.emplace(key, std::move(group)).first->second;
 }
 #endif
 
 #endif
 
-#if BBLITE_STANDARD_SHADOWS
-
-WGPUBindGroupLayout standard_shadow_layout_for(DawnState& state, std::size_t variant) {
-    return shadow_layout_for(
-        state, pal::standard_shadow_rows(variant),
-        shadow_cache_slot(state.shadow_layouts, upstream::standard_variants.size(), variant));
-}
-
-WGPUBindGroup standard_shadow_group_for(DawnState& state, const Scene& scene, const Engine& engine,
-                                        std::size_t variant) {
-    return shadow_group_for(
-        state, scene, engine, pal::standard_shadow_rows(variant),
-        shadow_cache_slot(state.shadow_layouts, upstream::standard_variants.size(), variant),
-        shadow_cache_slot(state.shadow_groups, upstream::standard_variants.size(), variant));
-}
-#endif
-
-#if BBLITE_PBR_SHADOWS
-WGPUBindGroupLayout pbr_shadow_layout_for(DawnState& state, std::size_t variant) {
-    return shadow_layout_for(
-        state, pal::pbr_shadow_rows(variant),
-        shadow_cache_slot(state.pbr_shadow_layouts, upstream::pbr_variants.size(), variant));
-}
-
-WGPUBindGroup pbr_shadow_group_for(DawnState& state, const Scene& scene, const Engine& engine,
-                                   std::size_t variant) {
-    return shadow_group_for(
-        state, scene, engine, pal::pbr_shadow_rows(variant),
-        shadow_cache_slot(state.pbr_shadow_layouts, upstream::pbr_variants.size(), variant),
-        shadow_cache_slot(state.pbr_shadow_groups, upstream::pbr_variants.size(), variant));
-}
-#else
-[[maybe_unused]] inline WGPUBindGroupLayout pbr_shadow_layout_for(DawnState&, std::size_t) {
+#if !(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)
+// A composed scene that reaches no generator: every call site still
+// compiles, and each answers "no shadows" rather than being conditioned out.
+[[maybe_unused]] inline WGPUBindGroupLayout shadow_layout_for(DawnState&, DawnLayoutFamily,
+                                                              std::size_t) {
     return nullptr;
 }
-[[maybe_unused]] inline WGPUBindGroup pbr_shadow_group_for(DawnState&, const Scene&, const Engine&,
-                                                           std::size_t) {
+[[maybe_unused]] inline WGPUBindGroup shadow_group_for(DawnState&, const Scene&, const Engine&,
+                                                       DawnLayoutFamily, std::size_t) {
     return nullptr;
 }
 #endif
@@ -4456,18 +4441,6 @@ void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engin
 }
 #endif
 
-#if !BBLITE_STANDARD_SHADOWS
-// A Standard scene that reaches no generator: every call site below still
-// compiles, and each answers "no shadows" rather than being conditioned out.
-[[maybe_unused]] inline WGPUBindGroupLayout standard_shadow_layout_for(DawnState&, std::size_t) {
-    return nullptr;
-}
-[[maybe_unused]] inline WGPUBindGroup standard_shadow_group_for(DawnState&, const Scene&,
-                                                                const Engine&, std::size_t) {
-    return nullptr;
-}
-#endif
-
 #if BBLITE_STANDARD_VARIANTS > 0
 /**
  * Group 1 for one Standard variant: the mesh block, the `mat` block, then
@@ -4475,79 +4448,34 @@ void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engin
  * samplers, the vertex `up` block, the geometry arms' `gp`, the morph
  * storage pair. `unfilterable_emissive` keys the depth-emissive trap: a
  * record whose emissive is the depth render texture binds eT as
- * unfilterable-float with a non-filtering sampler.
+ * unfilterable-float with a non-filtering sampler, and the two arms cannot
+ * share a layout.
  */
 WGPUBindGroupLayout standard_draw_layout_for(DawnState& state, std::size_t variant,
                                              bool unfilterable_emissive) {
-    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
-    if (state.standard_draw_layouts.size() < upstream::standard_variants.size() * 2) {
-        state.standard_draw_layouts.resize(upstream::standard_variants.size() * 2, nullptr);
-    }
-    if (state.standard_draw_layouts[key]) {
-        return state.standard_draw_layouts[key];
-    }
-    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
-    // The composed stages own the group-1 binding map. Bindings 0 and 1
-    // are the hand-managed mesh and material blocks — except when the
-    // reflected rows occupy them: a morph variant's storage pair claims
-    // bindings 1-2, which pushes `mat` out to a reflected uniform row of
-    // its own (scene 252's is at 3). A fixed entry under an occupied
-    // binding would duplicate it, which Dawn refuses at layout creation,
-    // so each fixed entry yields to the rows.
-    bool rows_occupy_binding_0 = false;
-    bool rows_occupy_binding_1 = false;
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PinnedVariantBinding& binding =
-            upstream::standard_variant_bindings[entry.first_binding + index];
-        if (binding.binding == 0)
-            rows_occupy_binding_0 = true;
-        if (binding.binding == 1)
-            rows_occupy_binding_1 = true;
-    }
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(2 + entry.binding_count);
-    if (!rows_occupy_binding_0) {
-        WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        mesh_entry.binding = 0;
-        mesh_entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(mesh_entry);
-    }
-    if (!rows_occupy_binding_1) {
-        WGPUBindGroupLayoutEntry material_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        material_entry.binding = 1;
-        material_entry.visibility = WGPUShaderStage_Fragment;
-        material_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(material_entry);
-    }
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PinnedVariantBinding& binding =
-            upstream::standard_variant_bindings[entry.first_binding + index];
-        entries.push_back(variant_layout_entry(
-            binding, unfilterable_emissive && (binding.name == "eT" || binding.name == "eS")));
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.standard_draw_layouts[key] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.standard_draw_layouts[key]) {
-        dawn_error("standard variant draw bind group layout creation failed.");
-    }
-    return state.standard_draw_layouts[key];
+    return state.layouts.group(
+        state.device, {DawnLayoutFamily::standard, variant, unfilterable_emissive ? 1u : 0u},
+        [variant, unfilterable_emissive] {
+            return reflected_group_layout_entries(
+                {
+                    uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment),
+                    uniform_layout_entry(1, WGPUShaderStage_Fragment),
+                },
+                standard_variant_rows(variant),
+                [unfilterable_emissive](const upstream::PinnedVariantBinding& row) {
+                    return unfilterable_emissive && (row.name == "eT" || row.name == "eS");
+                });
+        });
 }
 
 WGPUPipelineLayout standard_pipeline_layout_for(DawnState& state, std::size_t variant,
                                                 bool unfilterable_emissive) {
-    // The depth-emissive trap keys its own layout, so this family's cache is
-    // twice its variant table.
-    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
     return composed_pipeline_layout(
-        state, standard_draw_layout_for(state, variant, unfilterable_emissive),
-        pal::standard_variant_receives_shadows(variant) ? standard_shadow_layout_for(state, variant)
-                                                        : nullptr,
-        shadow_cache_slot(state.standard_pipeline_layouts, upstream::standard_variants.size() * 2,
-                          key),
-        "standard variant pipeline layout creation failed.");
+        state, {DawnLayoutFamily::standard, variant, unfilterable_emissive ? 1u : 0u},
+        standard_draw_layout_for(state, variant, unfilterable_emissive),
+        pal::standard_variant_receives_shadows(variant)
+            ? shadow_layout_for(state, DawnLayoutFamily::standard_shadow, variant)
+            : nullptr);
 }
 
 /**
@@ -4578,39 +4506,21 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
     const WGPUTextureView emissive_render_view = render_views.emissive;
     const WGPUTextureView diffuse_render_view = render_views.diffuse;
     const bool unfilterable_emissive = emissive_render_view != nullptr;
-    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     // The fixed mesh@0/material@1 entries yield to reflected rows exactly
-    // as the layout's do — a morph variant's storage pair occupies
-    // binding 1 and its `mat` block rides a reflected row instead.
-    bool rows_occupy_binding_0 = false;
-    bool rows_occupy_binding_1 = false;
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PinnedVariantBinding& binding =
-            upstream::standard_variant_bindings[entry.first_binding + index];
-        if (binding.binding == 0)
-            rows_occupy_binding_0 = true;
-        if (binding.binding == 1)
-            rows_occupy_binding_1 = true;
-    }
+    // as the layout's do.
+    const std::span<const upstream::PinnedVariantBinding> rows = standard_variant_rows(variant);
     std::vector<WGPUBindGroupEntry> entries;
-    entries.reserve(2 + entry.binding_count);
-    if (!rows_occupy_binding_0) {
-        WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        mesh_entry.binding = 0;
-        mesh_entry.buffer = mesh_uniforms;
-        mesh_entry.size = sizeof(upstream::MeshUniforms);
-        entries.push_back(mesh_entry);
-    }
-    if (!rows_occupy_binding_1) {
-        WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        material_entry.binding = 1;
-        material_entry.buffer = material_uniforms;
-        material_entry.size = upstream::standard_material_ubo_bytes;
-        entries.push_back(material_entry);
-    }
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PinnedVariantBinding& binding =
-            upstream::standard_variant_bindings[entry.first_binding + index];
+    entries.reserve(2 + rows.size());
+    WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    mesh_entry.binding = 0;
+    mesh_entry.buffer = mesh_uniforms;
+    mesh_entry.size = sizeof(upstream::MeshUniforms);
+    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    material_entry.binding = 1;
+    material_entry.buffer = material_uniforms;
+    material_entry.size = upstream::standard_material_ubo_bytes;
+    append_unclaimed_entries(entries, rows, {mesh_entry, material_entry});
+    for (const upstream::PinnedVariantBinding& binding : rows) {
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
         if (binding.kind == upstream::PinnedBindingKind::uniformBuffer) {
@@ -4942,104 +4852,68 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
  * reason: a receiving variant's third group is the shadow family's, and both
  * families read the same rows.
  */
-
 WGPUPipelineLayout pinned_pipeline_layout_for(DawnState& state, std::size_t variant) {
     return composed_pipeline_layout(
-        state, pinned_draw_layout_for(state, variant),
-        pal::pbr_variant_receives_shadows(variant) ? pbr_shadow_layout_for(state, variant)
-                                                   : nullptr,
-        shadow_cache_slot(state.pinned_pipeline_layouts, upstream::pbr_variants.size(), variant),
-        "pinned variant pipeline layout creation failed.");
+        state, {DawnLayoutFamily::pbr, variant}, pinned_draw_layout_for(state, variant),
+        pal::pbr_variant_receives_shadows(variant)
+            ? shadow_layout_for(state, DawnLayoutFamily::pbr_shadow, variant)
+            : nullptr);
 }
 #endif
 
-WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
-    if (state.mesh_pipeline_layout)
-        return state.mesh_pipeline_layout;
-    // Group 0: vertex storage morphing (always declared so the layout
-    // stays one superset; storage entries only when compiled).
-    {
-        std::array<WGPUBindGroupLayoutEntry, 2> entries{};
-        std::uint32_t count = 0;
+/**
+ * One group of the layout every mesh pipeline shares (main, task and
+ * geometry): WebGPU allows layout bindings the shader does not use, so one
+ * superset keeps all mesh bind groups interchangeable across shader variants.
+ */
+WGPUBindGroupLayout mesh_group_layout(DawnState& state, std::size_t group) {
+    return state.layouts.group(state.device, {DawnLayoutFamily::mesh, 0, group}, [group] {
+        std::vector<WGPUBindGroupLayoutEntry> entries;
+        switch (group) {
+        case 0:
+            // Vertex storage morphing: always declared so the layout stays
+            // one superset, with storage entries only when compiled.
 #if BBLITE_GPU_MORPH_STORAGE
-        for (std::uint32_t binding = 0; binding < 2; ++binding) {
-            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[count].binding = binding;
-            entries[count].visibility = WGPUShaderStage_Vertex;
-            entries[count].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            ++count;
-        }
+            entries.push_back(storage_layout_entry(0, WGPUShaderStage_Vertex));
+            entries.push_back(storage_layout_entry(1, WGPUShaderStage_Vertex));
 #endif
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = count;
-        descriptor.entries = entries.data();
-        state.mesh_group_layouts[0] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    }
-    // Group 1: vertex uniforms (scene matrix, deformation, instance).
-    {
-        std::array<WGPUBindGroupLayoutEntry, 3> entries{};
-        std::uint32_t count = 0;
-        const auto uniform = [&](std::uint32_t binding) {
-            entries[count] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[count].binding = binding;
-            entries[count].visibility = WGPUShaderStage_Vertex;
-            entries[count].buffer.type = WGPUBufferBindingType_Uniform;
-            ++count;
-        };
-        uniform(0);
+            break;
+        case 1:
+            // Vertex uniforms: scene matrix, deformation, instance.
+            entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Vertex));
 #if BBLITE_GPU_DEFORMATION
-        uniform(1);
+            entries.push_back(uniform_layout_entry(1, WGPUShaderStage_Vertex));
 #endif
 #if BBLITE_GPU_INSTANCING
-        uniform(instance_uniform_binding);
+            entries.push_back(
+                uniform_layout_entry(instance_uniform_binding, WGPUShaderStage_Vertex));
 #endif
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = count;
-        descriptor.entries = entries.data();
-        state.mesh_group_layouts[1] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    }
-    // Group 2: fragment texture/sampler pairs in the SDL slot order;
-    // binding 8 is the cube slot.
-    {
-        constexpr std::size_t pair_count =
-            6 + transmission_texture_pairs + material_extension_slots + standard_bump_slots;
-        std::array<WGPUBindGroupLayoutEntry, pair_count * 2> entries{};
-        for (std::uint32_t pair = 0; pair < pair_count; ++pair) {
-            entries[pair * 2] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[pair * 2].binding = pair * 2;
-            entries[pair * 2].visibility = WGPUShaderStage_Fragment;
-            entries[pair * 2].texture.sampleType = WGPUTextureSampleType_Float;
-            entries[pair * 2].texture.viewDimension =
-                pair == 4 ? WGPUTextureViewDimension_Cube : WGPUTextureViewDimension_2D;
-            entries[pair * 2 + 1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entries[pair * 2 + 1].binding = pair * 2 + 1;
-            entries[pair * 2 + 1].visibility = WGPUShaderStage_Fragment;
-            entries[pair * 2 + 1].sampler.type = WGPUSamplerBindingType_Filtering;
+            break;
+        case 2: {
+            // Fragment texture/sampler pairs in the SDL slot order; binding 8
+            // is the cube slot.
+            constexpr std::size_t pair_count =
+                6 + transmission_texture_pairs + material_extension_slots + standard_bump_slots;
+            entries = dawn_texture_pair_layout_entries(pair_count);
+            entries[8].texture.viewDimension = WGPUTextureViewDimension_Cube;
+            break;
         }
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = entries.size();
-        descriptor.entries = entries.data();
-        state.mesh_group_layouts[2] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    }
-    // Group 3: the fragment uniform block.
-    {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 0;
-        entry.visibility = WGPUShaderStage_Fragment;
-        entry.buffer.type = WGPUBufferBindingType_Uniform;
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = 1;
-        descriptor.entries = &entry;
-        state.mesh_group_layouts[3] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    }
-    WGPUPipelineLayoutDescriptor descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = state.mesh_group_layouts.size();
-    descriptor.bindGroupLayouts = state.mesh_group_layouts.data();
-    state.mesh_pipeline_layout = wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.mesh_pipeline_layout) {
-        dawn_error("mesh pipeline layout creation failed.");
-    }
-    return state.mesh_pipeline_layout;
+        case 3:
+            // The fragment uniform block.
+            entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Fragment));
+            break;
+        default:
+            dawn_error("the mesh layout has four groups.");
+        }
+        return entries;
+    });
+}
+
+WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
+    return state.layouts.pipeline(state.device, {DawnLayoutFamily::mesh}, [&] {
+        return std::vector{mesh_group_layout(state, 0), mesh_group_layout(state, 1),
+                           mesh_group_layout(state, 2), mesh_group_layout(state, 3)};
+    });
 }
 
 WGPUTextureSampleType shader_sample_type(upstream::ShaderSamplerSampleType type) {
@@ -5064,94 +4938,79 @@ WGPUTextureViewDimension shader_view_dimension(upstream::ShaderSamplerViewDimens
     dawn_error("Unknown shader sampler view dimension.");
 }
 
+/**
+ * One ShaderMaterial group layout, following the generated reflection
+ * exactly. The ordinary mesh layout cannot be a superset: custom storage
+ * bindings occupy group 0 and fragment resources may be depth arrays or
+ * storage buffers in group 2.
+ */
+WGPUBindGroupLayout shader_group_layout(DawnState& state, std::uint32_t variant,
+                                        std::size_t group) {
+    return state.layouts.group(state.device, {DawnLayoutFamily::shader, variant, group}, [&] {
+        const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
+        std::vector<WGPUBindGroupLayoutEntry> entries;
+        switch (group) {
+        case 0: {
+            std::uint32_t binding = 0;
+            for (const upstream::ShaderStorageBufferInfo& storage : info.storage_buffers) {
+                if (storage.vertex)
+                    entries.push_back(storage_layout_entry(binding++, WGPUShaderStage_Vertex));
+            }
+            break;
+        }
+        case 1:
+            if (info.vertex.present)
+                entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Vertex));
+            break;
+        case 2: {
+            // Fragment storage follows the texture/sampler pairs.
+            std::uint32_t binding = static_cast<std::uint32_t>(info.samplers.size() * 2);
+            for (const upstream::ShaderStorageBufferInfo& storage : info.storage_buffers) {
+                if (storage.fragment)
+                    entries.push_back(storage_layout_entry(binding++, WGPUShaderStage_Fragment));
+            }
+            for (std::size_t slot = 0; slot < info.samplers.size(); ++slot) {
+                const upstream::ShaderSamplerShape shape = slot < info.sampler_shapes.size()
+                                                               ? info.sampler_shapes[slot]
+                                                               : upstream::ShaderSamplerShape{};
+                WGPUBindGroupLayoutEntry texture = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+                texture.binding = static_cast<std::uint32_t>(slot * 2);
+                texture.visibility = WGPUShaderStage_Fragment;
+                texture.texture.sampleType = shader_sample_type(shape.sample_type);
+                texture.texture.viewDimension = shader_view_dimension(shape.view_dimension);
+                entries.push_back(texture);
+                WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+                sampler.binding = static_cast<std::uint32_t>(slot * 2 + 1);
+                sampler.visibility = WGPUShaderStage_Fragment;
+                sampler.sampler.type =
+                    shape.comparison ? WGPUSamplerBindingType_Comparison
+                    : shape.sample_type == upstream::ShaderSamplerSampleType::unfilterable_float
+                        ? WGPUSamplerBindingType_NonFiltering
+                        : WGPUSamplerBindingType_Filtering;
+                entries.push_back(sampler);
+            }
+            break;
+        }
+        case 3:
+            if (info.fragment.present)
+                entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Fragment));
+            break;
+        default:
+            dawn_error("a ShaderMaterial layout has four groups.");
+        }
+        return entries;
+    });
+}
+
 /** Pipeline layout for one generated ShaderMaterial reflection row. */
 WGPUPipelineLayout shader_pipeline_layout_for(DawnState& state, std::uint32_t variant) {
-    const std::size_t variant_count = upstream::shader_variant_count();
-    if (variant >= variant_count) {
+    if (variant >= upstream::shader_variant_count())
         dawn_error("Unknown shader variant id.");
-    }
-    if (state.shader_pipeline_layouts.size() < variant_count) {
-        state.shader_pipeline_layouts.resize(variant_count, nullptr);
-        state.shader_group_layouts.resize(variant_count);
-    }
-    if (state.shader_pipeline_layouts[variant]) {
-        return state.shader_pipeline_layouts[variant];
-    }
-
-    const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
-    std::array<std::vector<WGPUBindGroupLayoutEntry>, 4> entries;
-    std::uint32_t vertex_storage_binding = 0;
-    std::uint32_t fragment_storage_binding = static_cast<std::uint32_t>(info.samplers.size() * 2);
-    for (const upstream::ShaderStorageBufferInfo& storage : info.storage_buffers) {
-        if (storage.vertex) {
-            WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entry.binding = vertex_storage_binding++;
-            entry.visibility = WGPUShaderStage_Vertex;
-            entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            entries[0].push_back(entry);
-        }
-        if (storage.fragment) {
-            WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            entry.binding = fragment_storage_binding++;
-            entry.visibility = WGPUShaderStage_Fragment;
-            entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            entries[2].push_back(entry);
-        }
-    }
-    if (info.vertex.present) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 0;
-        entry.visibility = WGPUShaderStage_Vertex;
-        entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries[1].push_back(entry);
-    }
-    for (std::size_t slot = 0; slot < info.samplers.size(); ++slot) {
-        const upstream::ShaderSamplerShape shape = slot < info.sampler_shapes.size()
-                                                       ? info.sampler_shapes[slot]
-                                                       : upstream::ShaderSamplerShape{};
-        WGPUBindGroupLayoutEntry texture = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture.binding = static_cast<std::uint32_t>(slot * 2);
-        texture.visibility = WGPUShaderStage_Fragment;
-        texture.texture.sampleType = shader_sample_type(shape.sample_type);
-        texture.texture.viewDimension = shader_view_dimension(shape.view_dimension);
-        entries[2].push_back(texture);
-        WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler.binding = static_cast<std::uint32_t>(slot * 2 + 1);
-        sampler.visibility = WGPUShaderStage_Fragment;
-        sampler.sampler.type =
-            shape.comparison ? WGPUSamplerBindingType_Comparison
-            : shape.sample_type == upstream::ShaderSamplerSampleType::unfilterable_float
-                ? WGPUSamplerBindingType_NonFiltering
-                : WGPUSamplerBindingType_Filtering;
-        entries[2].push_back(sampler);
-    }
-    if (info.fragment.present) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 0;
-        entry.visibility = WGPUShaderStage_Fragment;
-        entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries[3].push_back(entry);
-    }
-
-    auto& layouts = state.shader_group_layouts[variant];
-    for (std::size_t group = 0; group < layouts.size(); ++group) {
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = entries[group].size();
-        descriptor.entries = entries[group].data();
-        layouts[group] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-        if (!layouts[group]) {
-            dawn_error("Shader bind group layout creation failed.");
-        }
-    }
-    WGPUPipelineLayoutDescriptor descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = layouts.size();
-    descriptor.bindGroupLayouts = layouts.data();
-    state.shader_pipeline_layouts[variant] =
-        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.shader_pipeline_layouts[variant]) {
-        dawn_error("Shader pipeline layout creation failed.");
-    }
-    return state.shader_pipeline_layouts[variant];
+    return state.layouts.pipeline(state.device, {DawnLayoutFamily::shader, variant}, [&] {
+        return std::vector{
+            shader_group_layout(state, variant, 0), shader_group_layout(state, variant, 1),
+            shader_group_layout(state, variant, 2), shader_group_layout(state, variant, 3)};
+    });
 }
 
 DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
@@ -5743,32 +5602,18 @@ WGPURenderPipeline standard_variant_pipeline(
  * block at whichever binding `compileNodePipeline` gave it, and the
  * environment pair a graph reaching `ReflectionBlock` declares.
  */
-WGPUBindGroupLayout
-node_draw_layout_for(DawnState& state, std::size_t variant, bool caster,
-                     std::size_t geometry_variant = pal::no_node_geometry_variant) {
-    const std::size_t slot = pal::node_draw_slot(variant, caster, geometry_variant);
-    if (state.node_draw_layouts.size() < pal::node_variant_slots()) {
-        state.node_draw_layouts.resize(pal::node_variant_slots(), nullptr);
-    }
-    if (state.node_draw_layouts[slot]) {
-        return state.node_draw_layouts[slot];
-    }
+std::vector<WGPUBindGroupLayoutEntry>
+node_draw_layout_entries(std::size_t slot, [[maybe_unused]] bool caster,
+                         [[maybe_unused]] std::size_t geometry_variant) {
     // The compiled view this slot draws: the graph's own row for a colour
     // or caster slot, the geometry emit's row for a geometry one.
     const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     [[maybe_unused]] const bool geometry_view = geometry_variant != pal::no_node_geometry_variant;
     std::vector<WGPUBindGroupLayoutEntry> entries;
-    WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    mesh_entry.binding = 0;
-    mesh_entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    entries.push_back(mesh_entry);
+    entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment));
     if (upstream::has_node_ubo(view)) {
-        WGPUBindGroupLayoutEntry node_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        node_entry.binding = static_cast<std::uint32_t>(view.ubo_binding);
-        node_entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        node_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(node_entry);
+        entries.push_back(uniform_layout_entry(static_cast<std::uint32_t>(view.ubo_binding),
+                                               WGPUShaderStage_Vertex | WGPUShaderStage_Fragment));
     }
     // The graph's own `TextureBlock`/`ImageSourceBlock` pairs, at the
     // bindings the pin's pipeline builder allocated and with the visibility
@@ -5801,25 +5646,17 @@ node_draw_layout_for(DawnState& state, std::size_t variant, bool caster,
         const upstream::NodeGeometryVariantEntry& geometry =
             upstream::node_geometry_variants[geometry_variant];
         if (geometry.geometry_params_binding != upstream::node_no_ubo) {
-            WGPUBindGroupLayoutEntry params = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            params.binding = static_cast<std::uint32_t>(geometry.geometry_params_binding);
-            params.visibility = WGPUShaderStage_Fragment;
-            params.buffer.type = WGPUBufferBindingType_Uniform;
+            WGPUBindGroupLayoutEntry params =
+                uniform_layout_entry(static_cast<std::uint32_t>(geometry.geometry_params_binding),
+                                     WGPUShaderStage_Fragment);
             params.buffer.minBindingSize = sizeof(PinnedGeometryParams);
             entries.push_back(params);
         }
     }
 #endif
     if (view.morph.present) {
-        const auto storage = [&](std::uint32_t binding) {
-            WGPUBindGroupLayoutEntry item = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            item.binding = binding;
-            item.visibility = WGPUShaderStage_Vertex;
-            item.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            entries.push_back(item);
-        };
-        storage(view.morph.deltas_binding);
-        storage(view.morph.weights_binding);
+        entries.push_back(storage_layout_entry(view.morph.deltas_binding, WGPUShaderStage_Vertex));
+        entries.push_back(storage_layout_entry(view.morph.weights_binding, WGPUShaderStage_Vertex));
     }
     if (view.env.present) {
         // The pin's own four, in the order `emitEnv` allocates them: the
@@ -5850,10 +5687,8 @@ node_draw_layout_for(DawnState& state, std::size_t variant, bool caster,
         if (view.caster.esm) {
             // The ESM caster adds one row; the PCF no-colour compile adds
             // none and keeps only the graph's shared bindings above.
-            WGPUBindGroupLayoutEntry params = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            params.binding = view.caster.params_binding;
-            params.visibility = WGPUShaderStage_Fragment;
-            params.buffer.type = WGPUBufferBindingType_Uniform;
+            WGPUBindGroupLayoutEntry params =
+                uniform_layout_entry(view.caster.params_binding, WGPUShaderStage_Fragment);
             params.buffer.minBindingSize = upstream::shadow_params_block_bytes;
             entries.push_back(params);
         }
@@ -5868,39 +5703,26 @@ node_draw_layout_for(DawnState& state, std::size_t variant, bool caster,
         }
     }
 #endif
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.label = string_view("node-mesh");
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.node_draw_layouts[slot] = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.node_draw_layouts[slot]) {
-        dawn_error("node variant bind group layout creation failed.");
-    }
-    return state.node_draw_layouts[slot];
+    return entries;
+}
+
+WGPUBindGroupLayout
+node_draw_layout_for(DawnState& state, std::size_t variant, bool caster,
+                     std::size_t geometry_variant = pal::no_node_geometry_variant) {
+    const std::size_t slot = pal::node_draw_slot(variant, caster, geometry_variant);
+    return state.layouts.group(
+        state.device, {DawnLayoutFamily::node, slot},
+        [&] { return node_draw_layout_entries(slot, caster, geometry_variant); }, "node-mesh");
 }
 
 WGPUPipelineLayout
 node_pipeline_layout_for(DawnState& state, std::size_t variant, bool caster,
                          std::size_t geometry_variant = pal::no_node_geometry_variant) {
     const std::size_t slot = pal::node_draw_slot(variant, caster, geometry_variant);
-    if (state.node_pipeline_layouts.size() < pal::node_variant_slots()) {
-        state.node_pipeline_layouts.resize(pal::node_variant_slots(), nullptr);
-    }
-    if (state.node_pipeline_layouts[slot]) {
-        return state.node_pipeline_layouts[slot];
-    }
-    std::array<WGPUBindGroupLayout, 2> groups{
-        pinned_frame_layout_for(state),
-        node_draw_layout_for(state, variant, caster, geometry_variant),
-    };
-    WGPUPipelineLayoutDescriptor descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = groups.size();
-    descriptor.bindGroupLayouts = groups.data();
-    state.node_pipeline_layouts[slot] = wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.node_pipeline_layouts[slot]) {
-        dawn_error("node variant pipeline layout creation failed.");
-    }
-    return state.node_pipeline_layouts[slot];
+    return state.layouts.pipeline(state.device, {DawnLayoutFamily::node, slot}, [&] {
+        return std::vector{pinned_frame_layout_for(state),
+                           node_draw_layout_for(state, variant, caster, geometry_variant)};
+    });
 }
 
 /**
@@ -6830,7 +6652,6 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
     DawnMeshBindings bindings;
 
     const PipelineKindTraits binding_traits = pipeline_traits(kind);
-    mesh_pipeline_layout_for(state);
     // The explicit superset layout requires every binding; kinds whose
     // shader ignores a slot still supply the mesh's resource (custom
     // vertex uniform blocks swap the scene matrix for the mesh's own
@@ -6865,7 +6686,7 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
     ++scene_entry_count;
 #endif
     WGPUBindGroupDescriptor scene_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    scene_descriptor.layout = state.mesh_group_layouts[1];
+    scene_descriptor.layout = mesh_group_layout(state, 1);
     scene_descriptor.entryCount = scene_entry_count;
     scene_descriptor.entries = scene_entries.data();
     bindings.scene = require_dawn_resource(
@@ -6883,7 +6704,7 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
         morph_entries[1].buffer = mesh.morph_weights;
         morph_entries[1].size = WGPU_WHOLE_SIZE;
         WGPUBindGroupDescriptor morph_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        morph_descriptor.layout = state.mesh_group_layouts[0];
+        morph_descriptor.layout = mesh_group_layout(state, 0);
         morph_descriptor.entryCount = morph_entries.size();
         morph_descriptor.entries = morph_entries.data();
         bindings.morph = require_dawn_resource(
@@ -6983,7 +6804,7 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
         texture_entries[slot * 2 + 1].sampler = samplers[slot];
     }
     WGPUBindGroupDescriptor texture_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    texture_descriptor.layout = state.mesh_group_layouts[2];
+    texture_descriptor.layout = mesh_group_layout(state, 2);
     texture_descriptor.entryCount = pair_count * 2;
     texture_descriptor.entries = texture_entries.data();
     bindings.textures = require_dawn_resource(
@@ -6994,7 +6815,7 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
     material_entry.buffer = mesh.material_uniforms;
     material_entry.size = mesh.material_uniform_size;
     WGPUBindGroupDescriptor material_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    material_descriptor.layout = state.mesh_group_layouts[3];
+    material_descriptor.layout = mesh_group_layout(state, 3);
     material_descriptor.entryCount = 1;
     material_descriptor.entries = &material_entry;
     bindings.material = require_dawn_resource(
@@ -7027,7 +6848,9 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         return existing->second;
 
     shader_pipeline_layout_for(state, variant);
-    const auto& layouts = state.shader_group_layouts[variant];
+    const std::array<WGPUBindGroupLayout, 4> layouts{
+        shader_group_layout(state, variant, 0), shader_group_layout(state, variant, 1),
+        shader_group_layout(state, variant, 2), shader_group_layout(state, variant, 3)};
     DawnShaderBindings bindings;
     const auto storage_buffer = [&](std::size_t declared_slot) {
         if (declared_slot >= material.shader_storage_buffers.size()) {
@@ -7406,7 +7229,7 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             uniform_entry.buffer = uniform_buffer;
             uniform_entry.size = 32;
             WGPUBindGroupDescriptor group_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            group_descriptor.layout = state.mesh_group_layouts[3];
+            group_descriptor.layout = mesh_group_layout(state, 3);
             group_descriptor.entryCount = 1;
             group_descriptor.entries = &uniform_entry;
             DawnBindGroup uniform_group{wgpuDeviceCreateBindGroup(state.device, &group_descriptor)};
@@ -11631,7 +11454,8 @@ public:
                         // -- which is exactly "this variant composed the
                         // shadow fragment".
                         pal::pbr_variant_receives_shadows(variant)
-                            ? pbr_shadow_group_for(state, *pass_scene, engine, variant)
+                            ? shadow_group_for(state, *pass_scene, engine,
+                                               DawnLayoutFamily::pbr_shadow, variant)
                             : nullptr);
                     continue;
                 }
@@ -11680,7 +11504,8 @@ public:
                         // The Standard families carry no glTF X-mirror: the
                         // baked buffer is the pin's own convention already.
                         mesh.vertices, standard_streams, mesh.indices, mesh.index_count,
-                        receives ? standard_shadow_group_for(state, *pass_scene, engine, variant)
+                        receives ? shadow_group_for(state, *pass_scene, engine,
+                                                    DawnLayoutFamily::standard_shadow, variant)
                                  : nullptr);
                     continue;
                 }
