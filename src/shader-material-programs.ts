@@ -5,7 +5,6 @@
 // and refuses on any semantic mismatch with the scene's own text
 // (`compileShaderMaterialOptions` in src/compiler.ts), so this table is a
 // verified mirror, never an independent source of truth.
-import type { ShaderMaterialVariantName } from "./compiler.js";
 import type {
     CompiledShaderProgram,
     CompiledShaderSampler,
@@ -162,16 +161,6 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
         depthWrite: false,
     },
 ];
-
-export function getShaderMaterialProgram(
-    name: ShaderMaterialVariantName,
-): ShaderMaterialProgramSource {
-    const program = shaderMaterialPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    if (!program) throw new Error(`Unknown shader material program '${name}'.`);
-    return program;
-}
 
 /**
  * The companion identifier the pin's own prelude writes beside a sampler's

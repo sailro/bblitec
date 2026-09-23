@@ -354,19 +354,14 @@ fn mainFragment(
 
 /**
  * The pinned fog falloff (`shader/wgsl-fog.ts` `WGSL_FOG`), lifted from the
- * packaged module and shared by every native fragment that reads
- * `uniforms.fogInfos`: the standard material fragment and the cubemap skybox.
+ * packaged module for the native cubemap skybox fragment, which reads its
+ * fog parameters from `uniforms.fogInfos`. The composed PBR and Standard
+ * variants carry the same pinned text inside their own composition.
  *
  * The re-homing is a rename pair plus the uniform flattening: the pin's
  * `calcFogFactor`/`E_FOG` become `bblCalcFogFactor`/`bblFogE` — the names the
- * consuming fragments already call — and `scene.vFogInfos` reads the
- * consumers' own `uniforms.fogInfos` slot.
- *
- * The PBR fragment keeps its own copy in the renderer lowerer. That one
- * is not this text — it is the Tint-normalized dialect, naming
- * `FragmentUniforms` and spelling every literal `1.0f`, and it carries a
- * provenance comment tying it line for line to the pinned WGSL module it
- * was converted from. Regenerating it from here would break that diff.
+ * skybox specialization calls — and `scene.vFogInfos` reads the skybox's own
+ * `uniforms.fogInfos` slot.
  */
 export function fogFactorWgsl(): string {
     const fog = extractPackagedTemplateLiteral(
