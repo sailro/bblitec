@@ -89,7 +89,8 @@ npm run package:demo -- -Platform android -Scene torus-states -ExpectBackend DAW
 npm run demos:release -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 ```
 
-ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
+`android`, `package:demo` and `demos:release` default to arm64-v8a; `android:sweep` defaults to x86_64;
+`-Abi`/`--abi` overrides.
 SDL_GPU remains the default. -Backend DAWN builds Dawn only; -Backend BOTH includes both renderers.
 Sweeps and release workflows select one renderer with --backend sdl_gpu|dawn.
 -Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
@@ -263,7 +264,7 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
 Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
-`docs/reviews/` contains the open branch's record only. Status verification checks published measurements,
+`docs/reviews/` holds the record of the most recent reviewed change. Status verification checks published measurements,
 registry names and canvas gates; measured repeatability exceptions live in the neutrality allowlist.
 There is no hosted CI.
 
@@ -284,24 +285,13 @@ regeneration. Native/shader changes use saved differential reports and the valid
 Dual builds use `native/build-<id>-release`; single-backend folders append `-sdl_gpu`/`-dawn`.
 Measuring commands' `--backend` chooses the runtime renderer; `--exe` overrides the binary.
 
-| Reached feature | Dependency/build effect |
-| --- | --- |
-| renderer:scene | PBR renderer and selected backend units |
-| Image formats | Codecs/notices from `native/vcpkg.json` |
-| glTF / Babylon / JSON | nlohmann-json |
-| ui:rml | FreeType, pinned RmlUi, platform fonts |
-| ui:inline-svg | LunaSVG and RmlUi `-EnableSvg` |
-| text:layout / text rendering | HarfBuzz / BBLITE_HAS_TEXT |
-| physics:world | Bullet |
-| navigation / crowd / tile-cache | Corresponding Recast/Detour features |
-| audio | LabSound/libnyquist; byte-selected codecs where known |
-| platform:window | Offscreen surfaces and presenters |
-| gamepad / files / audio | Matching SDL subsystem |
+Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
+`native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
 
 Development shares `artifacts/vcpkg-installed/development-full`. Reconcile an install once, never
 concurrently; parallel builds use `VCPKG_MANIFEST_INSTALL=OFF`. `BBLITE_VCPKG_INSTALLED_ROOT` relocates it.
 `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg`
-needs coordinated installation. Use `-Remove` to unlink junctions before removing a worktree.
+junctions that install, under the same rule. Use `-Remove` to unlink junctions before removing a worktree.
 
 ### Concurrency
 
@@ -313,8 +303,8 @@ needs coordinated installation. Use `-Remove` to unlink junctions before removin
 | BBLITE_PARALLEL_PARITY | Comparisons; default 8, audio serialized |
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
-Native ccache uses `artifacts/native-cache`; `CCACHE_PATH` overrides it and `BBLITE_NATIVE_CACHE=0`
-disables it. Identical generated headers share cache storage. Debug keys retain directory identity.
+Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`);
+`BBLITE_NATIVE_CACHE=0` disables it. Identical generated headers share cache storage. Debug keys retain directory identity.
 
 ## Shader compilation
 

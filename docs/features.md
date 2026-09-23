@@ -19,7 +19,7 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 | Registry | Source, title, host UI, reference query and attribution |
 | Build options | Backend, capture, size and PCH configuration |
 
-`upstream/feature-activation.json` records sites, decisions and consumers. Reaching a factory can
+`generated/<id>/upstream/feature-activation.json` records sites, decisions and consumers. Reaching a factory can
 activate its module even when one of its options is disabled.
 
 ### API coverage inventory
@@ -344,7 +344,8 @@ seeks, speed, masks and weighted/additive mixing. Metallic-roughness texture-tra
 by the pin. Property tracks support numeric leaves and linear/step interpolation; replacement does not retarget.
 
 Managers support fixed delta, onUpdate and autonomous RAF start/stop. First variable delta is zero;
-autonomous updates notify after evaluation. Autonomous and older persistent RAF lowering cannot coexist.
+autonomous updates notify after evaluation. Autonomous managers cannot share a program with a persistent
+application RAF loop.
 
 ## Deformation and instancing
 

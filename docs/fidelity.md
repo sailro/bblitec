@@ -5,6 +5,8 @@ This page lists source/native contracts and substitutions. [Features](features.m
 
 ## Semantic contract
 
+Artifact paths are relative to `generated/<id>/`.
+
 | Artifact | Records |
 | --- | --- |
 | `manifest.json` | Reached graph, features, assets |

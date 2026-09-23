@@ -78,24 +78,7 @@ Checks live in checks/<id>.json; plugins hold scene-specific arithmetic. Phases 
 expectations compare captures, state, images and logs. A twin builds the unchanged no-query source.
 `observe.captureReady` selects the canvas dataset flag awaited for `captureFrames`.
 Results are in artifacts/check/<id>/. Use numeric checks where small missing objects could pass image gates.
-
-| Area | Check IDs |
-| --- | --- |
-| Picking / splats | scene114 / scene121 |
-| TAA | scene261, scene261-live |
-| Text / live text | scene275 / scene180, scene181 |
-| Node geometry / GPU transport | scene149 / scene149-transport |
-| Local cubemaps | scene186 |
-| Shared canvases | scene227, scene228, antigravity-racer |
-| Workers / repaint rates | offscreen, offscreen-cadence |
-| Physics timing | break-meshes-60, break-meshes-240, break-meshes-live |
-| Heightfields / constraints | scene47 / scene46 |
-| Viewer / queries | scene41 / scene49 |
-| Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
-| Recovery | scene164 |
-| Interactivity | calculator, scene304, doom |
-| Desktop controls | quake, sandblox |
-| Ocean simulation / controls / resolution | ocean / ocean-ui / ocean-resolution |
+Each `checks/<id>.json` states its scope in `notes`.
 
 Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
