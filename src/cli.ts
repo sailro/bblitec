@@ -7,7 +7,7 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
@@ -516,6 +516,48 @@ function materializedAssetSource(source: string, inputPath: string): string {
         `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
         `/lab/public${source}`
     );
+}
+
+/**
+ * The manifest as the generated tree records it.
+ *
+ * The compiler reports the files it read by their resolved paths: its own
+ * readers resolve them and its diagnostics print them. The record names
+ * each one the way `inputs` already does -- relative to the repository
+ * root, forward slashes -- so a tree generated in another checkout or
+ * worktree records the same bytes. A file outside the repository keeps
+ * the relative path that reaches it from the root, or its absolute path
+ * where none exists (another drive). A name that is not an absolute path
+ * -- a host-UI companion's registry path, a virtual entry name -- is
+ * already machine-independent and is recorded as given.
+ */
+function recordedManifest(
+    manifest: CompileResult["manifest"],
+    repositoryRoot: string,
+): CompileResult["manifest"] {
+    const recordedPath = (path: string): string =>
+        isAbsolute(path) ? repositoryRelativePath(repositoryRoot, path) : path;
+    // A site is `file:line`; anything else is a named location.
+    const recordedSite = (site: string): string => {
+        const location = /^(.+):(\d+)$/.exec(site);
+        return location
+            ? `${recordedPath(location[1]!)}:${location[2]!}`
+            : site;
+    };
+    return {
+        ...manifest,
+        source: recordedPath(manifest.source),
+        featureSites: Object.fromEntries(
+            Object.entries(manifest.featureSites).map(([feature, site]) => [
+                feature,
+                recordedSite(site),
+            ]),
+        ),
+        sourceUnits: manifest.sourceUnits.map((unit) => ({
+            ...unit,
+            source: recordedPath(unit.source),
+        })),
+    };
 }
 
 /**
@@ -1667,16 +1709,14 @@ ${imageCodecLines || '    ""'}
             ],
         });
     result.manifest.inputs = [...new Set(result.manifest.inputs)].sort();
-    tree.write(
-        "manifest.json",
-        `${JSON.stringify(result.manifest, null, 2)}\n`,
-    );
+    const recorded = recordedManifest(result.manifest, repositoryRoot);
+    tree.write("manifest.json", `${JSON.stringify(recorded, null, 2)}\n`);
     tree.write(
         "fidelity.json",
         `${JSON.stringify(
             {
-                source: result.manifest.source,
-                adaptations: result.manifest.adaptations,
+                source: recorded.source,
+                adaptations: recorded.adaptations,
             },
             null,
             2,
@@ -1692,7 +1732,7 @@ ${imageCodecLines || '    ""'}
         `${JSON.stringify(
             featureActivationRows({
                 features: result.manifest.features,
-                featureSites: result.manifest.featureSites,
+                featureSites: recorded.featureSites,
                 assetJoinedFeatures,
                 specialization: specializationFeatures,
                 emit: emitOptions,
