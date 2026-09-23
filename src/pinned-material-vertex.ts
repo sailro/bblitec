@@ -713,22 +713,29 @@ function projectMorph(
             loop?.kind === "for",
         "bounded morph statement inventory",
     );
-    const counter = loop.initializer.name;
+    const { initializer, condition, update } = loop;
+    requireShape(
+        initializer?.kind === "var" &&
+            condition?.kind === "binary" &&
+            update?.kind === "assign" &&
+            update.operator === undefined,
+        "bounded morph loop header",
+    );
+    const counter = initializer.name;
     requireShape(
         position.value &&
             isPath(position.value, "position") &&
             normal.value &&
             isPath(normal.value, "normal") &&
-            isNumber(loop.initializer.value, 0) &&
-            loop.condition.kind === "binary" &&
-            loop.condition.operator === "<" &&
-            isPath(loop.condition.left, counter) &&
-            isPath(loop.condition.right, "morph", "count") &&
-            isPath(loop.update.target, counter) &&
-            loop.update.value.kind === "binary" &&
-            loop.update.value.operator === "+" &&
-            isPath(loop.update.value.left, counter) &&
-            isNumber(loop.update.value.right, 1),
+            isNumber(initializer.value, 0) &&
+            condition.operator === "<" &&
+            isPath(condition.left, counter) &&
+            isPath(condition.right, "morph", "count") &&
+            isPath(update.target, counter) &&
+            update.value.kind === "binary" &&
+            update.value.operator === "+" &&
+            isPath(update.value.left, counter) &&
+            isNumber(update.value.right, 1),
         "bounded morph loop",
     );
     const locals = new Map<string, ShaderExpression>();
@@ -919,6 +926,7 @@ function checkReferences(
         switch (statement.kind) {
             case "var":
             case "let":
+            case "const":
                 if (statement.value) check(statement.value);
                 requireShape(
                     !names.has(statement.name),
@@ -929,6 +937,9 @@ function checkReferences(
             case "assign":
                 check(statement.target);
                 check(statement.value);
+                break;
+            case "increment":
+                check(statement.target);
                 break;
             case "return":
                 if (statement.value) check(statement.value);
@@ -943,25 +954,46 @@ function checkReferences(
                     new Set(names),
                     requireShape,
                 );
+                if (statement.alternative)
+                    checkReferences(
+                        statement.alternative,
+                        new Set(names),
+                        requireShape,
+                    );
                 break;
             case "for": {
                 const loopNames = new Set(names);
-                checkReferences(
-                    [statement.initializer],
-                    loopNames,
-                    requireShape,
-                );
-                check(statement.condition, loopNames);
+                if (statement.initializer)
+                    checkReferences(
+                        [statement.initializer],
+                        loopNames,
+                        requireShape,
+                    );
+                if (statement.condition) check(statement.condition, loopNames);
                 checkReferences(
                     statement.statements,
                     new Set(loopNames),
                     requireShape,
                 );
-                checkReferences([statement.update], loopNames, requireShape);
+                if (statement.update)
+                    checkReferences(
+                        [statement.update],
+                        loopNames,
+                        requireShape,
+                    );
                 break;
             }
             case "discard":
                 requireShape(false, "vertex discard");
+                break;
+            case "while":
+            case "loop":
+            case "switch":
+            case "block":
+            case "break":
+            case "continue":
+            case "assert":
+                requireShape(false, `vertex ${statement.kind} statement`);
                 break;
         }
     }

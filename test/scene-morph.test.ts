@@ -18,6 +18,7 @@ import {
 } from "../src/pinned-picking-shaders.js";
 import { pinnedSceneMeshFeatures } from "../src/pinned-mesh-features.js";
 import { mirroredStructFromWgsl } from "../src/pinned-pbr-variant-cpp.js";
+import { reflectWgslStruct } from "../src/shader-ir.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
@@ -337,9 +338,10 @@ test(
         const nodePipeline = await importPinnedModuleWithExports<{
             buildMeshStruct(this: void): string;
         }>("material/node/node-pipeline.js", ["buildMeshStruct"]);
-        const meshBody = /struct MeshU\{([^}]*)\}/.exec(
+        const meshBody = reflectWgslStruct(
             nodePipeline.buildMeshStruct(),
-        )?.[1];
+            "MeshU",
+        )?.members;
         assert.ok(meshBody, "pinned NodeMaterial MeshU");
         const { MAX_LIGHTS } = await importPinnedModule<{ MAX_LIGHTS: number }>(
             "light/types.js",

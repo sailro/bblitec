@@ -8,6 +8,7 @@ import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
 import type { ShaderModuleDeclaration } from "./shader-composition.js";
+import { reflectWgslStruct } from "./shader-ir.js";
 import {
     SPLAT_CONTAINERS,
     type SplatContainerKind,
@@ -3725,17 +3726,21 @@ ${shadow.blurFragmentWgsl}`,
             // 144-byte block to that variant is a validation error. The
             // largest declared struct is mirrored; the base variants read
             // its prefix, which is laid out identically.
+            const meshMembers = (text: string): number =>
+                reflectWgslStruct(text, "MeshUniforms")?.members.length ?? 0;
             const widestStandardMesh = [
                 ...options.pinnedStandardVariants!,
-            ].sort((left, right) => {
-                const size = (text: string): number =>
-                    /struct MeshUniforms\s*\{([\s\S]*?)\}/.exec(text)?.[1]
-                        ?.length ?? 0;
-                return size(right.fragmentWgsl) - size(left.fragmentWgsl);
-            })[0]!.fragmentWgsl;
+            ].sort(
+                (left, right) =>
+                    meshMembers(right.fragmentWgsl) -
+                    meshMembers(left.fragmentWgsl),
+            )[0]!.fragmentWgsl;
             if (
                 (options.pinnedVariants ?? []).length > 0 &&
-                widestStandardMesh.includes("previousWorld")
+                reflectWgslStruct(
+                    widestStandardMesh,
+                    "MeshUniforms",
+                )?.members.some(({ name }) => name === "previousWorld")
             ) {
                 // The velocity arm rides a geometry-output task.
                 refuseGeneration(

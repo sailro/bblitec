@@ -217,6 +217,7 @@ import {
     type ShaderTextBinding,
     type ShaderTextContext,
 } from "./lowering/pinned-shader-text.js";
+import { liftWgslModuleConstant } from "./shader-ir.js";
 import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
@@ -10712,30 +10713,23 @@ class Compiler implements LoweringServices {
             };
         }
 
+        // The builder's one runtime number is a module-scope `f32` constant;
+        // it becomes a uniform read, located by the stage's own syntax tree.
         const marker = "__BBL_DYNAMIC_SHADER_FLOAT__";
-        const templated = template.head.text + marker + span.literal.text;
-        const declarationPattern = new RegExp(
-            `(^|\\n)([ \\t]*)const\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*f32\\s*=\\s*${marker}\\s*;[ \\t]*(?=\\n|$)`,
+        const uniformName = "bblDynamicDepthBias";
+        const lifted = liftWgslModuleConstant(
+            template.head.text + marker + span.literal.text,
+            marker,
+            () => `shaderUniforms.${uniformName}`,
         );
-        const match = declarationPattern.exec(templated);
-        if (!match) {
+        if (!lifted) {
             return {
                 source: this.compileStaticString(expression),
                 dynamicUniforms: [],
             };
         }
-        const constant = match[3]!;
-        const uniformName = "bblDynamicDepthBias";
-        const withoutDeclaration = templated.replace(
-            declarationPattern,
-            match[1]!,
-        );
-        const source = withoutDeclaration.replace(
-            new RegExp(`\\b${constant}\\b`, "g"),
-            `shaderUniforms.${uniformName}`,
-        );
         return {
-            source,
+            source: lifted.source,
             dynamicUniforms: [
                 {
                     name: uniformName,

@@ -482,6 +482,10 @@ function execute(
                     evaluate(expression.left),
                     evaluate(expression.right),
                 );
+            case "unary":
+                throw new Error(
+                    `Unhandled test unary operator ${expression.operator}`,
+                );
             case "construct": {
                 const values = expression.arguments.map(evaluate);
                 return expression.type === "mat4x4<f32>"
@@ -556,18 +560,17 @@ function execute(
                 if (scalar(evaluate(statement.condition)))
                     execute(statement.statements, scope, functions);
                 break;
-            case "for":
-                execute([statement.initializer], scope, functions);
-                for (
-                    let trips = 0;
-                    scalar(evaluate(statement.condition));
-                    ++trips
-                ) {
+            case "for": {
+                const { initializer, condition, update } = statement;
+                assert.ok(initializer && condition && update);
+                execute([initializer], scope, functions);
+                for (let trips = 0; scalar(evaluate(condition)); ++trips) {
                     assert.ok(trips < 1024);
                     execute(statement.statements, scope, functions);
-                    execute([statement.update], scope, functions);
+                    execute([update], scope, functions);
                 }
                 break;
+            }
             case "return":
                 return statement.value ? evaluate(statement.value) : undefined;
             default:

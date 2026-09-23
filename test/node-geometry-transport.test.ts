@@ -9,6 +9,7 @@ import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { mirroredStructFromWgsl } from "../src/pinned-pbr-variant-cpp.js";
+import { reflectWgslStruct } from "../src/shader-ir.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
@@ -61,9 +62,10 @@ test(
         const nodePipeline = await importPinnedModuleWithExports<{
             buildMeshStruct(this: void): string;
         }>("material/node/node-pipeline.js", ["buildMeshStruct"]);
-        const meshBody = /struct MeshU\{([^}]*)\}/.exec(
+        const meshBody = reflectWgslStruct(
             nodePipeline.buildMeshStruct(),
-        )?.[1];
+            "MeshU",
+        )?.members;
         assert.ok(meshBody);
         const { MAX_LIGHTS } = await importPinnedModule<{ MAX_LIGHTS: number }>(
             "light/types.js",

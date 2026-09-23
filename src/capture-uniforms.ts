@@ -1,9 +1,19 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+    parseWgslType,
+    reflectWgslModule,
+    wgslStructLayout,
+} from "./shader-ir.js";
+import {
     captureBuffersPath,
     captureShadersDirectory,
 } from "./tooling/artifacts.js";
+import {
+    fieldOffsets as wgslFieldOffsets,
+    layoutOf as wgslLayoutOf,
+    type WgslLayout,
+} from "./wgsl-layout.js";
 
 /**
  * Reading an instrumented capture's uniform buffers.
@@ -46,81 +56,53 @@ export interface DecodedBuffer {
     candidates: Array<{ struct: WgslStruct; fields: DecodedField[] }>;
 }
 
-/** WGSL uniform-address-space size and alignment for the types a composed
- *  Babylon Lite fragment declares. Anything else is reported as unknown rather
- *  than guessed, because a wrong stride silently shifts every later field.
- *  This is the one copy: `render-diff` decodes through it too, so a stride
- *  fix reaches both diagnostics at once. */
-export function layoutOf(
-    type: string,
-): { size: number; align: number } | undefined {
-    const scalar = /^(f32|i32|u32)$/.exec(type);
-    if (scalar) return { size: 4, align: 4 };
-    const vector = /^vec([234])<(f32|i32|u32)>$/.exec(type);
-    if (vector) {
-        const count = Number(vector[1]);
-        return count === 3
-            ? { size: 12, align: 16 }
-            : { size: count * 4, align: count * 4 };
-    }
-    const matrix = /^mat([234])x([234])<f32>$/.exec(type);
-    if (matrix) {
-        const columns = Number(matrix[1]);
-        const rows = Number(matrix[2]);
-        const columnStride = rows === 3 ? 16 : rows * 4;
-        return { size: columns * columnStride, align: 16 };
-    }
-    const array = /^array<(.+),\s*(\d+)u?>$/.exec(type);
-    if (array) {
-        const element = layoutOf(array[1]!.trim());
-        if (!element) return undefined;
-        // Uniform arrays round their stride up to 16.
-        const stride = roundUp(Math.max(element.align, 16), element.size);
-        return {
-            size: stride * Number(array[2]),
-            align: Math.max(element.align, 16),
-        };
-    }
-    return undefined;
-}
-
-export function roundUp(alignment: number, value: number): number {
-    return Math.ceil(value / alignment) * alignment;
+/**
+ * A declared type's uniform-address-space size and alignment, under the one
+ * layout rule (`wgsl-layout.ts`) generation mirrors blocks through too.
+ * Anything the rule does not know is reported as unknown rather than
+ * guessed, because a wrong stride silently shifts every later field.
+ */
+export function layoutOf(type: string): WgslLayout | undefined {
+    return wgslLayoutOf(parseWgslType(type).shape);
 }
 
 export function fieldOffsets(
     fields: WgslField[],
 ): { offsets: number[]; size: number } | undefined {
-    let offset = 0;
-    let maxAlign = 1;
-    const offsets: number[] = [];
-    for (const field of fields) {
-        const layout = layoutOf(field.type);
-        if (!layout) return undefined;
-        offset = roundUp(layout.align, offset);
-        offsets.push(offset);
-        offset += layout.size;
-        maxAlign = Math.max(maxAlign, layout.align);
-    }
-    return { offsets, size: roundUp(maxAlign, offset) };
+    const layout = wgslFieldOffsets(
+        fields.map(({ type }) => ({ type: parseWgslType(type).shape })),
+    );
+    return layout && { offsets: layout.offsets, size: layout.size };
 }
 
+/**
+ * The uniform-shaped structs a captured module declares: every member
+ * attribute-free and of known layout. Interface structs (`@location`,
+ * `@builtin` members) describe stage IO, not buffer contents.
+ */
 export function parseWgslStructs(source: string, module: string): WgslStruct[] {
-    const result: WgslStruct[] = [];
-    // Composed fragments write their structs without spaces around braces, so
-    // the opening brace may sit on the declaration line or its own.
-    const pattern = /struct\s+(\w+)\s*\{([^}]*)\}/g;
-    for (const match of source.matchAll(pattern)) {
-        const fields: WgslField[] = [];
-        for (const line of match[2]!.split(/[,\n]/)) {
-            const field = /^\s*(\w+)\s*:\s*([^,]+?)\s*$/.exec(line);
-            if (field) fields.push({ name: field[1]!, type: field[2]!.trim() });
+    return reflectWgslModule(source).declarations.flatMap((declaration) => {
+        if (
+            declaration.kind !== "struct" ||
+            declaration.members.length === 0 ||
+            declaration.members.some(({ attributes }) => attributes.length > 0)
+        ) {
+            return [];
         }
-        const layout = fieldOffsets(fields);
-        if (!layout || fields.length === 0) continue;
-        result.push({ name: match[1]!, module, fields, size: layout.size });
-    }
-    return result;
+        const layout = wgslStructLayout(declaration.members);
+        if (!layout) return [];
+        return [
+            {
+                name: declaration.name,
+                module,
+                fields: declaration.members.map(({ name, type }) => ({
+                    name,
+                    type: type.source,
+                })),
+                size: layout.size,
+            },
+        ];
+    });
 }
 
 function decodeStruct(

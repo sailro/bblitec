@@ -1,4 +1,11 @@
 /** SDL binding adaptation of Tint's HLSL; Babylon shader expressions stay intact. */
+import { shadowBindingSlotOrNull } from "./pinned-pbr-variant-cpp.js";
+import {
+    reflectWgslBindings,
+    reflectWgslModule,
+    type WgslVariableDeclaration,
+} from "./shader-ir.js";
+
 interface Register {
     kind: string;
     index: number;
@@ -590,30 +597,46 @@ export function assertUniformBufferCap(hlsl: string, stage: string): void {
     }
 }
 
-/** These read-only blocks retain their layout when moved from uniform to storage. */
-export function demotableUniformBlocks(wgsl: string): string[] {
-    const names = ["localProbeData", "gp", "nmeShadowParams"].filter((name) =>
-        new RegExp(`var\\s*<\\s*uniform\\s*>\\s*${name}\\s*:`).test(wgsl),
+/** The module-scope `var<uniform>` blocks a module declares, in source order. */
+function uniformBlocks(wgsl: string): WgslVariableDeclaration[] {
+    return reflectWgslModule(wgsl).declarations.filter(
+        (declaration): declaration is WgslVariableDeclaration =>
+            declaration.kind === "var" &&
+            declaration.addressSpace === "uniform" &&
+            declaration.type !== undefined,
     );
-    for (const match of wgsl.matchAll(
-        /var\s*<\s*uniform\s*>\s*((?:shadow|csm)Info_\d+)\s*:/g,
-    ))
-        names.push(match[1]!);
-    return names;
 }
 
+/** These read-only blocks retain their layout when moved from uniform to storage. */
+export function demotableUniformBlocks(wgsl: string): string[] {
+    const blocks = uniformBlocks(wgsl).map(({ name }) => name);
+    return [
+        ...["localProbeData", "gp", "nmeShadowParams"].filter((name) =>
+            blocks.includes(name),
+        ),
+        // The shadow receivers' per-light blocks: `shadowInfo_<light>` and
+        // `csmInfo_<light>`, as `createShadowFragment` names them.
+        ...blocks.filter(
+            (name) => shadowBindingSlotOrNull(name)?.role === "info",
+        ),
+    ];
+}
+
+/** Moves the named uniform blocks to read-only storage, keeping every other byte. */
 export function demoteUniformBlocks(
     wgsl: string,
     blocks: readonly string[],
 ): string {
-    return blocks.reduce(
-        (source, name) =>
-            source.replace(
-                new RegExp(`var\\s*<\\s*uniform\\s*>\\s*${name}\\s*:`, "g"),
-                `var<storage, read> ${name}:`,
-            ),
-        wgsl,
-    );
+    let demoted = wgsl;
+    for (const block of uniformBlocks(wgsl)
+        .filter(({ name }) => blocks.includes(name))
+        .reverse()) {
+        demoted =
+            demoted.slice(0, block.head.start) +
+            `var<storage, read> ${block.name}:` +
+            demoted.slice(block.head.end);
+    }
+    return demoted;
 }
 
 export interface SdlUniformAdaptation {
@@ -652,8 +675,8 @@ export function assertReflectedBindings(
     source: string,
 ): void {
     const declared = new Set(
-        [...wgsl.matchAll(/@group\((\d+)u?\)\s*@binding\((\d+)u?\)/g)].map(
-            (match) => `${match[1]}:${match[2]}`,
+        reflectWgslBindings(wgsl).map(
+            ({ group, binding }) => `${group}:${binding}`,
         ),
     );
     const undeclared = [
