@@ -4259,13 +4259,6 @@ inline std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometr
 }
 #endif
 
-// The no-environment fallback face — the ported pinned contract both
-// backends must agree on: a compiled-PBR scene with no environment binds a
-// 1x1 cube of this colour, never zeros. (Dawn used to keep its
-// zero-initialized startup cube here while SDL_GPU uploaded this face — a
-// silent backend delta on any environment-less PBR scene.)
-inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
-
 inline std::uint16_t float_to_half(float value) {
     std::uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -4297,16 +4290,6 @@ inline std::uint16_t float_to_half(float value) {
     }
     return static_cast<std::uint16_t>(sign | static_cast<std::uint16_t>(half_exponent << 10) |
                                       static_cast<std::uint16_t>(rounded >> 13));
-}
-
-/** The fallback face in the decode's own storage type. */
-inline std::vector<std::uint16_t> fallback_face_halves() {
-    std::vector<std::uint16_t> face;
-    face.reserve(4);
-    for (const float channel : environment_fallback_face) {
-        face.push_back(float_to_half(channel));
-    }
-    return face;
 }
 
 // The RGBD decode both render backends upload through.
