@@ -27,6 +27,8 @@ import {
 } from "./context.js";
 import {
     pinnedDefaultForDiscard,
+    pinnedDefaultSites,
+    type PinnedDefaultValue,
     type PinnedMaterialDefault,
 } from "./pinned-material-defaults.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
@@ -703,17 +705,16 @@ function foldedText(folded: FoldedDefault): string {
     return "<another record property>";
 }
 
-function defaultText(value: PinnedMaterialDefault["value"]): string {
+function defaultText(value: PinnedDefaultValue): string {
     return Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
 }
 
-/** Whether the fold agrees with one of the entry's pinned values. */
+/** Whether the fold agrees with one of the entry's pinned sites. */
 function matchesEntry(
     entry: PinnedMaterialDefault,
     folded: FoldedDefault,
 ): boolean {
-    const candidates = [entry.value, ...(entry.alsoPinned ?? [])];
-    return candidates.some((candidate) => {
+    return pinnedDefaultSites(entry).some((candidate) => {
         if (folded.kind === "number") return candidate === folded.value;
         if (folded.kind === "vector") {
             return (
@@ -728,13 +729,11 @@ function matchesEntry(
 
 /**
  * The RD-4 guard: a mapped property's `?? default` lowers to the record
- * field alone, so the pin's fallback is discarded here — and the record's
- * seed (the intrinsics' defaults, the loader's) restates the same number
- * with nothing tying the copies together. Before discarding, the pin's own
- * default expression is evaluated and asserted against
- * `PINNED_MATERIAL_DEFAULTS`, the table the intrinsics read: a pin bump
- * that moves a default fails generation naming the property and both
- * values instead of silently splitting the reference from the record.
+ * field alone, so the pin's fallback is discarded here, and the record is
+ * seeded by the intrinsics from `PINNED_MATERIAL_DEFAULTS`, which folds the
+ * same pinned site. Before discarding, the property must be anchored there
+ * — so a pin that grows a default no intrinsic seeds fails generation by
+ * name — and this site's fold must be one of the defaults the table read.
  *
  * Properties the table does not carry keep the silent discard only for the
  * plain `?? 0`/`?? 1` texture-transform and flag lanes with no
@@ -767,10 +766,9 @@ function assertDiscardedPinnedDefault(
         throw new Error(
             `Pinned ${state.request.symbolName} defaults '${property}' to ` +
                 `${foldedText(folded)}, but PINNED_MATERIAL_DEFAULTS ` +
-                `carries ${defaultText(entry.value)} for '${key}'. The ` +
-                "pin moved a discarded default; update the table (and the " +
-                "record seed it feeds) rather than letting the reference " +
-                "and the native record split.",
+                `folds [${pinnedDefaultSites(entry).map(defaultText).join(", ")}] ` +
+                `for '${key}': the two readers of the pin disagree about ` +
+                "which site this is.",
         );
     }
 }

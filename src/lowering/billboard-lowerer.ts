@@ -665,6 +665,30 @@ export class BillboardLowerer {
         this.assertSortDepth();
         this.assertQuad();
         this.assertSceneRegistration();
+        // The squared axis length below which the axis-locked factory
+        // refuses the axis as zero, read off its own `lengthSq < <floor>`.
+        const axisLocked = this.context.functionDeclaration(
+            systemModule,
+            "createAxisLockedBillboardSystem",
+        );
+        const floors = this.context.findNodes(
+            axisLocked.declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "lengthSq",
+        );
+        if (floors.length !== 1) {
+            this.context.contractError(
+                axisLocked.declaration,
+                "Expected createAxisLockedBillboardSystem to refuse one " +
+                    "lengthSq floor.",
+            );
+        }
+        const zeroAxisFloor = this.context.doubleLiteral(
+            this.context.numericValue(floors[0]!.right, axisLocked.file),
+        );
 
         const provenance = this.context.provenance(
             systemModule,
@@ -953,7 +977,7 @@ BillboardSystemHandle create_billboard_system(
                 "createAxisLockedBillboardSystem: axis components must be "
                 "finite numbers.");
         }
-        if (length_sq < 1e-8) {
+        if (length_sq < ${zeroAxisFloor}) {
             throw std::runtime_error(
                 "createAxisLockedBillboardSystem: axis must be non-zero.");
         }
