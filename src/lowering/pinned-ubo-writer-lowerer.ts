@@ -19,7 +19,7 @@
  * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import { hasNode, unwrapExpression, type LoweringContext } from "./context.js";
 import {
     pinnedDefaultForDiscard,
     type PinnedMaterialDefault,
@@ -181,16 +181,92 @@ function slotAtLane(
     );
 }
 
+/**
+ * A read of the composer's offset map: `offsets.<method>(key)` on an
+ * extension writer's parameter, or `spec._offsets.<method>(key)` in the
+ * base writer.
+ */
+function offsetsCall(
+    node: ts.Node,
+    method: "get" | "has",
+): ts.CallExpression | undefined {
+    if (
+        !ts.isCallExpression(node) ||
+        node.arguments.length !== 1 ||
+        !ts.isPropertyAccessExpression(node.expression) ||
+        node.expression.name.text !== method
+    ) {
+        return undefined;
+    }
+    const map = unwrapExpression(node.expression.expression);
+    const name = ts.isIdentifier(map)
+        ? map.text
+        : ts.isPropertyAccessExpression(map)
+          ? map.name.text
+          : undefined;
+    return name === "offsets" || name === "_offsets" ? node : undefined;
+}
+
+/**
+ * The key of the first offset-map read under `root`, in source order, whose
+ * key has the shape the predicate accepts.
+ */
+function offsetsKey<T extends ts.Expression>(
+    root: ts.Node,
+    method: "get" | "has",
+    key: (argument: ts.Expression) => argument is T,
+): T | undefined {
+    let found: T | undefined;
+    const visit = (node: ts.Node): void => {
+        if (found) return;
+        const argument = offsetsCall(node, method)?.arguments[0];
+        if (argument && key(argument)) {
+            found = argument;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return found;
+}
+
 function isOffsetsLookup(expression: ts.Expression): boolean {
-    return /offsets\s*\.\s*get\s*\(/.test(expression.getText());
+    return hasNode(
+        expression,
+        (node) => offsetsCall(node, "get") !== undefined,
+    );
 }
 
 /** The field name inside an `offsets.get("x")` lookup. */
 function offsetsLookupField(expression: ts.Expression): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*["']([^"']+)["']/.exec(
-        expression.getText(),
+    return offsetsKey(expression, "get", ts.isStringLiteral)?.text;
+}
+
+/**
+ * A key built as `${base}<suffix>`: one substitution of a plain name, then
+ * the literal tail the caller reads the field's `m`/`t` role off.
+ */
+function isSuffixedKey(
+    argument: ts.Expression,
+): argument is ts.TemplateExpression {
+    return (
+        ts.isTemplateExpression(argument) &&
+        argument.head.text === "" &&
+        argument.templateSpans.length === 1 &&
+        ts.isIdentifier(argument.templateSpans[0]!.expression)
     );
-    return match?.[1];
+}
+
+/** The literal tail of a `${base}<suffix>` key. */
+function keySuffix(key: ts.TemplateExpression): string {
+    return key.templateSpans[0]!.literal.text;
+}
+
+/** The property an element read names: `x["key"]` by its key, `x[k]` by `k`. */
+function elementKey(argument: ts.Expression): string {
+    return ts.isStringLiteralLike(argument) || ts.isIdentifier(argument)
+        ? argument.text
+        : argument.getText();
 }
 
 /**
@@ -206,11 +282,8 @@ function parameterOffsetField(
     state: WriterState,
     expression: ts.Expression,
 ): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(
-        expression.getText(state.file),
-    );
-    if (!match) return undefined;
-    return state.parameterFields?.[match[1]!];
+    const parameter = offsetsKey(expression, "get", ts.isIdentifier);
+    return parameter ? state.parameterFields?.[parameter.text] : undefined;
 }
 
 /**
@@ -221,12 +294,17 @@ function templateOffsetField(
     state: WriterState,
     expression: ts.Expression,
 ): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}\w*([mt])`/.exec(
-        expression.getText(),
+    const key = offsetsKey(
+        expression,
+        "get",
+        (argument): argument is ts.TemplateExpression =>
+            isSuffixedKey(argument) &&
+            (keySuffix(argument).endsWith("m") ||
+                keySuffix(argument).endsWith("t")),
     );
-    if (!match) return undefined;
+    if (!key) return undefined;
     const base = state.request.baseField;
-    return match[1] === "m" ? base : base.replace(/m$/, "t");
+    return keySuffix(key).endsWith("m") ? base : base.replace(/m$/, "t");
 }
 
 /** The absolute float lane a `data[...]` index refers to. */
@@ -328,10 +406,7 @@ function offsetLocalComparedToUndefined(
 
 /** The field an `offsets.has("x")` guard tests. */
 function guardedFieldByHas(condition: ts.Expression): string | undefined {
-    const match = /offsets\s*\.\s*has\s*\(\s*["']([^"']+)["']/.exec(
-        condition.getText(),
-    );
-    return match?.[1];
+    return offsetsKey(condition, "has", ts.isStringLiteral)?.text;
 }
 
 /**
@@ -865,7 +940,7 @@ function emitRecordExpression(
         // optional chain reads exactly like the plain access.
         const property = ts.isPropertyAccessChain(node)
             ? node.name.getText()
-            : node.argumentExpression.getText().replace(/["']/g, "");
+            : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
             throw new Error(
@@ -909,7 +984,7 @@ function emitRecordExpression(
     ) {
         const property = ts.isPropertyAccessExpression(node)
             ? node.name.getText()
-            : node.argumentExpression.getText().replace(/["']/g, "");
+            : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
             throw new Error(
@@ -1472,9 +1547,13 @@ function emitPlainStatement(
  */
 function nestedFieldSuffix(state: WriterState, callee: string): string {
     const { declaration } = state.nestedDeclarations[callee]!;
-    const text = declaration.body.getText();
-    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}(\w*)m`/.exec(text);
-    return match?.[1] ?? "";
+    const key = offsetsKey(
+        declaration.body,
+        "get",
+        (argument): argument is ts.TemplateExpression =>
+            isSuffixedKey(argument) && keySuffix(argument).endsWith("m"),
+    );
+    return key ? keySuffix(key).slice(0, -1) : "";
 }
 
 /** Lowers a shared transform helper against one variant's `<base>m`/`<base>t`. */

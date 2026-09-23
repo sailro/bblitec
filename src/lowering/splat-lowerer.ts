@@ -799,11 +799,23 @@ ${body}
             );
         }
         // Exactly the statements that touch the block, in the pin's order.
-        const writes = update.body.statements.filter(
-            (statement) =>
-                ts.isExpressionStatement(statement) &&
-                statement.expression.getText(file).startsWith("cpu"),
-        );
+        // `cpu[k] = ...` and `cpu.set(...)`: a statement whose target is
+        // the mirror itself.
+        const writes = update.body.statements.filter((statement) => {
+            if (!ts.isExpressionStatement(statement)) return false;
+            const expression = statement.expression;
+            const target = ts.isBinaryExpression(expression)
+                ? expression.left
+                : ts.isCallExpression(expression)
+                  ? expression.expression
+                  : expression;
+            const owner =
+                ts.isElementAccessExpression(target) ||
+                ts.isPropertyAccessExpression(target)
+                    ? target.expression
+                    : target;
+            return ts.isIdentifier(owner) && owner.text === "cpu";
+        });
         // The SH hook writes the same seven plus the four eye-position
         // lanes its wider block carries; either count is the whole set of
         // statements that touch the mirror, so a pin that adds one refuses
@@ -1392,12 +1404,20 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         // its per-texture window and the scatter that fills it.
         const packing: ts.Statement[] = [];
         for (const statement of loop.statement.statements) {
-            if (
+            const initializer =
                 ts.isVariableStatement(statement) &&
-                (statement.declarationList.declarations[0]?.initializer
-                    ?.getText(file)
-                    .includes("device.createTexture") ??
-                    false)
+                statement.declarationList.declarations[0]?.initializer;
+            if (
+                initializer &&
+                this.context.hasNode(
+                    initializer,
+                    (node) =>
+                        ts.isCallExpression(node) &&
+                        this.context
+                            .propertyPath(node.expression)
+                            ?.slice(-2)
+                            .join(".") === "device.createTexture",
+                )
             ) {
                 break;
             }

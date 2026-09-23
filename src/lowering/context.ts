@@ -213,6 +213,35 @@ export function topLevelFunctionDeclaration(
 }
 
 /**
+ * A pinned declaration's own source text from its first token after any
+ * `export` modifier: the form a generation-time executor wraps in a
+ * function body, where a module-level `export` does not parse.
+ */
+export function unexportedDeclarationText(
+    declaration: ts.FunctionDeclaration,
+): string {
+    const file = declaration.getSourceFile();
+    // The first token that is not `export`: a remaining modifier (`async`)
+    // or the `function` keyword itself.
+    const first = declaration
+        .getChildren(file)
+        .flatMap((child) =>
+            child.kind === ts.SyntaxKind.SyntaxList
+                ? child.getChildren(file)
+                : [child],
+        )
+        .find(
+            (token) =>
+                token.kind !== ts.SyntaxKind.ExportKeyword &&
+                !ts.isJSDoc(token),
+        );
+    return file.text.slice(
+        (first ?? declaration).getStart(file),
+        declaration.end,
+    );
+}
+
+/**
  * The two sides of a pinned `<left> ?? <right>` default.
  *
  * Every lowerer that anchors a pinned default splits this expression, so
