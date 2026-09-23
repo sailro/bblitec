@@ -85,9 +85,9 @@ dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending
 ### File transfer controls
 
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
-snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
-limits. Completion may occur before click returns. Multiple files/directories, unsupported accept values,
-arbitrary source paths and file-input type transitions refuse.
+snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
+live cap and per-file limits. Completion may occur before click returns. Multiple files/directories,
+unsupported accept values, arbitrary source paths and file-input type transitions refuse.
 
 iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.
 [Publication semantics](fidelity.md#semantic-contract) differ between direct paths and file providers.

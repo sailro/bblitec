@@ -158,9 +158,10 @@ different properties.
 
 ## Text contract
 
-Live text uses HarfBuzz and pinned layout/packing over the packaged repertoire. TextData retains identity; shared data owns group caches and captured styles.
-Disposal releases GPU leases while CPU data follows source lifetime. Deferred registration publishes
-only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
+Live text uses HarfBuzz and pinned layout/packing over the packaged repertoire. TextData retains
+identity; shared data owns group caches and captured styles. Disposal releases GPU leases while CPU data
+follows source lifetime. Deferred registration publishes only after successful construction. Arbitrary
+async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 

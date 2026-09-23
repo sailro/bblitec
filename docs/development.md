@@ -69,8 +69,8 @@ On older systems, LLVM libc++ must retain Apple's availability annotations; inst
 LLVM configuration can remove that define from `include/c++/v1/__config_site`, retaining a backup.
 
 Development uses host x64-osx/arm64-osx dependencies. Boost.Charconv provides floating formatting on
-systems lacking floating `to_chars`. Maintained Dawn patches support
-older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
+systems lacking floating `to_chars`. Maintained Dawn patches support older SDK capability checks. Apple
+Silicon runtime validation requires an Apple Silicon host.
 
 ### Android
 
@@ -89,12 +89,12 @@ npm run demos:release -- --platform android --scene torus-states --backend dawn 
 `android`, `package:demo` and `demos:release` default to arm64-v8a; `android:sweep` defaults to x86_64;
 `-Abi`/`--abi` overrides. SDL_GPU is the default renderer; `-Backend DAWN` builds Dawn only and
 `-Backend BOTH` both (`-Smoke` then checks each); sweeps and releases take `--backend sdl_gpu|dawn`.
-Debug intents select a compiled renderer with `BBLITE_GPU_BACKEND=sdl_gpu|dawn`. `-Install` opens the app;
-`-Smoke` requires native exit 0 and a PNG. APKs/logs are in `artifacts/android/<scene>/<abi>` (`-dawn`/`-both`
-suffixes); development installs share one application ID, release packages each have their own.
-Reached UI/audio dependencies and Dawn (monolithic/static at the Tint pin, WGSL only) build into
-`artifacts/tools/<library>-android-<abi>` and are reused by input fingerprint; `-DawnDirectory` selects a
-compatible static install.
+Debug intents select a compiled renderer with `BBLITE_GPU_BACKEND=sdl_gpu|dawn`. `-Install` opens the
+app; `-Smoke` requires native exit 0 and a PNG. APKs/logs are in `artifacts/android/<scene>/<abi>`
+(`-dawn`/`-both` suffixes); development installs share one application ID, release packages each have
+their own. Reached UI/audio dependencies and Dawn (monolithic/static at the Tint pin, WGSL only) build
+into `artifacts/tools/<library>-android-<abi>` and are reused by input fingerprint; `-DawnDirectory`
+selects a compatible static install.
 
 Packaging builds Release code into a debug-signed APK with assets/notices, validates it on `--device` and
 publishes a ZIP/receipt under `artifacts/releases` (replaced packages move to `.replaced/`). The sweep
@@ -184,8 +184,9 @@ scores closed acceptance groups against a fixed baseline. Keep ledgers and repor
 | `checks/<id>.json` | Interaction phases/expectations; plugins in `checks/plugins/` |
 
 Match the [reference pose](fidelity.md#the-reference-pose). New scenes need full/foreground MAD below
-0.5 on both backends plus interaction checks. Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
-`tools/create-status-preview.mjs`; ICU changes require `tools/generate-emoji-presentation.mjs`.
+0.5 on both backends plus interaction checks. Update registry/corpus membership tests. Fixture
+generators are in `tools/fixtures/`; previews use `tools/create-status-preview.mjs`; ICU changes require
+`tools/generate-emoji-presentation.mjs`.
 
 ## Linting and formatting
 

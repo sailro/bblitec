@@ -19,8 +19,8 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 | Registry | Source, title, host UI, reference query and attribution |
 | Build options | Backend, capture, size and PCH configuration |
 
-`generated/<id>/upstream/feature-activation.json` records sites, decisions and consumers. Reaching a factory can
-activate its module even when one of its options is disabled.
+`generated/<id>/upstream/feature-activation.json` records sites, decisions and consumers. Reaching a
+factory can activate its module even when one of its options is disabled.
 
 ### API coverage inventory
 
@@ -86,9 +86,10 @@ Self-captured `satisfies` records retain one identity when their checked and ini
 | `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |
 
-Arbitrary rejection values, heterogeneous race results and unrepresented aggregation shapes refuse. `all` excludes literal spreads, other iterables and stored void/value-only arrays.
-`allSettled` excludes literal spreads and other iterables. Async collection callbacks start synchronously
-and retain suspension; predicate promises are truthy.
+Arbitrary rejection values, heterogeneous race results and unrepresented aggregation shapes refuse.
+`all` excludes literal spreads, other iterables and stored void/value-only arrays. `allSettled` excludes
+literal spreads and other iterables. Async collection callbacks start synchronously and retain
+suspension; predicate promises are truthy.
 Timers/microtasks need no engine. RAF needs a Window repaint source. Unhandled rejections are reported
 in a subsequent task after microtasks. MessageChannel and runtime compression streams refuse; gzip/base64
 JSON decoded through `DecompressionStream` folds at generation.
@@ -394,9 +395,10 @@ ray/character/collision results. Collision callbacks retain removed bodies throu
 Thin physics with floating origin, body-aware trigger callbacks and retained trigger disposers are unsupported.
 
 Heightfields require square ground-mesh grids/static bodies. Zero/degenerate shapes refuse. Container
-construction precedes attachment; convex children admit finite nonzero scale. Mixed child filters/materials/triggers and triangle children
-refuse. Proximity/casts require inline query bags and convex targets. Viewers need construction-known
-shape descriptors and a native toolchain; constraint overlays and observable startup membership refuse.
+construction precedes attachment; convex children admit finite nonzero scale. Mixed child
+filters/materials/triggers and triangle children refuse. Proximity/casts require inline query bags and
+convex targets. Viewers need construction-known shape descriptors and a native toolchain; constraint
+overlays and observable startup membership refuse.
 See [physics substitutions](fidelity.md#physics-contract).
 
 ## Audio
