@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <deque>
+#include <exception>
 #include <list>
 #include <map>
 #include <memory>
@@ -15,7 +17,6 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
-#include <typeinfo>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -304,10 +305,9 @@ inline std::size_t collect_cycles() {
         // that enumerated one edge twice. Clearing it would free a live
         // value, so the collector refuses instead.
         if (node->owners() < node->incoming + 1) {
-            throw std::logic_error(std::string("A gc_trace over-reports the edges into a ") +
-                                   typeid(*node).name() + ": " + std::to_string(node->incoming) +
-                                   " incoming edge(s) against " + std::to_string(node->owners()) +
-                                   " owner(s).");
+            throw std::logic_error("A gc_trace over-reports the edges into a managed node: " +
+                                   std::to_string(node->incoming) + " incoming edge(s) against " +
+                                   std::to_string(node->owners()) + " owner(s).");
         }
         if (node->owners() > node->incoming + 1)
             mark.edge(node);
@@ -343,12 +343,18 @@ inline void collect_at_frame_boundary() {
     }
 }
 
-/** Declare before generated locals so collection follows their normal teardown. */
+/** Declare before generated locals so collection follows their normal teardown.
+ * Exhausted memory leaves acyclic owners to process teardown; a refused
+ * collection is a tracer defect, reported before the process fails. */
 struct CollectOnExit {
     ~CollectOnExit() noexcept {
         try {
             collect_cycles();
-        } catch (const std::bad_alloc&) { /* Process teardown still releases acyclic owners. */
+        } catch (const std::bad_alloc&) {
+            return;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "Babylon Lite native error: %s\n", error.what());
+            std::terminate();
         }
     }
 };
