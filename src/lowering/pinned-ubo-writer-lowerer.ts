@@ -342,7 +342,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         return fieldLane(state.request, field);
     };
     if (ts.isNumericLiteral(expression)) {
-        return Number.parseInt(expression.text, 10);
+        return Number(expression.text);
     }
     if (ts.isIdentifier(expression)) return base(expression);
     // `data[off / 4]`: the local holds the byte offset and the writer divides at
@@ -354,7 +354,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         ts.isBinaryExpression(expression) &&
         expression.operatorToken.kind === ts.SyntaxKind.SlashToken &&
         ts.isNumericLiteral(expression.right) &&
-        expression.right.text === "4"
+        Number(expression.right.text) === 4
     ) {
         return dataLane(state, expression.left);
     }
@@ -366,10 +366,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
         ts.isNumericLiteral(expression.right)
     ) {
-        return (
-            dataLane(state, expression.left) +
-            Number.parseInt(expression.right.text, 10)
-        );
+        return dataLane(state, expression.left) + Number(expression.right.text);
     }
     throw new Error(
         `Unsupported data index in pinned ${state.request.symbolName}: ` +
@@ -907,7 +904,7 @@ function emitRecordExpression(
         state.vectorLocals.has(node.expression.text) &&
         ts.isNumericLiteral(node.argumentExpression)
     ) {
-        const lane = Number.parseInt(node.argumentExpression.text, 10);
+        const lane = Number(node.argumentExpression.text);
         const laneSource = state.laneSourceFor(node.expression.text, lane);
         if (laneSource !== undefined) return laneSource;
         const local = state.vectorLocals.get(node.expression.text)!;
@@ -950,13 +947,13 @@ function emitRecordExpression(
         const owner = node.expression.name.getText();
         const direct =
             state.request.laneSources?.[owner]?.[
-                Number.parseInt(node.argumentExpression.text, 10)
+                Number(node.argumentExpression.text)
             ];
         if (direct !== undefined) return direct;
         const lanes = state.request.vectorProperties?.[owner];
         const source = state.request.propertySources[owner];
         if (lanes !== undefined && typeof source === "string") {
-            const lane = Number.parseInt(node.argumentExpression.text, 10);
+            const lane = Number(node.argumentExpression.text);
             if (lanes > 4) return `${source}[${lane}]`;
             const member = vectorMember(
                 state.request.symbolName,
