@@ -81,7 +81,7 @@ if ($LASTEXITCODE -ne 0) {
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
 
 # The Windows D3D12 variant applies no maintained Dawn patch; the record still
-# names the pin and the empty series (native/patches/patch-identity.cmake).
+# names the pin and the empty series (native/patch-identity.cmake).
 @(Get-PatchRecord dawn $pin.commit @(Get-MaintainedPatches dawn)) -join "`n" |
     Set-Content (Join-Path $output "bblite-dawn-features.cmake") -Encoding Ascii
 @{

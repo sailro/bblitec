@@ -646,10 +646,10 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     // (executed in test/patch-inventory.test.ts).
     assert.match(
         cmake,
-        /include\("\$\{BBLITE_NATIVE_ROOT\}\/patches\/patch-identity\.cmake"\)\s*bblite_verify_dependency_artifacts\(\)/,
+        /include\("\$\{BBLITE_NATIVE_ROOT\}\/patch-identity\.cmake"\)\s*bblite_verify_dependency_artifacts\(\)/,
     );
     assert.match(
-        readFileSync("native/patches/patch-identity.cmake", "utf8"),
+        readFileSync("native/patch-identity.cmake", "utf8"),
         /bblite_verify_patch_record\(rmlui "\$\{BBLITE_RMLUI_DIR\}" "\$\{BBLITE_RMLUI_BUILD_COMMAND\}"\)/,
     );
     assert.match(

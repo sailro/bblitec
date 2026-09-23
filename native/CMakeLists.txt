@@ -1146,7 +1146,7 @@ endif()
 
 # Every prebuilt dependency artifact this tree consumes must carry the source
 # and patch record the pin and native/patches/manifest.json select.
-include("${BBLITE_NATIVE_ROOT}/patches/patch-identity.cmake")
+include("${BBLITE_NATIVE_ROOT}/patch-identity.cmake")
 bblite_verify_dependency_artifacts()
 
 # Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp

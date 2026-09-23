@@ -329,7 +329,7 @@ test(
                 `set(BBLITE_RMLUI_DIR "${rmlui.replaceAll("\\", "/")}")`,
                 'set(BBLITE_RMLUI_BUILD_COMMAND "tools/build-rmlui.ps1")',
                 'set(BBLITE_RUNTIME_FEATURES "ui:rml")',
-                `include("${resolve("native/patches/patch-identity.cmake").replaceAll("\\", "/")}")`,
+                `include("${resolve("native/patch-identity.cmake").replaceAll("\\", "/")}")`,
                 "bblite_verify_dependency_artifacts()",
                 "",
             ].join("\n"),

@@ -215,7 +215,7 @@ function Install-MaintainedPatches([string]$Source, [object[]]$Patches, [string]
 
 # The CMake lines an artifact's record file carries: the pinned source it was
 # built from and each applied patch as name=sha256, in application order.
-# native/patches/patch-identity.cmake and src/development-tools.ts recompute
+# native/patch-identity.cmake and src/development-tools.ts recompute
 # both from the manifest and the pin.
 function Get-PatchRecord([string]$Library, [string]$Source, [object[]]$Patches) {
     $prefix = (Get-PatchManifest).libraries.$Library.record.prefix

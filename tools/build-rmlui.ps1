@@ -247,7 +247,7 @@ Copy-Item -Recurse -Force (Join-Path $source "Backends\RmlUi_SDL_GPU") `
 Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
 
 # Native configuration reads this record and refuses the artifact when the
-# pin or a patch moved since it was built (native/patches/patch-identity.cmake).
+# pin or a patch moved since it was built (native/patch-identity.cmake).
 $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $record = @(

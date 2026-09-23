@@ -8,8 +8,8 @@
 # An artifact that records no patch set predates the record and is reported,
 # not refused, until it is rebuilt.
 
-set(BBLITE_PATCH_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/manifest.json")
-get_filename_component(BBLITE_PATCH_REPOSITORY "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(BBLITE_PATCH_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/patches/manifest.json")
+get_filename_component(BBLITE_PATCH_REPOSITORY "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 # The record a <library> artifact built for the given variant tokens must carry.
 function(bblite_expected_patch_record library out_source out_patches)

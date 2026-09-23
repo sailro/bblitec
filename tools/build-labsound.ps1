@@ -201,7 +201,7 @@ $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $coreOnlySetting = if ($coreOnlyBuild) { "ON" } else { "OFF" }
 # Native configuration and development setup compare the patch record with the
-# pin and the manifest (native/patches/patch-identity.cmake).
+# pin and the manifest (native/patch-identity.cmake).
 $record = @(
     "set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)"
     "set(BBLITE_LABSOUND_MINSIZE $minSizeSetting)"

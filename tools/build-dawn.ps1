@@ -140,7 +140,7 @@ if ($d3d12 -eq 'ON') {
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
 
 # Native configuration and development setup compare this record with the
-# pin and the manifest (native/patches/patch-identity.cmake).
+# pin and the manifest (native/patch-identity.cmake).
 @(Get-PatchRecord dawn $pin.commit $patches) -join "`n" |
     Set-Content (Join-Path $output "bblite-dawn-features.cmake") -Encoding Ascii
 @{

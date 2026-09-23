@@ -225,7 +225,7 @@ $noticeText = for ($index = 0; $index -lt $notices.Count; $index += 2) {
 # dependency. Keep the capability machine-readable rather than inferring it
 # from an install-directory name or from a prose provenance field. The patch
 # record is compared with the pin and the manifest the same way
-# (native/patches/patch-identity.cmake).
+# (native/patch-identity.cmake).
 $record = @(
     "set(BBLITE_SDL_AUDIO $audioSetting)"
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"

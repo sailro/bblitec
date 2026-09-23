@@ -1,6 +1,6 @@
 /**
  * The maintained upstream patches: one inventory (native/patches/manifest.json)
- * read by the PowerShell builders, native/patches/patch-identity.cmake and
+ * read by the PowerShell builders, native/patch-identity.cmake and
  * this module.
  *
  * `checkPatchInventory` is `npm run patches:check`: every listed file exists,
