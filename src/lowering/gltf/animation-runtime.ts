@@ -1,4 +1,126 @@
+import ts from "typescript";
+import { sharedUpstreamStore } from "../../upstream-source.js";
+import { LoweringContext } from "../context.js";
+import { lowerPinnedFunction } from "../pinned-function-lowerer.js";
+import { pinnedNumericMathCallsWithHypot } from "../pinned-operators.js";
 import type { GltfLoaderOptions } from "./loader.js";
+
+/**
+ * An animated KHR_lights_punctual light, as the pin builds it: the light is
+ * parented to its source node at the node's origin with the glTF forward
+ * (`gltf-feature-lights-punctual.ts`, the `sourceNode` arm), so its world is
+ * the node's world under the parser's `RH_TO_LH_ROOT`, and its direction is
+ * `writeWorldLightDirection` over that world. The helper, the root matrix
+ * and the local forward all come from the pin.
+ */
+export function gltfAnimatedLightCpp(): {
+    helper: string;
+    root: string;
+    forward: string;
+} {
+    const context = new LoweringContext(sharedUpstreamStore());
+    const helper = lowerPinnedFunction(
+        context,
+        "src/light/light-base.ts",
+        "writeWorldLightDirection",
+        [
+            {
+                pinned: "data",
+                kind: "f32Buffer",
+                cpp: "data",
+                cppType: "std::array<float, 3>",
+                mutableRecord: true,
+            },
+            { pinned: "offset", kind: "number", cpp: "offset" },
+            { pinned: "world", kind: "mat4Const", cpp: "world" },
+            {
+                pinned: "direction",
+                kind: "record",
+                cpp: "direction",
+                cppType: "Vec3",
+                annotation: "ObservableVec3",
+            },
+        ],
+        {
+            cppName: "gltf_write_world_light_direction",
+            returns: "void",
+            calls: pinnedNumericMathCallsWithHypot(),
+            memberBindings: new Map(
+                (["x", "y", "z"] as const).map((axis) => [
+                    `direction.${axis}`,
+                    { cpp: `direction.${axis}`, type: "scalar" },
+                ]),
+            ),
+        },
+    );
+    const parser = "src/loader-gltf/gltf-parser.ts";
+    const parserFile = context.sourceFile(parser);
+    const rootMatrix = context.unwrapExpression(
+        context.variableInitializer(parserFile, "RH_TO_LH_ROOT"),
+    );
+    const rootValues =
+        ts.isNewExpression(rootMatrix) &&
+        rootMatrix.arguments?.length === 1 &&
+        ts.isArrayLiteralExpression(rootMatrix.arguments[0]!) &&
+        rootMatrix.arguments[0].elements.length === 16
+            ? rootMatrix.arguments[0].elements
+            : context.contractError(
+                  rootMatrix,
+                  "Expected RH_TO_LH_ROOT to be a sixteen-lane F32 matrix.",
+              );
+    const lights = "src/loader-gltf/gltf-feature-lights-punctual.ts";
+    const lightsFile = context.sourceFile(lights);
+    const forwards = context
+        .findNodes(
+            lightsFile,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "dir",
+        )
+        .filter((assignment) => {
+            let node: ts.Node = assignment;
+            while (node.parent && !ts.isIfStatement(node.parent)) {
+                node = node.parent;
+            }
+            const guard = node.parent;
+            return (
+                guard !== undefined &&
+                ts.isIfStatement(guard) &&
+                guard.thenStatement === node &&
+                ts.isIdentifier(guard.expression) &&
+                guard.expression.text === "sourceNode"
+            );
+        });
+    const forward = forwards[0]
+        ? context.unwrapExpression(forwards[0].right)
+        : undefined;
+    if (
+        forwards.length !== 1 ||
+        !forward ||
+        !ts.isArrayLiteralExpression(forward) ||
+        forward.elements.length !== 3
+    ) {
+        return context.contractError(
+            lightsFile,
+            "Expected one local light forward in the sourceNode arm.",
+        );
+    }
+    return {
+        helper,
+        root: `std::array<float, 16>{${rootValues
+            .map((value) =>
+                context.floatLiteral(context.numericValue(value, parserFile)),
+            )
+            .join(", ")}}`,
+        forward: `Vec3{${forward.elements
+            .map((value) =>
+                context.floatLiteral(context.numericValue(value, lightsFile)),
+            )
+            .join(", ")}}`,
+    };
+}
 
 /** Native record and Float32 buffer transport around the source animation bodies. */
 export function gltfAnimationRuntimeTypesCpp(
@@ -84,6 +206,7 @@ Matrix gltf_animation_matrix(const GltfAnimationFloats& values,std::size_t index
 export function gltfAnimationPoseTransportCpp(
     options: GltfLoaderOptions,
     cameraRefresh: string,
+    light?: ReturnType<typeof gltfAnimatedLightCpp>,
 ): string {
     return `
         const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer ? ",&engine" : ""}]() {
@@ -100,12 +223,15 @@ export function gltfAnimationPoseTransportCpp(
             };
             for(std::size_t index=0;index<animation_runtime->nodes.size();++index)compute_animated_world(index);
 ${
-    options.animationPointer
+    light
         ? `            for(const auto& binding:animation_runtime->light_nodes) {
                 auto& light=engine.lights.at(binding.light.value);
-                const auto& world=compute_animated_world(binding.node);
-                light.position={-world[12],world[13],world[14]};
-                light.direction=normalize({world[8],-world[9],-world[10]});
+                const Matrix light_world=upstream::matrix_product(
+                    ${light.root},compute_animated_world(binding.node));
+                light.position={light_world[12],light_world[13],light_world[14]};
+                std::array<float,3> direction{};
+                gltf_write_world_light_direction(direction,0.0,light_world,${light.forward});
+                light.direction={direction[0],direction[1],direction[2]};
             }`
         : ""
 }
