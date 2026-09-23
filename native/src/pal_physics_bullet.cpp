@@ -2667,10 +2667,6 @@ void physics_shape_add_child(PhysicsShapeHandle container, PhysicsShapeHandle ch
 #endif
 }
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
-PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle handle) {
-    return shape_at(handle).debug_descriptor;
-}
-
 PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle handle) {
     const auto& body = body_at(handle);
     if (!body.shape)

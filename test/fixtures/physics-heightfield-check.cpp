@@ -25,7 +25,7 @@ int main() {
 
     const auto ground =
         p::physics_shape_create_heightfield(3, 3, {2, 1, 3}, {0, 1, 2, 3, 4, 5, 6, 7, 8});
-    assert((p::physics_shape_debug_descriptor(ground) ==
+    assert((p::shape_at(ground).debug_descriptor ==
             p::PhysicsDebugShapeDescriptor{
                 "HEIGHTFIELD", {3, 3, 2, 1, 3, 0, 1, 2, 3, 4, 5, 6, 7, 8}, {}, {}}));
     auto body = p::physics_body_create();

@@ -11,7 +11,7 @@ void require(bool condition, const char* observation) {
     if (!condition)
         throw std::runtime_error(observation);
 }
-bool observed(const TextGpuResourceCapture& resource, std::size_t byte) {
+bool observed(const GpuResourceCapture& resource, std::size_t byte) {
     for (const auto& range : resource.written_ranges)
         if (byte >= range.offset && byte - range.offset < range.bytes)
             return true;

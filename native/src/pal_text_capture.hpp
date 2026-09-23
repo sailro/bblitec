@@ -4,7 +4,6 @@
 
 namespace bbl::pal {
 
-using TextGpuResourceCapture = GpuResourceCapture;
 struct TextGpuConstantCapture {
     std::uint32_t id = 0;
     double value = 0;

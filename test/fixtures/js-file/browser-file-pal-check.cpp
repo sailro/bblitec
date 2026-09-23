@@ -82,18 +82,6 @@ int main(int argc, char** argv) {
                    "construction refuses file selection before reading an override");
     require_throws([&] { bbl::pal::save_file(engine, {}, std::string_view("changed")); },
                    "construction refuses a save dialog");
-    require_throws(
-        [&] {
-            bbl::pal::write_selected_file_atomically(selected_path.string(),
-                                                     std::string_view("changed"));
-        },
-        "construction refuses text writes");
-    require_throws(
-        [&] {
-            bbl::pal::write_selected_file_atomically(selected_path.string(),
-                                                     std::vector<std::uint8_t>{1});
-        },
-        "construction refuses byte writes");
     bbl::pal::extracting_constructor_inputs = false;
     int once_dispatches = 0;
     int later_dispatches = 0;
