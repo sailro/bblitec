@@ -1,11 +1,13 @@
 {
-  "classStyles": [
+  "styleRules": [
     {
-      "className": "pane",
+      "kind": "class",
+      "primary": "pane",
       "style": "position:relative;min-width:0;width:50%;height:100%;overflow:hidden;"
     },
     {
-      "className": "label",
+      "kind": "class",
+      "primary": "label",
       "style": "position:absolute;top:8px;left:10px;font:12px sans-serif;color:#ddd;padding:2px 6px;background:rgba(0,0,0,0.55);border-radius:3px;pointer-events:none;"
     }
   ],

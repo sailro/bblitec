@@ -1,7 +1,8 @@
 {
-  "classStyles": [
+  "styleRules": [
     {
-      "className": "racer-touch-controls",
+      "kind": "class",
+      "primary": "racer-touch-controls",
       "style": "display:none;"
     }
   ],
