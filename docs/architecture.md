@@ -64,6 +64,8 @@ Escaping callbacks capture copyable handles by value, including handles borrowed
 ## Scene orchestration
 
 `scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
+Executables start with authored live defaults; parity and checks apply the registered query to the same
+executable.
 Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
 belong to scene identity. Property and glTF animation retain separate playback contracts.
 

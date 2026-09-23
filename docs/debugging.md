@@ -1,6 +1,6 @@
 # Diagnosing a scene
 
-Preserve corpus inputs, goldens and thresholds. Match source/module hashes, query, pose, UI and
+Compare at the [reference pose](fidelity.md#the-reference-pose) with matching
 [build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
 
 ## The ladder
@@ -44,8 +44,8 @@ iOS 16.2 WebKit has no WebGPU. Same-Mac Chrome comparisons are cross-platform di
 iOS-browser parity. Viewport, DPR and display dimensions must match; authored supersampling uses
 the browser compositor, never offline PNG resizing.
 
-`BBLITE_TEST_PASS` disables physical input but does not hide SDL windows. Run Windows regression
-captures on an inactive desktop when they must not appear on the user's desktop.
+`BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
+they must not appear on the user's desktop.
 
 ## Captured state and its limits
 
@@ -67,35 +67,18 @@ Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) 
 
 ## Before calling a scene done
 
-Run [validation](development.md#validation), then declared interaction checks on both backends:
+[Integration](development.md#integrating-a-curated-parity-scene) includes the declared interaction checks:
 
 ```powershell
 npm run scene -- observe <check-id>
 npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--keep]
 ```
 
-Checks live in checks/<id>.json; plugins hold scene-specific arithmetic. Phases define frames/input/env;
-expectations compare captures, state, images and logs. A twin builds the unchanged no-query source.
-`observe.captureReady` selects the canvas dataset flag awaited for `captureFrames`.
-Results are in artifacts/check/<id>/. Use numeric checks where small missing objects could pass image gates.
-
-| Area | Check IDs |
-| --- | --- |
-| Picking / splats | scene114 / scene121 |
-| TAA | scene261, scene261-live |
-| Text / live text | scene275 / scene180, scene181 |
-| Node geometry / GPU transport | scene149 / scene149-transport |
-| Local cubemaps | scene186 |
-| Shared canvases | scene227, scene228, antigravity-racer |
-| Workers / repaint rates | offscreen, offscreen-cadence |
-| Physics timing | break-meshes-60, break-meshes-240, break-meshes-live |
-| Heightfields / constraints | scene47 / scene46 |
-| Viewer / queries | scene41 / scene49 |
-| Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
-| Recovery | scene164 |
-| Interactivity | calculator, scene304, doom |
-| Desktop controls | quake, sandblox |
-| Ocean simulation / controls / resolution | ocean / ocean-ui / ocean-resolution |
+Checks live in `checks/<id>.json` (scope in `notes`); plugins hold scene-specific arithmetic. Phases
+define frames/input/env; expectations compare captures, state, images and logs. A twin builds the
+unchanged no-query source. `observe.captureReady` selects the canvas dataset flag awaited for
+`captureFrames`. Results are in artifacts/check/<id>/. Use numeric checks where small missing objects
+could pass image gates.
 
 Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
@@ -124,7 +107,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
 | `BBLITE_DEFORMATION_DUMP` | Supported SDL bone/morph dump |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
-| `BBLITE_SCREENSHOT_FRAMES` | Window-only comma-separated ascending presentation frames before the final screenshot; writes `<stem>.frame-<n>.png` and build-stamp sidecars in the same run; excludes engine-frame capture |
+| `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated presentation frames before the final screenshot, written as `<stem>.frame-<n>.png` with build stamps; excludes engine-frame capture |
 | `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |
@@ -135,7 +118,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
-| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; the executable override reaches every measuring command (`parity`, `geometry`, `memory`, `stability`, `check`, `diff`, `capture --native`, `probe-variants`) |
+| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; `BBLITE_NATIVE_EXE` applies to every measuring command |
 | `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
 | `BBLITE_TEST_PASS` | Nonfocusable test pass: camera controls disabled (set by the harness) |
 | `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
@@ -143,8 +126,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run; `BBLITE_BENCHMARK_FRAMES=0` disables VSync without a frame limit for direct renderers; Window hosts remain display-paced |
 | `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
-Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL
-assertion prompts. Build configuration belongs in [development](development.md).
+Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL assertion prompts.
 
 Android debug intents accept `nativeResolution=true` to bypass the source pixel-ratio cap for
 profiling. Automated captures also bypass it to retain the requested golden dimensions.

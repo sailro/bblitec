@@ -8,6 +8,8 @@ Values describe saved reports, not the current working tree. Verify with `npm ru
 
 Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
 0.5–1 yellow, 1+ red. Repeatability-exempt rows retain their published values.
+Physics rows measure Bullet against Havok: their residuals are solver deltas, not renderer fidelity
+([contract](fidelity.md#physics-contract)).
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -50,15 +52,15 @@ Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
 | 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
-| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Sphere Drop; Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value |
-| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Physics Shape Debug Viewer; Mesh, hull and compound bodies with retained debug overlays; Bullet/Havok free-fall solver delta |
+| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Sphere Drop; Bullet on Havok's sub-steps, speculative landing and rebound |
+| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Physics Shape Debug Viewer; Mesh, hull and compound bodies with retained debug overlays; free fall |
 | 42 | <img src="images/scenes/scene42.png" alt="Scene 42 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Clone Pre-Step |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
-| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Physics Sleeping Towers; Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value |
-| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.039 / 0.074 | 0.039 / 0.074 | Physics Collision Filtering; Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value |
+| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Physics Sleeping Towers |
+| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.039 / 0.074 | 0.039 / 0.074 | Physics Collision Filtering; landing hops under -1 gravity |
 | 46 | <img src="images/scenes/scene46.png" alt="Scene 46 rendering" width="160"> | 0.001 / 0.077 | 0.001 / 0.077 | Physics Constraints; Seven constraint types including radial limits; upstream frame 10. Later trajectories differ between solvers |
 | 47 | <img src="images/scenes/scene47.png" alt="Scene 47 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Physics Heightfield; Heightfield and six falling shape types; upstream frame 1. Later contact trajectories differ between solvers |
-| 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Physics Centre of Mass; Authored centres of mass under a kick, captured mid-topple; Bullet/Havok contact-instant lateral drift, not a renderer-fidelity value |
+| 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Physics Centre of Mass; Authored centres of mass under a kick, captured mid-topple; contact-instant lateral drift |
 | 49 | <img src="images/scenes/scene49.png" alt="Scene 49 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Shape Queries; cylinder/capsule proximity and cast with live rotation, query, orbit and resize controls |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
 | 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
@@ -110,13 +112,13 @@ Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
 | 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Multiply Blend |
 | 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprites |
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
-| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Collision Event; Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value |
-| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Physics Trigger Volume; Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value |
+| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Collision Event; Scene 40 plus the collision event |
+| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Physics Trigger Volume; trigger drop two elastic bounces in; the rebound rule's 0.2% compounding |
 | 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Havok Filtered Raycast; raycast over triangle-soup colliders |
 | 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
 | 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.014 / 0.013 | 0.014 / 0.013 | Havok Character Controller; Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps |
-| 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Havok Character Moving Platform; Character movement and animated platform; Bullet/Havok dynamic-obstacle solver delta |
-| 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.097 | 0.018 / 0.097 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
+| 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Havok Character Moving Platform; Character movement and animated platform |
+| 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.097 | 0.018 / 0.097 | Physics Motion and Prestep Grid; geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
