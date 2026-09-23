@@ -21,6 +21,16 @@ export interface FlagSpec {
     positionals?: number;
 }
 
+/**
+ * The flags every measuring command shares, spelled once: the backend,
+ * the pose and the validation layer. The native executable is chosen by
+ * `BBLITE_NATIVE_EXE`, never a flag, so every command honours it alike.
+ */
+export const MEASURE_FLAGS = {
+    value: ["--backend", "--seek"],
+    boolean: ["--gpu-debug"],
+} as const;
+
 export interface ParsedFlags {
     values: Map<string, string>;
     flags: Set<string>;

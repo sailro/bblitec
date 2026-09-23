@@ -7,6 +7,7 @@ import {
     captureNativePaths,
     defaultCaptureDirectory,
     readSeekMeta,
+    resolvePose,
     writeSeekMeta,
 } from "./tooling/artifacts.js";
 import { resolveNativeExecutable, runMeasured } from "./tooling/native-run.js";
@@ -103,8 +104,7 @@ export function runNativeCapture(
     // The seek pairs the native frame to the browser frame the golden was
     // captured at; without it an animated scene is described at a
     // different pose than the one being diffed against.
-    const seekSeconds =
-        options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
+    const { seekSeconds } = resolvePose(scene, options.seekSeconds);
     // The run deletes the capture, screenshot and stamp it must write;
     // the provenance sidecar is this writer's own and goes with them, so
     // a failed run cannot leave a previous capture looking current.

@@ -5,7 +5,6 @@ import test from "node:test";
 import {
     formatStabilityReport,
     parseParityArguments,
-    parseStabilityArguments,
     withoutVariable,
     type StabilityRunComparison,
 } from "../src/parity-scene.js";
@@ -19,9 +18,9 @@ import {
 } from "../src/tooling/artifacts.js";
 import { nativeCaptureFrameBudget } from "../src/tooling/native-run.js";
 
-// The TL-gaps rungs' parseable pieces: the shared native-capture path
+// The diagnosis tools' parseable pieces: the shared native-capture path
 // trio, the seek-bracket plan, the `--without` composition rules, and
-// the stability arguments and verdict text.
+// the `parity --runs` arguments and verdict text.
 
 test("spells the native-capture path trio once for writer and reader", () => {
     // capture-native.ts writes these and scene-command's diff arm reads
@@ -81,16 +80,16 @@ test("seekBracketPlan steps one frame each way and refuses impossible plans", ()
 
 test("parity --without takes ground|background and nothing else", () => {
     assert.equal(
-        parseParityArguments(["scene33", "--without", "ground"]).without,
+        parseParityArguments(["--without", "ground"]).without,
         "ground",
     );
     assert.equal(
-        parseParityArguments(["scene33", "--without", "background"]).without,
+        parseParityArguments(["--without", "background"]).without,
         "background",
     );
-    assert.equal(parseParityArguments(["scene33"]).without, undefined);
+    assert.equal(parseParityArguments([]).without, undefined);
     assert.throws(
-        () => parseParityArguments(["scene33", "--without", "skybox"]),
+        () => parseParityArguments(["--without", "skybox"]),
         /--without must be ground\|background/,
     );
     assert.equal(withoutVariable("ground"), "BBLITE_GROUND");
@@ -102,46 +101,30 @@ test("parity --without refuses companions that would measure something else", ()
     assert.throws(
         () =>
             parseParityArguments([
-                "s",
                 "--without",
                 "ground",
                 "--actual",
                 "x.png",
+                "--backend",
+                "dawn",
             ]),
-        /no native run for --without/,
+        /--without does not compose with --actual/,
     );
     // The golden keeps the element; recapturing it suppressed would poison
     // every later comparison.
     assert.throws(
         () =>
             parseParityArguments([
-                "s",
                 "--without",
                 "background",
                 "--recapture-reference",
             ]),
         /the golden keeps it/,
     );
-    // The differential fan-out forwards only --gpu-debug.
-    assert.throws(
-        () =>
-            parseParityArguments([
-                "s",
-                "--without",
-                "ground",
-                "--differential",
-            ]),
-        /--differential measures both GPU backends[\s\S]*--without/,
-    );
 });
 
-test("stability arguments: five runs by default, strict overrides", () => {
-    assert.deepEqual(parseStabilityArguments([]), {
-        runs: 5,
-        singleSample: false,
-        gpuDebug: false,
-    });
-    const parsed = parseStabilityArguments([
+test("parity --runs: the stability mode and its strict companions", () => {
+    const parsed = parseParityArguments([
         "--runs",
         "3",
         "--single-sample",
@@ -154,21 +137,14 @@ test("stability arguments: five runs by default, strict overrides", () => {
     assert.equal(parsed.singleSample, true);
     assert.equal(parsed.backend, "sdl_gpu");
     assert.equal(parsed.seekSeconds, 0.75);
+    assert.equal(parseParityArguments([]).runs, undefined);
     assert.throws(
-        () => parseStabilityArguments(["--seek", "later"]),
+        () => parseParityArguments(["--runs", "3", "--seek", "later"]),
         /--seek must be a number/,
     );
     assert.throws(
-        () => parseStabilityArguments(["--runs", "1"]),
-        /--runs must be an integer >= 2/,
-    );
-    assert.throws(
-        () => parseStabilityArguments(["--runs", "many"]),
-        /--runs must be an integer >= 2/,
-    );
-    assert.throws(
-        () => parseStabilityArguments(["--recapture"]),
-        /Unknown stability argument/,
+        () => parseParityArguments(["--runs", "3", "--recapture"]),
+        /Unknown parity argument '--recapture'/,
     );
 });
 

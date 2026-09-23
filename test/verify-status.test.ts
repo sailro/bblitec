@@ -236,6 +236,8 @@ test("verifyStatus returns the wobble-exempt cells with their newest values inst
             writeFileSync(
                 join(parityRoot, id, "report-differential.json"),
                 JSON.stringify({
+                    tool: "parity",
+                    backend: "both",
                     goldenVersusSdlGpu: {
                         fullMad: values[0],
                         foregroundMad: values[1],

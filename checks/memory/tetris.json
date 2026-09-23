@@ -1,0 +1,5 @@
+{
+  "notes": "Shift, rotate and hard-drop pieces continuously, so rows fill, clear and the board's meshes turn over.",
+  "lead": ["-*10"],
+  "cycle": ["ArrowLeft", "-*8", "ArrowUp", "-*8", "ArrowRight", "-*8", "Space", "-*30", "ArrowDown", "-*10"]
+}

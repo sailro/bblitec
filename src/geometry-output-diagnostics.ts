@@ -3,24 +3,24 @@ import { resolve } from "node:path";
 import {
     captureSuiteReference,
     pinnedBrowserEntryUrl,
+    suiteBrowserModuleDigest,
     type SuiteSourceTransform,
 } from "./capture-suite-reference.js";
-import { runNative, usesSeededRandom } from "./parity-scene.js";
+import { capturePin } from "./capture-instrumented.js";
+import { usesSeededRandom } from "./parity-scene.js";
 import {
-    applyGpuBackendEnvironment,
     backendFileToken,
+    captureMetaStaleness,
     parityReportPath,
-    readSeekMeta,
-    resolveBackend,
+    readCaptureMeta,
+    resolvePose,
     writeSeekMeta,
+    type NativeBackend,
 } from "./tooling/artifacts.js";
 import { writeReport } from "./tooling/reports.js";
-import {
-    enableGpuDebug,
-    resolveNativeExecutable,
-} from "./tooling/native-run.js";
+import { resolveNativeExecutable, runMeasured } from "./tooling/native-run.js";
 import { compareImages, generateDiffMap } from "./parity.js";
-import { resolveScene } from "./scene-registry.js";
+import { type SceneDefinition } from "./scene-registry.js";
 
 interface GeometryDiagnosticResult {
     task: string;
@@ -38,8 +38,10 @@ const impostorNamePattern = /"([A-Za-z0-9_]+-impostor-[A-Za-z0-9_]+)"/g;
  * from the scene source. Scenes 145, 146 and 149 build theirs in a loop over a
  * texture array, so the names exist only as
  * `` `sceneNNN-impostor-${entry.name}` `` and never appear literally in the
- * source; the compiler unrolls that loop, so the generated entry point carries
- * every name in the order the scene adds them.
+ * source; the compiler unrolls that loop, so the generated sources carry
+ * every name in the order the scene adds them. The manifest records the
+ * geometry renderer tasks but not the copy tasks' names, so the emitted
+ * `CopyTaskOptions` literals are the one record of them.
  */
 function geometryCopyTasks(generatedDirectory: string): string[] {
     const entryPoint = resolve(generatedDirectory, "main.cpp");
@@ -130,12 +132,25 @@ function taskSlug(task: string): string {
 }
 
 /**
- * The four files one impostor task leaves in the scene's geometry
- * directory, spelled once for the writer and the staleness reader. The
- * browser reference carries no native backend and stays `-lite`; its
- * seek-provenance sidecar sits beside it the way `capture --native`'s
- * does (`captureNativePaths`), and the native/diff pair carry the shared
- * backend filename token.
+ * The browser half of one impostor task in the scene's geometry
+ * directory: the reference carries no native backend and stays `-lite`;
+ * its provenance sidecar sits beside it the way `capture --native`'s does
+ * (`captureNativePaths`).
+ */
+export function geometryReferencePaths(
+    outputDirectory: string,
+    slug: string,
+): { reference: string; referenceMeta: string } {
+    return {
+        reference: resolve(outputDirectory, `${slug}-lite.png`),
+        referenceMeta: resolve(outputDirectory, `${slug}-lite.meta.json`),
+    };
+}
+
+/**
+ * The four files one impostor task leaves per backend, spelled once for
+ * the writer and the staleness reader: the shared browser reference pair
+ * and the native/diff pair carrying the backend filename token.
  */
 export function geometryTaskPaths(
     outputDirectory: string,
@@ -143,108 +158,90 @@ export function geometryTaskPaths(
     token: string,
 ): { reference: string; referenceMeta: string; actual: string; diff: string } {
     return {
-        reference: resolve(outputDirectory, `${slug}-lite.png`),
-        referenceMeta: resolve(outputDirectory, `${slug}-lite.meta.json`),
+        ...geometryReferencePaths(outputDirectory, slug),
         actual: resolve(outputDirectory, `${slug}-native-${token}.png`),
         diff: resolve(outputDirectory, `${slug}-diff-${token}.png`),
     };
 }
 
 /**
- * Why a cached impostor reference is NOT reusable at `wantSeek`, or
- * `undefined` when it is — the same rule `scene -- diff` applies to the
- * native capture before trusting it: reuse on bare existence compared an
- * animated scene's settled browser pose against whatever pose the file
- * happened to hold. `null` means "no seek"; a missing sidecar reads as
- * unknown and forces a recapture.
+ * Why a cached impostor reference is NOT reusable, or `undefined` when it
+ * is: missing, else the provenance rule every browser-evidence reuse path
+ * applies (`captureMetaStaleness`) — the pose, the pin and the served
+ * scene module must all still be the ones the reference was captured
+ * from.
  */
 export function geometryReferenceStaleness(
     referencePath: string,
     metaPath: string,
-    wantSeek: number | null,
+    want: Parameters<typeof captureMetaStaleness>[1],
 ): string | undefined {
     if (!existsSync(referencePath)) return "missing";
-    if (readSeekMeta(metaPath) !== wantSeek) {
-        return "was captured at a different seek (or carries no provenance)";
-    }
-    return undefined;
+    return captureMetaStaleness(readCaptureMeta(metaPath), want);
 }
 
 export interface GeometryDiagnosticsOptions {
+    /** The native backends to measure; the browser references are shared. */
+    backends: readonly NativeBackend[];
     recaptureReference?: boolean;
-    /** `sdl_gpu` (default; `gpu` accepted) or `dawn`; the ambient
-     *  `BBLITE_GPU_BACKEND` variable is the fallback. */
-    backend?: string;
     /**
      * Override the pose for both sides; the default is the registry's
-     * `referenceTimeSeconds`. A cached reference at another pose is
-     * recaptured rather than compared (the rule `diff` applies).
+     * `referenceTimeSeconds` (`resolvePose`). A cached reference at another
+     * pose is recaptured rather than compared.
      */
     seekSeconds?: number;
-    /** The backend's validation layer plus the SDL assertion defusal,
-     *  exactly as the sibling commands' `--gpu-debug`. */
-    gpuDebug?: boolean;
-    /** `--exe` override; `BBLITE_NATIVE_EXE` is the environment
-     *  fallback, then the scene's own Release build. */
-    executable?: string;
 }
 
+/**
+ * `scene -- parity <id> --geometry`: each impostor copy task rendered
+ * alone, browser against native, one report per backend in the scene's
+ * configured parity directory (`<outputDirectory>/geometry/`).
+ */
 export async function runGeometryOutputDiagnostics(
-    idOrSource: string,
-    options: GeometryDiagnosticsOptions = {},
+    scene: SceneDefinition,
+    options: GeometryDiagnosticsOptions,
 ): Promise<void> {
-    const recaptureReference = options.recaptureReference ?? false;
-    if (options.gpuDebug) enableGpuDebug();
-    const backend = resolveBackend(options.backend, "geometry");
-    applyGpuBackendEnvironment(backend);
-    // Backend-produced files carry the shared filename token
-    // (`-gpu`/`-dawn`) so the two backends' attachments sit side by side;
-    // the browser reference has no native backend and stays `-lite`.
-    const token = backendFileToken(backend);
-    const scene = resolveScene(idOrSource);
     const config = scene.parity;
-    // The measured pose, exactly as parity resolves it: the explicit
-    // `--seek` wins, else the registry's pinned pose, else no seek. The
-    // browser capture takes the seconds; the native side reads the same
-    // number through `BBLITE_ANIMATION_SEEK_SECONDS` — the registry's
-    // `nativeEnvironment` already carries the derived copy, and an
-    // explicit seek overrides it after the spread as parity does.
-    const seek = options.seekSeconds ?? config?.referenceTimeSeconds;
+    if (!config) {
+        throw new Error(`Scene '${scene.id}' has no parity definition.`);
+    }
+    const recaptureReference = options.recaptureReference ?? false;
+    // The measured pose, exactly as parity resolves it. The browser capture
+    // takes the seconds; the native side reads the same number through
+    // `BBLITE_ANIMATION_SEEK_SECONDS` — the registry's `nativeEnvironment`
+    // already carries the derived copy, and an explicit seek overrides it
+    // after the spread as parity does.
+    const { seekSeconds: seek } = resolvePose(scene, options.seekSeconds);
     const tasks = geometryCopyTasks(resolve(scene.output));
     if (tasks.length === 0) {
         throw new Error(
             `Scene '${scene.id}' has no geometry-output copy tasks.`,
         );
     }
-    const executable = resolveNativeExecutable(
-        options.executable,
-        scene.buildDirectory,
-    );
-    const outputDirectory = resolve(
-        "artifacts",
-        "parity",
-        scene.id,
-        "geometry",
-    );
+    const executable = resolveNativeExecutable(undefined, scene.buildDirectory);
+    const outputDirectory = resolve(config.outputDirectory, "geometry");
     mkdirSync(outputDirectory, { recursive: true });
-    const results: GeometryDiagnosticResult[] = [];
+    const provenance = {
+        seekSeconds: seek ?? null,
+        pin: capturePin(),
+        moduleSha256: (seekSeconds: number | undefined) =>
+            suiteBrowserModuleDigest(
+                scene.source,
+                seekSeconds,
+                config.referenceAnimationGroups,
+            ),
+    };
+    // The browser half is backend-independent: each task's reference is
+    // captured (or reused) once and measured against every backend.
     for (const task of tasks) {
         const slug = taskSlug(task);
-        const { reference, referenceMeta, actual, diff } = geometryTaskPaths(
+        const { reference, referenceMeta } = geometryReferencePaths(
             outputDirectory,
             slug,
-            token,
         );
-        // The same staleness discipline diff applies: a cached reference
-        // is only evidence at the pose it was captured at, so a stale or
-        // provenance-less one is recaptured rather than compared.
         const staleness = recaptureReference
             ? undefined
-            : geometryReferenceStaleness(
-                  reference,
-                  referenceMeta,
-                  seek ?? null,
-              );
+            : geometryReferenceStaleness(reference, referenceMeta, provenance);
         if (staleness !== undefined && staleness !== "missing") {
             console.log(
                 `Geometry reference ${slug} ${staleness}; recapturing.`,
@@ -257,7 +254,7 @@ export async function runGeometryOutputDiagnostics(
             capture,
             impostorShimTransform(),
             seek,
-            config?.referenceAnimationGroups,
+            config.referenceAnimationGroups,
             {
                 virtualModules: {
                     [impostorShimPath]: impostorShimModule(task),
@@ -267,50 +264,69 @@ export async function runGeometryOutputDiagnostics(
                 // or its impostor references describe different content
                 // than the golden's.
                 seededRandom: usesSeededRandom(scene),
-                ...(config?.referenceSearch !== undefined
+                ...(config.referenceSearch !== undefined
                     ? { search: config.referenceSearch }
                     : {}),
             },
         );
-        if (capture) writeSeekMeta(referenceMeta, seek);
-        runNative(
-            executable,
-            actual,
-            {
-                ...config?.nativeEnvironment,
-                ...(seek !== undefined
-                    ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seek) }
-                    : {}),
-                BBLITE_COPY_TASK: task,
-            },
-            undefined,
-            undefined,
-            resolve(scene.output),
-        );
-        const comparison = compareImages(actual, reference);
-        generateDiffMap(actual, reference, diff);
-        results.push({
-            task,
-            reference,
-            actual,
-            diff,
-            mad: comparison.mad,
-            maxDiff: comparison.maxDiff,
-        });
-        console.log(
-            `${scene.id} ${slug}: MAD=${comparison.mad.toFixed(3)}, ` +
-                `max=${comparison.maxDiff}`,
-        );
+        if (capture) {
+            writeSeekMeta(referenceMeta, seek, {
+                moduleSha256: provenance.moduleSha256(seek),
+                pin: provenance.pin,
+            });
+        }
     }
-    const report = parityReportPath(outputDirectory, token);
-    writeReport(
-        report,
-        {
-            tool: "geometry",
-            backend,
-            generatedDirectory: resolve(scene.output),
-        },
-        { scene: scene.id, results },
-    );
-    console.log(`Report: ${report}`);
+    for (const backend of options.backends) {
+        // Backend-produced files carry the shared filename token
+        // (`-gpu`/`-dawn`) so the two backends' attachments sit side by
+        // side; the browser reference has no native backend and stays
+        // `-lite`.
+        const token = backendFileToken(backend);
+        const results: GeometryDiagnosticResult[] = [];
+        for (const task of tasks) {
+            const slug = taskSlug(task);
+            const { reference, actual, diff } = geometryTaskPaths(
+                outputDirectory,
+                slug,
+                token,
+            );
+            runMeasured(executable, {
+                generatedDirectory: resolve(scene.output),
+                environment: {
+                    ...config.nativeEnvironment,
+                    ...(seek !== undefined
+                        ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seek) }
+                        : {}),
+                    BBLITE_COPY_TASK: task,
+                },
+                backend,
+                screenshot: actual,
+            });
+            const comparison = compareImages(actual, reference);
+            generateDiffMap(actual, reference, diff);
+            results.push({
+                task,
+                reference,
+                actual,
+                diff,
+                mad: comparison.mad,
+                maxDiff: comparison.maxDiff,
+            });
+            console.log(
+                `${scene.id} ${slug} (${backend}): MAD=${comparison.mad.toFixed(3)}, ` +
+                    `max=${comparison.maxDiff}`,
+            );
+        }
+        const report = parityReportPath(outputDirectory, token);
+        writeReport(
+            report,
+            {
+                tool: "geometry",
+                backend,
+                generatedDirectory: resolve(scene.output),
+            },
+            { scene: scene.id, results },
+        );
+        console.log(`Report: ${report}`);
+    }
 }

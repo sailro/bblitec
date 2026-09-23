@@ -10,7 +10,7 @@ import {
     parseDigestBaseline,
 } from "../src/generated-tree.js";
 
-// `scene -- neutrality-generated`: the compile-and-digest half of the
+// `scene -- neutrality --generated`: the compile-and-digest half of the
 // neutrality proof. The bar is the by-hand procedure it replaces — sha1
 // every file under generated/, one `generated/<path>\t<hash>` line each —
 // plus the footgun that procedure kept stepping on: entries no registry

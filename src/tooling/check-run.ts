@@ -86,7 +86,7 @@ export interface CheckVerdict {
     results: ExpectationResult[];
 }
 
-/** The observation report `scene -- observe` writes, as the check reads it. */
+/** The observation report `scene -- check <id> --observe` writes, as the check reads it. */
 export interface ObservationsReport {
     sourceSha256?: string;
     moduleSha256?: string;
@@ -149,9 +149,9 @@ const MEASUREMENT_VARIABLES = [
 ];
 
 /**
- * The environment base a check's phases share: the registry pose first
- * (`docs/debugging.md`: a checker spreads it before its own frame
- * window), then the ad-hoc or fixed clock a check asks for.
+ * The environment base a check's phases share: the registry pose first,
+ * spread before the check's own frame window, then the ad-hoc or fixed
+ * clock a check asks for.
  */
 export function checkEnvironmentBase(
     scene: SceneDefinition,
@@ -305,7 +305,7 @@ function referenceImage(
         const observations = evaluation.observations;
         if (observations === undefined) {
             throw new Error(
-                `'${reference}' needs browser observations; run 'scene -- observe' for this check first`,
+                `'${reference}' needs browser observations; run 'scene -- check <id> --observe' for this check first`,
             );
         }
         const frameMatch = /^frame-(\d+)$/.exec(id);

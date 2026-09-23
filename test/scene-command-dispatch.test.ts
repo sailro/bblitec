@@ -33,16 +33,110 @@ test("help prints the usage generated from the command table and exits 0", () =>
         assert.match(result.stdout, /^Usage: scene-command <command>/);
         assert.match(
             result.stdout,
-            /\n {2}check <check-id> \[--backend <value>\] \[--phase <value>\] \[--keep\]\n/,
+            /\n {2}check <check-id> \[--backend <value>\] \[--phase <value>\] \[--keep\] \[--observe\] \[--headed\]\n/,
         );
         assert.match(
             result.stdout,
-            /\n {2}parity <id\|source\.ts\|all> \[--exe <value>\]/,
+            /\n {2}parity <id\|source\.ts\|all> \[--backend <value>\] \[--seek <value>\]/,
         );
         assert.match(
             result.stdout,
             /\n {2}validate <id\|source\.ts\|all> \[--cold\]\n/,
         );
+    }
+});
+
+test("offers one command per question: the consolidated set, nothing else", () => {
+    const help = sceneCommand("help");
+    assert.equal(help.status, 0, help.stderr);
+    const names = [...help.stdout.matchAll(/^ {2}([a-z]+)\b/gm)].map(
+        (match) => match[1],
+    );
+    assert.deepEqual(names, [
+        "help",
+        "doctor",
+        "setup",
+        "list",
+        "show",
+        "status",
+        "compile",
+        "build",
+        "process",
+        "validate",
+        "clean",
+        "parity",
+        "memory",
+        "capture",
+        "diff",
+        "diagnose",
+        "check",
+        "measure",
+        "probe",
+        "neutrality",
+        "survey",
+    ]);
+    // Each retired command is refused, not silently mapped.
+    for (const retired of [
+        "stability",
+        "geometry",
+        "uniforms",
+        "compose",
+        "observe",
+        "probe-variants",
+        "neutrality-generated",
+    ]) {
+        const result = sceneCommand(retired, "scene1");
+        assert.equal(result.status, 1, retired);
+        assert.match(result.stderr, new RegExp(`Unknown command '${retired}'`));
+    }
+});
+
+test("refuses flag combinations across the consolidated readings", () => {
+    const refusals: Array<[string[], RegExp]> = [
+        [
+            ["diff", "scene1", "--uniforms", "--compose"],
+            /--uniforms and --compose are separate readings/,
+        ],
+        [["diff", "scene1", "--size", "64"], /--size does not apply/],
+        [
+            ["diff", "scene1", "--uniforms", "--backend", "dawn"],
+            /--backend does not apply to --uniforms/,
+        ],
+        [
+            ["diff", "scene1", "--compose", "--recapture"],
+            /--recapture does not apply to --compose/,
+        ],
+        [["diff", "all"], /'all' applies to --compose only/],
+        [
+            ["check", "scene149", "--observe", "--keep"],
+            /--keep selects native phases and does not compose with --observe/,
+        ],
+        [
+            ["check", "scene149", "--headed"],
+            /--headed shows the browser of --observe/,
+        ],
+        [
+            ["neutrality", "baseline.txt", "--write"],
+            /--write saves a generated-tree baseline and rides --generated/,
+        ],
+        [
+            ["probe", "scene1", "--shader", "x", "--backend", "dawn"],
+            /Unknown probe argument '--backend'/,
+        ],
+        [
+            ["parity", "all", "--runs", "3"],
+            /--runs requires one scene id or source path/,
+        ],
+        [
+            ["parity", "scene1", "--differential"],
+            /Unknown parity argument '--differential'/,
+        ],
+        [["survey", "no-such-entry.ts"], /survey: no TypeScript entry at /],
+    ];
+    for (const [invocation, message] of refusals) {
+        const result = sceneCommand(...invocation);
+        assert.equal(result.status, 1, invocation.join(" "));
+        assert.match(result.stderr, message, invocation.join(" "));
     }
 });
 
