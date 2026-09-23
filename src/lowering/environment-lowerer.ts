@@ -434,7 +434,7 @@ namespace bbl {
 
 namespace {
 
-${lowerWorldAabbHelpers(this.context)}
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: false })}
 
 // The pinned expansion over one mesh's local geometry box and its live
 // float32 world matrix, into the scene-size bounds. Keeping that transform

@@ -473,7 +473,7 @@ test("the lowered world-bounds expansion matches the pinned one", async (t) => {
 #include <limits>
 #include <optional>
 namespace {
-${lowerWorldAabbHelpers(new LoweringContext())}
+${lowerWorldAabbHelpers(new LoweringContext(), { emptyAccumulator: true })}
 }
 int main() {
     std::cout << std::setprecision(17);
@@ -583,6 +583,7 @@ test("a changed framing scale or free-camera orientation flows into its factory"
                 "transformedRadius += Math.abs(coefficient) * extent[column]!;",
                 "transformedRadius += coefficient * extent[column]!;",
             ),
+            { emptyAccumulator: false },
         ),
         /transformedRadius \+= \(coefficient \* static_cast<double>/,
     );

@@ -95,7 +95,8 @@ export function worldAabbLaneBindings(
  * `expandWorldAabbForMesh`, in JavaScript-number width over the pin's
  * Float32Array boxes and world matrix. `WorldAabbMesh` carries the three
  * `Mesh` members the expansion reads; each caller fills it from its native
- * record. Emitted into an anonymous namespace by every unit that needs it.
+ * record. Emitted into an anonymous namespace by every unit that needs it;
+ * `emptyAccumulator` adds `emptyWorldAabb` for a unit that seeds its own.
  *
  * `mesh._expandWorldBounds` is the thin-instance hook
  * `enableThinInstanceWorldBounds` installs. No native record carries one:
@@ -103,7 +104,10 @@ export function worldAabbLaneBindings(
  * and bakes the expanded world box into the loaded geometry, and scene code
  * cannot reach the public enabler.
  */
-export function lowerWorldAabbHelpers(context: LoweringContext): string {
+export function lowerWorldAabbHelpers(
+    context: LoweringContext,
+    options: { emptyAccumulator: boolean },
+): string {
     const lanes = accumulatorLanes(context);
     const body = (
         symbol: string,
@@ -266,7 +270,12 @@ export function lowerWorldAabbHelpers(context: LoweringContext): string {
             ]),
         },
     );
-    return `// ${context.provenance(boundsModule, "emptyWorldAabb, addRange, expandWorldAabbForMesh")}
+    const symbols = [
+        ...(options.emptyAccumulator ? ["emptyWorldAabb"] : []),
+        "addRange",
+        "expandWorldAabbForMesh",
+    ];
+    return `// ${context.provenance(boundsModule, symbols.join(", "))}
 // The accumulator's keys (${lanes.join(", ")}) are lanes of one array.
 using WorldAabb = std::array<double, ${lanes.length}>;
 
@@ -278,11 +287,15 @@ struct WorldAabbMesh {
     std::array<float, 16> world_matrix{};
 };
 
-WorldAabb empty_world_aabb() {
+${
+    options.emptyAccumulator
+        ? `WorldAabb empty_world_aabb() {
 ${empty}
 }
 
-void world_aabb_add_range(WorldAabb& acc, double axis, double center, double radius) {
+`
+        : ""
+}void world_aabb_add_range(WorldAabb& acc, double axis, double center, double radius) {
 ${addRange}
 }
 

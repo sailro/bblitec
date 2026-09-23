@@ -841,7 +841,7 @@ CameraHandle create_banked_free_camera(
 namespace bbl {
 namespace {
 
-${lowerWorldAabbHelpers(this.context)}
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
 // The Mesh members the framing reads, off the native record. A loaded glTF
 // primitive keeps its node world baked into its vertices, so its box is
