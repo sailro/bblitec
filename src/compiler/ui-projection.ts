@@ -155,6 +155,7 @@ interface UiProjectionContext extends Pick<
     | "lookupOptional"
     | "options"
     | "pinValueToTemporary"
+    | "probeEmission"
     | "reachFeature"
     | "registerAsset"
     | "reachJsData"
@@ -432,9 +433,21 @@ export class UiProjection {
         return undefined;
     }
 
+    private uiElementMetadata(
+        expression: ts.Expression,
+    ): { tag: string | undefined } | undefined {
+        let metadata: { tag: string | undefined } | undefined;
+        this.context.probeEmission(() => {
+            const element = this.uiElementValue(expression);
+            if (element?.kind === "ui-element")
+                metadata = { tag: element.uiTag };
+            return undefined;
+        });
+        return metadata;
+    }
+
     public uiCreatedElementTag(expression: ts.Expression): string | undefined {
-        const resolvedElement = this.uiElementValue(expression);
-        const direct = resolvedElement?.uiTag;
+        const direct = this.uiElementMetadata(expression)?.tag;
         if (direct) return direct;
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return undefined;
@@ -493,13 +506,13 @@ export class UiProjection {
             return this.context.lookupOptional(value)?.kind === "ui-element";
         }
         if (ts.isPropertyAccessExpression(value)) {
-            return this.uiElementValue(value)?.kind === "ui-element";
+            return this.uiElementMetadata(value) !== undefined;
         }
         if (!ts.isCallExpression(value)) return false;
         // Classifying a lookup must not evaluate its ID argument. The normal
         // call lowerer owns those effects when the expression is reached.
         if (this.isNativeHostUiLookup(value)) return true;
-        if (this.uiElementValue(value)?.kind === "ui-element") {
+        if (this.uiElementMetadata(value) !== undefined) {
             return true;
         }
         const callee = this.context.unwrap(value.expression);

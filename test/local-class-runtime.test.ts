@@ -857,7 +857,7 @@ test("gives two instances of one class-field callback two identities", () => {
     assert.notEqual(identities[0], identities[1]);
 });
 
-test("keeps callback-producing functions on the per-call inliner", () => {
+test("shared callback-producing functions allocate identity on each call", () => {
     const result = compileSource(`
         ${workspaceOverParts}
         function attach(part: Part): void {
@@ -873,9 +873,12 @@ test("keeps callback-producing functions on the per-call inliner", () => {
         const unused = workspace.parts.length;
     `);
 
-    const identities = callbackIdentities(result.cpp);
-    assert.equal(identities.length, 2);
-    assert.notEqual(identities[0], identities[1]);
+    assert.equal(
+        result.cpp.match(
+            /Callback<void\(\)> \w+\{bbl::js::next_callback_identity\(\),/g,
+        )?.length,
+        1,
+    );
     assert.doesNotMatch(result.cpp, /void attach\(/);
 });
 

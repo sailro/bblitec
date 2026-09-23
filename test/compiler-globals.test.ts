@@ -33,6 +33,7 @@ test("a scene binding named Math is the scene's own value", () => {
         ),
         { fileName: "scene-math.ts" },
     );
-    assert.match(result.cpp, /position\.x = \(3\.7 \+ 100\.0\);/);
+    assert.match(result.cpp, /return \(v_fn\d+_value \+ 100\.0\);/);
+    assert.match(result.cpp, /make_closure\([^\n]+\)\(3\.7\)/);
     assert.doesNotMatch(result.cpp, /position\.x = 3\.0;/);
 });

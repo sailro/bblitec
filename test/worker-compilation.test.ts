@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
+    buildNativeFixture,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -20,14 +21,15 @@ test("module Worker compilation retains per-instance module state and cloned mes
         helper,
         `let count = 0;
 export function increment(value: number): number { count += value; return count; }
+export function adjust(value: number): number { return value + 1; }
 `,
     );
     writeFileSync(
         worker,
-        `import { increment } from "./state";
+        `import { increment, adjust } from "./state";
 function main() { throw new Error("Module helper named main must not run automatically"); }
 async function update(amount: number): Promise<number> {
-    const value = increment(amount);
+    const value = increment(adjust(amount));
     const settled = { value: 0 };
     queueMicrotask(() => { settled.value = value; });
     await Promise.resolve(0);
@@ -46,13 +48,13 @@ let received = 0;
 let firstCount = 0;
 let secondCount = 0;
 first.addEventListener("message", (event: MessageEvent<number>) => {
-    firstCount += 2;
+    firstCount += 3;
     if (event.data !== firstCount) throw new Error("First instance state or clone snapshot is wrong");
     received++;
     if (received === 4) globalThis.close();
 });
 second.addEventListener("message", (event: MessageEvent<number>) => {
-    secondCount += 2;
+    secondCount += 3;
     if (event.data !== secondCount) throw new Error("Second instance state or clone snapshot is wrong");
     received++;
     if (received === 4) globalThis.close();
@@ -76,15 +78,34 @@ message.amount = 100;
             .length,
         1,
     );
-    const cpp = resolve(directory, "main.cpp");
-    writeFileSync(cpp, result.cpp);
+    for (const [path, cpp] of result.cppFiles) {
+        const full = resolve(directory, path);
+        mkdirSync(dirname(full), { recursive: true });
+        writeFileSync(full, cpp);
+    }
+    const sources = result.manifest.sourceUnits.map(({ path }) =>
+        resolve(directory, path),
+    );
+    assert.deepEqual(
+        result.manifest.sourceUnits.map(({ path }) => path),
+        [
+            "main.cpp",
+            "sources/workers/counter/main.cpp",
+            "sources/workers/counter/sources/state.cpp",
+        ],
+    );
+    assert.ok(
+        result.manifest.sourceUnits.some(
+            ({ source, realm }) => source.endsWith("state.ts") && realm,
+        ),
+    );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Requires the Windows native fixture compiler.");
         return;
     }
     const executable = resolve(directory, "check.exe");
-    runNativeFixtureCompiler(tools, [
+    const flags = [
         "/nologo",
         "/std:c++20",
         "/EHsc",
@@ -93,10 +114,8 @@ message.amount = 100;
         "/MD",
         "/DBBLITE_WORKERS=1",
         `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-    ]);
+    ];
+    buildNativeFixture(tools, sources, executable, flags);
     assert.equal(
         execFileSync(executable, {
             encoding: "utf8",
@@ -113,19 +132,7 @@ message.amount = 100;
     } catch {
         return;
     }
-    runNativeFixtureCompiler(clang, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-    ]);
+    buildNativeFixture(clang, sources, executable, flags);
     assert.equal(
         execFileSync(executable, {
             encoding: "utf8",
@@ -133,6 +140,31 @@ message.amount = 100;
             stdio: "pipe",
         }),
         "",
+    );
+});
+
+test("worker output paths distinguish equal module basenames without IDs", () => {
+    const directory = resolve("artifacts/worker-source-paths");
+    for (const folder of ["left", "right"]) {
+        mkdirSync(resolve(directory, folder), { recursive: true });
+        writeFileSync(resolve(directory, folder, "worker.ts"), "self.close();");
+    }
+    const result = compileSource(
+        `
+        const first = new Worker(new URL("./left/worker.ts", import.meta.url), {type:"module"});
+        const second = new Worker(new URL("./right/worker.ts", import.meta.url), {type:"module"});
+        first.terminate();
+        second.terminate();
+    `,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    assert.deepEqual(
+        result.manifest.sourceUnits.map(({ path }) => path),
+        [
+            "main.cpp",
+            "sources/workers/left/worker/main.cpp",
+            "sources/workers/right/worker/main.cpp",
+        ],
     );
 });
 

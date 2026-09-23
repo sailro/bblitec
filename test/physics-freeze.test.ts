@@ -99,7 +99,7 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     // and the engine stop inside it survives; the canvas write does not.
     assert.match(
         main,
-        /bbl::defer_callback\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) \{/,
+        /bbl::defer_callback\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, bblscene::v_bblite_closure_body_\d+\)\)/,
     );
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
     assert.doesNotMatch(main, /captureReady/);
@@ -118,8 +118,9 @@ test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
     );
     assert.match(
         main,
-        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& (\w+)\) \{\s*auto& v_engine = std::get<0>\(\1\)\.get\(\);\s*bbl::stop_engine\(v_engine\);\s*\}\), 1000\)/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, bblscene::v_bblite_closure_body_\d+\), 1000\)/,
     );
+    assert.match(main, /bbl::stop_engine\(v_engine\)/);
 });
 
 test("a deferred callback cannot capture the frame that queued it", () => {

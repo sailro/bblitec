@@ -117,7 +117,7 @@ test("returned canvas proxy keeps its dispatcher in orbit-control closures", () 
     `).cpp;
     assert.doesNotMatch(cpp, /pointer_drag_state\(nullptr/);
     const dispatcher = cpp.match(
-        /auto (\w+) = bbl::create_pointer_drag_dispatcher/,
+        /std::shared_ptr<bbl::PointerDragDispatcher> (\w+) = bbl::create_pointer_drag_dispatcher/,
     )!;
     assert.ok(dispatcher);
     assert.ok(cpp.includes(`pointer_drag_state(${dispatcher[1]}, 0u)`));

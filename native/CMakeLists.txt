@@ -328,6 +328,9 @@ endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
 set(BBLITE_ENTRY_SOURCE "${BBLITE_GENERATED_DIR}/main.cpp")
+# The platform wrapper includes main.cpp; every other application unit is compiled normally.
+set(BBLITE_APPLICATION_UNITS ${BBLITE_APPLICATION_SOURCES})
+list(REMOVE_ITEM BBLITE_APPLICATION_UNITS "${BBLITE_GENERATED_DIR}/main.cpp")
 if(ANDROID)
     set(BBLITE_ENTRY_SOURCE "${BBLITE_NATIVE_ROOT}/src/pal_android_main.cpp")
     add_library(bblite_native SHARED "${BBLITE_ENTRY_SOURCE}")
@@ -356,6 +359,7 @@ target_sources(
     "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
     ${BBLITE_RUNTIME_SOURCES}
     ${BBLITE_GENERATED_SOURCES}
+    ${BBLITE_APPLICATION_UNITS}
 )
 target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
 target_compile_definitions(bblite_features INTERFACE BBLITE_CHECKED_HANDLES=$<BOOL:${BBLITE_CHECKED_HANDLES}>)
@@ -367,6 +371,7 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         "${BBLITE_ENTRY_SOURCE}"
         "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
         ${BBLITE_GENERATED_SOURCES}
+        ${BBLITE_APPLICATION_UNITS}
         PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
 else()
     target_include_directories(bblite_native PRIVATE "${BBLITE_GENERATED_DIR}/upstream/include")
@@ -416,7 +421,7 @@ if(MSVC)
     # diagnostic only for generated application code, while the PAL remains
     # warning-clean under /W4 /WX.
     set_source_files_properties(
-        "${BBLITE_GENERATED_DIR}/main.cpp"
+        "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
         PROPERTIES COMPILE_OPTIONS "/wd4702"
     )
 endif()
@@ -1091,19 +1096,12 @@ else()
     target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
-# The optimization level of the generated application unit alone. The
-# lowered main.cpp of the largest demos is the one object that bounds a
-# population rebuild (antigravity-racer's takes minutes under -O2 while
-# every PAL unit is done in seconds); `O1` compiles it at -O1 and leaves
-# the PAL and the generated upstream units at the configuration's level.
-# `configuration` keeps the configuration's level everywhere. Measured on
-# antigravity-racer and tetris with the differential parity gate before
-# the default was chosen; the shipping shape keeps its own /O1 below.
+# Optimization of generated application units, independently of PAL/upstream units.
 set(
     BBLITE_MAIN_OPT
     "configuration"
     CACHE STRING
-    "Optimization of the generated main.cpp: configuration or O1"
+    "Optimization of generated application sources: configuration or O1"
 )
 set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
 if(BBLITE_MAIN_OPT STREQUAL "O1")
@@ -1116,7 +1114,7 @@ if(BBLITE_MAIN_OPT STREQUAL "O1")
             set(BBLITE_MAIN_OPT_FLAGS -O1)
         endif()
         set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}"
+            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
             APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
         )
         # A unit compiled at another level cannot consume the tree's PCH
@@ -1124,7 +1122,7 @@ if(BBLITE_MAIN_OPT STREQUAL "O1")
         # the generated unit includes what it needs itself, as the shipping
         # build without a PCH proves every time.
         set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}"
+            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
             PROPERTY SKIP_PRECOMPILE_HEADERS ON
         )
     endif()

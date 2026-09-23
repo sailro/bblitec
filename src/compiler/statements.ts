@@ -47,7 +47,7 @@ import {
     thrownMessage,
 } from "./error-values.js";
 import { emitStringAppend } from "./expressions.js";
-import { isStringValue } from "./types.js";
+import { commonResourceValue, isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -266,23 +266,6 @@ function bodyStatements(
         : [statement.statement];
 }
 
-// Small counted loops unroll because that keeps generation-known values
-// available to scene composition. Large loops stay native when they are only
-// data processing, but a body that reaches pinned scene construction must
-// still run at generation: emitting such a body once inside C++ would record
-// one AOT effect for many runtime iterations.
-const MAX_STATIC_INDEX_ITERATIONS = 32;
-// A data-only nest can contain individually small loops whose Cartesian
-// product is still large. Keep the outer layers native once that product
-// exceeds the largest established static nest (16 * 16 * 4), so large
-// voxel/grid walks do not duplicate their native inner body hundreds of
-// times during compilation.
-const MAX_DATA_STATIC_INDEX_NEST_PRODUCT = 1024;
-// Try a native body before expanding a resource nest past this threshold.
-// The residual static paths also have a compilation-wide hard limit, owned by
-// StaticExpansionBudget; the product is only an optimization threshold.
-const MAX_STATIC_UNROLL_PRODUCT = 256;
-const MIN_FOLD_ITERATIONS = 4;
 const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
     "%=": "remainder_js",
     "&=": "bitwise_and",
@@ -317,73 +300,12 @@ export class StatementLowerer {
         iteration: ts.IterationStatement;
         completion: "normal" | "break" | "continue";
     }> = emissionArray([]);
-    /**
-     * The running product of enclosing static unroll counts. Each unroller
-     * pushes its own count multiplied in, so a nested loop reads the number
-     * of times its body will be emitted rather than only its own count.
-     */
-    private readonly staticUnrollProducts: number[] = emissionArray([]);
-
-    /** How many times a body emitted here appears in the output. */
-    private staticUnrollProduct(): number {
-        return this.staticUnrollProducts.at(-1) ?? 1;
-    }
-
-    /** Runs one unroller's whole iteration sweep under its nest product. */
-    private withStaticUnrollProduct<T>(
-        iterations: number,
-        emitIterations: () => T,
-    ): T {
-        this.staticUnrollProducts.push(
-            this.staticUnrollProduct() * Math.max(1, iterations),
-        );
-        try {
-            return emitIterations();
-        } finally {
-            this.staticUnrollProducts.pop();
-        }
-    }
-
-    /**
-     * Whether unrolling `iterations` more bodies warrants a capture-and-fold
-     * attempt. The separate compilation-wide budget bounds its fallback.
-     */
-    private exceedsStaticUnrollBudget(iterations: number): boolean {
-        return (
-            iterations >= 2 &&
-            iterations * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT
-        );
-    }
-
-    private shouldFoldStaticIterations(iterations: number): boolean {
-        return (
-            iterations >= MIN_FOLD_ITERATIONS ||
-            this.exceedsStaticUnrollBudget(iterations)
-        );
-    }
 
     private preferNativeDataIteration(
         context: StatementLoweringContext,
         statement: ts.IterationStatement,
-        iterations: number,
     ): boolean {
-        if (
-            iterations < 2 ||
-            context.requiresStaticDataIteration(statement.statement)
-        )
-            return false;
-        if (context.prefersNativeDataIteration()) return true;
-        if (this.shouldFoldStaticIterations(iterations)) return true;
-        const allowance =
-            MAX_STATIC_UNROLL_PRODUCT /
-            (iterations * this.staticUnrollProduct());
-        let nodes = 0;
-        walkReachedLoopNodes(
-            context,
-            statement.statement,
-            () => ++nodes <= allowance,
-        );
-        return nodes > allowance;
+        return !context.requiresStaticDataIteration(statement.statement);
     }
 
     private plainIterationData(
@@ -1650,13 +1572,7 @@ export class StatementLowerer {
         statement: ts.ForStatement,
     ): void {
         const plan = context.parameterizedResourceLoop(statement);
-        if (
-            plan &&
-            (this.shouldFoldStaticIterations(plan.iterations) ||
-                plan.expansion * this.staticUnrollProduct() >
-                    MAX_STATIC_UNROLL_PRODUCT ||
-                context.isInParameterizedResourceLoop())
-        ) {
+        if (plan) {
             context.emitParameterizedResourceLoop(
                 statement,
                 plan.iterations,
@@ -1854,10 +1770,14 @@ export class StatementLowerer {
         const reachesResource = context.requiresStaticIteration(
             statement.statement,
         );
-        let requiresStaticIteration =
+        const requiresStaticIteration =
             staticControl ||
+            (reachesResource &&
+                !context.isRuntimeResourceConstruction() &&
+                !context.prefersNativeDataIteration()) ||
             context.requiresStaticDataIteration(statement.statement) ||
             containsFrameYield(context, statement.statement);
+        if (!requiresStaticIteration) return false;
         const length = context.compileValue(endExpression);
         const bound = context.unwrap(endExpression);
         const cardinality =
@@ -1881,10 +1801,6 @@ export class StatementLowerer {
         ) {
             return false;
         }
-        requiresStaticIteration ||=
-            reachesResource &&
-            !context.isInRuntimeControlFlow() &&
-            iterations <= MAX_STATIC_INDEX_ITERATIONS;
         if (
             requiresStaticIteration &&
             loopBoundMayChange(context, statement.statement, endExpression)
@@ -1894,16 +1810,6 @@ export class StatementLowerer {
                 "A static resource loop requires an invariant bound; " +
                     "the body or a called helper can change this bound.",
             );
-        }
-        // Once an enclosing runtime branch or loop owns execution, a
-        // data-only counted loop gains nothing from generation-time
-        // unrolling. Keeping it native also prevents small inner grid walks
-        // from being duplicated inside each runtime iteration.
-        if (context.isInRuntimeControlFlow() && !requiresStaticIteration) {
-            return false;
-        }
-        if (end > MAX_STATIC_INDEX_ITERATIONS && !requiresStaticIteration) {
-            return false;
         }
         let indexMutation: ts.Node | undefined;
         walkReachedLoopNodes(context, statement.statement, (node) => {
@@ -1934,17 +1840,6 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
-        if (
-            !requiresStaticIteration &&
-            (this.preferNativeDataIteration(context, statement, iterations) ||
-                this.exceedsDataStaticIndexNest(
-                    context,
-                    statement.statement,
-                    iterations,
-                ))
-        ) {
-            return false;
-        }
         const emitIndexIteration = (
             index: number,
         ): "normal" | "break" | "continue" => {
@@ -1961,66 +1856,10 @@ export class StatementLowerer {
                 },
             );
         };
-        this.withStaticUnrollProduct(iterations, () => {
-            for (let offset = 0; offset < iterations; offset += 1) {
-                if (emitIndexIteration(start + offset) === "break") break;
-            }
-        });
+        for (let offset = 0; offset < iterations; offset += 1) {
+            if (emitIndexIteration(start + offset) === "break") break;
+        }
         return true;
-    }
-
-    /**
-     * Whether statically counted loops below this body form a data walk too
-     * large to duplicate at generation. Static constant resolution is
-     * side-effect free. An unresolved or runtime-shaped nested iteration
-     * has an unknown Cartesian product, so conservatively keep its enclosing
-     * data-only loop native as well.
-     */
-    private exceedsDataStaticIndexNest(
-        context: StatementLoweringContext,
-        body: ts.Statement,
-        iterations: number,
-    ): boolean {
-        let exceeded = false;
-        const visit = (node: ts.Node, product: number): void => {
-            if (exceeded || ts.isFunctionLike(node)) return;
-            if (ts.isForStatement(node)) {
-                const shape = staticIndexLoopShape(context.symbols, node);
-                if (shape) {
-                    const resolved = context.resolveStaticExpression(shape.end);
-                    if (ts.isNumericLiteral(resolved)) {
-                        const end = Number(resolved.text);
-                        const count = staticIndexLoopIterations(shape, end);
-                        if (count !== undefined) {
-                            const nestedProduct = product * count;
-                            if (
-                                nestedProduct >
-                                MAX_DATA_STATIC_INDEX_NEST_PRODUCT
-                            ) {
-                                exceeded = true;
-                                return;
-                            }
-                            visit(node.statement, nestedProduct);
-                            return;
-                        }
-                    }
-                }
-                exceeded = true;
-                return;
-            }
-            if (
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isDoStatement(node)
-            ) {
-                exceeded = true;
-                return;
-            }
-            ts.forEachChild(node, (child) => visit(child, product));
-        };
-        visit(body, iterations);
-        return exceeded;
     }
 
     private emitWhile(
@@ -2118,14 +1957,7 @@ export class StatementLowerer {
         );
         if (runtimeCardinality === 0) return;
         const plan = context.parameterizedResourceLoop(statement);
-        if (
-            plan &&
-            (this.shouldFoldStaticIterations(plan.iterations) ||
-                plan.expansion * this.staticUnrollProduct() >
-                    MAX_STATIC_UNROLL_PRODUCT ||
-                runtimeCardinality !== undefined ||
-                context.isInParameterizedResourceLoop())
-        ) {
+        if (plan) {
             let emitted = false;
             context.emitParameterizedResourceLoop(
                 statement,
@@ -2224,11 +2056,7 @@ export class StatementLowerer {
             );
         }
         const values = context.expectStaticArrayLiteral(statement.expression);
-        const compiled = this.preferNativeDataIteration(
-            context,
-            statement,
-            values.elements.length,
-        )
+        const compiled = this.preferNativeDataIteration(context, statement)
             ? values.elements.map((element) => context.compileValue(element))
             : undefined;
         if (
@@ -2273,11 +2101,9 @@ export class StatementLowerer {
                 },
             );
         };
-        this.withStaticUnrollProduct(values.elements.length, () => {
-            for (const [index, element] of values.elements.entries()) {
-                emitElementIteration(element, index);
-            }
-        });
+        for (const [index, element] of values.elements.entries()) {
+            emitElementIteration(element, index);
+        }
     }
 
     private emitStaticResourceExitForOf(
@@ -2346,22 +2172,20 @@ export class StatementLowerer {
                 "A static resource-loop exit requires settled iteration values.",
             );
         }
-        this.withStaticUnrollProduct(values.length, () => {
-            for (const value of values) {
-                const completion = this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () =>
-                        this.bindStaticIterationValue(
-                            context,
-                            declaration.name,
-                            value,
-                        ),
-                );
-                if (completion === "break") break;
-            }
-        });
+        for (const value of values) {
+            const completion = this.emitUnrolledIteration(
+                context,
+                statement,
+                statement.statement,
+                () =>
+                    this.bindStaticIterationValue(
+                        context,
+                        declaration.name,
+                        value,
+                    ),
+            );
+            if (completion === "break") break;
+        }
         return true;
     }
 
@@ -2567,11 +2391,7 @@ export class StatementLowerer {
             return this.emitRuntimeForOf(context, statement, declaration);
         }
         if (
-            this.preferNativeDataIteration(
-                context,
-                statement,
-                elements.length,
-            ) &&
+            this.preferNativeDataIteration(context, statement) &&
             elements.every((value) =>
                 this.plainIterationData(context, value),
             ) &&
@@ -2585,38 +2405,36 @@ export class StatementLowerer {
                 "break/continue in for...of requires a runtime data container.",
             );
         }
-        this.withStaticUnrollProduct(elements.length, () => {
-            for (const [index, element] of elements.entries()) {
-                const indexValue: Value = {
-                    kind: "number",
-                    cpp: doubleLiteral(index),
-                    staticNumber: index,
-                    dataType: { kind: "number" },
-                };
-                const value: Value =
-                    method === "keys"
-                        ? indexValue
-                        : method === "values"
-                          ? element
-                          : {
-                                kind: "tuple",
-                                cpp: "",
-                                tupleElements: [indexValue, element],
-                            };
-                const completion = this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () =>
-                        this.bindStaticIterationValue(
-                            context,
-                            declaration.name,
-                            value,
-                        ),
-                );
-                if (completion === "break") break;
-            }
-        });
+        for (const [index, element] of elements.entries()) {
+            const indexValue: Value = {
+                kind: "number",
+                cpp: doubleLiteral(index),
+                staticNumber: index,
+                dataType: { kind: "number" },
+            };
+            const value: Value =
+                method === "keys"
+                    ? indexValue
+                    : method === "values"
+                      ? element
+                      : {
+                            kind: "tuple",
+                            cpp: "",
+                            tupleElements: [indexValue, element],
+                        };
+            const completion = this.emitUnrolledIteration(
+                context,
+                statement,
+                statement.statement,
+                () =>
+                    this.bindStaticIterationValue(
+                        context,
+                        declaration.name,
+                        value,
+                    ),
+            );
+            if (completion === "break") break;
+        }
         return true;
     }
 
@@ -2653,11 +2471,7 @@ export class StatementLowerer {
         }
         if (elements.length === 0) return true;
         if (
-            this.preferNativeDataIteration(
-                context,
-                statement,
-                elements.length,
-            ) &&
+            this.preferNativeDataIteration(context, statement) &&
             elements.every((value) =>
                 this.plainIterationData(context, value),
             ) &&
@@ -2692,22 +2506,20 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        this.withStaticUnrollProduct(elements.length, () => {
-            for (const element of elements) {
-                this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () => {
-                        this.bindStaticIterationValue(
-                            context,
-                            declaration.name,
-                            element,
-                        );
-                    },
-                );
-            }
-        });
+        for (const element of elements) {
+            this.emitUnrolledIteration(
+                context,
+                statement,
+                statement.statement,
+                () => {
+                    this.bindStaticIterationValue(
+                        context,
+                        declaration.name,
+                        element,
+                    );
+                },
+            );
+        }
         return true;
     }
 
@@ -2718,10 +2530,7 @@ export class StatementLowerer {
         declaration: ts.VariableDeclaration,
         elements: readonly Value[],
     ): boolean {
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !this.shouldFoldStaticIterations(elements.length)
-        )
+        if (!ts.isIdentifier(declaration.name) || elements.length === 0)
             return false;
         const binding = declaration.name;
         const kind = elements[0]!.kind;
@@ -2773,6 +2582,10 @@ export class StatementLowerer {
                     elementCppType: cppType,
                     engineCpp,
                     temporaryLabel: "handle_table_member",
+                    elementTemplate: commonResourceValue(
+                        elements[0]!,
+                        elements,
+                    ),
                 },
                 binding,
                 () => this.emitScopedBody(context, statement.statement),
@@ -2977,46 +2790,41 @@ export class StatementLowerer {
                 name: iterator,
                 initializer: `${range}.begin()`,
             });
-            this.withStaticUnrollProduct(count, () => {
-                for (let index = 0; index < count; ++index) {
-                    const completed = this.emitUnrolledIteration(
-                        context,
-                        statement,
-                        statement.statement,
-                        () => {
-                            const member =
-                                context.allocateTemporaryCppName(
-                                    "resource_member",
-                                );
-                            context.emit({
-                                kind: "declaration",
-                                type: "auto",
-                                name: member,
-                                initializer: `*${iterator}`,
-                                attributes: "[[maybe_unused]] ",
-                            });
-                            context.emit(`++${iterator};`);
-                            context.bindDataIterationVariable(
-                                declaration.name,
-                                member,
-                                target.element,
-                                target.template,
-                            );
-                        },
-                    );
-                    if (
-                        context.knownCollectionCardinality(
-                            statement.expression,
-                        ) !== count
-                    ) {
-                        context.fail(
-                            statement.expression,
-                            "A statically expanded resource iteration cannot resize its array.",
+            for (let index = 0; index < count; ++index) {
+                const completed = this.emitUnrolledIteration(
+                    context,
+                    statement,
+                    statement.statement,
+                    () => {
+                        const member =
+                            context.allocateTemporaryCppName("resource_member");
+                        context.emit({
+                            kind: "declaration",
+                            type: "auto",
+                            name: member,
+                            initializer: `*${iterator}`,
+                            attributes: "[[maybe_unused]] ",
+                        });
+                        context.emit(`++${iterator};`);
+                        context.bindDataIterationVariable(
+                            declaration.name,
+                            member,
+                            target.element,
+                            target.template,
                         );
-                    }
-                    if (completed === "break") break;
+                    },
+                );
+                if (
+                    context.knownCollectionCardinality(statement.expression) !==
+                    count
+                ) {
+                    context.fail(
+                        statement.expression,
+                        "A statically expanded resource iteration cannot resize its array.",
+                    );
                 }
-            });
+                if (completed === "break") break;
+            }
             return true;
         }
         const item =

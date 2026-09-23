@@ -61,6 +61,11 @@ test(
         retainedArrow.z = 51;
         if (first.getPosition().z !== 51 || second.getPosition().z !== 7)
             throw new Error("A concise helper return lost its vector alias");
+        function sum(position: {x: number; y: number; z: number}): number {
+            return position.x + position.y + position.z;
+        }
+        if (sum(retainedArrow) !== 114)
+            throw new Error("A shared helper lost its retained vector owner");
     `);
         const output = resolve("artifacts/character-controller-vector-alias");
         mkdirSync(output, { recursive: true });

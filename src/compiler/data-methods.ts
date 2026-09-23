@@ -697,16 +697,11 @@ export function compileDataMethodCall(
     // keeps an omitted method endpoint from constructing it again for size().
     let constructedOwner: Value | undefined;
     if (ts.isNewExpression(ownerExpression) && dynamicOwner?.kind === "data") {
-        const receiver = lowerer.context.allocateTemporaryCppName(
+        constructedOwner = lowerer.context.pinValueToTemporary(
+            dynamicOwner,
             "constructed_receiver",
+            ownerExpression,
         );
-        lowerer.context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: receiver,
-            initializer: dynamicOwner.cpp,
-        });
-        constructedOwner = { ...dynamicOwner, cpp: receiver };
     }
     const owner =
         constructedOwner ??
@@ -801,6 +796,9 @@ function compileKnownDataMethod(
         narrowed = {
             kind: "data",
             cpp: `${narrowedOwner.cpp}.${mutable ? "array_value" : "elements"}()`,
+            ...(mutable
+                ? {}
+                : { nativeCollectionCppType: "bbl::js::JsonArrayView" }),
             dataType: {
                 kind: mutable ? "vector" : "span",
                 element: { kind: "json" },

@@ -610,14 +610,38 @@ export interface LoweringServices {
         canHoist: boolean,
     ): string;
     registerNativeFunction(
-        prototype: string | undefined,
+        prototype: string,
         definitionLines: string[],
+        source?: ts.Node,
     ): void;
     registerSharedNativeFunction(
         name: string,
         definitionLines: string[],
         localBindings: readonly string[],
+        declaration?: { source: ts.Node; prototype: string },
     ): string;
+    renderSharedCoroutine(
+        closure: CapturedClosure,
+        returnType: string,
+        source: ts.Node,
+        parameters?: string,
+        args?: string,
+        environment?: string,
+        parameterNames?: readonly string[],
+    ): string;
+    renderSharedClosure(
+        closure: CapturedClosure,
+        returnType: string,
+        source: ts.Node,
+        parameters: string,
+        parameterNames: readonly string[],
+        name?: string,
+    ): string;
+    registerNativeTemplate(
+        name: string,
+        lines: string[],
+        prototype?: string,
+    ): void;
     canReplaySharedCallEffects(body: ts.Node): boolean;
     beginNativeFunctionBody(
         returnType: DataType | undefined,
@@ -630,7 +654,9 @@ export interface LoweringServices {
         name: string,
         borrowed?: boolean,
         allowReference?: boolean,
+        cppType?: string,
     ): NativeCaptureBinding;
+    registerNativeBindingType(name: string, cppType: string): void;
     nativeBindingCheckpoint(): number;
     captureHoistedLines(
         emitBody: () => void,
@@ -930,6 +956,7 @@ export interface LoweringServices {
         parameters: readonly {
             name: ts.Identifier;
             value: Value;
+            compileTime?: boolean;
         }[],
         work: () => T,
     ): T;

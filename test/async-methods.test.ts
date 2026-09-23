@@ -107,7 +107,7 @@ test("async methods preserve activation timing, receivers and conditional evalua
     assert.match(
         result.cpp,
         new RegExp(
-            `\\}\\(v_bblite_environment_\\d+, ${parameterPrefix}arg_0, ${parameterPrefix}arg_1, std::move\\(${parameterPrefix}arg_2\\)\\)\\)`,
+            `bblscene::v_bblite_async_body_\\d+\\(v_bblite_environment_\\d+, ${parameterPrefix}arg_0, ${parameterPrefix}arg_1, std::move\\(${parameterPrefix}arg_2\\)\\);`,
         ),
         "coroutine frame copies numeric parameters and moves owned strings",
     );

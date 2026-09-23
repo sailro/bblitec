@@ -66,7 +66,7 @@ export function compilePointerDragRegistration(
             dispatcher = context.allocateTemporaryCppName("pointer_dispatcher");
             context.emit({
                 kind: "declaration",
-                type: "auto",
+                type: "std::shared_ptr<bbl::PointerDragDispatcher>",
                 name: dispatcher,
                 initializer: `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false)`,
             });
@@ -86,7 +86,7 @@ export function compilePointerDragRegistration(
                     context.allocateTemporaryCppName("pointer_listener");
                 context.emit({
                     kind: "declaration",
-                    type: "auto",
+                    type: "bbl::js::Callback<void(bbl::js::BorrowedEvent)>",
                     name: cpp,
                     initializer: `bbl::pointer_drag_listener(${dispatcher}, ${index}u)`,
                 });

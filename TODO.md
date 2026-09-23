@@ -5,6 +5,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Compiler
 
+- [ ] Complete native capture types for opaque engine values and borrowed aliases so remaining shared closure templates can move to their owning C++ units (`compiler.ts`, `closure-captures.ts`).
 - [ ] Classify remaining API implementation routes and member adapters; qualify untested overloads/forms through the [coverage workflow](docs/development.md#api-coverage).
 - [ ] Dynamic values: optional own-property presence, earlier class instances, erased record/array mutation (`data-types.ts`, `json-record-views.ts`, `user-functions.ts`, `js_json.hpp`).
 - [ ] Embedded NUL strings truncate at native value sinks (`cpp-literals.ts`, `data-sinks/scalars.ts`).

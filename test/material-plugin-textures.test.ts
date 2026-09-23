@@ -105,6 +105,34 @@ const factoryDeclaration = `
     }
 `;
 
+test("static texture-list folds retain source identities without native iteration copies", () => {
+    const result = compileSource(
+        pluginScene(
+            "createListPlugin([stripe, tint])",
+            `
+        function createListPlugin(textures: readonly [Texture2D, Texture2D]): MaterialPlugin {
+            return {
+                name: "list",
+                getSamplers: () => [
+                    {texture: "oneT", sampler: "oneS"},
+                    {texture: "twoT", sampler: "twoS"},
+                ],
+                getCustomCode: shaderType => shaderType === "fragment" ? {
+                    CUSTOM_FRAGMENT_UPDATE_DIFFUSE:
+                        "baseColor *= textureSample(oneT, oneS, vec2<f32>(0.0)).rgb * textureSample(twoT, twoS, vec2<f32>(0.0)).rgb;",
+                } : null,
+                bindTextures(out) {for (const texture of textures) out.push({texture});},
+                getActiveTextures(out) {for (const texture of textures) out.push(texture);},
+            };
+        }
+    `,
+        ),
+    );
+    assert.doesNotMatch(result.cpp, /auto \w+_texture =/);
+    assert.match(result.cpp, /add_material_plugin_pixels_texture/);
+    assert.match(result.cpp, /add_material_plugin_file_texture/);
+});
+
 function refusal(source: string): string {
     try {
         compileSource(source);

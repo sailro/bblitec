@@ -1,11 +1,18 @@
 import { EmissionMap } from "./emission-transaction.js";
 import type { Feature } from "./types.js";
 import { reachesShadowGenerator } from "../shadow-capabilities.js";
+import {
+    renderSourceUnits,
+    type ApplicationCpp,
+    type NativeDefinition,
+    type NativeFunctionDefinition,
+    type DataPreamble,
+} from "./source-units.js";
 
 /**
  * The output projection: the feature→sources authority and the renders
- * that turn a finished compilation into its two emitted artifacts,
- * `main.cpp` and `features.cmake`. Everything here is a pure function of
+ * that turn a finished compilation into application C++ and
+ * `features.cmake`. Everything here is a pure function of
  * the values the entry orchestrator hands over — the walk itself lives
  * in `compiler.ts`.
  */
@@ -327,6 +334,7 @@ export function renderFeaturesCmake(
     features: readonly Feature[],
     runtimeSources: readonly string[],
     generatedSources: readonly string[],
+    applicationSources: readonly string[] = ["main.cpp"],
 ): string {
     const sourceLines = runtimeSources
         .map((source) => `    "\${BBLITE_NATIVE_ROOT}/${source}"`)
@@ -348,6 +356,10 @@ ${sourceLines}
 
 set(BBLITE_GENERATED_SOURCES
 ${generatedSourceLines}
+)
+
+set(BBLITE_APPLICATION_SOURCES
+${applicationSources.map((source) => `    "\${BBLITE_GENERATED_DIR}/${source}"`).join("\n")}
 )
 `;
 }
@@ -418,6 +430,7 @@ function markUnreferencedLocals(body: string[]): void {
  * is complete.
  */
 interface MainCppProjection {
+    source: string;
     workers?: {
         namespace: string | undefined;
         declarations: string;
@@ -435,9 +448,8 @@ interface MainCppProjection {
     throwReached: boolean;
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
-    renderDataPreamble: () => string;
-    nativeFunctionPrototypes: readonly string[];
-    nativeFunctionDefinitions: readonly string[];
+    renderDataPreamble: () => DataPreamble;
+    nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
     /** Whether the scene reaches the voxel save/load file boundary. */
     voxelFileStorageReached: boolean;
@@ -447,7 +459,7 @@ interface MainCppProjection {
     physicsDebugConstructionBody?: readonly string[];
 }
 
-export function renderMainCpp(projection: MainCppProjection): string {
+export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const {
         features,
         jsDataReached,
@@ -457,12 +469,18 @@ export function renderMainCpp(projection: MainCppProjection): string {
         postProcessCompositeCount,
         screenSpaceTaskCount,
         renderDataPreamble,
-        nativeFunctionPrototypes,
-        nativeFunctionDefinitions,
+        nativeFunctions,
         staticNativeDeclarations,
         voxelFileStorageReached,
         body,
     } = projection;
+    const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
+        fn.prototype === undefined ? [] : [fn.prototype],
+    );
+    const nativeFunctionDefinitions = nativeFunctions.flatMap(({ lines }) => [
+        ...lines,
+        "",
+    ]);
     // Scene code names a blend descriptor and a layer at the call
     // site, so the factories the sprite lowerer emits have to be visible
     // to main.cpp.
@@ -614,17 +632,16 @@ export function renderMainCpp(projection: MainCppProjection): string {
         preambleSections.push(staticNativeDeclarations.join("\n"));
     }
     const dataPreamble = renderDataPreamble();
-    if (
-        projection.runtimeMeshProfiles &&
-        !features.includes("renderer:scene")
-    ) {
-        // Without a renderer no draw reads composition profiles.
-        preambleSections.push(`namespace bbl::upstream {
+    // Without a renderer no draw reads composition profiles.
+    const meshProfileFallback =
+        projection.runtimeMeshProfiles && !features.includes("renderer:scene")
+            ? `namespace bbl::upstream {
 inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t) { return mesh; }
-}`);
-    }
-    if (dataPreamble.length > 0) {
-        preambleSections.push(dataPreamble);
+}`
+            : "";
+    if (meshProfileFallback) preambleSections.push(meshProfileFallback);
+    if (dataPreamble.standalone.length > 0) {
+        preambleSections.push(dataPreamble.standalone);
     }
     if (
         nativeFunctionPrototypes.length > 0 ||
@@ -671,11 +688,11 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
         : "";
     const entryBody = `${audioSession}${seedRandom}${body.join("\n")}`;
     const workerEntry = workerNamespace
-        ? `namespace ${workerNamespace} {\n${preamble}\nvoid initialize([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n}\n}\n`
+        ? `void initialize([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n}\n`
         : projection.workers?.windowOptions
-          ? `${preamble}\nint main() {\n    return bbl::pal::run_window_application([]([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n    }, ${projection.workers.windowOptions});\n}\n`
+          ? `int main() {\n    return bbl::pal::run_window_application([]([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n    }, ${projection.workers.windowOptions});\n}\n`
           : projection.workers
-            ? `${preamble}\nint main() {\n    try {\n        const bbl::js::RealmScope state;\n        bbl::pal::EventLoop loop;\n        bbl::pal::WorkerRealm realm(loop);\n        loop.run([&] {\n${entryBody}\n        });\n        return 0;\n    } catch (const std::exception& error) {\n        std::cerr << "Babylon Lite native error: " << error.what() << '\\n';\n        return 1;\n    }\n}\n`
+            ? `int main() {\n    try {\n        const bbl::js::RealmScope state;\n        bbl::pal::EventLoop loop;\n        bbl::pal::WorkerRealm realm(loop);\n        loop.run([&] {\n${entryBody}\n        });\n        return 0;\n    } catch (const std::exception& error) {\n        std::cerr << "Babylon Lite native error: " << error.what() << '\\n';\n        return 1;\n    }\n}\n`
             : undefined;
     const includes = `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
@@ -712,8 +729,49 @@ ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""
 #include <exception>
 #include <iostream>${throwReached ? "\n#include <stdexcept>" : ""}
 `;
-    if (workerEntry)
-        return includes + projection.workers!.declarations + "\n" + workerEntry;
+    const finish = (entry: string): ApplicationCpp => {
+        const declarations = projection.workers?.declarations ?? "";
+        const standaloneBody = `${preamble}${entry}`;
+        const cpp =
+            includes +
+            declarations +
+            (workerNamespace
+                ? `\nnamespace ${workerNamespace} {\n${standaloneBody}\n}\n`
+                : standaloneBody);
+        const definitions: NativeDefinition[] = [...dataPreamble.definitions];
+        for (const fn of nativeFunctions) {
+            if (fn.kind === "function")
+                definitions.push({
+                    source: fn.source,
+                    definition: fn.lines.join("\n"),
+                });
+        }
+        const shared = [
+            ...staticNativeDeclarations.map(
+                (declaration) => `inline ${declaration}`,
+            ),
+            meshProfileFallback,
+            dataPreamble.shared,
+            "namespace bblscene {",
+            ...nativeFunctionPrototypes,
+            "}\n",
+        ].join("\n");
+        return renderSourceUnits({
+            source: projection.source,
+            realm: workerNamespace,
+            includes: includes + declarations + "\n",
+            declarations: shared,
+            definitions,
+            templates: nativeFunctions.flatMap((fn) =>
+                fn.kind === "template"
+                    ? [{ name: fn.name, definition: fn.lines.join("\n") }]
+                    : [],
+            ),
+            entry,
+            cpp,
+        });
+    };
+    if (workerEntry) return finish(`\n${workerEntry}`);
     let extraction = "";
     if (projection.physicsDebugConstructionBody) {
         const construction = constructorEntryBody(
@@ -729,7 +787,7 @@ ${seedRandom}${construction.join("\n")}
     extraction.write(output_path);
 }\n`;
     }
-    return `${includes}${preamble}${extraction}
+    return finish(`${extraction}
 int main(${extraction ? "int argc, char** argv" : ""}) {
     const bbl::js::CollectOnExit collect_on_exit;
     try {
@@ -748,5 +806,5 @@ ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_s
         return 1;
     }
 }
-`;
+`);
 }

@@ -187,6 +187,11 @@ test("native lint selects owned translation units from the actual compilation da
         },
         {
             directory: build,
+            file: "../../generated/scene1/sources/helper.cpp",
+            command: "clang++ -c helper.cpp",
+        },
+        {
+            directory: build,
             file: "../../generated/scene1-other/main.cpp",
             command: "clang++ -c main.cpp",
         },
@@ -219,6 +224,7 @@ test("native lint selects owned translation units from the actual compilation da
         ),
         [
             resolve(root, "generated", "scene1", "main.cpp"),
+            resolve(root, "generated", "scene1", "sources", "helper.cpp"),
             resolve(
                 root,
                 "generated",

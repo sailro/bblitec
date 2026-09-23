@@ -87,6 +87,18 @@ test("digests the compiled inputs of a generated scene", (t) => {
     );
 });
 
+test("application units and their shared headers participate in build identity", (t) => {
+    const root = scratchRepository();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const generated = resolve(root, "generated/scene");
+    mkdirSync(resolve(generated, "sources"));
+    for (const file of ["sources/helper.cpp", "sources/application.hpp"]) {
+        const before = computeBuildStamp(generated, root).stamp;
+        writeFileSync(resolve(generated, file), "// application input\n");
+        assert.notEqual(computeBuildStamp(generated, root).stamp, before);
+    }
+});
+
 test("identifies sticky CMake cache changes that require a fresh tree", () => {
     const cache = {
         CMAKE_GENERATOR: "Ninja",

@@ -35,6 +35,7 @@ export interface CapturedClosure {
     initializer: string;
     nativeCaptures: readonly NativeCaptureBinding[];
     localBindings: readonly string[];
+    environmentType?: string;
 }
 
 export function renderClosure(
@@ -73,6 +74,7 @@ export function renderAsyncClosure(
     }[],
     returnType: string,
     discard: boolean,
+    invoke: typeof renderCoroutineInvocation = renderCoroutineInvocation,
 ): string {
     const declarations = parameters
         .map(
@@ -80,7 +82,7 @@ export function renderAsyncClosure(
                 `[[maybe_unused]] ${parameter.type} ${parameter.name}`,
         )
         .join(", ");
-    const invocation = renderCoroutineInvocation(
+    const invocation = invoke(
         closure,
         returnType,
         declarations,
@@ -126,6 +128,9 @@ export class ClosureCaptures {
         readonly environment: string,
         readonly boundary: number,
         private readonly byReference: boolean | "entry" = false,
+        private readonly bindingType?: (
+            binding: NativeCaptureBinding,
+        ) => string | undefined,
     ) {}
 
     use(binding: NativeCaptureBinding): void {
@@ -152,6 +157,20 @@ export class ClosureCaptures {
 
     get nativeCaptures(): readonly NativeCaptureBinding[] {
         return [...this.bindings];
+    }
+
+    get environmentType(): string | undefined {
+        const types: string[] = [];
+        for (const binding of this.bindings) {
+            const type = this.bindingType?.(binding);
+            if (!type) return undefined;
+            types.push(
+                this.borrows(binding)
+                    ? `std::reference_wrapper<${type}>`
+                    : `std::decay_t<${type}>`,
+            );
+        }
+        return `std::tuple<${types.join(", ")}>`;
     }
 
     get declarations(): string[] {

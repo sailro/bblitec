@@ -1,4 +1,4 @@
-import { valueForKind } from "./types.js";
+import { valueForKind, withNativeMetadata } from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
@@ -87,7 +87,7 @@ export function emitHandleCollectionLoop<
         | "containerCpp"
         | "elementKind"
         | "engineCpp"
-    >,
+    > & { elementTemplate?: Value },
     binding: ts.Identifier,
     emitBody: (context: Context) => void,
     /**
@@ -105,13 +105,16 @@ export function emitHandleCollectionLoop<
     context.increaseIndent();
     context.pushScope(context.allocateBlockPrefix());
     try {
+        const value = valueForKind(target.elementKind, {
+            cpp: item,
+            engineCpp: target.engineCpp,
+            ...(extraBinding ?? {}),
+        });
         context.bindLocalValue(
             binding,
-            valueForKind(target.elementKind, {
-                cpp: item,
-                engineCpp: target.engineCpp,
-                ...(extraBinding ?? {}),
-            }),
+            target.elementTemplate
+                ? withNativeMetadata(value, target.elementTemplate)
+                : value,
         );
         emitBody(context);
     } finally {
@@ -370,6 +373,7 @@ interface HandleCollectionsContext
             | "compileValue"
             | "emitStatement"
             | "isDefaultLibraryIdentifier"
+            | "isInRuntimeControlFlow"
             | "compileCondition"
             | "compileStringLiteral"
             | "cppString"
@@ -1540,8 +1544,8 @@ export class HandleCollections {
         }
         // An EMPTY list has no element to take its shape from, so the first
         // push decides it. That is the shape a scene writes when it builds
-        // a list in a loop -- `const paths: Vec3[][] = []` grown per path --
-        // and the loop unrolls, so the list is complete at generation.
+        // a list in a loop -- `const paths: Vec3[][] = []` grown per path.
+        // Runtime iterations replay the declaration with owned array storage.
         const kind = tuple.tupleElements[0]?.kind;
         // A list that already holds something answers before compiling
         // anything: a data-model list of numbers is not this rule, and
@@ -1569,6 +1573,26 @@ export class HandleCollections {
             );
         }
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
+        if (this.context.isInRuntimeControlFlow()) {
+            const declaration =
+                this.context.symbols.valueSymbol(owner)?.valueDeclaration;
+            const type = this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(owner),
+                owner,
+            );
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                type?.kind === "vector"
+            ) {
+                throw new DynamicBindingStorageRequired(declaration, type);
+            }
+            return this.context.fail(
+                owner,
+                "A runtime-grown handle list requires native array storage.",
+            );
+        }
         if (kind !== undefined && pushed.kind !== kind) {
             this.context.fail(
                 argumentAt(call, 0),

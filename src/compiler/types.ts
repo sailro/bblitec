@@ -11,6 +11,7 @@ export {
 } from "./values/model.js";
 import { EmissionSet } from "./emission-transaction.js";
 import type ts from "typescript";
+import type { SourceUnit } from "./source-units.js";
 import type {
     NativeCaptureBinding,
     NativeCompanionKey,
@@ -105,6 +106,8 @@ export interface CompileManifest {
     featureSites: Record<string, string>;
     runtimeSources: string[];
     generatedSources: string[];
+    /** Emitted application translation units, separate from pinned runtime sources. */
+    sourceUnits: SourceUnit[];
     assets: CompileAsset[];
     shaderVariants: string[];
     customShaderPrograms: CompiledShaderProgram[];
@@ -1176,7 +1179,9 @@ export interface ScreenSpaceTaskManifest {
 }
 
 export interface CompileResult {
+    /** Standalone inspection/fixture projection; generation writes cppFiles. */
     cpp: string;
+    cppFiles: ReadonlyMap<string, string>;
     cmake: string;
     manifest: CompileManifest;
     /**
@@ -1973,6 +1978,8 @@ export interface ValueFields {
     nativeLvalue?: true;
     /** The data expression is already a native std::vector, not a JS Array. */
     nativeVectorData?: true;
+    /** Native collection wrapper when its iteration type differs from the data model. */
+    nativeCollectionCppType?: string;
     /** The expression creates an owning data container at this read. */
     freshData?: true;
     dataStore?: TypedArrayKind | "numberindex";

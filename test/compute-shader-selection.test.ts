@@ -32,3 +32,15 @@ async function main(){
         /Compute binding resource records require known own-property presence/,
     );
 });
+
+test("stored shader callbacks borrow their owned native argument", () => {
+    const result = compileSource(`
+import {createEngine,createComputeShader,prepareComputeShader} from '@babylonjs/lite';
+async function main(){
+ const engine=await createEngine(document.createElement('canvas'));
+ const shader=createComputeShader(engine,{computeSource:'@compute @workgroup_size(1) fn main() {}',bindings:[]});
+ await Promise.allSettled([shader].map(item=>prepareComputeShader(item)));
+}void main();`);
+    assert.match(result.cpp, /auto& \w+_item = \w+arg_0;/);
+    assert.doesNotMatch(result.cpp, /auto \w+_item = \w+arg_0;/);
+});

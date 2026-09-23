@@ -37,7 +37,7 @@ test("a lazily created gizmo held by a stored listener shares one cell", () => {
     // The declaration is storage, not a value: the widget does not exist yet.
     assert.match(
         result.cpp,
-        /auto v_gizmo = bbl::js::make_gc_shared<std::optional<bbl::CompositeGizmoHandle>>\(\);/,
+        /std::shared_ptr<std::optional<bbl::CompositeGizmoHandle>> v_gizmo = bbl::js::make_gc_shared<std::optional<bbl::CompositeGizmoHandle>>\(\);/,
         "the nullable gizmo declares empty optional storage in a shared cell",
     );
     // A stored listener owns its environment by value, so the cell -- not the

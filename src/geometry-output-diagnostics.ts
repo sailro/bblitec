@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     captureSuiteReference,
@@ -49,12 +49,27 @@ function geometryCopyTasks(generatedDirectory: string): string[] {
                 "compile the scene before running geometry diagnostics.",
         );
     }
-    const generated = readFileSync(entryPoint, "utf8");
+    const sourceDirectory = resolve(generatedDirectory, "sources");
+    const files = [
+        entryPoint,
+        ...(existsSync(sourceDirectory)
+            ? readdirSync(sourceDirectory, {
+                  recursive: true,
+                  encoding: "utf8",
+              })
+                  .filter((path) => path.endsWith(".cpp"))
+                  .sort()
+                  .map((path) => resolve(sourceDirectory, path))
+            : []),
+    ];
     const result: string[] = [];
-    for (const match of generated.matchAll(impostorNamePattern)) {
-        const name = match[1];
-        if (name !== undefined && !result.includes(name)) result.push(name);
-    }
+    for (const file of files)
+        for (const match of readFileSync(file, "utf8").matchAll(
+            impostorNamePattern,
+        )) {
+            const name = match[1];
+            if (name !== undefined && !result.includes(name)) result.push(name);
+        }
     return result;
 }
 

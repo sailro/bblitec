@@ -30,6 +30,7 @@ test("shared native definitions do not accumulate empty prototype lines", () => 
 test("definition-only namespaces preserve deliberate whitespace inside native bodies", () => {
     const literal = 'R"payload(first\n\n\nlast)payload"';
     const cpp = renderMainCpp({
+        source: "main.ts",
         features: ["core"],
         jsDataReached: false,
         imageDecodeReached: false,
@@ -37,16 +38,22 @@ test("definition-only namespaces preserve deliberate whitespace inside native bo
         throwReached: false,
         postProcessCompositeCount: 0,
         screenSpaceTaskCount: 0,
-        renderDataPreamble: () => "",
-        nativeFunctionPrototypes: [],
-        nativeFunctionDefinitions: [
-            `inline auto retained() { return ${literal}; }`,
-            "",
+        renderDataPreamble: () => ({
+            standalone: "",
+            shared: "",
+            definitions: [],
+        }),
+        nativeFunctions: [
+            {
+                kind: "template",
+                name: "retained",
+                lines: [`inline auto retained() { return ${literal}; }`],
+            },
         ],
         staticNativeDeclarations: [],
         voxelFileStorageReached: false,
         body: [],
-    });
+    }).cpp;
     assert.ok(
         cpp.includes(
             `namespace bblscene {\n\ninline auto retained() { return ${literal}; }`,

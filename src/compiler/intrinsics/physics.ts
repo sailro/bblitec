@@ -74,6 +74,7 @@ export interface PhysicsIntrinsicContext
             | "compilePhysicsCollisionCallback"
             | "compilePhysicsTriggerCallback"
             | "allocateTemporaryCppName"
+            | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
             | "reachPhysicsViewerMaterial"

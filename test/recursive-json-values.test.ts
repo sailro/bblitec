@@ -118,6 +118,10 @@ test("typed function parameters retain dynamic record and array arguments", (t) 
         if(alias!==row||row.score!==8||(alias as any).extra!==7)throw new Error("typed argument identity");
         const reader=new Reader();
         if(reader.read(row)!==8)throw new Error("typed method argument");
+        const fixed:Row={score:6,child:{score:1}};
+        if(reader.read(fixed)!==6)throw new Error("native method argument after dynamic specialization");
+        row.score=11;
+        if(reader.read(row)!==11)throw new Error("live dynamic method argument");
         const rows:Row[]=JSON.parse('[{"score":4,"extra":9,"child":{"score":5}}]');
         const item=updateArray(rows);
         if(item!==rows[0]||item.score!==12||(item as any).extra!==9)throw new Error("typed array argument");

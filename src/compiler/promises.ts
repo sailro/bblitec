@@ -211,6 +211,7 @@ export function compileImmediatePromise(
             kind: "declaration",
             type: "auto",
             name: settled,
+            attributes: "[[maybe_unused]] ",
             initializer: context.takeNativeTemporary(
                 value.cpp,
                 settlementBoundary,

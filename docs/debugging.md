@@ -93,7 +93,7 @@ Results are in artifacts/check/<id>/. Use numeric checks where small missing obj
 | Viewer / queries | scene41 / scene49 |
 | Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
 | Recovery | scene164 |
-| Interactivity | calculator, scene304 |
+| Interactivity | calculator, scene304, doom |
 | Desktop controls | quake, sandblox |
 | Ocean simulation / controls / resolution | ocean / ocean-ui / ocean-resolution |
 

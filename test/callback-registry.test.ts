@@ -251,20 +251,13 @@ test("owns an optional Map Set before delete-argument side effects", () => {
         (result.cpp.match(/auto v_bblite_optional_chain_\d+ =/g) ?? []).length,
         3,
     );
-    for (const effect of [
-        /v_erased\.erase\("entry"\)/,
-        /v_cleared\.clear\(\)/,
-        /v_replaced\.set\("entry", v_replacement\)/,
-    ]) {
-        const match = effect.exec(result.cpp);
-        assert.ok(match);
-        const owned = result.cpp.lastIndexOf(
-            "auto v_bblite_optional_chain_",
-            match.index,
+    for (const owner of ["v_erased", "v_cleared", "v_replaced"]) {
+        assert.match(
+            result.cpp,
+            new RegExp(
+                `auto (v_bblite_optional_chain_\\d+) = ${owner}\\.get_owned\\("entry"\\);[\\s\\S]*?if \\(.*\\1\\.has_value\\(\\)[^\\n]+\\n[^\\n]+const double (v_bblite_shared_result_\\d+) = bbl::js::make_closure\\(std::tuple\\{std::ref\\(${owner}\\)[^\\n]+\\n[^\\n]+\\(\\*\\1\\)\\.erase\\(\\2\\)`,
+            ),
         );
-        const deleted = result.cpp.indexOf(").erase(", match.index);
-        assert.ok(owned >= 0 && owned < match.index);
-        assert.ok(deleted > match.index);
     }
 });
 
@@ -393,7 +386,7 @@ test("evaluates erased void callback defaults before the callback body", () => {
     assert.ok(bodyMark > defaultMark);
     assert.match(
         result.cpp,
-        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(std::tuple\{v_marks\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) -> void \{/,
+        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(std::tuple\{v_marks\}, bblscene::\w+/,
     );
 });
 
@@ -413,11 +406,12 @@ test("distinguishes callback expressions in static and runtime loops", () => {
             throw new Error("callback evaluations lost identity");
         }
     `);
-    const identities = [
-        ...result.cpp.matchAll(/bbl::js::Callback<void\(\)> \w+\{(\d+)u,/g),
-    ].map((match) => match[1]);
-    assert.equal(identities.length, 2);
-    assert.equal(new Set(identities).size, 2);
+    assert.equal(
+        result.cpp.match(
+            /Callback<void\(\)> \w+\{bbl::js::next_callback_identity\(\),/g,
+        )?.length,
+        1,
+    );
     assert.match(
         result.cpp,
         /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = bbl::js::snapshot_callback\(\1\);\s*\2\(\);/,

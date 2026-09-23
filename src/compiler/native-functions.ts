@@ -59,7 +59,10 @@ export interface NativeFunctionContext extends Pick<
     | "captureEmittedLines"
     | "registerNativeFunction"
     | "registerNativeTemporary"
+    | "registerNativeBinding"
+    | "registerNativeBindingType"
     | "registerNativeConstBinding"
+    | "invalidateRecordProperties"
     | "pinValueToTemporary"
     | "identifierIsRebound"
     | "beginNativeFunctionBody"
@@ -187,6 +190,10 @@ export function captureDataFunctionBody(
             ...parameters.map((parameter) => {
                 const cppName = context.cppLocalName(parameter.name.text);
                 const cppType = context.dataTypes.cppType(parameter.type);
+                context.registerNativeBindingType(
+                    cppName,
+                    `${parameter.byReference && parameter.readOnly ? "const " : ""}${cppType}`,
+                );
                 if (parameter.borrowedWrapper)
                     context.registerNativeConstBinding(cppName, true);
                 context.defineVariable(parameter.name, {
@@ -832,6 +839,8 @@ export class NativeFunctionLowerer {
                 );
             }
             this.context.dataLowerer.invalidateEscapingCollection(value);
+            if (dataType.kind === "struct")
+                this.context.invalidateRecordProperties(value);
             return value.cpp;
         }
         // The sink materializes when the argument's type is not exactly
@@ -1773,6 +1782,11 @@ export class NativeFunctionLowerer {
                             const cppName = this.context.cppLocalName(
                                 `this_${field.name}`,
                             );
+                            this.context.registerNativeBinding(
+                                cppName,
+                                false,
+                                true,
+                            );
                             fieldProperties[field.name] =
                                 this.context.dataLowerer.leafValue(
                                     cppName,
@@ -1809,7 +1823,12 @@ export class NativeFunctionLowerer {
         } finally {
             this.context.defineThis(previousThis);
         }
-        this.registerDataFunction(signature.cppName, returnCpp, captured);
+        this.registerDataFunction(
+            signature.cppName,
+            returnCpp,
+            captured,
+            signature.method,
+        );
     }
 
     private containsGenerationTimeFetch(
@@ -2266,6 +2285,7 @@ export class NativeFunctionLowerer {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
             ),
+            signature.declaration,
         );
     }
 
@@ -2296,6 +2316,7 @@ export class NativeFunctionLowerer {
             parameterDeclarations: string[];
             lines: string[];
         },
+        source: ts.Node,
     ): void {
         const parameterList = definition.parameterDeclarations.join(", ");
         this.context.registerNativeFunction(
@@ -2305,6 +2326,7 @@ export class NativeFunctionLowerer {
                 ...definition.lines.map((line) => `    ${line}`),
                 "}",
             ],
+            source,
         );
     }
 }

@@ -25,6 +25,10 @@ import type {
     NativeReturnValueCompiler,
 } from "./compiler/lowering-services.js";
 import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
+import type {
+    ApplicationCpp,
+    NativeFunctionDefinition,
+} from "./compiler/source-units.js";
 import {
     renderNativeDeclaration,
     type NativeDeclaration,
@@ -796,8 +800,8 @@ class Compiler implements LoweringServices {
     >();
     private staticAssetUrlCandidateCache: readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
-    private readonly nativeFunctionPrototypes: string[] = emissionArray([]);
-    private readonly nativeFunctionDefinitions: string[] = emissionArray([]);
+    private readonly nativeDefinitions =
+        emissionArray<NativeFunctionDefinition>();
     private readonly sharedNativeFunctions = new SharedNativeFunctions();
     private readonly staticNativeDeclarations: string[] = emissionArray([]);
     private readonly returnFrames: Array<
@@ -911,6 +915,8 @@ class Compiler implements LoweringServices {
         string,
         NativeCaptureBinding
     >();
+    private readonly nativeBindingTypes = new EmissionMap<string, string>();
+    private readonly allocatedCppNames = new EmissionMap<string, number>();
     private readonly nativeTemporaries =
         new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeConstBindings =
@@ -1328,11 +1334,17 @@ class Compiler implements LoweringServices {
         // The manifest and CMake projection of the same table the upstream
         // lowerer emits from, so a feature's sources are declared once.
         const generatedSources = reachedGeneratedSources(features);
-        const cpp = this.renderCpp(features);
+        const application = this.renderCpp(features);
         this.staticExpansionBudget.assertWithinBudget();
         return {
-            cpp,
-            cmake: this.renderCmake(features, runtimeSources, generatedSources),
+            cpp: application.cpp,
+            cppFiles: application.files,
+            cmake: renderFeaturesCmake(
+                features,
+                runtimeSources,
+                generatedSources,
+                application.sourceUnits.map(({ path }) => path),
+            ),
             assetPayloads: this.assetPayloads,
             ...(this.reachedNodeParticles.sets.length > 0
                 ? { nodeParticles: this.reachedNodeParticles }
@@ -1350,6 +1362,7 @@ class Compiler implements LoweringServices {
                 featureSites,
                 runtimeSources,
                 generatedSources,
+                sourceUnits: application.sourceUnits,
                 assets: [...this.assets.values()],
                 ...(this.assetDecoders.has("configuration")
                     ? {
@@ -2933,6 +2946,10 @@ class Compiler implements LoweringServices {
                 name: cppName,
                 initializer: `bbl::js::make_gc_shared<bbl::js::LexicalBinding<${this.dataTypes.cppType(type)}>>()`,
             });
+            this.registerNativeBindingType(
+                cppName,
+                `std::shared_ptr<bbl::js::LexicalBinding<${this.dataTypes.cppType(type)}>>`,
+            );
             this.defineVariable(declaration.name, {
                 ...this.dataLowerer.leafValue(`${cppName}->get()`, type),
                 sharedStorageCpp: cppName,
@@ -2971,7 +2988,7 @@ class Compiler implements LoweringServices {
                     sharedClosureStorage
                         ? {
                               kind: "declaration",
-                              type: "auto",
+                              type: `std::shared_ptr<std::optional<${resource.cppType}>>`,
                               name: cppName,
                               initializer: `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`,
                           }
@@ -2981,6 +2998,7 @@ class Compiler implements LoweringServices {
                               name: cppName,
                               initializer: "",
                               initialization: "default",
+                              attributes: "[[maybe_unused]] ",
                           },
                 );
                 this.defineVariable(
@@ -3069,6 +3087,7 @@ class Compiler implements LoweringServices {
                           name: cppName,
                           initializer: "",
                           initialization: "default",
+                          attributes: "[[maybe_unused]] ",
                       },
             );
             const boundCpp = sharedClosureStorage ? `(*${cppName})` : cppName;
@@ -3162,7 +3181,7 @@ class Compiler implements LoweringServices {
                 sharedClosureStorage
                     ? {
                           kind: "declaration",
-                          type: "auto",
+                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
                           name: cppName,
                           initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`,
                       }
@@ -3172,6 +3191,7 @@ class Compiler implements LoweringServices {
                           name: cppName,
                           initializer: "",
                           initialization: "default",
+                          attributes: "[[maybe_unused]] ",
                       },
             );
             this.defineVariable(
@@ -3343,7 +3363,7 @@ class Compiler implements LoweringServices {
                 sharedClosureStorage
                     ? {
                           kind: "declaration",
-                          type: "auto",
+                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
                           name: cppName,
                           initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp})`,
                       }
@@ -3352,6 +3372,7 @@ class Compiler implements LoweringServices {
                           type: `std::optional<${nullableResource.cppType}>`,
                           name: cppName,
                           initializer: initializerCpp,
+                          attributes: "[[maybe_unused]] ",
                       },
             );
             this.defineVariable(declaration.name, {
@@ -3520,7 +3541,9 @@ class Compiler implements LoweringServices {
                 narrowed.dataType.kind === "struct" &&
                 this.dataTypes.isReferenceStruct(narrowed.dataType.name);
             const stableOwnerAlias =
-                (wrapperCopiesIdentity || referenceStruct) &&
+                (wrapperCopiesIdentity ||
+                    referenceStruct ||
+                    narrowed.dataType.kind === "string") &&
                 this.borrowsConstBinding(declaration, narrowed);
             if (optionalFoundCpp && !referenceStruct) {
                 // A JavaScript local captures whether the element existed
@@ -3566,11 +3589,13 @@ class Compiler implements LoweringServices {
                 name: cppName,
                 type: sharedDataBinding
                     ? "auto"
-                    : `${localType}${stableOwnerAlias || (aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
+                    : stableOwnerAlias && narrowed.dataType.kind === "string"
+                      ? "auto&"
+                      : `${localType}${stableOwnerAlias || (aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
                 initializer: sharedDataBinding
                     ? `bbl::js::make_gc_shared<${localType}>(${initializerCpp})`
                     : initializerCpp,
-                attributes: stableOwnerAlias ? "[[maybe_unused]] " : "",
+                attributes: "[[maybe_unused]] ",
             });
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
@@ -3722,12 +3747,6 @@ class Compiler implements LoweringServices {
             this.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${value.ownedCpp ?? value.cpp})`;
         }
-        const maybeUnused =
-            value.kind === "number" ||
-            value.kind === "boolean" ||
-            stableOwnerAlias
-                ? "[[maybe_unused]] "
-                : "";
         const sharedPrimitive =
             sharedClosureStorage &&
             this.isSharedClosureScalar(
@@ -3740,6 +3759,7 @@ class Compiler implements LoweringServices {
             value.optionalFoundCpp === "false"
                 ? undefined
                 : this.allocateTemporaryCppName("element_found");
+        // Source bindings can be consumed entirely through generation metadata.
         this.emit({
             kind: "declaration",
             name: cppName,
@@ -3751,7 +3771,7 @@ class Compiler implements LoweringServices {
             initializer: sharedPrimitive
                 ? `bbl::js::make_gc_shared<${nativeType}>(${initializerCpp})`
                 : initializerCpp,
-            attributes: sharedPrimitive ? "" : maybeUnused,
+            attributes: "[[maybe_unused]] ",
         });
         if (optionalFoundCpp) {
             // A local initialized from any maybe-absent handle snapshots both
@@ -4133,7 +4153,7 @@ class Compiler implements LoweringServices {
                 `${this.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
         this.emit(
-            `${forward.storageCpp} = ${renderClosure(compiled, parameters.join(", "))};`,
+            `${forward.storageCpp} = ${this.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
         );
         this.rebindVariable(name, {
             kind: "callback",
@@ -4224,7 +4244,12 @@ class Compiler implements LoweringServices {
                 this.emit(
                     `[[maybe_unused]] const auto ${identity} = bbl::js::next_callback_identity();`,
                 );
-                this.registerNativeBinding(identity);
+                this.registerNativeBinding(
+                    identity,
+                    false,
+                    false,
+                    "const std::size_t",
+                );
                 value.callbackRecordOwner.runtimeCallbackIdentityCpp = identity;
             }
             this.defineVariable(name, { ...value, callbackDeclaration: name });
@@ -4398,7 +4423,7 @@ class Compiler implements LoweringServices {
             () => this.captureManagedClosureLines(emitCallbackBody, !escapes),
         );
         this.emit(
-            `${storage.cpp} = ${renderClosure(compiled, parameterDeclarations.join(", "), returnCpp)};`,
+            `${storage.cpp} = ${this.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
         );
     }
 
@@ -9416,7 +9441,14 @@ class Compiler implements LoweringServices {
                               kind: "number",
                               cpp: parameter,
                               nativeCaptures: [
-                                  this.registerNativeBinding(parameter),
+                                  this.registerNativeBinding(
+                                      parameter,
+                                      false,
+                                      false,
+                                      signature === "timestamp"
+                                          ? "double"
+                                          : "float",
+                                  ),
                               ],
                           },
                       ]
@@ -9429,11 +9461,14 @@ class Compiler implements LoweringServices {
                     ),
                 );
             });
-            return renderClosure(
+            return this.renderSharedClosure(
                 compiled,
+                "void",
+                unwrapped,
                 parameter
                     ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
                     : "",
+                parameter ? [parameter] : [],
             );
         }
         if (ts.isIdentifier(unwrapped)) {
@@ -9457,7 +9492,13 @@ class Compiler implements LoweringServices {
                         emitBody,
                         captureByValue ? false : "entry",
                     );
-                    return renderClosure(compiled, "");
+                    return this.renderSharedClosure(
+                        compiled,
+                        "void",
+                        unwrapped,
+                        "",
+                        [],
+                    );
                 }
                 if (
                     this.options.workers &&
@@ -9555,6 +9596,10 @@ class Compiler implements LoweringServices {
         try {
             const emitBody = () => {
                 if (parameter && ts.isIdentifier(parameter.name)) {
+                    this.registerNativeBindingType(
+                        parameterCppName!,
+                        signature === "timestamp" ? "double" : "float",
+                    );
                     this.defineVariable(parameter.name, {
                         kind: "number",
                         cpp: parameterCppName!,
@@ -9608,7 +9653,13 @@ class Compiler implements LoweringServices {
             signature === "void" || signature === "interval"
                 ? ""
                 : cppParameter;
-        return renderClosure(compiled, lambdaParameter);
+        return this.renderSharedClosure(
+            compiled,
+            "void",
+            unwrapped,
+            lambdaParameter,
+            parameterCppName ? [parameterCppName] : [],
+        );
     }
 
     /** A retained zero-argument callback with the same capture checks as timers. */
@@ -9642,6 +9693,7 @@ class Compiler implements LoweringServices {
             );
         }
         const dataName = this.allocateTemporaryCppName("csm_receiver_data");
+        this.registerNativeBindingType(dataName, "const bbl::js::F32Array");
         const previousDepth = this.frameCallbackDepth;
         this.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
@@ -9668,9 +9720,12 @@ class Compiler implements LoweringServices {
         } finally {
             this.frameCallbackDepth = previousDepth;
         }
-        return renderClosure(
+        return this.renderSharedClosure(
             compiled,
+            "void",
+            expression,
             `[[maybe_unused]] const bbl::js::F32Array& ${dataName}`,
+            [dataName],
         );
     }
 
@@ -9709,6 +9764,13 @@ class Compiler implements LoweringServices {
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
+                if (parameter)
+                    this.registerNativeBinding(
+                        parameter,
+                        false,
+                        false,
+                        signature === "timestamp" ? "double" : "float",
+                    );
                 const stored = this.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
                 if (
@@ -9749,7 +9811,13 @@ class Compiler implements LoweringServices {
         const lambdaParameter = parameter
             ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
             : "";
-        return renderClosure(compiled, lambdaParameter);
+        return this.renderSharedClosure(
+            compiled,
+            "void",
+            identifier,
+            lambdaParameter,
+            parameter ? [parameter] : [],
+        );
     }
 
     public compileColor3(expression: ts.Expression): string {
@@ -10353,6 +10421,12 @@ class Compiler implements LoweringServices {
             name: cppName,
             initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${engineOptions.join(", ")}}${canvasArgument})`,
         });
+        this.registerNativeBindingType(
+            cppName,
+            this.options.workers
+                ? "std::shared_ptr<bbl::Engine>"
+                : "bbl::Engine",
+        );
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
             this.engineCreationExecution = {
@@ -10434,6 +10508,7 @@ class Compiler implements LoweringServices {
             const candidate = `v_bblite_${safe}_${this.temporaryIndex++}`;
             if (!this.sourceCppNames.has(candidate)) {
                 this.sourceCppNames.add(candidate);
+                this.allocatedCppNames.set(candidate, this.temporaryIndex);
                 return candidate;
             }
         }
@@ -11476,11 +11551,16 @@ class Compiler implements LoweringServices {
                 `class_field_${name.text}`,
             );
             const storage = sharedStorage ? `(*${cppName})` : cppName;
-            this.emit(
-                sharedStorage
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>();`
-                    : `std::optional<${nullableResource.cppType}> ${cppName};`,
-            );
+            this.emit({
+                kind: "declaration",
+                type: sharedStorage
+                    ? `std::shared_ptr<std::optional<${nullableResource.cppType}>>`
+                    : `std::optional<${nullableResource.cppType}>`,
+                name: cppName,
+                initializer: sharedStorage
+                    ? `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`
+                    : "{}",
+            });
             this.defineVariable(
                 name,
                 valueForKind(nullableResource.kind, {
@@ -11538,11 +11618,16 @@ class Compiler implements LoweringServices {
             `class_field_${name.text}`,
         );
         const storage = sharedStorage ? `(*${cppName})` : cppName;
-        this.emit(
-            sharedStorage
-                ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${resource.cppType}>>();`
-                : `std::optional<${resource.cppType}> ${cppName};`,
-        );
+        this.emit({
+            kind: "declaration",
+            type: sharedStorage
+                ? `std::shared_ptr<std::optional<${resource.cppType}>>`
+                : `std::optional<${resource.cppType}>`,
+            name: cppName,
+            initializer: sharedStorage
+                ? `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`
+                : "{}",
+        });
         const value: Value = valueForKind(resource.kind, {
             cpp: `(*${storage})`,
             ...((resource.kind === "ui-element" ||
@@ -11599,7 +11684,12 @@ class Compiler implements LoweringServices {
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        this.emit(`std::optional<${resource.cppType}> ${cppName};`);
+        this.emit({
+            kind: "declaration",
+            type: `std::optional<${resource.cppType}>`,
+            name: cppName,
+            initializer: "{}",
+        });
         const value: Value = valueForKind(resource.kind, {
             cpp: `(*${cppName})`,
             ...((resource.kind === "ui-element" ||
@@ -11848,7 +11938,7 @@ class Compiler implements LoweringServices {
                 kind: "callback",
                 cpp: cppName,
                 nativeCaptures: [
-                    this.registerNativeBinding(cppName, false, true),
+                    this.registerNativeBinding(cppName, false, true, type),
                 ],
             };
         }
@@ -11863,7 +11953,14 @@ class Compiler implements LoweringServices {
             kind: "callback",
             cpp: `(*${owner})`,
             sharedStorageCpp: owner,
-            nativeCaptures: [this.registerNativeBinding(owner)],
+            nativeCaptures: [
+                this.registerNativeBinding(
+                    owner,
+                    false,
+                    false,
+                    `std::shared_ptr<${type}>`,
+                ),
+            ],
         };
     }
 
@@ -11980,27 +12077,123 @@ class Compiler implements LoweringServices {
     }
 
     public registerNativeFunction(
-        prototype: string | undefined,
+        prototype: string,
         definitionLines: string[],
+        source: ts.Node = this.sourceFile,
     ): void {
-        if (prototype !== undefined)
-            this.nativeFunctionPrototypes.push(prototype);
-        this.nativeFunctionDefinitions.push(...definitionLines, "");
+        this.nativeDefinitions.push({
+            kind: "function",
+            source: source.getSourceFile().fileName,
+            prototype,
+            lines: definitionLines,
+        });
     }
 
     public registerSharedNativeFunction(
         name: string,
         definitionLines: string[],
         localBindings: readonly string[],
+        declaration?: { source: ts.Node; prototype: string },
     ): string {
         const entry = this.sharedNativeFunctions.intern(
             name,
             definitionLines.join("\n"),
             new Set(localBindings),
         );
-        if (entry.added)
-            this.registerNativeFunction(undefined, definitionLines);
+        if (entry.added) {
+            if (declaration)
+                this.registerNativeFunction(
+                    declaration.prototype,
+                    definitionLines,
+                    declaration.source,
+                );
+            else this.registerNativeTemplate(entry.name, definitionLines);
+        }
         return entry.name;
+    }
+
+    public renderSharedCoroutine(
+        closure: CapturedClosure,
+        returnType: string,
+        source: ts.Node,
+        parameters = "",
+        args = "",
+        environment = closure.initializer,
+        parameterNames: readonly string[] = [],
+    ): string {
+        const shared = this.registerSharedClosureBody(
+            this.allocateTemporaryCppName("async_body"),
+            closure,
+            returnType,
+            source,
+            parameters,
+            parameterNames,
+            "value",
+        );
+        return `bblscene::${shared}(${environment}${args ? `, ${args}` : ""})`;
+    }
+
+    public renderSharedClosure(
+        closure: CapturedClosure,
+        returnType: string,
+        source: ts.Node,
+        parameters: string,
+        parameterNames: readonly string[],
+        name = this.allocateTemporaryCppName("closure_body"),
+    ): string {
+        const shared = this.registerSharedClosureBody(
+            name,
+            closure,
+            returnType,
+            source,
+            parameters,
+            parameterNames,
+            "reference",
+        );
+        const invocation = closure.environmentType
+            ? shared
+            : `${shared}<decltype(${closure.initializer})>`;
+        return `bbl::js::make_closure(${closure.initializer}, bblscene::${invocation})`;
+    }
+
+    private registerSharedClosureBody(
+        name: string,
+        closure: CapturedClosure,
+        returnType: string,
+        source: ts.Node,
+        parameters: string,
+        parameterNames: readonly string[],
+        passing: "value" | "reference",
+    ): string {
+        const signature = `${returnType} ${name}([[maybe_unused]] ${closure.environmentType ?? "Environment"}${passing === "reference" ? "&" : ""} ${closure.environment}${parameters ? `, ${parameters}` : ""})`;
+        return this.registerSharedNativeFunction(
+            name,
+            [
+                ...(closure.environmentType
+                    ? []
+                    : ["template<typename Environment>"]),
+                `${signature} {`,
+                ...closure.lines,
+                "}",
+            ],
+            [...closure.localBindings, ...parameterNames],
+            closure.environmentType
+                ? { source, prototype: `${signature};` }
+                : undefined,
+        );
+    }
+
+    public registerNativeTemplate(
+        name: string,
+        lines: string[],
+        prototype?: string,
+    ): void {
+        this.nativeDefinitions.push({
+            kind: "template",
+            name,
+            lines,
+            ...(prototype === undefined ? {} : { prototype }),
+        });
     }
 
     public beginNativeFunctionBody(
@@ -12037,7 +12230,9 @@ class Compiler implements LoweringServices {
         name: string,
         borrowed = false,
         allowReference = false,
+        cppType?: string,
     ): NativeCaptureBinding {
+        if (cppType) this.registerNativeBindingType(name, cppType);
         const existing = this.nativeBindings.get(name);
         if (existing) return existing;
         const binding = {
@@ -12058,6 +12253,14 @@ class Compiler implements LoweringServices {
             this.continuationLocals.set(name, this.continuationSequence);
         }
         return binding;
+    }
+
+    public registerNativeBindingType(name: string, cppType: string): void {
+        if (
+            cppIdentifierPattern.test(name) &&
+            !this.nativeBindingTypes.has(name)
+        )
+            this.nativeBindingTypes.set(name, cppType);
     }
 
     public nativeBindingCheckpoint(): number {
@@ -12149,6 +12352,36 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
+        const cppType =
+            value.kind === "engine"
+                ? value.ownedEngineCpp
+                    ? "std::shared_ptr<bbl::Engine>"
+                    : "bbl::Engine"
+                : value.kind === "texture" && value.textureStorage === "solid"
+                  ? "bbl::SolidTexture"
+                  : value.kind === "texture" && value.textureStorage === "file"
+                    ? "bbl::FileTexture"
+                    : value.kind === "texture" &&
+                        value.textureStorage === "pixels"
+                      ? "bbl::PixelsTexture"
+                      : value.dataType
+                        ? this.dataTypes.cppType(value.dataType)
+                        : isHandleKind(value.kind)
+                          ? handleCppType(value.kind)
+                          : value.kind === "number"
+                            ? "double"
+                            : value.kind === "boolean"
+                              ? "bool"
+                              : value.kind === "string"
+                                ? "std::string"
+                                : undefined;
+        if (cppType)
+            this.registerNativeBindingType(
+                storage,
+                value.sharedStorageCpp
+                    ? `std::shared_ptr<${cppType}>`
+                    : cppType,
+            );
         value.nativeCaptures = [
             this.registerNativeBinding(
                 storage,
@@ -12246,7 +12479,9 @@ class Compiler implements LoweringServices {
             this.allocateTemporaryCppName("environment"),
             this.nextNativeBindingSequence,
             byReference,
+            (binding) => this.nativeBindingTypes.get(binding.name),
         );
+        const allocationBoundary = this.temporaryIndex;
         this.managedCaptures.push(capture);
         const deferred =
             this.frameCallbackDepth > 0 &&
@@ -12272,12 +12507,15 @@ class Compiler implements LoweringServices {
         const localBindings = [...identifiers].filter(
             (name) =>
                 (this.nativeBindings.get(name)?.sequence ?? 0) >
-                capture.boundary,
+                    capture.boundary ||
+                (this.allocatedCppNames.get(name) ?? 0) > allocationBoundary,
         );
+        const environmentType = capture.environmentType;
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
+            ...(environmentType ? { environmentType } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,
@@ -13860,11 +14098,23 @@ class Compiler implements LoweringServices {
                 name: snapshot,
                 initializer: stored.cpp,
             });
-            const binding = this.registerNativeBinding(snapshot);
+            const binding = this.registerNativeBinding(
+                snapshot,
+                false,
+                false,
+                stored.dataType
+                    ? `const ${this.dataTypes.cppType(stored.dataType)}`
+                    : undefined,
+            );
             const closure = this.captureManagedClosureLines(
                 () => {
-                    if (parameter)
+                    if (parameter) {
+                        this.registerNativeBindingType(
+                            parameter.name,
+                            parameter.cppType.replace(/&+\s*$/, "").trim(),
+                        );
                         this.registerNativeConstBinding(parameter.name, true);
+                    }
                     this.useNativeBinding(binding);
                     this.emitDiscardedValue(
                         this.dataLowerer.compileFunctionValueCall(
@@ -13883,11 +14133,14 @@ class Compiler implements LoweringServices {
                           callback,
                       )
                     : "0u",
-                cpp: renderClosure(
+                cpp: this.renderSharedClosure(
                     closure,
+                    "void",
+                    callback,
                     parameter
                         ? `[[maybe_unused]] ${parameter.cppType} ${parameter.name}`
                         : "",
+                    parameter ? [parameter.name] : [],
                 ),
             };
         }
@@ -13915,8 +14168,13 @@ class Compiler implements LoweringServices {
         try {
             compiled = this.captureManagedClosureLines(
                 () => {
-                    if (parameter)
+                    if (parameter) {
+                        this.registerNativeBindingType(
+                            parameter.name,
+                            parameter.cppType.replace(/&+\s*$/, "").trim(),
+                        );
                         this.registerNativeConstBinding(parameter.name, true);
+                    }
                     const unwrapped = this.unwrap(callback) as
                         | ts.Identifier
                         | ts.PropertyAccessExpression
@@ -14035,7 +14293,13 @@ class Compiler implements LoweringServices {
         }
         return {
             identity: identity ?? "0u",
-            cpp: renderClosure(compiled, cppParameter),
+            cpp: this.renderSharedClosure(
+                compiled,
+                "void",
+                callback,
+                cppParameter,
+                parameter ? [parameter.name] : [],
+            ),
         };
     }
 
@@ -15984,11 +16248,12 @@ class Compiler implements LoweringServices {
         }
         if (value.kind === "engine" && value.ownedEngineCpp) {
             const owner = this.allocateTemporaryCppName(`${label}_owner`);
+            this.reachJsData();
             this.emit({
                 kind: "declaration",
                 type: "const auto",
                 name: owner,
-                initializer: value.ownedEngineCpp,
+                initializer: `bbl::js::snapshot_value(${value.ownedEngineCpp})`,
                 attributes: "[[maybe_unused]] ",
             });
             const binding = this.registerNativeConstBinding(owner);
@@ -16171,13 +16436,21 @@ class Compiler implements LoweringServices {
                     : undefined;
         if (!cppType) return value;
         const cppName = this.allocateTemporaryCppName(label);
+        const snapshot =
+            cppType === "std::string" &&
+            (value.nativeLvalue || cppIdentifierPattern.test(value.cpp));
+        if (snapshot) this.reachJsData();
         this.emit({
             kind: "declaration",
             type: `const ${cppType}`,
             name: cppName,
-            initializer: value.cpp,
+            initializer: snapshot
+                ? `bbl::js::snapshot_value(${value.cpp})`
+                : value.cpp,
+            attributes: "[[maybe_unused]] ",
         });
         const binding = this.registerNativeConstBinding(cppName);
+        this.registerNativeBindingType(cppName, `const ${cppType}`);
         return {
             ...value,
             cpp: cppName,
@@ -16623,7 +16896,7 @@ class Compiler implements LoweringServices {
             const type = `std::tuple<${packedScalars.map((field) => field.type).join(", ")}>`;
             this.emit({
                 kind: "declaration",
-                type: "auto",
+                type: `std::shared_ptr<${type}>`,
                 name: storage,
                 initializer: `bbl::js::make_gc_shared<${type}>(std::tuple{${packedScalars.map((field) => field.cpp).join(", ")}})`,
             });
@@ -17027,10 +17300,6 @@ class Compiler implements LoweringServices {
             this.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
         }
-        const maybeUnused =
-            value.kind === "number" || value.kind === "boolean" || parameter
-                ? "[[maybe_unused]] "
-                : "";
         if (sharedStorage) {
             if (isHandleKind(value.kind)) {
                 const cppType = this.dataTypes.cppType({
@@ -17042,7 +17311,7 @@ class Compiler implements LoweringServices {
                     type: "auto",
                     name: cppName,
                     initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
-                    attributes: maybeUnused,
+                    attributes: "[[maybe_unused]] ",
                 });
             } else {
                 this.emit({
@@ -17050,7 +17319,7 @@ class Compiler implements LoweringServices {
                     type: "auto",
                     name: cppName,
                     initializer: `bbl::js::make_gc_cell(${initializerCpp})`,
-                    attributes: maybeUnused,
+                    attributes: "[[maybe_unused]] ",
                 });
             }
         } else {
@@ -17059,7 +17328,7 @@ class Compiler implements LoweringServices {
                 type: nativeType,
                 name: cppName,
                 initializer: initializerCpp,
-                attributes: maybeUnused,
+                attributes: "[[maybe_unused]] ",
             });
         }
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
@@ -17582,14 +17851,20 @@ class Compiler implements LoweringServices {
      * collide with that local's own declaration.
      */
     public withBoundParameters<T>(
-        parameters: readonly { name: ts.Identifier; value: Value }[],
+        parameters: readonly {
+            name: ts.Identifier;
+            value: Value;
+            compileTime?: boolean;
+        }[],
         work: () => T,
     ): T {
         if (parameters.length === 0) return work();
         this.pushScope(this.allocateBlockPrefix());
         try {
             for (const parameter of parameters) {
-                this.bindParameterValue(parameter.name, parameter.value);
+                if (parameter.compileTime)
+                    this.bindCompileTimeValue(parameter.name, parameter.value);
+                else this.bindParameterValue(parameter.name, parameter.value);
             }
             return work();
         } finally {
@@ -18583,13 +18858,26 @@ class Compiler implements LoweringServices {
     public emit(line: string | NativeDeclaration): void {
         const code =
             typeof line === "string" ? line : renderNativeDeclaration(line);
-        if (typeof line !== "string")
+        if (typeof line !== "string") {
+            if (!/\bauto\b|\bdecltype\b/.test(line.type))
+                this.registerNativeBindingType(
+                    line.name,
+                    line.type.replace(/&+$/, "").trim(),
+                );
+            else if (line.type === "auto&" || line.type === "auto&&") {
+                const sourceType = this.nativeBindingTypes.get(
+                    line.initializer,
+                );
+                if (sourceType)
+                    this.registerNativeBindingType(line.name, sourceType);
+            }
             this.nativeDeclarations.set(code, {
                 ...line,
                 dependencies: [
                     ...(this.statementDependencies.at(-1) ?? []),
                 ].map((binding) => binding.name),
             });
+        }
         const emitted = `${"    ".repeat(this.indentLevel)}${code}`;
         this.staticExpansionBudget.emit(emitted);
         this.body.push(emitted);
@@ -19057,7 +19345,7 @@ class Compiler implements LoweringServices {
         };
     }
 
-    private renderCpp(features: Feature[]): string {
+    private renderCpp(features: Feature[]): ApplicationCpp {
         if (this.presentationHostCpp && !this.ui.presentationCanvasValue) {
             this.failAtFile(
                 "An engine-less animation manager needs a reached primary Canvas2D surface for native presentation.",
@@ -19113,6 +19401,7 @@ class Compiler implements LoweringServices {
             );
         }
         return renderMainCpp({
+            source: this.options.fileName,
             ...(this.options.workers
                 ? {
                       workers: {
@@ -19139,8 +19428,7 @@ class Compiler implements LoweringServices {
             screenSpaceTaskCount: this.screenSpaceTasks.length,
             renderDataPreamble: () =>
                 this.dataTypes.renderPreamble(!!this.options.workers),
-            nativeFunctionPrototypes: this.nativeFunctionPrototypes,
-            nativeFunctionDefinitions: this.nativeFunctionDefinitions,
+            nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
             voxelFileStorageReached: this.voxelFileStorageReached,
             ...(physicsDebugConstructionBody
@@ -19154,14 +19442,6 @@ class Compiler implements LoweringServices {
                   ]
                 : this.body,
         });
-    }
-
-    private renderCmake(
-        features: Feature[],
-        runtimeSources: string[],
-        generatedSources: string[],
-    ): string {
-        return renderFeaturesCmake(features, runtimeSources, generatedSources);
     }
 
     public fail(

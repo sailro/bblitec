@@ -1,0 +1,29 @@
+{
+  "scene": "doom",
+  "notes": "Cross the first lift, let its walk trigger finish, then face it from the lower floor. Space must lower it so the player can board and ride back up.",
+  "phases": [
+    {
+      "id": "blocked",
+      "frame": 800,
+      "tape": ["-*5", "+ArrowUp", "-*123", "-ArrowUp", "+ArrowLeft", "-*78", "-ArrowLeft", "-*402", "-*60", "+ArrowUp", "-*25", "-ArrowUp"]
+    },
+    {
+      "id": "boarded",
+      "frame": 800,
+      "tape": ["-*5", "+ArrowUp", "-*123", "-ArrowUp", "+ArrowLeft", "-*78", "-ArrowLeft", "-*400", "+Space", "-Space", "-*60", "+ArrowUp", "-*25", "-ArrowUp"]
+    },
+    {
+      "id": "raised",
+      "frame": 1000,
+      "tape": ["-*5", "+ArrowUp", "-*123", "-ArrowUp", "+ArrowLeft", "-*78", "-ArrowLeft", "-*400", "+Space", "-Space", "-*60", "+ArrowUp", "-*25", "-ArrowUp"]
+    }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "blocked", "path": "camera.position[0]", "min": 207, "max": 209 },
+    { "kind": "capture-path", "phase": "boarded", "path": "camera.position[0]", "min": 100, "max": 120 },
+    { "kind": "capture-path", "phase": "boarded", "path": "camera.position[1]", "min": -90, "max": -70 },
+    { "kind": "capture-path", "phase": "raised", "path": "camera.position[0]", "min": 100, "max": 120 },
+    { "kind": "capture-path", "phase": "raised", "path": "camera.position[1]", "equals": 53 },
+    { "kind": "backends-agree", "phase": "*", "paths": ["camera"] }
+  ]
+}

@@ -43,9 +43,10 @@ test("four-element handle literals and numeric walks emit compact loops", () => 
     assert.equal(result.manifest.sceneMeshes.length, 4);
 });
 
-test("short handle walks stay flat and conditional bodies use native identity", () => {
+test("short handle walks use native loops and conditional bodies retain identity", () => {
     const short = compileSource(handles.replace("[a, b, a, d]", "[a, b, d]"));
-    assert.doesNotMatch(short.cpp, /handle_table/);
+    assert.match(short.cpp, /handle_table_\d+\[3\]/);
+    assert.equal(short.cpp.match(/\.position\.x \+=/g)?.length, 1);
     const divergent = compileSource(
         handles.replace(
             "mesh.position.x += 1",

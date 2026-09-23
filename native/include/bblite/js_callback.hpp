@@ -41,8 +41,10 @@ struct ClosureInvoker<Invoke, R (*)(Args...) noexcept(Noexcept)> {
 
 template <typename Environment, typename Invoke>
 [[nodiscard]] auto make_closure(Environment environment, Invoke invoke) {
-    static_assert(std::is_empty_v<Invoke>, "Closure invokers must not hide captures.");
+    static_assert(std::is_empty_v<Invoke> || std::is_function_v<std::remove_pointer_t<Invoke>>,
+                  "Closure invokers must not hide captures.");
     if constexpr (requires {
+                      requires std::is_empty_v<Invoke>;
                       requires std::is_trivially_default_constructible_v<Invoke>;
                       requires std::is_trivially_destructible_v<Invoke>;
                       requires std::is_pointer_v<decltype(+invoke)>;

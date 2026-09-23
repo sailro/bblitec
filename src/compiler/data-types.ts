@@ -44,6 +44,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
+import type { DataPreamble, NativeDefinition } from "./source-units.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -587,6 +588,7 @@ export class DataTypeRegistry {
             name: string;
             elementCppType: string;
             elements: string[];
+            source: string;
         }
     >();
     private readonly structNamesInProgress = new EmissionMap<
@@ -3192,6 +3194,7 @@ export class DataTypeRegistry {
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        source: ts.Node = declaration,
     ): string {
         const existing = this.tagTables.get(declaration);
         if (existing) {
@@ -3205,6 +3208,7 @@ export class DataTypeRegistry {
             name,
             elementCppType,
             elements,
+            source: source.getSourceFile().fileName,
         });
         return name;
     }
@@ -3215,6 +3219,7 @@ export class DataTypeRegistry {
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        source: ts.Node,
     ): string {
         const key = createHash("sha256")
             .update(JSON.stringify([elementCppType, elements]))
@@ -3226,6 +3231,7 @@ export class DataTypeRegistry {
             preferredName,
             elementCppType,
             elements,
+            source,
         );
         this.sharedConstantArrays.set(key, name);
         return name;
@@ -3579,7 +3585,7 @@ export class DataTypeRegistry {
      * Renders the generated enum, struct, and table definitions in
      * dependency order inside `namespace bblscene`.
      */
-    public renderPreamble(structuredClone = false): string {
+    public renderPreamble(structuredClone = false): DataPreamble {
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&
@@ -3587,9 +3593,10 @@ export class DataTypeRegistry {
             this.tables.size === 0 &&
             this.tagTables.size === 0
         ) {
-            return "";
+            return { standalone: "", shared: "", definitions: [] };
         }
-        const lines: string[] = ["namespace bblscene {", ""];
+        const lines: (string | (NativeDefinition & { declaration: string }))[] =
+            ["namespace bblscene {", ""];
         for (const definition of this.enumsByKey.values()) {
             if (!used.enums.has(definition.name)) {
                 continue;
@@ -3784,22 +3791,60 @@ export class DataTypeRegistry {
         for (const definition of structs) {
             emitStruct(definition);
         }
-        for (const table of this.tables.values()) {
+        const emitTable = (
+            source: string,
+            type: string,
+            name: string,
+            initializer: string,
+        ): void => {
+            const definition = `const ${type} ${name}${initializer};`;
             lines.push(
-                `inline const ${this.tableCppType(table.dimensions)} ${table.name} = ${table.values};`,
+                {
+                    source,
+                    declaration: `extern const ${type} ${name};`,
+                    definition,
+                },
                 "",
+            );
+        };
+        for (const [node, table] of this.tables) {
+            emitTable(
+                node.getSourceFile().fileName,
+                this.tableCppType(table.dimensions),
+                table.name,
+                ` = ${table.values}`,
             );
         }
         for (const table of this.tagTables.values()) {
-            lines.push(
-                `inline const std::array<${table.elementCppType}, ${table.elements.length}> ${table.name}{${table.elements.join(", ")}};`,
-                "",
+            emitTable(
+                table.source,
+                `std::array<${table.elementCppType}, ${table.elements.length}>`,
+                table.name,
+                `{${table.elements.join(", ")}}`,
             );
         }
         lines.push(...this.renderJsonCodecs(used.structs));
         lines.push(...this.renderJsonObjectViews(used.structs));
         lines.push("}  // namespace bblscene");
-        return lines.join("\n");
+        return {
+            standalone: lines
+                .map((line) =>
+                    typeof line === "string"
+                        ? line
+                        : `inline ${line.definition}`,
+                )
+                .join("\n"),
+            shared: lines
+                .map((line) =>
+                    typeof line === "string" ? line : line.declaration,
+                )
+                .join("\n"),
+            definitions: lines.flatMap((line) =>
+                typeof line === "string"
+                    ? []
+                    : [{ source: line.source, definition: line.definition }],
+            ),
+        };
     }
 
     private reachableNamedTypes(): {

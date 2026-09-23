@@ -54,8 +54,12 @@ test("scene morph attachment records its exact PBR row and keeps weight updates 
     `);
     assert.equal(result.manifest.sceneMeshes[0]?.morphTargets, true);
     assert.equal(result.manifest.sceneMeshes[1]?.morphTargets, undefined);
+    const callback = result.cpp.match(
+        /bbl::on_before_render\([^\n]+bblscene::(v_bblite_closure_body_\d+)/,
+    );
+    assert.ok(callback);
     assert.match(
-        result.cpp.slice(result.cpp.indexOf("bbl::on_before_render")),
+        cppDefinition(result.cpp, `void ${callback[1]}(`),
         /bbl::set_morph_target_weights/,
     );
     const outputPath = resolve("artifacts/scene-morph-composition");
