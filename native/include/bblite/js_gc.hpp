@@ -45,11 +45,11 @@ struct Node {
     bool reachable = false;
     bool payload_alive = false;
     bool linked = false;
-    Node() {
+    Node() = default;
+    /** Registration is the collector's allocation: it drives the collection cadence. */
+    void attach() {
         ++registry.allocations;
         ++registry.total_allocations;
-    }
-    void attach() {
         const auto index = registry.nodes.size();
         registry.nodes.push_back(this);
         registry_index = index;
@@ -180,6 +180,51 @@ private:
     void* state_;
 };
 
+namespace gc {
+/**
+ * Whether tracing a value can report an edge: a shared owner, or a payload
+ * that describes its edges. Mirrors `TraceVisitor`'s dispatch; a container
+ * type specializes it by its elements.
+ */
+template <typename T>
+concept DescribesEdges = requires(const T& value, const TraceVisitor& visitor) {
+    value.gc_trace(visitor);
+} || requires(const T& value, const TraceVisitor& visitor) { gc_trace_edges(value, visitor); };
+template <typename T>
+concept Complete = requires { sizeof(T); };
+template <typename T> struct Traceable : std::bool_constant<DescribesEdges<T>> {
+    // A forward-declared record would answer false and stay cached; refuse it.
+    static_assert(Complete<T>, "Traceability is decided on complete types only.");
+};
+/** Tuple lanes that are references borrow their value and are never traced. */
+template <typename T>
+struct TraceableField
+    : std::bool_constant<!std::is_reference_v<T> && Traceable<std::remove_cv_t<T>>::value> {};
+template <typename T> struct Traceable<std::shared_ptr<T>> : std::true_type {};
+template <typename T> struct Traceable<std::optional<T>> : Traceable<T> {};
+template <typename... Ts>
+struct Traceable<std::variant<Ts...>> : std::disjunction<Traceable<Ts>...> {};
+template <typename... Ts>
+struct Traceable<std::tuple<Ts...>> : std::disjunction<TraceableField<Ts>...> {};
+template <typename A, typename B>
+struct Traceable<std::pair<A, B>> : std::disjunction<TraceableField<A>, TraceableField<B>> {};
+template <typename T, std::size_t N> struct Traceable<std::array<T, N>> : Traceable<T> {};
+template <typename T, typename A> struct Traceable<std::vector<T, A>> : Traceable<T> {};
+template <typename T, typename A> struct Traceable<std::deque<T, A>> : Traceable<T> {};
+template <typename T, typename A> struct Traceable<std::list<T, A>> : Traceable<T> {};
+template <typename K, typename V, typename C, typename A>
+struct Traceable<std::map<K, V, C, A>> : std::disjunction<Traceable<K>, Traceable<V>> {};
+template <typename K, typename V, typename H, typename E, typename A>
+struct Traceable<std::unordered_map<K, V, H, E, A>> : std::disjunction<Traceable<K>, Traceable<V>> {
+};
+template <typename K, typename C, typename A> struct Traceable<std::set<K, C, A>> : Traceable<K> {};
+template <typename K, typename H, typename E, typename A>
+struct Traceable<std::unordered_set<K, H, E, A>> : Traceable<K> {};
+} // namespace gc
+
+template <typename T>
+inline constexpr bool gc_traceable = gc::Traceable<std::remove_cv_t<T>>::value;
+
 inline gc::Registry::~Registry() noexcept {
     // Pin the complete registry before clearing cycles; payload destruction
     // can publish more nodes, which join the same teardown.
@@ -248,6 +293,19 @@ template <typename T, typename... Args>
     if constexpr (requires { value->gc_bind_node(block.get()); })
         value->gc_bind_node(block.get());
     return {std::move(block), value};
+}
+
+/**
+ * Container storage joins cycle collection only when its elements can own a
+ * traced edge. Storage that cannot is acyclic: reference counting releases
+ * it, and it costs the registry nothing.
+ */
+template <bool Traced, typename T, typename... Args>
+[[nodiscard]] std::shared_ptr<T> make_gc_shared_if(Args&&... args) {
+    if constexpr (Traced)
+        return make_gc_shared<T>(std::forward<Args>(args)...);
+    else
+        return std::make_shared<T>(std::forward<Args>(args)...);
 }
 
 template <typename T> [[nodiscard]] auto make_gc_cell(T&& value) {
