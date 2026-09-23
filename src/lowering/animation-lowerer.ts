@@ -9,6 +9,12 @@ import { lowerGltfAnimationEvaluator } from "./gltf/animation-evaluator.js";
 import { lowerAnimationGroupRegistration } from "./gltf/animation-group-registration.js";
 import { lowerPropertyAnimationPlayback } from "./animation-property-playback.js";
 import { lowerAnimationManagerDispatch } from "./animation-manager-dispatch.js";
+import {
+    lowerPinnedFunction,
+    lowerPinnedFunctionParts,
+} from "./pinned-function-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -764,15 +770,14 @@ void set_animation_additive_from_frame(
      * property) pair each binding resolved, samples every contributing
      * group at its own time, and writes one weighted sum per bucket.
      *
-     * Everything load-bearing is asserted against the pinned bodies here:
-     * which groups make a bucket contested, the early-out that hands the
-     * tick back to the ordinary per-group path, the weighted-sum term, the
-     * quaternion hemisphere rule and its final normalize, and the mixer's
-     * own time advance — which is a second copy of the playback
-     * arithmetic upstream, forking from the controller's on the loop
-     * branch, so it is asserted separately rather than assumed identical.
+     * The arithmetic is the pin's own: the group's time advance, the
+     * weighted accumulation with its quaternion hemisphere rule and the
+     * final normalize are lowered from their declarations. The walk around
+     * them runs over the native manager's ordered groups, so the shapes it
+     * follows -- which groups contest a bucket, the uncontested early-out,
+     * the zero-weight skip and the normalize guard -- are asserted here.
      */
-    private lowerWeightedPointerMixer(msPerSecond: number): string {
+    private lowerWeightedPointerMixer(): string {
         const mixerModule = "src/animation/weighted-pointer-mixer.ts";
         const weightModule = "src/animation/animation-weight.ts";
         const { declaration: setWeight } = this.context.functionDeclaration(
@@ -851,120 +856,154 @@ void set_animation_additive_from_frame(
             "bucket.quaternion && bucket.arity === 4",
             "blended quaternion normalize guard",
         );
-        const { declaration: accumulate } = this.context.functionDeclaration(
-            mixerModule,
-            "accumulateWeightedTrack",
-        );
-        this.context.assertExpressionShape(
-            this.context
-                .findNodes(
-                    accumulate,
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-                )
-                .filter((expression) =>
-                    ts.isElementAccessExpression(expression.left),
-                )[0] ??
-                this.context.contractError(
-                    accumulate,
-                    "Expected the weighted accumulation write.",
-                ),
-            "bucket.values[i] = bucket.values[i] + sample[i] * weight * sign",
-            "Weighted animation accumulation",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(accumulate, "sign"),
-            "1",
-            "Weighted animation default sign",
-        );
-        this.context.assertExpressionShape(
-            this.context.findNodes(
-                accumulate,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    ts.isIdentifier(node.left) &&
-                    node.left.text === "sign",
-            )[0] ??
-                this.context.contractError(
-                    accumulate,
-                    "Expected the quaternion hemisphere sign rule.",
-                ),
-            "sign = dot < 0 ? -1 : 1",
-            "Weighted animation hemisphere sign",
-        );
-        const { declaration: normalize } = this.context.functionDeclaration(
+        const calls = pinnedNumericMathCalls();
+        const normalize = lowerPinnedFunction(
+            this.context,
             mixerModule,
             "normalizeQuaternion",
+            [
+                {
+                    pinned: "values",
+                    kind: "f32Buffer",
+                    cpp: "values",
+                    cppType: "std::array<float, 4>",
+                    mutableRecord: true,
+                },
+            ],
+            { cppName: "normalize_blended_quaternion", returns: "void", calls },
         );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(normalize, "lenSq"),
-            "x * x + y * y + z * z + w * w",
-            "Blended quaternion length",
+        const accumulate = lowerPinnedFunctionParts(
+            this.context,
+            mixerModule,
+            "accumulateWeightedTrack",
+            [
+                {
+                    pinned: "bucket",
+                    kind: "record",
+                    cpp: "bucket",
+                    cppType: "PropertyAnimationBucket",
+                    annotation: "WeightedPointerBucket",
+                    mutableRecord: true,
+                },
+                {
+                    pinned: "track",
+                    kind: "record",
+                    cpp: "track",
+                    cppType: "PropertyAnimationTrack",
+                    annotation: "AnimationPropertyRuntimeTrack",
+                },
+                {
+                    pinned: "sample",
+                    kind: "f32Buffer",
+                    cpp: "sample",
+                    cppType: "std::array<float, 4>",
+                },
+                { pinned: "weight", kind: "number", cpp: "weight" },
+            ],
+            {
+                cppName: "accumulate_weighted_track",
+                returns: "void",
+                calls,
+                booleanAnd: true,
+                memberBindings: new Map<string, PinnedBinding>([
+                    ["bucket.active", { cpp: "bucket.active", type: "bool" }],
+                    [
+                        "bucket.quaternion",
+                        { cpp: "bucket.quaternion", type: "bool" },
+                    ],
+                    [
+                        "bucket.hasReference",
+                        { cpp: "bucket.has_reference", type: "bool" },
+                    ],
+                    ...(["refX", "refY", "refZ", "refW"] as const).map(
+                        (name, lane): [string, PinnedBinding] => [
+                            `bucket.${name}`,
+                            { cpp: `reference[${lane}]`, type: "scalar" },
+                        ],
+                    ),
+                    ["bucket.values", { cpp: "bucket.values", type: "f32" }],
+                    [
+                        "track.stride",
+                        {
+                            cpp: "static_cast<double>(track_stride(track.path, track.component))",
+                            type: "scalar",
+                        },
+                    ],
+                ]),
+            },
         );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(normalize, "inv"),
-            "1 / Math.sqrt(lenSq)",
-            "Blended quaternion normalize",
-        );
-        // The mixer's own advance. It forks from the controller's tick on
-        // the loop branch — that one wraps only while playing, this one
-        // wraps whenever the group loops — so both are pinned rather than
-        // one being derived from the other.
-        const { declaration: advance } = this.context.functionDeclaration(
+        const advance = lowerPinnedFunctionParts(
+            this.context,
             mixerModule,
             "advancePropertyGroupTime",
+            [
+                {
+                    pinned: "group",
+                    kind: "record",
+                    cpp: "group",
+                    cppType: "PropertyAnimationGroupRecord",
+                    annotation: "AnimationGroup",
+                    mutableRecord: true,
+                },
+                {
+                    pinned: "mixer",
+                    kind: "record",
+                    cpp: "mixer",
+                    annotation: "AnimationPropertyMixer",
+                    specialized: true,
+                    binding: { cpp: "mixer", type: "opaque" },
+                },
+                { pinned: "deltaMs", kind: "number", cpp: "delta_ms" },
+            ],
+            {
+                cppName: "advance_property_group_time",
+                returns: "double",
+                calls,
+                booleanAnd: true,
+                booleanOr: true,
+                memberBindings: new Map<string, PinnedBinding>([
+                    ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
+                    ["group.currentTime", { cpp: "time", type: "scalar" }],
+                    [
+                        "group.speedRatio",
+                        {
+                            cpp: "static_cast<double>(group.speed_ratio)",
+                            type: "scalar",
+                        },
+                    ],
+                    [
+                        "group.loopAnimation",
+                        { cpp: "group.loop", type: "bool" },
+                    ],
+                    [
+                        "mixer[MIX_FROM]",
+                        {
+                            cpp: "static_cast<double>(group.from_time)",
+                            type: "scalar",
+                        },
+                    ],
+                    [
+                        "mixer[MIX_TO]",
+                        {
+                            cpp: "static_cast<double>(group.to_time)",
+                            type: "scalar",
+                        },
+                    ],
+                    [
+                        "mixer[MIX_DURATION]",
+                        {
+                            cpp: "static_cast<double>(group.clip.duration)",
+                            type: "scalar",
+                        },
+                    ],
+                ]),
+            },
         );
-        this.context.assertExpressionShape(
-            this.context.findNodes(
-                advance,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-                    this.context.propertyPath(node.left)?.join(".") ===
-                        "group.currentTime" &&
-                    ts.isBinaryExpression(
-                        this.context.unwrapExpression(node.right),
-                    ),
-            )[0]?.right ??
-                this.context.contractError(
-                    advance,
-                    "Expected the mixer playback advance.",
-                ),
-            `(deltaMs / ${msPerSecond}) * group.speedRatio`,
-            "Mixer playback advance",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(advance, "fromTime"),
-            "Math.max(0, Math.min(mixer[MIX_FROM], mixer[MIX_DURATION]))",
-            "Mixer play-range start",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(advance, "toTime"),
-            "mixer[MIX_TO] > fromTime ? Math.min(mixer[MIX_TO], mixer[MIX_DURATION]) : mixer[MIX_DURATION]",
-            "Mixer play-range end",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(advance, "duration"),
-            "Math.max(0, toTime - fromTime)",
-            "Mixer play-range duration",
-        );
-        this.expectOneShape(
-            advance,
-            "group.currentTime = fromTime + ((group.currentTime - fromTime) % duration)",
-            "mixer loop wrap",
-        );
-        this.expectOneShape(
-            advance,
-            "group.currentTime += duration",
-            "mixer wrap correction",
-        );
-        this.expectOneShape(
-            advance,
-            "group.currentTime = Math.min(Math.max(group.currentTime, fromTime), toTime)",
-            "mixer play-range clamp",
-        );
+        const nested = (body: string): string =>
+            body
+                .split("\n")
+                .map((line) => (line ? `    ${line}` : line))
+                .join("\n");
         return `
 /**
  * ${this.context.provenance(mixerModule, "updateWeightedPointerAnimations")}
@@ -1003,81 +1042,33 @@ PropertyAnimationBucket& track_bucket(
     return buckets.back();
 }
 
-// The sum runs in double and rounds once at the float store, which is
-// where the pinned Float32Array bucket rounds it.
-void accumulate_weighted_track(
-    PropertyAnimationBucket& bucket,
-    const std::array<float, 4>& sample,
-    float weight) {
-    bucket.active = true;
-    double sign = 1.0;
-    const std::size_t arity =
-        track_stride(bucket.property, bucket.component);
-    if (bucket.quaternion && arity == 4) {
-        if (!bucket.has_reference) {
-            bucket.reference = sample;
-            bucket.has_reference = true;
-        } else {
-            const double dot =
-                static_cast<double>(bucket.reference[0]) * sample[0] +
-                static_cast<double>(bucket.reference[1]) * sample[1] +
-                static_cast<double>(bucket.reference[2]) * sample[2] +
-                static_cast<double>(bucket.reference[3]) * sample[3];
-            sign = dot < 0.0 ? -1.0 : 1.0;
-        }
-    }
-    for (std::size_t index = 0; index < arity; ++index) {
-        bucket.values[index] = static_cast<float>(
-            static_cast<double>(bucket.values[index]) +
-            static_cast<double>(sample[index]) *
-                static_cast<double>(weight) * sign);
+// ${accumulate.provenance}
+// The pin's refX..refW are JavaScript numbers that only ever hold sample
+// lanes; the bucket record keeps them in float, which holds them exactly.
+${accumulate.declaration} {
+    std::array<double, 4> reference{
+        bucket.reference[0],
+        bucket.reference[1],
+        bucket.reference[2],
+        bucket.reference[3]};
+${accumulate.body}
+    for (std::size_t lane = 0; lane < reference.size(); ++lane) {
+        bucket.reference[lane] = static_cast<float>(reference[lane]);
     }
 }
 
-void normalize_blended_quaternion(
-    std::array<float, 4>& values) {
-    const double length_squared =
-        static_cast<double>(values[0]) * values[0] +
-        static_cast<double>(values[1]) * values[1] +
-        static_cast<double>(values[2]) * values[2] +
-        static_cast<double>(values[3]) * values[3];
-    if (length_squared > 0.0) {
-        const double inverse = 1.0 / std::sqrt(length_squared);
-        for (float& component : values) {
-            component = static_cast<float>(component * inverse);
-        }
-    }
-}
+${normalize}
 
-float advance_property_group_time(
-    const PropertyAnimationGroup& group,
-    float delta_ms) {
-    if (group->playing) {
-        group->current_time +=
-            delta_ms * ${this.context.floatLiteral(1 / msPerSecond)} *
-            group->speed_ratio;
-    }
-    const float from_time = std::max(
-        0.0f,
-        std::min(group->from_time, group->clip.duration));
-    const float to_time = group->to_time > from_time
-        ? std::min(group->to_time, group->clip.duration)
-        : group->clip.duration;
-    const float duration = std::max(0.0f, to_time - from_time);
-    if (duration <= 0.0f) return from_time;
-    if (group->loop) {
-        group->current_time =
-            from_time +
-            std::fmod(group->current_time - from_time, duration);
-        if (group->current_time < from_time) {
-            group->current_time += duration;
-        }
-    } else {
-        group->current_time = std::min(
-            std::max(group->current_time, from_time),
-            to_time);
-    }
-    return group->current_time;
+// ${advance.provenance}
+// group.currentTime is a JavaScript number the record keeps in float: the
+// advance runs at the pin's width and rounds once, at the record store.
+${advance.declaration} {
+    double time = group.current_time;
+    const double result = [&]() -> double {
+${nested(advance.body)}
+    }();
+    group.current_time = static_cast<float>(time);
+    return result;
 }
 
 /**
@@ -1090,7 +1081,7 @@ float advance_property_group_time(
 bool update_weighted_property_animations(
     Engine& engine,
     PropertyAnimationManagerRecord& manager,
-    float delta_ms) {
+    double delta_ms) {
     for (PropertyAnimationBucket& bucket : manager.buckets) {
         bucket.contested = false;
         bucket.active = false;
@@ -1121,10 +1112,10 @@ bool update_weighted_property_animations(
         }
         const PropertyAnimationGroup group = reference.property_group;
         if (!group || group->stopped) continue;
-        const float time =
-            advance_property_group_time(group, delta_ms);
-        const float weight = group->weight;
-        if (weight == 0.0f) continue;
+        const double time =
+            advance_property_group_time(*group, delta_ms);
+        const double weight = group->weight;
+        if (weight == 0.0) continue;
         for (std::size_t index = 0;
              index < group->clip.tracks.size();
              ++index) {
@@ -1147,7 +1138,7 @@ bool update_weighted_property_animations(
                     sample);
                 continue;
             }
-            accumulate_weighted_track(bucket, sample, weight);
+            accumulate_weighted_track(bucket, track, sample, weight);
         }
     }
     for (PropertyAnimationBucket& bucket : manager.buckets) {
@@ -1167,6 +1158,110 @@ bool update_weighted_property_animations(
     return true;
 }
 `;
+    }
+
+    /**
+     * `updateFades`, lowered whole over the manager's native fade list:
+     * each fade's clamped advance, the weight it writes and the completed
+     * fade's exact target weight and removal. The fade's elapsed time and
+     * the group weight are JavaScript numbers the native records keep in
+     * float, so they are read widened and each store rounds once.
+     */
+    private lowerWeightFadeUpdate(): string {
+        const fadeModule = "src/animation/animation-weight-fade.ts";
+        const fade = "manager.weight_fades[static_cast<std::size_t>(i)]";
+        const parts = lowerPinnedFunctionParts(
+            this.context,
+            fadeModule,
+            "updateFades",
+            [
+                {
+                    pinned: "fades",
+                    kind: "record",
+                    cpp: "fades",
+                    annotation: "AnimationWeightFade[]",
+                    specialized: true,
+                    binding: { cpp: "manager.weight_fades", type: "opaque" },
+                },
+                { pinned: "deltaMs", kind: "number", cpp: "delta_ms" },
+            ],
+            {
+                cppName: "update_animation_weight_fades",
+                returns: "void",
+                calls: pinnedNumericMathCalls(),
+                leadingParameters: [
+                    "Engine& engine",
+                    "PropertyAnimationManagerRecord& manager",
+                ],
+                methods: new Map([
+                    [
+                        "splice",
+                        (receiver: string, args: readonly string[]): string =>
+                            args.length === 2 && args[1] === "1.0"
+                                ? `${receiver}.erase(${receiver}.begin() + static_cast<std::ptrdiff_t>(${args[0]}))`
+                                : this.context.contractError(
+                                      this.context.functionDeclaration(
+                                          fadeModule,
+                                          "updateFades",
+                                      ).declaration,
+                                      "Expected updateFades to remove one fade.",
+                                  ),
+                    ],
+                ]),
+                memberBindings: new Map<string, PinnedBinding>([
+                    [
+                        "fades.length",
+                        {
+                            cpp: "static_cast<double>(manager.weight_fades.size())",
+                            type: "scalar",
+                        },
+                    ],
+                    ["fades[i]", { cpp: fade, type: "opaque" }],
+                    [
+                        "fades[i].elapsedMs",
+                        {
+                            cpp: `AnimationFloatLane{${fade}.elapsed_ms}`,
+                            type: "scalar",
+                        },
+                    ],
+                    ...(
+                        [
+                            ["durationMs", "duration_ms"],
+                            ["from", "from"],
+                            ["to", "to"],
+                        ] as const
+                    ).map(([pinned, native]): [string, PinnedBinding] => [
+                        `fades[i].${pinned}`,
+                        {
+                            cpp: `static_cast<double>(${fade}.${native})`,
+                            type: "scalar",
+                        },
+                    ]),
+                    [
+                        "fades[i].group.weight",
+                        {
+                            cpp: `AnimationFloatLane{animation_weight_fade_target_weight(engine, ${fade}.target)}`,
+                            type: "scalar",
+                        },
+                    ],
+                ]),
+            },
+        );
+        return `// A pinned JavaScript-number lane a native record keeps in float: a read
+// widens it, and a store rounds once, where the record keeps it.
+struct AnimationFloatLane {
+    float& lane;
+    operator double() const { return lane; }
+    AnimationFloatLane& operator=(double value) {
+        lane = static_cast<float>(value);
+        return *this;
+    }
+};
+
+// ${parts.provenance}
+${parts.declaration} {
+${parts.body}
+}`;
     }
 
     /**
@@ -1401,24 +1496,6 @@ void enable_animation_blending(
                     "Expected the preserved pre-update hook to run once before weight fades.",
                 );
             }
-
-            const { declaration: updateFades } =
-                this.context.functionDeclaration(fadeModule, "updateFades");
-            this.expectOneShape(
-                updateFades,
-                "fade.elapsedMs = Math.min(fade.durationMs, fade.elapsedMs + Math.max(0, deltaMs))",
-                "clamped weight-fade advance",
-            );
-            this.expectOneShape(
-                updateFades,
-                "fade.group.weight = fade.from + (fade.to - fade.from) * t",
-                "weight-fade interpolation",
-            );
-            this.expectOneShape(
-                updateFades,
-                "fade.elapsedMs >= fade.durationMs",
-                "completed weight-fade guard",
-            );
         }
         // `evaluateSampler` with `findKeyframe`, `quatSlerp` and
         // `normalizeQuat4`, translated whole -- the translation the glTF
@@ -1438,160 +1515,6 @@ void enable_animation_blending(
                     interpolationTypes,
                 ),
             );
-        // The playback tick the emitted `tick_group` transcribes lives on
-        // the controller `createPointerAnimationGroup` builds. Everything
-        // load-bearing in it is pinned here: the ms-per-second divisor
-        // flows into the emitted advance (as its reciprocal — the
-        // existing emitted form multiplies), and the loop-wrap
-        // arithmetic, its negative-wrap correction, and the play-range
-        // clamp are shape-asserted against the exact emitted lines.
-        const { file: propertyFile, declaration: pointerGroup } =
-            this.context.functionDeclaration(
-                propertyModule,
-                "createPointerAnimationGroup",
-            );
-        const tickExpressions = this.context.findNodes(
-            pointerGroup,
-            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
-        );
-        const timeAssignment = (
-            operator: ts.SyntaxKind,
-            select: (right: ts.Expression) => boolean,
-            label: string,
-        ): ts.BinaryExpression => {
-            const matches = tickExpressions.filter(
-                (expression) =>
-                    expression.operatorToken.kind === operator &&
-                    this.context.propertyPath(expression.left)?.join(".") ===
-                        "ctrl.time" &&
-                    select(this.context.unwrapExpression(expression.right)),
-            );
-            if (matches.length !== 1) {
-                this.context.contractError(
-                    pointerGroup,
-                    `Expected one ${label}.`,
-                );
-            }
-            return matches[0]!;
-        };
-        // Advance: `ctrl.time += (deltaMs / 1000) * ctrl.speedRatio`.
-        // Structural checks rather than a full shape assert, so the
-        // divisor is free to flow into the emission.
-        const advance = timeAssignment(
-            ts.SyntaxKind.PlusEqualsToken,
-            (right) => ts.isBinaryExpression(right),
-            "playback advance",
-        );
-        const advanceProduct = this.context.unwrapExpression(advance.right);
-        if (
-            !ts.isBinaryExpression(advanceProduct) ||
-            advanceProduct.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-            this.context.propertyPath(advanceProduct.right)?.join(".") !==
-                "ctrl.speedRatio"
-        ) {
-            this.context.contractError(
-                advance,
-                "Expected the playback advance to scale by the speed ratio.",
-            );
-        }
-        const advanceRate = this.context.unwrapExpression(advanceProduct.left);
-        if (
-            !ts.isBinaryExpression(advanceRate) ||
-            advanceRate.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
-            !ts.isIdentifier(advanceRate.left) ||
-            advanceRate.left.text !== "deltaMs"
-        ) {
-            this.context.contractError(
-                advance,
-                "Expected the playback advance to divide the frame delta.",
-            );
-        }
-        const msPerSecond = this.context.numericValue(
-            advanceRate.right,
-            propertyFile,
-        );
-        // The loop wrap and its negative-wrap correction, paired with the
-        // emitted `if (group->loop)` branch (`std::fmod` mirrors the
-        // pinned `%`, whose result carries the dividend's sign — the
-        // reason the correction exists).
-        const loopWrap = timeAssignment(
-            ts.SyntaxKind.EqualsToken,
-            (right) => ts.isBinaryExpression(right),
-            "loop wrap",
-        );
-        this.context.assertExpressionShape(
-            loopWrap.right,
-            "fromTime + ((ctrl.time - fromTime) % duration)",
-            "Animation loop wrap",
-        );
-        const wrapCorrection = timeAssignment(
-            ts.SyntaxKind.PlusEqualsToken,
-            (right) => ts.isIdentifier(right),
-            "wrap correction",
-        );
-        this.context.assertExpressionShape(
-            wrapCorrection,
-            "ctrl.time += duration",
-            "Animation wrap correction",
-        );
-        const wrapGuards = tickExpressions.filter(
-            (expression) =>
-                expression.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
-                this.context.propertyPath(expression.left)?.join(".") ===
-                    "ctrl.time",
-        );
-        if (wrapGuards.length !== 1) {
-            this.context.contractError(
-                pointerGroup,
-                "Expected one wrap-correction guard.",
-            );
-        }
-        this.context.assertExpressionShape(
-            wrapGuards[0]!,
-            "ctrl.time < fromTime",
-            "Animation wrap-correction guard",
-        );
-        // The play-range clamp, paired with the emitted non-loop branch's
-        // `std::clamp(current_time, from_time, to_time)` (max against the
-        // lower bound, min against the upper) and reused by the emitted
-        // manager's explicit seek entry point.
-        const rangeClamp = timeAssignment(
-            ts.SyntaxKind.EqualsToken,
-            (right) => ts.isCallExpression(right),
-            "play-range clamp",
-        );
-        this.context.assertExpressionShape(
-            rangeClamp.right,
-            "Math.min(Math.max(ctrl.time, fromTime), toTime)",
-            "Animation play-range clamp",
-        );
-        // The degenerate-range guard, paired with the emitted
-        // `if (duration <= 0.0f) return;`. The pinned Math.max(0, ...)
-        // never changes the guarded comparison's outcome, so the
-        // emission carries the bare difference.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(pointerGroup, "duration"),
-            "Math.max(0, toTime - fromTime)",
-            "Animation tick duration",
-        );
-        const durationGuards = tickExpressions.filter(
-            (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.LessThanEqualsToken &&
-                ts.isIdentifier(expression.left) &&
-                expression.left.text === "duration",
-        );
-        if (durationGuards.length !== 1) {
-            this.context.contractError(
-                pointerGroup,
-                "Expected one degenerate-range guard.",
-            );
-        }
-        this.context.assertExpressionShape(
-            durationGuards[0]!,
-            "duration <= 0",
-            "Animation degenerate-range guard",
-        );
         // The seek conversion, paired with the emitted `go_to_frame`
         // (`frame / group->clip.frame_rate`). The pinned
         // `|| DEFAULT_FRAME_RATE` fallback is dead in the generated
@@ -1655,9 +1578,7 @@ ${[...propertyAnimationLanes.values()]
     return 0;
 }
 `;
-        const mixerSource = blending
-            ? this.lowerWeightedPointerMixer(msPerSecond)
-            : "";
+        const mixerSource = blending ? this.lowerWeightedPointerMixer() : "";
         const weightEntryPoints = blending
             ? `
 void set_animation_weight(
@@ -1710,31 +1631,7 @@ float& animation_weight_fade_target_weight(
     return engine.animation_groups[target.gltf_group.value].weight;
 }
 
-void update_animation_weight_fades(
-    Engine& engine,
-    PropertyAnimationManagerRecord& manager,
-    float delta_ms) {
-    for (
-        std::size_t index = manager.weight_fades.size();
-        index > 0;
-        --index) {
-        const std::size_t fade_index = index - 1;
-        PropertyAnimationWeightFade& fade =
-            manager.weight_fades[fade_index];
-        fade.elapsed_ms = std::min(
-            fade.duration_ms,
-            fade.elapsed_ms + std::max(0.0f, delta_ms));
-        const float amount =
-            fade.elapsed_ms / fade.duration_ms;
-        animation_weight_fade_target_weight(engine, fade.target) =
-            fade.from + (fade.to - fade.from) * amount;
-        if (fade.elapsed_ms >= fade.duration_ms) {
-            manager.weight_fades.erase(
-                manager.weight_fades.begin() +
-                static_cast<std::ptrdiff_t>(fade_index));
-        }
-    }
-}
+${this.lowerWeightFadeUpdate()}
 
 void run_manager_weight_fades(
     Engine& engine,
@@ -1832,7 +1729,7 @@ void cross_fade_animation_groups(
         manager.category_handler ==
             AnimationCategoryHandler::property_mixer &&
         update_weighted_property_animations(
-            engine, manager, static_cast<float>(delta_ms))) {
+            engine, manager, delta_ms)) {
         return true;
     }`
             : "";
