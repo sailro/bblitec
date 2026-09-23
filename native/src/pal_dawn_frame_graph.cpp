@@ -449,7 +449,7 @@ class DawnFrameGraphRun : public RendererRun<DawnFrameGraphRun> {
     DawnCommandEncoder encoder;
     DawnTexture surface;
     DawnTextureView surface_view;
-    WGPUSurfaceTexture surface_texture{};
+    WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;

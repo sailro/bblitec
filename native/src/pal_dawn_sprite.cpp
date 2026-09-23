@@ -63,7 +63,7 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
     DawnTexture surface;
     DawnTextureView surface_view;
     DawnCommandEncoder encoder;
-    WGPUSurfaceTexture surface_texture{};
+    WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
     bool canvas_only = false, capture_ui = false;

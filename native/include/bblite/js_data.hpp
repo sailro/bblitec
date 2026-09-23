@@ -324,8 +324,8 @@ public:
 private:
     struct BufferView {
         ArrayBuffer buffer;
-        std::size_t offset;
-        std::size_t length;
+        std::size_t offset = 0;
+        std::size_t length = 0;
     };
     [[nodiscard]] std::vector<T>& owned() const {
         if (view_) {
@@ -1044,12 +1044,12 @@ public:
     [[nodiscard]] T& value() {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] const T& value() const {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] T& operator*() { return value(); }
     [[nodiscard]] const T& operator*() const { return value(); }
@@ -1086,6 +1086,13 @@ public:
     }
 
 private:
+    /** JavaScript refuses a property read through null or undefined. */
+    template <typename Self> static auto& require_owned(Self& self) {
+        if (!self.owned_)
+            throw std::runtime_error("Cannot access a nullish value.");
+        return *self.owned_;
+    }
+
     T* reference_ = nullptr;
     std::optional<T> owned_;
 };
@@ -1278,10 +1285,9 @@ private:
         bool global;
         double last_index = 0;
         State(const std::string& source, bool global_, bool ignore_case)
-            : expression(wide(source),
-                         std::regex_constants::ECMAScript |
-                             (ignore_case ? std::regex_constants::icase
-                                          : std::regex_constants::syntax_option_type{})),
+            : expression(wide(source), ignore_case ? std::regex_constants::ECMAScript |
+                                                         std::regex_constants::icase
+                                                   : std::regex_constants::ECMAScript),
               global(global_) {}
     };
     std::shared_ptr<State> state_;

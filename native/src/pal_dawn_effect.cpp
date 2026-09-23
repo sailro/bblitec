@@ -39,7 +39,7 @@ class DawnEffectRun : public RendererRun<DawnEffectRun> {
     DawnTexture surface;
     DawnTextureView surface_view;
     DawnCommandEncoder encoder;
-    WGPUSurfaceTexture surface_texture{};
+    WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     std::uint32_t width = 0, height = 0, samples = 1;
     void recreate_msaa_target() {
         msaa_view.reset();
