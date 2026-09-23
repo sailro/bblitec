@@ -300,11 +300,6 @@ inline void append_canvas_focus_outline(UiRenderFrame& frame) {
                      0, 0, frame.width, frame.height, false});
 }
 
-inline bool ui_frame_uses_texture(const UiRenderFrame& frame, std::uint64_t id) {
-    return std::any_of(frame.textures.begin(), frame.textures.end(),
-                       [id](const UiRenderTexture& texture) { return texture.id == id; });
-}
-
 /** Opaque RmlUi projection of an engine's retained UI tree. */
 struct UiRmlRuntime;
 

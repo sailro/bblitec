@@ -62,6 +62,17 @@ RELEASE(PipelineLayout)
 RELEASE(RenderPipeline)
 RELEASE(ShaderModule)
 #undef RELEASE
+extern "C" WGPUBindGroupLayout
+wgpuDeviceCreateBindGroupLayout(WGPUDevice, const WGPUBindGroupLayoutDescriptor*) {
+    return make<WGPUBindGroupLayout>();
+}
+extern "C" WGPUPipelineLayout
+wgpuDeviceCreatePipelineLayout(WGPUDevice, const WGPUPipelineLayoutDescriptor* descriptor) {
+    const WGPUPipelineLayout layout = make<WGPUPipelineLayout>();
+    layout->dependencies.assign(descriptor->bindGroupLayouts,
+                                descriptor->bindGroupLayouts + descriptor->bindGroupLayoutCount);
+    return layout;
+}
 
 namespace bbl::upstream {
 enum class RenderPipelineKind { pbr, standard };
@@ -70,6 +81,10 @@ namespace bbl::pal {
 constexpr std::size_t mesh_texture_slots = 3, npos = static_cast<std::size_t>(-1);
 constexpr std::uint32_t invalid_handle = 0xffffffffu;
 constexpr std::uint64_t unsynced_bone_palette = static_cast<std::uint64_t>(-1);
+inline WGPUStringView string_view(const char* text) { return WGPUStringView{text, WGPU_STRLEN}; }
+[[noreturn]] inline void dawn_error(const std::string& message) {
+    throw std::runtime_error(message);
+}
 struct DawnSharedShaderGeometry {
     DawnBuffer vertex_buffer, index_buffer;
     std::size_t users = 0;
@@ -84,6 +99,8 @@ struct DawnSharedComposedMaterialTextures {
 #include "release-helpers.hpp"
 void release_dawn_mip_generator(int) {}
 struct DawnState {
+    DawnLayoutCache layouts;
+    WGPUDevice device = nullptr;
     int mips = 0;
     void release_render_tasks() {}
     void release_frame_graph_textures() {}
@@ -143,16 +160,9 @@ struct DawnState {
     std::vector<OverlayFrame> overlay_frames;
     std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
         pinned_variant_pipelines, standard_variant_pipelines, node_variant_pipelines;
-    std::vector<WGPUPipelineLayout> pinned_pipeline_layouts, standard_pipeline_layouts,
-        node_pipeline_layouts, shader_pipeline_layouts;
-    std::vector<WGPUBindGroupLayout> pinned_draw_layouts, standard_draw_layouts, node_draw_layouts,
-        mesh_group_layouts;
-    std::vector<std::vector<WGPUBindGroupLayout>> shader_group_layouts;
     std::vector<WGPUShaderModule> pinned_fragment_modules, pinned_vertex_modules,
         standard_fragment_modules, standard_vertex_modules, node_fragment_modules,
         node_vertex_modules, shader_fragment_modules, shader_vertex_modules;
-    WGPUBindGroupLayout pinned_frame_layout = nullptr;
-    WGPUPipelineLayout mesh_pipeline_layout = nullptr;
     std::vector<WGPUTextureView> reflection_cube_views;
     std::vector<WGPUTexture> reflection_cubes;
 #include "release-methods.hpp"
@@ -166,10 +176,12 @@ int main() {
         {
             DawnState state;
             state.default_sampler = make<WGPUSampler>();
-            const auto layout = make<WGPUBindGroupLayout>();
-            state.mesh_group_layouts.push_back(layout);
-            state.mesh_pipeline_layout = make<WGPUPipelineLayout>({layout});
-            state.pipelines[0].pipeline = make<WGPURenderPipeline>({state.mesh_pipeline_layout});
+            const auto layout =
+                state.layouts.group(state.device, {DawnLayoutFamily::mesh, 0, 2},
+                                    [] { return std::vector<WGPUBindGroupLayoutEntry>{}; });
+            const auto pipeline_layout = state.layouts.pipeline(
+                state.device, {DawnLayoutFamily::mesh}, [&] { return std::vector{layout}; });
+            state.pipelines[0].pipeline = make<WGPURenderPipeline>({pipeline_layout});
             const auto texture = make<WGPUTexture>();
             const auto view = make<WGPUTextureView>({texture});
             try {

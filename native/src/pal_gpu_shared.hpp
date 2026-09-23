@@ -4387,9 +4387,9 @@ struct UiScissorRect {
 
 /**
  * One recorded UI draw's scissor rectangle, clamped to the frame extent, or
- * nothing for a draw the clamp empties (or that carries no indices). Moved
- * verbatim from the two scene renderers' layer loops so the four RmlUi
- * consumers cannot drift on how a recorded rectangle meets the surface.
+ * nothing for a draw the clamp empties (or that carries no indices). Shared
+ * so the two backend compositors cannot drift on how a recorded rectangle
+ * meets the surface.
  */
 inline std::optional<UiScissorRect> clamped_ui_scissor(const UiRenderDraw& draw,
                                                        std::uint32_t frame_width,

@@ -228,7 +228,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     // layout -- and every task supplies its own light-space uniform block.
     assert.match(
         dawn,
-        /WGPUPipelineLayout shader_pipeline_layout_for\([\s\S]{0,3200}WGPUBufferBindingType_ReadOnlyStorage/,
+        /WGPUBindGroupLayout shader_group_layout\([\s\S]{0,600}case 0:[\s\S]{0,300}storage_layout_entry\(binding\+\+, WGPUShaderStage_Vertex\)/,
     );
     assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
     assert.match(

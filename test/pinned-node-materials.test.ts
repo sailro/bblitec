@@ -194,8 +194,14 @@ test("both native node paths bind per-mesh morph storage and its fallback", () =
     assert.match(sdl, /gpu_mesh\.morph_weights = state\.empty_morph_weights;/);
 
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    assert.match(dawn, /storage\(view\.morph\.deltas_binding\);/);
-    assert.match(dawn, /storage\(view\.morph\.weights_binding\);/);
+    assert.match(
+        dawn,
+        /storage_layout_entry\(view\.morph\.deltas_binding, WGPUShaderStage_Vertex\)/,
+    );
+    assert.match(
+        dawn,
+        /storage_layout_entry\(view\.morph\.weights_binding, WGPUShaderStage_Vertex\)/,
+    );
     assert.match(dawn, /deltas\.buffer = mesh\.morph_deltas;/);
     assert.match(dawn, /weights\.buffer = mesh\.morph_weights;/);
     assert.match(dawn, /mesh\.morph_deltas = state\.empty_morph_deltas;/);

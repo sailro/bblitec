@@ -269,7 +269,7 @@ test("Dawn completes canvas readback before post-copy UI", () => {
     assert.ok(capture >= 0 && copy > capture);
     assert.ok(firstSubmit > copy && map > firstSubmit);
     assert.equal(
-        dawn.slice(copy, firstSubmit).includes("render_ui_dawn_frame("),
+        dawn.slice(copy, firstSubmit).includes("render_sprite_ui_dawn_frame("),
         false,
     );
     assert.ok(deferredUi > map);

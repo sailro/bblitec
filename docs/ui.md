@@ -195,7 +195,9 @@ differ from Chromium. Relative transition units resolve at transition start.
 
 ## Rendering
 
-Both backends composite premultiplied UI at scene sample count. Canvas overlays precede DOM chrome.
+Each backend composites premultiplied UI through one compositor: scene drivers render each segment into a
+transparent layer at scene sample count; sprite and Window drivers blend into their single-sample targets.
+Canvas overlays precede DOM chrome.
 Backdrop blur snapshots preceding UI into FP16 scratch. Filters retain nested layers and ordered color
 adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only capture excludes UI filters.
 
