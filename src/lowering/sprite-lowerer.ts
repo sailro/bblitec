@@ -7,6 +7,7 @@ import {
 import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
 import {
     decodeAtlasImageCpp,
+    gridSpriteAtlasCpp,
     gridSpriteAtlasFramesCpp,
     pushAtlasHandleCpp,
 } from "./pinned-grid-atlas.js";
@@ -1071,62 +1072,6 @@ export class SpriteLowerer {
         );
     }
 
-    /** `createGridSpriteAtlas` derives columns, rows, and each frame's UVs. */
-    private assertGridAtlas(): void {
-        const { declaration } = this.context.functionDeclaration(
-            atlasModule,
-            "createGridSpriteAtlas",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "cols"),
-            "options.columns ?? Math.max(1, Math.floor((texture.width - margin * 2 + spacing) / (cellW + spacing)))",
-            "createGridSpriteAtlas columns",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "rows"),
-            "options.rows ?? Math.max(1, Math.floor((texture.height - margin * 2 + spacing) / (cellH + spacing)))",
-            "createGridSpriteAtlas rows",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "x"),
-            "margin + c * (cellW + spacing)",
-            "createGridSpriteAtlas frame x",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "y"),
-            "margin + r * (cellH + spacing)",
-            "createGridSpriteAtlas frame y",
-        );
-        const push = this.context.findNodes(
-            declaration,
-            (node): node is ts.CallExpression =>
-                ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "push",
-        )[0];
-        const frame = push
-            ? this.context.unwrapExpression(push.arguments[0]!)
-            : undefined;
-        if (!frame || !ts.isObjectLiteralExpression(frame)) {
-            this.context.contractError(
-                declaration,
-                "Pinned createGridSpriteAtlas no longer pushes frame literals.",
-            );
-        }
-        for (const [name, source] of [
-            ["uvMin", "[x / tw, y / th]"],
-            ["uvMax", "[(x + cellW) / tw, (y + cellH) / th]"],
-            ["sourceSizePx", "[cellW, cellH]"],
-            ["pivot", "[pivot[0], pivot[1]]"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(frame, name),
-                source,
-                `createGridSpriteAtlas frame ${name}`,
-            );
-        }
-    }
-
     /** `resolveSpriteFrame` is a bounds check and nothing else. */
     private assertFrameResolution(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -1499,7 +1444,6 @@ export class SpriteLowerer {
         );
         const depthRow = this.depthAttribute();
         const uvScrollRow = this.uvScrollAttribute(layout.pureInstanceFloats);
-        this.assertGridAtlas();
         assertFrameAtlasRule(this.context);
         this.assertFrameResolution();
         this.assertAtlasLoader();
@@ -1541,11 +1485,21 @@ export class SpriteLowerer {
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 
 namespace bbl::upstream {
+
+/**
+ * shared/sprite-atlas.ts#createGridSpriteAtlas, the one partition every grid
+ * loader shares: \`loadSpriteAtlas\`, the particle bridges and scene code's
+ * own calls over a file, pixel or render texture. It lives in the shared
+ * header because it is the shared atlas module's.
+ */
+${gridSpriteAtlasCpp(this.context)}
 
 /**
  * sprite-pipeline.ts: the pure-2D per-instance vertex attributes at the
@@ -1746,36 +1700,6 @@ void grow_sprite_capacity(
     layer.dirty_sprite_end = layer.count;
 }
 
-void populate_grid_sprite_atlas_frames(
-    SpriteAtlasRecord& atlas,
-    const GridSpriteAtlasOptions& options) {
-    const double cell_w = options.cell_width_px;
-    const double cell_h = options.cell_height_px;
-    const double margin = options.margin_px;
-    const double spacing = options.spacing_px;
-    const double tw = static_cast<double>(atlas.width);
-    const double th = static_cast<double>(atlas.height);
-    const double columns = options.has_columns
-        ? options.columns
-        : std::max(1.0, std::floor(
-              (tw - margin * 2.0 + spacing) / (cell_w + spacing)));
-    const double rows = options.has_rows
-        ? options.rows
-        : std::max(1.0, std::floor(
-              (th - margin * 2.0 + spacing) / (cell_h + spacing)));
-    for (double r = 0.0; r < rows; r += 1.0) {
-        for (double c = 0.0; c < columns; c += 1.0) {
-            const double x = margin + c * (cell_w + spacing);
-            const double y = margin + r * (cell_h + spacing);
-            atlas.frames.push_back(SpriteFrame{
-                Vec2{static_cast<float>(x / tw), static_cast<float>(y / th)},
-                Vec2{static_cast<float>((x + cell_w) / tw), static_cast<float>((y + cell_h) / th)},
-                Vec2{static_cast<float>(cell_w), static_cast<float>(cell_h)},
-                options.pivot});
-        }
-    }
-}
-
 } // namespace
 
 // sprite-2d.ts _setSprite2DCount / _markSprite2DDirty: the pin exports these
@@ -1876,7 +1800,6 @@ SpriteAtlasHandle load_sprite_atlas(
             "loadSpriteAtlas: gridSize required.");
     }
 ${decodeAtlasImageCpp()}
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     if (options.premultiply_on_load) {
         // createImageBitmap({ premultiplyAlpha: "premultiply" }).
         pal::DecodedImage premultiplied{
@@ -1899,10 +1822,9 @@ ${decodeAtlasImageCpp()}
     atlas.sampler.max_anisotropy = 1.0f;
     atlas.sampler.max_lod = 0.0f;
 
-    // createGridSpriteAtlas: row-major frames over a uniform grid.
     const double cell_w = static_cast<double>(options.grid_width_px);
     const double cell_h = static_cast<double>(options.grid_height_px);
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp("options.premultiplied_alpha")}
 
 ${pushAtlasHandleCpp()}
 }
@@ -1934,10 +1856,9 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.rgba = std::move(image.rgba);
     atlas.width = static_cast<std::uint32_t>(image.width);
     atlas.height = static_cast<std::uint32_t>(image.height);
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = texture.data.sampler.max_lod > 0.0f;
     atlas.sampler = texture.data.sampler;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1949,10 +1870,9 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.rgba.assign(texture.rgba.begin(), texture.rgba.end());
     atlas.width = texture.width;
     atlas.height = texture.height;
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = texture.sampler.max_lod > 0.0f;
     atlas.sampler = texture.sampler;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1965,7 +1885,6 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     SpriteAtlasRecord atlas;
     atlas.width = source.width;
     atlas.height = source.height;
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = false;
     atlas.sampler.min_filter = TextureFilter::linear;
     atlas.sampler.mag_filter = TextureFilter::linear;
@@ -1975,7 +1894,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.sampler.max_lod = 0.0f;
     atlas.has_render_texture = true;
     atlas.render_texture = texture;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 

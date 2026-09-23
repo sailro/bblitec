@@ -1104,12 +1104,9 @@ ${
         ? `#include <bblite/upstream/billboard_system.hpp>
 `
         : ""
-}${
-                sprite2d.length === 0
-                    ? ""
-                    : `#include <bblite/upstream/sprite_layer.hpp>
-`
-            }#include <bblite/upstream/node_particles.hpp>
+}// createGridSpriteAtlas, which every particle atlas partitions through.
+#include <bblite/upstream/sprite_layer.hpp>
+#include <bblite/upstream/node_particles.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1201,7 +1198,7 @@ ${decodeAtlasImageCpp()}
     atlas.sampler.address_v = TextureAddressMode::repeat;
     atlas.sampler.max_anisotropy = 4.0f;
 
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp()}
 
 ${pushAtlasHandleCpp()}
 }
@@ -1230,7 +1227,7 @@ SpriteAtlasHandle grid_atlas_from_pixels(
     atlas.mip_maps = false;
     atlas.sampler = texture.sampler;
 
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp()}
 
 ${pushAtlasHandleCpp()}
 }
