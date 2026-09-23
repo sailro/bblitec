@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
@@ -198,16 +199,16 @@ test("cycling SDL picking depth discards the unused stencil attachment", () => {
 const nativeTools = optionalNativeFixtureTools();
 test(
     "borrowed pointer identity and camera deferral survive drag and release",
-    {
-        skip:
-            !nativeTools ||
-            !existsSync(
-                "generated/antigravity-racer/upstream/include/bblite/upstream/camera_controls.hpp",
-            ),
-    },
+    { skip: !nativeTools },
     () => {
         const output = resolve("artifacts/editor-pointer-check");
-        mkdirSync(output, { recursive: true });
+        const headers = join(output, "include/bblite/upstream");
+        mkdirSync(headers, { recursive: true });
+        const controls = new CameraLowerer(
+            new LoweringContext(),
+        ).lowerControls();
+        writeFileSync(join(headers, "camera_controls.hpp"), controls.header);
+        writeFileSync(join(output, "controls.cpp"), controls.source);
         const executable = join(output, "editor-pointer-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
             "/nologo",
@@ -223,10 +224,11 @@ test(
             "/I",
             "native/src",
             "/I",
-            "generated/antigravity-racer/upstream/include",
+            join(output, "include"),
             "/I",
             join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/editor-pointer-check.cpp",
+            join(output, "controls.cpp"),
         ]);
         assert.match(
             execFileSync(executable, [], { encoding: "utf8" }),

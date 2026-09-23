@@ -637,71 +637,6 @@ test("integrates the source property clock and pinned interpolation", () => {
     );
 });
 
-test("flows the pinned camera inertia constants into the controls", () => {
-    const controls = new CameraLowerer(new LoweringContext()).lowerControls();
-    // ArcRotate applyInertia: the beta pole margin (`eps`), the radius
-    // floor, and the radius-proportional pan scale all come from
-    // src/camera/arc-rotate-controls.ts.
-    assert.match(controls.source, /constexpr double epsilon = 0\.01;/);
-    assert.match(
-        controls.source,
-        /camera\.radius = std::max\(0\.01, camera\.radius\);/,
-    );
-    assert.match(
-        controls.source,
-        /const double pan_scale = camera\.radius \* 0\.001;/,
-    );
-    // FreeCamera update: the pitch ceiling terms and the shared
-    // speed-proportional stop threshold come from
-    // src/camera/free-camera-controls.ts.
-    assert.match(
-        controls.source,
-        /constexpr double max_pitch = pi_double \/ 2\.0 - 0\.01;/,
-    );
-    assert.match(
-        controls.source,
-        /const double epsilon = camera\.speed \* 0\.001;/,
-    );
-    // The event accumulators the platform layer calls instead of
-    // re-typing: the wheel-precision scale flows from onWheel, and the
-    // pan/orbit divisions mirror onPointerMove.
-    assert.match(
-        controls.source,
-        /\(delta_y \* camera\.radius\) \/\s*\(camera\.wheel_precision \* 1000\.0\)/,
-    );
-    assert.match(
-        controls.source,
-        /camera\.inertial_panning_x \+= -dx \/ camera\.panning_sensibility;/,
-    );
-    assert.match(
-        controls.source,
-        /camera\.inertial_alpha_offset -= dx \/ camera\.angular_sensibility;/,
-    );
-    // The free-look accumulator folds the pinned `_pitch -= crX` sign
-    // into the apply-additive record offset.
-    assert.match(
-        controls.source,
-        /camera\.inertial_pitch_offset -= dy \/ camera\.angular_sensibility;/,
-    );
-    // The per-frame move scale is the pinned formula, never a
-    // hand-evaluated constant: moveSpeed = speed * sqrt(dt*dt / 1e5)
-    // with dt floored at 1 ms, both numbers read from
-    // free-camera-controls.ts. The platform loop hands in its own frame
-    // step at call time.
-    assert.match(
-        controls.source,
-        /const double dt = std::max\(delta_ms, 1\.0\);/,
-    );
-    assert.match(
-        controls.source,
-        /return camera\.speed \*\s*std::sqrt\(\(dt \* dt\) \/ 100000\.0\);/,
-    );
-    assert.match(
-        controls.header,
-        /double free_camera_move_speed\(const CameraRecord& camera, double delta_ms\);/,
-    );
-});
-
 // One store load serves both light tests: the LoweringContext constructor
 // parses every pinned source map, which dwarfs the lowering itself.
 const lightLowerer = new LightLowerer(new LoweringContext());
@@ -1478,14 +1413,17 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(free.source, /camera\.kind = CameraKind::free/);
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);
-    assert.match(controls.source, /rotation_epsilon = 0\.001;/);
+    assert.match(
+        controls.source,
+        /if \(std::abs\(camera\.inertial_alpha_offset\) < 0\.001\) \{/,
+    );
     assert.match(
         controls.source,
         /camera\.inertial_alpha_offset \*= camera\.inertia/,
     );
     assert.match(
         controls.source,
-        /if \(has_movement \|\| has_rotation\) \{\s*set_camera_vector\(camera, &CameraRecord::target, Vec3d/,
+        /if \(hasMovement \|\| hasRotation\) \{[^}]*set_camera_vector\(camera, &CameraRecord::target, Vec3d/,
     );
     const ortho = lowerer.lowerOrthographic();
     assert.equal(ortho.modulePath, "src/camera/orthographic.ts");

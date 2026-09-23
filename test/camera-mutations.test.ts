@@ -34,9 +34,9 @@ interface PinCamera {
     inertialPanningY: number;
 }
 
-function cameraSources(output: string, tracking = true): string[] {
+function cameraSources(output: string): string[] {
     const context = new LoweringContext();
-    const lowerer = new CameraLowerer(context, tracking);
+    const lowerer = new CameraLowerer(context);
     const headers = join(output, "include/bblite/upstream");
     mkdirSync(headers, { recursive: true });
     const controls = lowerer.lowerControls();

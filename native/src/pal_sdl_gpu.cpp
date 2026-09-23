@@ -8912,7 +8912,7 @@ public:
         sync_shader_storage_buffers(state, engine, frame_buffer_uploads);
         frame_buffer_uploads.submit();
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera);
+        update_surface_cameras(engine, camera, delta_ms);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, camera);
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
