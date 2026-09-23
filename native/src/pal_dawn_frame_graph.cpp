@@ -116,24 +116,6 @@ struct State : DawnDevice {
     std::uint32_t height = 0;
 };
 
-WGPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return WGPUTextureFormat_RGBA8Unorm;
-    case TextureFormatClass::r8_unorm:
-        return WGPUTextureFormat_R8Unorm;
-    case TextureFormatClass::r16_float:
-        return WGPUTextureFormat_R16Float;
-    case TextureFormatClass::rg16_float:
-        return WGPUTextureFormat_RG16Float;
-    case TextureFormatClass::r32_float:
-        return WGPUTextureFormat_R32Float;
-    case TextureFormatClass::rgba16_float:
-        return WGPUTextureFormat_RGBA16Float;
-    }
-    return WGPUTextureFormat_RGBA16Float;
-}
-
 std::uint32_t target_samples(const State& state, std::uint32_t requested) {
     return requested == 4 ? state.samples : 1u;
 }
