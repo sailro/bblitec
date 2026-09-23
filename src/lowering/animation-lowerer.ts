@@ -5,7 +5,7 @@ import {
 } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerAnimationManagerClock } from "./animation-manager.js";
-import { lowerAnimationInterpolationCpp } from "./gltf/animation-interpolation.js";
+import { lowerGltfAnimationEvaluator } from "./gltf/animation-evaluator.js";
 import { lowerAnimationGroupRegistration } from "./gltf/animation-group-registration.js";
 import { lowerPropertyAnimationPlayback } from "./animation-property-playback.js";
 import { lowerAnimationManagerDispatch } from "./animation-manager-dispatch.js";
@@ -1289,7 +1289,6 @@ void enable_animation_blending(
         const clock = lowerAnimationManagerClock(this.context);
         const groupModule = "src/animation/animation-group.ts";
         const fadeModule = "src/animation/animation-weight-fade.ts";
-        const evaluateModule = "src/animation/evaluate.ts";
         this.context.functionDeclaration(
             propertyModule,
             "createPropertyAnimationClip",
@@ -1421,65 +1420,24 @@ void enable_animation_blending(
                 "completed weight-fade guard",
             );
         }
-        const { declaration: evaluateSampler } =
-            this.context.functionDeclaration(evaluateModule, "evaluateSampler");
-        if (
-            !this.context.hasNode(
-                evaluateSampler,
-                (node) => ts.isIdentifier(node) && node.text === "INTERP_STEP",
-            )
-        ) {
-            this.context.contractError(
-                evaluateSampler,
-                "Expected STEP interpolation handling.",
-            );
-        }
-        if (!this.context.hasCall(evaluateSampler, "quatSlerp")) {
-            this.context.contractError(
-                evaluateSampler,
-                "Expected quaternion slerp interpolation.",
-            );
-        }
-        // The STEP tie-break, paired with the emitted `evaluate_track`
-        // STEP branch (`time >= track.keys[right].time ? right : left`):
-        // a query landing exactly on a key time takes the LATER key's
-        // value, so the `>=` comparison direction is pinned rather than
-        // trusted. The shape is asserted whole because every part of it
-        // is structural — there is no tunable constant to flow.
-        const stepSources = this.context
-            .findNodes(
-                evaluateSampler,
-                (node): node is ts.VariableDeclaration =>
-                    ts.isVariableDeclaration(node),
-            )
-            .filter(
-                (candidate) =>
-                    ts.isIdentifier(candidate.name) &&
-                    candidate.name.text === "srcOff" &&
-                    candidate.initializer !== undefined &&
-                    ts.isBinaryExpression(
-                        this.context.unwrapExpression(candidate.initializer),
-                    ),
-            );
-        if (stepSources.length !== 1) {
-            this.context.contractError(
-                evaluateSampler,
-                "Expected one STEP source-offset computation.",
-            );
-        }
-        this.context.assertExpressionShape(
-            stepSources[0]!.initializer!,
-            "(t >= t1 ? idx + 1 : idx) * stride",
-            "STEP tie-break",
+        // `evaluateSampler` with `findKeyframe`, `quatSlerp` and
+        // `normalizeQuat4`, translated whole -- the translation the glTF
+        // loader carries in its own unit -- so a property track samples in
+        // JavaScript-number width and rounds once at the Float32Array
+        // store. The clip's two interpolation codes are the pin's own.
+        const evaluator = lowerGltfAnimationEvaluator(this.context, "property");
+        const interpolationTypes = this.context.sourceFile(
+            "src/animation/types.ts",
         );
-        // The quaternion path is the pinned `quatSlerp`/`normalizeQuat4`
-        // pair translated whole -- the same translation the glTF loader
-        // carries -- so the near-parallel threshold, the hemisphere flip
-        // and the double-math-float-store width all flow from the
-        // declaration rather than being restated here.
-        const interpolation = lowerAnimationInterpolationCpp(
-            this.context.sourceFile(evaluateModule),
-        );
+        const interpolationCode = (
+            name: "INTERP_LINEAR" | "INTERP_STEP",
+        ): string =>
+            this.context.doubleLiteral(
+                this.context.numericValue(
+                    ts.factory.createIdentifier(name),
+                    interpolationTypes,
+                ),
+            );
         // The playback tick the emitted `tick_group` transcribes lives on
         // the controller `createPointerAnimationGroup` builds. Everything
         // load-bearing in it is pinned here: the ms-per-second divisor
@@ -1960,93 +1918,72 @@ ${lowerAnimationManagerDispatch(this.context)}
                 propertyModule,
                 "property animation manager, clips, groups, interpolation, and seeking",
             )}
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace bbl::upstream {
 
-// ${this.context.provenance(evaluateModule, "normalizeQuat4, quatSlerp and evaluateSampler's CUBICSPLINE branch")}
-// The one translation of the pinned sampler arithmetic, the same text the
-// glTF loader carries in its own translation unit: a rotation track
-// slerps in JavaScript-number width and rounds once at the Float32Array
-// store, exactly as a glTF rotation channel does.
-${interpolation}
+${evaluator}
 
 } // namespace bbl::upstream
 
 namespace bbl {
 namespace {
+${trackArity}
+// ${this.context.provenance(propertyModule, "createSampler")}
+// A track's keys as the pinned sampler's Float32Array \`input\` (one time
+// per key) and \`output\` (\`stride\` lanes per key), read in place.
+struct PropertyTrackTimes {
+    std::span<const PropertyAnimationKey> keys;
+    std::size_t size() const { return keys.size(); }
+    float operator[](std::size_t index) const { return keys[index].time; }
+};
 
-// A track's four stored lanes as the pinned quaternion and back: transport
-// only, the values pass through unchanged.
-Vec4 track_quaternion(const std::array<float, 4>& value) {
-    return Vec4{value[0], value[1], value[2], value[3]};
-}
+struct PropertyTrackLanes {
+    std::span<const PropertyAnimationKey> keys;
+    std::size_t stride = 1;
+    float operator[](std::size_t index) const {
+        return keys[index / stride].value[index % stride];
+    }
+};
 
-std::array<float, 4> track_lanes(const Vec4& value) {
-    return {value.x, value.y, value.z, value.w};
-}
+struct PropertyTrackSampler {
+    PropertyTrackTimes input;
+    PropertyTrackLanes output;
+    double interpolation = 0.0;
+};
 
+// evaluateSampler over one track, on the track's own rotation flag, which
+// the clip derived from its path -- so a path naming one component of a
+// quaternion lerps that number, as it does upstream.
 std::array<float, 4> evaluate_track(
     const PropertyAnimationTrack& track,
-    float time) {
-    if (track.keys.empty()) {
-        throw std::runtime_error(
-            "Property animation track has no keys.");
-    }
-    if (
-        track.keys.size() == 1 ||
-        time <= track.keys.front().time) {
-        return track.keys.front().value;
-    }
-    if (time >= track.keys.back().time) {
-        return track.keys.back().value;
-    }
-    std::size_t right = 1;
-    while (
-        right < track.keys.size() &&
-        track.keys[right].time < time) {
-        ++right;
-    }
-    const std::size_t left = right - 1;
-    if (
-        track.interpolation ==
-        PropertyAnimationInterpolation::step) {
-        return time >= track.keys[right].time
-            ? track.keys[right].value
-            : track.keys[left].value;
-    }
-    const float span =
-        track.keys[right].time -
-        track.keys[left].time;
-    const float amount =
-        span > 0.0f
-            ? (time - track.keys[left].time) / span
-            : 0.0f;
-    // evaluateSampler slerps on the track's own rotation flag, which the
-    // clip derived from its path -- so a path naming one component of a
-    // quaternion lerps that number, as it does upstream.
-    if (track.quaternion) {
-        return track_lanes(upstream::interpolate_quaternion(
-            track_quaternion(track.keys[left].value),
-            track_quaternion(track.keys[right].value),
-            amount));
-    }
-    std::array<float, 4> result{};
-    for (std::size_t index = 0; index < result.size(); ++index) {
-        result[index] =
-            track.keys[left].value[index] +
-            (
-                track.keys[right].value[index] -
-                track.keys[left].value[index]) *
-                amount;
-    }
-    return result;
+    double time) {
+    const std::size_t stride =
+        track_stride(track.path, track.component);
+    const PropertyTrackSampler sampler{
+        PropertyTrackTimes{track.keys},
+        PropertyTrackLanes{track.keys, stride},
+        track.interpolation == PropertyAnimationInterpolation::step
+            ? ${interpolationCode("INTERP_STEP")}
+            : ${interpolationCode("INTERP_LINEAR")}};
+    std::array<float, 4> sample{};
+    upstream::property_evaluate_animation_sampler(
+        sampler,
+        time,
+        static_cast<double>(stride),
+        track.quaternion,
+        sample,
+        0.0);
+    return sample;
 }
 
 ${weightHelpers}/**
@@ -2099,11 +2036,11 @@ ${this.propertyWriterArms("mesh", "        ")}
     }
     mark_mesh_runtime_transform(engine, MeshHandle{target.index});
 }
-${trackArity}
+
 void apply_group_at(
     Engine& engine,
     const PropertyAnimationGroup& group,
-    float time) {
+    double time) {
     if (!group) {
         throw std::runtime_error(
             "Property animation group is null.");
@@ -2132,7 +2069,7 @@ void tick_group(
     double delta_ms) {
     if (!group) return;
     tick_property_animation_group(*group,delta_ms,[&](double time) {
-        apply_group_at(engine,group,static_cast<float>(time));
+        apply_group_at(engine,group,time);
     });
 }
 ${mixerSource}${weightFadeSource}
