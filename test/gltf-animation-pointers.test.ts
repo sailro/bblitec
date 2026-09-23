@@ -4,7 +4,6 @@ import ts from "typescript";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import { asRecords, type JsonObject } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -14,7 +13,7 @@ import {
 } from "../src/gltf-animation-pointers.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
-import { readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
+import { gltfMeshPlan, readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
 
 const animationModule = "src/loader-gltf/gltf-animation.ts";
 const pointerModule = "src/loader-gltf/animation-pointer.ts";

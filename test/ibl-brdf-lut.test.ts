@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import {
-    generateIblBrdfLutRgba16f,
-    getIblBrdfLutProvenance,
-} from "../src/ibl-brdf-lut.js";
-import { readUpstreamPin } from "../src/upstream-source.js";
+import { generateIblBrdfLutRgba16f } from "../src/ibl-brdf-lut.js";
 
 function halfToFloat(bits: number): number {
     const sign = (bits & 0x8000) === 0 ? 1 : -1;
@@ -57,15 +53,4 @@ test("executes the pinned EXT_lights_image_based BRDF LUT", async () => {
         expectedSha256,
         `BRDF LUT sha256 was ${actualSha256}; pin it as expectedSha256.`,
     );
-});
-
-test("reports the pinned BRDF LUT provenance", () => {
-    const pin = readUpstreamPin();
-    assert.deepEqual(getIblBrdfLutProvenance(), {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-gltf/ibl-env-assembly.ts",
-        shader: "shaders/hdr-brdf-lut.compute.wgsl",
-        sampleCount: 1024,
-    });
 });

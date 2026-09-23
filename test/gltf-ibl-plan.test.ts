@@ -11,12 +11,12 @@ import {
     type JsonObject,
 } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
+    gltfMeshPlan,
     meshPlanFixture,
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";

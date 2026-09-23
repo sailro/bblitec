@@ -17,7 +17,6 @@ import {
     pinnedStandardMaterialFeatures,
     pinnedStandardSupportBlock,
     pinnedStandardVariantManifestEntry,
-    registeredStandardExtensionIds,
 } from "../src/pinned-standard-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -31,17 +30,25 @@ test("registers the pin's nine Standard material extensions", async () => {
     // registered unconditionally beside the eight `_detect` ones.
     // `stdSkeletonExt` is deliberately absent: upstream registers it only
     // through enableStandardSkeleton(), which no reached scene calls.
-    assert.deepEqual(await registeredStandardExtensionIds(), [
-        "0-std-uv-transform",
-        "normal-map",
-        "std-ambient",
-        "std-cube-reflection",
-        "std-emissive",
-        "std-lightmap",
-        "std-opacity",
-        "std-reflection",
-        "std-specular",
-    ]);
+    // Deriving any material's features registers them first.
+    await pinnedStandardMaterialFeatures({});
+    const flags = await importPinnedModule<{
+        _getStdExtsSorted: () => ReadonlyArray<{ _id: string }>;
+    }>("material/standard/standard-flags.js");
+    assert.deepEqual(
+        flags._getStdExtsSorted().map((ext) => ext._id),
+        [
+            "0-std-uv-transform",
+            "normal-map",
+            "std-ambient",
+            "std-cube-reflection",
+            "std-emissive",
+            "std-lightmap",
+            "std-opacity",
+            "std-reflection",
+            "std-specular",
+        ],
+    );
 });
 
 test("derives feature bits through the pin's own detect", async () => {

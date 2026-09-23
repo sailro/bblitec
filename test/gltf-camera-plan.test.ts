@@ -12,7 +12,6 @@ import {
 } from "../src/gltf-document.js";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -21,6 +20,7 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
+    gltfMeshPlan,
     meshPlanFixture,
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";

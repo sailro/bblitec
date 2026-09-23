@@ -6,7 +6,6 @@ import test from "node:test";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import { asRecords, type JsonObject } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -16,7 +15,7 @@ import { GltfLowerer } from "../src/lowering/gltf/loader.js";
 import { gltfAnimationBindingsCpp } from "../src/lowering/gltf/animation-bindings.js";
 import { gltfAnimationPoseStorageCpp } from "../src/lowering/gltf/animation-pose-storage.js";
 import { doctoredContext } from "./doctored-store.js";
-import { readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
+import { gltfMeshPlan, readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
 import {
     cppFunction,
     cppRecord,

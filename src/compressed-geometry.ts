@@ -39,7 +39,7 @@ import {
 } from "./pinned-shader-composer.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { readUpstreamPin } from "./upstream-source.js";
-import { readGlb, writeGlb, type GlbChunks } from "./glb-container.js";
+import type { GlbChunks } from "./glb-container.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
@@ -861,8 +861,9 @@ function readsBinaryChunk(json: JsonRecord): boolean {
 }
 
 /**
- * Every geometry extension this port resolves at generation, in the pin's
- * own order.
+ * Resolve every geometry extension this port handles at generation, in the
+ * pin's own order, inside an already parsed container that keeps its updated
+ * BIN bytes; the result says whether anything was rewritten.
  *
  * The order is a contract rather than a convenience, and it is the order
  * `gltf-feature-registry.ts` lists the hooks in: meshopt decompresses
@@ -875,26 +876,13 @@ function readsBinaryChunk(json: JsonRecord): boolean {
  *
  * The three document-level hooks share one parse, then the Gaussian-splat
  * conversion consumes what it owns and Draco runs at the pin's pre-mesh
- * boundary: an asset is read and written once however many features it
- * triggers, and one that triggers none is returned byte-for-byte.
+ * boundary: an asset is parsed once however many features it triggers.
  *
  * Gaussian splatting sits between them because that is where the pin puts it:
  * its `preParse` strips the GS primitives with the other pre-parse hooks,
  * before Draco's pre-mesh decode ever sees a primitive, and it reads
  * accessors the quantization hook may just have rewritten.
  */
-export async function resolveGeometryExtensions(
-    bytes: Uint8Array,
-    label: string,
-): Promise<Uint8Array> {
-    const glb = readGlb(bytes);
-    if (!glb) return bytes;
-    return (await resolveGlbGeometry(glb, label))
-        ? writeGlb(glb.json, glb.binary)
-        : bytes;
-}
-
-/** Resolve geometry in an already parsed container, retaining its updated BIN bytes. */
 export async function resolveGlbGeometry(
     glb: GlbChunks,
     label: string,

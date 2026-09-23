@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GLTF_MESH_PLAN, type JsonObject } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -14,6 +13,7 @@ import {
 } from "../src/pinned-material-arms.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 import {
+    gltfMeshPlan,
     meshPlanFixture,
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";

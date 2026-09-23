@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { encodeUnsignedShortJoints } from "../src/compressed-geometry.js";
 import {
-    encodeUnsignedShortJoints,
+    buildGlb,
+    readGlbFixture,
     resolveGeometryExtensions,
-} from "../src/compressed-geometry.js";
-import { buildGlb, readGlbFixture } from "./glb-fixture.js";
+} from "./glb-fixture.js";
 
 /**
  * A minimal GLB whose one accessor is sparse: a three-element FLOAT SCALAR
