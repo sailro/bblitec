@@ -310,14 +310,16 @@ function manifestInputs(outputDirectory: string): string[] | undefined {
  * written while it ran -- a file edited mid-generation may or may not be
  * in the tree, so no record is written and the next run regenerates.
  * `startedAt` is the millisecond clock reading taken before the compiler
- * was launched.
+ * was launched; `durationMs` is the work the generation cost when that is
+ * not simply the time since then (a specialization that ran after a wait).
  */
 export function recordGeneration(
     scene: GenerationScene,
     compilerArguments: readonly string[],
     startedAt: number,
-    repositoryRoot = process.cwd(),
+    options: { durationMs?: number; repositoryRoot?: string } = {},
 ): boolean {
+    const repositoryRoot = options.repositoryRoot ?? process.cwd();
     const output = resolve(scene.output);
     const inputs = manifestInputs(output);
     if (inputs === undefined) return false;
@@ -337,7 +339,7 @@ export function recordGeneration(
         inputs,
         input,
         output: generationOutputFingerprint(output),
-        durationMs: Date.now() - startedAt,
+        durationMs: options.durationMs ?? Date.now() - startedAt,
     } satisfies GenerationStamp);
     return true;
 }

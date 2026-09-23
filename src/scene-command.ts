@@ -341,7 +341,10 @@ async function compileScenes(
     if (stale.length > 1) {
         console.log(`Compiling ${stale.length} scenes, ${inFlight} at a time.`);
     }
-    const generationStartedAt = new Map<string, number>();
+    const generations = new Map<
+        string,
+        { startedAt: number; durationMs: number }
+    >();
     // The longest generations start first: in registry order the largest
     // applications, registered last, used to finish the stage alone.
     await runConcurrently(
@@ -354,8 +357,11 @@ async function compileScenes(
             runBuffered({ buffer: stale.length > 1 }, async (run) => {
                 const arguments_ = compilerArguments(scene);
                 const startedAt = Date.now();
-                generationStartedAt.set(scene.id, startedAt);
                 await run(process.execPath, arguments_);
+                generations.set(scene.id, {
+                    startedAt,
+                    durationMs: Date.now() - startedAt,
+                });
                 if (!sceneUsesNativeFeature(scene, "physics:viewer"))
                     recordGeneration(scene, arguments_, startedAt);
             }),
@@ -367,11 +373,18 @@ async function compileScenes(
     for (const scene of stale.filter((scene) =>
         sceneUsesNativeFeature(scene, "physics:viewer"),
     )) {
+        const generation = generations.get(scene.id)!;
+        const specializedAt = Date.now();
         await specializePhysicsDebugGeometry(scene);
+        // Its cost is its own generation and specialization, not the wait
+        // for the rest of the pool between them.
         recordGeneration(
             scene,
             compilerArguments(scene),
-            generationStartedAt.get(scene.id)!,
+            generation.startedAt,
+            {
+                durationMs: generation.durationMs + Date.now() - specializedAt,
+            },
         );
     }
 }
