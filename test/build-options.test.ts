@@ -294,6 +294,18 @@ test("shipping packages require the trimmed static build", () => {
     assert.match(smoke, /WorkingDirectory = \$packageDirectory/);
     assert.match(smoke, /WaitForExit\(120000\)/);
     assert.match(smoke, /\$smoke\.ExitCode -ne 0/);
+    // A failed start shows the program's own output, and a payload path the
+    // non-long-path-aware executable cannot open is refused before it runs.
+    assert.match(smoke, /RedirectStandardOutput = \$true/);
+    assert.match(smoke, /RedirectStandardError = \$true/);
+    assert.match(
+        smoke,
+        /exited with \$\(\$smoke\.ExitCode\)[^\n]*Output tail:/,
+    );
+    assert.match(
+        script.slice(0, script.indexOf("$smokeFrames = 5")),
+        /FullName\.Length -ge 260/,
+    );
 });
 
 test("the trimmed SDL build has a separate audio-capable variant", () => {
