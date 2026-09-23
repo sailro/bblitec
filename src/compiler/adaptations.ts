@@ -873,7 +873,7 @@ function appendPhysicsAdaptations(
                 "free fall is exact: the measured pose after N steps " +
                     "matches the closed form of the semi-implicit Euler " +
                     "integration both solvers use, to float32 precision " +
-                    "(examples/physics-drop.ts, 1e-7 at magnitude 4)",
+                    "(scene 40's sphere dropped from y=4, 1e-7)",
                 "a resting body settles at its geometric height " +
                     "(sphere radius 1 on a ground plane at y=0 rests at " +
                     "y=1.0 exactly), which is what the degenerate-box " +
