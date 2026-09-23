@@ -35,12 +35,12 @@ type dependencies. Inherited fields belong to their declaring type; external pee
 | Entry adapters | Registry probes and passing source forms; imported Babylon calls require an entry adapter even when their bodies translate |
 | Semantic cases | Scoped native/parity assertions and refusals in [`upstream/api-coverage.json`](../upstream/api-coverage.json) |
 
-Exercise percentages separate signatures, fields/accessors, constants and callbacks; type containers are excluded.
-They qualify exercised forms only. Failed compilations, discarded probes and stale receipts earn no credit.
-Unassessed declarations and type-dependent probe fallthrough mean unknown; `partial` combines positive and refusal evidence.
-The remaining adapter boundary is unclassified, so no overall PAL completion percentage is available.
-A project report sizes one external entry: the declarations it references, credited by the same evidence,
-with its unrouted functions and pin gaps listed separately. See [collection commands](development.md#api-coverage).
+Exercise percentages separate signatures, fields/accessors, constants and callbacks (type containers
+excluded) and qualify exercised forms only; failed compilations, discarded probes and stale receipts earn
+no credit. Unassessed declarations and type-dependent probe fallthrough are unknown; `partial` combines
+positive and refusal evidence. The adapter boundary is unclassified, so there is no overall PAL completion
+percentage. A project report credits one external entry's referenced declarations by the same evidence
+and lists its unrouted functions and pin gaps. See [collection commands](development.md#api-coverage).
 
 ## Program compilation
 
@@ -51,7 +51,7 @@ with its unrouted functions and pin gaps listed separately. See [collection comm
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
-| Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; erased native mutation; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
+| Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations | Custom thenables; general async iteration |
 | Workers | Local module scripts, isolated module state, typed cloning with cycles/aliases and copied buffers, timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; Date/Map/Set/typed-view messages throw `DataCloneError`; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
@@ -72,9 +72,8 @@ nested/default/renamed struct bindings refuse.
 
 Dynamic JSON preserves actual fields and object identity through typed locals, arguments, conditionals
 and represented generic returns. Source-backed record ownership can trigger compiler replay, preserving
-earlier aliases and initializer counts. Optional-property presence, earlier class instances and mutations
-through erased native records/arrays remain limited. Getters permit statements before a final return;
-early returns refuse.
+earlier aliases and initializer counts. Getters permit statements before a final return; early returns
+refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
 
 | Promise operation | Contract |
@@ -87,8 +86,7 @@ Self-captured `satisfies` records retain one identity when their checked and ini
 | `allSettled` | Ordered literal tuples and stored promise arrays, including void; fresh settlement records and original Error identities |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |
 
-Custom thenables, arbitrary rejection values, heterogeneous race results and unrepresented aggregation
-shapes refuse. `all` excludes literal spreads, other iterables and stored void/value-only arrays.
+Arbitrary rejection values, heterogeneous race results and unrepresented aggregation shapes refuse. `all` excludes literal spreads, other iterables and stored void/value-only arrays.
 `allSettled` excludes literal spreads and other iterables. Async collection callbacks start synchronously
 and retain suspension; predicate promises are truthy.
 Timers/microtasks need no engine. RAF needs a Window repaint source. Unhandled rejections are reported
@@ -103,12 +101,12 @@ JSON decoded through `DecompressionStream` folds at generation.
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
 | Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins | Closed flatten depth; no callback `thisArg`; some scalar pop/shift paths require nonempty arrays |
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
-| Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | WeakMap/WeakSet retain keys strongly; an iterator value of a nullable reference type reads as present |
+| Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | Native WTF-8 storage; embedded NUL value sinks remain limited; a concatenated operand is built before it is appended |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | Embedded NUL value sinks remain limited; a concatenated operand is built before it is appended |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
-| Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Host ICU data; option getters and non-string locale entries refuse |
-| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; freeze/seal/preventExtensions are identity operations |
+| Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
+| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs |
 | JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
@@ -396,8 +394,7 @@ ray/character/collision results. Collision callbacks retain removed bodies throu
 Thin physics with floating origin, body-aware trigger callbacks and retained trigger disposers are unsupported.
 
 Heightfields require square ground-mesh grids/static bodies. Zero/degenerate shapes refuse. Container
-construction precedes attachment;
-convex children admit finite nonzero scale. Mixed child filters/materials/triggers and triangle children
+construction precedes attachment; convex children admit finite nonzero scale. Mixed child filters/materials/triggers and triangle children
 refuse. Proximity/casts require inline query bags and convex targets. Viewers need construction-known
 shape descriptors and a native toolchain; constraint overlays and observable startup membership refuse.
 See [physics substitutions](fidelity.md#physics-contract).

@@ -22,9 +22,6 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
 Rebuild installed dependencies after maintained patches change, including `pwsh -File tools/build-rmlui.ps1`.
 
-Runtime Window applications start with their authored live defaults. Parity and interaction checks
-apply their registered query internally to the same executable.
-
 ### Linux prerequisites
 
 Install [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu),
@@ -47,8 +44,8 @@ export CMAKE_BUILD_PARALLEL_LEVEL=3
 export VCPKG_MAX_CONCURRENCY=3
 ```
 
-Generation/browser capture and native scenes need a graphical session,
-GPU-device access and X11/Wayland authorization. `SDL_VIDEODRIVER=x11|wayland` selects the display path.
+Generation/browser capture and native scenes need a graphical session, GPU-device access and
+X11/Wayland authorization. `SDL_VIDEODRIVER=x11|wayland` selects the display path.
 Set `CHROME_PATH` and `CC`/`CXX` as needed. Compiler changes require compatible dependency workspaces.
 Fontconfig/FreeType metrics can differ from Windows/browser references.
 
@@ -71,8 +68,8 @@ On older systems, LLVM libc++ must retain Apple's availability annotations; inst
 `_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS` may emit unavailable runtime symbols. A dedicated
 LLVM configuration can remove that define from `include/c++/v1/__config_site`, retaining a backup.
 
-Development uses host x64-osx/arm64-osx dependencies. CoreText/FreeType supplies fonts; Boost.Charconv
-provides floating formatting on systems lacking floating `to_chars`. Maintained Dawn patches support
+Development uses host x64-osx/arm64-osx dependencies. Boost.Charconv provides floating formatting on
+systems lacking floating `to_chars`. Maintained Dawn patches support
 older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
 
 ### Android
@@ -90,29 +87,22 @@ npm run demos:release -- --platform android --scene torus-states --backend dawn 
 ```
 
 `android`, `package:demo` and `demos:release` default to arm64-v8a; `android:sweep` defaults to x86_64;
-`-Abi`/`--abi` overrides.
-SDL_GPU remains the default. -Backend DAWN builds Dawn only; -Backend BOTH includes both renderers.
-Sweeps and release workflows select one renderer with --backend sdl_gpu|dawn.
--Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
-artifacts/android/<scene>/<abi>, with -dawn/-both suffixes for those build variants.
--Smoke checks both renderers in a BOTH APK. Debug intents select a compiled renderer with
-BBLITE_GPU_BACKEND=sdl_gpu|dawn; unavailable selections refuse.
-Development installs share the default application ID.
-Reached UI/audio dependencies and selected Dawn build automatically into artifacts/tools/<library>-android-<abi>.
-Dawn is monolithic/static at the Tint pin and consumes WGSL without offline shader compilation.
--DawnDirectory selects a compatible static install.
-Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
+`-Abi`/`--abi` overrides. SDL_GPU is the default renderer; `-Backend DAWN` builds Dawn only and
+`-Backend BOTH` both (`-Smoke` then checks each); sweeps and releases take `--backend sdl_gpu|dawn`.
+Debug intents select a compiled renderer with `BBLITE_GPU_BACKEND=sdl_gpu|dawn`. `-Install` opens the app;
+`-Smoke` requires native exit 0 and a PNG. APKs/logs are in `artifacts/android/<scene>/<abi>` (`-dawn`/`-both`
+suffixes); development installs share one application ID, release packages each have their own.
+Reached UI/audio dependencies and Dawn (monolithic/static at the Tint pin, WGSL only) build into
+`artifacts/tools/<library>-android-<abi>` and are reused by input fingerprint; `-DawnDirectory` selects a
+compatible static install.
 
-Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
-staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Each demo has its own
-application ID. Existing packages move to .replaced/.
-Android release workflows serialize shared dependency and device work.
-
-The sweep completes source/shader generation and dependency preparation before building four APKs concurrently, then captures serially at the
-registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
-unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
-Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
-For device-local rendering measurements instead of registered-reference comparisons, see
+Packaging builds Release code into a debug-signed APK with assets/notices, validates it on `--device` and
+publishes a ZIP/receipt under `artifacts/releases` (replaced packages move to `.replaced/`). The sweep
+prepares sources, shaders and one dependency set, builds four APKs concurrently (`--parallel`, `--jobs`),
+then captures serially at the registered pose and golden dimensions, reporting unsupported features,
+failures and mismatches separately; `--scene` is repeatable and evidence is in
+`artifacts/android/sweep/<run-id>`. Release workflows serialize dependency and device work; run
+standalone builds outside an active sweep. Device-local measurements:
 [same-device diagnosis](debugging.md#same-device-rendering-comparisons).
 
 Use adb devices -l to select an authorized, unlocked phone or a Vulkan-capable emulator:
@@ -179,23 +169,10 @@ node dist/src/cli.js <entry.ts> --survey <ignored-census.json>
 node tools/project-progress.mjs <ignored-acceptance-ledger.json> [ignored-progress.md]
 ```
 
-The scan inventories imports, library members, event shapes and language forms with source hashes/sites.
-It includes potentially unused bodies and does not prove compilation. Group findings by shared capability,
-match TODOs, and run independent source-shape probes before implementation batches. Record generation,
-native build and execution separately. Retry the unchanged entry at batch boundaries.
-
-The survey lowers the entry past every compile refusal: each statement runs in an emission transaction,
-a refusal rolls it back and is recorded, and lowering continues. The census lists every refusal reached
-(site, message, message class, enclosing function, cascades from refused declarations) with attempted and
-refused lowering counts; it writes no tree. Refusals inside speculative probes belong to the probe, storage
-replays keep only their final attempt, and an error outside statement lowering ends the survey as incomplete.
-Nested statement transactions journal into every open transaction, so a survey of a large entry costs up to
-about 1.6 times its generation.
-
-Progress is closed acceptance groups / fixed baseline groups, with equal credit per group. Every inventoried
-requirement needs one owner. Closure requires passing evidence with file hashes and completed dependencies;
-100% includes full generation, native builds, execution and validation. Document scope additions explicitly.
-This measures verified delivery, not effort or remaining time. Keep private ledgers and reports in artifacts.
+The requirements scan inventories imports, library members, event shapes and language forms, including
+unused bodies; it does not prove compilation. `--survey` lowers past every refusal and writes a census
+(site, message, enclosing function, cascades, attempted/refused counts) and no tree. `project-progress.mjs`
+scores closed acceptance groups against a fixed baseline. Keep ledgers and reports in ignored `artifacts/`.
 
 | File | Required data |
 | --- | --- |
@@ -206,9 +183,8 @@ This measures verified delivery, not effort or remaining time. Keep private ledg
 | `docs/status.md`, `docs/images/scenes/<id>.png` | Current measurement and preview |
 | `checks/<id>.json` | Interaction phases/expectations; plugins in `checks/plugins/` |
 
-Match source queries, reference time/frame and canvas size. New scenes need full/foreground MAD below
-0.5 on both backends plus interaction checks.
-Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
+Match the [reference pose](fidelity.md#the-reference-pose). New scenes need full/foreground MAD below
+0.5 on both backends plus interaction checks. Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
 `tools/create-status-preview.mjs`; ICU changes require `tools/generate-emoji-presentation.mjs`.
 
 ## Linting and formatting
@@ -243,10 +219,9 @@ build's emitted C++ and cached generated headers without changing their bytes:
 npm run lint:cpp -- all --generated --backend both
 ```
 
-Generate and build the selected scenes first. A build covers only its reached features and platform;
-use both backends and the affected subsystem configurations. Fix generated-code defects in the
-compiler, not its output. Generated analysis is opt-in and uses the same configured checks as maintained
-sources. Suggested fixes are never applied to generated files.
+Generate and build the selected scenes first; a build covers only its reached features and platform, so
+use both backends and the affected subsystem configurations. Suggested fixes are never applied to
+generated files.
 
 ## Validation
 
@@ -264,8 +239,9 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
 Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
-`docs/reviews/` holds the record of the most recent reviewed change. Status verification checks published measurements,
-registry names and canvas gates; measured repeatability exceptions live in the neutrality allowlist.
+`docs/reviews/` holds the record of the most recent reviewed change. Status verification checks
+published measurements, registry names and canvas gates; measured repeatability exceptions live in the
+neutrality allowlist.
 
 Documentation-only changes require link and affected metadata checks. Rendering checks are required
 when executable inputs or measurement contracts change. `lint:exports` is advisory.
@@ -303,7 +279,8 @@ junctions that install, under the same rule. Use `-Remove` to unlink junctions b
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
 Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`);
-`BBLITE_NATIVE_CACHE=0` disables it. Identical generated headers share cache storage. Debug keys retain directory identity.
+`BBLITE_NATIVE_CACHE=0` disables it. Identical generated headers share cache storage; debug keys retain
+directory identity.
 
 ## Shader compilation
 
@@ -331,8 +308,8 @@ CMakeLists edits require process before parity. Explicit payload overrides are d
 npm run demos:release -- --output artifacts/releases
 ```
 
-Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan`. One workflow owns dependency installation.
-It prepares reached static dependencies, builds and packages application demos. Plans/logs live in
+Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan`. The workflow owns dependency installation,
+prepares reached static dependencies, and builds and packages application demos. Plans/logs live in
 `artifacts/shipping/`; receipts include bytes, hashes and startup results. Replaced packages go to
 `.replaced/`; `@previous/` is preserved.
 
@@ -393,19 +370,12 @@ npm run api -- check
 npm run api -- diff --baseline <previous-snapshot.json>
 ```
 
-Searchable HTML/JSON reports, logs and receipts live in ignored `artifacts/api-coverage`;
-`--output <directory>` changes the destination. [Features](features.md#api-coverage-inventory) owns the metrics.
-`--project` restricts the report to the declarations one external entry references, scanned against this
-repository's pin and credited by the collected receipts; collect them at the current inputs first, or the
-report marks its evidence stale. Its readiness lists supported use sites and declarations, referenced exported
-functions without a routing hook, and imported names the pin does not export. It writes under
-`artifacts/api-coverage/projects/<directory>-<entry>` and collects nothing.
-
-`report --run` collects compiler evidence from all tests and registered scenes/demos, then runs semantic cases.
-Scenes use their registered query and host companion. Missing corpus entries, failed/skipped tests or missing
-scene receipts prevent publication. Collection leaves native outputs intact.
-`report` reuses current receipts, scans corpus/fixture references (including unused code), and probes
-entry routing with omitted arguments. It executes no test suite or native programs.
+Reports, logs and receipts live in ignored `artifacts/api-coverage` (`--output <directory>` relocates);
+[features](features.md#api-coverage-inventory) owns the metrics. `report --run` collects compiler evidence
+from all tests and registered scenes/demos (registered query and host companion), then runs semantic cases;
+missing corpus entries, failed/skipped tests or missing scene receipts block publication. `report` reuses
+current receipts and runs no tests or native programs. `--project` scores one external entry against the
+current receipts (stale ones are marked) and writes `artifacts/api-coverage/projects/<directory>-<entry>`.
 
 Semantic cases contain `id`, `level` (`generation`, `native`, `parity`, `refusal`), `scope`, `limitations`,
 `test: {file, name}`, and `targets: [{id, fingerprint}]`. Targets describe the named test's assertions.

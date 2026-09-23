@@ -42,8 +42,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
 | Skinning | Eight loaded influences reduced to four |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |
-| Splats | Synchronous render-thread sorting |
-| Physics/audio | Bullet/LabSound replace Havok/browser audio |
+| Splats | Synchronous render-thread sorting; draw/sort/picking share cloud identity |
 
 Live dataset readback and recovery hooks remain represented; write-only instrumentation can erase.
 Native drawCallCount includes transport draws.
@@ -87,7 +86,7 @@ does not establish matching CSM bounds, instance coverage or sampler bindings.
 
 Cube orientation, mips, encoding, samplers and pass order follow the reached source. GLTF IBL retains
 Float32 harmonics, RGBD decoding and the 256-square RGBA16F BRDF bake. Local probes execute source
-validation/grid/UBO/copy planning; SDL stores large probe uniforms in a buffer.
+validation/grid/UBO/copy planning.
 
 ### glTF material inputs
 
@@ -106,10 +105,6 @@ Native Euler/quaternion storage differs from the pin's rotation proxy; mixed wri
 Mips, encoding, orientation and samplers follow their source producer. invertY may use UV transforms.
 Configured KTX2/Draco JS/WASM runs during packaging; resulting pixels/geometry enter native output.
 Decoder bytes key caches and local decoder files participate in input tracking.
-
-### Gaussian splats
-
-Draw/sort/picking share cloud identity.
 
 ### Animation and hierarchy
 
@@ -163,8 +158,7 @@ different properties.
 
 ## Text contract
 
-Live text uses HarfBuzz and pinned layout/packing over
-the packaged repertoire. TextData retains identity; shared data owns group caches and captured styles.
+Live text uses HarfBuzz and pinned layout/packing over the packaged repertoire. TextData retains identity; shared data owns group caches and captured styles.
 Disposal releases GPU leases while CPU data follows source lifetime. Deferred registration publishes
 only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
@@ -176,10 +170,7 @@ agreement does not establish PCM fidelity.
 
 ## What is measured: the full page
 
-Parity includes canvas and reached UI. Canvas-only thresholds are additional gates, not replacements.
+Parity includes canvas and reached UI; canvas-only thresholds are additional gates, not replacements.
+Reports contain backend/build identity, full/foreground MAD, byte ratios, bias and spatial attribution;
+they locate residuals but establish neither their cause nor an acceptable precision floor.
 [Status](status.md) owns values; [debugging](debugging.md) owns commands and observation limits.
-
-## Parity reports
-
-Reports contain backend/build identity, full/foreground MAD, byte ratios, bias and spatial attribution.
-They locate residuals; they do not establish their cause or an acceptable precision floor.

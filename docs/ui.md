@@ -2,7 +2,7 @@
 
 Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume the same draw frame.
 
-## RmlUi ownership and integration gaps
+## RmlUi ownership
 
 | Area | Owner |
 | --- | --- |
@@ -13,10 +13,6 @@ Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume t
 
 The [pin](../upstream/rmlui.json) and maintained patches define the library surface.
 Check them before adding an implementation. Source rejection does not imply missing library support.
-
-Authored-tree queries work before rendering and while detached. A separate matcher also handles live
-RmlUi metadata, duplicating library capability. `Element::Matches` reparses each call; cached reuse
-needs performance and semantic verification. The easing/steps mapping is approximate.
 
 ## Integration
 
@@ -31,17 +27,16 @@ needs performance and semantic verification. The easing/steps mapping is approxi
   Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
 - Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract). Heap
   snapshots, GPU adapter requests and GPU API instrumentation are unsupported.
-- Location follows deployment. A query value the deployment answers is a constant: alone, beside native
-  operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
-  short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
-  time, parses the deployment query natively. Conditions over browser values the deployment does not answer
-  refuse. Reload and location.search assignment complete the task/microtasks then
-  recreate realms, retaining durable storage and the current query. Other navigation refuses. Screen/viewport metrics use CSS
-  pixels at display scale.
+- Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
+  native operands in comparisons, arithmetic and logical chains, or as a native string method receiver),
+  including short-circuits it decides; other reads, such as run-time keys, parse the deployment query
+  natively. Conditions over browser values the deployment does not answer refuse. Reload and
+  location.search assignment complete the task/microtasks, then recreate realms retaining durable storage
+  and the current query; other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 
 Host multi-canvas companions retain canvases, dividers and labels. Canvas-only captures include every
-canvas at its page position. Build switches are in [development](development.md#native-builds).
+canvas at its page position.
 
 ## DOM and events
 
@@ -84,13 +79,13 @@ Beforeunload and page-history caching are unsupported; native pagehide has persi
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
 across the Window mailbox; structural and special text changes rebuild projection.
-Source append arguments finish before insertion. Canvas backing dimensions are
-drawable pixels; client dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
+Source append arguments finish before insertion. Canvas backing dimensions are drawable pixels; client
+dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
 ### File transfer controls
 
-Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs snapshot bytes/name
-before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
+Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
+snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
 limits. Completion may occur before click returns. Multiple files/directories, unsupported accept values,
 arbitrary source paths and file-input type transitions refuse.
 
@@ -134,8 +129,8 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Lists | Unmarked block lists with default margins/indentation | Marker types, counters and images |
 
 Grid retains authored parents and structural selectors; source/style/inline order, responsive changes
-and child mutations update it. Container queries settle
-before synchronous measurements and report nonconverging layouts.
+and child mutations update it. Container queries settle before synchronous measurements and report
+nonconverging layouts.
 
 Custom properties preserve case, inherit and support var fallbacks; `--bbl-` is reserved. Quoted values
 and nested blocks retain declaration boundaries. Empty writes remove local declarations; cssText
@@ -165,8 +160,8 @@ Normal line height uses the current font's metrics and inherits as a keyword; ex
 length values retain their respective inheritance rules.
 
 Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
-on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named families
-through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
+on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named
+families through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
 on iOS (including Apple's `emjc` bitmaps) and Android's text renderer (including COLRv1).
 Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType color fonts retain
 PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
