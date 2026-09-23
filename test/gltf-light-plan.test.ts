@@ -7,6 +7,7 @@ import {
     asObject,
     asRecords,
     GLTF_MESH_PLAN,
+    parseGlbJson,
     type JsonObject,
 } from "../src/gltf-document.js";
 import {
@@ -108,7 +109,7 @@ test("source light constructors retain defaults, selected parents, baked worlds 
     mkdirSync(directory, { recursive: true });
     const file = resolve(directory, "lights.glb");
     writeFileSync(file, buildGlb(document, binary));
-    assert.deepEqual(gltfNodeLights(file), {
+    assert.deepEqual(gltfNodeLights(parseGlbJson(file)), {
         count: 4,
         kinds: ["point", "directional", "spot"],
     });

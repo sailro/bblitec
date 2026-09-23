@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import { composeScenePipeline } from "../src/compose-pipeline.js";
 import { emitAssetSpecializations } from "../src/asset-specializer.js";
+import { joinAssetFeatures } from "../src/asset-feature-join.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { writeGlbFixture } from "./glb-fixture.js";
@@ -90,10 +91,15 @@ async function composeImportedMesh(outputPath: string, source: string) {
             result,
             outputPath,
             tree: new GeneratedTree(outputPath),
-            specializationFeatures: emitAssetSpecializations(
+            assetJoin: await joinAssetFeatures({
+                result,
                 outputPath,
-                result.manifest.assets,
-            ),
+                specialization: emitAssetSpecializations(
+                    outputPath,
+                    result.manifest.assets,
+                ),
+                splatHarmonics: undefined,
+            }),
         }),
     };
 }

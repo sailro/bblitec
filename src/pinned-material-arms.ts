@@ -64,7 +64,7 @@ import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
-import { packagedGltfLights } from "./gltf-light-plan.js";
+import { packagedGltfLights, type GltfLight } from "./gltf-light-plan.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,
@@ -291,12 +291,11 @@ export interface MaterialSubject {
 /** Source-registered lights that join the scene's composed lighting arms. */
 export interface GltfNodeLights {
     count: number;
-    kinds: readonly string[];
+    kinds: readonly GltfLight["kind"][];
 }
 
-export function gltfNodeLights(path: string): GltfNodeLights {
-    const document = glbDocument(path);
-    if (!document) return { count: 0, kinds: [] };
+/** The lights a packaged document's executed light plan registers. */
+export function gltfNodeLights(document: JsonObject): GltfNodeLights {
     const plan = packagedGltfLights(document);
     const kinds = new Set(
         plan.sceneLights.map((index) => plan.lights[index]!.kind),
@@ -313,10 +312,8 @@ export function gltfNodeLights(path: string): GltfNodeLights {
  * composes every fragment with `PBR_HAS_ENV` and the tone-mapping arms the
  * environment turns on.
  */
-export function gltfHasImageBasedLight(path: string): boolean {
-    const record = glbDocument(path);
-    if (!record) return false;
-    const used = record["extensionsUsed"];
+export function gltfHasImageBasedLight(document: JsonObject): boolean {
+    const used = document["extensionsUsed"];
     return Array.isArray(used) && used.includes("EXT_lights_image_based");
 }
 

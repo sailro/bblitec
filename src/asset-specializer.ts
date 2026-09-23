@@ -677,8 +677,8 @@ export function specializeGltf(
             specularReflectance,
             extras,
             eightInfluenceSkinning,
-            gaussianSplats: hasGaussianSplats(document),
-            compressedImages: hasCompressedImages(document),
+            gaussianSplats: gltfHasGaussianSplats(document),
+            compressedImages: gltfHasCompressedImages(document),
             interactivity:
                 GLTF_MESH_PLAN in document
                     ? packagedFlowGraphPrograms(document).length > 0
@@ -692,30 +692,16 @@ export function specializeGltf(
  *
  * `KHR_gaussian_splatting`'s conversion happens at generation, so what the
  * loader ships against is the row buffer rather than the extension — which
- * packaging drops. Both readers ask the rows for that reason.
+ * packaging drops. The specializer and the asset feature join both ask the
+ * rows for that reason: `loader:splat` selects the generated splat units,
+ * and only the runtime feature list can do that.
  */
-function hasGaussianSplats(document: JsonRecord): boolean {
+export function gltfHasGaussianSplats(document: JsonRecord): boolean {
     return asRecords(document[GAUSSIAN_SPLAT_DOCUMENT_KEY]).length > 0;
 }
 
-/**
- * The same question off a materialized asset, for the feature join.
- *
- * `loader:splat` selects the generated splat translation units, and only the
- * runtime feature list can do that — so an asset that carries clouds joins it
- * after materialization, exactly as an asset's own punctual lights join
- * `light:*`.
- */
-export function gltfHasGaussianSplats(path: string): boolean {
-    return hasGaussianSplats(parseGlbJson(path));
-}
-
 /** Packaged mip lists reach the compressed-texture reader after materialization. */
-export function gltfHasCompressedImages(path: string): boolean {
-    return hasCompressedImages(parseGlbJson(path));
-}
-
-function hasCompressedImages(document: JsonRecord): boolean {
+export function gltfHasCompressedImages(document: JsonRecord): boolean {
     return asRecords(document.images).some(
         (image) => image.mimeType === compressedTextureFormat.mimeType,
     );

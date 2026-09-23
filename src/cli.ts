@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 
-import {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
@@ -15,7 +9,6 @@ import {
     CompileError,
     surveySource,
     compileSource,
-    renderFeaturesCmake,
 } from "./compiler.js";
 import {
     composeBillboardPickingShader,
@@ -30,9 +23,7 @@ import type {
     CompileOptions,
     CompileResult,
     CompiledNodeParticles,
-    Feature,
 } from "./compiler/types.js";
-import { reachedGeneratedSources } from "./generated-sources.js";
 import { writeJsonRecord } from "./validation-resume.js";
 import {
     predeclaredShaderProgram,
@@ -84,25 +75,11 @@ import {
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
+import { emitAssetSpecializations } from "./asset-specializer.js";
+import { joinAssetFeatures } from "./asset-feature-join.js";
 import {
-    gltfHasImageBasedLight,
-    gltfNodeLights,
-} from "./pinned-material-arms.js";
-import {
-    emitAssetSpecializations,
-    gltfHasCompressedImages,
-    gltfHasGaussianSplats,
-} from "./asset-specializer.js";
-import { parseGlbJson } from "./gltf-document.js";
-import {
-    type FlowGraphAssetPrograms,
-    parseFlowGraphs,
-} from "./pinned-flow-graph.js";
-import {
-    babylonLights,
     reachedDiffuseUv2,
     reachedStandardLightLists,
-    type BabylonLight,
 } from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
@@ -903,11 +880,23 @@ async function main(): Promise<void> {
         outputPath,
         result.manifest.assets,
     );
+    // Everything past this point reads the finished feature list: the join
+    // adds what the assets carry, re-projects the list, and decides the
+    // capabilities an asset and a scene call can both turn on.
+    const assetJoin = await joinAssetFeatures({
+        result,
+        outputPath,
+        specialization: specializationFeatures,
+        splatHarmonics: result.manifest.assets.find(
+            (_, index) =>
+                (materializedFacts[index]?.splatHarmonicDegree ?? 0) > 0,
+        ),
+    });
+    const activationPlan = assetJoin.plan;
     // KHR_interactivity is the asset's feature, as the pinned loader's
-    // document predicate makes it: each interactive asset joins the
-    // feature in the per-asset join below, where its graphs are parsed
-    // through the pin; the adaptation the attach records is stated here.
-    const flowGraphs: FlowGraphAssetPrograms[] = [];
+    // document predicate makes it: the join parsed each interactive asset's
+    // graphs through the pin; the adaptation the attach records is stated
+    // here.
     if (specializationFeatures.interactivity) {
         result.manifest.adaptations.push({
             id: "flow-graph-attach-at-add",
@@ -1066,128 +1055,8 @@ async function main(): Promise<void> {
             }
             return predeclaredShaderProgram(predeclared);
         });
-    const reachedBabylonLights = babylonLights(
-        outputPath,
-        result.manifest.assets,
-    );
-    // An asset's own KHR_lights_punctual lights are the scene's lights: the
-    // pin's loader creates them exactly like scene code does, and every
-    // consumer keyed on the light features -- the composed arms, the pinned
-    // light writers, the generated-source table -- reads the one authority,
-    // so the kinds the assets reach join the manifest here.
-    // Which features the join added and the asset that carried each,
-    // recorded for the activation inventory: a feature already reached by
-    // scene source is deliberately not re-attributed to an asset.
-    const assetJoinedFeatures = new Map<string, string>();
-    let assetLightNodes: { count: number; asset: string } | undefined;
-    for (const asset of result.manifest.assets) {
-        if (asset.kind !== "gltf") continue;
-        const assetPath = resolve(outputPath, "assets", asset.output);
-        // Source registration determines the asset's active light kinds and
-        // count. Native admission also checks this count against its fixed UBO.
-        const nodeLights = gltfNodeLights(assetPath);
-        if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
-            assetLightNodes = { count: nodeLights.count, asset: asset.output };
-        }
-        const assetFeatures = nodeLights.kinds.map(
-            (kind) => `light:${kind}` as Feature,
-        );
-        // EXT_lights_image_based installs the asset's own environment, which
-        // composes the same arms `environment:ibl` does.
-        if (gltfHasImageBasedLight(assetPath)) {
-            assetFeatures.push("environment:ibl");
-        }
-        // KHR_gaussian_splatting resolves to the pin's own splat row buffer
-        // at packaging, and the clouds the loader then builds draw through
-        // the generated splat pipeline -- which `loader:splat` is what
-        // selects. No scene API names the extension, so the asset joins the
-        // feature the way its punctual lights join `light:*`.
-        if (gltfHasGaussianSplats(assetPath)) {
-            assetFeatures.push("loader:splat");
-        }
-        // Packaged KHR_texture_basisu mip payloads reach the compressed reader.
-        if (gltfHasCompressedImages(assetPath)) {
-            assetFeatures.push("texture:compressed");
-        }
-        // The source applyAsset result owns activation, including an empty
-        // result when the extension creates no usable graph.
-        const document = parseGlbJson(assetPath);
-        const graphs = await parseFlowGraphs(asset.output, document);
-        if (graphs.length) {
-            flowGraphs.push({ asset: asset.output, graphs });
-            assetFeatures.push("flow-graph:interactivity");
-        }
-        for (const feature of assetFeatures) {
-            if (!result.manifest.features.includes(feature)) {
-                result.manifest.features.push(feature);
-                assetJoinedFeatures.set(feature, asset.output);
-            }
-        }
-    }
-    // A packaged splat container that parsed to a non-zero SH degree is
-    // what `attachParsedSplat` forks on, and no scene API names it -- so
-    // the asset joins the feature exactly as a glTF's own extensions do
-    // above. It selects the payload packer and the SH capability defines;
-    // `loader:splat` is already reached by the `loadSplat` call itself.
-    if (splatHarmonicDegree !== undefined) {
-        // The container that carried them, not merely the first splat asset:
-        // the facts are positional over the manifest's assets, so a scene
-        // holding a plain cloud beside one with harmonics still attributes
-        // the feature -- and names the parser below -- from the one that
-        // answered the degree.
-        const splatAsset =
-            result.manifest.assets[
-                materializedFacts.findIndex(
-                    (facts) => (facts?.splatHarmonicDegree ?? 0) > 0,
-                )
-            ];
-        result.manifest.features.push("loader:splat-sh");
-        assetJoinedFeatures.set(
-            "loader:splat-sh",
-            splatAsset?.output ?? "splat",
-        );
-        // Pushed HERE rather than in `compileAdaptations`, beside the two
-        // siblings below, because `loader:splat-sh` is an asset-joined
-        // feature: the compiler decides its adaptations from the entry AST
-        // and this one is not known until the pin has parsed the container
-        // and said the cloud carries harmonics. Gating it on the AST-side
-        // list recorded nothing at all -- scene 124's fidelity.json had no
-        // such entry -- which is the failure this placement fixes.
-        result.manifest.adaptations.push({
-            id: "splat-harmonics-sidecar",
-            category: "asset-materialization",
-            sourceSemantics:
-                // The parser that produced them, which is the container's
-                // answer rather than a fixed one: the compressed PLY, the
-                // SPZ and the SOG all reach the SH pipeline through this
-                // same fork. A container names its own parser in its row;
-                // anything else got here through the plain PLY loader.
-                ((splatAsset === undefined
-                    ? undefined
-                    : SPLAT_CONTAINERS.get(splatAsset.kind)?.parser) ??
-                    "convertCompressedPlyToParsedSplat") +
-                " returns the 32-byte rows " +
-                "beside a flat spherical-harmonic byte stream, and " +
-                "attachParsedSplat hands both to the SH pipeline in one call.",
-            nativeSemantics:
-                "The rows package to the interchange .splat buffer " +
-                "unchanged -- a .ply and a .splat of one cloud must still " +
-                "produce identical bytes -- so the harmonics package to a " +
-                "sidecar named off the row file, and the degree becomes a " +
-                "generation-time constant the loader, the payload packer " +
-                "and the deployed stages all read. The pin's run-time fork " +
-                "on parsed.shDegree is therefore taken at generation: a " +
-                "scene whose clouds disagree on degree refuses.",
-            risk: "low",
-            validation: [
-                "scene 124 parity against the browser golden on both backends",
-                "the browser's own compiled module is byte-identical to " +
-                    "buildShShaderSource(3)",
-            ],
-        });
-    }
-    // The SPZ container, recorded here for the same reason its sibling above
-    // is: `compileAdaptations` runs over the entry AST, and the VALUE this
+    // The SPZ container, recorded here rather than in the adaptation table:
+    // `compileAdaptations` runs over the entry AST, and the VALUE this
     // entry records -- the rotation the pinned loader wrote, which is the
     // whole point of executing it -- is not known until the container has
     // been fetched and it has run over it. The reach itself is AST-derived
@@ -1259,42 +1128,6 @@ async function main(): Promise<void> {
             ],
         });
     }
-    // A `.babylon` asset's own lights are the scene's lights the same way a
-    // glTF's KHR_lights_punctual lights are: the generated loader fills
-    // point LightRecords (`type: 0` is the only kind it accepts), and the
-    // pinned lights block consumes them through `write_pinned_light`, whose
-    // per-kind writers are emitted only for the light features the scene
-    // reaches. Joining `light:point` here is what routes the point writer
-    // (and the pinned light matrix it indexes) into the generated tree.
-    for (const asset of result.manifest.assets) {
-        if (asset.kind !== "babylon") continue;
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) continue;
-        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
-            lights?: BabylonLight[];
-        };
-        if (
-            (document.lights ?? []).some((light) => light.type === 0) &&
-            !result.manifest.features.includes("light:point")
-        ) {
-            result.manifest.features.push("light:point");
-            assetJoinedFeatures.set("light:point", asset.output);
-        }
-    }
-    if (assetJoinedFeatures.size > 0) {
-        // The features drive the generated-source table and the CMake
-        // projection, both rendered at compile time; re-render them from the
-        // same authorities so the joined features stay declared everywhere.
-        result.manifest.generatedSources = reachedGeneratedSources(
-            result.manifest.features,
-        );
-        result.cmake = renderFeaturesCmake(
-            result.manifest.features as Feature[],
-            result.manifest.runtimeSources,
-            result.manifest.generatedSources,
-            result.manifest.sourceUnits.map(({ path }) => path),
-        );
-    }
     const {
         lightKinds,
         toneMappingStates,
@@ -1315,31 +1148,12 @@ async function main(): Promise<void> {
     } = await composeScenePipeline({
         result,
         outputPath,
-        specializationFeatures,
+        assetJoin,
         tree,
     });
-    // Whether anything in this scene deforms on the GPU. Named once
-    // because two unrelated consumers ask it -- the pick pass's deform
-    // projection below and the emit options further down -- and the
-    // asset-or-scene-code disjunction is the whole answer either way.
-    const gpuDeformation =
-        specializationFeatures.gpuDeformation ||
-        result.manifest.features.includes("mesh:morph-targets") ||
-        // A scene-authored skeleton needs the same vertex layout: the
-        // joint and weight lanes the pin's own skinning stage reads live
-        // behind this define beside the morph deltas.
-        result.manifest.features.includes("mesh:skeleton");
-    // Scene-code morph targets join the storage arm: the pinned morph
-    // fragment (`morph-fragment-core`) reads its deltas and weights
-    // from storage buffers, and with the transcribed standard fragment
-    // retired there is no attribute-lane consumer left for them.
-    const morphStorage =
-        specializationFeatures.morphStorage ||
-        result.manifest.features.includes("mesh:morph-targets");
-    const gpuInstancing =
-        specializationFeatures.gpuInstancing ||
-        result.manifest.features.includes("mesh:thin-instances") ||
-        result.manifest.features.includes("mesh:thin-instances-dynamic");
+    const gpuDeformation = activationPlan.gpuDeformation.value;
+    const morphStorage = activationPlan.morphStorage.value;
+    const gpuInstancing = activationPlan.gpuInstancing.value;
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     // Which palette transport a skin takes: a build whose composed variants
@@ -1544,7 +1358,9 @@ async function main(): Promise<void> {
         // pulled the owning feature in.
         featureSites: result.manifest.featureSites,
         sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
-        ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
+        ...(assetJoin.assetLightNodes !== undefined
+            ? { assetLightNodes: assetJoin.assetLightNodes }
+            : {}),
         shaderPrograms,
         ...(result.manifest.computePrograms
             ? { computePrograms: result.manifest.computePrograms }
@@ -1571,16 +1387,12 @@ async function main(): Promise<void> {
         // the document, and only the asset says whether the loader reads
         // one.
         compressedImages: specializationFeatures.compressedImages,
-        // Both halves of the same lane: an asset's KHR_node_visibility
-        // materializes the cascade at load, and scene code writes the same
-        // per-mesh boolean directly. Either reaches the render-plan skip
-        // and the camera-bounds skip that read it.
-        nodeVisibility:
-            specializationFeatures.nodeVisibility ||
-            result.manifest.features.includes("mesh:visible"),
+        nodeVisibility: activationPlan.nodeVisibility.value,
         gltfNodeVisibility: specializationFeatures.nodeVisibility,
         gltfInteractivity: specializationFeatures.interactivity,
-        ...(flowGraphs.length > 0 ? { flowGraphs } : {}),
+        ...(assetJoin.flowGraphs.length > 0
+            ? { flowGraphs: assetJoin.flowGraphs }
+            : {}),
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
@@ -1590,7 +1402,7 @@ async function main(): Promise<void> {
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLightLists: reachedStandardLightLists(reachedBabylonLights),
+        standardLightLists: reachedStandardLightLists(assetJoin.babylonLights),
         standardDiffuseUv2: reachedDiffuseUv2(
             outputPath,
             result.manifest.assets,
@@ -1733,7 +1545,7 @@ ${imageCodecLines || '    ""'}
             featureActivationRows({
                 features: result.manifest.features,
                 featureSites: recorded.featureSites,
-                assetJoinedFeatures,
+                assetJoinedFeatures: assetJoin.joined,
                 specialization: specializationFeatures,
                 emit: emitOptions,
                 imageCodecs,

@@ -24,9 +24,61 @@ export interface AdaptationContext extends Pick<
     | "uiScopedSheetSelectors"
 > {}
 
+/**
+ * The rows the feature list alone decides, from the appenders that read
+ * nothing else. `compileAdaptations` appends each in place for the compiled
+ * features; the asset join runs them over the finished list and keeps the
+ * rows its joined features added, so a feature an asset carries records the
+ * adaptation a scene call reaching it would. A row keyed on a feature an
+ * asset can join therefore belongs in one of these appenders.
+ */
+export function featureKeyedAdaptations(
+    features: readonly Feature[],
+): CompileAdaptation[] {
+    const adaptations: CompileAdaptation[] = [];
+    appendSplatAdaptations(features, adaptations);
+    appendGizmoAdaptations(features, adaptations);
+    appendPhysicsAdaptations(features, adaptations);
+    return adaptations;
+}
+
+/**
+ * The row for a splat container whose parse answered spherical harmonics:
+ * the one fork no scene call reaches, so only the asset join records it,
+ * naming the parser that produced them.
+ */
+export function splatHarmonicsSidecarAdaptation(
+    parser: string,
+): CompileAdaptation {
+    return {
+        id: "splat-harmonics-sidecar",
+        category: "asset-materialization",
+        sourceSemantics:
+            parser +
+            " returns the 32-byte rows " +
+            "beside a flat spherical-harmonic byte stream, and " +
+            "attachParsedSplat hands both to the SH pipeline in one call.",
+        nativeSemantics:
+            "The rows package to the interchange .splat buffer " +
+            "unchanged -- a .ply and a .splat of one cloud must still " +
+            "produce identical bytes -- so the harmonics package to a " +
+            "sidecar named off the row file, and the degree becomes a " +
+            "generation-time constant the loader, the payload packer " +
+            "and the deployed stages all read. The pin's run-time fork " +
+            "on parsed.shDegree is therefore taken at generation: a " +
+            "scene whose clouds disagree on degree refuses.",
+        risk: "low",
+        validation: [
+            "scene 124 parity against the browser golden on both backends",
+            "the browser's own compiled module is byte-identical to " +
+                "buildShShaderSource(3)",
+        ],
+    };
+}
+
 export function compileAdaptations(
     context: AdaptationContext,
-    features: Feature[],
+    features: readonly Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
     if (features.includes("renderer:text")) {
@@ -766,7 +818,7 @@ export function compileAdaptations(
 }
 
 function appendSplatAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("loader:splat")) {
@@ -836,7 +888,7 @@ function appendSplatAdaptations(
 }
 
 function appendPhysicsAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("physics:world")) {
@@ -912,7 +964,7 @@ function appendPhysicsAdaptations(
 
 function appendUiAdaptations(
     context: AdaptationContext,
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("ui:rml")) {
@@ -979,7 +1031,7 @@ function appendUiAdaptations(
 }
 
 function appendGizmoAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     // The frozen node-particle bake is recorded by generation
