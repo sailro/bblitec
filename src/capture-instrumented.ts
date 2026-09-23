@@ -34,13 +34,16 @@ import {
     usesSeededRandom,
 } from "./parity-scene.js";
 import {
+    artifactDirectory,
     captureBuffersPath,
     captureDrawsPath,
     captureMetaPath,
+    captureMetaStaleness,
     captureShadersDirectory,
     captureTextureUploadsPath,
     defaultCaptureDirectory,
     readCaptureMeta,
+    resolvePose,
     writeSeekMeta,
     type CaptureMeta,
 } from "./tooling/artifacts.js";
@@ -81,24 +84,9 @@ export interface InstrumentedCaptureOptions {
 
 /**
  * Why a browser capture on disk is NOT reusable as evidence for `scene`,
- * or `undefined` when it is. One reader for every reuse path — `diff`
- * recaptures on a reason, `compose` auto-captures on one, `uniforms`
- * refuses with one — so the tools cannot disagree about what stale means.
- *
- * The classes, in the order they are cheapest to check:
- *   - no capture at all;
- *   - no provenance sidecar (a pre-meta capture);
- *   - a draw filter (`--skip-draw`): a filtered capture is an
- *     experiment, not evidence;
- *   - a different pose than requested (`requireSeek`, `null` = "no
- *     seek"; omit the property to accept the capture's own pose — the
- *     uniforms reader does, because decoded uploads are evidence at
- *     whatever pose they were taken);
- *   - a scene module that has since moved: the sidecar records the
- *     sha256 of the module the capture served, and it is recomputed
- *     here at the capture's own pose, so a scene-source or
- *     pinned-package change refuses even when the pixels still look
- *     plausible.
+ * or `undefined` when it is: no capture at all, else the shared sidecar
+ * rule (`captureMetaStaleness`). `requireSeek` (`null` = no seek) demands
+ * a pose; omitting it accepts the capture's own.
  */
 export function browserCaptureStaleness(
     scene: SceneDefinition,
@@ -108,44 +96,29 @@ export function browserCaptureStaleness(
     if (!existsSync(captureBuffersPath(captureDirectory))) {
         return "missing";
     }
-    const meta = readCaptureMeta(captureMetaPath(captureDirectory));
-    if (meta === undefined) {
-        return "carries no provenance sidecar";
-    }
-    if (meta.drawFilter !== undefined) {
-        return `was captured with a draw filter (--skip-draw ${meta.drawFilter})`;
-    }
-    if (
-        "requireSeek" in options &&
-        meta.seekSeconds !== (options.requireSeek ?? null)
-    ) {
-        return "was captured at a different seek";
-    }
-    if (meta.moduleSha256 === undefined) {
-        return "carries no scene-module provenance";
-    }
-    // Checked separately from the module digest because it moves separately;
-    // `CaptureMeta.pin` carries the reason.
-    if (meta.pin === undefined) {
-        return "carries no pinned-package provenance";
-    }
-    if (meta.pin !== capturePin()) {
-        return `was captured through ${meta.pin}, not the current pin`;
-    }
     // The frame derivation follows the ambient capture mode, exactly as
     // the capture's writer derived it; a `BBLITE_CAPTURE_UI` flip
     // between capture and reuse therefore refuses a retained-UI
     // application's capture and recaptures — the safe direction.
-    const current = suiteBrowserModuleDigest(
-        scene.source,
-        meta.seekSeconds ?? undefined,
-        scene.parity?.referenceAnimationGroups,
-        goldenFixedFrame(scene, captureUiEnabled() && usesRetainedUi(scene)),
+    return captureMetaStaleness(
+        readCaptureMeta(captureMetaPath(captureDirectory)),
+        {
+            ...("requireSeek" in options
+                ? { seekSeconds: options.requireSeek ?? null }
+                : {}),
+            pin: capturePin(),
+            moduleSha256: (seekSeconds) =>
+                suiteBrowserModuleDigest(
+                    scene.source,
+                    seekSeconds,
+                    scene.parity?.referenceAnimationGroups,
+                    goldenFixedFrame(
+                        scene,
+                        captureUiEnabled() && usesRetainedUi(scene),
+                    ),
+                ),
+        },
     );
-    if (meta.moduleSha256 !== current) {
-        return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
-    }
-    return undefined;
 }
 
 /**
@@ -384,8 +357,8 @@ export async function runInstrumentedCapture(
             "Per-draw instrumented capture does not yet aggregate independent worker realms. Use the scene parity command for full-page and canvas comparisons.",
         );
     }
-    const seekSeconds =
-        options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
+    const pose = resolvePose(scene, options.seekSeconds);
+    const seekSeconds = pose.seekSeconds;
     const animationGroups = scene.parity?.referenceAnimationGroups;
     const skipDrawIndexCount = options.skipDrawIndexCount ?? 0;
     // The golden's page composition, mirrored exactly: full page vs
@@ -534,27 +507,28 @@ export async function runInstrumentedCapture(
             console.log(`Draw calls: ${JSON.stringify(draws)}`);
             console.log(summary);
 
-            // Non-perturbation check: with no draw filter, the hooked
-            // render must stay byte-identical to the reference of the
-            // SAME convention — the committed full-page golden by
-            // default, or parity's canvas-only reference when
-            // `BBLITE_CAPTURE_UI=0` took the canvas-only shot above.
-            // Comparing across conventions is what once made the check
-            // cry wolf on every retained-UI scene. The verdict is
-            // recorded in the sidecar rather than only printed and
-            // discarded.
+            // Non-perturbation check: with no draw filter and at the pose
+            // the golden holds, the hooked render must stay byte-identical
+            // to the reference of the SAME convention — the committed
+            // full-page golden by default, or parity's canvas-only
+            // reference when `BBLITE_CAPTURE_UI=0` took the canvas-only
+            // shot above. Comparing across conventions (or poses) is what
+            // once made the check cry wolf. The verdict is recorded in the
+            // sidecar rather than only printed and discarded.
             const referencePath = captureUi
                 ? scene.parity?.reference.path
                 : resolve(
-                      "artifacts",
-                      "parity-canvas",
-                      scene.id,
-                      "browser-canvas.png",
+                      artifactDirectory(
+                          "parity-canvas",
+                          scene.id,
+                          "browser-canvas.png",
+                      ),
                   );
             let goldenIdentity: NonNullable<CaptureMeta["goldenIdentity"]> =
                 "not-checked";
             if (
                 skipDrawIndexCount === 0 &&
+                pose.golden &&
                 referencePath &&
                 existsSync(referencePath)
             ) {

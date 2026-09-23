@@ -150,9 +150,36 @@ interface CliOptions {
     idDiagnostics: boolean;
 }
 
+/**
+ * Every option `parseArguments` accepts, with its value placeholder. The
+ * usage text is generated from this table, and a test holds the table and
+ * the parser's cases to the same set, so neither can grow alone.
+ */
+const TARGET_FLAGS = [
+    { flag: "--out", value: "<directory>" },
+    { flag: "--survey", value: "<census.json>" },
+] as const;
+const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
+    { flag: "--title", value: "<text>" },
+    { flag: "--width", value: "<pixels>" },
+    { flag: "--height", value: "<pixels>" },
+    { flag: "--search", value: "<query>" },
+    { flag: "--initial-search", value: "<query>" },
+    { flag: "--public-dir", value: "<directory>" },
+    { flag: "--site-url", value: "<url>" },
+    { flag: "--env", value: "<NAME=value>" },
+    { flag: "--host-ui", value: "<json>" },
+    { flag: "--id-diagnostics" },
+];
+
 function usage(): never {
+    const spell = (option: { flag: string; value?: string }): string =>
+        option.value === undefined
+            ? option.flag
+            : `${option.flag} ${option.value}`;
     console.error(
-        "Usage: bblitec <entry.ts> (--out <directory> | --survey <census.json>) [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]",
+        `Usage: bblitec <entry.ts> (${TARGET_FLAGS.map(spell).join(" | ")}) ` +
+            OPTION_FLAGS.map((option) => `[${spell(option)}]`).join(" "),
     );
     process.exit(2);
 }

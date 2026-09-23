@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCompilerProgram } from "./compiler/program.js";
 import {
@@ -29,7 +29,8 @@ import {
 import { scanApiUsage, type ApiUsage } from "./api-usage.js";
 import { apiCoverageReport, apiReportHtml } from "./api-report.js";
 import { scenes } from "./scene-registry.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { listFiles, writeJsonRecord } from "./tooling/records.js";
+import { artifactDirectory } from "./tooling/artifacts.js";
 import {
     apiBaselineCurrent,
     readApiBaseline,
@@ -44,19 +45,14 @@ const commands: Readonly<Record<string, FlagSpec>> = {
     diff: { value: ["--baseline"] },
     report: {
         boolean: ["--run"],
-        value: ["--filter", "--output", "--project"],
+        value: ["--filter", "--output"],
     },
 };
 
 function typescriptFiles(directory: string): string[] {
-    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-        const path = join(directory, entry.name);
-        return entry.isDirectory()
-            ? typescriptFiles(path)
-            : entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")
-              ? [path]
-              : [];
-    });
+    return listFiles(directory).filter(
+        (path) => path.endsWith(".ts") && !path.endsWith(".d.ts"),
+    );
 }
 
 /** Every registered scene, the corpus source graph and the TypeScript fixtures, as one discovery program. */
@@ -188,31 +184,69 @@ export async function apiCommand(args: readonly string[]): Promise<void> {
         }
         return;
     }
-    const project = flags.values.get("--project");
-    const entry = project === undefined ? undefined : resolve(root, project);
-    if (entry !== undefined && flags.flags.has("--run"))
-        throw new Error(
-            "A project report only reads collected evidence; run 'report --run' without --project first.",
-        );
-    // Receipts live in the coverage directory; a project's report nests beside them.
-    const coverage = resolve(
+    const filter = flags.values.get("--filter");
+    await writeApiReport({
         root,
-        flags.values.get("--output") ?? "artifacts/api-coverage",
-    );
-    const output =
-        entry === undefined
-            ? coverage
-            : join(
-                  coverage,
-                  "projects",
-                  `${basename(dirname(entry))}-${parse(entry).name}`,
-              );
+        surface,
+        cases,
+        coverage: resolve(
+            root,
+            flags.values.get("--output") ?? artifactDirectory("api-coverage"),
+        ),
+        run: flags.flags.has("--run"),
+        ...(filter !== undefined ? { filter } : {}),
+    });
+}
+
+interface ApiReportRequest {
+    root: string;
+    surface: ApiSurface;
+    cases: ReturnType<typeof readApiCases>;
+    /** Where the collected receipts live (and, without `entry`, the report). */
+    coverage: string;
+    /** Collect evidence first (repository reports only). */
+    run: boolean;
+    filter?: string;
+    /** One external entry: report only the declarations it references. */
+    entry?: string;
+    /** Where an entry's report lands. */
+    output?: string;
+}
+
+/**
+ * The API readiness of one external entry, for `scene -- survey`: the
+ * declarations it references, scanned against this repository's pin and
+ * credited by the receipts collected under `artifacts/api-coverage`
+ * (`npm run api -- report --run`). It collects nothing; evidence older than
+ * the current inputs is marked stale.
+ */
+export async function writeProjectApiReport(
+    entry: string,
+    output: string,
+): Promise<void> {
+    const root = findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+    const surface = loadApiSurface();
+    await writeApiReport({
+        root,
+        surface,
+        cases: readApiCases(join(root, "upstream/api-coverage.json")),
+        coverage: resolve(root, artifactDirectory("api-coverage")),
+        run: false,
+        entry: resolve(entry),
+        output,
+    });
+}
+
+async function writeApiReport(request: ApiReportRequest): Promise<void> {
+    const { root, surface, cases, coverage, entry } = request;
+    const { snapshot } = surface;
+    const output = request.output ?? coverage;
     const receiptPath = join(coverage, "evidence.json");
     const inputs = apiEvidenceInputs(root, snapshot);
     let receipt = readApiReceipt(receiptPath);
     const baselinePath = join(coverage, "baseline.json");
     let collected = readApiBaseline(baselinePath);
-    if (flags.flags.has("--run")) {
+    if (request.run) {
         const stale = staleApiCases(cases, snapshot);
         if (stale.length)
             throw new Error(
@@ -253,7 +287,7 @@ export async function apiCommand(args: readonly string[]): Promise<void> {
         snapshot,
         usage,
         assessed,
-        flags.values.get("--filter"),
+        request.filter,
         currentBaseline,
         bindings,
         entry !== undefined,
@@ -282,13 +316,10 @@ export async function apiCommand(args: readonly string[]): Promise<void> {
     );
     if (report.readiness?.evidence === "stale")
         console.log(
-            "Evidence is missing or stale for the current inputs; run 'report --run' to credit supported forms.",
+            "Evidence is missing or stale for the current inputs; run 'npm run api -- report --run' to credit supported forms.",
         );
     console.log(`Report: ${join(output, "report.html")}`);
-    if (
-        flags.flags.has("--run") &&
-        assessed.some((entry) => entry.status !== "passed")
-    ) {
+    if (request.run && assessed.some((entry) => entry.status !== "passed")) {
         throw new Error(
             "API evidence is incomplete: failed, skipped, missing, or stale cases receive no coverage credit.",
         );

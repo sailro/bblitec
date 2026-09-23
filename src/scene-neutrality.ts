@@ -13,7 +13,7 @@
  * other moved cell is a finding.
  *
  * A scene earns a place in the table per backend and by measurement,
- * never by one surprising neutrality run: `scene -- stability <id>
+ * never by one surprising neutrality run: `scene -- parity <id> --runs N
  * --backend <b>` has to show the re-runs differing, and `--single-sample`
  * has to show them stop. What an entry costs is real: it excuses those
  * cells permanently, so a regression smaller than the wobble hides there.
@@ -24,6 +24,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { artifactDirectory, parityReportPath } from "./tooling/artifacts.js";
 
 /**
  * The backends whose cells move between runs with no code change at all,
@@ -35,7 +36,7 @@ import { join } from "node:path";
  * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
  * | 37 | Dawn | differ | byte-identical |
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
- * | 44 | both | the 2000 ms drop is a wall-clock timer (TODO.md, physics): the collapse pose rolls 0.005--0.006 / 0.033--0.037 | n/a |
+ * | 44 | both | the 2000 ms drop is a wall-clock timer: the collapse pose rolls 0.005--0.006 / 0.033--0.037 | n/a |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
  * | 121 | SDL_GPU | differ, worst MAD 0.000636, max 2 | byte-identical |
@@ -145,7 +146,7 @@ function reportsIn(directory: string): Map<string, Map<string, number>> {
     const reports = new Map<string, Map<string, number>>();
     if (!existsSync(directory)) return reports;
     for (const scene of readdirSync(directory)) {
-        const path = join(directory, scene, "report-differential.json");
+        const path = parityReportPath(join(directory, scene), "differential");
         if (!existsSync(path)) continue;
         try {
             const report: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -183,13 +184,13 @@ export function runNeutralityReport(
     baselineDirectory: string,
 ): NeutralityVerdict {
     const baseline = reportsIn(baselineDirectory);
-    const current = reportsIn(join("artifacts", "parity"));
+    const current = reportsIn(artifactDirectory("parity"));
     if (baseline.size === 0) {
         throw new Error(
             `No differential reports under ${baselineDirectory}. The ` +
                 "comparison covers report-differential.json only — a " +
                 "single-backend sweep produces nothing comparable, so run " +
-                "the matrix with 'scene -- parity all --differential'. " +
+                "the matrix on both backends with 'scene -- parity all'. " +
                 "Snapshot artifacts/parity before the change, then run it again after.",
         );
     }

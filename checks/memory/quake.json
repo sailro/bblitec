@@ -1,0 +1,5 @@
+{
+  "notes": "Walk, strafe, jump and fire on the start map, so projectiles, pickups and effects are created and retired during the run.",
+  "lead": ["-*10"],
+  "cycle": ["+KeyW", "-*90", "-KeyW", "MouseLeft", "-*20", "+KeyA", "-*30", "-KeyA", "Space", "-*20", "+KeyS", "-*60", "-KeyS", "+KeyD", "-*30", "-KeyD", "MouseLeft", "-*20"]
+}

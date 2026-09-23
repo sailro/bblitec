@@ -1,0 +1,5 @@
+{
+  "notes": "Walk, fire, turn, use and back up through the first rooms: doors and lifts rebuild their meshes, so retired mesh and geometry records show under play and never when idle.",
+  "lead": ["-*10"],
+  "cycle": ["+ArrowUp", "-*90", "-ArrowUp", "+ControlLeft", "-*30", "-ControlLeft", "+ArrowLeft", "-*25", "-ArrowLeft", "Space", "-*10", "+ArrowDown", "-*40", "-ArrowDown", "+ArrowRight", "-*35", "-ArrowRight", "+ControlLeft", "-*20", "-ControlLeft"]
+}

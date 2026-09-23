@@ -1,0 +1,5 @@
+{
+  "notes": "Walk, turn, jump, break and place blocks, so chunks stream and remesh during the run.",
+  "lead": ["-*10"],
+  "cycle": ["+KeyW", "-*120", "-KeyW", "MouseMoveRight", "MouseMoveRight", "MouseMoveRight", "Space", "-*20", "MouseLeft", "-*15", "MouseRight", "-*15", "+KeyA", "-*40", "-KeyA", "+KeyS", "-*60", "-KeyS", "+KeyD", "-*40", "-KeyD"]
+}
