@@ -1367,21 +1367,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      * The pin's declaration is still emitted, marked as possibly unused.
      */
     private mayBeUnread(name: ts.Identifier): boolean {
-        const symbol = this.checker.getSymbolAtLocation(name);
+        const symbol = declaredSymbol(this.checker, name);
         let unread = true;
         const visit = (node: ts.Node): void => {
             if (!unread) return;
-            if (ts.isIdentifier(node) && node !== name) {
-                const read =
-                    ts.isShorthandPropertyAssignment(node.parent) &&
-                    node.parent.name === node
-                        ? this.checker.getShorthandAssignmentValueSymbol(
-                              node.parent,
-                          )
-                        : this.checker.getSymbolAtLocation(node);
-                if (read === symbol && !this.adaptedArgument(node))
-                    unread = false;
-            }
+            if (
+                ts.isIdentifier(node) &&
+                node !== name &&
+                declaredSymbol(this.checker, node) === symbol &&
+                !this.adaptedArgument(node)
+            )
+                unread = false;
             ts.forEachChild(node, visit);
         };
         visit(this.entry.declaration.body!);
