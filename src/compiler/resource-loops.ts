@@ -3,7 +3,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
-    declaredInDomLibrary,
     isPinnedType,
     pinnedHandleKind,
     platformHandleKind,
@@ -13,7 +12,7 @@ import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import type { CompilerSymbols } from "./symbols.js";
+import { declaredInDomLibrary, type CompilerSymbols } from "./symbols.js";
 import {
     aliasedMutationScan,
     callArgumentIsReadOnly,

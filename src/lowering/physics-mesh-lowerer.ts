@@ -70,14 +70,10 @@ export function lowerPhysicsMesh(context: LoweringContext): {
     helpers: string;
     source: string;
 } {
-    const file = context.sourceFile(modulePath);
-    const owner = file.statements.find(
-        (node): node is ts.ClassDeclaration =>
-            ts.isClassDeclaration(node) &&
-            node.name?.text === "MeshAccumulator",
+    const { file, declaration: owner } = context.classDeclaration(
+        modulePath,
+        "MeshAccumulator",
     );
-    if (!owner)
-        context.contractError(file, "Physics MeshAccumulator class changed.");
     const fields = new Map([
         ["_vertices", "[]"],
         ["_indices", "[]"],

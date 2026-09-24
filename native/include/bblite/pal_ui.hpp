@@ -115,7 +115,7 @@ void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
                  std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
-UiElementHandle ui_primary_canvas(Engine&);
+UiElementHandle ui_primary_canvas(Engine&, std::string_view id);
 void ui_canvas_set_width(Engine&, UiElementHandle, double);
 void ui_canvas_set_height(Engine&, UiElementHandle, double);
 double ui_canvas_width(Engine&, UiElementHandle);

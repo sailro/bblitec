@@ -246,7 +246,6 @@ import {
     DataTypeRegistry,
     TYPED_ARRAY_KINDS,
     doubleLiteral as dataDoubleLiteral,
-    declaredInDomLibrary,
     domAudioHandleKind,
     handleCppType,
     isHandleKind,
@@ -290,6 +289,7 @@ import { readProperty } from "./compiler/properties.js";
 import {
     CompilerSymbols,
     declaredIn,
+    declaredInDomLibrary,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import { isNullable, presentMembers } from "./compiler/type-facts.js";

@@ -1,5 +1,6 @@
 // A28: inject failures inside the real pinned Recast/Detour implementation.
 #include "pal_navigation_recast.cpp"
+#include "navigation_build_defaults.hpp"
 #include <RecastAlloc.h>
 #include <DetourNode.h>
 #include <cstdio>
@@ -305,12 +306,13 @@ int main(int argc, char** argv) try {
     const NavMeshGeometry ground{{-10, 0, -10, -10, 0, 10, 10, 0, 10, 10, 0, -10},
                                  {0, 1, 2, 0, 2, 3}};
     const NavMeshBuildParams params{};
+    const NavBuildDefaults& defaults = bbl::upstream::navigation_build_defaults;
     unsigned build_allocations = 0;
     {
         auto plugin = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(plugin, ground, params);
+        navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
         allocation_count = 0;
-        navigation_create_solo_nav_mesh(plugin, ground, params);
+        navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
         build_allocations = allocation_count;
         require(build_allocations == 498, "pinned solo-floor allocation sequence changed");
         if (selection.empty() || selection == "queries")
@@ -334,7 +336,7 @@ int main(int argc, char** argv) try {
             std::fprintf(stderr, "failure %u\n", failure);
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(plugin, ground, params);
+                navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
             } catch (const std::bad_alloc&) {
                 failed = true;
             } catch (const std::runtime_error& error) {

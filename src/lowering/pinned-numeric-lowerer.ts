@@ -324,11 +324,6 @@ export interface PinnedNumericScope {
         lowerer: PinnedNumericLowerer,
         indent: string,
     ) => readonly string[] | undefined;
-    /**
-     * Read by nothing: every scope takes JavaScript's ToInt32 conversion,
-     * so the scopes that still pass it may drop it.
-     */
-    checkedBitwiseCoercions?: boolean;
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */

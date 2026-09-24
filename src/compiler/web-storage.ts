@@ -3,7 +3,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
-import { declaredInDomLibrary, type DataType } from "./data-types.js";
+import type { DataType } from "./data-types.js";
+import { declaredInDomLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */

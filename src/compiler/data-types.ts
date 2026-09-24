@@ -42,7 +42,6 @@ import {
     declaredInDomLibrary,
     isDefaultLibraryIdentifier,
 } from "./symbols.js";
-export { declaredInDomLibrary } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";

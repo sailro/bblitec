@@ -277,7 +277,6 @@ function operation(
         bindings,
         calls,
         booleanOr: true,
-        checkedBitwiseCoercions: true,
         callShapes: new Map([["Number.isInteger", "bool"]]),
         expression(node) {
             if (

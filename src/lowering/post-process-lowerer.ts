@@ -4,9 +4,9 @@ import {
     POST_PROCESS_EFFECTS,
     postProcessComposite,
     postProcessEffect,
-    slotOption,
     type PostProcessEffect,
 } from "../post-process-effects.js";
+import { pinnedPostProcessDefault } from "./post-process-defaults.js";
 import type { PostProcessTaskManifest } from "../compiler/types.js";
 import {
     passSuffix,
@@ -347,70 +347,17 @@ export class PostProcessLowerer {
     }
 
     /**
-     * The effect's own halves: the defaults its `??` fallbacks state and the
-     * options its factory makes settable. Both are read out of the table this
-     * repository keeps, so a pin that moves either fails rather than composing
-     * a pass against a stale default.
+     * The effect's own halves: the defaults its factory states and the
+     * textures it reads off the descriptor. The defaults are the table's own
+     * values, read from the pin (`post-process-defaults.ts`); reading every
+     * reached slot here refuses one the pin stopped defaulting before a
+     * record is emitted.
      */
     private assertEffectContracts(effect: PostProcessEffect): void {
-        const { file, declaration } = this.context.functionDeclaration(
+        const { declaration } = this.context.functionDeclaration(
             effect.module,
             effect.declaredIn ?? effect.intrinsic,
         );
-        const fallbacks = new Map<string, ts.Expression>();
-        for (const node of this.context.findNodes(
-            declaration,
-            (candidate): candidate is ts.BinaryExpression =>
-                ts.isBinaryExpression(candidate) &&
-                candidate.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken,
-        )) {
-            const path = this.context.propertyPath(node.left);
-            if (path?.[0] === "config" && path.length === 2) {
-                fallbacks.set(
-                    path[1]!,
-                    this.context.unwrapExpression(node.right),
-                );
-            }
-        }
-        // A default the pin states through a COERCER rather than `??`.
-        // SMAA runs three of its settings through `clampThreshold` and its
-        // siblings, whose second argument is the value used when the caller
-        // supplied nothing usable -- the same default `??` states, written
-        // where the range also has to be enforced. Reading it keeps the
-        // check on the pin's own text instead of exempting the effect.
-        //
-        // The callee has to be one of the module's OWN helpers, not any
-        // two-argument call: on arity alone this would equally read
-        // `Math.max(config.threshold, 0)` as a default, and first match
-        // would decide which. Resolving it against the file the writer is
-        // declared in keeps the contract on the pin's text.
-        const moduleHelpers = new Set(
-            file.statements
-                .filter(ts.isFunctionDeclaration)
-                .map((fn) => fn.name?.text)
-                .filter((name): name is string => name !== undefined),
-        );
-        for (const node of this.context.findNodes(
-            declaration,
-            (candidate): candidate is ts.CallExpression =>
-                ts.isCallExpression(candidate) &&
-                candidate.arguments.length === 2 &&
-                ts.isIdentifier(candidate.expression) &&
-                moduleHelpers.has(candidate.expression.text),
-        )) {
-            const path = this.context.propertyPath(node.arguments[0]!);
-            if (
-                path?.[0] === "config" &&
-                path.length === 2 &&
-                !fallbacks.has(path[1]!)
-            ) {
-                fallbacks.set(
-                    path[1]!,
-                    this.context.unwrapExpression(node.arguments[1]!),
-                );
-            }
-        }
         // An extra texture has no fallback -- the pin reads it straight off
         // the descriptor -- so what is checked is that the descriptor still
         // names it, which is what the emitted binding order depends on.
@@ -432,83 +379,7 @@ export class PostProcessLowerer {
             }
         }
         for (const slot of effect.params) {
-            if (slot.runtime) {
-                continue;
-            }
-            if (slot.owner === "task") {
-                this.expectDefault(
-                    this.context.propertyInitializer(
-                        this.context.objectInitializer(declaration, "task"),
-                        slot.path,
-                    ),
-                    slot.fallback,
-                    file,
-                    { intrinsic: effect.intrinsic, option: slot.path },
-                );
-                continue;
-            }
-            const { option, component } = slotOption(slot);
-            const found = fallbacks.get(option);
-            if (!found) {
-                this.context.contractError(
-                    declaration,
-                    `Expected ${effect.intrinsic} to default '${option}'.`,
-                );
-            }
-            if (!component) {
-                this.expectDefault(found, slot.fallback, file, {
-                    intrinsic: effect.intrinsic,
-                    option: slot.path,
-                });
-                continue;
-            }
-            // A vector option defaults as a whole object, so the component
-            // fallback is read out of that object rather than off the option.
-            if (!ts.isObjectLiteralExpression(found)) {
-                this.context.contractError(
-                    found,
-                    `Expected ${effect.intrinsic} to default '${option}' with an object literal.`,
-                );
-            }
-            this.expectDefault(
-                this.context.propertyInitializer(found, component),
-                slot.fallback,
-                file,
-                { intrinsic: effect.intrinsic, option: slot.path },
-            );
-        }
-    }
-
-    /**
-     * One pinned default, against the value this table carries.
-     *
-     * A flag is compared as the keyword the pin writes rather than as a
-     * number, so a setting that stopped being a flag reads as a changed
-     * default instead of quietly comparing 1 against `true`.
-     */
-    private expectDefault(
-        expression: ts.Expression,
-        expected: number | boolean,
-        file: ts.SourceFile,
-        label: { intrinsic: string; option: string },
-    ): void {
-        const unwrapped = this.context.unwrapExpression(expression);
-        const found =
-            unwrapped.kind === ts.SyntaxKind.TrueKeyword
-                ? true
-                : unwrapped.kind === ts.SyntaxKind.FalseKeyword
-                  ? false
-                  : typeof expected === "boolean"
-                    ? undefined
-                    : this.context.numericValue(unwrapped, file);
-        if (found !== expected) {
-            this.context.contractError(
-                expression,
-                `${label.intrinsic} default for '${label.option}' changed; ` +
-                    `expected ${expected}, found ${
-                        found === undefined ? unwrapped.getText(file) : found
-                    }.`,
-            );
+            pinnedPostProcessDefault(effect, slot);
         }
     }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -8,12 +8,22 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { navigationBuildDefaultsDeclaration } from "../src/lowering/navigation-lowerer.js";
+import { pinnedHeader } from "../src/lowering/pinned-header.js";
 
 const tools = optionalNativeFixtureTools();
 function runNavigationFixture(name: string): string {
     const output = resolve("artifacts", name);
     mkdirSync(output, { recursive: true });
     const executable = join(output, `${name}.exe`);
+    // The build defaults the generated navigation header hands the PAL.
+    writeFileSync(
+        join(output, "navigation_build_defaults.hpp"),
+        pinnedHeader(
+            ["<bblite/pal_navigation.hpp>"],
+            navigationBuildDefaultsDeclaration(),
+        ),
+    );
     runNativeFixtureCompiler(tools!, [
         "/nologo",
         "/std:c++20",
@@ -30,6 +40,8 @@ function runNavigationFixture(name: string): string {
         "native/src",
         "/I",
         "native/include",
+        "/I",
+        output,
         `/external:I${join(nativeFixtureVcpkgRoot, "include/recastnavigation")}`,
         "/external:W0",
         `test/fixtures/${name}.cpp`,

@@ -57,7 +57,7 @@ import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
 import { registerUiImageAsset } from "./assets.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
+import { browserGlobalNamed, primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -139,6 +139,7 @@ interface UiProjectionContext extends Pick<
     | "lookupIdentifierValue"
     | "allocateTemporaryCppName"
     | "sourceFile"
+    | "sourceFiles"
     | "checker"
     | "compileBoolean"
     | "compileCondition"
@@ -4090,15 +4091,26 @@ export class UiProjection {
         };
     }
 
+    /**
+     * The native document's primary canvas, created on first use under the
+     * id the program looks it up by, so a retained-UI `#id` rule or query
+     * finds the element the program means. One element carries one id.
+     */
     public primaryPresentationCanvas(node: ts.Node): Value {
         const engine = this.context.requirePresentationHost(node);
         if (!this.presentationCanvasValue) {
+            const ids = [...primaryCanvasIds(this.context)];
+            if (ids.length !== 1)
+                this.context.fail(
+                    node,
+                    `The native primary canvas carries one id; this program looks it up by ${ids.map((id) => JSON.stringify(id)).join(", ")}.`,
+                );
             this.context.reachFeature("ui:rml", node);
             this.context.reachFeature("backend:sdl", node);
             this.context.reachFeature("renderer:canvas", node);
             this.presentationCanvasValue = {
                 kind: "ui-element",
-                cpp: `bbl::ui_primary_canvas(${engine})`,
+                cpp: `bbl::ui_primary_canvas(${engine}, ${this.context.cppString(ids[0]!)})`,
                 engineCpp: engine,
                 uiTag: "canvas",
                 uiCanvas: true,

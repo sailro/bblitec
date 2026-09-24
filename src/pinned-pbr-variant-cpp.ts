@@ -51,10 +51,7 @@ import {
     type UboFieldSlot,
 } from "./lowering/pinned-ubo-writer-lowerer.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
-import {
-    pinnedNumericConstant,
-    type PinnedStandardVariantManifestEntry,
-} from "./pinned-standard-variants.js";
+import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
 import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-uniforms.js";
 import { stringLiteral } from "./cpp-literals.js";
@@ -1330,28 +1327,23 @@ export function pinnedSharedVariantDecls(
     context: LoweringContext,
     provenance: string,
 ): string {
-    const receiveShadowsBit = pinnedNumericConstant(
-        context,
+    const receiveShadowsBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_RECEIVE_SHADOWS",
     );
-    const thinInstancesBit = pinnedNumericConstant(
-        context,
+    const thinInstancesBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_HAS_THIN_INSTANCES",
     );
-    const instanceColorBit = pinnedNumericConstant(
-        context,
+    const instanceColorBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_HAS_INSTANCE_COLOR",
     );
-    const vatBit = pinnedNumericConstant(
-        context,
+    const vatBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_VAT",
     );
-    const skeletonBit = pinnedNumericConstant(
-        context,
+    const skeletonBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_HAS_SKELETON",
     );

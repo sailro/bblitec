@@ -4,7 +4,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericConstant } from "./pinned-numeric-constant.js";
 
 const STANDARD_RENDERABLE = "src/material/standard/standard-renderable.ts";
 const STANDARD_FLAGS = "src/material/standard/standard-flags.ts";
@@ -31,7 +30,7 @@ function flagBindings(
     return names.map((name) => [
         name,
         {
-            cpp: `${pinnedNumericConstant(context, modulePath, name)}u`,
+            cpp: `${context.pinnedNumber(modulePath, name)}u`,
             type: "scalar",
         },
     ]);
@@ -179,7 +178,7 @@ export function lowerRenderBucket(
     const [noColorFlag, esmFlag] = [
         "PBR2_NO_COLOR_OUTPUT",
         "PBR2_ESM_SHADOW_OUTPUT",
-    ].map((name) => pinnedNumericConstant(context, PBR_FLAGS, name));
+    ].map((name) => context.pinnedNumber(PBR_FLAGS, name));
     // `colorAlphaBlend`, through the pin's own lowered decision where the
     // scene reached vertex alpha; without it the arm is false.
     const colorAlphaBlend = options.standardVertexAlpha

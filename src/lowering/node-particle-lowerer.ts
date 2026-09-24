@@ -655,10 +655,9 @@ export class NodeParticleLowerer {
      * scene's.
      */
     public sprite2dMultiplyFragment(): string {
-        const file = this.context.sourceFile(sprite2dBlendModule);
-        return this.context.stringValue(
-            this.context.variableInitializer(file, "MULTIPLY_FRAGMENT_WGSL"),
-            file,
+        return this.context.pinnedString(
+            sprite2dBlendModule,
+            "MULTIPLY_FRAGMENT_WGSL",
         );
     }
 

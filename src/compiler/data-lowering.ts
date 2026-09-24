@@ -37,10 +37,10 @@ import { numberConstantValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
     MATH_MEMBERS,
-    mathExtremeCpp,
     mathMemberAccess,
     mathUnaryFold,
 } from "./math-intrinsics.js";
+import { mathExtremeCpp } from "../lowering/pinned-operators.js";
 import {
     dataTypesEqual,
     doubleLiteral,
@@ -4940,14 +4940,7 @@ export class DataLowerer {
                 const booleanConstructor =
                     ts.isIdentifier(callback) &&
                     callback.text === "Boolean" &&
-                    (
-                        this.context.checker.getSymbolAtLocation(callback)
-                            ?.declarations ?? []
-                    ).some((declaration) =>
-                        /(?:^|[\\/])lib\.es5\.d\.ts$/i.test(
-                            declaration.getSourceFile().fileName,
-                        ),
-                    );
+                    this.context.isDefaultLibraryIdentifier(callback);
                 const callbackArguments: Value[] = [
                     elementValue,
                     {

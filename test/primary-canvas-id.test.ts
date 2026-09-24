@@ -39,6 +39,21 @@ test("the host document's id names the primary canvas by default", () => {
     );
 });
 
+test("the native primary canvas is created under the id the program finds it by", () => {
+    const result = compileSource(
+        `
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const context = canvas.getContext("2d")!;
+        context.fillRect(0, 0, 20, 20);
+    `,
+        { fileName: "primary-canvas.ts" },
+    );
+    assert.match(
+        result.cpp,
+        /bbl::ui_primary_canvas\([^()]+, "renderCanvas"\)/,
+    );
+});
+
 test("another id is not the primary canvas once the program names its own", () => {
     const result = compileSource(program("app", "renderCanvas"), {
         fileName: "other-canvas.ts",

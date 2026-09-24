@@ -176,10 +176,9 @@ export function gltfIblSourceUrls(context: LoweringContext): {
     featureTransform.dispose();
     // Native RGBD arithmetic is generated from this shared shader. Different
     // addressing or kernels require a wider native texture adapter.
-    const rgbdFile = context.sourceFile("src/loader-env/rgbd-decode.ts");
-    const rgbdShader = context.stringValue(
-        context.variableInitializer(rgbdFile, "WGSL"),
-        rgbdFile,
+    const rgbdShader = context.pinnedString(
+        "src/loader-env/rgbd-decode.ts",
+        "WGSL",
     );
     return { feature, assembly, rgbdShader, brdfShader };
 }

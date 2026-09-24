@@ -131,9 +131,8 @@ export interface BrowserErasureContext extends Pick<
 > {}
 
 /**
- * The id the native host document gives its primary canvas
- * (`ui_primary_canvas`), and so the one a program finds it by when its
- * engine canvas is not looked up by an id of its own.
+ * The id the host page gives its primary canvas, and so the one a program
+ * finds it by when its engine canvas is not looked up by an id of its own.
  */
 const HOST_PRIMARY_CANVAS_ID = "renderCanvas";
 
@@ -145,6 +144,132 @@ const primaryCanvasIdsByEntry = new WeakMap<
     ts.SourceFile,
     ReadonlySet<string>
 >();
+
+type PrimaryCanvasContext = Pick<
+    LoweringServices,
+    | "sourceFile"
+    | "sourceFiles"
+    | "symbols"
+    | "unwrap"
+    | "isDefaultLibraryIdentifier"
+>;
+
+/**
+ * The ids `document.getElementById` finds the native primary canvas by:
+ * the ids the program looks up the canvas it hands `createEngine` by,
+ * followed through constant bindings and through the parameters of the
+ * local functions that pass the canvas on. A program whose engine canvas
+ * comes from anywhere else finds the primary canvas by the host page's
+ * own id.
+ */
+export function primaryCanvasIds(
+    context: PrimaryCanvasContext,
+): ReadonlySet<string> {
+    const cached = primaryCanvasIdsByEntry.get(context.sourceFile);
+    if (cached) return cached;
+    const calls: ts.CallExpression[] = [];
+    for (const file of context.sourceFiles()) {
+        if (file.isDeclarationFile) continue;
+        forEachAnalysisNode(file, (node) => {
+            if (ts.isCallExpression(node)) calls.push(node);
+        });
+    }
+    const ids = new Set<string>();
+    const seen = new Set<ts.Node>();
+    const collect = (expression: ts.Expression): void => {
+        const value = context.unwrap(expression);
+        if (seen.has(value)) return;
+        seen.add(value);
+        const id = elementIdLookup(context, value);
+        if (id !== undefined) {
+            ids.add(id);
+            return;
+        }
+        if (!ts.isIdentifier(value)) return;
+        const bound = constInitializer(context, value);
+        if (bound) {
+            collect(bound);
+            return;
+        }
+        const parameter = context.symbols.valueSymbol(value)?.valueDeclaration;
+        if (!parameter || !ts.isParameter(parameter)) return;
+        const owner = parameter.parent;
+        const index = owner.parameters.indexOf(parameter);
+        const name = ts.isFunctionDeclaration(owner)
+            ? owner.name
+            : (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+                ts.isVariableDeclaration(owner.parent) &&
+                ts.isIdentifier(owner.parent.name)
+              ? owner.parent.name
+              : undefined;
+        const target = name && context.symbols.valueSymbol(name);
+        if (!target) return;
+        for (const call of calls) {
+            const callee = context.unwrap(call.expression);
+            const argument = call.arguments[index];
+            if (
+                argument &&
+                ts.isIdentifier(callee) &&
+                context.symbols.valueSymbol(callee) === target
+            )
+                collect(argument);
+        }
+    };
+    for (const call of calls) {
+        const canvas = call.arguments[0];
+        if (
+            canvas &&
+            context.symbols.importedName(call.expression) === "createEngine"
+        )
+            collect(canvas);
+    }
+    const primary: ReadonlySet<string> =
+        ids.size > 0 ? ids : new Set([HOST_PRIMARY_CANVAS_ID]);
+    primaryCanvasIdsByEntry.set(context.sourceFile, primary);
+    return primary;
+}
+
+/** The id a library `document.getElementById(id)` call looks up. */
+function elementIdLookup(
+    context: PrimaryCanvasContext,
+    expression: ts.Expression,
+): string | undefined {
+    if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
+        return undefined;
+    const callee = context.unwrap(expression.expression);
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== "getElementById" ||
+        !ts.isIdentifier(callee.expression) ||
+        callee.expression.text !== "document" ||
+        !context.isDefaultLibraryIdentifier(callee.expression)
+    )
+        return undefined;
+    const argument = context.unwrap(argumentAt(expression, 0));
+    const id = ts.isIdentifier(argument)
+        ? constInitializer(context, argument)
+        : argument;
+    return id && ts.isStringLiteralLike(id) ? id.text : undefined;
+}
+
+/**
+ * The initializer a `const` binding was declared with, read from its
+ * declaration alone: the program scan above runs outside any scope.
+ */
+function constInitializer(
+    context: PrimaryCanvasContext,
+    identifier: ts.Identifier,
+): ts.Expression | undefined {
+    const declaration =
+        context.symbols.valueSymbol(identifier)?.valueDeclaration;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        declaration.initializer
+        ? context.unwrap(declaration.initializer)
+        : undefined;
+}
 
 /**
  * What walking a helper body produced: a value it returned, or the fact
@@ -345,123 +470,6 @@ export function browserDeploymentValue(
 
 export class BrowserErasure {
     public constructor(private readonly context: BrowserErasureContext) {}
-
-    /**
-     * The ids `document.getElementById` finds the native primary canvas by:
-     * the ids the program looks up the canvas it hands `createEngine` by,
-     * followed through constant bindings and through the parameters of the
-     * local functions that pass the canvas on. A program whose engine canvas
-     * comes from anywhere else finds the primary canvas by the host
-     * document's own id.
-     */
-    private primaryCanvasIds(): ReadonlySet<string> {
-        const cached = primaryCanvasIdsByEntry.get(this.context.sourceFile);
-        if (cached) return cached;
-        const calls: ts.CallExpression[] = [];
-        for (const file of this.context.sourceFiles()) {
-            if (file.isDeclarationFile) continue;
-            forEachAnalysisNode(file, (node) => {
-                if (ts.isCallExpression(node)) calls.push(node);
-            });
-        }
-        const ids = new Set<string>();
-        const seen = new Set<ts.Node>();
-        const collect = (expression: ts.Expression): void => {
-            const value = this.context.unwrap(expression);
-            if (seen.has(value)) return;
-            seen.add(value);
-            const id = this.elementIdLookup(value);
-            if (id !== undefined) {
-                ids.add(id);
-                return;
-            }
-            if (!ts.isIdentifier(value)) return;
-            const bound = this.constInitializer(value);
-            if (bound) {
-                collect(bound);
-                return;
-            }
-            const parameter =
-                this.context.symbols.valueSymbol(value)?.valueDeclaration;
-            if (!parameter || !ts.isParameter(parameter)) return;
-            const owner = parameter.parent;
-            const index = owner.parameters.indexOf(parameter);
-            const name = ts.isFunctionDeclaration(owner)
-                ? owner.name
-                : (ts.isArrowFunction(owner) ||
-                        ts.isFunctionExpression(owner)) &&
-                    ts.isVariableDeclaration(owner.parent) &&
-                    ts.isIdentifier(owner.parent.name)
-                  ? owner.parent.name
-                  : undefined;
-            const target = name && this.context.symbols.valueSymbol(name);
-            if (!target) return;
-            for (const call of calls) {
-                const callee = this.context.unwrap(call.expression);
-                const argument = call.arguments[index];
-                if (
-                    argument &&
-                    ts.isIdentifier(callee) &&
-                    this.context.symbols.valueSymbol(callee) === target
-                )
-                    collect(argument);
-            }
-        };
-        for (const call of calls) {
-            const canvas = call.arguments[0];
-            if (
-                canvas &&
-                this.context.symbols.importedName(call.expression) ===
-                    "createEngine"
-            )
-                collect(canvas);
-        }
-        const primary: ReadonlySet<string> =
-            ids.size > 0 ? ids : new Set([HOST_PRIMARY_CANVAS_ID]);
-        primaryCanvasIdsByEntry.set(this.context.sourceFile, primary);
-        return primary;
-    }
-
-    /** The id a library `document.getElementById(id)` call looks up. */
-    private elementIdLookup(expression: ts.Expression): string | undefined {
-        if (
-            !ts.isCallExpression(expression) ||
-            expression.arguments.length !== 1
-        )
-            return undefined;
-        const callee = this.context.unwrap(expression.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "getElementById" ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "document" ||
-            !this.context.isDefaultLibraryIdentifier(callee.expression)
-        )
-            return undefined;
-        const argument = this.context.unwrap(argumentAt(expression, 0));
-        const id = ts.isIdentifier(argument)
-            ? this.constInitializer(argument)
-            : argument;
-        return id && ts.isStringLiteralLike(id) ? id.text : undefined;
-    }
-
-    /**
-     * The initializer a `const` binding was declared with, read from its
-     * declaration alone: the program scan above runs outside any scope.
-     */
-    private constInitializer(
-        identifier: ts.Identifier,
-    ): ts.Expression | undefined {
-        const declaration =
-            this.context.symbols.valueSymbol(identifier)?.valueDeclaration;
-        return declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-            declaration.initializer
-            ? this.context.unwrap(declaration.initializer)
-            : undefined;
-    }
 
     /**
      * Helper bodies currently being evaluated, innermost last, each with
@@ -1398,7 +1406,7 @@ export class BrowserErasure {
                     );
                     if (
                         elementId?.kind !== "string" ||
-                        !this.primaryCanvasIds().has(elementId.value)
+                        !primaryCanvasIds(this.context).has(elementId.value)
                     ) {
                         return undefined;
                     }
