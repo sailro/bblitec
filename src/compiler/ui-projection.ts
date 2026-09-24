@@ -1433,7 +1433,11 @@ export class UiProjection {
      */
     private readonly uiCanvasStaticSizes = new EmissionMap<
         number,
-        { width?: number; height?: number; pairs: Set<string> }
+        {
+            readonly width?: number;
+            readonly height?: number;
+            readonly pairs: Set<string>;
+        }
     >();
 
     /** Mints `uiCanvasId` for each created retained canvas element. */

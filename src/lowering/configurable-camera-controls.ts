@@ -417,7 +417,7 @@ export function lowerConfigurableCameraControls(
 #include <limits>
 #include <numbers>
 namespace bbl {
-void attach_configurable_free_control(Engine& engine, CameraHandle handle, ConfigurableFreeControlOptions options) {
+void attach_configurable_free_control(Engine& engine, CameraHandle handle, const Scene& scene, ConfigurableFreeControlOptions options) {
     struct State {
 ${fields.join("\n")}
     };
@@ -425,6 +425,7 @@ ${fields.join("\n")}
 ${optionInitializers.join("\n")}
     auto& camera = ${recordAt("engine.cameras", "handle")};
     camera.controls_enabled = true;
+    camera.controls_scene = scene.state;
     camera.configurable_free_pointer = [state](CameraRecord& camera, double delta_x, double delta_y) {
 ${pointerBody}
     };

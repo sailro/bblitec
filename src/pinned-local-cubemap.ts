@@ -9,7 +9,7 @@ import {
     moduleClosureBytes,
     moduleIdentity,
 } from "./bake-cache.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import { readAssetBytesSync } from "./compiler/asset-bytes-sync.js";
 import { runGenerationChild } from "./compiler/generation-child.js";
 import {
@@ -27,12 +27,12 @@ export type LocalCubemapJson =
     | LocalCubemapJson[]
     | { [key: string]: LocalCubemapJson };
 export interface LocalCubemapPlan {
-    kind: "environment" | "single" | "probes";
-    maxCandidates: number;
-    entryFileName: string;
-    environments: string[];
-    options: { [key: string]: LocalCubemapJson };
-    debug?: boolean;
+    readonly kind: "environment" | "single" | "probes";
+    readonly maxCandidates: number;
+    readonly entryFileName: string;
+    readonly environments: readonly string[];
+    readonly options: { [key: string]: LocalCubemapJson };
+    readonly debug?: boolean;
 }
 export interface LocalCubemapPacket {
     overridesEnvironment: boolean;
@@ -105,7 +105,7 @@ export function pinnedLocalCubemapLimits(): {
     defaultCandidates: number;
     candidateCapacity: number;
 } {
-    const context = new LoweringContext();
+    const context = sharedPinnedContext();
     const file = context.sourceFile(
         "src/material/pbr/pbr-local-cubemap-limits.ts",
     );
@@ -196,7 +196,7 @@ export async function packLocalCubemap(
     const flags = await importPinnedModule<{
         TU: { TEXTURE_BINDING: number; COPY_SRC: number };
     }>("engine/gpu-flags.js");
-    const context = new LoweringContext();
+    const context = sharedPinnedContext();
     const loader = context.functionDeclaration(
         "src/loader-env/load-env.ts",
         "loadEnvironment",

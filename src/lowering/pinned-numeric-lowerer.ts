@@ -4333,18 +4333,18 @@ export class PinnedNumericLowerer {
         // the operator table below.
         const known = this.staticCondition(node);
         if (known !== undefined) return known ? "true" : "false";
-        // A `typeof` test generation cannot answer is the value's presence
-        // at run time, or nothing this translator can spell.
+        // A `typeof` test generation cannot answer but the binding can is
+        // the value's presence at run time. One the binding leaves open
+        // lowers as any comparison does: through the caller's own spelling
+        // of the `typeof`, or not at all.
         const typeofComparison = this.typeofComparison(node);
-        if (typeofComparison) {
-            const answer = this.typeofAnswer(
-                typeofComparison.value,
-                typeofComparison.name,
-            );
-            if (typeof answer !== "object") this.fail(node, "typeof test");
-            return answer.whenAbsent === typeofComparison.equality
-                ? `(${answer.absent})`
-                : `!(${answer.absent})`;
+        const typeofAnswer = typeofComparison
+            ? this.typeofAnswer(typeofComparison.value, typeofComparison.name)
+            : undefined;
+        if (typeofComparison && typeof typeofAnswer === "object") {
+            return typeofAnswer.whenAbsent === typeofComparison.equality
+                ? `(${typeofAnswer.absent})`
+                : `!(${typeofAnswer.absent})`;
         }
         // A boolean join with one static side keeps only the side that
         // still decides, by JavaScript's own short-circuit rule.

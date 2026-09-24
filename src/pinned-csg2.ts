@@ -12,7 +12,7 @@ import {
 } from "./capture-suite-reference.js";
 import { pageBase64Script, runPageGlobal } from "./browser-harness.js";
 import { runGenerationChild } from "./compiler/generation-child.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import {
     packBakedCsgMesh,
     recordingCsgEngine,
@@ -30,7 +30,7 @@ export type Csg2BooleanName = (typeof csg2BooleanNames)[number];
 let materialSlotCount: number | undefined;
 export function csg2MaterialSlotCount(): number {
     if (materialSlotCount === undefined) {
-        const context = new LoweringContext();
+        const context = sharedPinnedContext();
         const source = context.sourceFile("src/mesh/csg2.ts");
         materialSlotCount = context.numericValue(
             context.variableInitializer(source, "MATERIAL_ID_RESERVE_COUNT"),

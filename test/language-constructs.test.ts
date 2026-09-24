@@ -1796,6 +1796,14 @@ check(
     if (spell(255) !== "ff:11111111:255" || (-10).toString(16) !== "-a" || (0.5).toString(2) !== "0.1") throw new Error("radix");
     function parse(s: string): number { return parseFloat(s) + Number.parseFloat(s) + parseInt(s, 10); }
     if (parse("1.5x") !== 4 || !Number.isNaN(parseFloat("x")) || parseFloat("  -2e1z") !== -20) throw new Error("parseFloat");
+    if ("\\u00a0\\u3000x\\u2028\\ufeff".trim() !== "x" || parseFloat("\\u00a0\\u2029 3.5") !== 3.5) throw new Error("JavaScript white space");
+    function num(s: string): number { return Number(s); }
+    if (num(" \\u00a012\\u3000") !== 12 || num("\\u2028") !== 0 || num("5.") !== 5 || num("-Infinity") !== -Infinity || parseInt("\\u00a0 42px") !== 42)
+        throw new Error("Number of decimal strings");
+    if (num("0x1F") !== 31 || num("0o17") !== 15 || num("0B101") !== 5 || num("0x20000000000001") !== 9007199254740992)
+        throw new Error("Number of radix strings");
+    for (const bad of ["inf", "-0x10", "0x", "1e", "1_0", "0x1p3", "Infinityx", "."])
+        if (!Number.isNaN(num(bad))) throw new Error("Number of " + bad);
     function truthy(n: number, s: string): number { return (Boolean(n) ? 1 : 0) + (Boolean(s) ? 2 : 0); }
     if (truthy(0, "x") !== 2 || truthy(3, "") !== 1) throw new Error("Boolean()");
     if (String(null) + String(undefined) !== "nullundefined") throw new Error("String of nullish");
@@ -2820,6 +2828,166 @@ check(
     if (heard.join("|") !== "rex speaks|tom speaks") throw new Error("heard " + heard.join("|"));
 `,
 );
+
+check(
+    "record-and-tuple-members-hold-their-built-values",
+    `
+    let count = 0;
+    const holder = { value: 1 };
+    const record = { seen: count, field: holder.value, draw: Math.random() };
+    count = 5;
+    holder.value = 9;
+    if (record.seen !== 0) throw new Error("variable member " + record.seen);
+    if (record.field !== 1) throw new Error("property member " + record.field);
+    if (record.draw !== record.draw) throw new Error("draw member read twice");
+    function bump(): void { count += 1; }
+    const later = { seen: count };
+    bump();
+    if (later.seen !== 5) throw new Error("member across a call " + later.seen);
+    function inside(): void {
+        const snapshot = { seen: count };
+        count = 7;
+        if (snapshot.seen !== 6) throw new Error("function record " + snapshot.seen);
+    }
+    inside();
+    const nested = { inner: { seen: count } };
+    count = 8;
+    if (nested.inner.seen !== 7) throw new Error("nested member " + nested.inner.seen);
+    const list = [{ seen: count }];
+    count = 9;
+    if (list[0]!.seen !== 8) throw new Error("array element member " + list[0]!.seen);
+    const lanes = [count, Math.random()];
+    count = 10;
+    if (lanes[0] !== 9) throw new Error("tuple lane " + lanes[0]);
+    if (lanes[1] !== lanes[1]) throw new Error("tuple draw lane read twice");
+    let label = "a";
+    function tag(name: string): { name: string } { return { name }; }
+    const tagged = tag(label);
+    label = "b";
+    if (tagged.name !== "a") throw new Error("parameter member " + tagged.name);
+    function readAfterWrite(options: { seen: number }): number {
+        const first = options.seen;
+        count = 99;
+        return first + options.seen;
+    }
+    if (readAfterWrite({ seen: count }) !== 20) throw new Error("argument member read after the callee writes");
+    let title = "first";
+    const titled = { title };
+    const copied = title;
+    title = "second";
+    if (copied !== "first" || titled.title !== "first")
+        throw new Error("a record read does not make its source constant " + copied);
+`,
+);
+
+check(
+    "array-literal-receivers-take-mutating-methods",
+    `
+    const last = [7, 8].pop();
+    if (last !== 8) throw new Error("literal pop");
+    const first = [7, 8].shift();
+    if (first !== 7) throw new Error("literal shift");
+    const none = ([] as number[]).pop();
+    if (none !== undefined) throw new Error("empty literal pop");
+    let count = 1;
+    const drawn = [count, 5].pop()!;
+    if (drawn !== 5) throw new Error("asserted literal pop " + drawn);
+    count = 2;
+    const pushed = [1, 2].push(3);
+    if (pushed !== 3) throw new Error("literal push");
+    const removed = [1, 2, 3].splice(1, 1);
+    if (removed.length !== 1 || removed[0] !== 2) throw new Error("literal splice");
+    const reversed = [1, 2, 3].reverse();
+    if (reversed[0] !== 3) throw new Error("literal reverse");
+`,
+);
+
+check(
+    "absent values spell undefined or null in text",
+    `
+    enum Shape {
+        Box = 0,
+        Ball = 1,
+    }
+    enum Tone {
+        Soft = "soft",
+    }
+    interface Options {
+        label?: string;
+        size?: number;
+        wide?: boolean;
+    }
+    function describe(options: Options): string {
+        return options.label + ":" + options.size + ":" + options.wide;
+    }
+    function main(): void {
+        const items: number[] = [];
+        if ("last " + items.pop() !== "last undefined") throw new Error("absent number");
+        items.push(4);
+        if (\`value \${items.pop()}\` !== "value 4") throw new Error("present number in a template");
+        const flags: boolean[] = [];
+        if ("flag " + flags.shift() !== "flag undefined") throw new Error("absent boolean");
+        const lookup = new Map<string, number>([["a", 1]]);
+        if (\`\${lookup.get("a")}/\${lookup.get("b")}\` !== "1/undefined") throw new Error("map lookups");
+        let maybe: number | null = null;
+        if ("maybe " + maybe !== "maybe null") throw new Error("null number");
+        maybe = 2.5;
+        if ("maybe " + maybe !== "maybe 2.5") throw new Error("present nullable number");
+        if (describe({}) !== "undefined:undefined:undefined") throw new Error("absent fields " + describe({}));
+        if (describe({ label: "x", size: 3, wide: true }) !== "x:3:true") throw new Error("present fields");
+        const shapes: Shape[] = [];
+        shapes.push(Shape.Ball);
+        if ("shape " + shapes.pop() + shapes.pop() !== "shape 1undefined") throw new Error("enum");
+        const tones: Tone[] = [];
+        tones.push(Tone.Soft);
+        if ("tone " + tones.pop() + tones.pop() !== "tone softundefined") throw new Error("string enum");
+        const mixed: Array<number | string> = ["a"];
+        if (\`\${mixed.pop()}|\${mixed.pop()}\` !== "a|undefined") throw new Error("absent union");
+        let text = "sum";
+        text += items.pop();
+        if (text !== "sumundefined") throw new Error("append " + text);
+        if (String(items.pop()) !== "undefined") throw new Error("String of an absent value");
+        const pair: [number, number?] = [1];
+        if ("second " + pair[1] !== "second undefined") throw new Error("missing tuple lane");
+        const omitted: Options = {};
+        if (typeof omitted.size !== "undefined") throw new Error("typeof an omitted field");
+    }
+    main();
+`,
+);
+
+test("text refuses a value that may be either null or undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const spelled = "value " + values[0];
+    `),
+        /may be null or undefined is spelled only once one of them is ruled out/,
+    );
+});
+
+test("engine calls that write their arguments keep operand order and object storage", async (t) => {
+    // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
+    // expected values follow their bodies (`v.x * (1 / len)`).
+    const result = compileSource(
+        `import { normalizeVec3ToRef, scaleVec3ToRef } from "@babylonjs/lite";
+        function show(a: number, b: number): string { return a + ":" + b; }
+        const v = { x: 3, y: 0, z: 4 };
+        const normalized = show(v.x, normalizeVec3ToRef(v, v).x);
+        if (normalized !== "3:" + 3 * (1 / 5)) throw new Error("engine argument write " + normalized);
+        const w = { x: 1, y: 2, z: 3 };
+        function grow(target: { x: number; y: number; z: number }): number {
+            scaleVec3ToRef(target, 2, target);
+            return target.z;
+        }
+        const grown = show(w.x, grow(w));
+        if (grown !== "1:6" || w.x !== 2) throw new Error("engine write through a function " + grown);`,
+        { fileName: "engine-argument-writes.ts" },
+    );
+    await executeGeneratedAssertions(t, "engine-argument-writes", result.cpp);
+});
 
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");

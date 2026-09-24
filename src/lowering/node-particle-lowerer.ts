@@ -1383,7 +1383,7 @@ Sprite2DLayerOptions bridge_layer_options(
         .order = bridge.has_order ? bridge.order : ${floatLiteral(sprite2DLayerDefaults().order)},
         .depth_mode = Sprite2DDepthMode::${sprite2dDepthMode(sprite2dLayer!.depth)},
         .layer_z = ${floatLiteral(sprite2DLayerDefaults().layerZ)},
-        .pivot = Vec2{${bakedFloatLiteral(sprite2dLayer!.pivot[0])}, ${bakedFloatLiteral(sprite2dLayer!.pivot[1])}},
+        .pivot = Vec2d{${doubleLiteral(sprite2dLayer!.pivot[0])}, ${doubleLiteral(sprite2dLayer!.pivot[1])}},
         .custom_shader = blend.particle_passes >= 1,
         .custom_textures = {},
         .custom_texture_names = {},
@@ -1510,7 +1510,7 @@ void sync_node_particle_billboard(
     for (std::size_t i = 0; i < system.particle_count; ++i) {
         const BakedParticle& particle = system.particles[i];
         BillboardSpriteProps props;
-        props.position = particle.position;
+        props.position = Vec3d{particle.position.x, particle.position.y, particle.position.z};
         props.size_world = particle.size_world;
         props.has_size_world = true;
         props.frame = particle.frame;
@@ -1980,7 +1980,7 @@ void sync_native_particle_billboard(Engine& engine, BillboardSystemHandle billbo
     clear_billboard_sprites(engine, billboard);
     for (std::size_t i = 0; i < static_cast<std::size_t>(state.alive); ++i) {
         BillboardSpriteProps props;
-        props.position = Vec3{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
+        props.position = Vec3d{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
         props.size_world = Vec2{
             static_cast<float>(static_cast<double>(state.size[i]) * state.scale_x[i]),
             static_cast<float>(static_cast<double>(state.size[i]) * state.scale_y[i])};

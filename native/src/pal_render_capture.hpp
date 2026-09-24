@@ -243,6 +243,13 @@ public:
         value(vector.y);
         end_array();
     }
+    void field(const char* name, const Vec2d& vector) {
+        key(name);
+        begin_array();
+        value(vector.x);
+        value(vector.y);
+        end_array();
+    }
     void field(const char* name, const Vec3& vector) {
         key(name);
         begin_array();
@@ -822,7 +829,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("vertexCount", geometry.vertices.size());
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
-        json.field("flatNormals", geometry.flat_normals);
         json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
@@ -1281,8 +1287,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.handle("material", invalid_handle);
         json.handle("geometry", invalid_handle);
         json.field("billboardSystem", handle.value);
-        json.field("vertexStem", plan.vertex_stem);
-        json.field("fragmentStem", plan.fragment_stem);
+        json.field("programStem", plan.program_stem);
         json.field("orientation", plan.axis_locked ? "axisLocked" : "facing");
         json.field("depthMode", billboard_depth_mode_name(system.depth_mode));
         json.field("depthWrites", plan.cutout_writes_depth);
@@ -1310,14 +1315,11 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.key("uniforms");
         json.begin_array();
         {
-            // The reconstructed vertex stage's own block: view-projection
-            // then view, pushed as one block by both backends
-            // (`BillboardSceneUniforms`).
-            std::array<float, 32> scene_block{};
-            std::copy(view_projection.begin(), view_projection.end(), scene_block.begin());
-            std::copy(view.begin(), view.end(), scene_block.begin() + 16);
-            write_float_block(json, "vertex", 0, "BillboardSceneUniforms", scene_block.data(),
-                              scene_block.size());
+            // The pin's per-pass scene block the module binds at its group
+            // 0, from the builder both backends fill it with.
+            write_uniform_block(
+                json, "vertex", 0, "SceneUniforms",
+                billboard_scene_block(scene, engine, camera, view_projection, view));
             // The per-system block, from the same builder both backends
             // push — to the fragment stage always, and to the axis-locked
             // vertex stage too, which reads its lock axis from it.
@@ -1335,7 +1337,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
 #if BBLITE_HAS_SPRITE_RENDERER
 /**
  * The 2D sprite rendering contexts the engine records, layers in the
- * draw order `sprite_layer_draw_order` decides for both backends, each
+ * list order `sort_sprite_renderer_layers` leaves for both backends, each
  * with the exact sixteen-float layer block its pass pushes
  * (`build_sprite_layer_ubo`) and the six-index, count-instance draw shape.
  *
@@ -1363,8 +1365,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
         json.field("clearValue", renderer.clear_value);
         json.key("layers");
         json.begin_array();
-        for (const std::size_t slot : sprite_layer_draw_order(engine, renderer)) {
-            const Sprite2DLayerHandle handle = renderer.layers[slot];
+        for (const Sprite2DLayerHandle handle : renderer.layers) {
             if (handle.value >= engine.sprite_layers.size())
                 continue;
             const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
@@ -1737,7 +1738,6 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
         json.field("geometryVariant", pipeline.geometry_variant);
         json.field("colorTargetCount", pipeline.color_target_count);
         json.field("samples", pipeline.samples);
-        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
         json.field("topology", pipeline.topology);
         json.field("cullMode", pipeline.cull_mode);
         json.field("frontFace", pipeline.front_face);

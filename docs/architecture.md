@@ -40,7 +40,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
-| `emission-transaction.ts` | Undo journal of compiler state (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a declined or failed lowering replays it |
+| `emission-transaction.ts` | Compiler state's originals per transaction, one per written slot (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a commit folds them into the enclosing transaction, a declined or failed lowering restores them. Fields outside the journal are declared `@unjournaled` with a reason |
 | `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
 | `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
 | `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
@@ -50,10 +50,18 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. Pinned modules over plain records (text data, the text GPU writers, renderer and
-alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over the pinned sources types
-every value, structs are emitted from the pinned declarations, and `pinned-record-transport.ts` rebuilds
-records the pin built at generation. The pin's WebGPU calls lower one to one onto the device interface in
+use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
+renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
+the pinned sources types every value, structs are emitted from the pinned declarations, and
+`pinned-record-transport.ts` rebuilds records the pin built at generation. Pinned classes are structs of
+their fields with their accessors, methods and constructor lowered over the instance. A closure is a
+`bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
+shared by the frame and all of its closures; records and environments that can close a cycle describe
+their edges to cycle collection. A parameter whose type a type-only module erased takes each call's
+argument shape (one overload per signature). A bundled package's classes and calls bind by
+`package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
+HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
+`(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
 `text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in C++ translation units per owning source,

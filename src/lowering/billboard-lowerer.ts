@@ -1,16 +1,12 @@
 import ts from "typescript";
 import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
-import {
-    extraTextureBindingsWgsl,
-    extraTextureRecords,
-} from "../shader-builtins-sprite-fx.js";
+import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
-import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import {
     type PinnedBinding,
@@ -40,7 +36,7 @@ const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
  * identical, so this is the whole difference between the two families of
  * billboard.
  */
-type BillboardOrientation = "facing" | "axis-locked";
+export type BillboardOrientation = "facing" | "axis-locked";
 
 /**
  * Which depth path a system draws through. The pin's `DEPTH_MODE_TABLE`
@@ -49,37 +45,12 @@ type BillboardOrientation = "facing" | "axis-locked";
  * selects a fragment arm, a pipeline state, and (per the module doc) the
  * slot the system draws in.
  */
-type BillboardDepthMode = "transparent" | "cutout";
+export type BillboardDepthMode = "transparent" | "cutout";
 
-/** The billboard shader, split into the pieces each backend re-homes. */
-export interface BillboardShaderSource {
-    /**
-     * Whether the vertex stage reads the system block. Derived from the
-     * pin's own basis rather than from a table here — an orientation that
-     * starts reading the lock axis picks the binding up by itself — but
-     * carried as a value so the WGSL emitter and the two PALs cannot state
-     * it differently.
-     */
-    vertexReadsSystemBlock: boolean;
-    systemStructFields: string;
-    basisFunction: string;
-    instanceStructFields: string;
-    varyingStructFields: string;
-    vertexBody: string;
-    fragmentBody: string;
-    /**
-     * `SpriteFx` struct body, present only for a custom-shader system. The
-     * block is bound whether or not the caller's body names `fx`, which is
-     * why it rides the source rather than being sniffed out of the text.
-     */
-    fxStructFields?: string | undefined;
-    /**
-     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group, and empty when the body
-     * named none. Emitted by the pin's own builder, so the pair it writes
-     * per texture is the pin's.
-     */
-    extraTextureBindings: string;
+/** A custom-shader program: the caller's fragment body and its extra textures. */
+export interface BillboardCustomProgram {
+    fragment: string;
+    extraTextures: readonly string[];
 }
 
 /**
@@ -112,6 +83,7 @@ export class BillboardLowerer {
     /** The instance layout, read from the pin's own constants. */
     private layout(): {
         instanceFloats: number;
+        anchorFloats: number;
         systemUboBytes: number;
     } {
         const constant = (module: string, name: string): number => {
@@ -125,6 +97,10 @@ export class BillboardLowerer {
             instanceFloats: constant(
                 systemModule,
                 "BILLBOARD_INSTANCE_FLOATS_PER_SPRITE",
+            ),
+            anchorFloats: constant(
+                systemModule,
+                "BILLBOARD_ANCHOR_FLOATS_PER_SPRITE",
             ),
             systemUboBytes: constant(
                 pipelineModule,
@@ -161,9 +137,43 @@ export class BillboardLowerer {
 
     /** `writeInstance` writes each slot from the source the pin names. */
     private assertInstanceSlots(): void {
-        const { declaration } = this.context.functionDeclaration(
+        const { file, declaration } = this.context.functionDeclaration(
             systemModule,
             "writeInstance",
+        );
+        // The F64 anchor stored beside the F32 position lanes, which the
+        // floating-origin uploads subtract the camera offset from.
+        const anchorStores = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                node.left.expression.getText(file) === "system._anchor",
+        );
+        (["posX", "posY", "posZ"] as const).forEach((source, lane) => {
+            const store = anchorStores.find(
+                (node) =>
+                    ts.isElementAccessExpression(node.left) &&
+                    elementIndexText(node.left) ===
+                        (lane === 0 ? "anchorBase" : `anchorBase + ${lane}`),
+            );
+            if (!store) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned billboard writeInstance no longer stores anchor lane ${lane}.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                store.right,
+                source,
+                `billboard writeInstance anchor lane ${lane}`,
+            );
+        });
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "posX"),
+            "props.position ? props.position[0] : system._anchor[anchorBase]",
+            "billboard writeInstance posX",
         );
         const expected: ReadonlyArray<[number, string]> = [
             [0, "posX"],
@@ -457,10 +467,61 @@ export class BillboardLowerer {
             "indices.subarray(0, count).sort",
             "billboard sort range",
         );
+        // The anchor each sprite sorts and uploads by is the F64 `_anchor`
+        // made eye-relative, never the F32 lane: at world scale the F32
+        // store has already quantised the position.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "anchors"),
+            "system._anchor",
+            "billboard sort anchors",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "anchorBase"),
+            "index * BILLBOARD_ANCHOR_FLOATS_PER_SPRITE",
+            "billboard sort anchor base",
+        );
+        const sortedStores = this.context.pinnedElementStores(
+            declaration,
+            "sortedData",
+        );
+        (["X", "Y", "Z"] as const).forEach((axis, lane) => {
+            const store = sortedStores.find(
+                (node) =>
+                    elementIndexText(node.left) ===
+                    (lane === 0 ? "destBase" : `destBase + ${lane}`),
+            );
+            if (!store) {
+                this.context.contractError(
+                    declaration,
+                    `Pinned billboard sort no longer stages anchor lane ${lane}.`,
+                );
+            }
+            this.context.assertExpressionShape(
+                store.right,
+                lane === 0
+                    ? `anchors[sourceAnchorBase] - fo${axis}`
+                    : `anchors[sourceAnchorBase + ${lane}] - fo${axis}`,
+                `billboard sorted anchor lane ${lane}`,
+            );
+        });
         const lane = (name: string): PinnedBinding => ({
             cpp: name,
             type: "scalar",
         });
+        const anchorLowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["anchors", { cpp: "system.anchor", type: "f64-buffer" }],
+                ["anchorBase", lane("anchor_base")],
+                ["foX", lane("fo_offset.x")],
+                ["foY", lane("fo_offset.y")],
+                ["foZ", lane("fo_offset.z")],
+            ]),
+            calls: new Map(),
+        });
+        const anchor = (axis: "X" | "Y" | "Z"): string =>
+            anchorLowerer.expression(
+                this.context.variableInitializer(declaration, `anchor${axis}`),
+            );
         const depthLowerer = new PinnedNumericLowerer(file, {
             bindings: new Map<string, PinnedBinding>([
                 ["cameraViewMatrix", { cpp: "view", type: "f32" }],
@@ -483,6 +544,16 @@ export class BillboardLowerer {
             "uploadSortedBillboardInstances",
         );
         return `// ${provenance}
+// One sprite's eye-relative anchor (\`anchorX/Y/Z\`): the F64 \`_anchor\` less
+// the camera offset, zero where no floating origin applies.
+inline Vec3d billboard_eye_relative_anchor(
+    const BillboardSystemRecord& system,
+    double anchor_base,
+    Vec3d fo_offset) {
+    return Vec3d{${anchor("X")}, ${anchor("Y")}, ${anchor("Z")}};
+}
+
+// ${provenance}
 // The view depth an anchor sorts by (\`depths[index] = ...\`).
 inline double billboard_sort_depth(
     const std::array<float, 16>& view,
@@ -501,6 +572,48 @@ inline double billboard_sort_compare(
     double right) {
     return ${compareLowerer.expression(comparator.body)};
 }`;
+    }
+
+    /**
+     * `uploadSystem`'s fork between the sorted and the insertion-order
+     * upload: a transparent system sorts only when its pass has a camera,
+     * and every other upload keeps the logical order. Returned as the pin's
+     * own text for the emitted comment; the native condition is this
+     * expression over the system's depth mode and the pass camera.
+     */
+    private uploadCondition(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/sprite/billboard-renderable.ts",
+            "uploadSystem",
+        );
+        const forks = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                node.elseStatement !== undefined &&
+                this.context
+                    .findNodes(
+                        node.thenStatement,
+                        (call): call is ts.CallExpression =>
+                            ts.isCallExpression(call) &&
+                            call.expression.getText(file) ===
+                                "uploadSortedBillboardInstances",
+                    )
+                    .some(() => true),
+        );
+        const fork = forks[0];
+        if (forks.length !== 1 || !fork) {
+            return this.context.contractError(
+                declaration,
+                "Expected uploadSystem to fork once between the sorted and the unsorted upload.",
+            );
+        }
+        this.context.assertExpressionShape(
+            fork.expression,
+            'renderable._system._depthMode === "transparent" && camera',
+            "billboard sorted-upload condition",
+        );
+        return fork.expression.getText(file);
     }
 
     /** The quad the vertex stage expands, and the draw that issues it. */
@@ -547,139 +660,61 @@ inline double billboard_sort_compare(
     // -----------------------------------------------------------------
 
     /**
-     * The WGSL for the permutation scene code reaches, reconstructed by
-     * folding the pin's own builders.
+     * The module the pin hands WebGPU for a system's program, built by
+     * evaluating its own builder: `makeBillboardWgsl` for the stock
+     * program, or `makeCustomBillboardWgsl`, the pin's second composer,
+     * which keeps the world-space vertex stage, exposes the view distance
+     * and world position to the caller's body, and adds the fx block and
+     * extra textures. It is deployed whole, the pin's scene group at 0 and
+     * the system's own at 1, and the compaction re-homes both for SDL_GPU.
      */
-    public shaderSource(
-        orientation: BillboardOrientation = "facing",
-        depthMode: BillboardDepthMode = "transparent",
-        customFragment?: string,
-        extraTextures: readonly string[] = [],
-    ): BillboardShaderSource {
-        const permutation = new Map<string, ShaderTextBinding>([
-            ["orientation", orientation],
-            ["depthMode", depthMode],
-            ["alphaToCoverage", false],
-        ]);
-        // The custom composer is the pin's own second builder, not this one
-        // with a body swapped in: it keeps the world-space vertex stage and
-        // the varying contract, and adds the fx block the caller may read.
-        const composed =
-            customFragment === undefined
-                ? undefined
-                : this.shaderText.evaluate(
-                      customShaderModule,
-                      "makeCustomBillboardWgsl",
-                      // The three the pin's own composer takes: it has no
-                      // depth or coverage arm, so binding those would pre-fill
-                      // a parameter a later pin could add under either name.
-                      new Map<string, ShaderTextBinding>([
-                          ["orientation", orientation],
-                          ["extraTextures", extraTextureRecords(extraTextures)],
-                          ["fragment", customFragment],
-                      ]),
-                  );
-        const full =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeBillboardWgsl",
-                permutation,
-            );
-        const basis = this.shaderText.evaluate(
-            pipelineModule,
-            "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([["orientation", orientation]]),
-        );
-        return {
-            ...this.bracedShaderSections(full, basis, "billboard"),
-            fxStructFields: composed
-                ? this.shaderText.braced(
-                      composed,
-                      packagedWgsl`struct SpriteFx {`,
-                      "billboard fx uniform struct",
-                  )
-                : undefined,
-            extraTextureBindings: extraTextureBindingsWgsl(
-                this.shaderText,
-                extraTextures,
-            ),
-        };
+    public module(
+        orientation: BillboardOrientation,
+        depthMode: BillboardDepthMode,
+        custom?: BillboardCustomProgram,
+    ): string {
+        return custom === undefined
+            ? this.shaderText.evaluate(
+                  pipelineModule,
+                  "makeBillboardWgsl",
+                  new Map<string, ShaderTextBinding>([
+                      ["orientation", orientation],
+                      ["depthMode", depthMode],
+                      ["alphaToCoverage", false],
+                  ]),
+              )
+            : this.shaderText.evaluate(
+                  customShaderModule,
+                  "makeCustomBillboardWgsl",
+                  // The three the pin's own composer takes: it has no
+                  // depth or coverage arm, so binding those would pre-fill
+                  // a parameter a later pin could add under either name.
+                  new Map<string, ShaderTextBinding>([
+                      ["orientation", orientation],
+                      [
+                          "extraTextures",
+                          extraTextureRecords(custom.extraTextures),
+                      ],
+                      ["fragment", custom.fragment],
+                  ]),
+              );
     }
 
     /**
-     * The six pieces every billboard-family program splits into, extracted
-     * from one composed module under a family's own error labels. Both
-     * composers emit the same struct and stage markers, so the extraction
-     * is stated once and each caller adds only what its family declares
-     * beyond it.
-     */
-    private bracedShaderSections(
-        full: string,
-        basis: string,
-        labelPrefix: string,
-    ): Omit<BillboardShaderSource, "fxStructFields" | "extraTextureBindings"> {
-        return {
-            vertexReadsSystemBlock: basis.includes("billboards."),
-            systemStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct S {`,
-                `${labelPrefix} system uniform struct`,
-            ),
-            basisFunction: basis,
-            instanceStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct I {`,
-                `${labelPrefix} instance struct`,
-            ),
-            varyingStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct O {`,
-                `${labelPrefix} varying struct`,
-            ),
-            vertexBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn vs(in: I) -> O {`,
-                `${labelPrefix} vertex stage`,
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
-                `${labelPrefix} fragment stage`,
-            ),
-        };
-    }
-
-    /**
-     * The particle family's private Multiply program.
+     * The particle family's private Multiply module.
      *
      * It is a third billboard composer, not this one with a fragment swapped
      * in: `particle-billboard-renderable.ts` writes its own whole module so
      * the Multiply-only bundle carries no `SpriteFx` declaration, layout
-     * entry or per-frame write at all. Its vertex half is byte-identical to
-     * the stock stage today, and it is still taken from the pin's own
-     * builder — a builder that starts differing has to move what we deploy,
-     * not be caught by a comparison here.
+     * entry or per-frame write at all.
      */
-    public particleMultiplyShaderSource(
-        orientation: BillboardOrientation,
-    ): BillboardShaderSource {
-        const full = this.shaderText.evaluate(
+    public particleMultiplyModule(orientation: BillboardOrientation): string {
+        return this.shaderText.evaluate(
             particleMultiplyModule,
             "makeMultiplyWgsl",
             new Map<string, ShaderTextBinding>([["orientation", orientation]]),
         );
-        const basis = this.shaderText.evaluate(
-            pipelineModule,
-            "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([["orientation", orientation]]),
-        );
-        return {
-            ...this.bracedShaderSections(full, basis, "particle multiply"),
-            extraTextureBindings: "",
-        };
     }
-
     /**
      * `packBillboardPickUbo`, translated from `billboard-pick-pipeline.ts`.
      *
@@ -799,6 +834,7 @@ inline double billboard_sort_compare(
         const zeroAxisFloor = this.context.doubleLiteral(
             this.context.numericValue(floors[0]!.right, axisLocked.file),
         );
+        const uploadCondition = this.uploadCondition();
 
         const provenance = this.context.provenance(
             systemModule,
@@ -842,6 +878,9 @@ inline constexpr std::uint32_t billboard_instance_stride_bytes =
     ${layout.instanceFloats * 4}u;
 
 inline constexpr std::uint32_t billboard_system_ubo_bytes = ${layout.systemUboBytes}u;
+
+/** \`BILLBOARD_ANCHOR_FLOATS_PER_SPRITE\`: the F64 \`_anchor\` lanes per sprite. */
+inline constexpr std::uint32_t billboard_anchor_floats_per_sprite = ${layout.anchorFloats}u;
 #if BBLITE_HAS_PICKING
 
 ${this.packPickUboCpp()}
@@ -883,13 +922,16 @@ ${this.sortKeyCpp()}
  * Both backends upload the result verbatim, and neither may decide the
  * order: with depth writes off it IS the composite, so a per-backend copy of
  * this would be a per-backend copy of the image. The depth and the
- * comparator are the pin's own (above); the depths are stored at the pin's
- * float width before the comparator reads them.
+ * comparator are the pin's own (above); each sorts by the F64 anchor made
+ * eye-relative, and the depths are stored at the pin's float width before
+ * the comparator reads them. The staged position lanes are that same
+ * eye-relative anchor, stored once into float.
  */
 inline void billboard_sorted_instances(
     const BillboardSystemRecord& system,
     const std::array<float, 16>& view,
-    std::vector<float>& out) {
+    std::vector<float>& out,
+    Vec3d fo_offset) {
     const std::size_t floats = system.instance_floats_per_sprite;
     out.resize(static_cast<std::size_t>(system.count) * floats);
     if (system.count == 0) {
@@ -899,13 +941,12 @@ inline void billboard_sorted_instances(
     std::iota(order.begin(), order.end(), 0u);
     std::vector<float> depths(system.count);
     for (std::uint32_t index = 0; index < system.count; ++index) {
-        const std::size_t base =
-            static_cast<std::size_t>(index) * floats;
+        const Vec3d anchor = billboard_eye_relative_anchor(
+            system,
+            static_cast<double>(index * billboard_anchor_floats_per_sprite),
+            fo_offset);
         depths[index] = static_cast<float>(billboard_sort_depth(
-            view,
-            system.instance_data[base],
-            system.instance_data[base + 1u],
-            system.instance_data[base + 2u]));
+            view, anchor.x, anchor.y, anchor.z));
     }
     std::sort(
         order.begin(),
@@ -922,73 +963,70 @@ inline void billboard_sorted_instances(
             out[destination + field] =
                 system.instance_data[source + field];
         }
+        const Vec3d anchor = billboard_eye_relative_anchor(
+            system,
+            static_cast<double>(order[slot] * billboard_anchor_floats_per_sprite),
+            fo_offset);
+        out[destination + 0u] = static_cast<float>(anchor.x);
+        out[destination + 1u] = static_cast<float>(anchor.y);
+        out[destination + 2u] = static_cast<float>(anchor.z);
     }
 }
 
-#if BBLITE_FLOATING_ORIGIN
 /**
- * The anchor lanes of every staged instance, rebuilt eye-relative.
- *
- * The three position floats lead each instance (setSpriteProps writes them
- * at base + 0..2), and the subtraction runs in double before the single
- * float store -- the same large - large = small the mesh worlds take.
+ * uploadBillboardInstances: the instances in logical insertion order. Under
+ * a non-zero floating-origin offset every anchor is re-staged eye-relative
+ * from the F64 \`_anchor\`, as the pin's own arm does; otherwise the F32
+ * lanes upload as stored.
  */
-inline void billboard_apply_floating_origin(
+inline void billboard_unsorted_instances(
     const BillboardSystemRecord& system,
     std::vector<float>& out,
-    Vec3d offset) {
-    const std::size_t stride = system.instance_floats_per_sprite;
-    for (std::size_t base = 0; base + 2 < out.size(); base += stride) {
-        out[base + 0] = static_cast<float>(
-            static_cast<double>(out[base + 0]) - offset.x);
-        out[base + 1] = static_cast<float>(
-            static_cast<double>(out[base + 1]) - offset.y);
-        out[base + 2] = static_cast<float>(
-            static_cast<double>(out[base + 2]) - offset.z);
+    Vec3d fo_offset) {
+    const std::size_t floats = system.instance_floats_per_sprite;
+    out.assign(
+        system.instance_data.begin(),
+        system.instance_data.begin() +
+            static_cast<std::ptrdiff_t>(
+                static_cast<std::size_t>(system.count) * floats));
+    if (fo_offset.x == 0.0 && fo_offset.y == 0.0 && fo_offset.z == 0.0) {
+        return;
+    }
+    for (std::uint32_t index = 0; index < system.count; ++index) {
+        const Vec3d anchor = billboard_eye_relative_anchor(
+            system,
+            static_cast<double>(index * billboard_anchor_floats_per_sprite),
+            fo_offset);
+        const std::size_t base = static_cast<std::size_t>(index) * floats;
+        out[base + 0u] = static_cast<float>(anchor.x);
+        out[base + 1u] = static_cast<float>(anchor.y);
+        out[base + 2u] = static_cast<float>(anchor.z);
     }
 }
-#endif
 
 /**
- * The instance data a system uploads this frame, in the order its depth mode
- * gives it.
+ * The instance data a system uploads this frame, in the order the pin's
+ * \`${uploadCondition}\` gives it (billboard-renderable.ts uploadSystem).
  *
  * A transparent system writes no depth, so the draw order IS the composite
- * and the instances are staged back to front for the view. A cutout system
- * writes depth, so the GPU resolves its own overlap and the pin uploads in
- * logical insertion order instead. Neither backend chooses: a per-backend
- * copy of this choice would be a per-backend copy of the image.
+ * and, with a camera, the instances are staged back to front for its view.
+ * A cutout system -- or a pass without a camera -- uploads in logical
+ * insertion order. \`fo_offset\` is the pass camera's world translation
+ * under floating origin and the zero vector otherwise. Neither backend
+ * chooses: a per-backend copy of this choice would be a per-backend copy of
+ * the image.
  */
 inline void billboard_upload_instances(
     const BillboardSystemRecord& system,
+    bool has_camera,
     const std::array<float, 16>& view,
-    std::vector<float>& out
-#if BBLITE_FLOATING_ORIGIN
-    // The active camera's world translation. A billboard's anchor is a
-    // world position uploaded per instance, so it takes the same
-    // eye-relative bake the mesh worlds do -- after the sort, which is
-    // computed against the absolute view and would order the same either
-    // way but is left exactly as the pin runs it.
-    ,
-    Vec3d fo_offset
-#endif
-) {
-    if (system.depth_mode == BillboardDepthMode::cutout) {
-        const std::size_t floats =
-            static_cast<std::size_t>(system.count) *
-            system.instance_floats_per_sprite;
-        out.assign(
-            system.instance_data.begin(),
-            system.instance_data.begin() +
-                static_cast<std::ptrdiff_t>(floats));
+    std::vector<float>& out,
+    Vec3d fo_offset) {
+    if (system.depth_mode == BillboardDepthMode::transparent && has_camera) {
+        billboard_sorted_instances(system, view, out, fo_offset);
     } else {
-        billboard_sorted_instances(system, view, out);
+        billboard_unsorted_instances(system, out, fo_offset);
     }
-#if BBLITE_FLOATING_ORIGIN
-    // Both arms leave out in the same shape, so the anchor bake is one
-    // pass over whichever of the two filled it.
-    billboard_apply_floating_origin(system, out, fo_offset);
-#endif
 }
 
 } // namespace bbl::upstream
@@ -1073,10 +1111,32 @@ BillboardSystemHandle create_billboard_system(
         static_cast<std::size_t>(system.capacity) *
             system.instance_floats_per_sprite,
         0.0f);
+    system.anchor.assign(
+        static_cast<std::size_t>(system.capacity) *
+            upstream::billboard_anchor_floats_per_sprite,
+        0.0);
     engine.billboard_systems.push_back(std::move(system));
     return BillboardSystemHandle{
         static_cast<std::uint32_t>(
             engine.billboard_systems.size() - 1u)};
+}
+
+// writeInstance's position stores: the F32 lanes and the F64 \`_anchor\`
+// beside them, both from the pin's number triple.
+static void write_billboard_position(
+    BillboardSystemRecord& system,
+    std::uint32_t index,
+    Vec3d position) {
+    const std::size_t base =
+        static_cast<std::size_t>(index) * system.instance_floats_per_sprite;
+    system.instance_data[base + 0u] = static_cast<float>(position.x);
+    system.instance_data[base + 1u] = static_cast<float>(position.y);
+    system.instance_data[base + 2u] = static_cast<float>(position.z);
+    const std::size_t anchor_base =
+        static_cast<std::size_t>(index) * upstream::billboard_anchor_floats_per_sprite;
+    system.anchor[anchor_base + 0u] = position.x;
+    system.anchor[anchor_base + 1u] = position.y;
+    system.anchor[anchor_base + 2u] = position.z;
 }
 
 double add_billboard_sprite_index(
@@ -1095,6 +1155,10 @@ double add_billboard_sprite_index(
             static_cast<std::size_t>(capacity) *
                 system.instance_floats_per_sprite,
             0.0f);
+        system.anchor.resize(
+            static_cast<std::size_t>(capacity) *
+                upstream::billboard_anchor_floats_per_sprite,
+            0.0);
         system.capacity = capacity;
     }
 
@@ -1153,9 +1217,9 @@ double add_billboard_sprite_index(
     const float pivot_y =
         props.has_pivot ? props.pivot.y : frame.pivot.y;
 
-    system.instance_data[base + 0u] = props.position.x;
-    system.instance_data[base + 1u] = props.position.y;
-    system.instance_data[base + 2u] = props.position.z;
+    // Both stores are live, as in the pin: the F32 lanes feed the upload
+    // without an offset and picking, the F64 anchor the eye-relative one.
+    write_billboard_position(system, index, props.position);
     system.instance_data[base + 3u] = visible ? true_width : 0.0f;
     system.instance_data[base + 4u] = visible ? true_height : 0.0f;
     system.instance_data[base + 5u] = uv_min_x;
@@ -1216,9 +1280,7 @@ void update_billboard_sprite(
         static_cast<std::size_t>(found->second) *
         system.instance_floats_per_sprite;
     if (props.has_position) {
-        system.instance_data[base + 0u] = props.position.x;
-        system.instance_data[base + 1u] = props.position.y;
-        system.instance_data[base + 2u] = props.position.z;
+        write_billboard_position(system, found->second, props.position);
     }
     if (props.has_size_world) {
         system.instance_data[base + 3u] = props.size_world.x;
@@ -1300,6 +1362,7 @@ void remove_billboard_sprite(
     }
     const std::uint32_t index = found->second;
     const std::uint32_t last = system.count - 1u;
+    constexpr std::size_t anchor_stride = upstream::billboard_anchor_floats_per_sprite;
     if (index != last) {
         const std::size_t stride = system.instance_floats_per_sprite;
         std::copy_n(
@@ -1308,12 +1371,22 @@ void remove_billboard_sprite(
             stride,
             system.instance_data.begin() +
                 static_cast<std::ptrdiff_t>(index * stride));
+        std::copy_n(
+            system.anchor.begin() +
+                static_cast<std::ptrdiff_t>(last * anchor_stride),
+            anchor_stride,
+            system.anchor.begin() +
+                static_cast<std::ptrdiff_t>(index * anchor_stride));
         const std::uint32_t moved = system.index_to_handle_id[last];
         system.index_to_handle_id[index] = moved;
         if (moved != 0u) {
             system.handle_id_to_index[moved] = index;
         }
     }
+    std::fill_n(
+        system.anchor.begin() + static_cast<std::ptrdiff_t>(last * anchor_stride),
+        anchor_stride,
+        0.0);
     system.index_to_handle_id[last] = 0u;
     system.handle_id_to_index.erase(found);
     system.count = last;
@@ -1336,6 +1409,11 @@ void clear_billboard_sprites(
         system.index_to_handle_id.end(),
         0u);
     if (system.count != 0u) {
+        std::fill_n(
+            system.anchor.begin(),
+            static_cast<std::size_t>(system.count) *
+                upstream::billboard_anchor_floats_per_sprite,
+            0.0);
         system.count = 0u;
         system.instance_version += 1u;
     }

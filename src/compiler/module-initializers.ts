@@ -273,6 +273,7 @@ class ModuleInitializerPlanner {
         );
     }
 
+    /** @unjournaled Derived from the program alone, on first use. */
     private runtimeModuleCache: ts.SourceFile[] | undefined;
 
     /** JavaScript evaluation order follows runtime edges, including re-exports. */
@@ -442,6 +443,7 @@ class ModuleInitializerPlanner {
         return result;
     }
 
+    /** @unjournaled Derived from the program alone, on first use. */
     private mutatedContainerCache: Set<ts.Symbol> | undefined;
 
     /** Container names any project file writes into, entry included. */
@@ -655,6 +657,7 @@ class ModuleInitializerPlanner {
             : undefined;
     }
 
+    /** @unjournaled A cache of each file's writes, from its source alone. */
     private readonly initializerMutationCache = new Map<
         ts.SourceFile,
         ReadonlySet<ts.Symbol>

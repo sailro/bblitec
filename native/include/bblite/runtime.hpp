@@ -2025,7 +2025,6 @@ struct ModelGeometry {
      */
     bool has_uvs = true;
     bool has_vertex_colors = false;
-    bool flat_normals = false;
     /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};
@@ -2088,6 +2087,15 @@ struct TransformNodeRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
+    /**
+     * `SceneNode._localMatrix`: a glTF `matrix` node's raw local, or the
+     * exact affine local setParent keeps. While set it IS the local
+     * transform and the TRS lanes are ignored; a TRS write clears it unless
+     * `local_matrix_locked` (`_localMatrixLocked`) holds, which only
+     * setParent releases.
+     */
+    std::optional<std::array<float, 16>> local_matrix;
+    bool local_matrix_locked = false;
     /** The node this one hangs under, or none — `IParentable.parent`. */
     TransformNodeHandle parent{};
     /**
@@ -3029,6 +3037,13 @@ struct CameraRecord {
     std::optional<double> lower_radius_limit;
     std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
+    /**
+     * The scene `attachControl` pushed the control hook onto: its `_update`
+     * hands the hook `fixedDeltaMs > 0 ? fixedDeltaMs : _currentDelta`, so
+     * the camera advances by that scene's delta. Empty for a control
+     * installed without one, which the pin runs no per-frame hook for.
+     */
+    std::weak_ptr<SceneState> controls_scene;
     std::function<void(CameraRecord&, double, double)> configurable_free_pointer;
     std::function<void(CameraRecord&, double, const std::function<bool(std::string_view)>&)>
         configurable_free_update;
@@ -3209,6 +3224,16 @@ struct AssetRecord {
     Vec4d root_rotation_quaternion{0, 0, 0, 1};
     double root_quaternion_version = 0;
     double root_synced_quaternion_version = -1;
+    /**
+     * The pin's own hierarchy (`buildNodeHierarchy`), carried when scene
+     * code writes imported node transforms: the synthetic `__root__`, whose
+     * TRS is the root edit above, and one transform node per glTF node,
+     * indexed by node, under which each primitive hangs as an identity-TRS
+     * child. Empty otherwise, when the loaded worlds are flattened onto the
+     * meshes and the root edit composes as their outer transform.
+     */
+    TransformNodeHandle root_node{};
+    std::vector<TransformNodeHandle> nodes;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -3978,6 +4003,12 @@ struct Engine {
     bool post_render_animation_frame_callbacks_armed = false;
     /** One double-precision DOMHighResTimeStamp shared by this RAF turn. */
     double animation_frame_timestamp_ms = 0.0;
+    /**
+     * The pin's `eng._currentDelta`: this frame's delta before a scene's own
+     * `fixedDeltaMs` replaces it for that scene's hooks
+     * (`scene_callback_delta`).
+     */
+    double current_delta_ms = 0.0;
     /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
@@ -5094,6 +5125,9 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
+#if BBLITE_HAS_TEXT
+        visitor(text_renderables);
+#endif
     }
 };
 
@@ -6230,21 +6264,21 @@ void set_animation_current_time(Engine& engine, AnimationGroupHandle group, doub
 void set_animation_additive(Engine& engine, AnimationGroupHandle group, double reference_time);
 void set_animation_additive_from_frame(Engine& engine, AnimationGroupHandle group,
                                        double reference_frame);
-void attach_control(Engine& engine, CameraHandle camera);
+void attach_control(Engine& engine, CameraHandle camera, const Scene& scene);
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, double value);
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
 void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                        const std::array<double, 6>& limits);
-void attach_free_control(Engine& engine, CameraHandle camera);
+void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;
     std::optional<std::vector<std::string>> downKeys;
     std::optional<std::vector<std::string>> fastKeys;
     std::optional<double> fastMultiplier;
 };
-void attach_configurable_free_control(Engine& engine, CameraHandle camera,
+void attach_configurable_free_control(Engine& engine, CameraHandle camera, const Scene& scene,
                                       ConfigurableFreeControlOptions options);
 #if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>
@@ -6413,6 +6447,8 @@ void clear_interval(Engine& engine, double id);
 void set_mesh_parent(Engine& engine, MeshHandle child, MeshHandle parent);
 void set_mesh_parent(Engine& engine, MeshHandle child, TransformNodeHandle parent);
 void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandle parent);
+/** The same setParent over a transform-node child; none detaches it. */
+void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);

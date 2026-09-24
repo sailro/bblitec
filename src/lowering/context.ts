@@ -19,6 +19,7 @@ import {
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
 import { sourceLocation } from "../source-location.js";
+import { pinnedProvenanceLead } from "../pinned-provenance.js";
 import { foldNumericBinary, foldNumericUnary } from "./pinned-operators.js";
 
 export interface LoweredSource {
@@ -461,7 +462,7 @@ export class LoweringContext {
         extra?: string,
     ): string {
         const base =
-            `Generated from ${this.store.pin.package}@${this.store.pin.version} ` +
+            `${pinnedProvenanceLead}${this.store.pin.package}@${this.store.pin.version} ` +
             `(${this.store.pin.sourceVersion}) ${modulePath}#${symbolName}`;
         return `${base}${extra ? ` and ${extra}` : ""}.`;
     }
@@ -1673,4 +1674,15 @@ let sharedPinned: LoweringContext | undefined;
 export function sharedPinnedContext(): LoweringContext {
     sharedPinned ??= new LoweringContext(sharedUpstreamStore());
     return sharedPinned;
+}
+
+/**
+ * The context over `store`: the shared one for the process's store, and a
+ * context of its own for another (a test pointing at another tree). These
+ * two are the only places a context is built outside tests.
+ */
+export function pinnedContextOver(store: UpstreamSourceStore): LoweringContext {
+    return store === sharedUpstreamStore()
+        ? sharedPinnedContext()
+        : new LoweringContext(store);
 }

@@ -84,6 +84,8 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_pass_camera.hpp"
+#include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_TEXT
@@ -119,10 +121,10 @@ namespace bbl::pal {
 
 namespace {
 
+/** A mesh's groups for the ID-diagnostic program; group 3 is the pass's own. */
 struct DawnMeshBindings {
     DawnBindGroup scene{};
     DawnBindGroup textures{};
-    DawnBindGroup material{};
 #if BBLITE_GPU_MORPH_STORAGE
     DawnBindGroup morph{};
 #endif
@@ -169,20 +171,15 @@ WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
 }
 
 /**
- * The pin's `executePassBody` opening, mirrored from the SDL backend: a
- * camera carrying a viewport narrows the pass to it, and one without
- * leaves the pass at the whole target the way `if (v)` leaves it.
+ * The pin's `executePassBody` and geometry `executeTask` opening
+ * (`_applyCameraViewport`), mirrored from the SDL backend: a camera
+ * carrying a viewport narrows the pass to it, and one without leaves the
+ * pass at the whole target the way `if (!v) return` leaves it.
  *
  * Set AFTER the pass begins, exactly where upstream sets it, so the load
  * operation has already cleared or loaded the whole attachment.
  */
-void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, const Engine& engine,
-                              const CameraRecord* camera, std::uint32_t target_width,
-                              std::uint32_t target_height) {
-    // A pass without a camera keeps the whole target, the nullish camera's
-    // answer (`no_camera_record`).
-    const std::optional<PixelViewport> resolved = scene_camera_viewport(
-        engine, scene, camera ? *camera : no_camera_record, target_width, target_height);
+void set_pass_viewport(WGPURenderPassEncoder pass, const std::optional<PixelViewport>& resolved) {
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -192,6 +189,22 @@ void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, co
     wgpuRenderPassEncoderSetScissorRect(
         pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
         static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
+}
+
+/** A scene's own pass: its camera's viewport composed into its surface pane. */
+void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, const Engine& engine,
+                              const CameraRecord* camera, std::uint32_t target_width,
+                              std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      scene_camera_viewport(engine, scene, camera, target_width, target_height));
+}
+
+/** A render or geometry task's pass, over its own target's extent. */
+void set_task_camera_viewport(WGPURenderPassEncoder pass, const CameraRecord* camera,
+                              std::uint32_t target_width, std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                                     static_cast<double>(target_height)));
 }
 
 // Vertex uniform bindings in group 1 mirror the SDL vertex uniform
@@ -205,16 +218,10 @@ constexpr std::uint32_t mesh_world_uniform_binding = 1;
 // The mesh-owned slot order, the per-slot sRGB rules and fallback texels,
 // and the pinned binding names all live in the generated
 // `material_texture_slots` table (material_texture_slots.hpp) both
-// backends execute; the constants below only size this backend's arrays
-// and place the transcribed bind path's pairs, and the static_assert under
-// them keeps the two in step.
-// The transmission and thickness maps follow their composed bindings; the
-// scene-color pair follows the transmission renderer, whose grab it binds,
-// and rebinds the base color when no grab exists.
+// backends execute; the constants below only size this backend's arrays,
+// and the static_assert under them keeps the two in step.
 constexpr std::size_t transmission_texture_slots =
     (BBLITE_MATERIAL_TRANSMISSION_MAP ? 1 : 0) + (BBLITE_MATERIAL_THICKNESS_MAP ? 1 : 0);
-constexpr std::size_t scene_color_pairs = BBLITE_RENDERER_TRANSMISSION ? 1 : 0;
-constexpr std::size_t transmission_texture_pairs = scene_color_pairs + transmission_texture_slots;
 constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_CLEARCOAT ? 3 : 0) + (BBLITE_MATERIAL_SHEEN ? 2 : 0) +
     (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0) + (BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ? 1 : 0) +
@@ -222,12 +229,9 @@ constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP ? 1 : 0) + (BBLITE_MATERIAL_SPEC_GLOSS ? 1 : 0) +
     (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0) + (BBLITE_MATERIAL_LIGHTMAP ? 1 : 0);
-constexpr std::size_t material_extension_slot_base = 5 + transmission_texture_slots;
-// The Standard bump pair appends after everything the PBR path owns, so a
-// scene that compiles it shifts no existing slot or binding index.
+// The Standard bump slot appends after everything the PBR path owns, so a
+// scene that compiles it shifts no existing slot.
 constexpr std::size_t standard_bump_slots = BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 0;
-[[maybe_unused]] constexpr std::size_t standard_bump_slot =
-    5 + transmission_texture_slots + material_extension_slots;
 // The Standard 2D reflection slot appends after bump the same way (the
 // generated slot table's own order); only the composed variant bind path
 // consults it, through its generated slot index.
@@ -431,7 +435,7 @@ struct DawnMeshResources {
     bool owns_morph_buffers = false;
     std::uint64_t morph_weights_version = 0;
 #endif
-    std::map<upstream::RenderPipelineKind, DawnMeshBindings> bindings;
+    DawnMeshBindings diagnostic_bindings;
     // A render task may replace a mesh's material with another shader
     // variant (shadow caster views do exactly that), so the reflected
     // groups are keyed by both the active variant and active material.
@@ -569,6 +573,8 @@ struct DawnGeometryTask {
     DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
+    /** The task's Standard renderables' previous worlds. */
+    PinnedVelocityHistory velocity;
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
@@ -705,7 +711,7 @@ void release_variant_family(
  */
 enum class DawnLayoutFamily : std::uint8_t {
     frame,
-    mesh,
+    diagnostic,
     shader,
     pbr,
     standard,
@@ -1334,20 +1340,11 @@ struct DawnState : DawnDevice {
         // one. Dawn's D3D12 implementation reads that binding state
         // while destroying a group, so the inverse order is not merely
         // a leak/lifetime nicety -- it can dereference freed metadata.
-        for (auto& [kind, binding] : mesh.bindings) {
-            if (binding.scene)
-                binding.scene.reset();
-            if (binding.textures) {
-                binding.textures.reset();
-            }
-            if (binding.material) {
-                binding.material.reset();
-            }
+        mesh.diagnostic_bindings.scene.reset();
+        mesh.diagnostic_bindings.textures.reset();
 #if BBLITE_GPU_MORPH_STORAGE
-            if (binding.morph)
-                binding.morph.reset();
+        mesh.diagnostic_bindings.morph.reset();
 #endif
-        }
         for (auto& [key, binding] : mesh.shader_bindings) {
             (void)key;
             release_dawn_shader_bindings(binding);
@@ -2503,17 +2500,6 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     state.brdf_view = create_dawn_texture_view(texture, nullptr);
 }
 
-[[noreturn]] void fragment_module_for(DawnState& state, bool standard) {
-    (void)state;
-    // Both mesh families draw through their composed variants; the
-    // legacy mesh pipeline serves only the custom-shader kind, which
-    // never reaches this fork.
-    dawn_error(standard ? "transcribed Standard fragment requested; the composed "
-                          "variants own every Standard draw."
-                        : "transcribed PBR fragment requested; the pinned path owns "
-                          "every PBR draw.");
-}
-
 std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : 1u;
 }
@@ -2746,40 +2732,43 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
 }
 
 #if BBLITE_GPU_DEFORMATION
-constexpr std::uint32_t base_vertex_attribute_count = 16;
+constexpr std::uint32_t base_vertex_attribute_count = 14;
 #else
-constexpr std::uint32_t base_vertex_attribute_count = 8;
+constexpr std::uint32_t base_vertex_attribute_count = 6;
 #endif
 
-// The GpuVertex attribute table shared by mesh, skybox, and ground
-// pipelines; deformation appends joints/weights/morph deltas at
-// locations 8-15 exactly like the SDL backend.
+// The GpuVertex attribute table the shared material stage's `VertexInput`
+// declares, at its locations; deformation appends joints/weights/morph
+// deltas at locations 8-15 exactly like the SDL backend.
 void fill_base_vertex_attributes(WGPUVertexAttribute* attributes) {
+    std::uint32_t next = 0;
     const auto attribute = [&](std::uint32_t location, WGPUVertexFormat format,
                                std::uint64_t offset) {
-        attributes[location] = WGPU_VERTEX_ATTRIBUTE_INIT;
-        attributes[location].format = format;
-        attributes[location].offset = offset;
-        attributes[location].shaderLocation = location;
+        WGPUVertexAttribute& entry = attributes[next++];
+        entry = WGPU_VERTEX_ATTRIBUTE_INIT;
+        entry.format = format;
+        entry.offset = offset;
+        entry.shaderLocation = location;
     };
-    attribute(0, WGPUVertexFormat_Float32x3, 0);
-    attribute(1, WGPUVertexFormat_Float32x3, 12);
-    attribute(2, WGPUVertexFormat_Float32x4, 24);
-    attribute(3, WGPUVertexFormat_Float32x2, 40);
-    attribute(4, WGPUVertexFormat_Float32x3, 48);
-    attribute(5, WGPUVertexFormat_Float32x2, 60);
-    attribute(6, WGPUVertexFormat_Float32x4, 68);
-    attribute(7, WGPUVertexFormat_Float32x3, 84);
+    attribute(0, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, position));
+    attribute(1, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, normal));
+    attribute(2, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, tangent));
+    attribute(3, WGPUVertexFormat_Float32x2, offsetof(GpuVertex, uv));
+    attribute(5, WGPUVertexFormat_Float32x2, offsetof(GpuVertex, uv2));
+    attribute(6, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, color));
 #if BBLITE_GPU_DEFORMATION
-    attribute(8, WGPUVertexFormat_Float32x4, 96);
-    attribute(9, WGPUVertexFormat_Float32x4, 112);
-    attribute(10, WGPUVertexFormat_Float32x3, 128);
-    attribute(11, WGPUVertexFormat_Float32x3, 140);
-    attribute(12, WGPUVertexFormat_Float32x3, 152);
-    attribute(13, WGPUVertexFormat_Float32x3, 164);
-    attribute(14, WGPUVertexFormat_Float32x3, 176);
-    attribute(15, WGPUVertexFormat_Float32x3, 188);
+    attribute(8, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, joints));
+    attribute(9, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, weights));
+    attribute(10, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_position_0));
+    attribute(11, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_position_1));
+    attribute(12, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_normal_0));
+    attribute(13, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_normal_1));
+    attribute(14, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_tangent_0));
+    attribute(15, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_tangent_1));
 #endif
+    if (next != base_vertex_attribute_count) {
+        dawn_error("The shared stage's vertex table lost a lane.");
+    }
 }
 
 struct PipelineKindTraits {
@@ -2844,16 +2833,19 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
 // itself, so the sizes here are those structs rather than numbers chosen at this
 // layer. Texture pairs start at binding 3 because the mesh and material blocks
 // take 0 and 1, which is the pin's numbering and not a convention of ours.
-// Group 0: the per-pass scene block, then the lights array. One layout for
-// every variant, because the pin declares the same two bindings in all of them.
+// Group 0: the per-pass scene group, laid out as the pin's own
+// `getSceneBindGroupLayout` creates it -- the scene block, then the lights --
+// from the rows generation recorded off that call. One layout for every
+// variant, because the pin binds the same group under all of them.
 WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
     return state.layouts.group(state.device, {DawnLayoutFamily::frame}, [] {
-        // The scene block is read by both stages; the pin's vertex template
-        // takes its viewProjection from the same struct the fragment reads.
-        return std::vector{
-            uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment),
-            uniform_layout_entry(1, WGPUShaderStage_Fragment),
-        };
+        std::vector<WGPUBindGroupLayoutEntry> entries;
+        for (const upstream::PinnedSceneLayoutEntry& row : upstream::pinned_scene_layout) {
+            entries.push_back(uniform_layout_entry(
+                row.binding, (row.vertex ? WGPUShaderStage_Vertex : WGPUShaderStage_None) |
+                                 (row.fragment ? WGPUShaderStage_Fragment : WGPUShaderStage_None)));
+        }
+        return entries;
     });
 }
 
@@ -3653,19 +3645,14 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
 // own `_writeLightUbo`, and the scene block's members are the ones the pin's
 // declaration names. Only the plumbing is here.
 // Upload the pin's per-pass blocks. Both are built by the shared builders, so
-// this backend decides only where they land.
+// this backend decides only where they land: the scene block the pass
+// retains (`pal::write_pass_scene_block`, which a camera-less pass leaves as
+// it was) and the lights.
 void write_pinned_frame_blocks(DawnState& state, const Scene& scene, const Engine& engine,
-                               const CameraRecord* camera,
-                               const std::array<float, 16>& view_projection) {
+                               const upstream::SceneUniforms& scene_block) {
     ensure_pinned_frame_buffers(state);
-    // The pin refreshes the lights before `_writePassSceneUBO`, which
-    // returns without a camera and leaves the scene block as it was.
-    if (camera) {
-        const upstream::SceneUniforms scene_block =
-            pinned_scene_block(scene, engine, *camera, view_projection);
-        wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
-                             sizeof(scene_block));
-    }
+    wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
+                         sizeof(scene_block));
     const std::vector<std::uint8_t> lights = pinned_lights_block(scene, engine);
     wgpuQueueWriteBuffer(state.queue, state.pinned_lights_uniforms, 0, lights.data(),
                          lights.size());
@@ -3772,7 +3759,7 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& st
                                                                    RenderTargetHandle target_handle,
                                                                    bool depth_only = false) {
     if (target_handle.value >= state.render_targets.size()) {
-        dawn_error("Frame graph render target handle is invalid.");
+        pal::refuse_invalid_frame_handle("Frame graph render target handle is invalid.");
     }
     const RenderTargetRecord& record = handle_at(engine.render_targets, target_handle);
     DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
@@ -4502,13 +4489,20 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
     };
 }
 
-/** Writes one Standard draw's pinned blocks for the frame. */
+/**
+ * Writes one Standard draw's pinned blocks for the frame; a geometry task's
+ * draw passes its velocity history, updated for the frame.
+ */
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
                                 WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
+                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                const PinnedVelocityHistory* velocity_history = nullptr) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
-    const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    if (velocity_history) {
+        write_pinned_velocity_tail(*velocity_history, draw.item.mesh, mesh_block);
+    }
     wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
@@ -4567,14 +4561,13 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
             DawnDrawState& draw_state =
                 mesh.standard_geometry_states.try_emplace(variant, state).first->second;
-            // A LOCAL_POSITION variant's mesh block carries the node world
-            // where the colour pass's carries the identity over baked
-            // vertices, and every queue write lands before the frame's
+            // A geometry task's mesh block carries its own renderable's
+            // velocity tail, and every queue write lands before the frame's
             // submission — so a geometry variant cannot share the colour
-            // pass's mesh buffer without the last writer poisoning the
-            // other pass. Each geometry draw state owns its mesh block;
-            // the material and uv blocks are the same bytes in every pass
-            // and stay shared.
+            // pass's mesh buffer, or another task's, without the last writer
+            // poisoning the other pass. Each geometry draw state owns its
+            // mesh block; the material and uv blocks are the same bytes in
+            // every pass and stay shared.
             if (!draw_state.mesh_uniforms) {
                 WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
                 descriptor.size = sizeof(upstream::MeshUniforms);
@@ -4586,7 +4579,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
                                        colour_state.material_uniforms, colour_state.uv_uniforms,
-                                       colour_state.uv_transform_uniforms);
+                                       colour_state.uv_transform_uniforms, &geometry.velocity);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
@@ -4621,55 +4614,26 @@ WGPUPipelineLayout pinned_pipeline_layout_for(DawnState& state, std::size_t vari
 #endif
 
 /**
- * One group of the layout every mesh pipeline shares (main, task and
- * geometry): WebGPU allows layout bindings the shader does not use, so one
- * superset keeps all mesh bind groups interchangeable across shader variants.
+ * The ID-diagnostic program's stages: the scene vertex module and the two
+ * diagnostic fragments, which declare the same groups.
  */
-WGPUBindGroupLayout mesh_group_layout(DawnState& state, std::size_t group) {
-    return state.layouts.group(state.device, {DawnLayoutFamily::mesh, 0, group}, [group] {
-        std::vector<WGPUBindGroupLayoutEntry> entries;
-        switch (group) {
-        case 0:
-            // Vertex storage morphing: always declared so the layout stays
-            // one superset, with storage entries only when compiled.
-#if BBLITE_GPU_MORPH_STORAGE
-            entries.push_back(storage_layout_entry(0, WGPUShaderStage_Vertex));
-            entries.push_back(storage_layout_entry(1, WGPUShaderStage_Vertex));
-#endif
-            break;
-        case 1:
-            // Vertex uniforms: scene matrix, deformation, mesh world.
-            entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Vertex));
-#if BBLITE_GPU_DEFORMATION
-            entries.push_back(uniform_layout_entry(1, WGPUShaderStage_Vertex));
-#endif
-            entries.push_back(
-                uniform_layout_entry(mesh_world_uniform_binding, WGPUShaderStage_Vertex));
-            break;
-        case 2: {
-            // Fragment texture/sampler pairs in the SDL slot order; binding 8
-            // is the cube slot.
-            constexpr std::size_t pair_count =
-                6 + transmission_texture_pairs + material_extension_slots + standard_bump_slots;
-            entries = dawn_texture_pair_layout_entries(pair_count);
-            entries[8].texture.viewDimension = WGPUTextureViewDimension_Cube;
-            break;
-        }
-        case 3:
-            // The fragment uniform block.
-            entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Fragment));
-            break;
-        default:
-            dawn_error("the mesh layout has four groups.");
-        }
-        return entries;
+constexpr std::array<DawnLayoutStage, 3> diagnostic_stages{{
+    {"pbr.vert", WGPUShaderStage_Vertex},
+    {"diagnostic-id.frag", WGPUShaderStage_Fragment},
+    {"diagnostic-cluster.frag", WGPUShaderStage_Fragment},
+}};
+
+/** One group of the diagnostic program's layout, as its stages declare it. */
+WGPUBindGroupLayout diagnostic_group_layout(DawnState& state, std::uint32_t group) {
+    return state.layouts.group(state.device, {DawnLayoutFamily::diagnostic, 0, group}, [group] {
+        return dawn_reflected_layout_entries(diagnostic_stages, group);
     });
 }
 
-WGPUPipelineLayout mesh_pipeline_layout_for(DawnState& state) {
-    return state.layouts.pipeline(state.device, {DawnLayoutFamily::mesh}, [&] {
-        return std::vector{mesh_group_layout(state, 0), mesh_group_layout(state, 1),
-                           mesh_group_layout(state, 2), mesh_group_layout(state, 3)};
+WGPUPipelineLayout diagnostic_pipeline_layout(DawnState& state) {
+    return state.layouts.pipeline(state.device, {DawnLayoutFamily::diagnostic}, [&] {
+        return std::vector{diagnostic_group_layout(state, 0), diagnostic_group_layout(state, 1),
+                           diagnostic_group_layout(state, 2), diagnostic_group_layout(state, 3)};
     });
 }
 
@@ -4792,8 +4756,15 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     if (existing != pipeline_map.end())
         return existing->second;
     const PipelineKindTraits traits = pipeline_traits(kind);
-    const upstream::ShaderVariantInfo* shader_info =
-        traits.shader ? &upstream::shader_variant_info(shader_variant) : nullptr;
+    // Every other family draws through its composed variant pipelines;
+    // this one builds ShaderMaterial pipelines alone.
+    if (!traits.shader) {
+        dawn_error(traits.standard ? "transcribed Standard pipeline requested; the composed "
+                                     "variants own every Standard draw."
+                                   : "transcribed PBR pipeline requested; the composed "
+                                     "variants own every PBR draw.");
+    }
+    const upstream::ShaderVariantInfo& shader_info = upstream::shader_variant_info(shader_variant);
 
     auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
@@ -4833,34 +4804,29 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     vertex_layouts[2].arrayStride = sizeof(std::array<float, 4>);
     vertex_layouts[2].attributeCount = 1;
     vertex_layouts[2].attributes = &instance_color_attribute;
-    const std::uint32_t vertex_buffer_count = shader_info && shader_info->instance_colors
-                                                  ? matrix_vertex_buffer_count + 1
-                                                  : matrix_vertex_buffer_count;
+    const std::uint32_t vertex_buffer_count =
+        shader_info.instance_colors ? matrix_vertex_buffer_count + 1 : matrix_vertex_buffer_count;
 #else
     constexpr std::uint32_t vertex_buffer_count = matrix_vertex_buffer_count;
 #endif
 
-    if (shader_info) {
-        if (state.shader_vertex_modules.size() < upstream::shader_variant_count()) {
-            state.shader_vertex_modules.resize(upstream::shader_variant_count(), nullptr);
-            state.shader_fragment_modules.resize(upstream::shader_variant_count(), nullptr);
-        }
-        if (!state.shader_vertex_modules[shader_variant]) {
-            const std::string base_name = shader_info->name;
-            state.shader_vertex_modules[shader_variant] =
-                load_wgsl_module(state, (base_name + ".vert").c_str());
-        }
-        if (!shadow_pass && !state.shader_fragment_modules[shader_variant]) {
-            const std::string base_name = shader_info->name;
-            state.shader_fragment_modules[shader_variant] =
-                load_wgsl_module(state, (base_name + ".frag").c_str());
-        }
+    if (state.shader_vertex_modules.size() < upstream::shader_variant_count()) {
+        state.shader_vertex_modules.resize(upstream::shader_variant_count(), nullptr);
+        state.shader_fragment_modules.resize(upstream::shader_variant_count(), nullptr);
+    }
+    if (!state.shader_vertex_modules[shader_variant]) {
+        const std::string base_name = shader_info.name;
+        state.shader_vertex_modules[shader_variant] =
+            load_wgsl_module(state, (base_name + ".vert").c_str());
+    }
+    if (!shadow_pass && !state.shader_fragment_modules[shader_variant]) {
+        const std::string base_name = shader_info.name;
+        state.shader_fragment_modules[shader_variant] =
+            load_wgsl_module(state, (base_name + ".frag").c_str());
     }
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = shader_info ? shader_pipeline_layout_for(state, shader_variant)
-                                    : mesh_pipeline_layout_for(state);
-    descriptor.vertex.module =
-        shader_info ? state.shader_vertex_modules[shader_variant] : state.vertex_module;
+    descriptor.layout = shader_pipeline_layout_for(state, shader_variant);
+    descriptor.vertex.module = state.shader_vertex_modules[shader_variant];
     descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
@@ -4868,26 +4834,23 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     // The material's own primitive: the pin builds a shader pipeline at
     // `material._topology ?? "triangle-list"`, and a line material is the
     // one reached material that names the second one.
-    descriptor.primitive.topology =
-        shader_info && shader_info->topology == upstream::ShaderTopology::line_list
-            ? WGPUPrimitiveTopology_LineList
-            : WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.topology = shader_info.topology == upstream::ShaderTopology::line_list
+                                        ? WGPUPrimitiveTopology_LineList
+                                        : WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = traits.front;
     // The pinned shader-pipeline mapping drives variant state:
     // backFaceCulling selects the cull mode, and depthWrite=false turns
     // depth writes off (as a transparent draw does).
     descriptor.primitive.cullMode =
-        shader_info ? (shader_info->back_face_culling ? WGPUCullMode_Back : WGPUCullMode_None)
-                    : traits.cull;
+        shader_info.back_face_culling ? WGPUCullMode_Back : WGPUCullMode_None;
 
-    const bool depth_write_off = traits.transparent || (shader_info && !shader_info->depth_write);
+    const bool depth_write_off = traits.transparent || !shader_info.depth_write;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = depth_format;
     depth_stencil.depthWriteEnabled =
         depth_write_off ? WGPUOptionalBool_False : WGPUOptionalBool_True;
-    depth_stencil.depthCompare = dawn_depth_compare(shader_info && shader_info->depth_compare
-                                                        ? *shader_info->depth_compare
-                                                        : pass_depth_compare(shadow_pass));
+    depth_stencil.depthCompare = dawn_depth_compare(
+        shader_info.depth_compare ? *shader_info.depth_compare : pass_depth_compare(shadow_pass));
     // Depth-less render-task targets need attachment-compatible
     // pipelines; WebGPU validates what SDL_GPU tolerated.
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
@@ -4902,22 +4865,17 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = color_format;
     WGPUBlendState blend{};
-    if (traits.transparent || (shader_info && shader_info->alpha_blending)) {
-        blend =
-            blend_state_from(shader_info && shader_info->additive_blending ? shader_additive_blend
-                                                                           : transparent_blend);
+    if (traits.transparent || shader_info.alpha_blending) {
+        blend = blend_state_from(shader_info.additive_blending ? shader_additive_blend
+                                                               : transparent_blend);
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    if (shader_info) {
-        fragment.module = state.shader_fragment_modules[shader_variant];
-    } else {
-        fragment_module_for(state, traits.standard);
-    }
+    fragment.module = state.shader_fragment_modules[shader_variant];
     fragment.entryPoint = string_view("mainFragment");
     fragment.targetCount = 1;
     fragment.targets = &color_target;
-    descriptor.fragment = shadow_pass && shader_info ? nullptr : &fragment;
+    descriptor.fragment = shadow_pass ? nullptr : &fragment;
 
     DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline)
@@ -4954,10 +4912,8 @@ struct VariantVertexAttributes {
  * across the vertex stream and the two instance-stepped ones.
  */
 bool append_variant_attribute(std::string_view name, std::uint32_t location,
-                              bool uses_local_position, VariantVertexAttributes& inputs,
-                              bool uses_local_normal = false) {
-    const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position, uses_local_normal);
+                              VariantVertexAttributes& inputs) {
+    const PinnedVertexInput input = pinned_vertex_input(name);
     if (!input.mapped)
         return false;
     WGPUVertexAttribute attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
@@ -5150,8 +5106,7 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      inputs)) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("pinned variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5275,8 +5230,7 @@ WGPURenderPipeline standard_variant_pipeline(
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
             upstream::standard_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      inputs)) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("standard variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5542,9 +5496,7 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
             upstream::node_variant_attributes[view.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location,
-                                      node_uses_local_attributes(geometry_variant), inputs,
-                                      node_uses_local_attributes(geometry_variant))) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("node variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5629,7 +5581,6 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
         receipt.id = state.node_capture.allocate(pipeline, "node-pipeline");
         receipt.variant = static_cast<std::uint32_t>(variant);
         receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
-        receipt.uses_local_attributes = node_uses_local_attributes(geometry_variant);
         receipt.color_target_count = static_cast<std::uint32_t>(fragment.targetCount);
         receipt.samples = descriptor.multisample.count;
         receipt.topology = descriptor.primitive.topology == WGPUPrimitiveTopology_TriangleList
@@ -6375,184 +6326,72 @@ void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder
 }
 #endif
 
-DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::RenderPipelineKind kind,
-                               std::uint32_t shader_variant = 0) {
-    const auto existing = mesh.bindings.find(kind);
-    if (existing != mesh.bindings.end())
-        return existing->second;
-    // The groups build from the explicit superset layout and the state's own
-    // resources; the pipeline is the draw's business. The diagnostic passes
-    // request PBR-kind groups for their own fragments, and creating the
-    // retired transcribed PBR pipeline here was the only thing that still
-    // asked for its fragment module.
-    DawnMeshBindings bindings;
-
-    const PipelineKindTraits binding_traits = pipeline_traits(kind);
-    // The explicit superset layout requires every binding; kinds whose
-    // shader ignores a slot still supply the mesh's resource (custom
-    // vertex uniform blocks swap the scene matrix for the mesh's own
-    // buffer, sized by the variant's reflected block).
-    std::array<WGPUBindGroupEntry, 3> scene_entries{};
-    std::uint32_t scene_entry_count = 0;
-    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entries[scene_entry_count].binding = 0;
-    const upstream::ShaderVariantInfo* binding_shader_info =
-        binding_traits.shader ? &upstream::shader_variant_info(shader_variant) : nullptr;
-    if (binding_shader_info && binding_shader_info->vertex.present &&
-        !block_is_shared_scene_matrix(binding_shader_info->vertex)) {
-        scene_entries[scene_entry_count].buffer = mesh.shader_vertex_uniforms;
-        scene_entries[scene_entry_count].size = binding_shader_info->vertex.float_size * 4;
-    } else {
-        scene_entries[scene_entry_count].buffer = state.view_projection;
-        scene_entries[scene_entry_count].size = 64;
-    }
-    ++scene_entry_count;
+/**
+ * A mesh's groups for the ID-diagnostic program, built once over its
+ * layout: each binding the program's stages declare (their `.slots`
+ * layout lines) takes the resource that serves it. Group 1 carries the
+ * vertex blocks, group 2 the texture/sampler pairs in the mesh's own slot
+ * order -- pair n at bindings 2n and 2n + 1 -- and group 3 is the pass's
+ * own per-draw block.
+ */
+DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh) {
+    DawnMeshBindings& bindings = mesh.diagnostic_bindings;
+    if (bindings.scene)
+        return bindings;
+    const auto unserved = [](std::uint32_t group, std::uint32_t binding) {
+        dawn_error("the diagnostic program declares @group(" + std::to_string(group) +
+                   ") @binding(" + std::to_string(binding) + "), which no mesh resource serves.");
+    };
+    const auto group_for = [&](std::uint32_t group, auto&& serve) {
+        std::vector<WGPUBindGroupEntry> entries;
+        for (const WGPUBindGroupLayoutEntry& declared :
+             dawn_reflected_layout_entries(diagnostic_stages, group)) {
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = declared.binding;
+            serve(entry);
+            entries.push_back(entry);
+        }
+        WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        descriptor.layout = diagnostic_group_layout(state, group);
+        descriptor.entryCount = entries.size();
+        descriptor.entries = entries.data();
+        return DawnBindGroup{require_dawn_resource(
+            wgpuDeviceCreateBindGroup(state.device, &descriptor), "diagnostic bind group")};
+    };
+    bindings.scene = group_for(1, [&](WGPUBindGroupEntry& entry) {
+        if (entry.binding == 0) {
+            entry.buffer = state.view_projection;
+            entry.size = 64;
 #if BBLITE_GPU_DEFORMATION
-    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entries[scene_entry_count].binding = 1;
-    scene_entries[scene_entry_count].buffer = mesh.deformation_uniforms;
-    scene_entries[scene_entry_count].size = sizeof(DeformationUniforms);
-    ++scene_entry_count;
+        } else if (entry.binding == 1) {
+            entry.buffer = mesh.deformation_uniforms;
+            entry.size = sizeof(DeformationUniforms);
 #endif
-    scene_entries[scene_entry_count] = WGPU_BIND_GROUP_ENTRY_INIT;
-    scene_entries[scene_entry_count].binding = mesh_world_uniform_binding;
-    scene_entries[scene_entry_count].buffer = mesh.mesh_world_uniform;
-    scene_entries[scene_entry_count].size = 64;
-    ++scene_entry_count;
-    WGPUBindGroupDescriptor scene_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    scene_descriptor.layout = mesh_group_layout(state, 1);
-    scene_descriptor.entryCount = scene_entry_count;
-    scene_descriptor.entries = scene_entries.data();
-    bindings.scene = require_dawn_resource(
-        wgpuDeviceCreateBindGroup(state.device, &scene_descriptor), "mesh bind group");
-
+        } else if (entry.binding == mesh_world_uniform_binding) {
+            entry.buffer = mesh.mesh_world_uniform;
+            entry.size = 64;
+        } else {
+            unserved(1, entry.binding);
+        }
+    });
+    bindings.textures = group_for(2, [&](WGPUBindGroupEntry& entry) {
+        const std::size_t slot = entry.binding / 2;
+        if (slot >= mesh.views.size())
+            unserved(2, entry.binding);
+        if (entry.binding % 2 == 0)
+            entry.textureView = mesh.views[slot];
+        else
+            entry.sampler = mesh.samplers[slot];
+    });
 #if BBLITE_GPU_MORPH_STORAGE
-    {
-        std::array<WGPUBindGroupEntry, 2> morph_entries{};
-        morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-        morph_entries[0].binding = 0;
-        morph_entries[0].buffer = mesh.morph_deltas;
-        morph_entries[0].size = WGPU_WHOLE_SIZE;
-        morph_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        morph_entries[1].binding = 1;
-        morph_entries[1].buffer = mesh.morph_weights;
-        morph_entries[1].size = WGPU_WHOLE_SIZE;
-        WGPUBindGroupDescriptor morph_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        morph_descriptor.layout = mesh_group_layout(state, 0);
-        morph_descriptor.entryCount = morph_entries.size();
-        morph_descriptor.entries = morph_entries.data();
-        bindings.morph = require_dawn_resource(
-            wgpuDeviceCreateBindGroup(state.device, &morph_descriptor), "mesh bind group");
-    }
+    bindings.morph = group_for(0, [&](WGPUBindGroupEntry& entry) {
+        if (entry.binding > 1)
+            unserved(0, entry.binding);
+        entry.buffer = entry.binding == 0 ? mesh.morph_deltas : mesh.morph_weights;
+        entry.size = WGPU_WHOLE_SIZE;
+    });
 #endif
-
-    // Fragment texture pairs mirror the SDL_GPU slot order. Standard:
-    // base color, specular, opacity, ambient, reflection cube,
-    // standard emissive. PBR: base color, metallic-roughness, normal,
-    // emissive, environment cube, BRDF LUT.
-    constexpr std::size_t max_texture_pairs =
-        6 + transmission_texture_pairs + material_extension_slots + standard_bump_slots;
-    std::array<WGPUTextureView, max_texture_pairs> views{
-        mesh.views[0],
-        mesh.views[1],
-        mesh.views[2],
-        mesh.views[3],
-        binding_traits.standard ? (mesh.reflection ? mesh.reflection : state.black_cube_view)
-                                : state.environment_cube_view,
-        // No render-texture arm here: a Standard draw in a build with a
-        // composed variant table never reaches this superset layout (the
-        // encode's own arm handles it, and the write phase errors when it
-        // resolves none), and a build without one cannot reach the
-        // features that write these slots.
-        binding_traits.standard ? mesh.views[4] : state.brdf_view,
-    };
-    std::array<WGPUSampler, max_texture_pairs> samplers{
-        mesh.samplers[0],      mesh.samplers[1],
-        mesh.samplers[2],      mesh.samplers[3],
-        state.default_sampler, binding_traits.standard ? mesh.samplers[4] : state.clamp_sampler,
-    };
-    // The scene-color pair, the transmission and thickness maps and the
-    // material-extension pairs append after the base six. The superset
-    // layout requires every pair for every kind; shaders that ignore a
-    // slot never sample it. The scene-color slot binds the grab texture
-    // through the pinned repeat trilinear anisotropic sampler when
-    // transmission runs, and the base color as an inert stand-in
-    // otherwise (exactly like the SDL backend with transmission disabled
-    // at runtime).
-    std::size_t pair = 6;
-#if BBLITE_RENDERER_TRANSMISSION
-    if (state.transmission_color_view) {
-        views[pair] = state.transmission_color_view;
-        samplers[pair] = state.transmission_sampler;
-    } else {
-        views[pair] = mesh.views[0];
-        samplers[pair] = mesh.samplers[0];
-    }
-    ++pair;
-#endif
-    // The mesh-owned slots past the base five, in the table's own order.
-    for (std::size_t slot = 5; slot < material_extension_slot_base + material_extension_slots;
-         ++slot) {
-        views[pair] = mesh.views[slot];
-        samplers[pair] = mesh.samplers[slot];
-        ++pair;
-    }
-#if BBLITE_MATERIAL_STANDARD_BUMP
-    // Last pair, so the indexes above are exactly what they were before
-    // this slot existed. A PBR material binds its flat-normal fallback
-    // here and never samples it.
-    views[pair] = mesh.views[standard_bump_slot];
-    samplers[pair] = mesh.samplers[standard_bump_slot];
-    ++pair;
-#endif
-    // A shader material's own textures replace the leading pairs: the
-    // caller's fragment declares them from binding 0 up, and the superset
-    // layout's own first pairs are the material-slot ones no custom WGSL
-    // names.
-    //
-    // Declared order is binding order here, unlike the SDL backend: Dawn
-    // compiles the `.native.wgsl` this port emitted, whose `@binding(2n)`
-    // pairs ARE the declared indexes, so no compaction stands between the
-    // record and the group.
-    if (binding_traits.shader && binding_shader_info) {
-        const auto& shader_textures = mesh_shader_textures(mesh);
-        if (shader_textures.size() < binding_shader_info->samplers.size()) {
-            dawn_error(shader_sampler_shortfall(*binding_shader_info, shader_textures.size()));
-        }
-        for (std::size_t slot = 0; slot < binding_shader_info->samplers.size(); ++slot) {
-            views[slot] = shader_textures[slot].view;
-            samplers[slot] = shader_textures[slot].sampler;
-        }
-    }
-    const std::uint32_t pair_count = static_cast<std::uint32_t>(pair);
-    std::array<WGPUBindGroupEntry, max_texture_pairs * 2> texture_entries{};
-    for (std::uint32_t slot = 0; slot < pair_count; ++slot) {
-        texture_entries[slot * 2] = WGPU_BIND_GROUP_ENTRY_INIT;
-        texture_entries[slot * 2].binding = slot * 2;
-        texture_entries[slot * 2].textureView = views[slot];
-        texture_entries[slot * 2 + 1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        texture_entries[slot * 2 + 1].binding = slot * 2 + 1;
-        texture_entries[slot * 2 + 1].sampler = samplers[slot];
-    }
-    WGPUBindGroupDescriptor texture_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    texture_descriptor.layout = mesh_group_layout(state, 2);
-    texture_descriptor.entryCount = pair_count * 2;
-    texture_descriptor.entries = texture_entries.data();
-    bindings.textures = require_dawn_resource(
-        wgpuDeviceCreateBindGroup(state.device, &texture_descriptor), "mesh bind group");
-
-    WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    material_entry.binding = 0;
-    material_entry.buffer = mesh.material_uniforms;
-    material_entry.size = mesh.material_uniform_size;
-    WGPUBindGroupDescriptor material_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    material_descriptor.layout = mesh_group_layout(state, 3);
-    material_descriptor.entryCount = 1;
-    material_descriptor.entries = &material_entry;
-    bindings.material = require_dawn_resource(
-        wgpuDeviceCreateBindGroup(state.device, &material_descriptor), "mesh bind group");
-
-    return mesh.bindings.emplace(kind, std::move(bindings)).first->second;
+    return bindings;
 }
 
 /** Build the four reflected groups for an active ShaderMaterial draw. */
@@ -6561,7 +6400,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                                         MaterialHandle material_handle, std::uint32_t variant,
                                         WGPUBuffer pass_uniforms) {
     if (material_handle.value >= engine.materials.size()) {
-        dawn_error("Shader draw has an invalid material.");
+        pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
     }
     const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
@@ -6653,7 +6492,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #if BBLITE_SHADOW_RECEIVERS
             const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
             if (generator.value >= engine.shadow_generators.size()) {
-                dawn_error("Shader CSM receiver has an invalid generator.");
+                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
             }
             ensure_shadow_samplers(state);
             view = shadow_map_view(state, engine, generator);
@@ -6761,7 +6600,7 @@ WGPURenderPipeline create_diagnostic_pipeline(DawnState& state, WGPUShaderModule
     constexpr std::uint32_t vertex_buffer_count = 1;
 #endif
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = mesh_pipeline_layout_for(state);
+    descriptor.layout = diagnostic_pipeline_layout(state);
     descriptor.vertex.module = state.vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
     descriptor.vertex.bufferCount = vertex_buffer_count;
@@ -6958,13 +6797,12 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             uniform_entry.buffer = uniform_buffer;
             uniform_entry.size = 32;
             WGPUBindGroupDescriptor group_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            group_descriptor.layout = mesh_group_layout(state, 3);
+            group_descriptor.layout = diagnostic_group_layout(state, 3);
             group_descriptor.entryCount = 1;
             group_descriptor.entries = &uniform_entry;
             DawnBindGroup uniform_group{wgpuDeviceCreateBindGroup(state.device, &group_descriptor)};
 
-            DawnMeshBindings& bindings =
-                bindings_for(state, mesh, upstream::RenderPipelineKind::pbr_opaque_back);
+            DawnMeshBindings& bindings = diagnostic_bindings_for(state, mesh);
             wgpuRenderPassEncoderSetBindGroup(pass, 1, bindings.scene, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 2, bindings.textures, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 3, uniform_group, 0, nullptr);
@@ -8865,6 +8703,10 @@ class DawnSceneRun {
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+        // Each pass's scene blocks, which a camera-less pass keeps.
+        RetainedSceneBlocks pass_blocks;
+#endif
         std::vector<float> shader_block_scratch;
 #if BBLITE_OFFSCREEN_SURFACES
         OffscreenRun* offscreen = nullptr;
@@ -8891,7 +8733,7 @@ class DawnSceneRun {
 #endif
         double benchmark_start = 0, delta_ms = 0, updated = 0, uploaded = 0, written = 0,
                acquired = 0;
-        bool topology_updated = false, capture_ready = false, frame_graph_presented = false;
+        bool capture_ready = false, frame_graph_presented = false;
         PixelViewport surface_extent{};
         CameraPassMatrices frame_camera{};
         ShaderPassMatrices frame_pass_matrices{};
@@ -8917,16 +8759,6 @@ class DawnSceneRun {
 
     /** The run scene's `scene_camera`. */
     CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
-
-    /**
-     * The camera a registered layer's pass projects through: its own, or,
-     * for a layer without one, the base scene's. Null when neither has one,
-     * which is the no-camera pass `scene_camera` describes.
-     */
-    CameraRecord* layer_camera(const Scene& layer) {
-        CameraRecord* const own = scene_camera(data_.engine, layer);
-        return own ? own : active_camera();
-    }
 
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
@@ -9109,7 +8941,7 @@ class DawnSceneRun {
                     // The SDL backend's named refusal: encoding
                     // the draw with stale or zero uniforms is
                     // the silent alternative.
-                    dawn_error("Shader draw has an invalid material.");
+                    pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
                 }
             } else {
 #if BBLITE_PBR_VARIANTS > 0
@@ -9701,337 +9533,223 @@ public:
         return FramePreparation::ready;
     }
 
-    void synchronize() {
-        [[maybe_unused]] auto& engine = data_.engine;
-        [[maybe_unused]] auto& captures = data_.captures;
-        [[maybe_unused]] auto& frame = data_.frame;
-        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
-        [[maybe_unused]] auto& scene = data_.scene;
-        [[maybe_unused]] auto& state = data_.state;
-        [[maybe_unused]] auto& width = data_.width;
-        [[maybe_unused]] auto& height = data_.height;
-        [[maybe_unused]] auto& render_plan = data_.render_plan;
-        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
-        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
-        [[maybe_unused]] auto& synced_render_topology_version =
-            data_.synced_render_topology_version;
-        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
-        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
-        [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
-        CameraRecord* const camera = active_camera();
-        [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
-        [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
-        [[maybe_unused]] auto& uploaded = current_frame().uploaded;
-        [[maybe_unused]] auto& written = current_frame().written;
-        [[maybe_unused]] auto& topology_updated = current_frame().topology_updated;
-        [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
-        [[maybe_unused]] auto& frame_camera = current_frame().frame_camera;
-        [[maybe_unused]] const auto& aspect = frame_camera.aspect;
-        [[maybe_unused]] const auto& matrix = frame_camera.view_projection;
-        [[maybe_unused]] const auto& frame_view = frame_camera.view;
-        [[maybe_unused]] const auto& frame_projection = frame_camera.projection;
-        [[maybe_unused]] const auto& frame_camera_position = frame_camera.camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
-        [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
-        [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
-        [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
-#if BBLITE_NODE_VARIANTS > 0
-        [[maybe_unused]] auto& node_mesh_blocks = current_frame().node_mesh_blocks;
-#endif
-        trace_dynamic_frame(engine, delta_ms, frame);
-#if BBLITE_HAS_SPRITE_RENDERER
-        // Upstream updates every rendering context before recording any of
-        // them. Scene callbacks above may have changed layer membership or
-        // instance data, so synchronize and upload every sprite context now.
-        sync_dawn_scene_sprites(state, engine);
-        for (DawnSpritePass& sprite_pass : state.sprite_passes) {
-            // `spriteRendererUpdate` runs the renderer's own hooks before
-            // it reads its layers, so an overlay HUD's hook is seen by this
-            // frame rather than the next.
-            run_sprite_renderer_before_update(engine, sprite_pass.renderer, delta_ms);
-            sync_dawn_sprite_pass_layers(state.device, state.queue, state.mips, engine, sprite_pass,
-                                         state.sprite_render_textures,
-                                         state.sprite_render_texture_views);
-            upload_dawn_sprite_pass(state.device, state.queue, engine, sprite_pass, width, height,
-                                    delta_ms);
-        }
-        if (state.has_scene_sprite_pass) {
-            upload_dawn_scene_sprite_pass(state.device, state.queue, engine,
-                                          state.scene_sprite_pass, width, height, delta_ms);
-        }
-#endif
-        topology_updated = refresh_overlay_render_plans(
-            engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
-            engine.draw_list_epoch != synced_draw_list_epoch, [](DawnMesh& mesh) { mesh.reset(); },
-            [&](const upstream::RenderItem& item) {
-                return upload_dawn_scene_mesh(state, engine, item);
-            });
-        if (topology_updated) {
-            state.prune_shared_shader_geometries();
-            state.prune_shared_shader_material_textures();
-            state.prune_shared_composed_material_textures();
-        }
-        if (scene.render_topology_version != synced_render_topology_version) {
-            const std::size_t previous_item_count = render_plan.items.size();
-            // The table half of the SDL backend's post-registration
-            // family guard; this backend loads its modules lazily, so
-            // the tables are its whole answer.
-            reject_uncomposed_family_growth(scene.material_family_mask &
-                                            ~synced_material_family_mask);
-            upstream::RenderPlan updated_plan = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated_plan);
-            // Dawn command buffers retain submitted resources, so releasing
-            // a removed row drops only this state's reference.
-            std::vector<DawnMesh> updated_meshes = rematch_render_meshes(
-                render_plan.items, updated_plan.items, state.meshes,
-                [](DawnMesh& mesh) { mesh.reset(); },
-                [&](const upstream::RenderItem& item) {
-                    return upload_dawn_scene_mesh(state, engine, item);
-                });
-            state.prune_shared_shader_geometries();
-            state.prune_shared_shader_material_textures();
-            state.prune_shared_composed_material_textures();
-            state.meshes = std::move(updated_meshes);
-            render_plan = std::move(updated_plan);
-            synced_render_topology_version = scene.render_topology_version;
-            synced_material_family_mask = scene.material_family_mask;
-            const std::size_t shader_item_count = static_cast<std::size_t>(
-                std::count_if(render_plan.items.begin(), render_plan.items.end(),
-                              [](const upstream::RenderItem& item) {
-                                  return item.material_kind == upstream::RenderMaterialKind::shader;
-                              }));
-            trace_scene_topology(scene, engine, previous_item_count, render_plan.items.size(),
-                                 shader_item_count, state.shared_shader_geometries.size(),
-                                 state.shared_shader_material_textures.size(), frame);
-            topology_updated = true;
-        } else if (engine.draw_list_epoch != synced_draw_list_epoch) {
-            // The pin's visibility epoch re-records the cached opaque
-            // render bundles; the draw lists are this port's bundles, so
-            // only they and the task lists rebuild -- mesh GPU state is
-            // untouched. A culling-enabled thin-instance pool moves the
-            // second epoch only when its live count crosses zero, matching
-            // the pin's direct-bucket membership.
-            render_plan.draw_lists = upstream::build_render_draw_lists(render_plan.items, engine);
-        }
-        if (topology_updated || engine.draw_list_epoch != synced_draw_list_epoch) {
-            rebuild_task_draw_lists();
-        }
-        synced_draw_list_epoch = engine.draw_list_epoch;
-        // One mesh-sync pass per frame over the plan's items, the same
-        // walk as the SDL_GPU backend's loop: the thin-instance pool
-        // re-upload, the version-gated position and morph-weight writes.
-        // The vertex buffers hold local lanes, so a transform uploads no
-        // vertices. The per-mesh vertex-stage blocks SDL_GPU pushes per
-        // draw -- WebGPU has no push constants -- are rewritten here once
-        // per frame instead: the mesh world and the deformation block
-        // carry no version, so both writes are unconditional, exactly as
-        // the per-draw pushes are. The per-draw material blocks stay with
-        // their draws in `write_material_uniforms` below.
-        // One scene's plan synced against the meshes uploaded for it. A
-        // swapchain overlay layer is a second (scene, plan, mesh array)
-        // triple, so this takes them rather than closing over the base
-        // scene's; the world a floating-origin block carries is relative
-        // to that layer's own camera.
-        const auto sync_plan_meshes = [&](const Scene& sync_scene,
-                                          const upstream::RenderPlan& sync_plan,
-                                          std::vector<DawnMesh>& sync_meshes) {
-            for (std::size_t index = 0;
-                 index < sync_plan.items.size() && index < sync_meshes.size(); ++index) {
-                const upstream::RenderItem& item = sync_plan.items[index];
-                const MeshRecord& mesh = handle_at(engine.meshes, item.mesh);
-                DawnMesh& dawn_mesh = sync_meshes[index];
-                // The shared material stage's blocks, for the diagnostic and
-                // depth-only draws that read them; a shader-variant stage
-                // owns its own. Both writes below are unconditional --
-                // bone palettes and worlds carry no version -- so they would
-                // run every frame for a mesh that never draws. SDL pushes
-                // them per DRAW and so pays nothing for one; this loop was
-                // hoisted to once per plan item, which widened it. The plan
-                // keeps a hidden mesh so the pick pass can see it, so the
-                // sync asks the same predicate the draw lists ask.
-                //
-                // Sound because visibility reaches the draw lists only through
-                // a version bump -- render_topology_version or the visibility
-                // epoch -- and the rebuild either triggers runs earlier in
-                // this same frame, so the frame a mesh starts drawing is a
-                // frame this loop writes it.
-                const bool mesh_world_item =
-                    upstream::mesh_draws(mesh) &&
-                    item.material_kind != upstream::RenderMaterialKind::shader;
+    /**
+     * The GPU writes one plan row's refresh makes (`sync_plan_mesh_rows`),
+     * as queue writes. WebGPU has no push constants, so a row also rewrites
+     * the per-mesh vertex-stage blocks SDL_GPU pushes per draw.
+     */
+    struct MeshRowWrites {
+        DawnState& state;
+        Engine& engine;
+
 #if BBLITE_GPU_INSTANCING
-                if (mesh.thin_instanced && dawn_mesh.instance_version != mesh.instance_version) {
-                    // A pool that grew past what registration allocated cannot
-                    // be filled by a write: the instance buffers are recreated
-                    // at the new capacity, which is also a full upload, so the
-                    // dirty-range write below is skipped that frame. Releasing
-                    // the old handles here is safe because a submitted command
-                    // buffer holds its own reference, and this port records no
-                    // bundles -- every pass reads DawnMesh live at the draw, so
-                    // a shadow or depth task later this frame binds the new
-                    // buffers.
-                    const bool recreated =
-                        thin_instance_pool_grew(mesh, dawn_mesh.instance_capacity);
-                    if (recreated) {
-                        const std::size_t rows = mesh.instance_matrices.size();
+        void recreate_instances(DawnMesh& gpu, const MeshRecord& mesh) {
+            // A submitted command buffer holds its own reference to the
+            // released buffers, and this port records no bundles.
+            const std::size_t rows = mesh.instance_matrices.size();
 #if BBLITE_HAS_PICKING
-                        dawn_mesh.release_thin_pick_group();
+            gpu.release_thin_pick_group();
 #endif
-                        wgpuBufferRelease(dawn_mesh.instances);
-                        dawn_mesh.instances =
-                            create_buffer(state, WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
+            wgpuBufferRelease(gpu.instances);
+            gpu.instances = create_buffer(state, WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
                                           mesh.instance_matrices.data(),
                                           rows * sizeof(mesh.instance_matrices.front()));
 #if BBLITE_GPU_INSTANCE_COLORS
-                        if (dawn_mesh.instance_colors) {
-                            // The colour mirror is the scene's own array and
-                            // may still be the shorter one; pad to the pool
-                            // the way registration does.
-                            std::vector<float> instance_colors = instance_colors_for_upload(mesh);
-                            instance_colors.resize(rows * 4, 1.0f);
-                            wgpuBufferRelease(dawn_mesh.instance_colors);
-                            dawn_mesh.instance_colors =
-                                create_buffer(state, WGPUBufferUsage_Vertex, instance_colors.data(),
-                                              instance_colors.size() * sizeof(float));
-                        }
+            if (gpu.instance_colors) {
+                // The colour mirror is the scene's own array and may still
+                // be the shorter one; pad to the pool the way registration
+                // does.
+                std::vector<float> instance_colors = instance_colors_for_upload(mesh);
+                instance_colors.resize(rows * 4, 1.0f);
+                wgpuBufferRelease(gpu.instance_colors);
+                gpu.instance_colors =
+                    create_buffer(state, WGPUBufferUsage_Vertex, instance_colors.data(),
+                                  instance_colors.size() * sizeof(float));
+            }
 #endif
-                        dawn_mesh.instance_capacity = static_cast<std::uint32_t>(rows);
-                    }
-                    // Re-upload the dirty range [0, count) from the record
-                    // pool; slots past the active count keep their previous
-                    // contents and are never drawn.
-                    const std::size_t active_count = thin_instance_active_count(mesh);
-                    if (!recreated && active_count > 0) {
-                        wgpuQueueWriteBuffer(state.queue, dawn_mesh.instances, 0,
-                                             mesh.instance_matrices.data(),
-                                             active_count * sizeof(mesh.instance_matrices.front()));
+        }
+
+        void update_instances(DawnMesh& gpu, const MeshRecord& mesh, std::size_t active_count) {
+            wgpuQueueWriteBuffer(state.queue, gpu.instances, 0, mesh.instance_matrices.data(),
+                                 active_count * sizeof(mesh.instance_matrices.front()));
 #if BBLITE_GPU_INSTANCE_COLORS
-                        if (dawn_mesh.instance_colors) {
-                            const auto colors = instance_colors_for_upload(mesh);
-                            if (colors.size() >= active_count * 4) {
-                                wgpuQueueWriteBuffer(state.queue, dawn_mesh.instance_colors, 0,
-                                                     colors.data(),
-                                                     active_count * 4 * sizeof(float));
-                            }
-                        }
-#endif
-                    }
-                    dawn_mesh.instance_count = static_cast<std::uint32_t>(active_count);
-                    dawn_mesh.instance_version = mesh.instance_version;
+            if (gpu.instance_colors) {
+                const auto colors = instance_colors_for_upload(mesh);
+                if (colors.size() >= active_count * 4) {
+                    wgpuQueueWriteBuffer(state.queue, gpu.instance_colors, 0, colors.data(),
+                                         active_count * 4 * sizeof(float));
                 }
+            }
 #endif
-                if (mesh_world_item) {
-                    const std::array<float, 16> world = mesh_block_world(sync_scene, engine, mesh);
-                    wgpuQueueWriteBuffer(state.queue, dawn_mesh.mesh_world_uniform, 0, world.data(),
-                                         sizeof(world));
-                }
+        }
+#endif
+
+        /**
+         * The shared material stage's world and deformation blocks, for the
+         * diagnostic and depth-only draws that read them; a shader-variant
+         * stage owns its own. Neither carries a version, so both writes are
+         * unconditional, as SDL_GPU's per-draw pushes are -- and so they are
+         * asked the predicate the draw lists ask: the plan keeps a hidden
+         * mesh for the pick pass, and visibility reaches the draw lists only
+         * through a version bump whose rebuild runs earlier this frame.
+         */
+        void write_mesh_blocks(const Scene& scene, const upstream::RenderItem& item,
+                               const MeshRecord& mesh, DawnMesh& gpu) {
+            if (!upstream::mesh_draws(mesh) ||
+                item.material_kind == upstream::RenderMaterialKind::shader) {
+                return;
+            }
+            const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
+            wgpuQueueWriteBuffer(state.queue, gpu.mesh_world_uniform, 0, world.data(),
+                                 sizeof(world));
 #if BBLITE_GPU_DEFORMATION
-                if (mesh_world_item) {
-                    const DeformationUniforms deformation = build_deformation_uniforms(
-                        mesh, engine.geometries[item.geometry].flat_normals);
-                    wgpuQueueWriteBuffer(state.queue, dawn_mesh.deformation_uniforms, 0,
-                                         &deformation, sizeof(deformation));
-                }
+            const DeformationUniforms deformation = build_deformation_uniforms(mesh);
+            wgpuQueueWriteBuffer(state.queue, gpu.deformation_uniforms, 0, &deformation,
+                                 sizeof(deformation));
 #endif
-                // The vertex buffer holds the geometry's local lanes, so only
-                // a position update rewrites it; a transform reaches the
-                // draw through its mesh block.
+        }
+
 #if BBLITE_MESH_POSITION_UPDATE
-                const ModelGeometry& geometry = engine.geometries[item.geometry];
-                if (dawn_mesh.position_version != geometry.position_version) {
-                    const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh);
-                    wgpuQueueWriteBuffer(state.queue, dawn_mesh.vertices, 0, vertices.data(),
-                                         vertices.size() * sizeof(GpuVertex));
+        void upload_vertices(DawnMesh& gpu, const std::vector<GpuVertex>& vertices) {
+            wgpuQueueWriteBuffer(state.queue, gpu.vertices, 0, vertices.data(),
+                                 vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                    state.node_capture.update(dawn_mesh.vertices, vertices.data(),
-                                              vertices.size() * sizeof(GpuVertex));
+            state.node_capture.update(gpu.vertices, vertices.data(),
+                                      vertices.size() * sizeof(GpuVertex));
 #endif
-                    dawn_mesh.position_version = geometry.position_version;
-                }
+        }
 #endif
+
 #if BBLITE_GPU_MORPH_STORAGE
-                if (mesh.gpu_deformation) {
-                    sync_morph_weights(state, dawn_mesh, engine.geometries[item.geometry], mesh);
-                }
-#endif
-            }
-        };
-        sync_plan_meshes(scene, render_plan, state.meshes);
-        for (std::size_t layer = 0;
-             layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-            sync_plan_meshes(*engine.registered_scenes[layer + 1u], overlay_plans[layer],
-                             state.overlay_meshes[layer]);
-        }
-        uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera, delta_ms);
-        surface_extent = scene_surface_extent(engine, scene, width, height);
-        if (camera) {
-            trace_camera_state(*camera, camera_trace_state, frame);
-            // `sortTransparentBindings` sorts only with a camera
-            // (render-task-base.ts).
-            upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
-        }
-        // The frame's product and its two factors, built once: a shader
-        // material may declare either factor beside the product, the pin's
-        // splat UBO stores them separately, and the billboard sort reads the
-        // view.
-        frame_camera = camera_pass_matrices(scene, engine, camera, surface_extent.width,
-                                            surface_extent.height);
-        frame_pass_matrices = frame_camera.pass();
-#if BBLITE_HAS_TEXT
-        validate_text_scene(scene);
-        state.text->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        const std::optional<TextCameraInput> text_camera =
-            camera ? std::optional<TextCameraInput>{TextCameraInput{
-                         js::TypedArray<float>(matrix.begin(), matrix.end()),
-                         upstream::scene_camera_change_key(*camera), aspect}}
-                   : std::nullopt;
-        state.text->scene.update(bbl::text_surface(engine), text_camera ? &*text_camera : nullptr,
-                                 static_cast<double>(surface_extent.width),
-                                 static_cast<double>(surface_extent.height));
-#endif
-#if BBLITE_HAS_SPLATS
-        if (camera) {
-            // The splat renderable's update returns without a camera
-            // (gaussian-splatting-pipeline.ts), leaving its block unwritten.
-            // Lazily built for the same reason the billboard passes are:
-            // the clouds are known only once the scene has run. The sort
-            // then follows the camera, which `upload_dawn_splat_pass`
-            // decides with the pin's own epsilon.
-            if (state.splat_passes.empty()) {
-                for (const SplatMeshHandle splat : scene.splat_meshes) {
-                    state.splat_passes.push_back(create_dawn_splat_pass(
-                        state.device, state.queue, state.frame_color_format,
-                        WGPUTextureFormat_Depth24PlusStencil8, state.sample_count, engine, splat));
-                }
-            }
-            for (DawnSplatPass& splat : state.splat_passes) {
-                upload_dawn_splat_pass(state.queue, engine, splat, frame_view, frame_projection,
-                                       frame_camera_position, static_cast<float>(width),
-                                       static_cast<float>(height));
-            }
+        void upload_morph_weights(DawnMesh& gpu, const ModelGeometry& geometry,
+                                  const MeshRecord& mesh) {
+            sync_morph_weights(state, gpu, geometry, mesh);
         }
 #endif
+    };
+
+    /** The Dawn operations `synchronize_scene` orders. */
+    struct SceneSync {
+        DawnSceneRun& run;
+        MeshRowWrites rows;
+
+        void update_sprites([[maybe_unused]] double delta_ms) {
+#if BBLITE_HAS_SPRITE_RENDERER
+            auto& data = run.data_;
+            DawnState& state = rows.state;
+            // `_update` for every sprite context precedes every `_record`.
+            // Scene callbacks may have changed layer membership or instance
+            // data, so every sprite context synchronizes and uploads now.
+            sync_dawn_scene_sprites(state, rows.engine);
+            for (DawnSpritePass& sprite_pass : state.sprite_passes) {
+                // `spriteRendererUpdate` runs the renderer's own hooks
+                // before it reads its layers, so an overlay HUD's hook is
+                // seen by this frame rather than the next.
+                begin_sprite_renderer_update(rows.engine, sprite_pass.renderer, delta_ms);
+                sync_dawn_sprite_pass_layers(state.device, state.queue, state.mips, rows.engine,
+                                             sprite_pass, state.sprite_render_textures,
+                                             state.sprite_render_texture_views);
+                upload_dawn_sprite_pass(state.device, state.queue, rows.engine, sprite_pass,
+                                        data.width, data.height, delta_ms);
+            }
+            if (state.has_scene_sprite_pass) {
+                upload_dawn_scene_sprite_pass(state.device, state.queue, rows.engine,
+                                              state.scene_sprite_pass, data.width, data.height,
+                                              delta_ms);
+            }
+#endif
+        }
+
+        // Dawn command buffers retain submitted resources, so releasing a
+        // removed row drops only this state's reference.
+        void release_mesh(DawnMesh& mesh) { mesh.reset(); }
+
+        DawnMesh upload_mesh(const upstream::RenderItem& item) {
+            return upload_dawn_scene_mesh(rows.state, rows.engine, item);
+        }
+
+        void prune_shared_resources() {
+            rows.state.prune_shared_shader_geometries();
+            rows.state.prune_shared_shader_material_textures();
+            rows.state.prune_shared_composed_material_textures();
+        }
+
+        // This backend loads its modules lazily, so the shared table guard
+        // is its whole answer.
+        void reject_unbuilt_family_growth(std::uint32_t) const {}
+
+        std::size_t shared_shader_geometry_count() const {
+            return rows.state.shared_shader_geometries.size();
+        }
+        std::size_t shared_shader_material_count() const {
+            return rows.state.shared_shader_material_textures.size();
+        }
+
+        void rebuild_task_draw_lists() { run.rebuild_task_draw_lists(); }
+
+        MeshRowWrites& mesh_rows() { return rows; }
+
+        void publish_storage() { sync_shader_storage_buffers(rows.state, rows.engine); }
+
+        // Queue writes land with the next submit; there is no batch to close.
+        void submit_uploads() {}
+
+        void mark_uploaded() {
+            run.current_frame().uploaded = run.data_.cpu_profile ? monotonic_milliseconds() : 0.0;
+        }
+
+        void settle_pass(const SceneSyncOutcome& outcome) {
+            Frame& frame = run.current_frame();
+            frame.surface_extent = outcome.surface_extent;
+            frame.frame_camera = outcome.pass.matrices;
+            frame.frame_pass_matrices = frame.frame_camera.pass();
+        }
+
+        // A skinned draw's palette is written with its material blocks.
+        void stream_bone_palettes() {}
+
+        void mark_capture(bool topology_updated) {
+            auto& data = run.data_;
+            run.current_frame().capture_ready = data.frame >= data.frame_options.screenshot_frame &&
+                                                !topology_updated &&
+                                                data.captures.drains_resolved();
+        }
+
+        void update_clustered_lights([[maybe_unused]] const SceneSyncOutcome& outcome) {
 #if BBLITE_HAS_CLUSTERED_LIGHTS
-        // The cluster binning, in the place the splat sort runs and for the
-        // same reason: it reads this frame's camera and the draws below read
-        // what it wrote. The pin's updater runs for every colour pass over
-        // its camera and target, and its refresh returns without a camera
-        // (render-task-base.ts, clustered.ts).
-        if (ClusteredLightContainer* clustered =
-                upstream::clustered_container(engine, scene.clustered_lights)) {
-            upload_dawn_clustered(state.device, state.queue, engine, *clustered, scene.camera,
-                                  static_cast<double>(surface_extent.width),
-                                  static_cast<double>(surface_extent.height), state.clustered);
-        }
+            // The cluster binning reads this frame's camera and the draws
+            // read what it wrote. The pin's updater runs for every colour
+            // pass over its camera and target, and its refresh returns
+            // without a camera (render-task-base.ts, clustered.ts).
+            const Scene& scene = run.data_.scene;
+            if (ClusteredLightContainer* clustered =
+                    upstream::clustered_container(rows.engine, scene.clustered_lights)) {
+                upload_dawn_clustered(
+                    rows.state.device, rows.state.queue, rows.engine, *clustered, scene.camera,
+                    static_cast<double>(outcome.surface_extent.width),
+                    static_cast<double>(outcome.surface_extent.height), rows.state.clustered);
+            }
 #endif
+        }
+
+        void update_text([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_TEXT
+            update_scene_text(*rows.state.text, run.data_.scene, run.data_.frame,
+                              outcome.surface_extent, outcome.pass);
+#endif
+        }
+
+        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome,
+                               [[maybe_unused]] double delta_ms) {
 #if BBLITE_HAS_BILLBOARDS
-        {
+            DawnState& state = rows.state;
+            const Scene& scene = run.data_.scene;
             // Lazily built, because the systems are known only once the
             // scene has run; the sort then follows the camera every frame.
             if (state.billboard_passes.empty()) {
                 for (const BillboardSystemHandle system : scene.billboard_systems) {
                     state.billboard_passes.push_back(create_dawn_billboard_pass(
-                        state.device, state.queue, engine, system, state.frame_color_format,
+                        state.device, state.queue, rows.engine, system, state.frame_color_format,
                         WGPUTextureFormat_Depth24PlusStencil8, state.sample_count));
                     // The atlas reports the chain it allocated; the blit
                     // that fills it is this state's.
@@ -10040,28 +9758,89 @@ public:
                                      built.atlas_mip_levels);
                 }
             }
+            // The scene block each program binds at its group 0: the pass's
+            // own, over the matrices the frame draws billboards with.
+            const upstream::SceneUniforms& billboard_block = write_billboard_scene_block(
+                run.data_.pass_blocks.scene(scene), scene, rows.engine, outcome.pass.camera,
+                outcome.pass.matrices.view_projection, outcome.pass.matrices.view);
             for (DawnBillboardPass& billboard : state.billboard_passes) {
-                upload_dawn_billboard_pass(state.queue, scene, engine, billboard, matrix,
-                                           frame_view, delta_ms);
+                upload_dawn_billboard_pass(state.queue, scene, rows.engine, billboard,
+                                           billboard_block, delta_ms);
             }
-        }
 #endif
-        capture_ready =
-            frame >= screenshot_frame && !topology_updated && captures.drains_resolved();
+        }
 
+        void upload_splats([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_SPLATS
+            Engine& engine = rows.engine;
+            DawnState& state = rows.state;
+            const Scene& scene = run.data_.scene;
+            const CameraPassMatrices& matrices = outcome.pass.matrices;
+            const std::uint32_t width = run.data_.width, height = run.data_.height;
+            // Lazily built for the same reason the billboard passes are: the
+            // clouds are known only once the scene has run. Each update
+            // returns on the renderable's own test without a camera -- which
+            // tests `scene.camera`, not the pass's -- and the sort then
+            // follows the camera with the pin's own epsilon.
+            if (state.splat_passes.empty()) {
+                for (const SplatMeshHandle splat : scene.splat_meshes) {
+                    state.splat_passes.push_back(create_dawn_splat_pass(
+                        state.device, state.queue, state.frame_color_format,
+                        WGPUTextureFormat_Depth24PlusStencil8, state.sample_count, engine, splat));
+                }
+            }
+            const CameraRecord* const camera = scene_camera(engine, scene);
+            for (DawnSplatPass& splat : state.splat_passes) {
+                upload_dawn_splat_pass(state.queue, engine, splat, camera, matrices.view,
+                                       matrices.projection, matrices.camera_position,
+                                       static_cast<float>(width), static_cast<float>(height));
+            }
+#endif
+        }
+
+        void capture_render_state() {
 #if !BBLITE_HAS_TAA && !BBLITE_HAS_TEXT
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-        if (!state.node_capture.capture.enabled())
+            if (!rows.state.node_capture.capture.enabled())
 #endif
-            capture_render_state();
+                run.capture_render_state();
+#endif
+        }
+
+        void write_pass_blocks(const SceneSyncOutcome& outcome) { run.write_pass_blocks(outcome); }
+    };
+
+    /**
+     * The frame's buffered pass blocks, before anything reads them: WebGPU
+     * has no push constants, so every block a pass binds is a queue write
+     * here. Each scene block is the one its pass retains
+     * (`pal::write_pass_scene_block`), which a pass without a camera leaves
+     * as the pin's `_writePassSceneUBO` leaves it.
+     */
+    void write_pass_blocks(const SceneSyncOutcome& outcome) {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] const CameraRecord* const camera = outcome.pass.camera;
+        [[maybe_unused]] const auto& matrix = outcome.pass.matrices.view_projection;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
+        [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
+#if BBLITE_NODE_VARIANTS > 0
+        [[maybe_unused]] auto& node_mesh_blocks = current_frame().node_mesh_blocks;
 #endif
         wgpuQueueWriteBuffer(state.queue, state.view_projection, 0, matrix.data(), sizeof(matrix));
 #if BBLITE_PINNED_MATERIALS
         // The pin's per-pass blocks, before anything reads them: the scene block
         // the variants' vertex and fragment stages share, and the lights array
         // their multi-light arm indexes.
-        write_pinned_frame_blocks(state, scene, engine, camera, matrix);
-#if BBLITE_PINNED_MATERIALS
+        write_pinned_frame_blocks(
+            state, scene, engine,
+            write_pass_scene_block(data_.pass_blocks.scene(scene), scene, engine, camera, matrix));
         // Each overlay layer's own scene and lights blocks, written into
         // its own buffers. A queue write lands before the whole command
         // buffer runs, so the base scene's blocks cannot simply be
@@ -10073,28 +9852,23 @@ public:
                 continue;
             DawnState::OverlayFrame& overlay = state.overlay_frames[layer];
             overlay_frame_group(state, overlay);
-            if (const CameraRecord* overlay_camera = layer_camera(*overlay_scene)) {
-                // A layer's own camera answers `getEffectiveAspectRatio` for
-                // itself: upstream each scene's render task writes its OWN
-                // scene UBO from `cfg.cam ?? scene.camera`, so two scenes
-                // splitting one target by viewport project at two ratios.
-                const PixelViewport overlay_surface_extent =
-                    scene_surface_extent(engine, *overlay_scene, width, height);
-                const double overlay_aspect = upstream::effective_aspect_ratio(
-                    *overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                    static_cast<double>(overlay_surface_extent.height));
-                const upstream::SceneUniforms overlay_scene_block = pinned_scene_block(
-                    *overlay_scene, engine, *overlay_camera,
-                    upstream::build_view_projection(*overlay_camera, overlay_aspect));
-                wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
-                                     sizeof(overlay_scene_block));
-            }
+            // The layer's own scene pass, projected at its own extent's
+            // aspect: two scenes splitting one target by viewport project
+            // at two ratios.
+            const PixelViewport overlay_surface_extent =
+                scene_surface_extent(engine, *overlay_scene, width, height);
+            const PassCamera overlay_pass =
+                build_pass_camera(*overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
+                                  overlay_surface_extent.width, overlay_surface_extent.height);
+            const upstream::SceneUniforms& overlay_scene_block = write_pass_scene_block(
+                data_.pass_blocks.scene(*overlay_scene), *overlay_scene, engine, overlay_pass);
+            wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
+                                 sizeof(overlay_scene_block));
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
             wgpuQueueWriteBuffer(state.queue, overlay.lights_uniforms, 0, overlay_lights.data(),
                                  overlay_lights.size());
         }
-#endif
 #if BBLITE_SHADOW_RECEIVERS
         // The shadow generators' matrices and their receiver blocks, before
         // the caster pass reads the first and the receiving draws read the
@@ -10113,8 +9887,8 @@ public:
             create_frame_graph_textures(state, engine, width, height);
 #endif
         }
-        // RAF callbacks and CSM receiver subscriptions can both update
-        // ShaderMaterial storage. Publish their latest bytes before any
+        // CSM receiver subscriptions can update ShaderMaterial storage after
+        // the frame's publication. Publish their latest bytes before any
         // caster or colour pass builds and binds the reflected groups.
         sync_shader_storage_buffers(state, engine);
         // The pass's own matrices travel with the list: a render task
@@ -10140,12 +9914,6 @@ public:
         // this and never reads it.
         pass_scene = &scene;
         pass_meshes = &state.meshes;
-#if BBLITE_NODE_VARIANTS > 0
-        // This frame's node mesh blocks, composed once per mesh per scene
-        // and written into every view's own buffer below. A local, so the
-        // next frame composes them again against the meshes it moved.
-
-#endif
 
 #if !BBLITE_HAS_TAA
         write_material_uniforms(render_plan.draw_lists.opaque, frame_pass_matrices);
@@ -10161,10 +9929,10 @@ public:
             // not the target's.
             const PixelViewport overlay_surface_extent =
                 scene_surface_extent(engine, *overlay_scene, width, height);
-            const CameraPassMatrices overlay_camera_pass =
-                camera_pass_matrices(*overlay_scene, engine, layer_camera(*overlay_scene),
-                                     overlay_surface_extent.width, overlay_surface_extent.height);
-            const ShaderPassMatrices overlay_pass_matrices = overlay_camera_pass.pass();
+            const PassCamera overlay_pass =
+                build_pass_camera(*overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
+                                  overlay_surface_extent.width, overlay_surface_extent.height);
+            const ShaderPassMatrices overlay_pass_matrices = overlay_pass.pass();
             pass_scene = overlay_scene;
             pass_meshes = &state.overlay_meshes[layer];
             write_material_uniforms(overlay_plans[layer].draw_lists.opaque, overlay_pass_matrices);
@@ -10188,11 +9956,11 @@ public:
             for (std::size_t graph_layer = 0; graph_layer < engine.registered_scenes.size();
                  ++graph_layer) {
                 const Scene& graph_scene = *engine.registered_scenes[graph_layer];
-                const CameraRecord* const graph_camera = layer_camera(graph_scene);
                 const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
-#if BBLITE_GEOMETRY_TASK_FAMILIES
-                std::optional<std::array<float, 16>> graph_matrix;
-#endif
+                // A geometry task renders through its scene's camera.
+                const PassCamera geometry_pass = build_pass_camera(
+                    graph_scene, engine, geometry_pass_camera(engine, graph_scene),
+                    graph_extent.width, graph_extent.height);
                 pass_scene = &graph_scene;
                 pass_meshes =
                     graph_layer == 0 ? &state.meshes : &state.overlay_meshes[graph_layer - 1];
@@ -10204,21 +9972,12 @@ public:
                 for (const TaskHandle handle : graph_scene.tasks) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind == FrameTaskKind::geometry) {
-                        // A geometry task without a camera does not execute
-                        // (geometry-renderer-task.ts executeTask returns 0).
-                        if (!graph_camera)
+                        // Without a camera the task does not execute.
+                        if (upstream::geometry_task_skips(geometry_pass.camera))
                             continue;
-#if BBLITE_GEOMETRY_TASK_FAMILIES
-                        if (!graph_matrix) {
-                            const double graph_aspect = upstream::effective_aspect_ratio(
-                                *graph_camera, graph_extent.width, graph_extent.height);
-                            graph_matrix =
-                                upstream::build_view_projection(*graph_camera, graph_aspect);
-                        }
-#endif
                         upstream::sort_transparent_draws(
                             handle_at(state.render_tasks, handle).draw_lists.transparent, engine,
-                            *graph_camera);
+                            geometry_pass.camera);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                         // The task's own frame state, written once and before
                         // any family: its scene block, its gpUniforms buffer and
@@ -10227,9 +9986,10 @@ public:
                         // decides only whether it is written at all.
                         if (pinned_lists_have_pinned_draws(
                                 handle_at(state.render_tasks, handle).draw_lists)) {
-                            write_pinned_geometry_prologue(
-                                state, graph_scene, engine, *graph_camera,
-                                handle_at(state.geometry_tasks, handle), *graph_matrix);
+                            write_pinned_geometry_prologue(state, graph_scene, engine,
+                                                           *geometry_pass.camera,
+                                                           handle_at(state.geometry_tasks, handle),
+                                                           geometry_pass.matrices.view_projection);
                         }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
@@ -10242,6 +10002,10 @@ public:
                             handle_at(state.render_tasks, handle).draw_lists);
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
+                        update_pinned_velocity_frame(
+                            handle_at(state.geometry_tasks, handle).velocity, graph_scene, engine,
+                            (graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1])
+                                .items);
                         write_standard_geometry_task(
                             state, graph_scene, engine, task,
                             handle_at(state.geometry_tasks, handle),
@@ -10264,8 +10028,7 @@ public:
                         handle_at(engine.render_targets, task.render.target);
                     const DawnRenderTarget& target =
                         handle_at(state.render_targets, task.render.target);
-                    const CameraRecord* const task_camera =
-                        render_task_camera(engine, task, graph_camera);
+                    const CameraRecord* const task_camera = task_pass_camera(engine, task);
                     // `_writePassSceneUBO` folds the camera's own viewport into
                     // whichever extent the task was configured for -- the
                     // canvas or the target.
@@ -10282,7 +10045,9 @@ public:
                         task_camera_pass.view_projection = {};
                     const std::array<float, 16>& task_matrix = task_camera_pass.view_projection;
                     const ShaderPassMatrices task_pass_matrices = task_camera_pass.pass();
-                    if (!shadow_task && task_camera) {
+                    // The port's own view-projection lane carries the pass's
+                    // matrix, as the frame's and the SDL_GPU push do.
+                    if (!shadow_task) {
                         wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
                                              task_matrix.data(), 64);
                     }
@@ -10304,13 +10069,13 @@ public:
                         const std::array<float, 16>& caster_view_projection =
                             caster.view_projection;
                         const std::array<float, 16>& caster_view = caster.view;
-                        if (!graph_camera) {
+                        if (!task_camera) {
                             throw std::runtime_error(
                                 "A shadow caster pass fills its scene block's camera lanes from "
                                 "the scene's active camera; a scene without one is not reached.");
                         }
                         upstream::SceneUniforms shadow_block = pinned_scene_block(
-                            graph_scene, engine, *graph_camera, caster_view_projection);
+                            graph_scene, engine, *task_camera, caster_view_projection);
                         shadow_block.view = caster_view;
                         task_pinned_frame_group(state, render_task, graph_lights);
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
@@ -10332,20 +10097,37 @@ public:
                                                 caster_pass_matrices, later_cascade);
                     }
 #endif
+#if BBLITE_HAS_BILLBOARDS
+                    // The billboards a scene-stage task draws bind the task's own
+                    // pass block, as the pin binds each task's scene group: the
+                    // task's camera and matrices, as the SDL_GPU twin pushes.
+                    if (task.render.scene_stages && target_record.has_color && !shadow_task) {
+                        const upstream::SceneUniforms& billboard_block =
+                            write_billboard_scene_block(data_.pass_blocks.task(handle), graph_scene,
+                                                        engine, task_camera, task_matrix,
+                                                        task_camera_pass.view);
+                        for (DawnBillboardPass& billboard : state.billboard_passes) {
+                            write_dawn_billboard_task_scene(state.device, state.queue, billboard,
+                                                            handle.value, billboard_block);
+                        }
+                    }
+#endif
 #if BBLITE_PINNED_MATERIALS
                     // A colour task that is not a caster pass reads its OWN
                     // pass block, which is the rule the SDL_GPU backend states
-                    // as `if (!shadow_task)` around its own push. Every such
-                    // task writes it, camera or not: the matrix is built from
-                    // the task's aspect, which comes from the task's target
-                    // (scene 187 renders into half the canvas width). A caster
-                    // pass writes none: its `task_matrix` is the zero matrix,
-                    // and a written block would hand every receiver zeros.
-                    if (target_record.has_color && !shadow_task && task_camera) {
+                    // as `if (!shadow_task)` around its own push. The matrix
+                    // is built from the task's aspect, which comes from the
+                    // task's target (scene 187 renders into half the canvas
+                    // width). A caster pass writes none: its `task_matrix` is
+                    // the zero matrix, and a written block would hand every
+                    // receiver zeros.
+                    if (target_record.has_color && !shadow_task) {
                         // The task's own pass block, in the pin's own shape: the
-                        // frame's writer over the task's camera and matrix.
-                        const upstream::SceneUniforms task_scene_block =
-                            pinned_scene_block(graph_scene, engine, *task_camera, task_matrix);
+                        // frame's writer over the task's camera and matrix, kept
+                        // as it was by a camera-less task.
+                        const upstream::SceneUniforms& task_scene_block =
+                            write_pass_scene_block(data_.pass_blocks.task(handle), graph_scene,
+                                                   engine, task_camera, task_matrix);
                         task_pinned_frame_group(state, render_task, graph_lights);
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
                                              &task_scene_block, sizeof(task_scene_block));
@@ -10361,10 +10143,8 @@ public:
                     // nothing to sort for. The SDL backend sorts in exactly
                     // its colour and geometry task arms for the same reasons.
                     if (target_record.has_color) {
-                        if (task_camera) {
-                            upstream::sort_transparent_draws(render_task.draw_lists.transparent,
-                                                             engine, *task_camera);
-                        }
+                        upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine,
+                                                         task_camera);
                         write_material_uniforms(render_task.draw_lists.opaque, task_pass_matrices);
                         write_material_uniforms(render_task.draw_lists.transparent,
                                                 task_pass_matrices);
@@ -10375,8 +10155,29 @@ public:
             pass_meshes = &state.meshes;
 #endif
         }
+    }
 
-        written = cpu_profile ? monotonic_milliseconds() : 0.0;
+    void synchronize() {
+        State& data = data_;
+        Frame& frame = current_frame();
+        SceneSync hooks{*this, MeshRowWrites{data.state, data.engine}};
+        SceneSyncState<DawnMesh> sync{data.engine,
+                                      data.scene,
+                                      data.frame,
+                                      frame.delta_ms,
+                                      data.width,
+                                      data.height,
+                                      data.render_plan,
+                                      data.overlay_plans,
+                                      data.overlay_topology_versions,
+                                      data.state.meshes,
+                                      data.state.overlay_meshes,
+                                      data.synced_render_topology_version,
+                                      data.synced_draw_list_epoch,
+                                      data.synced_material_family_mask,
+                                      data.camera_trace_state};
+        static_cast<void>(synchronize_scene(sync, hooks));
+        frame.written = data.cpu_profile ? monotonic_milliseconds() : 0.0;
     }
 
     bool acquire() {
@@ -10419,7 +10220,9 @@ public:
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
         [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
-        CameraRecord* const camera = active_camera();
+        // The scene's own pass camera, the one the frame's matrices were
+        // settled from.
+        const CameraRecord* const camera = scene_pass_camera(engine, scene);
         [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
         [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
         [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
@@ -10620,35 +10423,22 @@ public:
                     wgpuRenderPassEncoderSetPipeline(list_pass, pipeline.pipeline);
                     bound_pipeline = pipeline.pipeline;
                 }
-                if (draw.item.material_kind == upstream::RenderMaterialKind::shader) {
-                    DawnShaderBindings& bindings = shader_bindings_for(
-                        state, *pass_scene, engine, mesh, draw.item.material,
-                        draw.item.shader_variant,
-                        shader_pass_uniforms ? shader_pass_uniforms : state.view_projection);
-                    if (bindings.storage) {
-                        wgpuRenderPassEncoderSetBindGroup(list_pass, 0, bindings.storage, 0,
-                                                          nullptr);
-                    }
-                    if (bindings.scene) {
-                        wgpuRenderPassEncoderSetBindGroup(list_pass, 1, bindings.scene, 0, nullptr);
-                    }
-                    if (bindings.resources) {
-                        wgpuRenderPassEncoderSetBindGroup(list_pass, 2, bindings.resources, 0,
-                                                          nullptr);
-                    }
-                    if (bindings.material) {
-                        wgpuRenderPassEncoderSetBindGroup(list_pass, 3, bindings.material, 0,
-                                                          nullptr);
-                    }
-                } else {
-                    DawnMeshBindings& bindings =
-                        bindings_for(state, mesh, draw.pipeline, draw.item.shader_variant);
+                // `pipeline_for` builds ShaderMaterial pipelines alone, so
+                // the draw binds that family's reflected groups.
+                DawnShaderBindings& bindings = shader_bindings_for(
+                    state, *pass_scene, engine, mesh, draw.item.material, draw.item.shader_variant,
+                    shader_pass_uniforms ? shader_pass_uniforms : state.view_projection);
+                if (bindings.storage) {
+                    wgpuRenderPassEncoderSetBindGroup(list_pass, 0, bindings.storage, 0, nullptr);
+                }
+                if (bindings.scene) {
                     wgpuRenderPassEncoderSetBindGroup(list_pass, 1, bindings.scene, 0, nullptr);
-                    wgpuRenderPassEncoderSetBindGroup(list_pass, 2, bindings.textures, 0, nullptr);
+                }
+                if (bindings.resources) {
+                    wgpuRenderPassEncoderSetBindGroup(list_pass, 2, bindings.resources, 0, nullptr);
+                }
+                if (bindings.material) {
                     wgpuRenderPassEncoderSetBindGroup(list_pass, 3, bindings.material, 0, nullptr);
-#if BBLITE_GPU_MORPH_STORAGE
-                    wgpuRenderPassEncoderSetBindGroup(list_pass, 0, bindings.morph, 0, nullptr);
-#endif
                 }
                 wgpuRenderPassEncoderSetVertexBuffer(list_pass, 0, mesh.vertices, 0,
                                                      WGPU_WHOLE_SIZE);
@@ -10673,6 +10463,8 @@ public:
         };
         if (scene.tasks.empty()) {
             const bool transmission = scene.transmission_enabled;
+            // The scene's own pass configures no clear colour.
+            const Color4 clear_color = scene_pass_clear_color(scene);
             WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             color_attachment.view = state.msaa_color_view;
             if (transmission) {
@@ -10685,15 +10477,15 @@ public:
                 color_attachment.storeOp = WGPUStoreOp_Store;
                 color_attachment.clearValue = WGPUColor{
                     upstream::inverse_image_processed_channel(
-                        scene.clear_color.r, scene.environment.exposure, scene.environment.contrast,
+                        clear_color.r, scene.environment.exposure, scene.environment.contrast,
                         scene.environment.tone_mapping_enabled),
                     upstream::inverse_image_processed_channel(
-                        scene.clear_color.g, scene.environment.exposure, scene.environment.contrast,
+                        clear_color.g, scene.environment.exposure, scene.environment.contrast,
                         scene.environment.tone_mapping_enabled),
                     upstream::inverse_image_processed_channel(
-                        scene.clear_color.b, scene.environment.exposure, scene.environment.contrast,
+                        clear_color.b, scene.environment.exposure, scene.environment.contrast,
                         scene.environment.tone_mapping_enabled),
-                    scene.clear_color.a,
+                    clear_color.a,
                 };
             } else if (state.multisampled()) {
                 color_attachment.resolveTarget = surface_view;
@@ -10705,10 +10497,10 @@ public:
                 color_attachment.storeOp =
                     overlay_plans.empty() ? WGPUStoreOp_Discard : WGPUStoreOp_Store;
                 color_attachment.clearValue = WGPUColor{
-                    scene.clear_color.r,
-                    scene.clear_color.g,
-                    scene.clear_color.b,
-                    scene.clear_color.a,
+                    clear_color.r,
+                    clear_color.g,
+                    clear_color.b,
+                    clear_color.a,
                 };
             } else {
                 // One sample has nothing to average, so the pass draws
@@ -10716,10 +10508,10 @@ public:
                 color_attachment.view = surface_view;
                 color_attachment.storeOp = WGPUStoreOp_Store;
                 color_attachment.clearValue = WGPUColor{
-                    scene.clear_color.r,
-                    scene.clear_color.g,
-                    scene.clear_color.b,
-                    scene.clear_color.a,
+                    clear_color.r,
+                    clear_color.g,
+                    clear_color.b,
+                    clear_color.a,
                 };
             }
             color_attachment.loadOp = WGPULoadOp_Clear;
@@ -10795,7 +10587,7 @@ public:
                     if (handle_at(engine.billboard_systems, billboard.system).depth_mode != mode) {
                         continue;
                     }
-                    record_dawn_billboard_pass(pass, engine, billboard);
+                    record_dawn_billboard_pass(pass, engine, billboard, billboard.frame_scene);
                 }
             };
 #endif
@@ -10824,7 +10616,8 @@ public:
                 case upstream::RenderStage::transparent:
                     draw_render_list(render_plan.draw_lists.transparent);
 #if BBLITE_HAS_TEXT
-                    state.text->scene.draw(state.text->borrow_pass(pass));
+                    state.text->scene.draw(state.text->borrow_pass(pass),
+                                           bbl::text_surface(engine));
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
                     if (state.has_scene_sprite_pass) {
@@ -10897,8 +10690,10 @@ public:
                 overlay_descriptor.depthStencilAttachment = &overlay_depth;
                 DawnRenderPass overlay_pass{
                     wgpuCommandEncoderBeginRenderPass(encoder, &overlay_descriptor)};
+                // The layer's own scene pass camera, with no fallback to the
+                // base scene's.
                 set_pass_camera_viewport(overlay_pass, *overlay_scene, engine,
-                                         layer_camera(*overlay_scene), width, height);
+                                         scene_pass_camera(engine, *overlay_scene), width, height);
                 WGPURenderPipeline overlay_bound_pipeline = nullptr;
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
@@ -11060,6 +10855,9 @@ public:
                                 target_record.swapchain
                                     ? 1u
                                     : task_sample_count(state, target_record.samples);
+                            // The camera the task's pass renders through: its
+                            // viewport narrows the pass (`executePassBody`).
+                            CameraRecord* const pass_camera = task_pass_camera(engine, task);
 #if BBLITE_HAS_TAA
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
@@ -11068,18 +10866,12 @@ public:
                                 throw std::runtime_error(
                                     "Temporal source requires an admitted Standard color pass in its owning scene.");
                             }
-                            CameraRecord* source_camera =
-                                task.render.has_camera
-                                    ? &handle_at(engine.cameras, task.render.camera)
-                                    : handle_find(engine.cameras, task.source_scene->camera);
+                            // `validate_temporal_source` refuses a task
+                            // without a camera.
+                            CameraRecord* const source_camera = pass_camera;
                             validate_temporal_source(engine, task, source_camera,
                                                      render_task.draw_lists);
-                            if (!source_camera && !camera) {
-                                throw std::runtime_error(
-                                    "A temporal source pass without a camera is not reached.");
-                            }
-                            const CameraRecord& task_camera =
-                                source_camera ? *source_camera : *camera;
+                            const CameraRecord& task_camera = *source_camera;
                             const auto graph_extent =
                                 scene_surface_extent(engine, graph_scene, width, height);
                             restore_temporal_source_buffer(state, task, render_task);
@@ -11109,9 +10901,8 @@ public:
                                                  sizeof(task_camera_pass.view_projection));
                             write_material_uniforms(render_task.draw_lists.opaque, matrices);
                             write_material_uniforms(render_task.draw_lists.transparent, matrices);
-                            if (source_camera)
-                                upstream::sort_transparent_draws(render_task.draw_lists.transparent,
-                                                                 engine, task_camera);
+                            upstream::sort_transparent_draws(render_task.draw_lists.transparent,
+                                                             engine, source_camera);
 #endif
 #if BBLITE_SHADOW_RECEIVERS
                             if (task.render.shadow_generator.value <
@@ -11228,6 +11019,8 @@ public:
                                 pass_descriptor.depthStencilAttachment = &depth_attachment;
                                 DawnRenderPass task_pass{
                                     wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                                set_task_camera_viewport(task_pass, pass_camera, target.width,
+                                                         target.height);
                                 const auto depth_only_group =
                                     [&](const MeshHandle handle) -> WGPUBindGroup {
                                     DawnDepthOnlyDraw& draw =
@@ -11348,7 +11141,7 @@ public:
                             color_attachment.loadOp =
                                 task.render.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
                             color_attachment.storeOp = WGPUStoreOp_Store;
-                            const Color4 task_clear_color = render_task_clear_color(task);
+                            const Color4 task_clear_color = task_pass_clear_color(task);
                             color_attachment.clearValue = WGPUColor{
                                 task_clear_color.r,
                                 task_clear_color.g,
@@ -11407,21 +11200,9 @@ public:
                             }
                             DawnRenderPass task_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                            set_task_camera_viewport(task_pass, pass_camera, target.width,
+                                                     target.height);
                             WGPURenderPipeline bound_pipeline = nullptr;
-#if BBLITE_HAS_TAA
-                            if (source_camera && task_camera.viewport) {
-                                const auto rectangle = upstream::resolve_camera_viewport(
-                                    task_camera, target.width, target.height);
-                                wgpuRenderPassEncoderSetViewport(
-                                    task_pass, static_cast<float>(rectangle.x),
-                                    static_cast<float>(rectangle.y),
-                                    static_cast<float>(rectangle.width),
-                                    static_cast<float>(rectangle.height), 0.0f, 1.0f);
-                                wgpuRenderPassEncoderSetScissorRect(task_pass, rectangle.x,
-                                                                    rectangle.y, rectangle.width,
-                                                                    rectangle.height);
-                            }
-#endif
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -11429,7 +11210,9 @@ public:
                                             .depth_mode != mode) {
                                         continue;
                                     }
-                                    record_dawn_billboard_pass(task_pass, engine, billboard);
+                                    record_dawn_billboard_pass(
+                                        task_pass, engine, billboard,
+                                        dawn_billboard_task_scene(billboard, handle.value));
                                 }
                                 // The billboard pass has its own pipeline; a following
                                 // mesh list must not mistake the previously cached mesh
@@ -11495,7 +11278,6 @@ public:
                                     state.background_arm(*state.background_draws.ground);
                                 draw_dawn_background_arm(task_pass, arm,
                                                          render_task.pinned_frame_group);
-                                bound_pipeline = arm.pipeline;
                             }
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -11516,8 +11298,12 @@ public:
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                                     DawnRenderPass utility_pass{wgpuCommandEncoderBeginRenderPass(
                                         encoder, &pass_descriptor)};
+                                    // The layer's own scene pass camera, with
+                                    // no fallback to the base scene's.
+                                    const CameraRecord* const utility_camera =
+                                        scene_pass_camera(engine, utility);
                                     set_pass_camera_viewport(utility_pass, utility, engine,
-                                                             layer_camera(utility), target.width,
+                                                             utility_camera, target.width,
                                                              target.height);
                                     pass_scene = &utility;
                                     pass_meshes = &state.overlay_meshes[layer];
@@ -11531,12 +11317,9 @@ public:
                                 const WGPUBuffer utility_uniforms = state.view_projection;
 #endif
                                     WGPURenderPipeline utility_pipeline = nullptr;
-                                    if (const CameraRecord* utility_camera =
-                                            layer_camera(utility)) {
-                                        upstream::sort_transparent_draws(
-                                            overlay_plans[layer].draw_lists.transparent, engine,
-                                            *utility_camera);
-                                    }
+                                    upstream::sort_transparent_draws(
+                                        overlay_plans[layer].draw_lists.transparent, engine,
+                                        utility_camera);
                                     draw_list_into(utility_pass,
                                                    overlay_plans[layer].draw_lists.opaque, samples,
                                                    utility_pipeline, pass_has_depth, utility_group,
@@ -11555,8 +11338,9 @@ public:
                         }
                         if (task.kind == FrameTaskKind::geometry) {
                             // Without a camera the task does not execute, not
-                            // even its clears (geometry-renderer-task.ts).
-                            if (!layer_camera(graph_scene))
+                            // even its clears.
+                            if (upstream::geometry_task_skips(
+                                    geometry_pass_camera(engine, graph_scene)))
                                 continue;
                             DawnGeometryTask& geometry = handle_at(state.geometry_tasks, handle);
                             DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
@@ -11617,6 +11401,11 @@ public:
                             pass_descriptor.depthStencilAttachment = &depth_attachment;
                             DawnRenderPass task_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                            // Over the task's own attachments, which the frame
+                            // graph allocates at the frame's extent.
+                            set_task_camera_viewport(task_pass,
+                                                     geometry_pass_camera(engine, graph_scene),
+                                                     width, height);
                             // Both are read only by the composed families' arms below,
                             // so a scene reaching neither leaves them untouched.
                             [[maybe_unused]] WGPURenderPipeline bound_pipeline = nullptr;

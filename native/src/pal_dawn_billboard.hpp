@@ -22,6 +22,9 @@
 #include <cstdint>
 #include <numeric>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // billboard_draw_plan / billboard_needs_upload: the program ladder and
@@ -34,6 +37,15 @@
 
 namespace bbl::pal {
 
+/**
+ * The pin's per-pass scene block one pass target binds at a billboard
+ * program's group 0, and the group over it.
+ */
+struct DawnBillboardScene {
+    WGPUBuffer uniforms = nullptr;
+    WGPUBindGroup group = nullptr;
+};
+
 /** One billboard system, as Dawn resources. */
 struct DawnBillboardResources {
     /**
@@ -44,20 +56,28 @@ struct DawnBillboardResources {
      */
     std::uint32_t atlas_mip_levels = 1u;
     WGPURenderPipeline pipeline = nullptr;
-    WGPUShaderModule vertex_module = nullptr;
-    WGPUShaderModule fragment_module = nullptr;
+    // The program's one module: both stages enter where it declares them.
+    WGPUShaderModule module = nullptr;
     // The mode-4 wrapper's second pass: a stock Add pipeline over the same
     // instances and the same bind groups, built only when the descriptor
     // carries two passes. Its layout is identical -- the Multiply system
     // declares no fx block either -- so nothing but the pipeline differs.
     WGPURenderPipeline add_pipeline = nullptr;
-    WGPUShaderModule add_vertex_module = nullptr;
-    WGPUShaderModule add_fragment_module = nullptr;
-    std::array<WGPUBindGroupLayout, 4> group_layouts{};
+    WGPUShaderModule add_module = nullptr;
+    // The pin's two groups: the pass's scene block at 0, the system's own
+    // block, atlas and custom resources at 1.
+    std::array<WGPUBindGroupLayout, 2> group_layouts{};
     WGPUBuffer index_buffer = nullptr;
     WGPUBuffer instances = nullptr;
-    WGPUBuffer vertex_uniforms = nullptr;
-    WGPUBuffer fragment_uniforms = nullptr;
+    // The system block (group 1).
+    WGPUBuffer system_uniforms = nullptr;
+    // Group 0 as the program declares it -- the pin's scene block -- and
+    // one block and group per pass target the system draws into: the
+    // frame's own, and each scene-stage render task's, keyed by the task,
+    // as the pin binds each task's own scene group.
+    std::vector<DawnReflectedLayoutEntry> scene_layout;
+    DawnBillboardScene frame_scene;
+    std::unordered_map<std::uint32_t, DawnBillboardScene> task_scenes;
     // Bound beside the system uniforms for a custom-shader system, and
     // null for a plain one, which is the pin's own nullable fx attachment.
     WGPUBuffer fx_uniforms = nullptr;
@@ -71,9 +91,7 @@ struct DawnBillboardResources {
     // The custom shader's extra textures, in the order they bind after
     // the atlas.
     std::vector<DawnSampledTexture> extras;
-    WGPUBindGroup vertex_group = nullptr;
-    WGPUBindGroup texture_group = nullptr;
-    WGPUBindGroup fragment_group = nullptr;
+    WGPUBindGroup system_group = nullptr;
     BillboardSystemHandle system{};
     // The reordered upload, kept across frames.
     std::vector<float> sorted;
@@ -85,12 +103,6 @@ struct DawnBillboardResources {
 inline void release_dawn_billboard_resources(WGPUDevice, DawnBillboardResources&) noexcept;
 using DawnBillboardPass = OwnedGpuRecord<DawnBillboardResources, std::remove_pointer_t<WGPUDevice>,
                                          release_dawn_billboard_resources>;
-
-/** The vertex block the reconstructed billboard stage declares. */
-struct DawnBillboardSceneUniforms {
-    std::array<float, 16> view_projection{};
-    std::array<float, 16> view{};
-};
 
 inline WGPUVertexFormat dawn_billboard_format(std::uint32_t float_count) {
     switch (float_count) {
@@ -106,6 +118,59 @@ inline WGPUVertexFormat dawn_billboard_format(std::uint32_t float_count) {
         throw std::runtime_error("Billboard instance attribute has an unsupported float "
                                  "count.");
     }
+}
+
+/** A pass target's scene block and the group over it, laid out as group 0. */
+inline DawnBillboardScene create_dawn_billboard_scene(WGPUDevice device,
+                                                      const DawnBillboardResources& pass) {
+    DawnBillboardScene scene;
+    WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+    descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+    descriptor.size = sizeof(upstream::SceneUniforms);
+    scene.uniforms = wgpuDeviceCreateBuffer(device, &descriptor);
+    if (!scene.uniforms)
+        dawn_error("wgpuDeviceCreateBuffer billboard scene block");
+    scene.group = create_dawn_named_group(device, pass.group_layouts[0], pass.scene_layout, 0,
+                                          [&](std::string_view name, WGPUBindGroupEntry& entry) {
+                                              if (name != "scene")
+                                                  return false;
+                                              entry.buffer = scene.uniforms;
+                                              entry.size = sizeof(upstream::SceneUniforms);
+                                              return true;
+                                          });
+    return scene;
+}
+
+inline void release_dawn_billboard_scene(DawnBillboardScene& scene) noexcept {
+    if (scene.group)
+        wgpuBindGroupRelease(scene.group);
+    if (scene.uniforms)
+        wgpuBufferRelease(scene.uniforms);
+    scene = DawnBillboardScene{};
+}
+
+/**
+ * A scene-stage render task's own pass block, as the pin binds each task's
+ * scene group: written into the task's own buffer, so every task drawing
+ * the system in one submission reads the block of the task it draws for.
+ */
+inline void write_dawn_billboard_task_scene(WGPUDevice device, WGPUQueue queue,
+                                            DawnBillboardPass& pass, std::uint32_t task,
+                                            const upstream::SceneUniforms& scene_block) {
+    auto found = pass.task_scenes.find(task);
+    if (found == pass.task_scenes.end())
+        found = pass.task_scenes.emplace(task, create_dawn_billboard_scene(device, pass)).first;
+    wgpuQueueWriteBuffer(queue, found->second.uniforms, 0, &scene_block, sizeof(scene_block));
+}
+
+/** The scene group a task binds, written by `write_dawn_billboard_task_scene`. */
+inline const DawnBillboardScene& dawn_billboard_task_scene(const DawnBillboardPass& pass,
+                                                           std::uint32_t task) {
+    const auto found = pass.task_scenes.find(task);
+    if (found == pass.task_scenes.end())
+        dawn_error("billboard system drawn by render task " + std::to_string(task) +
+                   " has no scene block written for that task.");
+    return found->second;
 }
 
 inline DawnBillboardPass
@@ -133,25 +198,25 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
     // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
     // keeps only its API mechanics.
     const BillboardDrawPlan plan = billboard_draw_plan(system);
-    const bool axis_locked = plan.vertex_reads_system_block;
-    pass.vertex_module = load_wgsl_module(device, plan.vertex_stem);
-    pass.fragment_module = load_wgsl_module(device, plan.fragment_stem);
+    // The program's one module, deployed whole under the fragment stem;
+    // both stages enter where it declares them.
+    const std::string stem = plan.program_stem;
+    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
+    pass.module = load_wgsl_module(device, fragment_stem);
 
-    // Every group is laid out from what the pass's modules declare in it
-    // (their `.slots` layout lines). Group 0 is declared by neither -- the
-    // scene block is re-homed into the vertex group -- and lays out empty so
-    // the layout's group indexes line up; then the vertex block (and, for
-    // the axis-locked basis, the system block) at 1, the atlas pair and a
-    // custom program's extra pairs at 2, and the system block beside a
-    // custom program's fx block at 3. The mode-4 add pass draws the stock
-    // program under the same layout, so its modules are laid out with the
-    // pass's own.
-    std::vector<DawnLayoutStage> stages{{plan.vertex_stem, WGPUShaderStage_Vertex},
-                                        {plan.fragment_stem, WGPUShaderStage_Fragment}};
+    // Both groups are laid out from what the program's stages declare in
+    // them (their `.slots` layout lines): the pin's scene block at 0, the
+    // system block, atlas pair and a custom program's fx block and extra
+    // pairs at 1. The mode-4 add pass draws the stock program under the
+    // same layout, so its stages are laid out with the pass's own.
+    std::vector<DawnLayoutStage> stages{{vertex_stem, WGPUShaderStage_Vertex},
+                                        {fragment_stem, WGPUShaderStage_Fragment}};
     if (plan.particle_passes == 2) {
         stages.push_back({"billboard.vert", WGPUShaderStage_Vertex});
         stages.push_back({"billboard.frag", WGPUShaderStage_Fragment});
     }
+    if (dawn_reflected_group_count(stages) != pass.group_layouts.size())
+        dawn_error("billboard program " + stem + " declares groups other than the pin's two.");
     for (std::uint32_t group = 0; group < pass.group_layouts.size(); ++group)
         pass.group_layouts[group] = create_dawn_reflected_layout(device, stages, group);
     auto attributes = vertex_attribute_array<upstream::billboard_instance_attributes.size()>();
@@ -184,8 +249,7 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
         color_target.blend = &blend_state;
     }
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = pass.fragment_module;
-    fragment_state.entryPoint = string_view("mainFragment");
+    fragment_state.module = pass.module;
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
 
@@ -203,8 +267,7 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
 
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = pass.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.module = pass.module;
     descriptor.vertex.bufferCount = 1;
     descriptor.vertex.buffers = &instance_layout;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
@@ -239,13 +302,12 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
         add_blend.alpha.dstFactor = dawn_sprite_blend_factor(add.alpha.dst);
         WGPUColorTargetState add_target = color_target;
         add_target.blend = add.enabled ? &add_blend : nullptr;
-        pass.add_vertex_module = load_wgsl_module(device, "billboard.vert");
-        pass.add_fragment_module = load_wgsl_module(device, "billboard.frag");
+        pass.add_module = load_wgsl_module(device, "billboard.frag");
         WGPUFragmentState add_fragment = fragment_state;
-        add_fragment.module = pass.add_fragment_module;
+        add_fragment.module = pass.add_module;
         add_fragment.targets = &add_target;
         WGPURenderPipelineDescriptor add_descriptor = descriptor;
-        add_descriptor.vertex.module = pass.add_vertex_module;
+        add_descriptor.vertex.module = pass.add_module;
         add_descriptor.fragment = &add_fragment;
         pass.add_pipeline = wgpuDeviceCreateRenderPipeline(device, &add_descriptor);
         if (!pass.add_pipeline) {
@@ -267,11 +329,9 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
 
         WGPUBufferDescriptor uniform_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         uniform_descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        uniform_descriptor.size = sizeof(DawnBillboardSceneUniforms);
-        pass.vertex_uniforms = wgpuDeviceCreateBuffer(device, &uniform_descriptor);
         uniform_descriptor.size = upstream::billboard_system_ubo_bytes;
-        pass.fragment_uniforms = wgpuDeviceCreateBuffer(device, &uniform_descriptor);
-        if (!pass.vertex_uniforms || !pass.fragment_uniforms) {
+        pass.system_uniforms = wgpuDeviceCreateBuffer(device, &uniform_descriptor);
+        if (!pass.system_uniforms) {
             dawn_error("wgpuDeviceCreateBuffer billboard uniforms");
         }
         if (system.custom_shader) {
@@ -292,49 +352,32 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
     pass.atlas_view = create_dawn_texture_view(pass.atlas, nullptr);
     pass.sampler = create_texture_sampler(device, atlas.sampler);
 
-    std::array<WGPUBindGroupEntry, 2> vertex_bindings{};
-    vertex_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    vertex_bindings[0].binding = 0;
-    vertex_bindings[0].buffer = pass.vertex_uniforms;
-    vertex_bindings[0].size = sizeof(DawnBillboardSceneUniforms);
-    vertex_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    vertex_bindings[1].binding = 1;
-    vertex_bindings[1].buffer = pass.fragment_uniforms;
-    vertex_bindings[1].size = upstream::billboard_system_ubo_bytes;
-    WGPUBindGroupDescriptor vertex_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    vertex_group.layout = pass.group_layouts[1];
-    vertex_group.entryCount = axis_locked ? 2u : 1u;
-    vertex_group.entries = vertex_bindings.data();
-    pass.vertex_group = wgpuDeviceCreateBindGroup(device, &vertex_group);
-
-    std::vector<WGPUBindGroupEntry> texture_bindings;
-    append_dawn_texture_pair(texture_bindings, pass.atlas_view, pass.sampler);
     for (const PixelsTexture& extra : system.custom_textures) {
         pass.extras.push_back(upload_dawn_extra_texture(device, queue, extra));
-        append_dawn_texture_pair(texture_bindings, pass.extras.back());
     }
-    WGPUBindGroupDescriptor texture_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    texture_group.layout = pass.group_layouts[2];
-    texture_group.entryCount = static_cast<std::uint32_t>(texture_bindings.size());
-    texture_group.entries = texture_bindings.data();
-    pass.texture_group = wgpuDeviceCreateBindGroup(device, &texture_group);
-
-    std::array<WGPUBindGroupEntry, 2> fragment_bindings{};
-    fragment_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    fragment_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    fragment_bindings[0].binding = 0;
-    fragment_bindings[0].buffer = pass.fragment_uniforms;
-    fragment_bindings[0].size = upstream::billboard_system_ubo_bytes;
-    if (system.custom_shader) {
-        fragment_bindings[1].binding = 1;
-        fragment_bindings[1].buffer = pass.fx_uniforms;
-        fragment_bindings[1].size = upstream::sprite_fx_ubo_bytes;
-    }
-    WGPUBindGroupDescriptor fragment_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    fragment_group.layout = pass.group_layouts[3];
-    fragment_group.entryCount = system.custom_shader ? 2u : 1u;
-    fragment_group.entries = fragment_bindings.data();
-    pass.fragment_group = wgpuDeviceCreateBindGroup(device, &fragment_group);
+    // Each binding the program declares takes the resource that serves the
+    // name it is declared under: the pin's own names, whichever binding
+    // numbers its composer gave them.
+    const auto serve = [&](std::string_view name, WGPUBindGroupEntry& entry) {
+        if (name == "billboards") {
+            entry.buffer = pass.system_uniforms;
+            entry.size = upstream::billboard_system_ubo_bytes;
+        } else if (name == "fx" && pass.fx_uniforms) {
+            entry.buffer = pass.fx_uniforms;
+            entry.size = upstream::sprite_fx_ubo_bytes;
+        } else if (name == "atlasTex") {
+            entry.textureView = pass.atlas_view;
+        } else if (name == "atlasSamp") {
+            entry.sampler = pass.sampler;
+        } else {
+            return serve_dawn_extra_texture(name, system.custom_texture_names, pass.extras, entry);
+        }
+        return true;
+    };
+    pass.system_group =
+        create_dawn_reflected_group(device, pass.group_layouts[1], stages, 1, serve);
+    pass.scene_layout = dawn_reflected_layout(stages, 0);
+    pass.frame_scene = create_dawn_billboard_scene(device, pass);
     return pass;
 }
 
@@ -348,18 +391,17 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
  */
 inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engine& engine,
                                        DawnBillboardPass& pass,
-                                       const std::array<float, 16>& view_projection,
-                                       const std::array<float, 16>& view, double delta_ms) {
+                                       const upstream::SceneUniforms& scene_block,
+                                       double delta_ms) {
     const BillboardSystemRecord& system = handle_at(engine.billboard_systems, pass.system);
+    const std::array<float, 16>& view = scene_block.view;
 
-    DawnBillboardSceneUniforms scene_uniforms{};
-    scene_uniforms.view_projection = view_projection;
-    scene_uniforms.view = view;
-    wgpuQueueWriteBuffer(queue, pass.vertex_uniforms, 0, &scene_uniforms, sizeof(scene_uniforms));
+    // The pass's scene block, which the program binds at group 0.
+    wgpuQueueWriteBuffer(queue, pass.frame_scene.uniforms, 0, &scene_block, sizeof(scene_block));
 
     std::array<float, upstream::billboard_system_ubo_bytes / 4> system_ubo{};
     upstream::build_billboard_system_ubo(system, system_ubo);
-    wgpuQueueWriteBuffer(queue, pass.fragment_uniforms, 0, system_ubo.data(),
+    wgpuQueueWriteBuffer(queue, pass.system_uniforms, 0, system_ubo.data(),
                          system_ubo.size() * sizeof(float));
 
     // The pin advances the clock in `_update`, before and regardless of
@@ -379,20 +421,22 @@ inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engi
     if (!billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
-    upstream::billboard_upload_instances(system, view, pass.sorted
-#if BBLITE_FLOATING_ORIGIN
-                                         ,
-                                         fo_offset
-#endif
-    );
+    // `context._camera`: the pass that draws a system renders through its
+    // scene's camera.
+    upstream::billboard_upload_instances(system, scene_camera(engine, scene) != nullptr, view,
+                                         pass.sorted, fo_offset);
     wgpuQueueWriteBuffer(queue, pass.instances, 0, pass.sorted.data(),
                          pass.sorted.size() * sizeof(float));
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 
-/** Records the draw into an encoder the scene renderer already opened. */
+/**
+ * Records the draw into an encoder the scene renderer already opened,
+ * binding `scene` -- the frame's or the drawing task's own -- at group 0.
+ */
 inline void record_dawn_billboard_pass(WGPURenderPassEncoder encoder, Engine& engine,
-                                       const DawnBillboardPass& pass) {
+                                       const DawnBillboardPass& pass,
+                                       const DawnBillboardScene& scene) {
     const BillboardSystemRecord& system = handle_at(engine.billboard_systems, pass.system);
     if (!system.visible || system.count == 0) {
         return;
@@ -401,9 +445,8 @@ inline void record_dawn_billboard_pass(WGPURenderPassEncoder encoder, Engine& en
     wgpuRenderPassEncoderSetIndexBuffer(encoder, pass.index_buffer, WGPUIndexFormat_Uint16, 0,
                                         sizeof(std::uint16_t) *
                                             upstream::billboard_index_data.size());
-    wgpuRenderPassEncoderSetBindGroup(encoder, 1, pass.vertex_group, 0, nullptr);
-    wgpuRenderPassEncoderSetBindGroup(encoder, 2, pass.texture_group, 0, nullptr);
-    wgpuRenderPassEncoderSetBindGroup(encoder, 3, pass.fragment_group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(encoder, 0, scene.group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(encoder, 1, pass.system_group, 0, nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(encoder, 0, pass.instances, 0,
                                          static_cast<std::uint64_t>(system.count) *
                                              upstream::billboard_instance_stride_bytes);
@@ -428,43 +471,36 @@ inline void release_dawn_billboard_resources([[maybe_unused]] WGPUDevice device,
     if (pass.fx_uniforms)
         wgpuBufferRelease(pass.fx_uniforms);
     release_dawn_extra_textures(pass.extras);
-    if (pass.vertex_group)
-        wgpuBindGroupRelease(pass.vertex_group);
-    if (pass.texture_group)
-        wgpuBindGroupRelease(pass.texture_group);
-    if (pass.fragment_group)
-        wgpuBindGroupRelease(pass.fragment_group);
+    release_dawn_billboard_scene(pass.frame_scene);
+    for (auto& [task, scene] : pass.task_scenes) {
+        (void)task;
+        release_dawn_billboard_scene(scene);
+    }
+    if (pass.system_group)
+        wgpuBindGroupRelease(pass.system_group);
     if (pass.sampler)
         wgpuSamplerRelease(pass.sampler);
     if (pass.atlas_view)
         wgpuTextureViewRelease(pass.atlas_view);
     if (pass.atlas)
         wgpuTextureRelease(pass.atlas);
-    if (pass.vertex_uniforms)
-        wgpuBufferRelease(pass.vertex_uniforms);
-    if (pass.fragment_uniforms)
-        wgpuBufferRelease(pass.fragment_uniforms);
+
+    if (pass.system_uniforms)
+        wgpuBufferRelease(pass.system_uniforms);
     if (pass.instances)
         wgpuBufferRelease(pass.instances);
     if (pass.index_buffer)
         wgpuBufferRelease(pass.index_buffer);
     if (pass.add_pipeline)
         wgpuRenderPipelineRelease(pass.add_pipeline);
-    if (pass.add_vertex_module) {
-        wgpuShaderModuleRelease(pass.add_vertex_module);
-    }
-    if (pass.add_fragment_module) {
-        wgpuShaderModuleRelease(pass.add_fragment_module);
-    }
+    if (pass.add_module)
+        wgpuShaderModuleRelease(pass.add_module);
     for (WGPUBindGroupLayout layout : pass.group_layouts) {
         if (layout)
             wgpuBindGroupLayoutRelease(layout);
     }
-    if (pass.vertex_module)
-        wgpuShaderModuleRelease(pass.vertex_module);
-    if (pass.fragment_module) {
-        wgpuShaderModuleRelease(pass.fragment_module);
-    }
+    if (pass.module)
+        wgpuShaderModuleRelease(pass.module);
     if (pass.pipeline)
         wgpuRenderPipelineRelease(pass.pipeline);
     pass = DawnBillboardResources{};

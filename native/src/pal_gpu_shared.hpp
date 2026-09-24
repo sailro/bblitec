@@ -12,6 +12,7 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
@@ -80,6 +81,11 @@
 // attribute agreement below. Emitted only for a scene that builds a system.
 #if BBLITE_HAS_BILLBOARDS
 #include <bblite/upstream/billboard_system.hpp>
+#endif
+// The 2D layer family's generated header, for the renderer's in-place layer
+// sort its per-frame update runs.
+#if BBLITE_HAS_SPRITE_RENDERER
+#include <bblite/upstream/sprite_layer.hpp>
 #endif
 // Babylon Lite's own composed PBR variants: one entry per material feature
 // set the scene's assets reach, each naming its compiled stages and the byte
@@ -376,37 +382,32 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
         });
 }
 
-/** Final viewport/scissor after composing a camera viewport into its pane. */
+/**
+ * Final viewport/scissor of a scene's own pass: the pass camera's
+ * `_applyCameraViewport` rectangle (`upstream::pass_camera_viewport`)
+ * composed into the scene's surface pane. A camera-less pass, like one whose
+ * camera has no viewport, keeps the whole pane.
+ */
 #if BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
-                                                          const CameraRecord& camera,
+                                                          const CameraRecord* camera,
                                                           std::uint32_t target_width,
                                                           std::uint32_t target_height) {
     const std::optional<PixelViewport> pane =
         scene_surface_pane(engine, scene, target_width, target_height);
     if (!pane.has_value()) {
-        if (!camera.viewport.has_value())
-            return std::nullopt;
-        return upstream::resolve_camera_viewport(camera, static_cast<double>(target_width),
-                                                 static_cast<double>(target_height));
+        return upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                              static_cast<double>(target_height));
     }
-    if (!camera.viewport.has_value())
-        return pane;
-    PixelViewport viewport = upstream::resolve_camera_viewport(
+    std::optional<PixelViewport> viewport = upstream::pass_camera_viewport(
         camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
-    viewport.x += pane->x;
-    viewport.y += pane->y;
+    if (!viewport.has_value())
+        return pane;
+    viewport->x += pane->x;
+    viewport->y += pane->y;
     return viewport;
 }
 #endif
-
-inline std::string sprite_fragment_shader_name(std::uint32_t program) {
-    if (program == 0u)
-        return "sprite.frag";
-    if (program == 1u)
-        return "sprite_custom.frag";
-    return "sprite_custom_" + std::to_string(program) + ".frag";
-}
 
 /**
  * The scene's active camera, read from the live `scene.camera` at each
@@ -418,18 +419,6 @@ inline std::string sprite_fragment_shader_name(std::uint32_t program) {
  */
 inline CameraRecord* scene_camera(Engine& engine, const Scene& scene) {
     return handle_find(engine.cameras, scene.camera);
-}
-
-/**
- * A render task's camera, the pin's `cfg.cam ?? scene.camera`: the task's
- * own when it was given one, else `scene`'s, the camera of the scene it
- * renders. Null is the no-camera pass `scene_camera` describes.
- */
-inline const CameraRecord* render_task_camera(const Engine& engine, const FrameTaskRecord& task,
-                                              const CameraRecord* scene) {
-    const CameraRecord* own =
-        task.render.has_camera ? handle_find(engine.cameras, task.render.camera) : nullptr;
-    return own ? own : scene;
 }
 
 /**
@@ -538,6 +527,23 @@ inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRec
         layer.uv_scroll, has_depth, layer.depth_mode == Sprite2DDepthMode::test_write,
         layer.alpha_to_coverage,
         layer.instance_floats_per_sprite * static_cast<std::uint32_t>(sizeof(float))};
+}
+
+/**
+ * A layer's program: the pin's module for its permutation, deployed whole
+ * under this stem -- the stock program (0) or a custom one (its 1-based
+ * index) -- with `<stem>.vert` and `<stem>.frag` both compiled from it.
+ * `spriteProgramStem` (upstream-lower.ts) deploys the same names.
+ */
+inline std::string sprite_program_stem(std::uint32_t program, const SpriteLayerPipelinePlan& plan) {
+    std::string stem = program == 0u   ? std::string("sprite")
+                       : program == 1u ? std::string("sprite_custom")
+                                       : "sprite_custom_" + std::to_string(program);
+    if (plan.has_depth)
+        stem += "_depth";
+    if (plan.scroll)
+        stem += "_uvscroll";
+    return stem;
 }
 
 /** Fixed pipeline identity for layers targeting the same scene pass. */
@@ -742,6 +748,16 @@ inline bool render_target_samples_depth(const RenderTargetRecord& record) {
 }
 
 /**
+ * The refusal both backends owe a frame record naming a handle outside its
+ * table: a generation defect, classified as `handle_at` classifies its own
+ * refusal. Never a `GpuTransportError`, which would reach the
+ * device-recovery listeners as a lost device.
+ */
+[[noreturn]] inline void refuse_invalid_frame_handle(const char* message) {
+    throw std::out_of_range(message);
+}
+
+/**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
  * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
  * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):
@@ -753,6 +769,80 @@ struct PinnedGeometryParams {
     std::array<float, 16> previousViewProjection{};
     std::array<float, 4> cameraNearFar{};
 };
+
+/**
+ * A geometry task's Standard renderables' velocity state
+ * (`standard-geometry-renderable.ts`), one per mesh slot.
+ *
+ * The pin builds one renderable per bound mesh. It packs the mesh's world
+ * as `previousWorld` when built and starts with `velocityReady` false; each
+ * frame's update writes the mesh block from that snapshot and flag, then
+ * snapshots the current world and sets the flag, so a renderable's first
+ * frame writes `velocityEnabled` 0 and the composed vertex's previous clip
+ * falls back to the current one. The task rebuilds every renderable when
+ * the scene's renderable version moves (`rebuildBoundMeshes`), which here is
+ * the scene's `render_topology_version`, and a slot a new mesh reuses is a
+ * new renderable. The composed velocity arm and its block tail belong to the
+ * Standard geometry output alone, so the history is written for nothing
+ * else. Unguarded because the geometry encode names it in both backends
+ * whatever the variant count.
+ */
+struct PinnedVelocityHistory {
+    struct Renderable {
+        MeshHandle mesh{};
+        /** The pin's `previousWorld` snapshot and `velocityReady`. */
+        std::array<float, 16> previous_world{};
+        bool velocity_ready = false;
+        /**
+         * The history frame this renderable last updated in and what that
+         * update wrote: the pin updates each bound renderable once a frame,
+         * before any draw, so every draw of the mesh in the frame binds the
+         * same block.
+         */
+        std::uint64_t updated_frame = 0;
+        std::array<float, 16> written_previous_world{};
+        float written_velocity_enabled = 0.0f;
+    };
+    std::uint64_t frame = 0;
+    std::uint64_t topology_version = 0;
+    std::vector<Renderable> renderables;
+};
+
+/** Opens a task frame; a moved renderable version rebuilds every renderable. */
+inline void begin_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene) {
+    if (history.frame == 0 || history.topology_version != scene.render_topology_version) {
+        history.renderables.clear();
+        history.topology_version = scene.render_topology_version;
+    }
+    ++history.frame;
+}
+
+/**
+ * The renderable's update for this frame, run once however many draws the
+ * mesh has: builds the renderable on its first frame, then writes the
+ * snapshot and flag and snapshots `world`.
+ */
+inline const PinnedVelocityHistory::Renderable&
+update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
+                       const std::array<float, 16>& world) {
+    if (history.renderables.size() <= mesh.value) {
+        history.renderables.resize(static_cast<std::size_t>(mesh.value) + 1u);
+    }
+    PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+    if (!(renderable.mesh == mesh)) {
+        renderable = {};
+        renderable.mesh = mesh;
+        renderable.previous_world = world;
+    }
+    if (renderable.updated_frame != history.frame) {
+        renderable.written_previous_world = renderable.previous_world;
+        renderable.written_velocity_enabled = renderable.velocity_ready ? 1.0f : 0.0f;
+        renderable.previous_world = world;
+        renderable.velocity_ready = true;
+        renderable.updated_frame = history.frame;
+    }
+    return renderable;
+}
 
 // Where the per-instance streams sit in the shared attribute table both
 // backends bind against. The matrix columns take the four lanes after the
@@ -768,10 +858,8 @@ struct GpuVertex {
     float normal[3];
     float tangent[4];
     float uv[2];
-    float local_position[3];
     float uv2[2];
     float color[4];
-    float local_normal[3];
 #if BBLITE_GPU_DEFORMATION
     float joints[4];
     float weights[4];
@@ -791,11 +879,11 @@ struct GpuVertex {
 #endif
 };
 #if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
-static_assert(sizeof(GpuVertex) == 216);
+static_assert(sizeof(GpuVertex) == 192);
 #elif BBLITE_GPU_DEFORMATION
-static_assert(sizeof(GpuVertex) == 200);
+static_assert(sizeof(GpuVertex) == 176);
 #else
-static_assert(sizeof(GpuVertex) == 96);
+static_assert(sizeof(GpuVertex) == 72);
 #endif
 
 /**
@@ -1071,7 +1159,7 @@ struct DeformationUniforms {
     float options[4]{};
 };
 
-inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bool flat_normals) {
+inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
     DeformationUniforms result;
     for (std::array<float, 16>& matrix : result.bone_matrices) {
         matrix[0] = 1.0f;
@@ -1096,15 +1184,9 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bo
     }
     std::copy(mesh.morph_weights.begin(), mesh.morph_weights.end(), result.morph_weights);
     result.options[0] = 1.0f;
-    result.options[1] = flat_normals ? 1.0f : 0.0f;
     return result;
 }
 #endif
-
-// `transform_position`/`transform_direction` — the pin's own vertex-stage
-// world multiplies — moved to the always-emitted
-// `upstream/pinned_world_transform.hpp`, where both geometry loaders share
-// the same single emission.
 
 #if BBLITE_HAS_PICKING
 // GPU picking's backend-independent half. The arithmetic -- the pointer
@@ -1489,9 +1571,8 @@ private:
  * these bytes -- it reaches the vertex stage through the mesh block
  * (`mesh_block_world`) -- so a transform-only change uploads nothing.
  *
- * The two `local_*` lanes repeat the position and the normal for the
- * geometry arms that name them; the morph lanes carry the geometry's first
- * two targets for the vertex-attribute morph transport.
+ * The morph lanes carry the geometry's first two targets for the
+ * vertex-attribute morph transport.
  */
 inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
                                                 [[maybe_unused]] const MeshRecord& mesh) {
@@ -1513,10 +1594,8 @@ inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
             {vertex.normal.x, vertex.normal.y, vertex.normal.z},
             {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
             {vertex.uv.x, vertex.uv.y},
-            {vertex.position.x, vertex.position.y, vertex.position.z},
             {vertex.uv2.x, vertex.uv2.y},
             {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
 #if BBLITE_GPU_DEFORMATION
             {
                 static_cast<float>(vertex.joints[0]),
@@ -1957,45 +2036,7 @@ inline std::optional<std::array<float, 16>> shader_world_view(const std::array<f
     return view ? std::optional<std::array<float, 16>>{upstream::matrix_product(*view, world)}
                 : std::nullopt;
 }
-
-/**
- * One background-plan vertex (the skybox and ground quads) in GpuVertex
- * layout: the local-normal lane mirrors the normal, and the local-position
- * lane and every deformation lane stay zero. Both backends upload the plan quads from this one
- * packing, so the vertex bytes cannot differ between them.
- */
 #endif
-
-inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
-    return GpuVertex{
-        {vertex.position.x, vertex.position.y, vertex.position.z},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-        {
-            vertex.tangent.x,
-            vertex.tangent.y,
-            vertex.tangent.z,
-            vertex.tangent.w,
-        },
-        {vertex.uv.x, vertex.uv.y},
-        {}, // local position
-        {vertex.uv2.x, vertex.uv2.y},
-        {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-#if BBLITE_GPU_DEFORMATION
-        {}, // joints
-        {}, // weights
-        {}, // morph position 0
-        {}, // morph position 1
-        {}, // morph normal 0
-        {}, // morph normal 1
-        {}, // morph tangent 0
-        {}, // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-        {}, // integer joint indices
-#endif
-#endif
-    };
-}
 
 /**
  * Whether a live pool has outgrown the instance buffers its registration
@@ -2051,13 +2092,10 @@ struct PinnedVertexInput {
 };
 
 /**
- * Resolve one declared input. `local_position` is the arm a LOCAL_POSITION
- * geometry variant takes: its varying reads the raw attribute, so the draw
- * binds the vertex's local lanes and its mesh block carries the real node
- * world.
+ * Resolve one declared input onto the vertex's own lanes, which hold the
+ * geometry's local values for every family and view.
  */
-inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_local_position,
-                                             bool uses_local_normal = false) {
+inline PinnedVertexInput pinned_vertex_input(std::string_view name) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
             lane,
@@ -2067,12 +2105,10 @@ inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_lo
         };
     };
     if (name == "position") {
-        return at(VertexInputLane::float3, uses_local_position ? offsetof(GpuVertex, local_position)
-                                                               : offsetof(GpuVertex, position));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, position));
     }
     if (name == "normal") {
-        return at(VertexInputLane::float3, uses_local_normal ? offsetof(GpuVertex, local_normal)
-                                                             : offsetof(GpuVertex, normal));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
     }
     if (name == "tangent") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
@@ -2300,20 +2336,6 @@ inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
  *  outside the guard because every node draw site names it, and checked
  *  against the generated spelling where that exists. */
 inline constexpr std::size_t no_node_geometry_variant = npos;
-
-inline bool node_uses_local_attributes(std::size_t geometry_variant) {
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (geometry_variant == no_node_geometry_variant)
-        return false;
-    if (geometry_variant >= upstream::node_geometry_variants.size()) {
-        throw std::out_of_range("Invalid node geometry view.");
-    }
-    return true;
-#else
-    (void)geometry_variant;
-    return false;
-#endif
-}
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 static_assert(no_node_geometry_variant == upstream::node_no_geometry_variant,
@@ -2828,7 +2850,7 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
 }
 #endif
 
-#if BBLITE_PINNED_MATERIALS
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
 /**
  * The pin's per-pass scene block.
  *
@@ -2929,7 +2951,27 @@ inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engi
     }
     return scene_block;
 }
+#endif
 
+#if BBLITE_HAS_BILLBOARDS
+/**
+ * The scene block a billboard program binds at its group 0: the pin's
+ * block for the pass, over the view projection and view the pass draws
+ * billboards with. A pass without a camera writes none and keeps what its
+ * block last held (`pal::write_billboard_scene_block`).
+ */
+inline upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& engine,
+                                                     const CameraRecord& camera,
+                                                     const std::array<float, 16>& view_projection,
+                                                     const std::array<float, 16>& view) {
+    upstream::SceneUniforms block = pinned_scene_block(scene, engine, camera, view_projection);
+    block.viewProjection = view_projection;
+    block.view = view;
+    return block;
+}
+#endif
+
+#if BBLITE_PINNED_MATERIALS
 /**
  * The pin's per-pass lights block: a u32 count, three words of padding, then
  * MAX_LIGHTS entries.
@@ -3009,23 +3051,56 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
     upstream::MeshUniforms block{};
     block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
     pinned_mesh_light_selection(scene, engine, mesh, block);
-    // The velocity geometry arm's tail. No previous world is tracked, so
-    // the previous world is the world itself and the flag stays on: the
-    // composed vertex then measures camera motion alone, which is what the
-    // pin's tracked previous clip reduces to for a mesh that did not move.
-    // The generic lambda makes the access dependent: outside a template,
-    // both `if constexpr` branches must compile, and most scenes' mirrored
-    // MeshUniforms carries no velocity tail.
+    return block;
+}
+
+/**
+ * A geometry task's pre-draw update (`geometry-renderer-task.ts` executes
+ * every bound renderable's `update` before its first draw): each Standard
+ * mesh of the layer's plan, the hidden ones included, because the pin
+ * reads visibility only at the draw.
+ */
+inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
+                                         const Engine& engine,
+                                         const std::vector<upstream::RenderItem>& items) {
+    begin_pinned_velocity_frame(history, scene);
+    for (const upstream::RenderItem& source : items) {
+        const upstream::RenderItem item =
+            upstream::bind_render_item(source, engine, source.material);
+        if (item.material_kind != upstream::RenderMaterialKind::standard) {
+            continue;
+        }
+        update_pinned_velocity(
+            history, item.mesh,
+            mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh)));
+    }
+}
+
+/**
+ * The Standard geometry output's block tail (`standard-geometry-renderable.ts`
+ * `_baseUpdate`): what this frame's update wrote for the mesh. The generic
+ * lambda makes the access dependent: outside a template both `if constexpr`
+ * branches must compile, and most scenes' mirrored MeshUniforms carries no
+ * velocity tail.
+ */
+inline void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle mesh,
+                                       upstream::MeshUniforms& block) {
     [&](auto& dependent) {
         if constexpr (requires {
                           dependent.previousWorld;
                           dependent.velocityEnabled;
                       }) {
-            dependent.previousWorld = block.world;
-            dependent.velocityEnabled = 1.0f;
+            if (mesh.value >= history.renderables.size() ||
+                !(history.renderables[mesh.value].mesh == mesh) ||
+                history.renderables[mesh.value].updated_frame != history.frame) {
+                throw std::logic_error("A geometry task drew a Standard mesh its frame's "
+                                       "velocity update did not reach.");
+            }
+            const PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+            dependent.previousWorld = renderable.written_previous_world;
+            dependent.velocityEnabled = renderable.written_velocity_enabled;
         }
     }(block);
-    return block;
 }
 #endif
 
@@ -4057,31 +4132,38 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
             static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
+#if BBLITE_HAS_SPRITE_RENDERER
 /**
- * `spriteRendererUpdate`'s first act: run the renderer's own per-frame hooks
- * with the frame's delta, before anything reads its layer list.
+ * `spriteRendererUpdate` up to its upload: run the renderer's own per-frame
+ * hooks with the frame's delta, then sort its layer list in place
+ * (`sort_sprite_renderer_layers`), before anything reads the list.
  *
- * A disposed renderer runs none, which is the pin's own early return; the
- * list is copied because a hook may push another one, and upstream's
+ * A disposed renderer runs neither, which is the pin's own early return; the
+ * hook list is copied because a hook may push another one, and upstream's
  * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
  */
-inline void run_sprite_renderer_before_update(Engine& engine, SpriteRendererHandle renderer,
-                                              double delta_ms) {
+inline void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
+                                         double delta_ms) {
     if (renderer.value >= engine.sprite_renderers.size())
         return;
     SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
-    if (record.disposed || record.before_update.empty())
+    if (record.disposed)
         return;
-    // Copied into the record's own scratch rather than a fresh vector: the
-    // copy is what makes this iterate the list it entered with, the way
-    // upstream's `for (const hook of rr._beforeUpdate)` does, and assigning
-    // into a retained buffer keeps that guarantee while paying the
-    // allocation once instead of once per renderer per frame.
-    record.before_update_running.assign(record.before_update.begin(), record.before_update.end());
-    for (const auto& hook : record.before_update_running) {
-        hook(delta_ms);
+    if (!record.before_update.empty()) {
+        // Copied into the record's own scratch rather than a fresh vector:
+        // the copy is what makes this iterate the list it entered with, the
+        // way upstream's `for (const hook of rr._beforeUpdate)` does, and
+        // assigning into a retained buffer keeps that guarantee while paying
+        // the allocation once instead of once per renderer per frame.
+        record.before_update_running.assign(record.before_update.begin(),
+                                            record.before_update.end());
+        for (const auto& hook : record.before_update_running) {
+            hook(delta_ms);
+        }
     }
+    sort_sprite_renderer_layers(engine, handle_at(engine.sprite_renderers, renderer));
 }
+#endif
 
 /**
  * Whether a standalone driver's pass list still mirrors
@@ -4139,15 +4221,14 @@ inline std::size_t sprite_pass_target_run_end(const Engine& engine, const Sprite
  * keep pipeline and bind mechanics only.
  */
 struct BillboardDrawPlan {
-    const char* vertex_stem;
-    const char* fragment_stem;
+    /** The program's stem: `<stem>.vert` and `<stem>.frag` compile from one module. */
+    const char* program_stem;
     bool axis_locked;
     /** The pinned depth table pairs `transparent` with writes off, which
      *  is what makes the sorted draw order the composite, and `cutout`
      *  with writes on, which lets the GPU resolve overlap instead. */
     bool cutout_writes_depth;
-    /** The axis-locked basis reads the system block in the vertex stage. */
-    bool vertex_reads_system_block;
+
     std::uint32_t particle_passes;
 };
 
@@ -4170,24 +4251,21 @@ inline BillboardDrawPlan billboard_draw_plan(const BillboardSystemRecord& system
     }
     const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
     BillboardDrawPlan plan{};
-    // Unlike the 2D layer, a custom billboard program brings its own
-    // vertex stage: the pin's composer exposes the view distance and the
-    // world position to a custom body, which the stock stage does not
-    // write.
-    plan.vertex_stem = particle_multiply      ? "billboard_particle_multiply.vert"
-                       : system.custom_shader ? "billboard_custom.vert"
-                       : axis_locked          ? "billboard_axis_locked.vert"
-                                              : "billboard.vert";
-    // The cutout arm discards below the cutoff; with alpha-to-coverage
-    // the pin drops the discard and lets sample coverage carry the edge,
-    // so that permutation shares the transparent stage.
-    plan.fragment_stem = particle_multiply                     ? "billboard_particle_multiply.frag"
-                         : system.custom_shader                ? "billboard_custom.frag"
-                         : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
-                                                               : "billboard.frag";
+    // Each program is the module the pin composes for the system, deployed
+    // whole under these stems (`emitSpriteBillboard`, upstream-lower.ts).
+    // The custom composer takes the orientation and has no depth arm; the
+    // stock cutout arm discards below the cutoff, and with alpha-to-coverage
+    // the pin drops the discard and lets sample coverage carry the edge, so
+    // that permutation shares the transparent program.
+    const bool discards = cutout && !system.alpha_to_coverage;
+    plan.program_stem =
+        particle_multiply      ? "billboard_particle_multiply"
+        : system.custom_shader ? (axis_locked ? "billboard_custom_axis_locked" : "billboard_custom")
+        : discards             ? (axis_locked ? "billboard_axis_locked_cutout" : "billboard_cutout")
+        : axis_locked          ? "billboard_axis_locked"
+                               : "billboard";
     plan.axis_locked = axis_locked;
     plan.cutout_writes_depth = cutout;
-    plan.vertex_reads_system_block = axis_locked;
     plan.particle_passes = system.blend.particle_passes;
     return plan;
 }
@@ -4850,54 +4928,6 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
 }
 
 /**
- * Reconcile one backend's uploaded mesh rows with a rebuilt render plan.
- *
- * Plans preserve scene order, so a forward scan moves surviving rows,
- * releases removed rows, and uploads only new rows. The GPU resource type and
- * its release/upload operations remain backend-owned.
- */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline std::vector<GpuMesh>
-rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
-                      const std::vector<upstream::RenderItem>& updated_items,
-                      std::vector<GpuMesh>& uploaded_meshes, ReleaseMesh&& release_mesh,
-                      UploadItem&& upload_item) {
-    if (previous_items.size() != uploaded_meshes.size()) {
-        throw std::runtime_error("Render plan and uploaded mesh rows are out of sync.");
-    }
-    // The whole mesh handle: a row uploaded for a retired mesh must not
-    // survive into the mesh that reused its slot (and possibly its
-    // geometry slot) before this rebuild.
-    const auto same_source = [](const upstream::RenderItem& left,
-                                const upstream::RenderItem& right) {
-        return left.mesh == right.mesh && left.geometry == right.geometry &&
-               left.material.value == right.material.value;
-    };
-    std::vector<GpuMesh> result;
-    result.reserve(updated_items.size());
-    std::size_t previous_index = 0;
-    for (const upstream::RenderItem& item : updated_items) {
-        std::size_t scan = previous_index;
-        while (scan < previous_items.size() && !same_source(previous_items[scan], item)) {
-            ++scan;
-        }
-        if (scan < previous_items.size()) {
-            for (std::size_t dropped = previous_index; dropped < scan; ++dropped) {
-                release_mesh(uploaded_meshes[dropped]);
-            }
-            result.push_back(std::move(uploaded_meshes[scan]));
-            previous_index = scan + 1;
-            continue;
-        }
-        result.push_back(upload_item(item));
-    }
-    for (std::size_t dropped = previous_index; dropped < uploaded_meshes.size(); ++dropped) {
-        release_mesh(uploaded_meshes[dropped]);
-    }
-    return result;
-}
-
-/**
  * A material family appearing after registration must have composed
  * artifacts to draw with: generation composes variants from the whole
  * scene, so a family the tables never saw is a compiler contract broken,
@@ -4923,36 +4953,6 @@ inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
     }
 }
 
-/** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::RenderPlan>& plans,
-                                         std::vector<std::vector<GpuMesh>>& meshes,
-                                         std::vector<std::uint64_t>& versions,
-                                         bool draw_lists_changed, ReleaseMesh&& release_mesh,
-                                         UploadItem&& upload_item) {
-    if (plans.size() != meshes.size() || plans.size() != versions.size() ||
-        plans.size() + 1 != engine.registered_scenes.size()) {
-        throw std::runtime_error("Overlay registration changed after renderer initialization.");
-    }
-    bool changed = false;
-    for (std::size_t layer = 0; layer < plans.size(); ++layer) {
-        Scene& scene = *engine.registered_scenes[layer + 1];
-        if (scene.render_topology_version != versions[layer]) {
-            reject_uncomposed_family_growth(scene.material_family_mask);
-            upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated);
-            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items, meshes[layer],
-                                                  release_mesh, upload_item);
-            plans[layer] = std::move(updated);
-            versions[layer] = scene.render_topology_version;
-            changed = true;
-        } else if (draw_lists_changed) {
-            plans[layer].draw_lists = upstream::build_render_draw_lists(plans[layer].items, engine);
-            changed = true;
-        }
-    }
-    return changed;
-}
 #endif
 
 /**
@@ -5310,11 +5310,6 @@ inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine&
     return matrices;
 }
 
-/** A render task's clear colour, the pin's `cfg.clrColor ?? sc.clearColor`, read live at the pass. */
-inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
-    return task.render.clear_color ? *task.render.clear_color : task.source_scene->clear_color;
-}
-
 /**
  * One custom-shader stage block: declared system matrices followed by the
  * reflected gathers from the material's flat value storage. These exact
@@ -5424,9 +5419,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     // The scene callback API is the engine's float delta.
@@ -5470,9 +5467,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     return delta_ms;
 }
@@ -5480,9 +5479,12 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 /** The measured update boundary for a standalone FrameGraphContext. */
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameGraphContext& context,
                                           FrameClock& frame_clock, double frame_delta_ms) {
-    if (engine.stopped)
+    if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
+    }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const float callback_delta_ms = static_cast<float>(delta_ms);
     for (const auto& callback : context.updates) {

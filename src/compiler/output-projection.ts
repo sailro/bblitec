@@ -375,6 +375,9 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "compute:uniform-buffer",
     ],
     "compute:one-shot": ["compute:task"],
+    // A scene that writes SceneNode transforms loads each glTF asset with
+    // its node hierarchy, which the transform-node records carry.
+    "scene:node-transforms": ["mesh:transform-node"],
 };
 
 export function impliedFeatures(feature: Feature): readonly Feature[] {
@@ -637,6 +640,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const textInclude =
         features.includes("text:data") || features.includes("text:renderable")
             ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" +
+              (features.includes("text:renderable")
+                  ? "#include <bblite/upstream_text_renderable.hpp>\n"
+                  : "") +
               (features.includes("text:layout")
                   ? "#include <bblite/upstream_text_update.hpp>\n"
                   : "") +

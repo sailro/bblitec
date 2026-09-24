@@ -185,7 +185,9 @@ int main() {
             options.upKeys = {"Space"}; options.downKeys = {"KeyC", "PageDown"};
             options.fastKeys = {"ShiftLeft", "ShiftRight"}; options.fastMultiplier = 5;
         }
-        bbl::attach_configurable_free_control(engine, bbl::CameraHandle{0}, options);
+        const bbl::Scene scene;
+        bbl::attach_configurable_free_control(engine, bbl::CameraHandle{0}, scene, options);
+        if (camera.controls_scene.lock() != scene.state) return 1;
         ${frames
             .map(
                 (frame) => `{

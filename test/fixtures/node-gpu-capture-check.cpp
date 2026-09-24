@@ -28,7 +28,6 @@ int main() {
         pipeline.geometry_variant = static_cast<int>(view) - 1;
         pipeline.color_target_count = std::array<std::uint32_t, 3>{1, 7, 4}[view];
         pipeline.samples = 4;
-        pipeline.uses_local_attributes = view != 0;
         pipeline.topology = "triangle-list";
         pipeline.cull_mode = "back";
         pipeline.front_face = "ccw";

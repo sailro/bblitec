@@ -315,7 +315,9 @@ export function compileCameraIntrinsic(
             context.expectSameEngine(camera, scene, call);
             context.reachFeature("camera:geospatial", call);
             const engine = context.requireEngine(camera, call);
-            context.emit(`bbl::attach_control(${engine}, ${camera.cpp});`);
+            context.emit(
+                `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp});`,
+            );
             return {
                 kind: "data",
                 cpp:

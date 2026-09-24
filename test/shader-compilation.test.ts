@@ -13,7 +13,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import {
     compileOfflineShaders,
@@ -410,26 +410,27 @@ fn tint(t: texture_2d<f32>, s: sampler, uv: vec2f) -> vec4f { return textureSamp
         // A texture reaching a sampling builtin through a helper's parameter
         // is filterable; one only loaded is not; a declared binding nothing
         // reads is still listed, as its bind group carries it (the writable
-        // ones too, which SDL_GPU binds in compute stages only). The sidecar
-        // opens with the entry point.
+        // ones too, which SDL_GPU binds in compute stages only), each under
+        // the name the module declares it with. The sidecar opens with the
+        // entry point.
         const sidecar = sidecarLines(directory, "layout.frag");
         assert.equal(sidecar[0], "@entry main");
         assert.deepEqual(
             sidecar.filter((line) => line.startsWith("@binding ")),
             [
-                "@binding 0 0 uniform",
-                "@binding 0 1 storage read",
-                "@binding 0 2 storage read_write",
-                "@binding 1 0 texture float 2d single",
-                "@binding 1 1 sampler filtering",
-                "@binding 1 2 texture unfilterable-float 2d single",
-                "@binding 1 3 texture uint 2d single",
-                "@binding 1 4 texture depth 2d-array single",
-                "@binding 1 5 sampler comparison",
-                "@binding 1 6 texture float cube single",
-                "@binding 1 7 texture unfilterable-float 2d multisampled",
-                "@binding 1 8 texture unfilterable-float 2d single",
-                "@binding 2 0 storage-texture write-only rgba8unorm 2d",
+                "@binding 0 0 u uniform",
+                "@binding 0 1 values storage read",
+                "@binding 0 2 results storage read_write",
+                "@binding 1 0 color texture float 2d single",
+                "@binding 1 1 colorSampler sampler filtering",
+                "@binding 1 2 data texture unfilterable-float 2d single",
+                "@binding 1 3 cells texture uint 2d single",
+                "@binding 1 4 shadow texture depth 2d-array single",
+                "@binding 1 5 shadowSampler sampler comparison",
+                "@binding 1 6 sky texture float cube single",
+                "@binding 1 7 samples texture unfilterable-float 2d multisampled",
+                "@binding 1 8 unused texture unfilterable-float 2d single",
+                "@binding 2 0 written storage-texture write-only rgba8unorm 2d",
             ],
         );
         assert.throws(
@@ -1153,10 +1154,15 @@ test(
     return textureSample(color, colorSampler, vec2f(0.5)) + vec4f(textureLoad(values, vec2i(0), 0));
 }`,
         );
-        // The same executable with one more trailing byte: another build.
+        // The same executable with one more trailing byte: another build
+        // of the same sources, so its provenance stands.
         const rebuilt = join(root, basename(tint));
         copyFileSync(tint, rebuilt);
         appendFileSync(rebuilt, Buffer.from([0]));
+        copyFileSync(
+            join(dirname(tint), "provenance.json"),
+            join(root, "provenance.json"),
+        );
         const compile = (bbliteTint: string) =>
             compileOfflineShaders({
                 repositoryRoot: root,
@@ -1180,6 +1186,70 @@ test(
             slots,
         );
         assert.equal(compile(rebuilt).directoriesReused, 1);
+    },
+);
+
+test(
+    "a bblite-tint built from other tool sources than this checkout's is refused",
+    { skip: !tools.bbliteTint },
+    (t) => {
+        const root = fixtureRoot(t);
+        const tint = tools.bbliteTint;
+        assert.ok(tint);
+        const directory = shaderDirectory(root, "stale-tool");
+        const compile = (bbliteTint: string) =>
+            compileOfflineShaders({
+                repositoryRoot: root,
+                directories: [directory],
+                tools: { dxc: tools.dxc, bbliteTint },
+                target: "metal",
+            });
+        const provenance: unknown = JSON.parse(
+            readFileSync(join(dirname(tint), "provenance.json"), "utf8"),
+        );
+        assert.ok(
+            typeof provenance === "object" &&
+                provenance !== null &&
+                "sources" in provenance &&
+                typeof provenance.sources === "object" &&
+                provenance.sources !== null,
+        );
+        // Another checkout's build: one wrapper source differs, and one it
+        // read is not in this checkout.
+        const stale = join(root, "stale");
+        mkdirSync(stale);
+        copyFileSync(tint, join(stale, basename(tint)));
+        writeFileSync(
+            join(stale, "provenance.json"),
+            JSON.stringify({
+                ...provenance,
+                sources: {
+                    ...provenance.sources,
+                    "tools/tint-sdl/main.cc": "0".repeat(64),
+                    "tools/tint-sdl/extra.cc": "1".repeat(64),
+                },
+            }),
+        );
+        assert.throws(
+            () => compile(join(stale, basename(tint))),
+            (error: unknown) =>
+                error instanceof Error &&
+                error.message.includes("tools/tint-sdl/main.cc differs") &&
+                error.message.includes(
+                    "tools/tint-sdl/extra.cc is not in this checkout",
+                ) &&
+                error.message.includes("pwsh -File tools/build-tint.ps1"),
+        );
+        // A tool without provenance records no sources to match.
+        const bare = join(root, "bare");
+        mkdirSync(bare);
+        copyFileSync(tint, join(bare, basename(tint)));
+        assert.throws(
+            () => compile(join(bare, basename(tint))),
+            /provenance\.json does not exist\. Run pwsh -File tools\/build-tint\.ps1/,
+        );
+        // Neither failed run left a checkpoint; this checkout's tool compiles.
+        assert.equal(compile(tint).directoriesCompiled, 1);
     },
 );
 

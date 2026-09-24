@@ -21,14 +21,14 @@ import {
     vertexAttributeTableCpp,
     vertexFormatFloats,
 } from "./pinned-vertex-attributes.js";
-import {
-    extraTextureBindingsWgsl,
-    extraTextureRecords,
-} from "../shader-builtins-sprite-fx.js";
-import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    absentBinding,
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { recordAt } from "../compiler/record-access.js";
 import {
@@ -51,33 +51,17 @@ const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 const pickSpriteModule = "src/sprite/picking/pick-sprite-2d.ts";
 
-/** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
-export interface SpriteShaderSource {
-    /** `Lr` struct body, one field per line, as the pin declares it. */
-    layerStructFields: string;
-    /** `I` struct body: the per-instance vertex attributes. */
-    instanceStructFields: string;
-    /** `O` struct body: the interpolants. */
-    varyingStructFields: string;
-    /** The `vs` body between its braces. */
-    vertexBody: string;
-    /** The `fs` body between its braces. */
-    fragmentBody: string;
-    /**
-     * `SpriteFx` struct body, present only for a custom-shader layer. The
-     * pin declares the block in the same builder that splices the caller's
-     * fragment in, because a body that never names `fx` still has it bound.
-     */
-    fxStructFields?: string | undefined;
-    /**
-     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group, and empty when the body
-     * named none. Emitted by the pin's own builder, so the pair it writes
-     * per texture is the pin's.
-     */
-    extraTextureBindings: string;
+/** A reached sprite permutation: the depth host and uv-scroll opt-ins. */
+export interface SpritePermutation {
+    hasDepth: boolean;
+    uvScroll: boolean;
 }
 
+/** A custom-shader program: the caller's fragment body and its extra textures. */
+export interface SpriteCustomProgram {
+    fragment: string;
+    extraTextures: readonly string[];
+}
 /**
  * Lowers Babylon Lite's Sprite2D path.
  *
@@ -877,6 +861,93 @@ ${body}
      * `compareLayers`, the comparator `spriteRendererUpdate` sorts a
      * renderer's layers by, translated from `sprite-renderer.ts`.
      */
+    /**
+     * `spriteRendererUpdate`'s `if (rr.layers.length > 1) rr._layers.sort(
+     * compareLayers)`: the renderer's own list sorted IN PLACE once per frame,
+     * after its hooks ran and before anything reads it. JavaScript's sort is
+     * stable over the order the list was left in, so a tie after an order
+     * change resolves against the previous frame's order rather than the
+     * registration order; `std::stable_sort` over the record's own list is
+     * that. A reorder moves each backend's per-layer GPU records with it
+     * through `layers_version`, as the pin's `_layerGpu` map is keyed by layer.
+     */
+    private sortLayersCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            rendererModule,
+            "spriteRendererUpdate",
+        );
+        const guards = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                this.context
+                    .findNodes(
+                        node.thenStatement,
+                        (call): call is ts.CallExpression =>
+                            ts.isCallExpression(call) &&
+                            call.expression.getText(file) === "rr._layers.sort",
+                    )
+                    .some(
+                        (call) =>
+                            call.arguments.length === 1 &&
+                            call.arguments[0]!.getText(file) ===
+                                "compareLayers",
+                    ),
+        );
+        const guard = guards[0];
+        if (guards.length !== 1 || !guard || guard.elseStatement) {
+            return this.context.contractError(
+                declaration,
+                "Expected spriteRendererUpdate to sort rr._layers in place by compareLayers under one guard.",
+            );
+        }
+        const condition = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "rr.layers.length",
+                    {
+                        cpp: "static_cast<double>(renderer.layers.size())",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(guard.expression);
+        return `/**
+ * ${this.context.provenance(rendererModule, "spriteRendererUpdate", "rr._layers.sort(compareLayers)")}
+ * The renderer's layer list sorted in place, stable over the order the last
+ * frame left it in; both backends and the capture then walk the list as it
+ * stands. A reorder bumps \`layers_version\`, which moves each backend's
+ * per-layer GPU records to the new positions without rebuilding them.
+ */
+inline void sort_sprite_renderer_layers(
+    const Engine& engine,
+    SpriteRendererRecord& renderer) {
+    if (${condition}) {
+        std::vector<Sprite2DLayerHandle> sorted = renderer.layers;
+        std::stable_sort(
+            sorted.begin(),
+            sorted.end(),
+            [&](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return upstream::compare_sprite_layers(
+                           ${recordAt("engine.sprite_layers", "left")},
+                           ${recordAt("engine.sprite_layers", "right")}) < 0.0;
+            });
+        const bool moved = !std::equal(
+            sorted.begin(),
+            sorted.end(),
+            renderer.layers.begin(),
+            [](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return left.value == right.value;
+            });
+        if (moved) {
+            renderer.layers = std::move(sorted);
+            renderer.layers_version += 1u;
+        }
+    }
+}`;
+    }
+
     private compareLayersCpp(): string {
         const layer = (name: string) => ({
             pinned: name,
@@ -1092,93 +1163,46 @@ ${body}
     // -----------------------------------------------------------------
 
     /**
-     * Reconstructs the shader the pin builds for the reached permutation
-     * selected depth/uv permutation by evaluating its
-     * own template rather than by transcribing the result. Anything the
-     * evaluator cannot fold is a contract failure, so a changed shader
-     * stops generation instead of silently keeping this copy.
+     * The module the pin hands WebGPU for a layer's permutation, built by
+     * evaluating its own builder: `makeSpriteWgsl`, or -- for a
+     * custom-shader layer -- `makeCustomSpriteWgsl`, which composes the
+     * caller's body with the same prologue, its extra textures and the fx
+     * block. It is deployed whole: each stage enters where the module
+     * declares it does, the compiler keeps what that entry point reads, and
+     * the compaction re-homes the pin's one group for SDL_GPU. Anything the
+     * evaluator cannot fold is a contract failure, so a changed builder
+     * stops generation.
      */
-    public shaderSource(
-        uvScroll = false,
-        customFragment?: string,
-        extraTextures: readonly string[] = [],
-        hasDepth = false,
-    ): SpriteShaderSource {
-        const permutation = new Map<string, ShaderTextBinding>([
-            ["hasDepth", hasDepth],
-            ["spriteGroupIndex", hasDepth ? "1" : "0"],
-            ["uvScroll", uvScroll],
+    public module(
+        permutation: SpritePermutation,
+        custom?: SpriteCustomProgram,
+    ): string {
+        // The pin's own call: `makeSpriteWgsl(hasDepth, hasDepth ? 1 : 0,
+        // uvScroll)`, the depth host's scene group taking group 0.
+        const parameters = new Map<string, ShaderTextBinding>([
+            ["hasDepth", permutation.hasDepth],
+            ["spriteGroupIndex", permutation.hasDepth ? "1" : "0"],
+            ["uvScroll", permutation.uvScroll],
         ]);
-        // A custom-shader layer keeps the engine's vertex stage and
-        // replaces only the fragment body, which the pin expresses by
-        // composing the same prologue with the caller's text -- so one
-        // builder yields both halves here.
-        const composed =
-            customFragment === undefined
-                ? undefined
-                : this.shaderText.evaluate(
-                      customShaderModule,
-                      "makeCustomSpriteWgsl",
-                      new Map<string, ShaderTextBinding>([
-                          ...permutation,
-                          ["extraTextures", extraTextureRecords(extraTextures)],
-                          ["fragment", customFragment],
-                      ]),
-                  );
-        const prologue =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpritePrologueWgsl",
-                permutation,
-            );
-        const full =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpriteWgsl",
-                permutation,
-            );
-        return {
-            layerStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct Lr {`,
-                "sprite layer uniform struct",
-            ),
-            instanceStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct I {`,
-                "sprite instance struct",
-            ),
-            varyingStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct O {`,
-                "sprite varying struct",
-            ),
-            vertexBody: this.shaderText.braced(
-                prologue,
-                packagedWgsl`fn vs(in: I) -> O {`,
-                "sprite vertex stage",
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
-                "sprite fragment stage",
-            ),
-            fxStructFields: composed
-                ? this.shaderText.braced(
-                      composed,
-                      packagedWgsl`struct SpriteFx {`,
-                      "sprite fx uniform struct",
-                  )
-                : undefined,
-            extraTextureBindings: extraTextureBindingsWgsl(
-                this.shaderText,
-                extraTextures,
-            ),
-        };
+        return custom === undefined
+            ? this.shaderText.evaluate(
+                  pipelineModule,
+                  "makeSpriteWgsl",
+                  parameters,
+              )
+            : this.shaderText.evaluate(
+                  customShaderModule,
+                  "makeCustomSpriteWgsl",
+                  new Map<string, ShaderTextBinding>([
+                      ...parameters,
+                      [
+                          "extraTextures",
+                          extraTextureRecords(custom.extraTextures),
+                      ],
+                      ["fragment", custom.fragment],
+                  ]),
+              );
     }
-
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -1351,27 +1375,7 @@ namespace bbl {
  * blend is the pin's opaque replacement, which is blending disabled.
  */
 ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
-/**
- * sprite-renderer.ts spriteRendererUpdate's \`rr._layers.sort(compareLayers)\`:
- * the order both backends draw a renderer's layers in and the capture walks
- * them in, by the pin's own comparator under JavaScript's stable sort. It is
- * a permutation of the renderer's list, decided here once.
- */
-inline std::vector<std::size_t> sprite_layer_draw_order(
-    const Engine& engine,
-    const SpriteRendererRecord& renderer) {
-    std::vector<std::size_t> draw_order(renderer.layers.size());
-    std::iota(draw_order.begin(), draw_order.end(), std::size_t{0});
-    std::stable_sort(
-        draw_order.begin(),
-        draw_order.end(),
-        [&](std::size_t left, std::size_t right) {
-            return upstream::compare_sprite_layers(
-                       ${recordAt("engine.sprite_layers", "renderer.layers[left]")},
-                       ${recordAt("engine.sprite_layers", "renderer.layers[right]")}) < 0.0;
-        });
-    return draw_order;
-}
+${this.sortLayersCpp()}
 
 ${this.pickSprite2DCpp()}
 } // namespace bbl

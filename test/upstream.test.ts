@@ -37,7 +37,8 @@ import {
 } from "./shader-program-fixtures.js";
 import {
     spriteCoreAdditionalProvenance,
-    spriteVertexPermutations,
+    spriteProgramStem,
+    spritePermutations,
 } from "../src/upstream-lower.js";
 import {
     pinnedMipBlitModule,
@@ -763,10 +764,14 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /upstream::transform_position\(|upstream::transform_direction\(/,
     );
-    // A face normal takes the vertex stage's own normalize (the declared
-    // guarded CPU stand-in). Animated lights take the pin's
-    // writeWorldLightDirection, lowered whole.
-    assert.match(adapter.source, /upstream::normalize_baked_direction\(face\)/);
+    // A primitive without NORMAL reads the packaged smooth normals the pin
+    // uploads; no CPU face normal stands in for its derivative flat normal.
+    // Animated lights take the pin's writeWorldLightDirection, lowered whole.
+    assert.doesNotMatch(adapter.source, /normalize_baked_direction\(face\)/);
+    assert.match(
+        adapter.source,
+        /const AccessorInfo& normals = accessors\.at\(unsigned_value\(required\(attributes, "NORMAL"\)\)\);/,
+    );
     const animatedLights = lowerer.lowerLoaderAdapter({
         animationPointer: true,
     }).source;
@@ -779,9 +784,14 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /0\.000001f|Vec3\{0\.0f, 1\.0f, 0\.0f\}/,
     );
+    // buildNodeHierarchy names an unnamed node `node_<index>` and keeps an
+    // empty authored name.
+    assert.match(
+        adapter.source,
+        /node_name && !node_name->is_null\(\)\s*\? node_name->as_string\(\)\s*: "node_" \+ std::to_string\(node_index\);/,
+    );
     assert.match(adapter.source, /record\.clockwise_front_face/);
     assert.match(adapter.source, /source_clockwise &&\s*!clockwise_front_face/);
-    assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(
         adapter.source,
         /geometry\.has_tangents = tangents != nullptr/,
@@ -2236,34 +2246,34 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     }
 });
 
-test("gates pure and depth-hosted sprite vertex permutations independently", () => {
+test("gates pure and depth-hosted sprite permutations independently", () => {
     assert.deepEqual(
-        spriteVertexPermutations({
+        spritePermutations({
             pure: false,
             depthHosted: true,
             uvScroll: true,
         }),
         [
-            {
-                output: "sprite_depth.vert.native.wgsl",
-                uvScroll: false,
-                depthHosted: true,
-            },
-            {
-                output: "sprite_depth_uvscroll.vert.native.wgsl",
-                uvScroll: true,
-                depthHosted: true,
-            },
+            { suffix: "_depth", uvScroll: false, depthHosted: true },
+            { suffix: "_depth_uvscroll", uvScroll: true, depthHosted: true },
         ],
     );
+    const pure = spritePermutations({
+        pure: true,
+        depthHosted: false,
+        uvScroll: true,
+    });
+    // The stock program and the custom ones share the permutation suffix,
+    // the names `sprite_program_stem` (pal_gpu_shared.hpp) loads.
     assert.deepEqual(
-        spriteVertexPermutations({
-            pure: true,
-            depthHosted: false,
-            uvScroll: true,
-        }).map(({ output }) => output),
-        ["sprite.vert.native.wgsl", "sprite_uvscroll.vert.native.wgsl"],
+        pure.map((permutation) => spriteProgramStem(0, permutation)),
+        ["sprite", "sprite_uvscroll"],
     );
+    assert.deepEqual(
+        pure.map((permutation) => spriteProgramStem(2, permutation)),
+        ["sprite_custom_2", "sprite_custom_2_uvscroll"],
+    );
+    assert.equal(spriteProgramStem(1, pure[0]!), "sprite_custom");
 });
 
 test("pins the complete synchronous Sprite2D pick-result contract", () => {

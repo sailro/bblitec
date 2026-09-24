@@ -88,6 +88,9 @@ struct BackgroundDraws {
                    : std::nullopt;
     }
 };
+// The scene's own pass configures no clear colour; its resolution is
+// pal_pass_camera.hpp's, which scene-topology-sync runs.
+Color4 scene_pass_clear_color(const Scene& scene) { return scene.clear_color; }
 void record_background(BackgroundKind kind) {
     if (kind)
         draws.push_back(*kind == upstream::PinnedBackgroundArmKind::ground ? "ground" : "skybox");
@@ -212,10 +215,21 @@ struct SdlGraph : Graph {
     }
     std::vector<int> task_draw_lists{1};
     MeshHandle handle{0};
-    static void draw_task_background(int, int, int, BackgroundKind kind) {
+    static void draw_task_background(int, MeshHandle, int, const int*, BackgroundKind kind) {
         record_background(kind);
     }
-    static void draw_task_billboards(int, BillboardDepthMode mode, int, int) {
+    // The pass's retained scene block a billboard program binds, written
+    // from the pass's scene, camera and matrices; the stages only order the
+    // draw.
+    struct {
+        static int pass(int, std::optional<TaskHandle>) { return 0; }
+        static int task(MeshHandle) { return 0; }
+    } pass_blocks;
+    int draw_context = 0, draw_camera = 0, engine = 0;
+    std::optional<TaskHandle> pass_task;
+    static int write_billboard_scene_block(int, int, int, const int*, int, int) { return 0; }
+    static int write_billboard_scene_block(int, int, int, int, int, int) { return 0; }
+    static void draw_task_billboards(int, BillboardDepthMode mode, int) {
         Graph::draw_task_billboards(mode);
     }
     template <class... Args> void draw_scene(Args... args) {

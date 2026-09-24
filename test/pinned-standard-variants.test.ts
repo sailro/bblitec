@@ -333,6 +333,29 @@ test("the geometry MRT arm is the pin's own rewrite", async () => {
     );
 });
 
+test("a skinned Standard mesh refuses a LINEAR_VELOCITY geometry task", async () => {
+    const meshBits = await importPinnedModule<{ MSH_HAS_SKELETON: number }>(
+        "material/mesh-features.js",
+    );
+    const skinned = (attachments: string[]) =>
+        composePinnedStandardVariant(
+            {},
+            {
+                meshFeatures: meshBits.MSH_HAS_SKELETON,
+                skeleton: true,
+                geometry: { attachments, emitColor: false },
+            },
+        );
+    // The composer's skeletal velocity arm samples the previous frame's
+    // bone texture, which neither backend keeps.
+    await assert.rejects(
+        skinned(["LINEAR_VELOCITY"]),
+        /previous frame's bone texture/,
+    );
+    const normal = await skinned(["WORLD_NORMAL"]);
+    assert.doesNotMatch(normal.vertexWgsl, /previousBoneSampler/);
+});
+
 test("composition is deterministic", async () => {
     const compose = () =>
         composePinnedStandardVariant(

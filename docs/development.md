@@ -311,20 +311,27 @@ share it without reinstalling. Use `-Remove` to unlink junctions before removing
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
 Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`, 25 GiB);
-`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits, and Clang
-builds keep the precompiled header under the cache. Each repository unit reads a content-addressed folder
-holding exactly the generated headers its include closure names (`native/native-header-cache.cmake`), so a
-generated header rebuilds only its includers and a unit hits across scenes whose inputs to it agree; debug
-keys retain directory identity.
+`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits. Each
+repository unit reads a content-addressed folder holding exactly the generated headers its include closure
+names (`native/native-header-cache.cmake`), so a generated header rebuilds only its includers and a unit
+hits across scenes whose inputs to it agree; lowered modules compile from content-addressed copies under the
+cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds the precompiled
+header from a source under the cache named by its text, so every tree of a checkout whose PCH inputs agree
+shares it and its users' entries; its own entry keys on the checkout's absolute paths, which the PCH
+records. Debug keys retain directory identity.
 
 ## Shader compilation
 
 `process --shader d3d12|vulkan|metal|all` selects offline targets; default is the host target.
 `BBLITE_SHADER_TARGET`, `BBLITE_TINT_PATH` and `DXC_PATH` override defaults. Dawn uses WGSL.
 `tools/build-tint.ps1` builds the pinned `tint` and bblite-tint (`tools/tint-sdl`), the offline
-compiler's writer driver, from its own checkout carrying the `tint` patch series into
-`artifacts/tools/tint`.
-Shader checkpoints include input/output bytes and compiler identity.
+compiler's writer driver, from its own checkout carrying the `tint` patch series. Each set of tool
+sources (the script, the Tint pin, `tools/tint-sdl` and the series) builds into
+`artifacts/tools/tint/<identity>`, whose `provenance.json` records every source's SHA-256, so
+worktrees with other tool sources keep their own builds. A checkout uses only the build recording
+exactly its sources; `compile-shaders` refuses any other tool, including `BBLITE_TINT_PATH`, and
+names the fix: `pwsh -File tools/build-tint.ps1`.
+Shader checkpoints include input/output bytes, compiler identity and the tool sources.
 
 | Cache | Location |
 | --- | --- |

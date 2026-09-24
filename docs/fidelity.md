@@ -59,10 +59,11 @@ the installed handler or rethrow. Local catches remain active. This differs from
 PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/builders. Composition
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
-Vertex buffers carry each geometry's source lanes; every family's mesh block carries `mesh.worldMatrix`
-(eye-relative under floating origin), with fixed PAL bindings and a 64-matrix palette. A glTF primitive
-without NORMAL stands in for the derivative flat normal with its local face normal, signed by the
-loaded world's handedness; under a non-uniformly scaled node the stand-in leans with the world basis.
+Vertex buffers carry each geometry's source lanes, a glTF primitive without NORMAL carrying the smooth
+normals the pin generates for it; every family's mesh block carries `mesh.worldMatrix` (eye-relative
+under floating origin), with fixed PAL bindings and a 64-matrix palette. A Standard geometry task keeps
+each renderable's previous world and writes velocity disabled on its first frame, as the pin does; a
+skinned Standard mesh in a LINEAR_VELOCITY task refuses, having no previous bone texture.
 SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
@@ -73,7 +74,8 @@ steps by an integer and is written and captured nowhere else counts in 64 bits a
 Matrix order, layout and rounding are
 part of the contract. Signed-zero byte differences can remain despite numeric equality. GLTF light
 scalars/colors use float storage, clamping oversized ranges; spot-angle math remains double until its
-uniform store. Imported cameras retain double fields and source Float32 matrices.
+uniform store. Imported cameras retain double fields and source Float32 matrices. A loaded glTF node's
+rotation, scaling and raw `matrix` are stored at float width where the pin holds JavaScript numbers.
 
 ### The reference pose
 
@@ -172,13 +174,17 @@ different properties.
 
 ## Text contract
 
-Live text uses HarfBuzz and pinned layout over the packaged repertoire, whose outlines are extracted
-and packed at generation. TextData is the pin's record graph (runs, draw groups, style palette, slot
+Live text lays out through the pin's lowered `layoutText` over the packaged repertoire, whose outlines are
+extracted and packed at generation. text-shaper, which the layout shapes with, is HarfBuzz: font scale,
+nominal glyph lookup and the shaping pass (`shapeInto`) are HarfBuzz's. TextData is the pin's record graph (runs, draw groups, style palette, slot
 allocator) updated by the pin's lowered bodies; it retains identity, and shared data owns group caches
-and captured styles. Buffer, texture, bind-group and bundle creation, writes and draws are the pin's
-own calls on a WebGPU-shaped device; SDL_GPU keeps uniform buffers as CPU copies pushed at each draw.
-Disposal destroys GPU resources while CPU data follows source lifetime. Deferred registration publishes
-only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
+and captured styles. A text renderable is the pin's own record: its observable transforms, Euler proxy,
+world-matrix state, binding and scene attachment are the pin's classes and closures. Buffer, texture,
+bind-group and bundle creation, writes and draws are the pin's own calls on a WebGPU-shaped device;
+SDL_GPU keeps uniform buffers as CPU copies pushed at each draw. Disposal destroys GPU resources while CPU
+data follows source lifetime. Deferred registration publishes only after successful construction; the
+native scene queue calls a text builder without the engine and scene arguments, which the pin's builder
+does not read. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 

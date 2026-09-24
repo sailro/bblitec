@@ -79,7 +79,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["tan", { arity: 1, cpp: shared("tan") }],
     ["atan", { arity: 1, cpp: compilerOnly("atan") }],
     ["acos", { arity: 1, cpp: shared("acos") }],
-    ["asin", { arity: 1, cpp: compilerOnly("asin") }],
+    ["asin", { arity: 1, cpp: shared("asin") }],
     ["log", { arity: 1, cpp: shared("log") }],
     ["log2", { arity: 1, cpp: shared("log2") }],
     ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],

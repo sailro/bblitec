@@ -54,9 +54,12 @@ struct CameraTraceState {
     Vec3d target{};
 };
 
-inline void trace_camera_state(const CameraRecord& camera, CameraTraceState& state, long frame) {
-    if (!runtime_trace_enabled())
+/** The pass camera's pose when it moved; a camera-less pass has none to report. */
+inline void trace_camera_state(const CameraRecord* pass_camera, CameraTraceState& state,
+                               long frame) {
+    if (!pass_camera || !runtime_trace_enabled())
         return;
+    const CameraRecord& camera = *pass_camera;
     constexpr double epsilon = 1e-7;
     const bool changed = !state.initialized || std::abs(camera.alpha - state.alpha) > epsilon ||
                          std::abs(camera.beta - state.beta) > epsilon ||

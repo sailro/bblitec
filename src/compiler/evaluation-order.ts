@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { classChain, type ClassHierarchy } from "./class-members.js";
+import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
 import { writeReceiverMethods } from "./data-methods.js";
 import { propertyIsReadOnly } from "./data-types.js";
 import {
@@ -32,12 +33,15 @@ import {
  * it ran (their properties and elements, as one store), and, through the
  * functions it calls, everything they touch. A call the analysis cannot
  * follow -- a function value it cannot name, an abstract method, an
- * `await` -- touches everything. A function a declaration file declares
- * (the language's library, the engine's typings) has no body to read: it
- * is taken to read its receiver and the objects it is handed, to write
- * only through the language's mutating container methods (`push`, `set`,
- * `sort`, ...), and to run the callbacks it is handed. `Math.random`
- * reads and writes its generator, so two draws keep their order.
+ * `await` -- touches everything. An engine function or class method is read
+ * from the pin's own body behind its typing (`engine-bodies.ts`), the
+ * engine's module state counting as object state; an engine member with no
+ * pinned body (an interface method) touches everything. A function of the
+ * language's library has no body to read: it is taken to read its receiver
+ * and the objects it is handed, to write only through the mutating
+ * container methods (`push`, `set`, `sort`, ...), and to run the callbacks
+ * it is handed. `Math.random` reads and writes its generator, so two draws
+ * keep their order.
  */
 
 /** Storage an evaluation reads or writes. */
@@ -122,6 +126,13 @@ function evaluationContainer(node: ts.Node): ts.Node {
     return node.getSourceFile();
 }
 
+/** Whether `outer` lexically contains `inner`. */
+function encloses(outer: ts.Node, inner: ts.Node): boolean {
+    for (let current = inner.parent; current; current = current.parent)
+        if (current === outer) return true;
+    return false;
+}
+
 /** The object an access chain starts from: `a` for `a.b[0].c`. */
 function accessRoot(expression: ts.Expression): ts.Expression {
     let current = unwrapExpression(expression);
@@ -141,14 +152,22 @@ function loopTargets(node: ts.Node): readonly ts.Expression[] {
         : [];
 }
 
+/** One analysis of the pinned program per resolver, shared by every scene. */
+const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
+
 export class EvaluationOrder {
+    /** @unjournaled A cache of the checker's answers for a file. */
     private readonly written = new WeakMap<ts.SourceFile, Set<ts.Symbol>>();
+    /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
+    /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
     private readonly summaries = new Map<Unit, Access>();
 
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly hierarchy: ClassHierarchy,
+        /** The engine's pinned bodies, for a scene program's calls into it. */
+        private readonly engine?: () => EngineBodies,
     ) {}
 
     /**
@@ -163,6 +182,16 @@ export class EvaluationOrder {
                 .slice(index + 1)
                 .some((later) => conflicts(earlier, later)),
         );
+    }
+
+    /**
+     * Whether evaluating `node` again later could give another value or
+     * repeat an effect: it reads storage some code writes, or writes
+     * storage itself.
+     */
+    public touchesStorage(node: ts.Node): boolean {
+        const access = this.access(node);
+        return touchesAnything(access.reads) || touchesAnything(access.writes);
     }
 
     /** Everything evaluating `node` touches, the functions it calls included. */
@@ -181,9 +210,80 @@ export class EvaluationOrder {
     }
 
     /**
+     * Whether a value built from `built` must be read before a call to
+     * `callee` runs, rather than where the callee reads it: building it has
+     * an effect, or the callee (with everything it reaches) writes storage
+     * the value reads.
+     */
+    public calleeChanges(built: ts.Node, callee: ts.Node): boolean {
+        const access = this.access(built);
+        if (touchesAnything(access.writes)) return true;
+        const units = this.declarationUnits(callee);
+        return !units || touches(this.bodyAccess(units).writes, access.reads);
+    }
+
+    /**
+     * The code calling a declaration runs: a constructor's whole chain, every
+     * implementation an overridden method dispatches to, a function's body;
+     * undefined for a declaration without one.
+     */
+    private declarationUnits(
+        declaration: ts.Node,
+    ): readonly Unit[] | undefined {
+        if (ts.isConstructorDeclaration(declaration))
+            return ts.isClassDeclaration(declaration.parent)
+                ? this.construction(declaration.parent)
+                : undefined;
+        if (ts.isMethodDeclaration(declaration)) {
+            const implementations = this.hierarchy.implementations(
+                declaration,
+            ) ?? [declaration];
+            return implementations.every(
+                (implementation): implementation is ts.MethodDeclaration =>
+                    implementation?.body !== undefined,
+            )
+                ? implementations
+                : undefined;
+        }
+        if (ts.isAccessor(declaration))
+            return declaration.body &&
+                !(
+                    ts.isClassDeclaration(declaration.parent) &&
+                    this.hierarchy.subclasses(declaration.parent).length > 0
+                )
+                ? [declaration]
+                : undefined;
+        return (ts.isFunctionDeclaration(declaration) ||
+            ts.isFunctionExpression(declaration) ||
+            ts.isArrowFunction(declaration)) &&
+            declaration.body
+            ? [declaration]
+            : undefined;
+    }
+
+    /**
+     * What running the units touches outside their own frames, merged: the
+     * access a call reaching any of them may have.
+     */
+    public bodyAccess(units: readonly Unit[]): Access {
+        const access: Access = {
+            reads: emptyStorage(),
+            writes: emptyStorage(),
+        };
+        units.forEach((unit) => {
+            const summary = this.summary(unit);
+            merge(access.reads, summary.reads);
+            merge(access.writes, summary.writes);
+        });
+        return access;
+    }
+
+    /**
      * What running `unit` touches outside its own frame: its own body and
-     * every function it can reach, less the variables it declares -- each
-     * run has fresh ones no caller can see.
+     * every function it can reach, less the variables those functions
+     * declare -- each run has fresh ones no caller can see. A function that
+     * encloses `unit` is the exception: its variables are the ones `unit`
+     * closes over.
      */
     private summary(unit: Unit): Access {
         const known = this.summaries.get(unit);
@@ -198,6 +298,7 @@ export class EvaluationOrder {
             const direct = this.directAccess(next);
             merge(summary.reads, direct.reads);
             merge(summary.writes, direct.writes);
+            if (summary.reads.any && summary.writes.any) break;
             direct.callees.forEach((callee) => {
                 if (reached.has(callee)) return;
                 reached.add(callee);
@@ -206,9 +307,12 @@ export class EvaluationOrder {
         }
         for (const storage of [summary.reads, summary.writes]) {
             storage.variables.forEach((variable) => {
+                if (typeof variable === "symbol") return;
+                const frame = this.frameOf(variable);
                 if (
-                    typeof variable !== "symbol" &&
-                    this.isLocal(variable, unit)
+                    frame &&
+                    reached.has(frame) &&
+                    !(frame !== unit && encloses(frame, unit))
                 )
                     storage.variables.delete(variable);
             });
@@ -366,6 +470,12 @@ export class EvaluationOrder {
             access.writes.variables.add(randomState);
             return;
         }
+        const engine = this.engineAccess(call);
+        if (engine) {
+            merge(access.reads, engine.reads);
+            merge(access.writes, engine.writes);
+            return;
+        }
         const units = this.callees(call);
         if (units === "library") {
             this.libraryCall(access, call, unit);
@@ -373,6 +483,45 @@ export class EvaluationOrder {
         }
         if (!units) touchEverything(access);
         else units.forEach((callee) => access.callees.add(callee));
+    }
+
+    /**
+     * What an engine call touches, from the pinned bodies its typing names:
+     * everything when it names none or runs code the pinned bodies cannot
+     * follow, otherwise the objects and engine state they read and write.
+     * Undefined for a call that is not the engine's.
+     */
+    private engineAccess(
+        call: ts.CallExpression | ts.NewExpression,
+    ): Access | undefined {
+        if (!this.engine || ts.isNewExpression(call)) return undefined;
+        const declaration =
+            this.checker.getResolvedSignature(call)?.declaration;
+        if (!declaration || !isEngineDeclaration(declaration)) return undefined;
+        const engine = this.engine();
+        const bodies = engine.bodies(declaration);
+        if (!bodies) {
+            const access = { reads: emptyStorage(), writes: emptyStorage() };
+            touchEverything(access);
+            return access;
+        }
+        let pinned = pinnedOrders.get(engine);
+        if (!pinned) {
+            pinned = new EvaluationOrder(engine.checker, engine.hierarchy);
+            pinnedOrders.set(engine, pinned);
+        }
+        const summary = pinned.bodyAccess(bodies);
+        // The engine's own variables are state only its calls reach: to the
+        // scene they are one store with the objects it holds.
+        const asScene = (storage: Storage): Storage => ({
+            any: storage.any,
+            heap: storage.heap || storage.variables.size > 0,
+            variables: new Set(),
+        });
+        return {
+            reads: asScene(summary.reads),
+            writes: asScene(summary.writes),
+        };
     }
 
     /**
@@ -472,17 +621,8 @@ export class EvaluationOrder {
         if (!declaration) return undefined;
         if (declaration.getSourceFile().isDeclarationFile) return "library";
         const callee = unwrapExpression(call.expression);
-        if (ts.isMethodDeclaration(declaration)) {
-            const implementations = this.hierarchy.implementations(
-                declaration,
-            ) ?? [declaration];
-            return implementations.every(
-                (implementation): implementation is ts.MethodDeclaration =>
-                    implementation?.body !== undefined,
-            )
-                ? implementations
-                : undefined;
-        }
+        if (ts.isMethodDeclaration(declaration))
+            return this.declarationUnits(declaration);
         // A function reached through a variable or a property is that
         // function only while nothing stores another one there.
         if (ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)) {
@@ -607,15 +747,21 @@ export class EvaluationOrder {
         );
     }
 
-    /** Whether a variable is declared in `unit`'s own frame. */
-    private isLocal(symbol: ts.Symbol, unit: Unit): boolean {
+    /** The function whose frame a local variable or parameter lives in. */
+    private frameOf(symbol: ts.Symbol): Unit | undefined {
         const declaration = symbol.valueDeclaration;
-        return (
-            declaration !== undefined &&
-            (ts.isVariableDeclaration(declaration) ||
-                ts.isParameter(declaration)) &&
-            evaluationContainer(declaration) === unit
-        );
+        if (
+            !declaration ||
+            !(
+                ts.isVariableDeclaration(declaration) ||
+                ts.isParameter(declaration)
+            )
+        )
+            return undefined;
+        const container = evaluationContainer(declaration);
+        return ts.isFunctionLike(container) && "body" in container
+            ? container
+            : undefined;
     }
 
     /** Whether any code assigns the variable after its declaration. */
@@ -650,20 +796,36 @@ export class EvaluationOrder {
  * knows is that value's literal, anything else a temporary.
  */
 export function pinOperand(
-    context: Pick<
-        LoweringServices,
-        | "bindings"
-        | "cppString"
-        | "dataTypes"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "registerNativeConstBinding"
-        | "registerNativeBindingType"
-    >,
+    context: Pick<LoweringServices, "bindings"> & ScalarReadContext,
     value: Value,
     node: ts.Expression,
     label: string,
 ): Value {
+    return (
+        readScalarOperand(context, value, label) ??
+        context.bindings.pinValueToTemporary(value, label, node)
+    );
+}
+
+type ScalarReadContext = Pick<
+    LoweringServices,
+    | "cppString"
+    | "dataTypes"
+    | "allocateTemporaryCppName"
+    | "emit"
+    | "registerNativeConstBinding"
+    | "registerNativeBindingType"
+>;
+
+/**
+ * A scalar operand read where it stands: its literal when generation knows
+ * it, otherwise a constant temporary. Undefined for any other value.
+ */
+export function readScalarOperand(
+    context: ScalarReadContext,
+    value: Value,
+    label: string,
+): Value | undefined {
     if (value.staticNumber !== undefined)
         return { ...value, cpp: doubleLiteral(value.staticNumber) };
     if (value.staticBoolean !== undefined)
@@ -687,7 +849,7 @@ export function pinOperand(
                     )
                   ? context.dataTypes.cppType(value.dataType)
                   : undefined;
-    if (!type) return context.bindings.pinValueToTemporary(value, label, node);
+    if (!type) return undefined;
     const name = context.allocateTemporaryCppName(label);
     context.emit({
         kind: "declaration",

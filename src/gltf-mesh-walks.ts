@@ -117,8 +117,9 @@ export async function gltfMeshWalks(
     const owners = new Map(
         meshes.map((mesh, index) => [
             mesh,
-            asString(nodes[meshDatas[index]!._nodeIndex]!.name) ||
-                `gltf_node_${meshDatas[index]!._nodeIndex}`,
+            // buildNodeHierarchy's `node.name ?? node_<index>`.
+            asString(nodes[meshDatas[index]!._nodeIndex]!.name) ??
+                `node_${meshDatas[index]!._nodeIndex}`,
         ]),
     );
     return evaluateMeshWalks({ entities: [root] }, meshes, walks, (mesh) =>

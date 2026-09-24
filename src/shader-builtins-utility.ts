@@ -6,11 +6,10 @@
  * counterpart and stay written here.
  */
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import { parseWgslStages, type ShaderModule } from "./shader-ir.js";
 import { emitWgslModule } from "./shader-wgsl-emitter.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -113,15 +112,11 @@ function pinnedCopyBlit(context: LoweringContext): {
     };
 }
 
-export function blitVertexWgsl(
-    context = new LoweringContext(sharedUpstreamStore()),
-): string {
+export function blitVertexWgsl(context = sharedPinnedContext()): string {
     return `// ${context.provenance(copyTaskModule, "VERTEX_WGSL")}\n${emitWgslModule(pinnedCopyBlit(context).vertex)}`;
 }
 
-export function blitFragmentWgsl(
-    context = new LoweringContext(sharedUpstreamStore()),
-): string {
+export function blitFragmentWgsl(context = sharedPinnedContext()): string {
     return `// ${context.provenance(copyTaskModule, "fragmentForSingle")}\n${emitWgslModule(pinnedCopyBlit(context).fragment)}`;
 }
 

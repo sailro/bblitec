@@ -114,6 +114,7 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     booleanValue,
     commonResourceValue,
+    isCompileTimeOnlyValue,
     isStringValue,
     objectTruthinessCpp,
     presenceCpp,
@@ -178,6 +179,7 @@ export interface ExpressionContext
             | "audioSessionCpp"
             | "checker"
             | "evaluationOrder"
+            | "hasStableNativeBinding"
             | "options"
             | "referenceSearch"
             | "evaluator"
@@ -284,6 +286,7 @@ function staticStringCoercion(value: Value): string | undefined {
 export function emitStringAppend(
     context: Pick<
         LoweringServices,
+        | "checker"
         | "compileValue"
         | "cppString"
         | "dataTypes"
@@ -302,7 +305,10 @@ export function emitStringAppend(
 }
 
 export function stringConcatPart(
-    context: Pick<LoweringServices, "cppString" | "dataTypes" | "fail">,
+    context: Pick<
+        LoweringServices,
+        "checker" | "cppString" | "dataTypes" | "fail"
+    >,
     value: Value,
     node: ts.Node,
 ): string {
@@ -335,15 +341,27 @@ export function stringConcatPart(
     if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
-    if (
-        value.dataType?.kind === "optional" &&
-        value.dataType.inner.kind === "string"
-    ) {
-        const absent =
-            value.preserveUncheckedLookup || value.dataType.undefinedOnly
-                ? "undefined"
-                : "null";
-        return `([&]() -> std::string { const auto& character = ${value.cpp}; return character.has_value() ? *character : std::string("${absent}"); }())`;
+    if (value.dataType?.kind === "optional") {
+        const inner = value.dataType.inner;
+        const present = stringConcatPart(
+            context,
+            {
+                kind:
+                    inner.kind === "number" ||
+                    inner.kind === "boolean" ||
+                    inner.kind === "string"
+                        ? inner.kind
+                        : "data",
+                cpp: "(*present)",
+                dataType: inner,
+            },
+            node,
+        );
+        const absent = context.cppString(absentSpelling(context, value, node));
+        // A present string is already text; any other part is joined into one.
+        const text =
+            inner.kind === "string" ? present : `bbl::js::concat(${present})`;
+        return `([&]() -> std::string { const auto& present = ${value.cpp}; return present.has_value() ? ${text} : std::string(${absent}); }())`;
     }
     if (
         value.dataType?.kind === "union" &&
@@ -364,7 +382,37 @@ export function stringConcatPart(
     }
     return context.fail(
         node,
-        "String concatenation supports string, number, boolean, and null values.",
+        "String concatenation supports string, number, boolean, enum and null values, and absent ones of those kinds.",
+    );
+}
+
+/**
+ * How JavaScript spells an absent optional operand. The native optional has
+ * one absent state, so the spelling comes from what the operand can be: a
+ * type that admits only `undefined` -- or a lookup that can miss, of values
+ * that are never `null` -- spells "undefined", a type that admits only
+ * `null` spells "null". An operand that may be either does not say which
+ * one a runtime absence is, and refuses.
+ */
+function absentSpelling(
+    context: Pick<LoweringServices, "checker" | "fail">,
+    value: Value,
+    node: ts.Node,
+): "undefined" | "null" {
+    const absent = nullability(context.checker.getTypeAtLocation(node));
+    if (value.preserveUncheckedLookup && !absent.null) return "undefined";
+    if (absent.undefined && !absent.null) return "undefined";
+    if (absent.null && !absent.undefined && !value.preserveUncheckedLookup)
+        return "null";
+    if (
+        !absent.null &&
+        !absent.undefined &&
+        value.dataType?.kind === "optional"
+    )
+        return value.dataType.undefinedOnly ? "undefined" : "null";
+    return context.fail(
+        node,
+        'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
     );
 }
 
@@ -955,7 +1003,12 @@ export class ExpressionLowerer {
                             }
                             elements.push(...(spread.tupleElements ?? []));
                         } else {
-                            elements.push(this.laneValue(element));
+                            elements.push(
+                                this.builtLane(
+                                    this.laneValue(element),
+                                    element,
+                                ),
+                            );
                         }
                     }
                     if (staticTuple) {
@@ -1001,7 +1054,7 @@ export class ExpressionLowerer {
                               "array_member",
                               element,
                           )
-                        : value;
+                        : this.builtLane(value, element);
                 }),
             };
         }
@@ -1841,6 +1894,30 @@ export class ExpressionLowerer {
         }
         const staticNumber = staticNumberValue(this.context, expression);
         return staticNumber === undefined ? value : { ...value, staticNumber };
+    }
+
+    /**
+     * A lane holds the value its initializer had when the tuple or record is
+     * built. The compile-time value keeps no storage of its own -- each use
+     * re-emits the lane's expression -- so a lane whose expression reads
+     * storage some code writes, or repeats an effect (`Math.random()`),
+     * records that expression: the lane is read into a temporary once the
+     * aggregate outlives the statement that builds it
+     * (`BindingScopes.settleBuiltValue`), while a sink consuming it in that
+     * statement reads it in place.
+     */
+    private builtLane(value: Value, node: ts.Expression): Value {
+        const holdsItsValue =
+            value.cpp === "" ||
+            value.kind === "callback" ||
+            value.kind === "record" ||
+            value.kind === "tuple" ||
+            isCompileTimeOnlyValue(value.kind) ||
+            this.context.hasStableNativeBinding(value);
+        return holdsItsValue ||
+            !this.context.evaluationOrder.touchesStorage(node)
+            ? value
+            : { ...value, builtFrom: { node, cpp: value.cpp } };
     }
 
     /**
@@ -2753,7 +2830,10 @@ export class ExpressionLowerer {
                 value.nativeError ||
                 value.kind === "number" ||
                 value.kind === "boolean" ||
-                value.dataType?.kind === "enum"
+                value.dataType?.kind === "enum" ||
+                // An absent value spells "undefined" or "null", as in a
+                // concatenation.
+                value.dataType?.kind === "optional"
             ) {
                 return {
                     kind: "data",
@@ -3872,7 +3952,8 @@ export class ExpressionLowerer {
                     unwrapped.parent.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken)
             ) {
-                return { kind: "json-null", cpp: "" };
+                // A lane past the tuple's end reads as `undefined`.
+                return { kind: "json-null", cpp: "std::nullopt" };
             }
             this.context.fail(
                 unwrapped,
@@ -4256,10 +4337,10 @@ export class ExpressionLowerer {
                         : property,
             ),
         );
-        const inOrder = (value: Value, index: number, node: ts.Expression) =>
+        const member = (value: Value, index: number, node: ts.Expression) =>
             ordered[index]
                 ? pinOperand(this.context, value, node, "record_member")
-                : value;
+                : this.builtLane(value, node);
         for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
@@ -4347,7 +4428,7 @@ export class ExpressionLowerer {
                     methods[name] = initializer;
                     continue;
                 }
-                const value = inOrder(
+                const value = member(
                     this.laneValue(property.initializer),
                     index,
                     property.initializer,
@@ -4364,7 +4445,7 @@ export class ExpressionLowerer {
                     methods[property.name.text] = property.name;
                     continue;
                 }
-                properties[property.name.text] = inOrder(
+                properties[property.name.text] = member(
                     this.laneValue(property.name),
                     index,
                     property.name,

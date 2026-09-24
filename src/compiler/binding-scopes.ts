@@ -30,6 +30,7 @@ import {
     journaled,
     writable,
 } from "./emission-transaction.js";
+import { readScalarOperand } from "./evaluation-order.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -598,6 +599,7 @@ export class BindingScopes {
      * instead of stamping the wrong mesh.
      */
     public rebindVariable(identifier: ts.Identifier, value: Value): void {
+        value = this.settleBuiltValue(value);
         const symbol = this.requireValueSymbol(identifier);
         // The same innermost-first walk `lookup` takes, so a rebind and a
         // read cannot disagree about which scope owns the name.
@@ -662,7 +664,64 @@ export class BindingScopes {
         innermost.set(symbol, rebound);
     }
 
+    /**
+     * A compile-time record or tuple as it was built. A member whose
+     * expression reads storage code can change (`Value.builtFrom`) is read
+     * into a temporary here, where the aggregate starts to outlive the
+     * statement that built it; nested aggregates settle the same way.
+     * `needsSettling` narrows which built members a short-lived binding
+     * reads now (a call argument, the callee's body the only code between).
+     */
+    public settleBuiltValue(
+        value: Value,
+        needsSettling: (built: ts.Expression) => boolean = () => true,
+        seen = new Set<Value>(),
+    ): Value {
+        // A record can hold itself (a node's parent link): each aggregate
+        // settles once.
+        if (seen.has(value)) return value;
+        seen.add(value);
+        const settle = (member: Value): Value => {
+            const nested = this.settleBuiltValue(member, needsSettling, seen);
+            const built = nested.builtFrom;
+            if (!built) return nested;
+            const { builtFrom: _built, ...current } = nested;
+            if (built.cpp !== nested.cpp) return current;
+            if (!needsSettling(built.node)) return nested;
+            const label =
+                value.kind === "tuple" ? "array_member" : "record_member";
+            return (
+                readScalarOperand(this.context, current, label) ??
+                this.pinValueToTemporary(current, label, built.node)
+            );
+        };
+        if (value.kind === "record" && value.recordProperties) {
+            const entries = Object.entries(value.recordProperties);
+            const settled = entries.map(
+                ([name, member]) => [name, settle(member)] as const,
+            );
+            return settled.every(
+                ([, member], index) => member === entries[index]![1],
+            )
+                ? value
+                : { ...value, recordProperties: Object.fromEntries(settled) };
+        }
+        if (value.kind === "tuple" && value.tupleElements) {
+            const settled = value.tupleElements.map(settle);
+            return settled.every(
+                (member, index) => member === value.tupleElements![index],
+            )
+                ? value
+                : { ...value, tupleElements: settled };
+        }
+        return value;
+    }
+
     public defineVariable(identifier: ts.MemberName, value: Value): void {
+        // A parameter's record was settled where the call built it: what the
+        // callee could change was read before it ran.
+        if (!ts.isParameter(identifier.parent))
+            value = this.settleBuiltValue(value);
         // A resource whose native value has one type declares it for the
         // local holding it, whichever declaration emitted that local, so a
         // closure capturing it has a concrete environment.
@@ -777,6 +836,7 @@ export class BindingScopes {
         identifier: ts.Identifier,
         value: Value,
     ): void {
+        value = this.settleBuiltValue(value);
         this.context.describeNativeValue(value);
         const symbol = this.requireValueSymbol(identifier);
         const owner = this.bindingScope(symbol);
