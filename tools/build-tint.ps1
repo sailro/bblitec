@@ -17,7 +17,10 @@ $CMake = Find-CMake $CMake
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "Tint"
+# The checkout is tools/build-dawn.ps1's: carry the Dawn series this host's
+# Dawn build applies (Metal on macOS), so neither builder resets the other's
+# tree. Those patches touch Dawn's native backends only, never Tint.
+Sync-PatchedCheckout $source $pin.repository $pin.commit "Tint" dawn @(if ($IsMacOS) { "metal" }) $CMake | Out-Null
 
 $compilerArguments = Get-PosixCompilerArguments
 & $CMake -S $source -B $build @compilerArguments `

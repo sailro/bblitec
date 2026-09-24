@@ -27,7 +27,7 @@ export function mobilePackageArguments(
         target.push(
             "-Abi",
             abi,
-            "-ExpectBackend",
+            "-Backend",
             backend.toUpperCase(),
             ...(values.get("--sdk") ? ["-Sdk", values.get("--sdk")!] : []),
             ...(values.get("--device")
@@ -51,9 +51,7 @@ export function mobilePackageArguments(
     return [
         "-NoProfile",
         "-File",
-        resolve("tools/package-demo.ps1"),
-        "-Platform",
-        platform,
+        resolve(`tools/package-${platform}.ps1`),
         "-Scene",
         scene,
         "-Jobs",

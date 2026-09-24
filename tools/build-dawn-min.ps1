@@ -1,6 +1,7 @@
 param(
     [string]$Workspace = ".cache\tint",
     [string]$OutputDirectory = "artifacts\tools\dawn-min",
+    [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -29,7 +30,8 @@ $CMake = Find-CMake $CMake
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
+# The Windows D3D12 variant applies no maintained Dawn patch: the empty series.
+Sync-PatchedCheckout $source $pin.repository $pin.commit "Dawn" dawn @() $CMake | Out-Null
 
 & $CMake -S $source -B $build `
     -DCMAKE_BUILD_TYPE=MinSizeRel `
@@ -62,10 +64,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Dawn minimal CMake configuration failed."
 }
 
+$parallelArguments = Get-BuildParallelArguments $Jobs
 & $CMake --build $build `
     --target webgpu_dawn `
     --config MinSizeRel `
-    --parallel
+    @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Dawn minimal build failed."
 }
@@ -78,12 +81,11 @@ if ($LASTEXITCODE -ne 0) {
 # Install the Dawn license beside the library so release packaging can
 # redistribute it without the source checkout (static linking still
 # requires the notice).
-Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
+Copy-ArtifactItem (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt")
 
-# The Windows D3D12 variant applies no maintained Dawn patch; the record still
-# names the pin and the empty series (native/patch-identity.cmake).
-@(Get-PatchRecord dawn $pin.commit @(Get-MaintainedPatches dawn)) -join "`n" |
-    Set-Content (Join-Path $output "bblite-dawn-features.cmake") -Encoding Ascii
+# The record still names the pin and the empty series (native/patch-identity.cmake).
+Set-ArtifactContent (Join-Path $output "bblite-dawn-features.cmake") `
+    ((@(Get-PatchRecord dawn @() $CMake) -join "`n") + "`n")
 @{
     repository = $pin.repository
     commit = $pin.commit

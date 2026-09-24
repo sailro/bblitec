@@ -35,7 +35,7 @@
     "doctor": "npm run scene -- doctor",
     "dev:setup": "npm run scene -- setup",
     "sweep": "npm run scene -- validate all",
-    "package:demo": "pwsh -File tools/package-demo.ps1",
+    "package:demo": "npm run build && node dist/src/package-demo.js",
     "demos:release": "npm run build && node dist/src/shipping-demos.js",
     "android": "pwsh -File tools/android.ps1",
     "android:sweep": "npm run build && node tools/android-sweep.mjs",

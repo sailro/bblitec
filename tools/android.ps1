@@ -16,7 +16,6 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 $root = Get-RepositoryRoot
 $Backend = $Backend.ToUpperInvariant()
 if ($env:BBLITE_ANDROID_INPUTS_PREPARED -eq '1' -and -not $SkipGenerate) {
@@ -87,7 +86,7 @@ try {
         $installArguments += @($dependencyFeatures.Split(';', [StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { "--x-feature=$_" })
         Invoke-Checked $vcpkg $installArguments
         if ('ui:rml' -in $runtimeFeatures) {
-            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/patches/manifest.json") +
+            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$root/native/patches/manifest.json", "$root/native/patch-identity.cmake") +
                 @(Get-MaintainedPatches rmlui | ForEach-Object Path) +
                 @('freetype', 'lunasvg', 'boost-charconv' | ForEach-Object { "$root/artifacts/android-vcpkg/$triplet/share/$_/vcpkg_abi_info.txt" })
             Build-DependencyArtifact 'RmlUi Android' $rmlui $dependencyIdentity ($dependencyInputs + $inputs) @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
@@ -95,14 +94,14 @@ try {
             }
         }
         if ('audio:engine' -in $runtimeFeatures) {
-            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$root/native/patches/manifest.json") +
+            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$root/native/patches/manifest.json", "$root/native/patch-identity.cmake") +
                 @(Get-MaintainedPatches labsound | ForEach-Object Path)
             Build-DependencyArtifact 'LabSound Android' $labsound $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
                 & "$PSScriptRoot/build-labsound.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -Jobs $Jobs -CMake $cmake
             }
         }
         if ($Backend -ne 'SDL_GPU') {
-            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$root/native/patches/manifest.json") +
+            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$root/native/patches/manifest.json", "$root/native/patch-identity.cmake") +
                 @(Get-MaintainedPatches dawn @('android') | ForEach-Object Path)
             Build-DependencyArtifact 'Dawn Android' $dawn $dependencyIdentity (@("$Ndk/source.properties") + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'bblite-dawn-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-dawn.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -OutputDirectory $dawn -Jobs $Jobs -CMake $cmake
@@ -139,7 +138,7 @@ try {
     # Remove only disposable staging payloads, after checking their absolute boundary.
     foreach ($relative in @('assets', 'jniLibs')) {
         $path = [IO.Path]::GetFullPath("$staging/$relative")
-        Assert-PackageChild $staging $path
+        Assert-ContainedPath $staging $path
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
     $payload = "$staging/assets/payload"
@@ -161,24 +160,10 @@ try {
     Get-ChildItem $libraries -Filter '*.so' -File | ForEach-Object {
         Invoke-Checked $strip @('--strip-unneeded', $_.FullName)
     }
+    # The notices of what this build links (src/package-notices.ts, shared with every platform).
     $licenses = "$staging/assets/licenses"
-    New-Item -ItemType Directory -Force $licenses | Out-Null
-    Get-ChildItem "$root/artifacts/android-vcpkg/$triplet/share" -Filter copyright -Recurse -File | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $licenses "$($_.Directory.Name).txt")
-    }
-    Copy-Item "$Ndk/NOTICE.toolchain" "$licenses/NDK-toolchain.txt"
-    Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
-    if ($Backend -ne 'SDL_GPU') {
-        Copy-Item "$dawn/LICENSE.txt" "$licenses/Dawn.txt"
-        Copy-Item "$dawn/provenance.json" "$licenses/Dawn-provenance.json"
-    }
-    if ('ui:rml' -in $sceneFeatures) {
-        Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses
-        Copy-Item "$root/native/android/fonts/OFL.txt" "$licenses/NotoSansSymbols2.txt"
-    }
-    if ('audio:engine' -in $sceneFeatures) {
-        Get-ChildItem $labsound -File | Where-Object { $_.Name -match '-(LICENSE|COPYING)\.txt$' } | Copy-Item -Destination $licenses
-    }
+    Invoke-Checked 'node' @('dist/src/package-notices.js', '--build-directory', $build, '--platform', 'android',
+        '--output', $licenses, '--ndk', $Ndk, '--cmake', $cmake)
     $hashes = Get-ChildItem $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
         $_.FullName.Substring($payload.Length) + ':' + (Get-FileHash $_.FullName -Algorithm SHA256).Hash
     }
@@ -187,7 +172,7 @@ try {
     $gradle = if ($IsWindows) { "$sdl/android-project/gradlew.bat" } else { "$sdl/android-project/gradlew" }
     # Recreate the ZIP so incremental replacement cannot retain holes from larger libraries.
     $gradleApk = "$staging/gradle-app/outputs/apk/debug/app-debug.apk"
-    Assert-PackageChild $staging $gradleApk
+    Assert-ContainedPath $staging $gradleApk
     if (Test-Path -LiteralPath $gradleApk) { Remove-Item -LiteralPath $gradleApk }
     Invoke-Checked $gradle @('-p', "$root/native/android", '--project-cache-dir', "$staging/gradle-cache",
         "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteMinSdk=$minSdk", "-PbbliteApplicationId=$ApplicationId", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')

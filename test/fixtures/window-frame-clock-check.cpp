@@ -7,6 +7,7 @@
 
 using bbl::pal::WindowFrameClock;
 using bbl::pal::detail::WindowFrameClockTicks;
+namespace detail = bbl::pal::detail;
 using namespace std::chrono_literals;
 
 struct HeartbeatLoop {
@@ -25,6 +26,8 @@ struct HeartbeatLoop {
         std::size_t next = 0;
         WindowFrameClockTicks* consumer = nullptr;
         std::vector<Clock::time_point> delivered;
+        std::vector<DWORD> rests;
+        std::size_t next_rest = 0;
         DWORD wait(UINT count, const HANDLE* handles, DWORD timeout) {
             assert(count == 1 && handles == &stop && timeout <= 100);
             if (consumer)
@@ -32,16 +35,31 @@ struct HeartbeatLoop {
                     delivered.push_back(*timestamp);
             return responses.at(next++);
         }
+        DWORD rest(DWORD timeout) {
+            assert(timeout <= 100);
+            return rests.at(next_rest++);
+        }
         // Independent-flip frames have no composition statistics to query.
     };
     Api* api_;
     WindowFrameClockTicks ticks_;
     bool cpu_profile_ = false;
+    std::size_t idle_wait_limit_ = 0;
     static std::runtime_error api_error(const char* operation, unsigned long) {
         return std::runtime_error(operation);
     }
 #include "clock-wait-loop.hpp"
 };
+
+/** The message a run's clock failed with, or empty when it stopped cleanly. */
+std::string failure_of(HeartbeatLoop& loop) {
+    try {
+        (void)loop.ticks_.take_latest();
+    } catch (const std::runtime_error& error) {
+        return error.what();
+    }
+    return {};
+}
 
 int main(int argc, char** argv) {
     using Clock = WindowFrameClock::Clock;
@@ -74,6 +92,43 @@ int main(int argc, char** argv) {
         reported_wait_failure = std::string_view(error.what()) == "wait";
     }
     assert(reported_wait_failure);
+
+    constexpr DWORD occluded = bbl::pal::detail::compositor_display_occluded;
+    // An unbounded run waits out an occluded display and ticks when it returns.
+    HeartbeatLoop::Clock::index = 0;
+    HeartbeatLoop::Api patient{
+        nullptr, {occluded, occluded, WAIT_TIMEOUT, WAIT_OBJECT_0 + 1, WAIT_OBJECT_0}};
+    patient.rests = {WAIT_TIMEOUT, WAIT_TIMEOUT};
+    HeartbeatLoop waited{&patient, {}};
+    waited.run();
+    assert(patient.next == patient.responses.size() && patient.next_rest == 2);
+    assert(waited.ticks_.take_latest() == origin);
+    // A bounded run fails after its streak of tickless waits, naming the last status.
+    HeartbeatLoop::Api timed_out{nullptr, {WAIT_TIMEOUT, occluded, WAIT_TIMEOUT}};
+    timed_out.rests = {WAIT_TIMEOUT};
+    HeartbeatLoop bounded{&timed_out, {}, false, 3};
+    bounded.run();
+    assert(timed_out.next == 3);
+    const auto timeout_failure = failure_of(bounded);
+    assert(timeout_failure.find("3 consecutive waits (300 ms) of a bounded run") !=
+           std::string::npos);
+    assert(timeout_failure.find("last status WAIT_TIMEOUT") != std::string::npos);
+    HeartbeatLoop::Api locked{nullptr, {occluded, occluded}};
+    locked.rests = {WAIT_TIMEOUT};
+    HeartbeatLoop occluded_run{&locked, {}, false, 2};
+    occluded_run.run();
+    assert(locked.next == 2 && locked.next_rest == 1);
+    assert(
+        failure_of(occluded_run).find("last status 0xC01E0006 STATUS_GRAPHICS_PRESENT_OCCLUDED") !=
+        std::string::npos);
+    // A heartbeat restarts the streak.
+    HeartbeatLoop::Clock::index = 0;
+    HeartbeatLoop::Api intermittent{
+        nullptr, {WAIT_TIMEOUT, WAIT_OBJECT_0 + 1, WAIT_TIMEOUT, WAIT_OBJECT_0 + 1, WAIT_OBJECT_0}};
+    HeartbeatLoop recovering{&intermittent, {}, false, 2};
+    recovering.run();
+    assert(intermittent.next == intermittent.responses.size());
+    assert(recovering.ticks_.take_latest() == origin + 3ms);
 
     HeartbeatLoop::Clock::index = 0;
     HeartbeatLoop::Clock::delays = {0ms, 500ms, 1000ms};
