@@ -1025,6 +1025,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/shadow-task.ts",
         consumers: CMAKE,
     },
+    // `enableMorphTargetShadows`: the caster fit's morph-expanded bounds,
+    // kept in its own pinned module upstream and compiled only for a scene
+    // that registers the provider.
+    "shadow:morph-bounds": {
+        provenance: "src/shadow/enable-morph-target-shadows.ts",
+        consumers: CMAKE,
+    },
     "sprite:2d": {
         provenance:
             "src/sprite/sprite-2d.ts + " +

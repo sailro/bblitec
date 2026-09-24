@@ -5747,7 +5747,9 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 #endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
+#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
+#endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);

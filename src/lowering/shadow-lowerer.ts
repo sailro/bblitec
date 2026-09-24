@@ -1453,13 +1453,20 @@ export function pinnedShadowHeader(
     const pcfDirectional = pcfDirectionalDefaults(context);
     const invertMat4 = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
+    // `enableMorphTargetShadows` is its own pinned module upstream, and its
+    // provider -- the caster-bounds expansion, the per-target delta ranges
+    // it caches, and the weight version the render gate sums -- is emitted
+    // only for a scene that calls it.
+    const morphBounds = features.includes("shadow:morph-bounds");
     // `computeAabb`'s local arm, the per-target delta range the morph
     // bounds provider caches.
-    const computeAabb = lowerComputeAabb(context, {
-        arm: "local",
-        cppName: "compute_aabb",
-        inline: true,
-    });
+    const computeAabb = morphBounds
+        ? lowerComputeAabb(context, {
+              arm: "local",
+              cppName: "compute_aabb",
+              inline: true,
+          })
+        : "";
     const floats = (values: readonly number[]): string =>
         values.map((value) => floatLiteral(value)).join(", ");
     return `#pragma once
@@ -1660,7 +1667,9 @@ inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_min{
 inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_max{
     ${floats(casterFallback.max)}};
 
-
+${
+    morphBounds
+        ? `
 /**
  * enableMorphTargetShadows' bounds provider, as the caster fit reads it.
  *
@@ -1757,7 +1766,9 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
     }
 }
 
-${lowerBuildLightViewMatrix(context)}
+`
+        : ""
+}${lowerBuildLightViewMatrix(context)}
 
 ${lowerMultiply4x4(context)}
 
@@ -1839,14 +1850,22 @@ ${lowerShadowEnabled(context)}
  */
 inline std::uint64_t shadow_caster_version_sum(
     const Engine& engine,
-    const std::vector<MeshHandle>& caster_meshes,
-    bool morph_shadow_bounds) {
+    const std::vector<MeshHandle>& caster_meshes${
+        morphBounds
+            ? `,
+    bool morph_shadow_bounds`
+            : ""
+    }) {
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& mesh = engine.meshes[handle.value];
-        sum += mesh.transform_version + mesh.instance_version;
-        if (morph_shadow_bounds) sum += mesh.morph_weights_version;
+        sum += mesh.transform_version + mesh.instance_version;${
+            morphBounds
+                ? `
+        if (morph_shadow_bounds) sum += mesh.morph_weights_version;`
+                : ""
+        }
     }
     return sum;
 }
@@ -1939,7 +1958,7 @@ inline bool shadow_refresh_due(
     if (generator.force_refresh_every_frame) return true;
     const auto light_matrix = light_world_matrix(light);
     const std::uint64_t caster_version = shadow_caster_version_sum(
-        engine, generator.caster_meshes, generator.morph_shadow_bounds);
+        engine, generator.caster_meshes${morphBounds ? ", generator.morph_shadow_bounds" : ""});
 #if BBLITE_SHADOWS_CSM
     const bool camera_unchanged = csm_camera == nullptr
         ? eye.x == gate.last_fo_offset.x &&
@@ -2167,6 +2186,9 @@ export function shadowFactorySource(
     // The cascaded generator: a layered map, one caster pass per
     // cascade, and the 320-byte cascade block its receivers bind.
     const csmShadows = features.includes("shadow:csm");
+    // `enableMorphTargetShadows`, the one entry point of its own pinned
+    // module: emitted only for a scene that calls it.
+    const morphBounds = features.includes("shadow:morph-bounds");
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
@@ -2502,7 +2524,9 @@ void refresh_shadow_task_meshes(
 }
 
 } // namespace
-
+${
+    morphBounds
+        ? `
 // src/shadow/enable-morph-target-shadows.ts enableMorphTargetShadows:
 // register the morph bounds provider on this generator. Upstream that
 // installs a provider object into a WeakMap and wraps each caster in a
@@ -2517,7 +2541,9 @@ void enable_morph_target_shadows(
     }
     engine.shadow_generators[generator.value].morph_shadow_bounds = true;
 }
-
+`
+        : ""
+}
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

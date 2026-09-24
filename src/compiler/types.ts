@@ -2795,6 +2795,9 @@ export type Feature =
     | "shadow:pcf-directional"
     | "shadow:csm"
     | "shadow:task"
+    // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
+    // (upstream's own `shadow/enable-morph-target-shadows.ts` module).
+    | "shadow:morph-bounds"
     | "sprite:2d"
     | "sprite:2d-depth-host"
     | "sprite:2d-y-sort"

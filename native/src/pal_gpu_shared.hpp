@@ -2885,6 +2885,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
                 geometry.bounds_max.y,
                 geometry.bounds_max.z,
             };
+#if BBLITE_SHADOW_MORPH_BOUNDS
             // enableMorphTargetShadows' provider, read LIVE: the weights
             // are what the scene animates, and the fit has to follow them
             // or it bounds a scrambled mesh by its unmorphed box.
@@ -2907,6 +2908,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
                     uncapped ? storage_weights.size() : record.morph_weights.size(),
                     caster.bounds_min, caster.bounds_max);
             }
+#endif
         }
         // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
         // boundMax properties, not the geometry record. Sandblox maintains

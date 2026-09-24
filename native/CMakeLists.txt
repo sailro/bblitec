@@ -915,6 +915,9 @@ bblite_feature_define(BBLITE_HAS_DETAILED_PICKING "picking:detailed")
 # A scene that never adds one carries none of it.
 bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
 bblite_feature_define(BBLITE_SHADOWS_CSM "shadow:csm")
+# enableMorphTargetShadows' caster-bounds provider: the generator flag and the
+# fit's morph expansion, compiled only for a scene that registers it.
+bblite_feature_define(BBLITE_SHADOW_MORPH_BOUNDS "shadow:morph-bounds")
 
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
