@@ -419,14 +419,14 @@ function compileObjectAssign(
         }
         return target;
     }
-    // An engine handle has no data fields to store into. The statement
-    // erases exactly as the browser-instrumentation path erased every
-    // `Object.assign` before data targets were lowered; a tracked camera
-    // still refuses through the camera-mutation scan.
-    for (const source of sources) {
-        context.compileValue(source);
-    }
-    return { kind: "void", cpp: "" };
+    // Nothing else has stored fields to copy into: an engine handle's
+    // properties are setters with native effects, which a copy of plain
+    // properties would bypass. Browser-only targets never reach here; the
+    // instrumentation path erases those statements whole.
+    return context.fail(
+        call,
+        `Object.assign cannot write into a ${target.kind} value: only records, object literals and structs have plain properties to copy into.`,
+    );
 }
 
 /**

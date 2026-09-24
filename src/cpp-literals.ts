@@ -174,19 +174,27 @@ export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * Keep lone UTF-16 surrogates in the runtime's WTF-8 representation: C++
  * forbids surrogate universal-character names. Match escaped backslashes
  * separately so a source string containing literal "\\ud800" stays literal.
+ *
+ * A string holding U+0000 is spelled as a `std::string` sized by the
+ * literal itself: every native string sink reads a bare literal through
+ * `const char*`, which would stop at the first NUL.
  */
 export function stringLiteral(value: string): string {
-    return JSON.stringify(value)
+    const literal = JSON.stringify(value)
         .replace(
-            /\\\\|\\u(d[89a-f][0-9a-f]{2})/gi,
-            (escape: string, surrogate: string | undefined) => {
-                if (!surrogate) return escape;
-                const unit = Number.parseInt(surrogate, 16);
-                return [
-                    0xe0 | (unit >> 12),
-                    0x80 | ((unit >> 6) & 0x3f),
-                    0x80 | (unit & 0x3f),
-                ]
+            /\\\\|\\u(d[89a-f][0-9a-f]{2}|0000)/gi,
+            (escape: string, unitText: string | undefined) => {
+                if (!unitText) return escape;
+                const unit = Number.parseInt(unitText, 16);
+                const bytes =
+                    unit === 0
+                        ? [0]
+                        : [
+                              0xe0 | (unit >> 12),
+                              0x80 | ((unit >> 6) & 0x3f),
+                              0x80 | (unit & 0x3f),
+                          ];
+                return bytes
                     .map((byte) => `\\${byte.toString(8).padStart(3, "0")}`)
                     .join("");
             },
@@ -195,6 +203,9 @@ export function stringLiteral(value: string): string {
         .join("\\u2028")
         .split("\u2029")
         .join("\\u2029");
+    return value.includes("\u0000")
+        ? `std::string(${literal}, sizeof(${literal}) - 1)`
+        : literal;
 }
 
 /**

@@ -239,6 +239,7 @@ import {
     TYPED_ARRAY_KINDS,
     doubleLiteral as dataDoubleLiteral,
     declaredInDomLibrary,
+    domAudioHandleKind,
     handleCppType,
     isHandleKind,
     isOpaqueReference,
@@ -247,6 +248,8 @@ import {
     opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
+    pinnedHandleKind,
+    platformHandleKind,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -276,7 +279,12 @@ import { engineSampleCountCpp } from "./compiler/engine-samples.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { nativeReturnTsType } from "./compiler/native-return-type.js";
 import { readProperty } from "./compiler/properties.js";
-import { CompilerSymbols } from "./compiler/symbols.js";
+import {
+    CompilerSymbols,
+    declaredIn,
+    type DeclarationOrigin,
+} from "./compiler/symbols.js";
+import { isNullable, presentMembers } from "./compiler/type-facts.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import {
@@ -471,82 +479,51 @@ const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["isTrusted", "trusted"],
 ]);
 
+const NULLABLE_UI_ELEMENT = {
+    origin: "dom",
+    kind: "ui-element",
+    cppType: handleCppType("ui-element"),
+} as const;
+
 /**
- * A nullable name's resource kind, keyed by the type's name alone.
- *
- * These rows are deliberately ungated, unlike `opaqueEngineValue`'s table:
- * half of them are DOM types (`AudioContext`, `Element` and the three
- * HTML element interfaces) that the pinned package does not declare, so
- * `declaredInBabylonLite` would drop them. `nullableResourceKind` consults
- * this where its name chain used to start -- after the workers-only
- * `EngineContext` row and before the `createRenderTexture2D`-guarded
- * `Texture2D` one, which no name here collides with.
+ * The resources a nullable name holds as optional native storage beyond the
+ * pinned handles and Web Audio identities the data model's own classifiers
+ * name (`nullableResourceKind`), keyed by type name and gated on the origin
+ * that declares that type: a program's own `class AssetContainer` or
+ * `interface Element` is its own data, not the engine's or the browser's.
  *
  * A Map, like the two tables above: the key is a type's symbol name, and an
  * object literal would answer `Object.prototype` for one spelled `toString`.
  */
 const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     string,
-    { kind: ValueKind; cppType: string }
+    { origin: DeclarationOrigin; kind: ValueKind; cppType: string }
 >([
     [
         "AudioEngine",
-        { kind: "audio-engine", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "AudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "BaseAudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "OfflineAudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "AudioParam",
-        { kind: "audio-param", cppType: "bbl::pal::AudioParamHandle" },
-    ],
-    [
-        "AudioBuffer",
-        { kind: "audio-buffer", cppType: handleCppType("audio-buffer") },
+        {
+            origin: "babylon",
+            kind: "audio-engine",
+            cppType: "bbl::pal::AudioContextHandle",
+        },
     ],
     [
         "SpriteRenderer",
-        { kind: "sprite-renderer", cppType: "bbl::SpriteRendererHandle" },
-    ],
-    [
-        "Sprite2DLayer",
-        { kind: "sprite-layer", cppType: handleCppType("sprite-layer") },
-    ],
-    ["Element", { kind: "ui-element", cppType: handleCppType("ui-element") }],
-    [
-        "HTMLElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "HTMLDivElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "HTMLCanvasElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "ObstacleHandle",
         {
-            kind: "navigation-obstacle",
-            cppType: handleCppType("navigation-obstacle"),
+            origin: "babylon",
+            kind: "sprite-renderer",
+            cppType: "bbl::SpriteRendererHandle",
         },
     ],
-    ["Mesh", { kind: "mesh", cppType: handleCppType("mesh") }],
-    ["AssetContainer", { kind: "asset", cppType: "bbl::AssetHandle" }],
     [
-        "StorageBuffer",
-        { kind: "storage-buffer", cppType: handleCppType("storage-buffer") },
+        "AssetContainer",
+        { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
     ],
+    // The element interfaces a scene declares empty and fills from a lookup.
+    ["Element", NULLABLE_UI_ELEMENT],
+    ["HTMLElement", NULLABLE_UI_ELEMENT],
+    ["HTMLDivElement", NULLABLE_UI_ELEMENT],
+    ["HTMLCanvasElement", NULLABLE_UI_ELEMENT],
 ]);
 
 /**
@@ -561,7 +538,7 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
  * assignment inside the "did the asset carry a skinned mesh and clips" arm,
  * the shape both VAT scenes are written in. `VatClip`: `let swim: VatClip |
  * null = null` then the guarded row read, the per-instance scene's shape for
- * holding one clip's row block.
+ * holding one clip's row block. Both are pinned types.
  */
 const NULLABLE_VAT_RESOURCE_TYPES = new EmissionMap<
     string,
@@ -2022,29 +1999,38 @@ class Compiler implements LoweringServices {
         allowDirect = false,
     ): { kind: ValueKind; cppType: string } | undefined {
         const type = this.checker.getTypeAtLocation(node);
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types.filter(
-                      (member) =>
-                          (member.flags &
-                              (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                          0,
-                  )
-                : allowDirect
-                  ? [type]
-                  : [];
-        if (members.length !== 1) return undefined;
-        if (
-            this.options.workers &&
-            isPinnedType(members[0]!, ["EngineContext"])
-        ) {
+        const present = presentMembers(type);
+        if (present.length !== 1 || (!allowDirect && !isNullable(type)))
+            return undefined;
+        const member = present[0]!;
+        if (this.options.workers && isPinnedType(member, ["EngineContext"])) {
             return { kind: "engine", cppType: "std::shared_ptr<bbl::Engine>" };
         }
-        const name = members[0]!.symbol?.name;
+        const pinned = pinnedHandleKind(member);
+        switch (pinned) {
+            case "mesh":
+            case "sprite-layer":
+            case "navigation-obstacle":
+            case "storage-buffer":
+                return { kind: pinned, cppType: handleCppType(pinned) };
+        }
+        const audio = domAudioHandleKind(member);
+        switch (audio) {
+            case "audio-context":
+            case "audio-param":
+            case "audio-buffer":
+                return { kind: audio, cppType: handleCppType(audio) };
+        }
+        const name = member.symbol?.name;
         const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
-        if (named) return named;
+        if (named && declaredIn(member.symbol, named.origin)) {
+            return { kind: named.kind, cppType: named.cppType };
+        }
+        // `createRenderTexture2D` returns the pin's ordinary `Texture2D`, so
+        // the type cannot tell its offscreen target from a loaded texture;
+        // the assignment that fills the name does.
         if (
-            name === "Texture2D" &&
+            isPinnedType(member, ["Texture2D"]) &&
             this.identifierIsAssignedFromIntrinsic(
                 node,
                 "createRenderTexture2D",
@@ -2055,7 +2041,7 @@ class Compiler implements LoweringServices {
                 cppType: "bbl::SpriteRenderTextureHandle",
             };
         }
-        const mappedHandle = this.dataTypes.fromTsType(members[0]!, node);
+        const mappedHandle = this.dataTypes.fromTsType(member, node);
         if (
             mappedHandle?.kind === "handle" &&
             (mappedHandle.handle === "pointer-drag" ||
@@ -2067,23 +2053,22 @@ class Compiler implements LoweringServices {
                 cppType: this.dataTypes.cppType(mappedHandle),
             };
         }
-        if (this.typeIsOrExtendsNamed(members[0]!, "Material")) {
+        if (
+            this.typeIsOrExtendsNamed(member, "Material", (symbol) =>
+                declaredIn(symbol, "babylon"),
+            )
+        ) {
             return {
                 kind: "material",
                 cppType: handleCppType("material"),
             };
         }
         const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
-        if (vat) return vat;
+        if (vat && declaredIn(member.symbol, "babylon")) return vat;
         // Resolved through the DOM library's own `AudioNode`: a scene's
         // `SceneNode`, or the pin's `TransformNode`, is not a Web Audio node.
         if (
-            this.typeIsOrExtendsNamed(
-                members[0]!,
-                "AudioNode",
-                new EmissionSet(),
-                declaredInDomLibrary,
-            )
+            this.typeIsOrExtendsNamed(member, "AudioNode", declaredInDomLibrary)
         ) {
             return {
                 kind: "audio-node",
@@ -2099,7 +2084,7 @@ class Compiler implements LoweringServices {
         // the assignment through `emitOptionalResourceAssignment` and the
         // shared closure cell a stored callback needs are the same ones
         // every resource row above already uses.
-        const opaque = opaqueEngineValue(members[0]!);
+        const opaque = opaqueEngineValue(member);
         if (opaque) {
             return opaque;
         }
@@ -2108,14 +2093,14 @@ class Compiler implements LoweringServices {
 
     /**
      * Whether a type is, or derives from, the class or interface named
-     * `name`; `declaredBy` narrows which declaration of that name counts
-     * (the DOM library's `AudioNode`, not a scene's own class of that name).
+     * `name` that `declaredBy` owns (the DOM library's `AudioNode`, not a
+     * scene's own class of that name).
      */
     private typeIsOrExtendsNamed(
         type: ts.Type,
         name: string,
+        declaredBy: (symbol: ts.Symbol) => boolean,
         visited = new EmissionSet<ts.Type>(),
-        declaredBy: (symbol: ts.Symbol) => boolean = () => true,
     ): boolean {
         if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
         if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
@@ -2134,7 +2119,7 @@ class Compiler implements LoweringServices {
             this.checker
                 .getBaseTypes(type as ts.InterfaceType)
                 ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, visited, declaredBy),
+                    this.typeIsOrExtendsNamed(base, name, declaredBy, visited),
                 ) ?? false
         );
     }
@@ -8469,15 +8454,9 @@ class Compiler implements LoweringServices {
             this.checker.getAwaitedType(resultType) ?? resultType;
         let writeOnlyObjectResult = false;
         if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
-            const resultDeclarations = [
-                ...(observableResult.symbol?.declarations ?? []),
-                ...(observableResult.aliasSymbol?.declarations ?? []),
-            ];
-            const directlyDom = resultDeclarations.some((result) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    result.getSourceFile().fileName,
-                ),
-            );
+            const directlyDom =
+                declaredInDomLibrary(observableResult.symbol) ||
+                declaredInDomLibrary(observableResult.aliasSymbol);
             if (!directlyDom) {
                 writeOnlyObjectResult =
                     observableResult.getProperties().length > 0 &&
@@ -8719,13 +8698,7 @@ class Compiler implements LoweringServices {
             (type.flags & ts.TypeFlags.Union) !== 0
                 ? (type as ts.UnionType).types
                 : [type];
-        return members.some((member) =>
-            (member.symbol?.declarations ?? []).some((declaration) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            ),
-        );
+        return members.some((member) => declaredInDomLibrary(member.symbol));
     }
 
     private isBrowserUtilitySource(source: ts.SourceFile): boolean {
@@ -13832,21 +13805,17 @@ class Compiler implements LoweringServices {
             (type.flags & ts.TypeFlags.Union) !== 0
                 ? (type as ts.UnionType).types
                 : [type];
+        // Gamepads are platform handles the native input model reads.
         if (
-            members.some(
-                (member) =>
-                    member.symbol?.name === "Gamepad" ||
-                    member.symbol?.name === "GamepadButton",
-            )
+            members.some((member) => {
+                const handle = platformHandleKind(member);
+                return handle === "gamepad" || handle === "gamepad-button";
+            })
         ) {
             return false;
         }
         const directlyDom = members.some((member) =>
-            (member.symbol?.declarations ?? []).some((declaration) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            ),
+            declaredInDomLibrary(member.symbol),
         );
         if (directlyDom) return true;
         const unwrapped = this.unwrap(expression);

@@ -4,7 +4,9 @@ import type { NativeHostUi } from "./types.js";
 import { nativeHostUiStyleRules } from "../ui-style-rule.js";
 import {
     declarationInDefaultLibrary,
+    declaredInDomLibrary,
     isDefaultLibraryIdentifier,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -33,16 +35,14 @@ function hasOnlyInstrumentationEffects(
         }
         return false;
     };
-    const valueDeclaration = (
-        expression: ts.Expression,
-    ): ts.Declaration | undefined => {
-        const symbol = checker.getSymbolAtLocation(expression);
-        return (
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? checker.getAliasedSymbol(symbol)
-                : symbol
-        )?.valueDeclaration;
-    };
+    const valueDeclaration = (node: ts.Node): ts.Declaration | undefined =>
+        resolvedSymbol(checker, node)?.valueDeclaration;
+    const globalThisSymbol = checker.resolveName(
+        "globalThis",
+        undefined,
+        ts.SymbolFlags.Value,
+        false,
+    );
     const isPrimitive = (expression: ts.Expression): boolean => {
         const type = checker.getTypeAtLocation(expression);
         const members = type.isUnion() ? type.types : [type];
@@ -67,16 +67,7 @@ function hasOnlyInstrumentationEffects(
             (member) =>
                 (member.flags &
                     (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                    0 ||
-                member
-                    .getSymbol()
-                    ?.declarations?.some(
-                        (node) =>
-                            declarationInDefaultLibrary(node) &&
-                            /(?:^|[\\/])lib\.dom(?:\.iterable)?\.d\.ts$/.test(
-                                node.getSourceFile().fileName,
-                            ),
-                    ) === true,
+                    0 || declaredInDomLibrary(member.getSymbol()),
         );
     };
     const isFetch = (expression: ts.Expression): boolean => {
@@ -91,13 +82,7 @@ function hasOnlyInstrumentationEffects(
             value.name.text === "fetch" &&
             ts.isIdentifier(value.expression) &&
             value.expression.text === "globalThis" &&
-            checker.getSymbolAtLocation(value.expression) ===
-                checker.resolveName(
-                    "globalThis",
-                    undefined,
-                    ts.SymbolFlags.Value,
-                    false,
-                ) &&
+            resolvedSymbol(checker, value.expression) === globalThisSymbol &&
             valueDeclaration(value) !== undefined &&
             declarationInDefaultLibrary(valueDeclaration(value)!)
         );
@@ -135,9 +120,7 @@ function hasOnlyInstrumentationEffects(
                 if (ts.isPropertyAssignment(property))
                     return confined(property.initializer, new Set(seen));
                 if (ts.isShorthandPropertyAssignment(property)) {
-                    const symbol =
-                        checker.getShorthandAssignmentValueSymbol(property);
-                    const target = symbol?.valueDeclaration;
+                    const target = valueDeclaration(property.name);
                     return (
                         target !== undefined &&
                         ts.isVariableDeclaration(target) &&
@@ -192,13 +175,7 @@ function hasOnlyInstrumentationEffects(
             call.arguments.length === 1 &&
             ts.isIdentifier(call.arguments[0]!) &&
             call.arguments[0].text === "globalThis" &&
-            checker.getSymbolAtLocation(call.arguments[0]) ===
-                checker.resolveName(
-                    "globalThis",
-                    undefined,
-                    ts.SymbolFlags.Value,
-                    false,
-                )
+            resolvedSymbol(checker, call.arguments[0]) === globalThisSymbol
         );
     };
     const safeCall = (call: ts.CallExpression | ts.NewExpression): boolean => {
@@ -276,7 +253,7 @@ function hasOnlyInstrumentationEffects(
             if (
                 ts.isPropertyAccessExpression(owner) &&
                 owner.name.text === "dataset" &&
-                checker.getSymbolAtLocation(owner.expression) === canvas
+                resolvedSymbol(checker, owner.expression) === canvas
             )
                 return true;
             return confined(owner);
@@ -362,7 +339,7 @@ export function writesUnobservedCanvasMetadata(
         return false;
     const parameter = declaration.parameters[argumentIndex];
     if (!parameter || !ts.isIdentifier(parameter.name)) return false;
-    const symbol = checker.getSymbolAtLocation(parameter.name);
+    const symbol = resolvedSymbol(checker, parameter.name);
     if (
         !symbol ||
         !hasOnlyInstrumentationEffects(checker, call, declaration, symbol)
@@ -372,10 +349,9 @@ export function writesUnobservedCanvasMetadata(
     let valid = true;
     const visit = (node: ts.Node): void => {
         if (!valid || ts.isTypeNode(node)) return;
-        if (
-            ts.isIdentifier(node) &&
-            checker.getSymbolAtLocation(node) === symbol
-        ) {
+        // A shorthand `{ canvas }` names the parameter too: resolved as a
+        // value, it is a use that is not a dataset write.
+        if (ts.isIdentifier(node) && resolvedSymbol(checker, node) === symbol) {
             const dataset = node.parent;
             const field = dataset.parent;
             if (
@@ -420,12 +396,11 @@ export function writesUnobservedCanvasMetadata(
     const observes = (node: ts.Node): boolean => {
         if (node === declaration) return false;
         if (ts.isTypeNode(node)) return false;
-        if (
-            ts.isElementAccessExpression(node) &&
-            checker.getTypeAtLocation(node.expression).getSymbol()?.name ===
-                "DOMStringMap"
-        )
-            return true;
+        if (ts.isElementAccessExpression(node)) {
+            const map = checker.getTypeAtLocation(node.expression).getSymbol();
+            if (map?.name === "DOMStringMap" && declaredInDomLibrary(map))
+                return true;
+        }
         if (
             ts.isPropertyAccessExpression(node) &&
             node.name.text === "dataset" &&
