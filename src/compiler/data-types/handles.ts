@@ -126,3 +126,18 @@ export function isHandleKind(kind: string): kind is HandleKind {
 export function handleCppType(kind: HandleKind): string {
     return handleCppTypes[kind];
 }
+
+/**
+ * Resource values outside the data model whose native value has exactly one
+ * type: the one intrinsic that produces the kind returns it (`bbl::create_sprite_renderer`,
+ * `bbl::create_animation_manager`). A local holding one declares that type,
+ * so a closure capturing it has a concrete environment.
+ */
+const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
+    ["sprite-renderer", "bbl::SpriteRendererHandle"],
+    ["animation-manager", "bbl::PropertyAnimationManager"],
+]);
+
+export function resourceValueCppType(kind: string): string | undefined {
+    return resourceValueCppTypes.get(kind);
+}

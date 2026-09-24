@@ -18,6 +18,7 @@ import {
     isOpaqueReference,
     isTypedArrayType,
     passesByReferenceKind,
+    resourceValueCppType,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -974,6 +975,15 @@ export class BindingScopes {
                 `std::shared_ptr<${handleType}>`,
             );
         }
+        // So does a resource whose native value has one type.
+        const resourceType = resourceValueCppType(value.kind);
+        if (resourceType)
+            this.context.registerNativeBindingType(
+                cppName,
+                sharedStorage
+                    ? `std::shared_ptr<${resourceType}>`
+                    : resourceType,
+            );
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
         const constantParameter =
             readOnlyParameter &&

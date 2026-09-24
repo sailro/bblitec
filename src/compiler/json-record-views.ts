@@ -71,7 +71,14 @@ export function compileJsonTupleView(
     });
     const result = {
         ...lowerer.leafValue(cpp, { kind: "json" }),
-        nativeCaptures: [context.registerNativeBinding(cpp)],
+        nativeCaptures: [
+            context.registerNativeBinding(
+                cpp,
+                false,
+                false,
+                "bbl::js::JsonValue",
+            ),
+        ],
     };
     views.set(elements, result);
     context.useNativeValue(result);
@@ -140,7 +147,14 @@ export function compileJsonRecordView(
     });
     const result = {
         ...lowerer.leafValue(cpp, { kind: "json" }),
-        nativeCaptures: [context.registerNativeBinding(cpp)],
+        nativeCaptures: [
+            context.registerNativeBinding(
+                cpp,
+                false,
+                false,
+                "bbl::js::JsonValue",
+            ),
+        ],
     };
     views.set(properties, result);
     context.useNativeValue(result);
