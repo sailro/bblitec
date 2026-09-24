@@ -1584,7 +1584,7 @@ class Compiler implements LoweringServices {
         try {
             this.statements.emit(this, statement);
         } finally {
-            this.statementDependencies.pop();
+            this.popDependencies(this.statementDependencies);
         }
     }
 
@@ -2786,7 +2786,7 @@ class Compiler implements LoweringServices {
                 this.windowProperties.call(expression) ??
                 this.expressions.compileValue(expression);
         } finally {
-            this.nativeDependencyStack.pop();
+            this.popDependencies(this.nativeDependencyStack);
         }
         if (
             value.kind === "text-vector" &&
@@ -6707,7 +6707,7 @@ class Compiler implements LoweringServices {
             lines = this.captureEmittedLines(emitBody);
         } finally {
             this.synchronousCleanupFrames.pop();
-            this.nativeDependencyStack.pop();
+            this.popDependencies(this.nativeDependencyStack);
         }
         for (const binding of dependencies) {
             if (
@@ -6816,15 +6816,25 @@ class Compiler implements LoweringServices {
         }
     }
 
+    /**
+     * Close the innermost dependency frame: its enclosing frame gains the
+     * bindings it read, in first-read order. A frame is read only once it is
+     * innermost again, so handing reads up when a frame closes is the same
+     * as adding each read to every open frame.
+     */
+    private popDependencies(stack: Set<NativeCaptureBinding>[]): void {
+        const closed = stack.pop()!;
+        const enclosing = stack.at(-1);
+        if (enclosing) for (const binding of closed) enclosing.add(binding);
+    }
+
     public useNativeBinding(binding: NativeCaptureBinding): void {
         // Stored Values keep their own home rather than initializer dependencies.
         // Propagate reads here so a parent expression still sees those reads when
         // its child returns an existing stored Value.
-        for (const dependencies of this.nativeDependencyStack)
-            dependencies.add(binding);
+        this.nativeDependencyStack.at(-1)?.add(binding);
         for (const capture of this.managedCaptures) capture.use(binding);
-        for (const dependencies of this.statementDependencies)
-            dependencies.add(binding);
+        this.statementDependencies.at(-1)?.add(binding);
         if (this.engineStartMark) {
             let sequences = this.continuationUses.get(binding.name);
             if (!sequences) {
@@ -6882,7 +6892,7 @@ class Compiler implements LoweringServices {
         try {
             return { cpp: compile(), nativeCaptures: [...dependencies] };
         } finally {
-            this.nativeDependencyStack.pop();
+            this.popDependencies(this.nativeDependencyStack);
         }
     }
 
