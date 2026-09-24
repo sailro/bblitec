@@ -174,7 +174,7 @@ export class GeneratedTree {
 }
 
 // ---------------------------------------------------------------------------
-// `scene -- neutrality-generated` — the compile-and-digest proof
+// `scene -- neutrality --generated` — the compile-and-digest proof
 //
 // docs/development.md's neutrality ladder: a change confined to
 // TypeScript is proved by compiling every registered scene and digesting

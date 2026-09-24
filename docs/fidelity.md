@@ -9,10 +9,10 @@ Artifact paths are relative to `generated/<id>/`.
 
 | Artifact | Records |
 | --- | --- |
-| `manifest.json` | Reached graph, features, assets |
+| `manifest.json` | Reached graph, features (scene reach and asset joins), assets; repository-relative source paths |
 | `fidelity.json` | Adaptations and risks |
 | `upstream/provenance.json` | Pinned modules/symbols |
-| `upstream/feature-activation.json` | Reach sites and consumers |
+| `upstream/feature-activation.json` | Reach sites, asset joins, activation reasons and consumers |
 | `upstream/renderer-fidelity.json` | Renderer formats/invariants |
 | `upstream/shaders/composition.json` | Composed modules |
 | Reflection, native WGSL, `.slots` | Actual shader interfaces/bindings |
@@ -38,6 +38,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
 | GPU task timing | Pinned frame-graph task snapshots use asynchronous hardware timestamp readback; [backend capability](backends.md#backend-comparison) determines availability |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
+| Pointer offsets | offsetX/offsetY read clientX/clientY: exact for the full-window primary canvas, not target-relative for auxiliary canvases or UI elements |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
 | Skinning | Eight loaded influences reduced to four |

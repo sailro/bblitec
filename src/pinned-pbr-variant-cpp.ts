@@ -211,7 +211,7 @@ const extensionWriters: ReadonlyArray<
         // the default they both read the writer's `transform` parameter, which
         // the dispatcher fills with the identity — and Scene 29's asset carries
         // `KHR_texture_transform` at u_scale 30 / v_scale -30 on every texture,
-        // measured with `scene -- uniforms scene29 --size 256`.
+        // measured with `scene -- diff scene29 --uniforms --size 256`.
         nestedWriters: {
             writeSheenUvTransform: uvTransformSources({
                 sheenUV: "material.sheen_transform",
@@ -347,7 +347,7 @@ const extensionWriters: ReadonlyArray<
                 // occlusion textureInfo, not the ORM one. The two agree
                 // wherever a material gives both slots the same transform --
                 // Scene 29's asset carries 30 / -30 on every texture, which
-                // is what `scene -- uniforms scene29 --size 256` shows in
+                // is what `scene -- diff scene29 --uniforms --size 256` shows in
                 // `occlUVm` -- and part where the occlusion slot declares
                 // its own, which is the orm-unpack split's whole point.
                 occl: "material.occlusion_transform",

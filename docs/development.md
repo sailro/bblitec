@@ -10,7 +10,7 @@ npm ci
 npm run dev:setup
 npm run doctor
 npm run scene -- process scene1
-npm run scene -- parity scene1 --differential
+npm run scene -- parity scene1
 ```
 
 On this Windows checkout, set CMake before native commands:
@@ -147,10 +147,13 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript p
 | `compile <scene\|all>` | C++, WGSL, assets, manifests |
 | `build <scene\|all>` | Native build/deployment; no shader compilation |
 | `process <scene\|all>` | Generate, compile shaders, build |
-| `parity <scene\|all> --differential` | Both backends against the reference |
-| `check <id>`, `observe <id>` | Declared interaction check/browser observation |
+| `parity <scene\|all> [--backend sdl_gpu\|dawn]` | Both backends (or one) against the reference, and their differential |
+| `check <id> [--observe]` | Declared interaction check / its browser observation |
 | `validate <scene\|all> [--cold]` | Process, parity, status checks |
-| `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Inspect/clean selected outputs |
+| `survey <entry.ts>` | Compile census and API readiness of an external entry |
+| `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Inspect/clean selected outputs; `--artifacts` keeps the tools' roots |
+
+Diagnosis commands are in [debugging](debugging.md#the-ladder).
 
 Build dist once with `npm run build`; repeated commands can use `node dist/src/scene-command.js`.
 Never rebuild/delete dist during its runs. Finish generation before native builds; finish shared-header
@@ -164,15 +167,14 @@ folders by stem and have diagnostic-only comparisons without configured threshol
 ### Sizing a capability before implementing it
 
 ```powershell
-node tools/project-requirements.mjs <entry.ts> <ignored-report.json>
-node dist/src/cli.js <entry.ts> --survey <ignored-census.json>
-node tools/project-progress.mjs <ignored-acceptance-ledger.json> [ignored-progress.md]
+npm run scene -- survey <entry.ts>
 ```
 
-The requirements scan inventories imports, library members, event shapes and language forms, including
-unused bodies; it does not prove compilation. `--survey` lowers past every refusal and writes a census
-(site, message, enclosing function, cascades, attempted/refused counts) and no tree. `project-progress.mjs`
-scores closed acceptance groups against a fixed baseline. Keep ledgers and reports in ignored `artifacts/`.
+The survey writes `artifacts/survey/<directory>-<stem>/`: `census.json` lists every compile refusal the
+lowering reaches (site, message, message class, enclosing function, cascades) and writes no tree;
+`api/report.html` lists the pinned declarations the entry references, credited by the evidence
+`npm run api -- report --run` collected. Group findings by shared capability and run independent
+source-shape probes before implementation batches.
 
 | File | Required data |
 | --- | --- |
@@ -249,8 +251,9 @@ when executable inputs or measurement contracts change. `lint:exports` is adviso
 
 ## Proving a change moved nothing
 
-`neutrality-generated <file> --write` saves generated-byte baselines. Compare after full registry
-regeneration. Native/shader changes use saved differential reports and the validation sequence above.
+`neutrality <file> --generated --write` saves a generated-byte baseline and `neutrality <file> --generated`
+compares against it after full registry regeneration. Native/shader changes use saved differential
+reports and the validation sequence above.
 
 ## Native builds
 
@@ -259,7 +262,8 @@ regeneration. Native/shader changes use saved differential reports and the valid
 `BBLITE_BACKEND`, `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR`.
 
 Dual builds use `native/build-<id>-release`; single-backend folders append `-sdl_gpu`/`-dawn`.
-Measuring commands' `--backend` chooses the runtime renderer; `--exe` overrides the binary.
+`parity` and `check` measure every backend the build compiles; `--backend sdl_gpu|dawn` (any case, `gpu`
+means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_EXE` overrides the executable.
 
 Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
 `native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
@@ -366,7 +370,6 @@ API updates: `npm run api -- diff`, update affected cases/fingerprints, then
 ```powershell
 npm run api -- report --run
 npm run api -- report --filter BoxOptions
-npm run api -- report --project <entry.ts>
 npm run api -- check
 npm run api -- diff --baseline <previous-snapshot.json>
 ```
@@ -375,8 +378,8 @@ Reports, logs and receipts live in ignored `artifacts/api-coverage` (`--output <
 [features](features.md#api-coverage-inventory) owns the metrics. `report --run` collects compiler evidence
 from all tests and registered scenes/demos (registered query and host companion), then runs semantic cases;
 missing corpus entries, failed/skipped tests or missing scene receipts block publication. `report` reuses
-current receipts and runs no tests or native programs. `--project` scores one external entry against the
-current receipts (stale ones are marked) and writes `artifacts/api-coverage/projects/<directory>-<entry>`.
+current receipts and runs no tests or native programs. The API readiness of one external entry is part of
+`scene -- survey`.
 
 Semantic cases contain `id`, `level` (`generation`, `native`, `parity`, `refusal`), `scope`, `limitations`,
 `test: {file, name}`, and `targets: [{id, fingerprint}]`. Targets describe the named test's assertions.

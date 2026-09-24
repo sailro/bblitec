@@ -104,7 +104,8 @@ Supports backing dimensions, scale, full clear, fillRect, bounded paths/fill/str
 destination-rectangle canvas drawImage and bounded fillText. Offscreen pixels are premultiplied RGBA.
 Closed canvas producers can bake getImageData; mutable module/engine inputs refuse.
 
-Engine-less renderCanvas presents through Window/input/RAF. That primary canvas cannot also own a
+The primary canvas is the element the program passes to createEngine, found by the id it is looked up
+by (the host document's `renderCanvas` otherwise). Engine-less renderCanvas presents through Window/input/RAF. That primary canvas cannot also own a
 source-created GPU engine. Partial clear, source-rectangle blits, general transforms/clipping/shaping
 and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 

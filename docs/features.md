@@ -14,13 +14,16 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 | Input | Selects |
 | --- | --- |
 | Reached APIs/properties/globals | Generated code, PAL units, native dependencies |
-| Call options and asset loader predicates | Subfeatures, codecs, material variants |
+| Call options and asset loader predicates | Runtime features joined from assets, subfeatures, codecs, material variants |
 | Pinned composition | Shader arms, layouts and binding requirements |
 | Registry | Source, title, host UI, reference query and attribution |
 | Build options | Backend, capture, size and PCH configuration |
 
-`generated/<id>/upstream/feature-activation.json` records sites, decisions and consumers. Reaching a
-factory can activate its module even when one of its options is disabled.
+`generated/<id>/upstream/feature-activation.json` records repository-relative reach sites, asset joins,
+the activation plan's reasons and checked consumers. An asset's loader trigger joins the same runtime
+feature a scene call reaches before anything reads the feature list; material and shader capabilities,
+including the transmission renderer, come from the composed arms. Reaching a factory can activate its
+module even when one of its options is disabled.
 
 ### API coverage inventory
 
@@ -104,10 +107,10 @@ JSON decoded through `DecompressionStream` folds at generation.
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | Embedded NUL value sinks remain limited; a concatenated operand is built before it is appended |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | A concatenated operand is built before it is appended |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
-| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs |
+| Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |
 | JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
