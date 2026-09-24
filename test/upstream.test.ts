@@ -2289,18 +2289,19 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
 
     const sorted = String(new SpriteLowerer(context).lowerCore(true).source);
     // The draw key is the stored positionPx.y lane plus the slot's bias,
-    // summed at the width the pin's F64 bias array gives it. Lane 1 comes
-    // from the pinned keyAt rather than from this expectation: a bump that
-    // moved it fails generation with a named contract error.
+    // summed at the width the pin's F64 bias array gives it, translated
+    // from the pinned keyAt: a bump that moved the lane moves this.
+    assert.match(sorted, /sprite-2d-y-sort\.ts#keyAt\./);
     assert.match(
         sorted,
-        /layer\.instance_data\[base \+ 1u\]\) \+\n\s*state\.biases\[index\];/,
+        /\+ 1\.0\)\)\]\) \+ static_cast<double>\(state\.biases\[static_cast<std::size_t>\(index\)\]\)\);/,
     );
     // Equal keys keep insertion order, which is what makes two sprites at
     // the same Y stable across an unrelated removal.
+    assert.match(sorted, /sprite-2d-y-sort\.ts#comesBefore\./);
     assert.match(
         sorted,
-        /if \(left_key < right_key\) return true;\n\s*if \(left_key > right_key\) return false;\n\s*return state\.serials\[left\] < state\.serials\[right\];/,
+        /if \(leftKey < rightKey\) \{\n\s*return true;\n\s*\}\n\s*if \(leftKey > rightKey\) \{\n\s*return false;\n\s*\}\n\s*return \(static_cast<double>\(state\.serials\[static_cast<std::size_t>\(left\)\]\) < static_cast<double>\(state\.serials\[static_cast<std::size_t>\(right\)\]\)\);/,
     );
     // The permutation is the GPU's, never the layer's own rows. The pin's
     // own `packRange` writes lane by lane because JavaScript has nothing
