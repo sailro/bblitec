@@ -13,6 +13,7 @@ import {
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
+import { shadowGeneratorFeatures } from "../src/shadow-capabilities.js";
 import { listFiles } from "../src/tooling/records.js";
 
 test("compiled backends have independent build and deployment directories", () => {
@@ -428,6 +429,15 @@ test("feature macros come from one CMake function", () => {
     assert.match(
         cmake,
         /bblite_feature_define\(BBLITE_HAS_TEXT "text:renderable" "renderer:text"\)/,
+    );
+    // Generator records exist exactly where a shadow generator is reached.
+    assert.match(
+        cmake,
+        new RegExp(
+            `bblite_feature_define\\(BBLITE_HAS_SHADOWS ${shadowGeneratorFeatures
+                .map((feature) => `"${feature}"`)
+                .join(" ")}\\)`,
+        ),
     );
     assert.ok((cmake.match(/bblite_feature_define\(/g) ?? []).length >= 36);
     // No hand-written 1/0 pair is left for a single-feature macro, no

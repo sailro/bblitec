@@ -1684,8 +1684,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // bundle too -- but every define is a CONJUNCTION of that reach with a
 // composed family, because the receiver fragment is composed per family
 // and a scene composing no variant of a family compiles none of its
-// shadow code even having reached a generator. The reach alone gates
-// nothing, so it has no define of its own.
+// shadow code even having reached a generator. The reach alone gates only
+// the generator records, through CMake's BBLITE_HAS_SHADOWS.
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the

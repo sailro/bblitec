@@ -884,7 +884,11 @@ bblite_feature_define(BBLITE_HAS_ANIMATION "animation:property" "animation:manag
 bblite_feature_define(BBLITE_HAS_GIZMOS "gizmo:utility-layer")
 bblite_feature_define(BBLITE_HAS_CAMERA_GIZMOS "gizmo:camera")
 bblite_feature_define(BBLITE_HAS_LIGHT_GIZMOS "gizmo:light")
-bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:esm" "shadow:pcf" "shadow:pcf-directional" "shadow:csm" "shadow:task")
+# A shadow generator's own records: reached by either filter, exactly the
+# `shadowGeneratorFeatures` list (src/shadow-capabilities.ts). The directional
+# and cascaded factories reach `shadow:pcf` beside their own feature, and
+# `shadow:task` schedules without owning a generator.
+bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:pcf" "shadow:esm")
 bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
 bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")
 bblite_feature_define(BBLITE_HAS_FRAME_GRAPH_RENDERER "renderer:frame-graph")

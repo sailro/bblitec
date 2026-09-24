@@ -1022,9 +1022,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/csm-directional-shadow-generator.ts",
         consumers: CMAKE,
     },
+    // The scheduler alone owns no generator, so no build rule tests it:
+    // the compiler emits the registration where it is reached.
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     // `enableMorphTargetShadows`: the caster fit's morph-expanded bounds,
     // kept in its own pinned module upstream and compiled only for a scene
