@@ -60,11 +60,15 @@ test(
             "0002-core-only.patch",
         ]);
         // The trimmed SDL carries the overlay port's own patches except
-        // vcpkg's FreeBSD packaging fix, then its dynamic-API switch.
+        // vcpkg's FreeBSD packaging fix, then its dynamic-API switch and the
+        // joystick-free device names.
         const trimmed = names("sdl3", ["trimmed"]);
         assert.equal(trimmed.includes("fix-freebsd.patch"), false);
-        assert.equal(trimmed.at(-1), "0009-static-no-dynapi.patch");
-        assert.equal(trimmed.length, 8);
+        assert.deepEqual(trimmed.slice(-2), [
+            "0009-static-no-dynapi.patch",
+            "0010-no-joystick-device-names.patch",
+        ]);
+        assert.equal(trimmed.length, 9);
         assert.equal(names("sdl3", ["vcpkg"])[0], "fix-freebsd.patch");
         // A port feature selects its own patch.
         assert.equal(
