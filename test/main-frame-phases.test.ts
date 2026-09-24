@@ -8,6 +8,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("main renderers acquire surfaces, restart changed scenes and grow task resources", (t) => {
@@ -21,7 +22,7 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     }
     const directory = resolve("artifacts/test-main-frame-phases");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(directory, "scene-restart.hpp"),
         [

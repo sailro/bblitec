@@ -9,6 +9,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("standalone renderers synchronize live contexts, batch uploads and capture frame targets", (t) => {
@@ -22,7 +23,7 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     }
     const directory = resolve("artifacts/test-standalone-capture");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(directory, "capture-options.hpp"),
         [

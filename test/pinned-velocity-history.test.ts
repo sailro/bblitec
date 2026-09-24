@@ -8,10 +8,10 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
-const shared = (): string =>
-    readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+const shared = (): string => sharedGpuSource();
 
 test("a geometry task's Standard renderables keep the pin's previous world and start velocity disabled", (t) => {
     const tools = optionalNativeFixtureTools(false);

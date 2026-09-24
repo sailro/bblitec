@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
@@ -10,6 +10,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -23,10 +24,7 @@ test(
         const context = new LoweringContext();
         const core = new BillboardLowerer(context).lowerCore();
         const sprite = new SpriteLowerer(context).lowerCore();
-        const shared = readFileSync(
-            "native/src/pal_gpu_shared.hpp",
-            "utf8",
-        ).replaceAll("\r\n", "\n");
+        const shared = sharedGpuSource().replaceAll("\r\n", "\n");
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");
         const anchorFloats = core.header.match(

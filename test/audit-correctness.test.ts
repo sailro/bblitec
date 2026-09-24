@@ -8,6 +8,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -65,7 +66,7 @@ test(
     "laid-out canvas panes retain physical bounds at any CSS density",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "canvas-pane-density",
             `
@@ -221,7 +222,7 @@ test(
     "VAT synchronization retains unchanged payloads and retries failed uploads",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "vat-record-sync",
             `
@@ -273,7 +274,7 @@ test(
     "target planning resolves pane sizes, scaled chains and format inheritance before allocation",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "render-target-plan",
             `
@@ -399,7 +400,7 @@ test(
     "backdrop sizing and screen-space recording preserve allocation retries and pass order",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "effect-pass-plans",
             `
@@ -454,7 +455,7 @@ test(
     "pick contributor admission follows the picked scene, visibility and source filter",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         for (const floating of [0, 1]) {
             runCpp(
                 `pick-contributor-admission-${floating}`,
@@ -520,7 +521,7 @@ test(
     "detailed picking refuses only thin instances admitted by geometry and filter gates",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         const renderer = readFileSync(
             "src/lowering/renderer-lowerer.ts",
             "utf8",

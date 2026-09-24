@@ -8,6 +8,7 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "../src/lowering/shadow-lowerer.js";
+import { sharedGpuSource } from "./native-fixture.js";
 
 /**
  * The pinned render gate: `renderEsmShadowMap`, `renderPcfShadowMap` and
@@ -140,7 +141,7 @@ test("a caster array names every mesh it lists, so a removed caster keeps its re
 });
 
 test("gates each family's fit and publishes the verdict to the task loops", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     // ONE gate ask per generator, and the verdict lands on the gate the
     // task loops read.
     assert.match(
@@ -186,7 +187,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
 });
 
 test("fits CSM casters to every active non-degenerate thin instance", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(
         shared,
         /const std::size_t active_instances =\s*thin_instance_active_count\(record\);/,

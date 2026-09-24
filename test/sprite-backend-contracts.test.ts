@@ -9,6 +9,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("sprite backend uploads preserve dirty rows, clocks, bindings and scene insertion order", (t) => {
@@ -19,7 +20,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     }
     const read = (name: string) =>
         readFileSync(`native/src/${name}.hpp`, "utf8").replaceAll("\r\n", "\n");
-    const shared = read("pal_gpu_shared"),
+    const shared = sharedGpuSource(),
         sdl = read("pal_sdl_gpu_sprite"),
         dawn = read("pal_dawn_sprite");
     const sdlBillboard = read("pal_sdl_gpu_billboard"),

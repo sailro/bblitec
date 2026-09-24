@@ -8,6 +8,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("Dawn mesh teardown releases bindings before resources and shared layouts", (t) => {
@@ -24,7 +25,7 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
         /using DawnVariantPipelineKey[\s\S]*?;/,
     )?.[0];
     assert.ok(pipelineKey);
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(output, "records.hpp"),
         [

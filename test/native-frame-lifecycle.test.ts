@@ -8,6 +8,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("native frame clocks, continuation drains and capture budgets preserve frame boundaries", (t) => {
@@ -18,7 +19,7 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
     }
     const directory = resolve("artifacts/test-native-frame-lifecycle");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     const pal = readFileSync("native/src/pal.cpp", "utf8");
     writeFileSync(
         join(directory, "frame-lifecycle.hpp"),

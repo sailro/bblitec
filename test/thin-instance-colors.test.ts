@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -11,6 +11,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -88,7 +89,7 @@ struct MeshRecord {
     double thin_instance_cull_bounds_pad = 0;
 };
 struct Engine { std::array<MeshRecord, 1> meshes; };
-${cppFunction(readFileSync("native/src/pal_gpu_shared.hpp", "utf8"), "inline std::vector<float> instance_colors_for_upload(")}
+${cppFunction(sharedGpuSource(), "inline std::vector<float> instance_colors_for_upload(")}
 ${functions}
 }
 int main() {

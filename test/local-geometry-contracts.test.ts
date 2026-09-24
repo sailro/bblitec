@@ -13,6 +13,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("geometry stays local: shader draws share one world record and a mesh uploads its geometry's own lanes", (t) => {
@@ -29,7 +30,7 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
         }),
         renderer = plan.source;
     const scene = new SceneLowerer(context).lowerCore().source;
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(join(output, "matrix.hpp"), pinnedMatrixHeader(context));
     writeFileSync(
         join(output, "world.hpp"),

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 
@@ -90,6 +96,22 @@ export function cppFunction(source: string, signature: string): string {
         return source.slice(start, end);
     }
     assert.fail(signature);
+}
+
+/**
+ * The GPU backends' shared concerns as one text, in the order
+ * `pal_gpu_shared.hpp` includes them: what a fixture that lifts the shared
+ * helpers by name reads, whichever concern header holds one.
+ */
+export function sharedGpuSource(): string {
+    const umbrella = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const parts = [umbrella];
+    for (const [, name] of umbrella.matchAll(
+        /^#include "(pal_gpu_\w+\.hpp)"/gm,
+    )) {
+        parts.push(readFileSync(join("native/src", name!), "utf8"));
+    }
+    return parts.join("\n");
 }
 
 /** Header-only fixtures can opt out of the installed-library prerequisite. */

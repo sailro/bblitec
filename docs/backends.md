@@ -24,7 +24,10 @@ backend requests fail.
 `pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers. `pal_gpu_dispatch.hpp`
 holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
 shares the standalone hosts' input, clock, capture and benchmark phases.
-`pal_gpu_shared.hpp` owns clocks, capture gates, callbacks and upload records.
+`pal_gpu_shared.hpp` includes what the GPU backends share, one header per concern: the scene-invariant
+`pal_gpu_frame.hpp` (run options, clocks, frame boundaries, capture gates, profiles) and `pal_gpu_images.hpp`
+(texel packing, decoded uploads, readback rows), then the scene-shaped surface, texture, sprite, vertex,
+material, shadow, scene-block, picking, target, pipeline and shader-pass headers.
 `pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
 instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
 colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders

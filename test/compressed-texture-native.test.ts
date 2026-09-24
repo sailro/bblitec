@@ -11,6 +11,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools();
@@ -19,7 +20,7 @@ test(
     "compressed texture candidates use device support in source order and both API tables agree",
     { skip: !native },
     () => {
-        const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const shared = sharedGpuSource();
         const sdl = cppFunction(
             readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
             "SDL_GPUTextureFormat compressed_texture_format(",

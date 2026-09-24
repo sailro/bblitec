@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { featureSources } from "../src/compiler/output-projection.js";
+import { sharedGpuSource } from "./native-fixture.js";
 
 // `featureSources` decides which SDL_GPU translation units a feature
 // compiles into BBLITE_RUNTIME_SOURCES; the CMake backend arm derives the
@@ -142,7 +143,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
             /request_renderer_restart_if_scene_set_changed\(\s*engine, active_registered_scenes\)/,
         );
     }
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(
         shared,
         /engine\.renderer_restart_requested = !engine\.registered_scenes\.empty\(\);/,
@@ -150,7 +151,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
 });
 
 test("late auxiliary scene registration rebuilds both backend plans", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(
         shared,
         /engine\.registered_scenes\.size\(\) != planned\.size\(\)/,
@@ -176,7 +177,7 @@ test("diagnostic input resumes across renderer restarts", () => {
 });
 
 test("frame dispatch survives a callback disposing its own scene", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(
         shared,
         /const auto root_callbacks = scene\.before_render;\s*for \(const auto& callback : root_callbacks\)/,
@@ -199,7 +200,7 @@ test("creating a camera during UI dispatch cannot invalidate the active camera",
 
 test("auxiliary surface scenes render in independent panes", () => {
     const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(runtime, /std::optional<UiElementHandle> surface_canvas;/);
     assert.match(shared, /scene_surface_pane\(/);
     assert.match(shared, /scene_surface_extent\(/);

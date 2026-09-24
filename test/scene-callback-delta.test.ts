@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
@@ -12,6 +12,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -56,7 +57,7 @@ int main() {
             file,
         ]);
         execFileSync(executable);
-        const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const shared = sharedGpuSource();
         assert.match(shared, /frame_clock.advance\(frame_delta_ms\)/);
         assert.match(shared, /scene_callback_delta\(\*registered, delta_ms\)/);
         const compiled =

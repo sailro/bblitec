@@ -12,6 +12,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("PBR feature keys and both backend stream bindings agree with pinned instance colors", async (t) => {
@@ -23,7 +24,7 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
     }
     const output = resolve("artifacts/instance-stream-binding");
     mkdirSync(output, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
         dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
     const key = cppFunction(

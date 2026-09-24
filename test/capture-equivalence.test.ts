@@ -15,6 +15,7 @@ import test from "node:test";
 import { findRepositoryRoot } from "../src/upstream-source.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
+import { sharedGpuSource } from "./native-fixture.js";
 
 function nativeSource(name: string): string {
     return readFileSync(
@@ -23,7 +24,7 @@ function nativeSource(name: string): string {
     );
 }
 
-const shared = () => nativeSource("pal_gpu_shared.hpp");
+const shared = () => sharedGpuSource();
 const consumers = () => ({
     "pal_dawn.cpp": nativeSource("pal_dawn.cpp"),
     "pal_sdl_gpu.cpp": nativeSource("pal_sdl_gpu.cpp"),

@@ -18,6 +18,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -247,7 +248,7 @@ test(
         const context = new LoweringContext();
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
-        const pal = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const pal = sharedGpuSource();
         const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
         const output = resolve("artifacts/node-geometry-transport-check");
         mkdirSync(output, { recursive: true });
