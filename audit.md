@@ -12,34 +12,35 @@ and performance.
 | FA-1 | high | Asset facts joined the feature list after compilation or were ORed at 7 consumers; adaptations ran first (scene226 lacked its splat adaptations). | `joinAssetFeatures()` runs before adaptations; one implication table; `projectFeatures()` renders sources for entries and workers; one `ActivationPlan`. | fixed |
 | FA-2 | high | Transmission activated from reach/asset ORs and emitted-literal comparisons; 5 skybox-only trees compiled the transmission path. | Define from the composed refraction/thickness arms and scene reach; `setPbrSkybox` no longer reaches it; unpinned `transmissive`/`subsurface` options refuse. | fixed |
 | FA-3 | med | The activation inventory re-derived 33 rows; 15 features had no reader, 8 claimed false readers. | Rows record the plan's reasons; a test checks every claimed reader. | fixed |
-| FA-4 | med | Asset conditions restated from the pinned registry; GLBs parsed ≥5 times. | Each document parsed once; lights from the executed plan; `staticModules` removed. Remaining: record triggered registry rows at packaging and read them in the specializer. | partial |
+| FA-4 | med | Asset conditions restated from the pinned registry; GLBs parsed ≥5 times. | Each document parsed once; lights from the executed plan; `staticModules` removed; packaging records the id of every feature the pinned loader ran (`GltfMeshPlan.features`), and the specializer reads it and each planned mesh's topology instead of restating the registry triggers. | fixed |
 | FA-5 | med | Macros have two owners and three guard styles with opposite defaults; no `-Wundef`. | One owner per macro (CMake for feature-keyed ones; `render_capabilities.hpp` in every tree for generator decisions), always 0/1; only `#if X` (native 560 `defined()` guards → 0; generated 2,094 → 0); `-Werror=undef` (clang-cl), `/we4668` (MSVC) on project units, which found two units reading a generator macro before its header. `BBLITE_HAS_SHADOWS` keys on the shadow generator list, checked by a test. | fixed |
 | FA-6 | med | Camera/light gizmo factories and morph-shadow bounds emitted without reach. | `gizmo:camera`/`gizmo:light` and `shadow:morph-bounds` gate emission and native records. | fixed |
 | FA-7 | low | `loadBabylon` reached `camera:free` with `loadCamera: false`. | Camera parser emitted only when cameras load. | fixed |
 | FA-8 | low | Activation records embedded absolute checkout paths. | Repository-relative POSIX paths. | fixed |
 | FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | `morph_bounds` and its release compile under `BBLITE_SHADOW_MORPH_BOUNDS`; builders clear it only when `shadow:morph-bounds` is reached. | fixed |
-| FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Key the slots on the composed arms. | open |
-| FA-11 | low | Native test fixtures compile with ad-hoc `/D` flags and harness defaults, without the undefined-macro check. | Derive fixture flags from the CMake table and add `/we4668`. | open |
-| FA-12 | med | CMake re-derives feature→macro for 58 macros the activation plan already decides, and a test greps CMakeLists to keep them in sync. | Generate every macro from the activation plan (per unit, with BD-7); CMake keeps source and link selection. | open |
+| FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Each map slot keys on its own composed binding; scene26 drops the transmission renderer. | fixed |
+| FA-11 | low | Native test fixtures compile with ad-hoc `/D` flags and harness defaults, without the undefined-macro check. | The harness renders fixture macros as headers from the one table, states its build options, makes third-party headers external and compiles with `/we4668` (`-Werror=undef` under clang-cl). | fixed |
+| FA-12 | med | CMake re-derives feature→macro for 58 macros the activation plan already decides, and a test greps CMakeLists to keep them in sync. | `src/feature-macros.ts` decides every feature-keyed macro from the final feature list into its own generated `bblite/features/<name>.hpp`, included by each file testing it; CMake keeps source/link selection and build options; tests cover the headers and each file's includes. | fixed |
 
 ## Re-derivation in TypeScript (RDT)
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
-| RDT-1 | high | 1,362 AST-shape assertions guarded hand-written C++ transcriptions of pinned bodies. | Camera, sprite/billboard writers and sorts, grid atlas, pick helpers, animation mixer/tracks, mesh bounds, tube/extrude, VAT, glTF light direction and clustered lights are lowered; their guards are gone. Remaining families: text data updates (needs the pin's multi-group native model), device recovery, physics floating origin, Y-sort bookkeeping. | partial |
+| RDT-1 | high | 1,362 AST-shape assertions guarded hand-written C++ transcriptions of pinned bodies. | Every family is lowered from the pin: camera, sprite/billboard writers and sorts, grid atlas, pick helpers, animation mixer/tracks, mesh bounds, tube/extrude, VAT, glTF light direction, clustered lights, text data (the pin's record graph over `PinnedRecordModel`), Sprite2D Y-sort, Havok floating origin and the device-loss coordinator; their guards are gone. The text renderable/renderer factories are RDN-3. | fixed |
 | RDT-2 | high | Pinned functions hand-copied though lowered elsewhere (camera clamp/inertia, `evaluate_track`, grid atlas, `expandWorldAabbForMesh`, mesh bounds). | All use the lowered versions. | fixed |
-| RDT-3 | high | Hand copies without a lowered version (clustered lights, free-camera yaw/pitch, VAT, glTF light direction, mixer, tube/extrude, HDR prefilter setup, Draco/basisu routing). | Lowered except HDR prefilter setup and Draco/basisu routing. | partial |
+| RDT-3 | high | Hand copies without a lowered version (clustered lights, free-camera yaw/pitch, VAT, glTF light direction, mixer, tube/extrude, HDR prefilter setup, Draco/basisu routing). | HDR prefilter setup executes the pinned cube chain; Draco decodes through the executed pinned pre-mesh hook; KHR_texture_basisu routes through the executed pinned extension. | fixed |
 | RDT-4 | high | Behaviour keyed on mesh names starting with `wheel`. | Declined for now: removing it sinks the racer body (imported positions are offsets over baked worlds). Needs imported node-local transforms, a parent-world matrix and parent×local composition first. | open |
 | RDT-5 | med | Pinned WGSL rewritten by regex onto flattened uniform layouts. | Keep pinned structs/bindings; remap by compaction; pinned UBO writers. | open |
 | RDT-6 | med | Composed WGSL read back with ~20 regexes. | Typed WGSL reflection (`shader-ir.ts`, `wgsl-layout.ts`). | fixed |
-| RDT-7 | med | Regex/spelling checks over pinned TS and packaged JS. | AST readers and one specifier rewriter; 22 → 5 regex sites (one WGSL scale match awaits IR unary minus). | partial |
+| RDT-7 | med | Regex/spelling checks over pinned TS and packaged JS. | AST readers and one specifier rewriter; the last sites (tone-map scale through the WGSL IR, blend-export family, lite-error import, clearcoat remap bit, skybox condition, export index, async stripping) read syntax. Tint HLSL/MSL rewriting is RDT-15. | fixed |
 | RDT-8 | med | `assertPinnedShaderFormulas` guarded formulas no longer copied. | Deleted with its flags. | fixed |
 | RDT-9 | med | `shader-ir.ts` regex raw-module fallback; user WGSL constant rewritten by regex. | Full typed WGSL front end; raw path deleted. | fixed |
 | RDT-10 | low | Plugin `getCustomCode` had its own evaluator. | Shares the pinned shader-text folding. | fixed |
 | RDT-11 | low | Pinned defaults copied into tables and checked. | Material, billboard, post-process and navigation defaults read or emitted from the pin. | fixed |
-| RDT-12 | low | Hand SDL blit, stale comment, predeclared shader programs. | Comment fixed. The predeclared programs are live (alpha-card gate); the pinned blit differs in LOD and group, so only a measured vertex lift remains. | partial |
-| RDT-13 | low | Grid material and sprite-grid absent-arm defaults are literals (`material-options.ts`, `material.ts`, `intrinsics/sprite.ts`); the node-particle Sprite2D bridge relies on header defaults. | Read them from the pin. | open |
-| RDT-14 | med | The clustered-light refresh uses a hand dirty key (view/projection equality, `topologyDirty` bound true) and matches generic JS by source text in its statement hook. | Lower the pin's dirty test with `scene_camera_change_key`; move truncation/push/sort/destructuring into the shared pinned lowerer; match platform calls by symbol. | open |
+| RDT-12 | low | Hand SDL blit, stale comment, predeclared shader programs. | Comment fixed; `setAlphaToCoverage` takes any reached shader-material program and the predeclared table is deleted; the copy blit is the pin's copy-task shader, on both backends. | fixed |
+| RDT-13 | low | Grid material and sprite-grid absent-arm defaults are literals (`material-options.ts`, `material.ts`, `intrinsics/sprite.ts`); the node-particle Sprite2D bridge relies on header defaults. | Factory `??` defaults read from the pin (`pinned-factory-defaults.ts`); the grid atlas carries a presence flag per optional member; the Sprite2D bridge fills every layer member. | fixed |
+| RDT-14 | med | The clustered-light refresh uses a hand dirty key (view/projection equality, `topologyDirty` bound true) and matches generic JS by source text in its statement hook. | The refresh is lowered whole with the pin's dirty key and a generated `ClusteredRefreshState`; array operations live in the shared lowerer; platform calls resolve by declaration; uploads follow the pin's writes. | fixed |
+| RDT-15 | med | `shader-bindings.ts` rewrites Tint HLSL/MSL with ~40 regexes (register compaction to SDL spaces, combined samplers, SV_Position order, discard→clip, MSL buffer indices). | Emit SDL layouts from a Tint-linked generator and delete the rewrites. | open |
 
 ## Re-derivation in native code (RDN)
 
@@ -47,11 +48,11 @@ and performance.
 | --- | --- | --- | --- | --- |
 | RDN-1 | high | The PAL bakes TRS into vertices and re-picks each draw's world matrix instead of uploading the pin's `worldMatrix`. | Feed generated `MeshUniforms.world`; upload local vertices. | open |
 | RDN-2 | high | Camera input dispatch diverged from the pinned handlers. | Handlers and key map lowered; real frame delta; SDL only translates events. | fixed |
-| RDN-3 | med | Camera/billboard/sprite/text templates transcribed pinned formulas. | Camera, billboard and sprite lowered; text remains (RDT-1). | partial |
+| RDN-3 | med | Camera/billboard/sprite/text templates transcribed pinned formulas. | Camera, billboard, sprite and text data lowered. Remaining: the text renderable and renderer factories (`text-lowerer.ts`, `text-renderer-lowerer.ts`, 35 + 39 guards) and the GPU writers' selector guards. | partial |
 | RDN-4 | med | 61 record defaults copied or invented pinned values. | Option structs written whole by generation carry none; records zeroed; render tasks without `clrColor` (the default task included) clear to the scene's live colour; a scene without a camera clears and draws through a zero scene block and skips what the pin skips; glTF projection writes each absent key's pinned default. Remaining: `create_pbr_material` and the `set_pbr_*` setters still rely on `MaterialRecord` initializers, and an absent clearcoat/sheen/iridescence layer is encoded as zero intensity. | partial |
 | RDN-5 | med | Invented environment fallback face. | Measured unused; zero cube bound. | fixed |
 | RDN-6 | med | Render bucket rule lacked the pin's opacity/blend arms. | Bucket from the pinned `isTransparent` predicates (fixtures: 0.373 → 0.000, 0.121 → 0.000). | fixed |
-| RDN-7 | med | Small pinned functions hand-copied. | Generated from the pin except `pack_morph_deltas`. | partial |
+| RDN-7 | med | Small pinned functions hand-copied. | Generated from the pin, including `pack_morph_deltas` (`morph_targets.hpp` from `createMorphTargets`). | fixed |
 | RDN-8 | med | Pick orchestration restated per backend. | Shared preparation, clears and decode; lowered pointer mapping. | fixed |
 | RDN-9 | low | UI composite WGSL duplicated. | One compositor per backend. | fixed |
 | RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
@@ -67,7 +68,12 @@ and performance.
 | RDN-20 | med | The camera-less pass contract is ~26 `if (camera)` arms per backend, and render-task-base's `cfg.cam ?? scene.camera` / `cfg.clrColor ?? sc.clearColor` resolution is transcribed in each backend. | Lower the pass resolution once into an `upstream::` function; one shared pass-camera builder yielding the zero block; lowered pinned early returns do the per-renderable skips. | open |
 | RDN-21 | med | Tile-cache builds defaulted `expectedLayersPerTile` to the wrapper's 4; the pinned `_createNavMeshFromMerged` resolves `?? 1` first. | `createNavMesh` emits the pinned default read from the module; the PAL requires the key. | fixed |
 | RDN-22 | low | The PAL threw on a refused obstacle add, leaving the generated null check dead. | The PAL returns an empty optional and the generated layer refuses. | fixed |
-| RDN-23 | low | Arithmetic the generators hand to Detour after the config step is hand-ported in the PAL: solo `NavMeshCreateParams` walkable values and `buildBvTree`, tile-cache params and `maxTiles`, the tile/poly bit split (`dtIlog2`/`dtNextPow2`), `NavMeshParams.tileWidth`, `getBoundingBox` and `createRcConfig`'s spread. | Extend the step lowering to the arguments the generators pass to those Detour calls. | open |
+| RDN-23 | low | Arithmetic the generators hand to Detour after the config step is hand-ported in the PAL: solo `NavMeshCreateParams` walkable values and `buildBvTree`, tile-cache params and `maxTiles`, the tile/poly bit split (`dtIlog2`/`dtNextPow2`), `NavMeshParams.tileWidth`, `getBoundingBox` and `createRcConfig`'s spread. | `navigation-build-plan.ts` lowers every number the generators hand Recast/Detour from the installed packages (bounds, `createRcConfig` over the resolved spreads, build-config steps, the Detour parameter records, the tile/poly bit split, per-tile config and allocator sizes); the PAL keeps only the library calls; `computePath` capacities come from core. | fixed |
+| RDN-24 | low | Tile-cache builds silently dropped off-mesh connections; a build without `tileSize` refused though the pin defaults it to 32. | Off-mesh connections on a tile cache refuse; `tileSize ?? 32` is the pin's. | fixed |
+| RDN-25 | low | The PAL hand-ports JavaScript that runs over library data: the solo generator's poly area/flag normalization, `createDefaultTileCacheMeshProcess`, `setOffMeshConnections` packing and defaults, and `createDebugNavMeshGeometry`. | Lower each from its package or pinned body. | open |
+| RDN-26 | med | The native clustered factories (`create_clustered_point_light`, spot and siblings) are hand-written. | Lower the pinned factory bodies. | open |
+| RDN-27 | low | The clustered refresh identifies its camera by `CameraRecord*`; the packer passes `srcStrideBytes ?? width * 4` as a `0u` sentinel. | Handle identity; an optional stride. | open |
+| RDN-28 | low | `begin_device_recovery` restates the pin's context-kind check with its own message. | Lower `assertEveryActiveContextKindIsRecoverable`. | open |
 
 ## Compiler core (CC)
 
@@ -75,32 +81,42 @@ and performance.
 | --- | --- | --- | --- | --- |
 | CC-1 | high | Nullable resource kinds classified by bare type name. | Declaration-origin checks; user `class Mesh`/`interface Material` compile. | fixed |
 | CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | `SceneManifestRecorder`, `BindingScopes`, `ConditionLowerer`, browser predicates in `BrowserErasure`, `DeclarationLowerer` and `PropertyAccessLowerer` own their slices behind narrow contexts (19,183 → 10,725 lines; 448 → 349 service members; output identical). Remaining: closures, async/lifecycle, option adapters, the native-emission registry, assets and the `note*` admissions. | partial |
-| CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Needs generic support first: absent file-picker globals, escaping Promise `resolve`, `FileReader`, `JSON.parse(text) as T`. | open |
+| CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Pinned save/load lowers from its own source; the path regex and `js_voxel_file.hpp` are deleted. Missing File System Access pickers read as `undefined`; `new Promise` outside a realm (escaping resolve; still-pending ends the awaiting function); FileReader and file-input `onchange`; parsed documents stay dynamic through record-typed returns. | fixed |
 | CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared; pinned and scene-code `Math.max/min` lower through one `math_extreme` at any arity (float writer lanes `math_extreme_lane`; camera controls included); pinned Uint32Array stores use `to_uint32`. | fixed |
-| CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` (bare names, `globalThis`, `window.`/`self.` members) at 185 sites; user declarations named `Number`, `String`, `Object` or `Map` lower as user code. Remaining: the platform timer arm accepts only bare names, and `undefined` has 12 hand checks. | partial |
+| CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` at every site, window-qualified timers lower as the bare calls (quake's `clearTimeout` was dropped), and `isGlobalUndefined`/`isNullishLiteral` replace every hand `undefined` check. | fixed |
 | CC-6 | med | Declaration origin decided 8 ways. | One `declarationOrigin()`. | fixed |
 | CC-7 | med | Nullable-union rule had no owner. | `presentMembers()`/`nullability()`. | fixed |
-| CC-8 | med | Class members found by name in ≥12 loops. | One `ClassMemberTable`. Remaining: inheritance and mutable statics. | partial |
-| CC-9 | med | String and presence facts spelled per site. | String tests through `isStringValue` (5 → 32 callers); presence through `optionalPresentCpp`/`presenceCpp` (literal `has_value()` 61 → 12). Remaining: `truthinessCpp`, `optionalFoundCpp` and `conditionFromValue` sites each need a truthiness-versus-presence proof. | partial |
+| CC-8 | med | Class members found by name in ≥12 loops. | One `ClassMemberTable` per class, linked to its base (`class-members.ts`); inheritance, mutable statics, static blocks and brand checks lower through it; no name loop remains. | fixed |
+| CC-9 | med | String and presence facts spelled per site. | Presence through `presenceFlagCpp`/`presenceCpp`, truthiness through `truthinessCondition`; three truthiness/presence bugs fixed with tests. | fixed |
 | CC-10 | med | Methods inlined at every call; constant tables wrapped each element. | Tables emit typed literals (tetris `renderer.cpp` 1.96 → 0.83 MB). Method sharing is blocked by `canShareFunctionBody` refusals (function-typed parameters, retained-canvas reads). | partial |
-| CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `resolvedSymbol`/`aliasTarget` replace 19 alias idioms (`getAliasedSymbol` only in `symbols.ts`). Remaining: 93 raw lookups, mostly deliberate unresolved reads; value positions change imported-name behaviour. | partial |
+| CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `declaredSymbol` (65) and `resolvedSymbol` (24) replace every raw lookup in `src/compiler/**` as of their merge; two imported-name fixes with tests. Streams merged later reintroduced some (CC-20). | fixed |
 | CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators, folds, boolean comparisons and `instanceof`; `ConditionLowerer` owns conditions, and the static evaluator and data lowerer reach it directly. | fixed |
 | CC-13 | low | Literal `renderCanvas` id, silent GitHub asset fallback, `offsetX` as `clientX`. | Canvas keyed on `createEngine`; `--public-url` or refusal; offsets recorded as an adaptation. | fixed |
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
 | CC-16 | med | Lazy singletons (`let c: C \| null = null; c = new C()`) refused. | Rebound locals store their declared type. | fixed |
 | CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | `bindings.lookupOptional` is the one lookup (51 callers moved); the two narrowing folds take a `StaticFoldContext`, so no context redeclares `bindings`. | fixed |
-| CC-18 | med | Colour-shape refusals (DEAD-13) are placed per site; the compiler never reads TypeScript assignability diagnostics, which would refuse every off-API object shape at once. | Refuse user sources on assignability diagnostics, measured over the corpus first; at minimum decide colour shape from the contextual type. | open |
+| CC-18 | med | Colour-shape refusals (DEAD-13) are placed per site; the compiler never reads TypeScript assignability diagnostics, which would refuse every off-API object shape at once. | One contextual-type colour decision (`requireObjectColour`); a program-wide refusal on type errors was measured (2 corpus sites vs 581 test `createEngine({})` errors and a newer-pin application) and not adopted. | fixed |
+| CC-19 | med | Presence is lost after the first `?.` in a chain: `found?.position.y` reads through the optional unchecked, and `if (found?.position.y)` tests the value, not presence. | A presence rule for the whole chain and a guarded binding. | open |
+| CC-20 | low | Raw `getSymbolAtLocation` reads: 10 reintroduced in `src/compiler` by streams merged after CC-11 (`async.ts`, `class-members.ts`, `classes.ts`, `data-types.ts`, `executed-application-function.ts`, `pending-activations.ts`) and 7 outside it (`api-usage.ts`, `api-surface.ts`, `pinned-csm.ts`). | Route each through `declaredSymbol`/`resolvedSymbol`. | open |
+| CC-21 | low | Plain-data functions that reach the engine were emitted standalone and did not compile; `on…` handler properties on UI elements were silently dropped. | They stay inline; handler properties refuse (file-input `onchange` lowers). | fixed |
+| CC-22 | low | `File.text()` copies raw bytes without UTF-8 decoding or BOM removal (FileReader decodes); `typeof reader.result` is `"undefined"` where the browser says `"object"`. | Share FileReader's decoding; distinct null storage. | open |
+| CC-23 | low | Once a program reaches a `new Promise`, the check for stored or callback uses of waiting functions scans the whole program and could refuse unreached code. | Scope the scan to reached code. | open |
+| CC-24 | med | A shared call is evaluated ahead of earlier operands that read state it changes (`"x" + count + reg()` gives "x22", JS "x12"). | Preserve JavaScript evaluation order around shared calls. | open |
+| CC-25 | med | A `Map.forEach` callback that invokes callbacks stored on class instances exhausts compiler memory. | Bound the reach analysis. | open |
+| CC-26 | low | `Array.pop()` on an empty array throws natively; JavaScript returns `undefined`. | Return the absent value. | open |
+| CC-27 | med | Recursion through stored instances (a tree's `sum()` over `children`) refuses; it needs the method emitted as a native function over its receiver. | Emit recursive methods over stored receivers. | open |
+| CC-28 | low | Callbacks that call an abstract method are inlined instead of shared (the abstract declaration has no body). | Treat abstract dispatch as shareable. | open |
 
 ## Lowering layer (LW)
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
-| LW-1 | high | Restated pinned strings and ~35k lines of C++ template text. | Same programme as RDT-1. | partial |
-| LW-2 | high | Eight overlapping evaluators of pinned TypeScript. | One folding core. Remaining: retire `PinnedReferenceLowerer`; typed program over pinned sources. | partial |
+| LW-1 | high | Restated pinned strings and ~35k lines of C++ template text. | Same programme as RDT-1, which is lowered; remaining template text is the text renderable/renderer factories (RDN-3). | partial |
+| LW-2 | high | Eight overlapping evaluators of pinned TypeScript. | One folding core; one checked TypeScript program over the pinned sources (`pinned-program.ts`) through which lowerers resolve names and types (identifier-spelled lookups 18 → 0); `PinnedReferenceLowerer` retired. | fixed |
 | LW-3 | high | Seven generation-time execution mechanisms; Chromium per bake; JSON passes in children. | In-process JSON passes; one shared Chromium per generation (68 bakes on 35 browsers). | fixed |
 | LW-4 | med | WGSL structs parsed by regex; two layout tables. | `reflectWgslStruct` and one `wgsl-layout.ts`. | fixed |
-| LW-5 | med | Shader-text builders re-interpreted by an 880-line evaluator. | Sprite, billboard, line and grid builders executed. Remaining: define/vertex fragments and application builders. | partial |
+| LW-5 | med | Shader-text builders re-interpreted by an 880-line evaluator. | Pinned builders and fragments (defines prelude, PBR vertex template, morph/instance/skeleton) are executed; application shader builders and plugin `getCustomCode` run at generation over the declarations they reach (`executed-application-function.ts`); the 920-line evaluator is deleted. | fixed |
 | LW-6 | med | Private per-family attribute tables, walkers, UBO writers, sorts. | Shared emitters and readers; writers and sorts lowered. | fixed |
 | LW-7 | med | Feature→source mapping stated twice. | The table owns emission. | fixed |
 | LW-8 | med | Regex/text scans where AST helpers exist. | AST helpers. | fixed |
@@ -152,6 +168,7 @@ and performance.
 | GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | `runtime.hpp` render-task, material, asset, storage-buffer and CSM helpers go through `handle_at`/`handle_find` (one shared validity predicate); the slot allocator stays raw. | fixed |
 | GC-18 | med | `handle_at` checks a generation only when the handle type carries one, so slot-only references (`PhysicsNodeRef`, `mesh_slot_handle` callers) pass unchecked and retirement scans child lists to protect them. | Store `MeshHandle`s (a variant for physics nodes), make a generation-carrying table reject generation-less handles at compile time, delete `mesh_slot_handle`. | open |
 | GC-19 | low | Slot reuse waits on `composition_feature_rows_initialized`, and `composition_feature_mesh` falls back to the creation ordinal, because composition rows have two identities. | Assign the row in `store_mesh_record` (clones take their source's). | open |
+| GC-20 | med | MSVC builds of generated trees fail on C4244 conversions: a `float`-parameter callback through `std::function<void(double)>` (scene303), `build_view_matrix` storing doubles into floats (renderer_plan), `size_t`/`uint64_t` to double (scene164). | Emit explicit conversions or matching types. | open |
 
 ## Dead code (DEAD)
 
@@ -217,12 +234,12 @@ and performance.
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | BD-1 | high | Each native edit recreated every scene's build tree (short ninja path). | Tool paths compare by final spelling. | fixed |
-| BD-2 | high | Emission transactions deep-copied compiler state (72.7% of quake generation). | Diff-based capture/rollback (quake −40% CPU); UI metadata answered without a probe. Remaining: journal plain compiler state. | partial |
+| BD-2 | high | Emission transactions deep-copied compiler state (72.7% of quake generation). | A transaction is a mark in one undo journal: journaled maps/sets/arrays/records, `@journaled` fields, readonly state types written through `writable()`; the walking capture is deleted (walk-as-oracle: 0 mismatches). Transaction self time quake 9.7 → 2.7 s, minecraft survey 9.4 → 0.9 s, antigravity 366 → 59 s; generation CPU −36…−76%. | fixed |
 | BD-3 | med | Largest apps generated last. | Ordered by recorded cost. | fixed |
 | BD-4 | high | `demos:release` on Windows failed since 2026-09-18. | Array-preserving parallel arguments. | fixed |
 | BD-5 | med | ccache full and path-keyed per worktree. | `base_dir`, 25 GiB. | fixed |
 | BD-6 | med | No PCH under ccache. | Clang PCH with cache sloppiness. | fixed |
-| BD-7 | med | Every unit receives all feature macros; header folder keyed on all headers. | Per-unit macros and header identity. | open |
+| BD-7 | med | Every unit receives all feature macros; header folder keyed on all headers. | Units read only the macro headers they include; under the object cache each repository unit reads a content-addressed folder of its include closure's generated headers. quake: a `render_capabilities.hpp` edit rebuilds 3 units (was 33), an unread macro flip 0 (was 41). | fixed |
 | BD-8 | med | Backend units compile once per scene shape. | Capability-independent code in shared units. | open |
 | BD-9 | med | `main.cpp` is each large app's critical path. | With GC-10. | open |
 | BD-10 | low | Shipping carries SDL software blitting and the MSVC demangler. | Demangler removed. Remaining: SDL blitter references. | partial |
@@ -232,6 +249,8 @@ and performance.
 | BD-14 | low | `--plan` failed before generation. | Plan generates first. | fixed |
 | BD-15 | low | Startup failures discarded output. | Output tail; long paths refused. | fixed |
 | BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Key the shared install by manifest identity. | open |
+| BD-17 | low | Journaled writes to shared records are found by inventory, not enforced by types; `EmissionSet.add` is 21 s of antigravity's 59 s journal cost. | Readonly types inside the compiler (or a test failing on unjournaled writes); cheaper dependency-set adds. | open |
+| BD-18 | low | `runtime.hpp` sits in the PCH and tests 15 feature macros, so every PAL unit's cache key carries them; generated units never hit the cache across scenes. | Split the feature-gated record blocks out of `runtime.hpp`; content-addressed generated sources. | open |
 
 ## Workers (WK)
 
