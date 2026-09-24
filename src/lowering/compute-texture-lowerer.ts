@@ -154,7 +154,6 @@ function sampledResourcesCpp(context: LoweringContext): string {
                     () => "(resource->texture.data.gpu_source->owners == 0)",
                 ],
             ]),
-            checkedBitwiseCoercions: true,
             booleanOr: true,
             expression(node) {
                 if (ts.isStringLiteral(node)) return stringLiteral(node.text);
@@ -585,7 +584,6 @@ function disposalCpp(context: LoweringContext): string {
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls,
-        checkedBitwiseCoercions: true,
         statement(node, _lowerer, indent) {
             if (!ts.isVariableStatement(node)) return undefined;
             const entries = node.declarationList.declarations;

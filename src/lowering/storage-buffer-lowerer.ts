@@ -48,7 +48,6 @@ function ownerMethod(
         bindings,
         calls,
         booleanOr: true,
-        checkedBitwiseCoercions: true,
         callShapes: new Map([
             ["Number.isInteger", "bool"],
             ["engine._storageBuffers?.has", "bool"],

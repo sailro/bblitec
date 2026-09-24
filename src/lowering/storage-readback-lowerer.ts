@@ -130,7 +130,6 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
             calls,
             booleanAnd: true,
             booleanOr: true,
-            checkedBitwiseCoercions: true,
             callShapes: new Map([
                 ["Number.isSafeInteger", "bool"],
                 ["buffer._engine._storageBuffers?.has", "bool"],

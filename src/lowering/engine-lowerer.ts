@@ -223,7 +223,6 @@ ${canvasDatasetSource}
             ]),
             calls: new Map(),
             booleanAnd: true,
-            checkedBitwiseCoercions: true,
         });
         return `
 // ${this.context.provenance(module, "setSurfaceSize")}
