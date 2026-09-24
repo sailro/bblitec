@@ -2404,25 +2404,55 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return value;
 }
 
-/** The six characters JavaScript's own trim and number parsing skip. */
+/** The six ASCII white-space characters (`number_from_string` and `parse_int` skip these). */
 [[nodiscard]] inline bool is_ascii_whitespace(char value) {
     return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f' ||
            value == '\v';
 }
 
-// The first byte past the leading ASCII whitespace.
+/** JavaScript's WhiteSpace and LineTerminator code points, which `trim` and `parseFloat` skip. */
+[[nodiscard]] inline bool is_js_whitespace(char32_t point) {
+    return (point >= 0x09 && point <= 0x0d) || point == 0x20 || point == 0xa0 || point == 0x1680 ||
+           (point >= 0x2000 && point <= 0x200a) || point == 0x2028 || point == 0x2029 ||
+           point == 0x202f || point == 0x205f || point == 0x3000 || point == 0xfeff;
+}
+
+/** The code point of the (W)UTF-8 sequence starting at `index`, and its byte length. */
+[[nodiscard]] inline std::pair<char32_t, std::size_t> code_point_at(const std::string& value,
+                                                                    std::size_t index) {
+    const auto lead = static_cast<unsigned char>(value[index]);
+    const std::size_t length = lead < 0x80u ? 1 : lead < 0xe0u ? 2 : lead < 0xf0u ? 3 : 4;
+    if (index + length > value.size())
+        return {static_cast<char32_t>(lead), 1};
+    char32_t point = length == 1 ? lead : lead & (0x7fu >> length);
+    for (std::size_t byte = 1; byte < length; ++byte)
+        point = (point << 6u) | (static_cast<unsigned char>(value[index + byte]) & 0x3fu);
+    return {point, length};
+}
+
+// The first byte past the leading JavaScript white space.
 [[nodiscard]] inline std::size_t trimmed_begin(const std::string& value) {
     std::size_t begin = 0;
-    while (begin < value.size() && is_ascii_whitespace(value[begin]))
-        ++begin;
+    while (begin < value.size()) {
+        const auto [point, length] = code_point_at(value, begin);
+        if (!is_js_whitespace(point))
+            break;
+        begin += length;
+    }
     return begin;
 }
 
-// The end of the text before the trailing ASCII whitespace, never before `begin`.
+// The end of the text before the trailing JavaScript white space, never before `begin`.
 [[nodiscard]] inline std::size_t trimmed_end(const std::string& value, std::size_t begin) {
     std::size_t end = value.size();
-    while (end > begin && is_ascii_whitespace(value[end - 1]))
-        --end;
+    while (end > begin) {
+        std::size_t start = end - 1;
+        while (start > begin && (static_cast<unsigned char>(value[start]) & 0xc0u) == 0x80u)
+            --start;
+        if (!is_js_whitespace(code_point_at(value, start).first))
+            break;
+        end = start;
+    }
     return end;
 }
 

@@ -1796,6 +1796,7 @@ check(
     if (spell(255) !== "ff:11111111:255" || (-10).toString(16) !== "-a" || (0.5).toString(2) !== "0.1") throw new Error("radix");
     function parse(s: string): number { return parseFloat(s) + Number.parseFloat(s) + parseInt(s, 10); }
     if (parse("1.5x") !== 4 || !Number.isNaN(parseFloat("x")) || parseFloat("  -2e1z") !== -20) throw new Error("parseFloat");
+    if ("\\u00a0\\u3000x\\u2028\\ufeff".trim() !== "x" || parseFloat("\\u00a0\\u2029 3.5") !== 3.5) throw new Error("JavaScript white space");
     function truthy(n: number, s: string): number { return (Boolean(n) ? 1 : 0) + (Boolean(s) ? 2 : 0); }
     if (truthy(0, "x") !== 2 || truthy(3, "") !== 1) throw new Error("Boolean()");
     if (String(null) + String(undefined) !== "nullundefined") throw new Error("String of nullish");
