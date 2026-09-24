@@ -261,12 +261,10 @@ inline void upload_billboard_pass(SDL_GPUDevice* device, const Scene& scene, Eng
     if (!billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
-    upstream::billboard_upload_instances(system, view, pass.sorted
-#if BBLITE_FLOATING_ORIGIN
-                                         ,
-                                         fo_offset
-#endif
-    );
+    // `context._camera`: the pass that draws a system renders through its
+    // scene's camera.
+    upstream::billboard_upload_instances(system, scene_camera(engine, scene) != nullptr, view,
+                                         pass.sorted, fo_offset);
     update_buffer(device, pass.instances, pass.sorted.data(), pass.sorted.size() * sizeof(float));
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }

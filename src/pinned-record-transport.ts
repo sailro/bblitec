@@ -34,7 +34,10 @@ export type TransportShape =
           readonly key: TransportShape;
           readonly value: TransportShape;
       }
-    | { readonly kind: "typed"; readonly element: "f32" | "u32" | "u8" }
+    | {
+          readonly kind: "typed";
+          readonly element: "f32" | "u32" | "i32" | "u8";
+      }
     | { readonly kind: "optional"; readonly value: TransportShape }
     | { readonly kind: "variant"; readonly members: readonly TransportShape[] }
     | { readonly kind: "weakmap" | "weakset" | "function" };
@@ -58,7 +61,7 @@ export type Transported =
     | { readonly value: Readonly<Record<string, Transported>> }
     | { readonly container: number }
     | {
-          readonly typed: "f32" | "u32" | "u8";
+          readonly typed: "f32" | "u32" | "i32" | "u8";
           readonly buffer: number;
           readonly byteOffset: number;
           readonly length: number;
@@ -89,6 +92,7 @@ export interface TransportedGraph {
 const typedConstructors = {
     f32: Float32Array,
     u32: Uint32Array,
+    i32: Int32Array,
     u8: Uint8Array,
 } as const;
 

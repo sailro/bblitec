@@ -320,16 +320,17 @@ export function compileSceneIntrinsic(
                 });
                 configuration = `bbl::ConfigurableFreeControlOptions{${fields.join(", ")}}`;
             }
-            // The scene is checked but not passed: both pinned hooks read it
-            // only to reach the canvas and the render loop. Install the
-            // native control immediately and preserve the pin's returned
-            // disposer, which disables controls and releases its callbacks.
+            // The scene is the render loop the pinned hooks push their
+            // per-frame update onto, and its `_update` decides the delta
+            // that update advances by. Install the native control
+            // immediately and preserve the pin's returned disposer, which
+            // disables controls and releases its callbacks.
             context.emit(
                 configurable
-                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${configuration});`
+                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp}, ${configuration});`
                     : importedName === "attachFreeControl"
-                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp});`
-                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp});`,
+                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`
+                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`,
             );
             const engine = context.requireEngine(camera, call);
             for (const { member, cpp } of deferrals) {

@@ -854,6 +854,71 @@ ${body}
     }
 
     /**
+     * The splat renderable's update hook opens with `const cam =
+     * scene.camera; if (!cam) return;`: a scene without an active camera
+     * writes no UBO, uploads no order and posts no sort that frame. Lowered
+     * as the predicate both backends' update runs first.
+     */
+    private lowerUpdateGuard(): string {
+        const file = this.context.sourceFile(this.pipelineModule);
+        const update = this.context.findNodes(
+            file,
+            (
+                node,
+            ): node is ts.VariableDeclaration & {
+                initializer: ts.ArrowFunction;
+            } =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "update" &&
+                node.initializer !== undefined &&
+                ts.isArrowFunction(node.initializer),
+        )[0]?.initializer;
+        const statements =
+            update && ts.isBlock(update.body) ? update.body.statements : [];
+        const camera = statements[0];
+        const guard = statements[1];
+        if (
+            !camera ||
+            !ts.isVariableStatement(camera) ||
+            !this.context.expressionMatchesShape(
+                this.context.variableInitializer(camera, "cam"),
+                "scene.camera",
+            ) ||
+            !guard ||
+            !ts.isIfStatement(guard) ||
+            guard.elseStatement !== undefined ||
+            !ts.isBlock(guard.thenStatement) ||
+            guard.thenStatement.statements.length !== 1 ||
+            !ts.isReturnStatement(guard.thenStatement.statements[0]!) ||
+            guard.thenStatement.statements[0].expression !== undefined
+        ) {
+            return this.context.contractError(
+                update ?? file,
+                "Expected the splat update hook to read scene.camera and return without one.",
+            );
+        }
+        const returns = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "cam",
+                    {
+                        cpp: "camera",
+                        type: "opaque",
+                        absentCpp: "camera == nullptr",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(guard.expression);
+        return `// ${this.context.provenance(this.pipelineModule, "buildGaussianSplattingRenderable")}
+/** Whether the splat update returns before its work: its scene has no camera. */
+inline bool splat_update_returns(const CameraRecord* camera) {
+    return ${returns};
+}`;
+    }
+
+    /**
      * The updateData CPU boundary. Geometry math is already lowered whole;
      * the rest is a GPU/worker handoff, represented here by a successful
      * payload commit and version. Assert its complete order so an added
@@ -2004,6 +2069,7 @@ void bake_current_transform_into_vertices(
         const bits = this.declaration(SORT_MODULE, "splatSortBucketBits");
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
+        const updateGuard = this.lowerUpdateGuard();
         const blockFloats = this.uniformBlockFloats();
         // The one parameter the two pipelines' update hooks disagree about.
         // Emitted only where the pin reads it: a stock cloud's hook never
@@ -2073,6 +2139,8 @@ void bake_current_transform_into_vertices(
                     "<vector>",
                 ],
                 `
+${updateGuard}
+
 /** Per-cloud scratch reused across sorts, sized once per upload. */
 struct SplatSortScratch {
     std::vector<float> depths;

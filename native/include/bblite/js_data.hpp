@@ -2404,25 +2404,49 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return value;
 }
 
-/** The six characters JavaScript's own trim and number parsing skip. */
-[[nodiscard]] inline bool is_ascii_whitespace(char value) {
-    return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f' ||
-           value == '\v';
+/** JavaScript's WhiteSpace and LineTerminator code points, which trimming and number parsing skip. */
+[[nodiscard]] inline bool is_js_whitespace(char32_t point) {
+    return (point >= 0x09 && point <= 0x0d) || point == 0x20 || point == 0xa0 || point == 0x1680 ||
+           (point >= 0x2000 && point <= 0x200a) || point == 0x2028 || point == 0x2029 ||
+           point == 0x202f || point == 0x205f || point == 0x3000 || point == 0xfeff;
 }
 
-// The first byte past the leading ASCII whitespace.
+/** The code point of the (W)UTF-8 sequence starting at `index`, and its byte length. */
+[[nodiscard]] inline std::pair<char32_t, std::size_t> code_point_at(const std::string& value,
+                                                                    std::size_t index) {
+    const auto lead = static_cast<unsigned char>(value[index]);
+    const std::size_t length = lead < 0x80u ? 1 : lead < 0xe0u ? 2 : lead < 0xf0u ? 3 : 4;
+    if (index + length > value.size())
+        return {static_cast<char32_t>(lead), 1};
+    char32_t point = length == 1 ? lead : lead & (0x7fu >> length);
+    for (std::size_t byte = 1; byte < length; ++byte)
+        point = (point << 6u) | (static_cast<unsigned char>(value[index + byte]) & 0x3fu);
+    return {point, length};
+}
+
+// The first byte past the leading JavaScript white space.
 [[nodiscard]] inline std::size_t trimmed_begin(const std::string& value) {
     std::size_t begin = 0;
-    while (begin < value.size() && is_ascii_whitespace(value[begin]))
-        ++begin;
+    while (begin < value.size()) {
+        const auto [point, length] = code_point_at(value, begin);
+        if (!is_js_whitespace(point))
+            break;
+        begin += length;
+    }
     return begin;
 }
 
-// The end of the text before the trailing ASCII whitespace, never before `begin`.
+// The end of the text before the trailing JavaScript white space, never before `begin`.
 [[nodiscard]] inline std::size_t trimmed_end(const std::string& value, std::size_t begin) {
     std::size_t end = value.size();
-    while (end > begin && is_ascii_whitespace(value[end - 1]))
-        --end;
+    while (end > begin) {
+        std::size_t start = end - 1;
+        while (start > begin && (static_cast<unsigned char>(value[start]) & 0xc0u) == 0x80u)
+            --start;
+        if (!is_js_whitespace(code_point_at(value, start).first))
+            break;
+        end = start;
+    }
     return end;
 }
 
@@ -2440,44 +2464,106 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
 }
 
 /**
- * JavaScript `parseFloat`: leading whitespace, an optional sign, decimal
- * digits with an optional fraction and exponent, or `Infinity`; anything
- * else in front is NaN and anything after the number is ignored.
+ * The end of the longest decimal literal at `index` (an optional sign,
+ * digits with an optional fraction, and an exponent when digits follow
+ * it), or `index` itself when it has no digits.
  */
-[[nodiscard]] inline double parse_float(const std::string& value) {
-    std::size_t index = trimmed_begin(value);
+[[nodiscard]] inline std::size_t decimal_literal_end(std::string_view value, std::size_t index) {
+    const auto digit = [&](std::size_t at) {
+        return at < value.size() && value[at] >= '0' && value[at] <= '9';
+    };
     const std::size_t start = index;
     if (index < value.size() && (value[index] == '+' || value[index] == '-'))
         ++index;
-    if (value.compare(index, 8, "Infinity") == 0) {
-        return value[start] == '-' ? -std::numeric_limits<double>::infinity()
-                                   : std::numeric_limits<double>::infinity();
-    }
     std::size_t digits = 0;
-    while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-        ++index;
+    for (; digit(index); ++index)
         ++digits;
-    }
-    if (index < value.size() && value[index] == '.') {
-        ++index;
-        while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-            ++index;
+    if (index < value.size() && value[index] == '.')
+        for (++index; digit(index); ++index)
             ++digits;
-        }
-    }
     if (digits == 0)
-        return std::numeric_limits<double>::quiet_NaN();
+        return start;
     if (index < value.size() && (value[index] == 'e' || value[index] == 'E')) {
         std::size_t exponent = index + 1;
         if (exponent < value.size() && (value[exponent] == '+' || value[exponent] == '-'))
             ++exponent;
-        if (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9') {
-            while (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9')
+        if (digit(exponent)) {
+            while (digit(exponent))
                 ++exponent;
             index = exponent;
         }
     }
-    return std::strtod(value.substr(start, index - start).c_str(), nullptr);
+    return index;
+}
+
+/** A signed `Infinity` at `index`: its value and where it ends. */
+[[nodiscard]] inline std::optional<std::pair<double, std::size_t>>
+infinity_at(std::string_view value, std::size_t index) {
+    const bool has_sign = index < value.size() && (value[index] == '+' || value[index] == '-');
+    const std::size_t word = index + (has_sign ? 1 : 0);
+    if (value.substr(word, 8) != "Infinity")
+        return std::nullopt;
+    const double infinity = std::numeric_limits<double>::infinity();
+    return std::pair{has_sign && value[index] == '-' ? -infinity : infinity, word + 8};
+}
+
+/** A letter or digit's value as a digit of radix up to 36, or -1. */
+[[nodiscard]] inline int radix_digit(char character) {
+    return character >= '0' && character <= '9'   ? character - '0'
+           : character >= 'a' && character <= 'z' ? character - 'a' + 10
+           : character >= 'A' && character <= 'Z' ? character - 'A' + 10
+                                                  : -1;
+}
+
+/**
+ * An unsigned `0x`/`0o`/`0b` integer literal's value, correctly rounded
+ * (NaN when it has no digits or one outside its radix), or nothing when
+ * `text` is not one.
+ */
+[[nodiscard]] inline std::optional<double> radix_integer_literal(std::string_view text) {
+    if (text.size() < 2 || text[0] != '0')
+        return std::nullopt;
+    const char tag = text[1];
+    const int bits = tag == 'x' || tag == 'X'   ? 4
+                     : tag == 'o' || tag == 'O' ? 3
+                     : tag == 'b' || tag == 'B' ? 1
+                                                : 0;
+    if (bits == 0)
+        return std::nullopt;
+    // The digits' bits, regrouped as hexadecimal, which strtod rounds correctly.
+    std::string binary;
+    for (const char character : text.substr(2)) {
+        const int digit = radix_digit(character);
+        if (digit < 0 || digit >= (1 << bits))
+            return std::numeric_limits<double>::quiet_NaN();
+        for (int bit = bits - 1; bit >= 0; --bit)
+            binary.push_back(((digit >> bit) & 1) != 0 ? '1' : '0');
+    }
+    if (binary.empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    binary.insert(0, (4 - binary.size() % 4) % 4, '0');
+    std::string hexadecimal = "0x";
+    for (std::size_t at = 0; at < binary.size(); at += 4) {
+        int nibble = 0;
+        for (std::size_t bit = at; bit < at + 4; ++bit)
+            nibble = nibble * 2 + (binary[bit] - '0');
+        hexadecimal.push_back("0123456789abcdef"[nibble]);
+    }
+    return std::strtod(hexadecimal.c_str(), nullptr);
+}
+
+/**
+ * JavaScript `parseFloat`: leading white space, then a signed decimal
+ * literal or `Infinity`; anything else in front is NaN and anything after
+ * the number is ignored.
+ */
+[[nodiscard]] inline double parse_float(const std::string& value) {
+    const std::size_t start = trimmed_begin(value);
+    if (const auto infinity = infinity_at(value, start))
+        return infinity->first;
+    const std::size_t end = decimal_literal_end(value, start);
+    return end == start ? std::numeric_limits<double>::quiet_NaN()
+                        : std::strtod(value.substr(start, end - start).c_str(), nullptr);
 }
 
 /**
@@ -2830,30 +2916,28 @@ template <typename Replacement>
         all);
 }
 
+/**
+ * JavaScript's string-to-number conversion: white space around a signed
+ * decimal literal, a signed `Infinity` or an unsigned `0x`/`0o`/`0b`
+ * integer; white space alone is 0 and anything else NaN.
+ */
 [[nodiscard]] inline double number_from_string(const std::string& value) {
-    const char* begin = value.c_str();
-    char* end = nullptr;
-    const double parsed = std::strtod(begin, &end);
-    while (is_ascii_whitespace(*end)) {
-        ++end;
-    }
-    if (end == begin) {
-        for (const char character : value) {
-            if (!is_ascii_whitespace(character)) {
-                return std::numeric_limits<double>::quiet_NaN();
-            }
-        }
+    const std::size_t begin = trimmed_begin(value);
+    const std::string_view text(value.data() + begin, trimmed_end(value, begin) - begin);
+    if (text.empty())
         return 0.0;
-    }
-    return *end == '\0' ? parsed : std::numeric_limits<double>::quiet_NaN();
+    if (const auto infinity = infinity_at(text, 0); infinity && infinity->second == text.size())
+        return infinity->first;
+    if (const auto integer = radix_integer_literal(text))
+        return *integer;
+    return decimal_literal_end(text, 0) == text.size()
+               ? std::strtod(std::string(text).c_str(), nullptr)
+               : std::numeric_limits<double>::quiet_NaN();
 }
 
 /** JavaScript parseInt over a string and a validated literal radix. */
 [[nodiscard]] inline double parse_int(const std::string& value, int radix) {
-    std::size_t index = 0;
-    while (index < value.size() && is_ascii_whitespace(value[index])) {
-        ++index;
-    }
+    std::size_t index = trimmed_begin(value);
     bool negative = false;
     if (index < value.size() && (value[index] == '+' || value[index] == '-')) {
         negative = value[index] == '-';
@@ -2870,11 +2954,7 @@ template <typename Replacement>
     double parsed = 0.0;
     bool found_digit = false;
     while (index < value.size()) {
-        const char character = value[index];
-        const int digit = character >= '0' && character <= '9'   ? character - '0'
-                          : character >= 'a' && character <= 'z' ? character - 'a' + 10
-                          : character >= 'A' && character <= 'Z' ? character - 'A' + 10
-                                                                 : -1;
+        const int digit = radix_digit(value[index]);
         if (digit < 0 || digit >= radix)
             break;
         found_digit = true;

@@ -125,10 +125,17 @@ template <typename Pass, typename Sync, typename Frame> static void check(Sync s
             pass.textures[slot] = &textures[slot];
     }
     Recorder recorder;
-    frame(recorder, engine, pass);
+    // A scene without a camera leaves the cloud untouched: the renderable's
+    // update returns on its own test before any upload or sort.
+    frame(recorder, engine, pass, nullptr);
+    require(recorder.events.empty() && pass.data_version == 0 &&
+                pass.cpu_order == std::vector<std::uint32_t>(3, 0u),
+            "camera-less frame updated the cloud");
+    const bbl::CameraRecord camera{};
+    frame(recorder, engine, pass, &camera);
     require(pass.cpu_order == std::vector<std::uint32_t>({0, 2, 1}), "initial order");
     recorder.events.clear();
-    frame(recorder, engine, pass);
+    frame(recorder, engine, pass, &camera);
     require(std::count(recorder.events.begin(), recorder.events.end(), "order") == 0,
             "stationary frame sorted again");
 
@@ -157,7 +164,7 @@ template <typename Pass, typename Sync, typename Frame> static void check(Sync s
         require(textures[slot].bytes == std::vector<std::uint8_t>(64, 0x7d), "SH changed");
     }
     recorder.events.clear();
-    frame(recorder, engine, pass);
+    frame(recorder, engine, pass, &camera);
     require(pass.cpu_order == std::vector<std::uint32_t>({1, 2, 0}),
             "updated positions not sorted");
     require(std::count(recorder.events.begin(), recorder.events.end(), "order") == 1,
@@ -181,7 +188,7 @@ template <typename Pass, typename Sync, typename Frame> static void check(Sync s
             "failed upload consumed version");
     recorder.fail_slot = 99;
     recorder.events.clear();
-    frame(recorder, engine, pass);
+    frame(recorder, engine, pass, &camera);
     require(recorder.events.size() >= 5 && recorder.events[0] == "texture0" &&
                 recorder.events[3] == "texture3" && recorder.events[4] == "order",
             "frame upload precedes order");
@@ -194,7 +201,7 @@ template <typename Pass, typename Sync, typename Frame> static void check(Sync s
     record.scaling = bbl::Vec3{0, 0, 0};
     ++record.data_version;
     recorder.events.clear();
-    frame(recorder, engine, pass);
+    frame(recorder, engine, pass, &camera);
     require(std::count(recorder.events.begin(), recorder.events.end(), "order") == 0,
             "data version bypassed the pinned zero-kernel gate");
 }
@@ -205,15 +212,15 @@ int main() try {
         [](auto& recorder, const auto& record, auto& pass) {
             bbl::pal::sync_splat_data(&recorder, record, pass);
         },
-        [&](auto& recorder, const auto& engine, auto& pass) {
-            bbl::pal::frame_sdl_gpu(recorder, engine, pass, identity);
+        [&](auto& recorder, const auto& engine, auto& pass, const bbl::CameraRecord* camera) {
+            bbl::pal::frame_sdl_gpu(recorder, engine, pass, identity, camera);
         });
     check<bbl::pal::DawnSplatPass>(
         [](auto& recorder, const auto& record, auto& pass) {
             bbl::pal::sync_dawn_splat_data(&recorder, record, pass);
         },
-        [&](auto& recorder, const auto& engine, auto& pass) {
-            bbl::pal::frame_dawn(recorder, engine, pass, identity);
+        [&](auto& recorder, const auto& engine, auto& pass, const bbl::CameraRecord* camera) {
+            bbl::pal::frame_dawn(recorder, engine, pass, identity, camera);
         });
     std::cout << "splat-pal-update: ok\n";
 } catch (const std::exception& error) {

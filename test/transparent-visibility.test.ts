@@ -49,7 +49,7 @@ test(
             const bbl::CameraRecord camera;
             for (const bool visible : {true, false, true}) {
                 for (auto& mesh : engine.meshes) mesh.visible = visible;
-                bbl::upstream::sort_transparent_draws(lists.transparent, engine, camera);
+                bbl::upstream::sort_transparent_draws(lists.transparent, engine, &camera);
                 assert(lists.opaque.commands.empty());
                 assert(lists.transparent.commands.size() == (visible ? 2u : 0u));
                 if (visible) {
@@ -59,11 +59,16 @@ test(
             }
             engine.meshes[1].thin_instanced = true;
             engine.meshes[1].instance_count = 0;
-            bbl::upstream::sort_transparent_draws(lists.transparent, engine, camera);
+            bbl::upstream::sort_transparent_draws(lists.transparent, engine, &camera);
             assert(lists.transparent.commands.size() == 1);
             engine.meshes[1].instance_count = 1;
-            bbl::upstream::sort_transparent_draws(lists.transparent, engine, camera);
+            bbl::upstream::sort_transparent_draws(lists.transparent, engine, &camera);
             assert(lists.transparent.commands.size() == 2);
+            // A camera-less pass skips the sort, not the visibility refresh.
+            engine.meshes[2].visible = false;
+            bbl::upstream::sort_transparent_draws(lists.transparent, engine, nullptr);
+            assert(lists.transparent.commands.size() == 1);
+            assert(lists.transparent.commands[0].item.mesh.value == 1);
         }
     `,
         );

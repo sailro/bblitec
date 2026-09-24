@@ -5,6 +5,10 @@
 #include <bblite/upstream_text.hpp>
 #include <bblite/upstream_text_gpu.hpp>
 #include <bblite/upstream/camera_change_key.hpp>
+
+#include <array>
+#include <optional>
+
 #include "pal_text_pipeline.hpp"
 
 namespace bbl::pal {
@@ -57,6 +61,21 @@ struct TextScenePass {
         for (const auto& binding : bindings)
             if (binding->update)
                 binding->update(TextDrawUpdateContext{camera, width, height});
+    }
+
+    /**
+     * The scene pass's update: the text renderables read the pass camera
+     * (`context._camera ?? null`) as its product, change key and aspect, and
+     * a camera-less pass hands them none.
+     */
+    void update_for_pass(const CameraRecord* camera, const std::array<float, 16>& view_projection,
+                         double aspect, double width, double height) const {
+        const std::optional<TextCameraInput> input =
+            camera ? std::optional<TextCameraInput>{TextCameraInput{
+                         js::TypedArray<float>(view_projection.begin(), view_projection.end()),
+                         upstream::scene_camera_change_key(*camera), aspect}}
+                   : std::nullopt;
+        update(input ? &*input : nullptr, width, height);
     }
 
     double draw(const TextGpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {

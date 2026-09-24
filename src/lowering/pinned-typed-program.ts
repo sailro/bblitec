@@ -54,6 +54,9 @@ export function pinnedTypedProgram(
         lib: ["lib.es2022.d.ts"],
         types: [],
         strict: true,
+        // The pin's own compiler setting (`tsconfig.base.json`): an indexed
+        // read may be absent, which the pin says with `!` where it is not.
+        noUncheckedIndexedAccess: true,
         noEmit: true,
         skipLibCheck: true,
     };

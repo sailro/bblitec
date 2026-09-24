@@ -12,6 +12,7 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
@@ -80,6 +81,11 @@
 // attribute agreement below. Emitted only for a scene that builds a system.
 #if BBLITE_HAS_BILLBOARDS
 #include <bblite/upstream/billboard_system.hpp>
+#endif
+// The 2D layer family's generated header, for the renderer's in-place layer
+// sort its per-frame update runs.
+#if BBLITE_HAS_SPRITE_RENDERER
+#include <bblite/upstream/sprite_layer.hpp>
 #endif
 // Babylon Lite's own composed PBR variants: one entry per material feature
 // set the scene's assets reach, each naming its compiled stages and the byte
@@ -376,26 +382,29 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
         });
 }
 
-/** Final viewport/scissor after composing a camera viewport into its pane. */
+/**
+ * Final viewport/scissor of a scene's own pass: the pass camera's
+ * `_applyCameraViewport` rectangle (`upstream::pass_camera_viewport`)
+ * composed into the scene's surface pane. A camera-less pass, like one whose
+ * camera has no viewport, keeps the whole pane.
+ */
 #if BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
-                                                          const CameraRecord& camera,
+                                                          const CameraRecord* camera,
                                                           std::uint32_t target_width,
                                                           std::uint32_t target_height) {
     const std::optional<PixelViewport> pane =
         scene_surface_pane(engine, scene, target_width, target_height);
     if (!pane.has_value()) {
-        if (!camera.viewport.has_value())
-            return std::nullopt;
-        return upstream::resolve_camera_viewport(camera, static_cast<double>(target_width),
-                                                 static_cast<double>(target_height));
+        return upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                              static_cast<double>(target_height));
     }
-    if (!camera.viewport.has_value())
-        return pane;
-    PixelViewport viewport = upstream::resolve_camera_viewport(
+    std::optional<PixelViewport> viewport = upstream::pass_camera_viewport(
         camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
-    viewport.x += pane->x;
-    viewport.y += pane->y;
+    if (!viewport.has_value())
+        return pane;
+    viewport->x += pane->x;
+    viewport->y += pane->y;
     return viewport;
 }
 #endif
@@ -410,18 +419,6 @@ inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, 
  */
 inline CameraRecord* scene_camera(Engine& engine, const Scene& scene) {
     return handle_find(engine.cameras, scene.camera);
-}
-
-/**
- * A render task's camera, the pin's `cfg.cam ?? scene.camera`: the task's
- * own when it was given one, else `scene`'s, the camera of the scene it
- * renders. Null is the no-camera pass `scene_camera` describes.
- */
-inline const CameraRecord* render_task_camera(const Engine& engine, const FrameTaskRecord& task,
-                                              const CameraRecord* scene) {
-    const CameraRecord* own =
-        task.render.has_camera ? handle_find(engine.cameras, task.render.camera) : nullptr;
-    return own ? own : scene;
 }
 
 /**
@@ -748,6 +745,16 @@ inline bool render_target_samples_depth(const RenderTargetRecord& record) {
 /** The refusal both backends owe a depth-only target with no depth. */
 [[noreturn]] inline void fail_render_target_has_no_texture() {
     throw std::runtime_error("Depth-only render target has no color texture.");
+}
+
+/**
+ * The refusal both backends owe a frame record naming a handle outside its
+ * table: a generation defect, classified as `handle_at` classifies its own
+ * refusal. Never a `GpuTransportError`, which would reach the
+ * device-recovery listeners as a lost device.
+ */
+[[noreturn]] inline void refuse_invalid_frame_handle(const char* message) {
+    throw std::out_of_range(message);
 }
 
 /**
@@ -2950,16 +2957,14 @@ inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engi
 /**
  * The scene block a billboard program binds at its group 0: the pin's
  * block for the pass, over the view projection and view the pass draws
- * billboards with. A pass without a camera carries the zero block the pin
- * never writes, as every composed family's does.
+ * billboards with. A pass without a camera writes none and keeps what its
+ * block last held (`pal::write_billboard_scene_block`).
  */
 inline upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& engine,
-                                                     const CameraRecord* camera,
+                                                     const CameraRecord& camera,
                                                      const std::array<float, 16>& view_projection,
                                                      const std::array<float, 16>& view) {
-    upstream::SceneUniforms block =
-        camera ? pinned_scene_block(scene, engine, *camera, view_projection)
-               : upstream::SceneUniforms{};
+    upstream::SceneUniforms block = pinned_scene_block(scene, engine, camera, view_projection);
     block.viewProjection = view_projection;
     block.view = view;
     return block;
@@ -4127,31 +4132,38 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
             static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
+#if BBLITE_HAS_SPRITE_RENDERER
 /**
- * `spriteRendererUpdate`'s first act: run the renderer's own per-frame hooks
- * with the frame's delta, before anything reads its layer list.
+ * `spriteRendererUpdate` up to its upload: run the renderer's own per-frame
+ * hooks with the frame's delta, then sort its layer list in place
+ * (`sort_sprite_renderer_layers`), before anything reads the list.
  *
- * A disposed renderer runs none, which is the pin's own early return; the
- * list is copied because a hook may push another one, and upstream's
+ * A disposed renderer runs neither, which is the pin's own early return; the
+ * hook list is copied because a hook may push another one, and upstream's
  * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
  */
-inline void run_sprite_renderer_before_update(Engine& engine, SpriteRendererHandle renderer,
-                                              double delta_ms) {
+inline void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
+                                         double delta_ms) {
     if (renderer.value >= engine.sprite_renderers.size())
         return;
     SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
-    if (record.disposed || record.before_update.empty())
+    if (record.disposed)
         return;
-    // Copied into the record's own scratch rather than a fresh vector: the
-    // copy is what makes this iterate the list it entered with, the way
-    // upstream's `for (const hook of rr._beforeUpdate)` does, and assigning
-    // into a retained buffer keeps that guarantee while paying the
-    // allocation once instead of once per renderer per frame.
-    record.before_update_running.assign(record.before_update.begin(), record.before_update.end());
-    for (const auto& hook : record.before_update_running) {
-        hook(delta_ms);
+    if (!record.before_update.empty()) {
+        // Copied into the record's own scratch rather than a fresh vector:
+        // the copy is what makes this iterate the list it entered with, the
+        // way upstream's `for (const hook of rr._beforeUpdate)` does, and
+        // assigning into a retained buffer keeps that guarantee while paying
+        // the allocation once instead of once per renderer per frame.
+        record.before_update_running.assign(record.before_update.begin(),
+                                            record.before_update.end());
+        for (const auto& hook : record.before_update_running) {
+            hook(delta_ms);
+        }
     }
+    sort_sprite_renderer_layers(engine, handle_at(engine.sprite_renderers, renderer));
 }
+#endif
 
 /**
  * Whether a standalone driver's pass list still mirrors
@@ -4916,54 +4928,6 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
 }
 
 /**
- * Reconcile one backend's uploaded mesh rows with a rebuilt render plan.
- *
- * Plans preserve scene order, so a forward scan moves surviving rows,
- * releases removed rows, and uploads only new rows. The GPU resource type and
- * its release/upload operations remain backend-owned.
- */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline std::vector<GpuMesh>
-rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
-                      const std::vector<upstream::RenderItem>& updated_items,
-                      std::vector<GpuMesh>& uploaded_meshes, ReleaseMesh&& release_mesh,
-                      UploadItem&& upload_item) {
-    if (previous_items.size() != uploaded_meshes.size()) {
-        throw std::runtime_error("Render plan and uploaded mesh rows are out of sync.");
-    }
-    // The whole mesh handle: a row uploaded for a retired mesh must not
-    // survive into the mesh that reused its slot (and possibly its
-    // geometry slot) before this rebuild.
-    const auto same_source = [](const upstream::RenderItem& left,
-                                const upstream::RenderItem& right) {
-        return left.mesh == right.mesh && left.geometry == right.geometry &&
-               left.material.value == right.material.value;
-    };
-    std::vector<GpuMesh> result;
-    result.reserve(updated_items.size());
-    std::size_t previous_index = 0;
-    for (const upstream::RenderItem& item : updated_items) {
-        std::size_t scan = previous_index;
-        while (scan < previous_items.size() && !same_source(previous_items[scan], item)) {
-            ++scan;
-        }
-        if (scan < previous_items.size()) {
-            for (std::size_t dropped = previous_index; dropped < scan; ++dropped) {
-                release_mesh(uploaded_meshes[dropped]);
-            }
-            result.push_back(std::move(uploaded_meshes[scan]));
-            previous_index = scan + 1;
-            continue;
-        }
-        result.push_back(upload_item(item));
-    }
-    for (std::size_t dropped = previous_index; dropped < uploaded_meshes.size(); ++dropped) {
-        release_mesh(uploaded_meshes[dropped]);
-    }
-    return result;
-}
-
-/**
  * A material family appearing after registration must have composed
  * artifacts to draw with: generation composes variants from the whole
  * scene, so a family the tables never saw is a compiler contract broken,
@@ -4989,36 +4953,6 @@ inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
     }
 }
 
-/** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::RenderPlan>& plans,
-                                         std::vector<std::vector<GpuMesh>>& meshes,
-                                         std::vector<std::uint64_t>& versions,
-                                         bool draw_lists_changed, ReleaseMesh&& release_mesh,
-                                         UploadItem&& upload_item) {
-    if (plans.size() != meshes.size() || plans.size() != versions.size() ||
-        plans.size() + 1 != engine.registered_scenes.size()) {
-        throw std::runtime_error("Overlay registration changed after renderer initialization.");
-    }
-    bool changed = false;
-    for (std::size_t layer = 0; layer < plans.size(); ++layer) {
-        Scene& scene = *engine.registered_scenes[layer + 1];
-        if (scene.render_topology_version != versions[layer]) {
-            reject_uncomposed_family_growth(scene.material_family_mask);
-            upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated);
-            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items, meshes[layer],
-                                                  release_mesh, upload_item);
-            plans[layer] = std::move(updated);
-            versions[layer] = scene.render_topology_version;
-            changed = true;
-        } else if (draw_lists_changed) {
-            plans[layer].draw_lists = upstream::build_render_draw_lists(plans[layer].items, engine);
-            changed = true;
-        }
-    }
-    return changed;
-}
 #endif
 
 /**
@@ -5376,11 +5310,6 @@ inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine&
     return matrices;
 }
 
-/** A render task's clear colour, the pin's `cfg.clrColor ?? sc.clearColor`, read live at the pass. */
-inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
-    return task.render.clear_color ? *task.render.clear_color : task.source_scene->clear_color;
-}
-
 /**
  * One custom-shader stage block: declared system matrices followed by the
  * reflected gathers from the material's flat value storage. These exact
@@ -5490,9 +5419,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     // The scene callback API is the engine's float delta.
@@ -5536,9 +5467,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     return delta_ms;
 }
@@ -5546,9 +5479,12 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 /** The measured update boundary for a standalone FrameGraphContext. */
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameGraphContext& context,
                                           FrameClock& frame_clock, double frame_delta_ms) {
-    if (engine.stopped)
+    if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
+    }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const float callback_delta_ms = static_cast<float>(delta_ms);
     for (const auto& callback : context.updates) {

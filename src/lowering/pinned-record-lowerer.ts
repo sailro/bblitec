@@ -81,7 +81,10 @@ export type RecordShape =
       }
     | { readonly kind: "weakmap"; readonly value: RecordShape }
     | { readonly kind: "weakset" }
-    | { readonly kind: "typed"; readonly element: "f32" | "u32" | "u8" }
+    | {
+          readonly kind: "typed";
+          readonly element: "f32" | "u32" | "i32" | "u8";
+      }
     | {
           readonly kind: "function";
           readonly parameters: readonly RecordShape[];
@@ -299,6 +302,14 @@ interface ModuleVariable {
 
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+
+/** The C++ element type of each typed-array kind. */
+const typedElementCpp = {
+    f32: "float",
+    u32: "std::uint32_t",
+    i32: "std::int32_t",
+    u8: "std::uint8_t",
+} as const;
 
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
@@ -683,6 +694,7 @@ export class PinnedRecordModel {
                 return { kind: "typed", element: "f32" };
             if (name === "Uint32Array")
                 return { kind: "typed", element: "u32" };
+            if (name === "Int32Array") return { kind: "typed", element: "i32" };
             if (name === "Uint8Array") return { kind: "typed", element: "u8" };
             // `ArrayBufferLike` names both; this runtime has one kind of buffer.
             if (name === "ArrayBuffer" || name === "SharedArrayBuffer")
@@ -908,7 +920,7 @@ export class PinnedRecordModel {
             case "weakset":
                 return "bbl::js::WeakMap<bool>";
             case "typed":
-                return `bbl::js::TypedArray<${{ f32: "float", u32: "std::uint32_t", u8: "std::uint8_t" }[shape.element]}>`;
+                return `bbl::js::TypedArray<${typedElementCpp[shape.element]}>`;
             case "function":
                 // A JavaScript function object: copies share its identity
                 // and its environment, which cycle collection traces.
@@ -2205,6 +2217,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly captured = new Set<ts.Symbol>();
     /** Where the first closure over each captured binding is created. */
     private readonly earliestCapture = new Map<ts.Symbol, number>();
+    /** The decoded views of constant string locals (`stringViewLines`). */
+    private readonly stringViews = new Map<
+        ts.Symbol,
+        { units?: string; length?: string }
+    >();
     /** The frames being lowered, innermost last. */
     private readonly frames: Frame[] = [];
     /** Environment struct definitions, in the order frames created them. */
@@ -2892,11 +2909,40 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                           : callee,
                   )
                 : undefined;
-        const key = declaration ? this.model.keyOf(declaration) : undefined;
+        // A package the store does not carry (`text-shaper`) is keyed
+        // `package#name`, by the import that names it.
+        const imported = ts.isIdentifier(callee)
+            ? this.packageImport(callee)
+            : undefined;
+        const key = declaration
+            ? this.model.keyOf(declaration)
+            : imported
+              ? `${imported.specifier}#${imported.name}`
+              : undefined;
         return (
             (key ? this.model.schema.adapters.get(key) : undefined) ??
             this.model.schema.adapters.get(callee.getText(this.source))
         );
+    }
+
+    /**
+     * The package and exported name an identifier imports from a module
+     * the typed program does not carry (a bare specifier).
+     */
+    private packageImport(
+        node: ts.Identifier,
+    ): { specifier: string; name: string } | undefined {
+        const declaration = declaredSymbol(this.checker, node)
+            ?.declarations?.[0];
+        if (!declaration || !ts.isImportSpecifier(declaration))
+            return undefined;
+        const module = declaration.parent.parent.parent.moduleSpecifier;
+        if (!ts.isStringLiteral(module) || module.text.startsWith("."))
+            return undefined;
+        return {
+            specifier: module.text,
+            name: (declaration.propertyName ?? declaration.name).text,
+        };
     }
 
     // ── Names and locals ────────────────────────────────────────────────
@@ -2956,6 +3002,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? this.moduleValue(declaration)
                 : undefined;
             if (platform) return platform.shape;
+        }
+        // A numeric element read is a number whether or not it may be
+        // absent: a missing element reads NaN, as `undefined` converts.
+        if (ts.isElementAccessExpression(node)) {
+            const owner = this.stripOptional(this.shapeAt(node.expression));
+            if (
+                owner.kind === "typed" ||
+                owner.kind === "tuple" ||
+                (owner.kind === "array" && owner.element.kind === "number")
+            )
+                return { kind: "number" };
         }
         const type = this.typeAt(node);
         // A record's member is the shape its record declares, whether the
@@ -3109,11 +3166,53 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )
             return this.shapeAt(node.right);
+        // Arithmetic over an erased value is a number, and `+` with a
+        // string operand is a string, as JavaScript's operators decide.
+        if (
+            ts.isBinaryExpression(node) &&
+            [
+                ts.SyntaxKind.PlusToken,
+                ts.SyntaxKind.MinusToken,
+                ts.SyntaxKind.AsteriskToken,
+                ts.SyntaxKind.SlashToken,
+                ts.SyntaxKind.PercentToken,
+                ts.SyntaxKind.AsteriskAsteriskToken,
+            ].includes(node.operatorToken.kind)
+        ) {
+            const operands = [node.left, node.right].map((operand) =>
+                this.stripOptional(this.shapeAt(operand)),
+            );
+            if (
+                node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                operands.some((shape) => shape.kind === "string")
+            )
+                return { kind: "string" };
+            if (operands.every((shape) => shape.kind === "number"))
+                return { kind: "number" };
+            return undefined;
+        }
+        if (
+            ts.isPrefixUnaryExpression(node) &&
+            (node.operator === ts.SyntaxKind.MinusToken ||
+                node.operator === ts.SyntaxKind.PlusToken) &&
+            this.stripOptional(this.shapeAt(node.operand)).kind === "number"
+        )
+            return { kind: "number" };
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.stripOptional(this.shapeAt(node.expression));
             if (owner.kind === "record")
                 return this.model.member(owner.name, node.name.text, node)
                     .shape;
+            // A collection's or string's length is a number.
+            if (
+                (node.name.text === "length" &&
+                    ["array", "typed", "tuple", "string"].includes(
+                        owner.kind,
+                    )) ||
+                (node.name.text === "size" &&
+                    (owner.kind === "map" || owner.kind === "set"))
+            )
+                return { kind: "number" };
             return undefined;
         }
         if (
@@ -3781,6 +3880,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "tuple":
                 if (name === "length") return `${shape.length}.0`;
                 break;
+            case "string":
+                if (name === "length")
+                    return (
+                        this.stringView(owner, "length") ??
+                        `bbl::js::string_length(${value()})`
+                    );
+                break;
             case "buffer":
                 if (name === "byteLength")
                     return `static_cast<double>(${value()}.byte_length())`;
@@ -3834,8 +3940,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 const element = shape.element;
                 if (element.kind === "number")
                     return `bbl::pinned::number_at(${owner}, ${index})`;
+                // A value element the pin may find absent reads `undefined`
+                // past the end.
+                const at = this.shapeAt(node);
+                if (
+                    at.kind === "optional" &&
+                    !nullableByRepresentation(element, this.model)
+                )
+                    return `bbl::pinned::array_at_optional(${owner}, ${index})`;
                 // A reference reads null past the end, as `undefined` is
-                // null in this model; a value element reads its default.
+                // null in this model; a value element proven present reads
+                // its default only where the pin already failed.
                 return this.narrowed(
                     `bbl::js::array_at_or_default(${owner}, ${index})`,
                     element,
@@ -4259,6 +4374,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 }
                 break;
             }
+            case "string":
+                return this.stringMethod(node, name, receiverNode);
             case "weakset":
                 switch (name) {
                     case "add":
@@ -4280,6 +4397,155 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 `Pinned method '${name}' has no native lowering.`,
             );
         return undefined;
+    }
+
+    /**
+     * A string method, with JavaScript's UTF-16 semantics over the
+     * runtime's strings: `repeat`, `trim`, `split` by a string,
+     * `charCodeAt`, and `replace` of a string or of a regular expression
+     * literal by a string.
+     */
+    private stringMethod(
+        node: ts.CallExpression,
+        name: string,
+        receiverNode: ts.Expression,
+    ): string {
+        const string: RecordShape = { kind: "string" };
+        const [first, second] = node.arguments;
+        const receiver = (): string => this.value(receiverNode);
+        const arity = (count: number): void => {
+            if (node.arguments.length !== count)
+                this.refuse(node, `Pinned string ${name} arity.`);
+        };
+        switch (name) {
+            case "repeat":
+                arity(1);
+                return `bbl::js::string_repeat(${receiver()}, ${this.value(first!)})`;
+            case "trim":
+                arity(0);
+                return `bbl::js::string_trim(${receiver()})`;
+            case "split":
+                arity(1);
+                if (this.stripOptional(this.shapeAt(first!)).kind !== "string")
+                    return this.refuse(
+                        first!,
+                        "Pinned split by a non-string separator.",
+                    );
+                return `bbl::js::string_split(${receiver()}, ${this.convert(first!, string)})`;
+            case "charCodeAt": {
+                arity(1);
+                // A constant string read by index shares one decoded view.
+                const view = this.stringView(receiverNode, "units");
+                return `bbl::js::string_char_code_at(${view ?? receiver()}, ${this.value(first!)})`;
+            }
+            case "replace": {
+                arity(2);
+                if (this.stripOptional(this.shapeAt(second!)).kind !== "string")
+                    return this.refuse(
+                        second!,
+                        "Pinned replace with a non-string replacement.",
+                    );
+                const replacement = this.convert(second!, string);
+                const pattern = this.skipParentheses(first!);
+                if (ts.isRegularExpressionLiteral(pattern))
+                    return `${this.regularExpression(pattern)}.replace(${receiver()}, ${replacement})`;
+                if (this.stripOptional(this.shapeAt(pattern)).kind !== "string")
+                    return this.refuse(
+                        pattern,
+                        "Pinned replace of a non-string pattern.",
+                    );
+                return `bbl::js::string_replace(${receiver()}, ${this.convert(pattern, string)}, ${replacement}, false)`;
+            }
+            default:
+                return this.refuse(node, `Pinned string method '${name}'.`);
+        }
+    }
+
+    /**
+     * A regular expression literal as the runtime's JavaScript `RegExp`:
+     * its source and its global and case-insensitive flags. Other flags
+     * refuse.
+     */
+    private regularExpression(node: ts.RegularExpressionLiteral): string {
+        const text = node.text;
+        const slash = text.lastIndexOf("/");
+        const source = text.slice(1, slash);
+        const flags = text.slice(slash + 1);
+        for (const flag of flags)
+            if (flag !== "g" && flag !== "i")
+                return this.refuse(
+                    node,
+                    `Pinned regular expression flag '${flag}'.`,
+                );
+        return `bbl::js::RegExp(${stringLiteral(source)}, ${flags.includes("g")}, ${flags.includes("i")})`;
+    }
+
+    /**
+     * A decoded view of a constant string local that the body reads by
+     * index or length (`units`: a `bbl::js::StringIndex`; `length`: its
+     * UTF-16 length), declared once beside it; undefined for anything
+     * else, which reads the string itself.
+     */
+    private stringView(
+        node: ts.Expression,
+        kind: "units" | "length",
+    ): string | undefined {
+        const unwrapped = this.skipParentheses(node);
+        if (!ts.isIdentifier(unwrapped)) return undefined;
+        const symbol = declaredSymbol(this.checker, unwrapped);
+        return symbol ? this.stringViews.get(symbol)?.[kind] : undefined;
+    }
+
+    /**
+     * The views a constant string local needs: its body reads its length
+     * or its code units by index in a loop, where the string itself would
+     * decode from the start on every read.
+     */
+    private stringViewLines(
+        declaration: ts.VariableDeclaration,
+        cpp: string,
+        indent: string,
+    ): string[] {
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !(declaration.parent.flags & ts.NodeFlags.Const)
+        )
+            return [];
+        const symbol = declaredSymbol(this.checker, declaration.name);
+        if (!symbol) return [];
+        let units = false,
+            length = false;
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                declaredSymbol(this.checker, node.expression) === symbol
+            ) {
+                if (node.name.text === "length") length = true;
+                if (
+                    node.name.text === "charCodeAt" &&
+                    ts.isCallExpression(node.parent) &&
+                    node.parent.expression === node
+                )
+                    units = true;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(this.entry.declaration);
+        const views: { units?: string; length?: string } = {};
+        const lines: string[] = [];
+        if (units) {
+            views.units = `${cpp}_units`;
+            lines.push(`${indent}bbl::js::StringIndex ${views.units}(${cpp});`);
+        }
+        if (length) {
+            views.length = `${cpp}_length`;
+            lines.push(
+                `${indent}const double ${views.length} = bbl::js::string_length(${cpp});`,
+            );
+        }
+        if (units || length) this.stringViews.set(symbol, views);
+        return lines;
     }
 
     /**
@@ -4541,6 +4807,25 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 node,
             );
         }
+        // A platform class the port represents natively (text-shaper's
+        // `UnicodeBuffer`), constructed empty.
+        const platform = this.packageImport(node.expression)
+            ? this.model.schema.unresolved?.get(node.expression.text)
+            : undefined;
+        if (platform?.kind === "record") {
+            const spec = this.model.record(platform.name).spec;
+            if (!spec.native || !spec.reference || args.length !== 0)
+                return this.refuse(
+                    node,
+                    "A pinned platform class constructs empty, as a native record.",
+                );
+            return this.coerce(
+                `bbl::js::make_gc_shared<bbl::${spec.cpp}>()`,
+                platform,
+                to,
+                node,
+            );
+        }
         // `new F32(16)`: the pin's short alias of a library constructor.
         const name =
             declaration &&
@@ -4601,6 +4886,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return `${this.cpp(shape)}(bbl::pinned::array_length(${this.value(args[0]!)}))`;
             case "Float32Array":
             case "Uint32Array":
+            case "Int32Array":
             case "Uint8Array": {
                 if (shape.kind !== "typed" || args.length !== 1)
                     return this.refuse(node, `Pinned new ${name}.`);
@@ -4610,7 +4896,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return `${this.cpp(shape)}{${literal.elements
                         .map(
                             (element) =>
-                                `static_cast<${{ f32: "float", u32: "std::uint32_t", u8: "std::uint8_t" }[shape.element]}>(${this.convert(element, { kind: "number" })})`,
+                                `static_cast<${typedElementCpp[shape.element]}>(${this.convert(element, { kind: "number" })})`,
                         )
                         .join(", ")}}`;
                 const argumentShape = this.shapeAt(argument);
@@ -4849,6 +5135,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const cpp = this.declare(declaration.name, storage);
         return [
             `${indent}${this.mayBeUnread(declaration.name) ? "[[maybe_unused]] " : ""}${this.cpp(storage)} ${cpp} = ${value};`,
+            ...(storage.kind === "string"
+                ? this.stringViewLines(declaration, cpp, indent)
+                : []),
         ];
     }
 

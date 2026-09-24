@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bblite/features/has_text.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/text_gpu.hpp>
 #include <array>
