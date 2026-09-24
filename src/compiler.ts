@@ -6560,6 +6560,9 @@ class Compiler implements LoweringServices {
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
 
+    /** Closure environment structs already registered, by name. */
+    private readonly environmentStructs = new EmissionSet<string>();
+
     /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
      * Captured callback/IIFE bodies get their own identity so a lazily
@@ -7061,6 +7064,15 @@ class Compiler implements LoweringServices {
                 (this.allocatedCppNames.get(name) ?? 0) > allocationBoundary,
         );
         const environmentType = capture.environmentType;
+        const struct = capture.environmentStruct;
+        if (!this.environmentStructs.has(struct.name)) {
+            this.environmentStructs.add(struct.name);
+            this.registerNativeTemplate(
+                struct.name,
+                [...struct.lines],
+                struct.declaration,
+            );
+        }
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,

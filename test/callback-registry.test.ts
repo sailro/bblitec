@@ -167,7 +167,9 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
             /bbl::js::Callback<void\(bblscene::MousePayload\)> \w+\{(\d+)u,/g,
         ),
     ].map((match) => match[1]);
-    assert.ok(identities.length >= 4);
+    // One shared body per registry method materializes the callback, and
+    // every materialization keeps the function's one identity.
+    assert.ok(identities.length >= 2);
     assert.equal(new Set(identities).size, 1);
 });
 
@@ -255,7 +257,7 @@ test("owns an optional Map Set before delete-argument side effects", () => {
         assert.match(
             result.cpp,
             new RegExp(
-                `auto (v_bblite_optional_chain_\\d+) = ${owner}\\.get_owned\\("entry"\\);[\\s\\S]*?if \\(.*\\1\\.has_value\\(\\)[^\\n]+\\n[^\\n]+const double (v_bblite_shared_result_\\d+) = bbl::js::make_closure\\(std::tuple\\{std::ref\\(${owner}\\)[^\\n]+\\n[^\\n]+\\(\\*\\1\\)\\.erase\\(\\2\\)`,
+                `auto (v_bblite_optional_chain_\\d+) = ${owner}\\.get_owned\\("entry"\\);[\\s\\S]*?if \\(.*\\1\\.has_value\\(\\)[^\\n]+\\n[^\\n]+const double (v_bblite_shared_result_\\d+) = bbl::js::make_closure\\(bblscene::bbl_environment_\\w+\\{std::ref\\(${owner}\\)[^\\n]+\\n[^\\n]+\\(\\*\\1\\)\\.erase\\(\\2\\)`,
             ),
         );
     }
@@ -386,7 +388,7 @@ test("evaluates erased void callback defaults before the callback body", () => {
     assert.ok(bodyMark > defaultMark);
     assert.match(
         result.cpp,
-        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(std::tuple\{v_marks\}, bblscene::\w+/,
+        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_marks\}, bblscene::\w+/,
     );
 });
 
@@ -503,9 +505,15 @@ test("inlined class parameters keep borrowed event wrappers alive", () => {
             handler.on(event => event.preventDefault());
             ${target}.addEventListener("${eventName}", (event) => handler.consume(event));
         `);
+        // The caller names the wrapper; the shared method takes it by value
+        // and borrows the event from its own parameter.
         assert.match(
             result.cpp,
-            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*\[\[maybe_unused\]\] const auto& \w+ = \1\.get\(\);/,
+            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*bbl::js::make_closure\([^\n]*\(bbl::js::Borrowed(?:<[^>]+>|Event)\(\1\.get\(\)\)\);/,
+        );
+        assert.match(
+            result.cpp,
+            /\[\[maybe_unused\]\] const auto& \w+ = fn\d+_recursive_arg_0\.get\(\);/,
         );
         assert.doesNotMatch(
             result.cpp,

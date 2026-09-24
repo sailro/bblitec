@@ -1272,7 +1272,7 @@ test("borrows stable Ref parameters and snapshots rebindable call arguments", ()
     assert.match(result.cpp, /bblscene::add\(v_stable, 2\.0\)/);
     assert.match(
         result.cpp,
-        /auto (v_bblite_function_argument_\d+) = bbl::js::snapshot_value\(v_current\);\s+\[\[maybe_unused\]\] const double (v_bblite_shared_result_\d+) = bbl::js::make_closure\(std::tuple\{std::ref\(v_current\)\}, bblscene::\w+\)\(\);[\s\S]*bblscene::add\(\1, \2\)/,
+        /auto (v_bblite_function_argument_\d+) = bbl::js::snapshot_value\(v_current\);\s+\[\[maybe_unused\]\] const double (v_bblite_shared_result_\d+) = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_current\)\}, bblscene::\w+\)\(\);[\s\S]*bblscene::add\(\1, \2\)/,
     );
 });
 
@@ -2322,7 +2322,7 @@ test("does not fold mutable reference-record fields into retained callbacks", ()
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_view\}, bblscene::\w+/,
+        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_view\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /return v_view->x;/);
     assert.doesNotMatch(result.cpp, /return 0\.0;/);
@@ -2791,7 +2791,7 @@ test("evaluates constructor arguments with the caller's this", () => {
 
     assert.match(
         result.cpp,
-        /return \(\*v_bblite_class_field_value_\d+\);[\s\S]*double v_selected = bbl::js::make_closure\(std::tuple\{v_bblite_class_field_value_\d+\}, bblscene::bbl_recursive_fn\d+_group\)\(\);/,
+        /return \(\*v_bblite_class_field_value_\d+\);[\s\S]*double v_selected = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_bblite_class_field_value_\d+\}, bblscene::bbl_recursive_fn\d+_group\)\(\);/,
     );
 });
 
@@ -2927,7 +2927,7 @@ test("guards optional class method calls before evaluating their body", () => {
 
     assert.match(
         result.cpp,
-        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*bbl::js::make_closure\(std::tuple\{std::ref\(v_bblite_target_receiver_\d+\)\}, bblscene::bbl_recursive_fn\d+_group<decltype\(std::tuple\{std::ref\(v_bblite_target_receiver_\d+\)\}\)>\)\(\);/,
+        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_bblite_target_receiver_\d+\)\}, bblscene::bbl_recursive_fn\d+_group\)\(\);/,
     );
     assert.match(
         result.cpp,
@@ -4273,7 +4273,7 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
     assert.match(result.cpp, /v_state->count = 1\.0;/);
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_state\}, bblscene::\w+/,
+        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_state\}, bblscene::\w+/,
     );
 });
 
@@ -4288,7 +4288,7 @@ test("stored callbacks may ignore arguments supplied by their container", () => 
 
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_calls\}, bblscene::\w+/,
+        /make_closure\(bblscene::bbl_environment_\w+\{v_calls\}, bblscene::\w+/,
     );
 });
 
@@ -4311,7 +4311,7 @@ test("wires an optional callback field through nullish coalescing", () => {
     assert.match(result.cpp, /\(\*v_total\) \+= v_fn\d+_value/);
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_total\}, bblscene::\w+\)\(3\.0\)/,
+        /make_closure\(bblscene::bbl_environment_\w+\{v_total\}, bblscene::\w+\)\(3\.0\)/,
     );
 });
 
@@ -4419,7 +4419,7 @@ test("captures the live engine by reference in stored callbacks", () => {
 
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, bblscene::\w+/,
+        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_engine\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /bbl::create_box\(v_engine,/);
 });
@@ -5254,8 +5254,9 @@ test("lowers early bare returns of inlined closures through a wrapper", () => {
     assert.match(result.cpp, /if \(v_fn\d+_value < 0\.0\) \{\s+return;/);
     assert.equal(result.cpp.match(/v_values\.push_back/g)?.length, 1);
     assert.equal(
-        result.cpp.match(/make_closure\(std::tuple\{std::ref\(v_values\)\}/g)
-            ?.length,
+        result.cpp.match(
+            /make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_values\)\}/g,
+        )?.length,
         2,
     );
 });
@@ -5889,7 +5890,7 @@ test("retains frame callback closure storage after its installer returns", () =>
     assert.match(
         result.cpp,
         new RegExp(
-            `bbl::on_before_render\\([^,]+, bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, bblscene::\\w+`,
+            `bbl::on_before_render\\([^,]+, bbl::js::make_closure\\(bblscene::bbl_environment_\\w+\\{${disposed}\\}, bblscene::\\w+`,
         ),
     );
     assert.match(result.cpp, new RegExp(`if \\(\\(\\*${disposed}\\)\\)`));
@@ -5933,11 +5934,11 @@ test("retains an escaping recursive callback's closure and self reference", () =
     assert.match(
         result.cpp,
         new RegExp(
-            `\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, bblscene::\\w+`,
+            `\\(\\*${owner}\\) = bbl::js::make_closure\\(bblscene::bbl_environment_\\w+\\{v_busy, v_queued, ${owner}\\}, bblscene::\\w+`,
         ),
     );
     const mouseCaptures = result.cpp.match(
-        /bbl::on_dom_pointer\([^\n]*?std::tuple\{([^}]+)\}/,
+        /bbl::on_dom_pointer\([^\n]*?bblscene::bbl_environment_\w+\{([^}]+)\}/,
     )?.[1];
     assert.deepEqual(
         mouseCaptures?.split(", ").sort(),
@@ -5979,7 +5980,7 @@ test("shares mutable state between retained callbacks and returned disposers", (
     assert.match(
         result.cpp,
         new RegExp(
-            `= bbl::js::make_closure\\(std::tuple\\{${disposed}\\}, bblscene::\\w+`,
+            `= bbl::js::make_closure\\(bblscene::bbl_environment_\\w+\\{${disposed}\\}, bblscene::\\w+`,
         ),
     );
     assert.match(result.cpp, new RegExp(`\\(\\*${disposed}\\) = true;`));
@@ -7667,7 +7668,7 @@ test("retains recursive timer callbacks after their source scope returns", () =>
     );
     assert.match(
         result.cpp,
-        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w+_owner\}, bblscene::\w+/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{bbl_recursive_\w+_owner\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
 });
@@ -7732,7 +7733,7 @@ test("keeps synchronous frame-local recursive callbacks in local storage", () =>
     );
     assert.match(
         result.cpp,
-        /v_fn\d+_drain = bbl::js::make_closure\(std::tuple\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, bblscene::\w+/,
+        /v_fn\d+_drain = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /drain_owner/);
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
@@ -7764,7 +7765,7 @@ test("keeps synchronous recursive groups in automatic callable storage", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::js::make_closure\(std::tuple\{std::ref\(v_total\)\}, bblscene::\w+\{\}/,
+        /bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_total\)\}, bblscene::\w+\{\}/,
     );
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
     assert.doesNotMatch(result.cpp, /drain_owner/);
@@ -7798,7 +7799,7 @@ test("owns only the timer-scheduled recursive callback beyond its scope", () => 
 
     assert.match(
         result.cpp,
-        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w*poll_owner\}, bblscene::\w+/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{bbl_recursive_\w*poll_owner\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /bbl::js::Callback<void\(double\)> v_countdown;/);
     assert.equal(
@@ -7836,14 +7837,13 @@ test("snapshots scalar members of records retained by classes", () => {
         }
         main();
     `);
+    // The shared factory stores the scalar in the record it returns; the
+    // method reads that field rather than the live mesh position.
     assert.match(
         result.cpp,
-        /auto v_\w*return_makeVehicle_bodyRestY_\d+ = bbl::js::make_gc_shared<double>\(bbl::handle_at\(v_engine\.meshes, v_\w*body\)\.position\.y\);/,
+        /VehicleData\{v_\w*body, \w+, bbl::handle_at\(v_engine\.meshes, v_\w*body\)\.position\.y\}/,
     );
-    assert.match(
-        result.cpp,
-        /return \(\*v_\w*return_makeVehicle_bodyRestY_\d+\);/,
-    );
+    assert.match(result.cpp, /return v_\w+_vehicle_\d+->bodyRestY;/);
 });
 
 test("reads mutated flat-entry variables from live generated state", () => {
@@ -11068,7 +11068,7 @@ test("stores nullable retained UI callbacks as empty native functions", () => {
     );
     assert.match(
         result.cpp,
-        /stored_callback = bbl::js::make_closure\(std::tuple\{v_button, std::ref\(v_bblite_inline_engine_\d+\)\}, bblscene::\w+/,
+        /stored_callback = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_button, std::ref\(v_bblite_inline_engine_\d+\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\(\*v_callback\) = \w+_stored_callback/);
 });
@@ -11253,10 +11253,11 @@ test("materializes a callback returned through its own closure cycle", () => {
     );
     assert.match(result.cpp, /on_dom_pointer[^\n]*"click"/);
     assert.match(result.cpp, /ui_set_style_property/);
-    assert.match(result.cpp, /\(\*v_update_owner\)\(1\.0\)/);
+    // The shared select body forwards its runtime index to the owner.
+    assert.match(result.cpp, /\(\*v_update_owner\)\(v_fn\d+_index\)/);
     assert.match(
         result.cpp,
-        /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, bblscene::\w+/,
+        /\(\*v_update_owner\) = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, bblscene::\w+/,
     );
     assert.doesNotMatch(result.cpp, /on_dom_pointer[^\n]*v_update\(1\.0\)/);
 });
@@ -11296,7 +11297,7 @@ test("reuses a stored callback while compiling its self-referential record", () 
     assert.match(
         result.cpp,
         new RegExp(
-            `\\(\\*${declaration[1]}\\) = bbl::js::make_closure\\(std::tuple\\{fn\\d+_stored_callback_weak\\}, bblscene::\\w+`,
+            `\\(\\*${declaration[1]}\\) = bbl::js::make_closure\\(bblscene::bbl_environment_\\w+\\{fn\\d+_stored_callback_weak\\}, bblscene::\\w+`,
         ),
     );
     assert.match(
@@ -11362,7 +11363,7 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
     assert.match(result.cpp, /on_dom_pointer[^\n]*"pointermove"/);
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{std::ref\(v_bblite_inline_engine_\d+\), v_hit\}, bblscene::\w+/,
+        /"pointermove", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\.client_x/);
     const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
@@ -11398,16 +11399,21 @@ test("captures callback-local values by value in retained UI listeners", () => {
 
     assert.equal(
         result.cpp.match(
-            /on_dom_pointer\([^\n]*"mousedown", \d+u, bbl::js::make_closure\(std::tuple\{/g,
+            /on_dom_pointer\([^\n]*"mousedown", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{/g,
         )?.length,
         2,
     );
     assert.doesNotMatch(result.cpp, /"mousedown", \[&\]/);
     assert.match(
         result.cpp,
-        /std::tuple\{v_fn\d+_swatch, std::ref\(v_bblite_inline_engine_\d+\)\}/,
+        /bblscene::bbl_environment_\w+\{v_fn\d+_swatch, std::ref\(v_bblite_inline_engine_\d+\)\}/,
     );
-    assert.doesNotMatch(result.cpp, /std::ref\(v_fn\d+_(?:swatch|index)\)/);
+    // A retained listener owns its captures; only an immediate call of the
+    // shared listener body may borrow them.
+    assert.doesNotMatch(
+        result.cpp,
+        /on_dom_pointer\([^\n]*std::ref\(v_fn\d+_(?:swatch|index)\)/,
+    );
 });
 
 test("retains dynamically indexed UI handles and camelCase style properties", () => {
@@ -11782,7 +11788,7 @@ test("does not erase an application condition from a retained-canvas factory", (
                     }
 
                     static async run(): Promise<void> {
-                        await OptionalHud.create(false);
+                        await OptionalHud.create(true);
                     }
                 }
 
@@ -14031,10 +14037,10 @@ test("registers a callback returned by a local factory as a platform listener", 
     `);
 
     const down = result.cpp.match(
-        /on_dom_keyboard\([^\n]+"keydown"[^\n]+std::tuple\{v_onDown_owner\}, (bblscene::\w+)/,
+        /on_dom_keyboard\([^\n]+"keydown"[^\n]+bblscene::bbl_environment_\w+\{v_onDown_owner\}, (bblscene::\w+)/,
     );
     const up = result.cpp.match(
-        /on_dom_keyboard\([^\n]+"keyup"[^\n]+std::tuple\{v_onUp_owner\}, (bblscene::\w+)/,
+        /on_dom_keyboard\([^\n]+"keyup"[^\n]+bblscene::bbl_environment_\w+\{v_onUp_owner\}, (bblscene::\w+)/,
     );
     assert.ok(down && up);
     assert.equal(
@@ -14128,7 +14134,7 @@ test("retained platform listeners keep live scene aliases", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_dom_pointer\([^;]*make_closure\(std::tuple\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, bblscene::\w+/,
+        /bbl::on_dom_pointer\([^;]*make_closure\(bblscene::bbl_environment_\w+\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, bblscene::\w+/,
     );
 });
 
@@ -15473,7 +15479,7 @@ test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
     assert.match(
         result.cpp,
-        /bbl::on_before_render\([^\n]*make_closure\(std::tuple\{[^}\n]*std::ref\(v_engine\)[^}\n]*\}, bblscene::\w+/,
+        /bbl::on_before_render\([^\n]*make_closure\(bblscene::bbl_environment_\w+\{[^}\n]*std::ref\(v_engine\)[^}\n]*\}, bblscene::\w+/,
     );
     // The amber body's transmission, IOR, volume, and skybox-mode
     // material state arrive through the glTF loader; the scene's own
@@ -15492,7 +15498,7 @@ test("compiles Babylon Lite scene 52 scene-owned HUD disposal", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_scene_dispose\(v_scene, bbl::js::make_closure\(std::tuple\{std::ref\(v_hudRenderer\), std::ref\(v_engine\)\}, bblscene::\w+/,
+        /bbl::on_scene_dispose\(v_scene, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_hudRenderer\), std::ref\(v_engine\)\}, bblscene::\w+/,
     );
     assert.match(
         result.cpp,
@@ -15784,7 +15790,7 @@ test("lowers the Sprite2D handle and Y-sort entry points", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::sprite_renderer_before_update\(\w+, \w+, bbl::js::make_closure\(std::tuple\{std::ref\(v_hero\), std::ref\(v_engine\), std::ref\(v_layer\)\}, bblscene::\w+/,
+        /bbl::sprite_renderer_before_update\(\w+, \w+, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_hero\), std::ref\(v_engine\), std::ref\(v_layer\)\}, bblscene::\w+/,
     );
     // Both handle entry points resolve the slot the id names at the call,
     // never the slot the add returned.
@@ -18178,7 +18184,7 @@ test("registers pre-start application animation loops before rendering", () => {
     );
     assert.match(
         result.cpp,
-        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{v_elapsed\}, bblscene::\w+/,
+        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_elapsed\}, bblscene::\w+/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -18414,7 +18420,7 @@ test("lowers recurring browser timers onto the frame conductor", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, bblscene::\w+/,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_ticks, v_timer, std::ref\(v_engine\)\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /v_\w*previous = \(\*v_\w*ticks\)/);
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
@@ -18445,7 +18451,7 @@ test("lets recurring timers read persistent factory closure state", () => {
 
     assert.match(
         result.cpp,
-        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_fn\d+_ticks\}, bblscene::\w+/,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_fn\d+_ticks\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
@@ -20241,7 +20247,7 @@ test("shares one cell for entry-module state a stored callback rebinds", () => {
     assert.equal(
         (
             result.cpp.match(
-                /bbl::(?:on_dom_pointer|set_timeout)\([^\n]+make_closure\(std::tuple\{v_ticks\}/g,
+                /bbl::(?:on_dom_pointer|set_timeout)\([^\n]+make_closure\(bblscene::bbl_environment_\w+\{v_ticks\}/g,
             ) ?? []
         ).length,
         2,
