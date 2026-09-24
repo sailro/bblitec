@@ -30,7 +30,7 @@ and performance.
 | RDT-2 | high | Pinned functions hand-copied though lowered elsewhere (camera clamp/inertia, `evaluate_track`, grid atlas, `expandWorldAabbForMesh`, mesh bounds). | All use the lowered versions. | fixed |
 | RDT-3 | high | Hand copies without a lowered version (clustered lights, free-camera yaw/pitch, VAT, glTF light direction, mixer, tube/extrude, HDR prefilter setup, Draco/basisu routing). | HDR prefilter setup executes the pinned cube chain; Draco decodes through the executed pinned pre-mesh hook; KHR_texture_basisu routes through the executed pinned extension. | fixed |
 | RDT-4 | high | Behaviour keyed on mesh names starting with `wheel`. | Declined for now: removing it sinks the racer body (imported positions are offsets over baked worlds). Needs imported node-local transforms, a parent-world matrix and parent×local composition first. | open |
-| RDT-5 | med | Pinned WGSL rewritten by regex onto flattened uniform layouts. | Keep pinned structs/bindings; remap by compaction; pinned UBO writers. | open |
+| RDT-5 | med | Pinned WGSL rewritten by regex onto flattened uniform layouts. | Backgrounds, grid, utility passes and splat execute or deploy the pin's own modules and factories; compaction and `.slots` re-home them for SDL; pinned UBO writers; entry points from `.slots`. No regex over pinned WGSL remains. | fixed |
 | RDT-6 | med | Composed WGSL read back with ~20 regexes. | Typed WGSL reflection (`shader-ir.ts`, `wgsl-layout.ts`). | fixed |
 | RDT-7 | med | Regex/spelling checks over pinned TS and packaged JS. | AST readers and one specifier rewriter; the last sites (tone-map scale through the WGSL IR, blend-export family, lite-error import, clearcoat remap bit, skybox condition, export index, async stripping) read syntax. Tint HLSL/MSL rewriting is RDT-15. | fixed |
 | RDT-8 | med | `assertPinnedShaderFormulas` guarded formulas no longer copied. | Deleted with its flags. | fixed |
@@ -41,6 +41,7 @@ and performance.
 | RDT-13 | low | Grid material and sprite-grid absent-arm defaults are literals (`material-options.ts`, `material.ts`, `intrinsics/sprite.ts`); the node-particle Sprite2D bridge relies on header defaults. | Factory `??` defaults read from the pin (`pinned-factory-defaults.ts`); the grid atlas carries a presence flag per optional member; the Sprite2D bridge fills every layer member. | fixed |
 | RDT-14 | med | The clustered-light refresh uses a hand dirty key (view/projection equality, `topologyDirty` bound true) and matches generic JS by source text in its statement hook. | The refresh is lowered whole with the pin's dirty key and a generated `ClusteredRefreshState`; array operations live in the shared lowerer; platform calls resolve by declaration; uploads follow the pin's writes. | fixed |
 | RDT-15 | med | `shader-bindings.ts` rewrites Tint HLSL/MSL with ~40 regexes (register compaction to SDL spaces, combined samplers, SV_Position order, discard→clip, MSL buffer indices). | Emit SDL layouts from a Tint-linked generator and delete the rewrites. | open |
+| RDT-16 | low | Sprite and billboard WGSL is wrapped by templates into the SDL grouping (groups 1–3) instead of deploying the pin's one-group module. | Deploy the pin's module and re-home by compaction, as backgrounds do. | open |
 
 ## Re-derivation in native code (RDN)
 
@@ -55,7 +56,7 @@ and performance.
 | RDN-7 | med | Small pinned functions hand-copied. | Generated from the pin, including `pack_morph_deltas` (`morph_targets.hpp` from `createMorphTargets`). | fixed |
 | RDN-8 | med | Pick orchestration restated per backend. | Shared preparation, clears and decode; lowered pointer mapping. | fixed |
 | RDN-9 | low | UI composite WGSL duplicated. | One compositor per backend. | fixed |
-| RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
+| RDN-10 | low | Dawn hand-writes bind-group layouts. | `.slots` sidecars carry reflected `@binding` lines; sprite, billboard, picking, splat and post-process Dawn layouts are built from them plus each site's binding model; compute mipmaps use Dawn's reflected layout; the rest come from generated pin tables. | fixed |
 | RDN-11 | low | Recast wrapper defaults copied without version provenance. | Emitted from the pinned wrapper packages, whose versions are recorded. | fixed |
 | RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Query half-extents and the 2048-node pool are emitted from the pinned wrapper and read by every search. Each generator's build-config step (`generateSoloNavMeshData`/`generateTileCache`: region areas squared, detail sampling in cells, tile grid, padded tile extent) is lowered from the installed generators package into the generated navigation header and handed to the PAL over `NavRcConfig`; the hand port is deleted. | fixed |
 | RDN-13 | low | The pin sorts sprite `_layers` in place; native builds a fresh permutation each frame, so ties after an order change differ. | Stable in-place sort. | open |
@@ -74,6 +75,7 @@ and performance.
 | RDN-26 | med | The native clustered factories (`create_clustered_point_light`, spot and siblings) are hand-written. | Lower the pinned factory bodies. | open |
 | RDN-27 | low | The clustered refresh identifies its camera by `CameraRecord*`; the packer passes `srcStrideBytes ?? width * 4` as a `0u` sentinel. | Handle identity; an optional stride. | open |
 | RDN-28 | low | `begin_device_recovery` restates the pin's context-kind check with its own message. | Lower `assertEveryActiveContextKindIsRecoverable`. | open |
+| RDN-29 | low | `pinned_frame_layout_for` restates the pin's scene layout; the sprite UI's Dawn layouts restate its own C++ WGSL string. | Read the recorded scene layout; give the sprite UI a sidecar. | open |
 
 ## Compiler core (CC)
 
@@ -122,7 +124,7 @@ and performance.
 | LW-8 | med | Regex/text scans where AST helpers exist. | AST helpers. | fixed |
 | LW-9 | med | Pinned constants read 7 ways. | Public `pinnedConstant` family. | fixed |
 | LW-10 | low | Dead lowering exports. | Deleted. | fixed |
-| LW-11 | med | Pinned UBO-writer, glTF-leaf and SH-prescale scopes compute in float (`math_extreme_lane`, `scalarPrecision`, the deduced width) where the pin computes in double and rounds at the Float32Array store. | Compute every pinned numeric scope in double and convert at the typed-array sink; delete the width options. | open |
+| LW-11 | med | Pinned UBO-writer, glTF-leaf and SH-prescale scopes compute in float (`math_extreme_lane`, `scalarPrecision`, the deduced width) where the pin computes in double and rounds at the Float32Array store. | Pinned UBO-writer and SH-prescale scopes compute in double and narrow at the store; `math_extreme_lane`, `scalarPrecision` and the deduced width are deleted; environment option records are double. | fixed |
 | LW-12 | low | About 12 modules outside `src/lowering` still build their own `new LoweringContext(sharedUpstreamStore())` instead of `sharedPinnedContext()`. | Use the shared context. | open |
 
 ## Native PAL (NT)
@@ -189,6 +191,7 @@ and performance.
 | DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | The four kinds and `dimensions` deleted; the default camera skips a mesh without bounds, as the pin does. | fixed |
 | DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | `{r,g,b}` and `{r,g,b,a}` refuse wherever the pin types a number tuple (every Color3 site, `baseColorFactor`); Color4 objects stay where pinned (clear colours, lines). | fixed |
 | DEAD-14 | low | `PrimitiveKind` decides default-camera framing and normal mirroring, standing in for the pin's bounds presence. | Record bounds presence where the pin sets it and read that. | open |
+| DEAD-15 | low | Dawn's `mesh_group_layout` keeps a group-2 texture-pair superset no live stage declares. | Delete it. | open |
 
 ## Documentation (DOC)
 
