@@ -84,6 +84,9 @@ and performance.
 | RDN-35 | low | The Dawn billboard pass keeps one per-frame scene buffer, so billboards inside render tasks draw with the main camera's block where SDL_GPU uses the task's matrices. | Each Dawn billboard pass owns a frame scene group and one per drawing task; a colour task writes its block from the task's camera (as SDL_GPU pushes), the draw binds that task's group, and a draw with no written block refuses. | fixed |
 | RDN-36 | low | Unnamed glTF nodes were named `gltf_node_<index>` (and an empty name replaced) where `buildNodeHierarchy` names them `node.name ?? node_<index>`. | The loader's wrapper name and the mesh-walk owner names follow the pin. | fixed |
 | RDN-37 | low | `text-layout-lowerer.ts` still hooks `layoutText`'s locals behind 9 shape guards and 5 contract errors (whitespace collapse, paragraph split, shaping scratch, output views, wrap tail); `text-weight-lowerer.ts` checks the `loadFontWeightOffset` lazy import with one body-shape assertion. | Lower `layoutText` through `PinnedRecordModel` with a HarfBuzz shaper adapter; read the lazy import from the pin. | open |
+| RDN-38 | low | A render-task pass applies its camera's viewport only in the TAA source arm on both backends; the pin's `executePassBody` applies it on every task pass (render-task-base.ts:548). | Apply the task camera's viewport on every task pass. | open |
+| RDN-39 | low | Sprite-renderer hooks, sprite FX and billboard FX advance by the scene-callback delta (the scene's `fixedDeltaMs` when set); the pin hands them `engine._currentDelta`. | Pass the engine's current delta as the pin does. | open |
+| RDN-40 | low | SDL_GPU pushes a zero scene block for a camera-less pass; the pin and Dawn leave the last-written block, so the backends differ for a scene that loses its camera mid-run. | Keep the last-written block on SDL_GPU. | open |
 
 ## Compiler core (CC)
 
