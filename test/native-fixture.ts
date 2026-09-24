@@ -115,7 +115,6 @@ const nativeFixtureMacroDefaults: ReadonlyMap<string, string> = new Map([
     ["BBLITE_HAS_SPRITES", "1"],
     ["BBLITE_HAS_SPRITE_ANIMATION", "1"],
     ["BBLITE_HAS_SHADOWS", "1"],
-    ["BBLITE_HAS_PICKING", "1"],
     ["BBLITE_HAS_GIZMOS", "1"],
     ["BBLITE_HAS_CAMERA_GIZMOS", "1"],
     ["BBLITE_HAS_LIGHT_GIZMOS", "1"],

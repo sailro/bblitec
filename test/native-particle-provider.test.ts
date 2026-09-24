@@ -334,6 +334,11 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
                 billboard.header,
             );
             writeFileSync(join(headers, "sprite_layer.hpp"), sprite.header);
+            // The one generator capability the billboard header tests.
+            writeFileSync(
+                join(headers, "render_capabilities.hpp"),
+                "#pragma once\n#define BBLITE_FLOATING_ORIGIN 0\n",
+            );
             writeFileSync(join(output, "node_particles.cpp"), particle.source);
             writeFileSync(
                 join(output, "billboard_system.cpp"),
