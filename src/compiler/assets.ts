@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
+import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
@@ -190,7 +191,9 @@ export function registerAsset(
             }
         }
     }
-    const asset = assetRecord(source, kind, context.assetPayloads, faceSize);
+    const asset = assetRecord(source, kind, context.assetPayloads, {
+        faceSize,
+    });
     context.assets.set(key, asset);
     return asset;
 }
@@ -276,15 +279,26 @@ export function canonicalLocalAssetSource(
  * entry AST, and generation, whose one source -- a node-particle graph's
  * texture -- is only known once the pin has resolved it against the scene's
  * `textureBaseUrl`. Both must package it under the same name, so the naming
- * rule lives here rather than in either.
+ * rule lives here rather than in either. The compiler resolves its sources
+ * before they reach here; generation passes the entry and the deployment,
+ * so a root-relative texture URL resolves the way a scene's own does.
  */
 export function assetRecord(
     source: string,
     kind: CompileAsset["kind"],
     assetPayloads: Map<string, string>,
-    faceSize?: number,
+    placement: {
+        faceSize?: number | undefined;
+        entryFileName?: string | undefined;
+        deployment?: DeploymentOptions;
+    } = {},
 ): CompileAsset {
-    source = resolveBundledAsset(source);
+    const { faceSize } = placement;
+    source = resolveBundledAsset(
+        source,
+        placement.entryFileName,
+        placement.deployment,
+    );
     const materializationSource = source;
     const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
     // A data URL's text IS the payload, so it names nothing; the media type
@@ -490,12 +504,7 @@ export function resolveBundledAsset(
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
     }
     if (source === "/environment.env") {
-        const pin = readUpstreamPin();
-        return (
-            "https://raw.githubusercontent.com/" +
-            `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-            "/lab/public/textures/environment.env"
-        );
+        return `${pinnedLabPublicUrl()}textures/environment.env`;
     }
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));

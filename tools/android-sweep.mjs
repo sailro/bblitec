@@ -12,7 +12,7 @@ import {
     imageDimensions,
 } from "../dist/src/parity.js";
 import { resolveParityThresholds } from "../dist/src/parity-scene.js";
-import { writeJsonRecord } from "../dist/src/validation-resume.js";
+import { writeJsonRecord } from "../dist/src/tooling/records.js";
 import { runConcurrently } from "../dist/src/run-concurrently.js";
 import { runLoggedProcess } from "../dist/src/tooling/logged-process.js";
 import { holdDistLock } from "../dist/src/dist-lock.js";

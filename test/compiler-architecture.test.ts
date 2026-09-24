@@ -192,7 +192,6 @@ test("split lowerer barrels contain exports and families own their declarations"
     }
     for (const [name, path] of [
         ["GltfLowerer", "gltf/loader"],
-        ["lowerAnimationInterpolationCpp", "gltf/animation-interpolation"],
         ["lowerGltfDefaultSampler", "gltf/sampler-mapping"],
         ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],

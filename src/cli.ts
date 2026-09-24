@@ -24,7 +24,7 @@ import type {
     CompileResult,
     CompiledNodeParticles,
 } from "./compiler/types.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,
@@ -70,7 +70,6 @@ import {
 } from "./executed-module-assets.js";
 import {
     findRepositoryRoot,
-    readUpstreamPin,
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
@@ -353,10 +352,7 @@ async function materializeAsset(
             `Missing materialization payload for '${asset.source}'.`,
         );
     }
-    const source = materializedAssetSource(
-        inlineSource ?? asset.source,
-        inputPath,
-    );
+    const source = inlineSource ?? asset.source;
     const destination = resolve(outputPath, "assets", asset.output);
     mkdirSync(dirname(destination), { recursive: true });
 
@@ -522,23 +518,6 @@ async function materializeAsset(
     );
 }
 
-function materializedAssetSource(source: string, inputPath: string): string {
-    if (
-        !source.startsWith("/") ||
-        !inputPath
-            .replace(/\\/g, "/")
-            .includes("/corpus/babylon-lite/lab/lite/src/lite/")
-    ) {
-        return source;
-    }
-    const pin = readUpstreamPin();
-    return (
-        "https://raw.githubusercontent.com/" +
-        `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-        `/lab/public${source}`
-    );
-}
-
 /**
  * The manifest as the generated tree records it.
  *
@@ -593,6 +572,7 @@ function recordedManifest(
 async function bakeNodeParticleSystems(
     program: CompiledNodeParticles,
     assetPayloads: Map<string, string>,
+    compileOptions: CompileOptions,
 ): Promise<{
     systems: NodeParticleSystemEmit[];
     sprite2d: NodeParticleSprite2DEmit[];
@@ -602,6 +582,13 @@ async function bakeNodeParticleSystems(
 }> {
     const { bakeNodeParticles } = await import("./pinned-node-particle.js");
     const bake = await bakeNodeParticles(program);
+    // A graph texture the pin resolved against a root-relative
+    // `textureBaseUrl` names the deployment's public files, as a scene's own
+    // root-relative URL does.
+    const texturePlacement = {
+        entryFileName: compileOptions.fileName,
+        deployment: compileOptions,
+    };
     // Whether a set's blend takes `createParticleBlend`'s five modes (the
     // exact-blend builder, or the enabler over any builder) or the plain
     // builder's three-arm mapping.
@@ -624,6 +611,7 @@ async function bakeNodeParticleSystems(
                           : `data:${system.texture.mediaType || "image/png"};base64,${system.texture.bytes}`,
                       "texture",
                       assetPayloads,
+                      texturePlacement,
                   )
                 : undefined;
         const assigned = program.textures.find(
@@ -661,7 +649,7 @@ async function bakeNodeParticleSystems(
                 : texture.url;
         const asset = texture.sceneAssigned
             ? undefined
-            : assetRecord(source, "texture", assetPayloads);
+            : assetRecord(source, "texture", assetPayloads, texturePlacement);
         const assigned = program.textures.find(
             (texture) =>
                 texture.set === entry.set && texture.system === entry.system,
@@ -809,7 +797,11 @@ async function main(): Promise<void> {
     // tree as the browser spends simulating, and the two overlap. It is
     // joined below, before the first consumer of what it produces.
     const bakingNodeParticles = result.nodeParticles
-        ? bakeNodeParticleSystems(result.nodeParticles, result.assetPayloads)
+        ? bakeNodeParticleSystems(
+              result.nodeParticles,
+              result.assetPayloads,
+              compileOptions,
+          )
         : undefined;
 
     mkdirSync(outputPath, { recursive: true });

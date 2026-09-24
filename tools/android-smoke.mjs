@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { PNG } from "pngjs";
-import { writeJsonRecord } from "../dist/src/validation-resume.js";
+import { writeJsonRecord } from "../dist/src/tooling/records.js";
 import {
     androidCaptureSettings,
     verifyAndroidNativeRun,

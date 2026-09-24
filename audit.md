@@ -17,6 +17,8 @@ and performance.
 | FA-6 | med | Camera/light gizmo factories and morph-shadow bounds emitted without reach. | `gizmo:camera`/`gizmo:light` and `shadow:morph-bounds` gate emission and native records. | fixed |
 | FA-7 | low | `loadBabylon` reached `camera:free` with `loadCamera: false`. | Camera parser emitted only when cameras load. | fixed |
 | FA-8 | low | Activation records embedded absolute checkout paths. | Repository-relative POSIX paths. | fixed |
+| FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | Gate both on `BBLITE_SHADOW_MORPH_BOUNDS`. | open |
+| FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Key the slots on the composed arms. | open |
 
 ## Re-derivation in TypeScript (RDT)
 
@@ -34,6 +36,7 @@ and performance.
 | RDT-10 | low | Plugin `getCustomCode` had its own evaluator. | Shares the pinned shader-text folding. | fixed |
 | RDT-11 | low | Pinned defaults copied into tables and checked. | Material, billboard, post-process and navigation defaults read or emitted from the pin. | fixed |
 | RDT-12 | low | Hand SDL blit, stale comment, predeclared shader programs. | Comment fixed. The predeclared programs are live (alpha-card gate); the pinned blit differs in LOD and group, so only a measured vertex lift remains. | partial |
+| RDT-13 | low | Grid material and sprite-grid absent-arm defaults are literals (`material-options.ts`, `material.ts`, `intrinsics/sprite.ts`); the node-particle Sprite2D bridge relies on header defaults. | Read them from the pin. | open |
 
 ## Re-derivation in native code (RDN)
 
@@ -51,6 +54,10 @@ and performance.
 | RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
 | RDN-11 | low | Recast wrapper defaults copied without version provenance. | Emitted from the pinned wrapper packages, whose versions are recorded. | fixed |
 | RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Lower them from the pinned wrapper or emit their constants. | open |
+| RDN-13 | low | The pin sorts sprite `_layers` in place; native builds a fresh permutation each frame, so ties after an order change differ. | Stable in-place sort. | open |
+| RDN-14 | low | Billboard sorting under a floating origin and Sprite2D pivots use float where the pin uses numbers (205/206 identical today). | Double lanes. | open |
+| RDN-15 | low | `update_surface_cameras` gives every scene the primary frame delta, wrong for a scene with its own `fixedDeltaMs`. | Per-scene delta. | open |
+| RDN-16 | low | Property-animation records store float lanes (`animation-records.hpp`). | Double lanes. | open |
 
 ## Compiler core (CC)
 
@@ -67,7 +74,7 @@ and performance.
 | CC-9 | med | String and presence facts spelled per site. | Shared accessors. | open |
 | CC-10 | med | Methods inlined at every call; constant tables wrapped each element. | Tables emit typed literals (tetris `renderer.cpp` 1.96 → 0.83 MB). Method sharing is blocked by `canShareFunctionBody` refusals (function-typed parameters, retained-canvas reads). | partial |
 | CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `resolvedSymbol()` in classification files. | partial |
-| CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators and folds. Remaining: condition lowerer extraction. | partial |
+| CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators, folds, boolean comparisons and `instanceof`. Remaining: condition lowerer extraction. | partial |
 | CC-13 | low | Literal `renderCanvas` id, silent GitHub asset fallback, `offsetX` as `clientX`. | Canvas keyed on `createEngine`; `--public-url` or refusal; offsets recorded as an adaptation. | fixed |
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
@@ -122,6 +129,8 @@ and performance.
 | GC-11 | low | MSVC suppressed C4702 for generated units. | Fallthrough proof; `/wd4702` removed (10 apps build with MSVC). | fixed |
 | GC-12 | med | A `switch` over a temporary string bound a dangling `string_view`. | Storage bound before the view. | fixed |
 | GC-13 | low | Collection `forEach` copies were `const auto`, rejected by clang-cl `/WX`. | Non-const copies. | fixed |
+| GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | Round once. | open |
+| GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
 
 ## Dead code (DEAD)
 
@@ -137,6 +146,9 @@ and performance.
 | DEAD-8 | low | Self-described "legacy" compiler paths. | Measured: all reached by scenes or tests. | declined |
 | DEAD-9 | low | 258 exports used only in their own file. | Drop exports; `ts-prune -u`. | open |
 | DEAD-10 | low | Unused parameters, duplicated helpers, silently passing tests. | Fixed; the tooling `isRecord` copy stays (importing it would load TypeScript into `scene show`). | fixed |
+| DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Drop them (moves every PBR manifest). | open |
+| DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | Delete. | open |
+| DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | Refuse. | open |
 
 ## Documentation (DOC)
 
@@ -157,14 +169,17 @@ and performance.
 | TL-2 | med | 8 of 25 scene commands restated others. | 21 commands; parity measures both backends by default. | fixed |
 | TL-3 | med | Four sizing tools. | `scene -- survey`. | fixed |
 | TL-4 | med | PowerShell packaging re-implements TypeScript helpers. | Move desktop packaging into TypeScript. | open |
-| TL-5 | med | Tools import `dist/src` unchecked. | Import-name test; full `checkJs` would flag inference noise. | partial |
+| TL-5 | med | Tools import `dist/src` unchecked. | Import-name test. Remaining: `checkJs` reports real errors in `checks/plugins/break-meshes-timing.mjs`, `ocean-controls.mjs` and `tools/android-smoke.mjs` beside inference noise. | partial |
 | TL-6 | med | Backend names and `--exe` accepted inconsistently. | One backend parser; `BBLITE_NATIVE_EXE` for every measuring command. | fixed |
 | TL-7 | med | Seek handled 3 ways; `parity --seek` could overwrite a golden. | One pose resolver; seeks are diagnostic. | fixed |
-| TL-8 | med | `geometry` used weaker staleness and regex task discovery. | Capture provenance and configured output. Remaining: manifest copy-task names. | partial |
+| TL-8 | med | `geometry` used weaker staleness and regex task discovery. | Capture provenance and configured output; tasks from the manifest's `copyTasks`. | fixed |
 | TL-9 | low | Two JSON report writers. | One record module. | fixed |
 | TL-10 | low | Help/parser/doc drift. | Shared flag specs; generated usage. | fixed |
 | TL-11 | low | Dead entry points and aliases. | Deleted. | fixed |
 | TL-12 | low | Duplicated walkers and runners. | Shared in tooling. | partial |
+| TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Detect the session or time out. | open |
+| TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
+| TL-15 | low | Package `.staging/` folders accumulate. | Remove after packaging. | open |
 
 ## Building (BD)
 
@@ -182,12 +197,14 @@ and performance.
 | BD-10 | low | Shipping carries SDL software blitting and the MSVC demangler. | Demangler removed. Remaining: SDL blitter references. | partial |
 | BD-11 | med | Trimmed SDL records no patch set. | With NT-7. | open |
 | BD-12 | low | Two SDL trim options are not options. | Removed; guard requires a declared option. | open |
-| BD-13 | low | Packages ship vcpkg SDL's 349 KB licence. | Trimmed SDL notices. | open |
+| BD-13 | low | Packages ship vcpkg SDL's 349 KB licence. | Windows packages ship the trimmed SDL's notices (5,196 B). Remaining: Android/iOS copy vcpkg's notice; the shipping profile still installs vcpkg SDL. | partial |
 | BD-14 | low | `--plan` failed before generation. | Plan generates first. | open |
 | BD-15 | low | Startup failures discarded output. | Output tail; long paths refused. | open |
+| BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Key the shared install by manifest identity. | open |
 
 ## Workers (WK)
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | WK-1 | high | Worker messages with Date/Map/Set/typed views compiled then threw `DataCloneError`. | Structured-clone codecs; unsupported types refuse at generation. | fixed |
+| WK-2 | med | Class instances cross workers as classes; the browser delivers plain objects without private fields or prototype. | Refuse, or clone as plain records. | open |

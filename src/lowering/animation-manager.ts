@@ -1,9 +1,7 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import {
-    cppPrecedence,
-    renderCppExpression,
-} from "./gltf/animation-interpolation.js";
+import { renderCppExpression } from "./gltf/cpp-expression.js";
+import { cppPrecedence } from "./pinned-numeric-expression.js";
 import type { CppExpressionScope } from "./gltf/shared.js";
 
 /** The clock arithmetic and state writes come from the manager, while RAF

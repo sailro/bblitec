@@ -22,7 +22,7 @@ import { runConcurrently } from "./run-concurrently.js";
 import { scenes } from "./scene-registry.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 
 interface LintUnit {
     build: string;

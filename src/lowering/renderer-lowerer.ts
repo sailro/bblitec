@@ -3386,10 +3386,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "Defaults to `4`.",
                     nativeBehavior:
                         "SDL_GPU requests 4x MSAA and resolves into the single-sample presentation or capture target.",
-                    validation: [
-                        "source marker assertion",
-                        "edge MAD attribution",
-                    ],
+                    validation: ["edge MAD attribution"],
                 },
                 {
                     id: "pbr-skybox-mode",
@@ -3397,10 +3394,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: PBR_SKYBOX_VIEW_RAY,
                     nativeBehavior:
                         "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
-                    validation: [
-                        "source marker assertion",
-                        "skybox gate parity",
-                    ],
+                    validation: ["skybox gate parity"],
                 },
                 {
                     id: "scene-color-transmission",
@@ -3408,10 +3402,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "updateTransmissionTexture(state, engine)",
                     nativeBehavior:
                         "PAL renders linear RGBA16F scene color, copies completed opaque color and its pinned mip chain before the first transmissive draw, then applies image processing once to the final visible output.",
-                    validation: [
-                        "source marker assertion",
-                        "scene-color gate parity",
-                    ],
+                    validation: ["scene-color gate parity"],
                 },
                 {
                     id: "ior-fresnel",
@@ -3419,7 +3410,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "((ior - 1) / (ior + 1)) ** 2 / 0.04",
                     nativeBehavior:
                         "KHR_materials_ior maps to dielectric F0=((ior-1)/(ior+1))^2 and the transmitted lobe uses the Fresnel complement.",
-                    validation: ["source marker assertion", "IOR gate parity"],
+                    validation: ["IOR gate parity"],
                 },
                 {
                     id: "volume-beer-lambert",
@@ -3427,10 +3418,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
                     nativeBehavior:
                         "KHR_materials_volume attenuation uses exp(log(attenuationColor)/attenuationDistance * thickness).",
-                    validation: [
-                        "source marker assertion",
-                        "volume gate parity",
-                    ],
+                    validation: ["volume gate parity"],
                 },
                 {
                     id: "clearcoat-layer",
@@ -3438,10 +3426,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: CLEARCOAT_IBL_CONSERVATION,
                     nativeBehavior:
                         "KHR_materials_clearcoat adds a GGX/Kelemen direct lobe and a Jones analytical IBL lobe, attenuates the base layer by 1-F(ccF0)*intensity, and keeps the glTF loader's disabled F0 remap.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 28 GPU parity",
-                    ],
+                    validation: ["scene 28 GPU parity"],
                 },
                 {
                     id: "sheen-layer",
@@ -3449,10 +3434,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: SHEEN_ALBEDO_SCALING,
                     nativeBehavior:
                         "KHR_materials_sheen uses the Charlie distribution with Ashikhmin visibility, samples the BRDF LUT blue channel at sheen roughness, and scales the base layer by 1-maxSheenColor*brdf.b.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 29 GPU parity",
-                    ],
+                    validation: ["scene 29 GPU parity"],
                 },
                 {
                     id: "iridescence-thin-film",
@@ -3460,10 +3442,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                     nativeBehavior:
                         "KHR_materials_iridescence evaluates Babylon's thin-film airy summation in XYZ and blends the result into base F0 by the iridescence intensity.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 178 GPU parity",
-                    ],
+                    validation: ["scene 178 GPU parity"],
                 },
                 {
                     id: "dispersion-chromatic-refraction",
@@ -3471,10 +3450,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                     nativeBehavior:
                         "KHR_materials_dispersion splits the refracted scene-color ray into per-RGB etas using Babylon's 20/dispersion Abbe strength.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 212 GPU parity",
-                    ],
+                    validation: ["scene 212 GPU parity"],
                 },
                 {
                     id: "ggx-smith",
@@ -3482,7 +3458,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "roughness*roughness+0.0005; 0.5/(gl+gv)",
                     nativeBehavior:
                         "GGX distribution and Smith correlated geometry use Babylon alphaG conventions.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "ibl-energy-conservation",
@@ -3490,7 +3466,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "getEnergyConservationFactor",
                     nativeBehavior:
                         "BRDF LUT reflectance is multiplied by Babylon's energy-conservation factor.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "ibl-horizon-occlusion",
@@ -3498,10 +3474,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "environmentHorizonOcclusion",
                     nativeBehavior:
                         "Normal-mapped IBL squares Babylon's saturated reflection-to-geometric-normal horizon term.",
-                    validation: [
-                        "source marker assertions",
-                        "Scene 1 diagnostics",
-                    ],
+                    validation: ["Scene 1 diagnostics"],
                 },
                 {
                     id: "ibl-specular-occlusion",
@@ -3509,10 +3482,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: IBL_SPECULAR_OCCLUSION,
                     nativeBehavior:
                         "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
-                    validation: [
-                        "source marker assertions",
-                        "Scene 1 diagnostics",
-                    ],
+                    validation: ["Scene 1 diagnostics"],
                 },
                 {
                     id: "environment-lod",
@@ -3520,10 +3490,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "lodGenerationScale ?? 0.8",
                     nativeBehavior:
                         "Cubemap mip selection uses log2(cubemapDim * alphaG) with the environment's pinned lodGenerationScale.",
-                    validation: [
-                        "source marker assertions",
-                        "generated uniform tests",
-                    ],
+                    validation: ["generated uniform tests"],
                 },
                 {
                     id: "brdf-lut-coordinates",
@@ -3531,10 +3498,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: BRDF_LUT_COORDINATES,
                     nativeBehavior:
                         "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
-                    validation: [
-                        "source marker assertions",
-                        "CPU/GPU visual parity",
-                    ],
+                    validation: ["CPU/GPU visual parity"],
                 },
                 {
                     id: "environment-cubemap-orientation",
@@ -3542,10 +3506,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: ENVIRONMENT_CUBEMAP_ROTATION,
                     nativeBehavior:
                         "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
-                    validation: [
-                        "source marker assertions",
-                        "Scenes 1 and 8 parity",
-                    ],
+                    validation: ["Scenes 1 and 8 parity"],
                 },
                 {
                     id: "rgbd-cubemap-y-flip",
@@ -3553,10 +3514,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "select(g.y,d.y-1u-g.y,f)",
                     nativeBehavior:
                         "RGBD cubemap rows are vertically reversed during SDL_GPU upload.",
-                    validation: [
-                        "source marker assertion",
-                        "Scene 1 foreground parity",
-                    ],
+                    validation: ["Scene 1 foreground parity"],
                 },
                 {
                     id: "image-processing",
@@ -3564,7 +3522,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "1.590579",
                     nativeBehavior:
                         "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "hdr-cubemap-skybox",
@@ -3572,10 +3530,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "buildHdrSkyboxRenderable",
                     nativeBehavior:
                         "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
-                    validation: [
-                        "source marker assertions",
-                        "scene 8 GPU parity",
-                    ],
+                    validation: ["scene 8 GPU parity"],
                 },
                 {
                     id: "solid-skybox",

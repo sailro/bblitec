@@ -7,7 +7,7 @@ import ts from "typescript";
 import { PinnedNumericLowerer } from "../src/lowering/pinned-numeric-lowerer.js";
 import type { PinnedExpressionSpelling } from "../src/lowering/pinned-numeric-expression.js";
 import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
-import { renderCppExpression } from "../src/lowering/gltf/animation-interpolation.js";
+import { renderCppExpression } from "../src/lowering/gltf/cpp-expression.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,

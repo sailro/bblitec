@@ -1411,14 +1411,6 @@ export async function composeScenePbrVariants(
         }
         if (material.shadowOnly)
             setters.setShadowOnly(input, material.shadowOnly);
-        if (material.transmission > 0) {
-            refuseGeneration(
-                "renderer:transmission",
-                "A scene-code transmissive material has no composed arm yet; " +
-                    "the refraction pass structure is the open transmission " +
-                    "item.",
-            );
-        }
         const noColor = material.noColorView
             ? {
                   passFeatures2: (

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { floatLiteral } from "../../cpp-literals.js";
-import { renderCppExpression } from "./animation-interpolation.js";
+import { renderCppExpression } from "./cpp-expression.js";
 import {
     CppExpressionScope,
     identifierParameters,

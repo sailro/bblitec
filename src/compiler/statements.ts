@@ -53,9 +53,6 @@ import { rejectClassStaticBlocks } from "./classes.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
-// The handle-collection concept owns the collection targets, the loop
-// frame, and the recursive imported-mesh walk proof; the emitters here are
-// the statement layer over the same resolutions.
 import {
     emitHandleCollectionLoop,
     isRecursiveImportedMeshWalk,

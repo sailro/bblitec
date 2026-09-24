@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     captureSuiteReference,
@@ -31,48 +31,39 @@ interface GeometryDiagnosticResult {
     maxDiff: number;
 }
 
-const impostorNamePattern = /"([A-Za-z0-9_]+-impostor-[A-Za-z0-9_]+)"/g;
-
 /**
- * The impostor copy tasks are discovered from the generated tree rather than
- * from the scene source. Scenes 145, 146 and 149 build theirs in a loop over a
- * texture array, so the names exist only as
+ * The impostor copy tasks, read from the generated manifest rather than
+ * from the scene source. Scenes 145, 146 and 149 build theirs in a loop
+ * over a texture array, so the names exist only as
  * `` `sceneNNN-impostor-${entry.name}` `` and never appear literally in the
- * source; the compiler unrolls that loop, so the generated sources carry
- * every name in the order the scene adds them. The manifest records the
- * geometry renderer tasks but not the copy tasks' names, so the emitted
- * `CopyTaskOptions` literals are the one record of them.
+ * source; the compiler folds each name and records every copy task in the
+ * manifest (`copyTasks`) in the order the scene adds them.
  */
 function geometryCopyTasks(generatedDirectory: string): string[] {
-    const entryPoint = resolve(generatedDirectory, "main.cpp");
-    if (!existsSync(entryPoint)) {
+    const manifestPath = resolve(generatedDirectory, "manifest.json");
+    if (!existsSync(manifestPath)) {
         throw new Error(
-            `Generated entry point '${entryPoint}' is missing; ` +
+            `Generated manifest '${manifestPath}' is missing; ` +
                 "compile the scene before running geometry diagnostics.",
         );
     }
-    const sourceDirectory = resolve(generatedDirectory, "sources");
-    const files = [
-        entryPoint,
-        ...(existsSync(sourceDirectory)
-            ? readdirSync(sourceDirectory, {
-                  recursive: true,
-                  encoding: "utf8",
-              })
-                  .filter((path) => path.endsWith(".cpp"))
-                  .sort()
-                  .map((path) => resolve(sourceDirectory, path))
-            : []),
-    ];
-    const result: string[] = [];
-    for (const file of files)
-        for (const match of readFileSync(file, "utf8").matchAll(
-            impostorNamePattern,
-        )) {
-            const name = match[1];
-            if (name !== undefined && !result.includes(name)) result.push(name);
-        }
-    return result;
+    const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const recorded =
+        typeof manifest === "object" &&
+        manifest !== null &&
+        "copyTasks" in manifest
+            ? manifest.copyTasks
+            : [];
+    if (!Array.isArray(recorded)) {
+        throw new Error(`'${manifestPath}' records copyTasks as a non-array.`);
+    }
+    const names = recorded.filter(
+        (name): name is string => typeof name === "string",
+    );
+    if (names.length !== recorded.length) {
+        throw new Error(`'${manifestPath}' records a non-string copy task.`);
+    }
+    return [...new Set(names.filter((name) => name.includes("-impostor-")))];
 }
 
 const impostorShimPath = "/__bbl-geometry-impostor-shim.js";

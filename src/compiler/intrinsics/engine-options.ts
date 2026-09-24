@@ -42,6 +42,7 @@ export interface EngineOptionContext
             | "noteTemporalRecordBoundary"
             | "symbols"
             | "geometryOutputTasks"
+            | "recordCopyTask"
             | "unwrap"
             | "propertyName"
             | "compileValue"
@@ -456,6 +457,10 @@ export function compileCopyTaskOptions(
         "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, and viewport.",
     );
     const nameExpression = context.objectProperty(object, "name");
+    const name = nameExpression
+        ? context.compileStringLiteral(nameExpression)
+        : "copy-task";
+    context.recordCopyTask(name);
     const sourceCpp = compileTextureReference(context, object, "sourceTexture");
     const targetExpression = context.objectProperty(object, "targetTexture");
     const resolveExpression = context.objectProperty(object, "resolveTexture");
@@ -483,11 +488,7 @@ export function compileCopyTaskOptions(
         const viewportObject = context.expectObjectLiteral(viewportExpression);
         viewport = `bbl::NormalizedViewport{${requiredObjectNumber(context, viewportObject, "x", "double")}, ${requiredObjectNumber(context, viewportObject, "y", "double")}, ${requiredObjectNumber(context, viewportObject, "width", "double")}, ${requiredObjectNumber(context, viewportObject, "height", "double")}}`;
     }
-    return `bbl::CopyTaskOptions{${context.cppString(
-        nameExpression
-            ? context.compileStringLiteral(nameExpression)
-            : "copy-task",
-    )}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    return `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
 }
 
 function compileGeometryTextureType(

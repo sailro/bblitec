@@ -141,6 +141,8 @@ export interface CompileManifest {
     plainSpriteLayer: boolean;
     plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
+    /** Every copy task's name, in the order the scene creates them. */
+    copyTasks?: string[];
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];

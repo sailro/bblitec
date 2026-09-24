@@ -462,12 +462,10 @@ export function compilePbrMaterialOptions(
             "_metallicF0Factor",
             "enableSpecularAA",
             "doubleSided",
-            "transmissive",
-            "subsurface",
             "usePhysicalLightFalloff",
             "plugins",
         ],
-        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
     );
     const baseColorExpression = context.objectProperty(
         object,
@@ -525,102 +523,34 @@ export function compilePbrMaterialOptions(
         object,
         "usePhysicalLightFalloff",
     );
-    const transmissive = context.objectProperty(object, "transmissive");
-    const subsurfaceExpression = context.objectProperty(object, "subsurface");
-    let transmission = requiredStaticFiniteNumber(
+    // Refraction is not a creation option: the pin writes `_transmissive`
+    // and `_subsurface` only through `setPbrTransmission`, and
+    // `compileCreatePbrMaterial` refuses both names. A created material
+    // therefore carries the refraction writer's absent-subsurface ground
+    // state: the pinned intensity and IOR defaults, and a zero thickness
+    // (the pin's `thick?.max ?? 1` applies only under a refraction object).
+    const transmission = requiredStaticFiniteNumber(
         context,
         undefined,
         pinnedDefaultNumber("transmissionIntensity"),
         "PBR transmission intensity",
     );
-    let ior = requiredStaticFiniteNumber(
+    const ior = requiredStaticFiniteNumber(
         context,
         undefined,
         pinnedDefaultNumber("transmissionIndexOfRefraction"),
         "PBR index of refraction",
     );
-    // NOT the pin's `?? 1`: with a refraction object and no thickness the
-    // pinned writer reads `thick?.max ?? 1` while this record seeds 0 —
-    // the absent-subsurface ground state. UNREACHABLE today, measured
-    // 2026-08-24: a scene-code refraction shape refuses at generation
-    // ("no composed arm yet", the open transmission item in TODO), so the
-    // divergence cannot reach a composed variant. When that arm lands,
-    // resolve this seed against the pin's `?? 1` for the
-    // refraction-without-thickness shape before measuring. The `?? 1` arm
-    // the defaults table anchors is the inner thickness branch below.
-    let thickness = requiredStaticFiniteNumber(
+    const thickness = requiredStaticFiniteNumber(
         context,
         undefined,
         0,
         "PBR thickness",
     );
-    let useThicknessAsDepth = "false";
-    let hasVolume = "false";
-    let attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
-    let attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
-    if (subsurfaceExpression) {
-        const subsurface = context.expectObjectLiteral(subsurfaceExpression);
-        const refractionExpression = context.objectProperty(
-            subsurface,
-            "refraction",
-        );
-        if (refractionExpression) {
-            const refraction =
-                context.expectObjectLiteral(refractionExpression);
-            const intensity = context.objectProperty(refraction, "intensity");
-            const indexOfRefraction = context.objectProperty(
-                refraction,
-                "indexOfRefraction",
-            );
-            const thicknessAsDepth = context.objectProperty(
-                refraction,
-                "useThicknessAsDepth",
-            );
-            transmission = requiredStaticFiniteNumber(
-                context,
-                intensity,
-                transmissive ? 1 : pinnedDefaultNumber("transmissionIntensity"),
-                "PBR transmission intensity",
-            );
-            ior = requiredStaticFiniteNumber(
-                context,
-                indexOfRefraction,
-                pinnedDefaultNumber("transmissionIndexOfRefraction"),
-                "PBR index of refraction",
-            );
-            useThicknessAsDepth = thicknessAsDepth
-                ? context.compileBoolean(thicknessAsDepth)
-                : "false";
-        }
-        const thicknessExpression = context.objectProperty(
-            subsurface,
-            "thickness",
-        );
-        if (thicknessExpression) {
-            const thicknessObject =
-                context.expectObjectLiteral(thicknessExpression);
-            const maximum = context.objectProperty(thicknessObject, "max");
-            thickness = requiredStaticFiniteNumber(
-                context,
-                maximum,
-                pinnedDefaultNumber("transmissionThicknessMax"),
-                "PBR thickness",
-            );
-        }
-        const tintExpression = context.objectProperty(subsurface, "tint");
-        if (tintExpression) {
-            const tint = context.expectObjectLiteral(tintExpression);
-            const color = context.objectProperty(tint, "color");
-            const distance = context.objectProperty(tint, "atDistance");
-            hasVolume = distance ? "true" : "false";
-            attenuationColor = color
-                ? context.compileColor3(color)
-                : attenuationColor;
-            attenuationDistance = distance
-                ? context.compileNumber(distance)
-                : attenuationDistance;
-        }
-    }
+    const useThicknessAsDepth = "false";
+    const hasVolume = "false";
+    const attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
+    const attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
     const metallicOption = requiredStaticFiniteNumber(
         context,
         metallic,
