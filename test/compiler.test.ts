@@ -4688,7 +4688,7 @@ test("shares a reassigned array binding across stored callbacks", () => {
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\) = `));
     assert.match(
         result.cpp,
-        new RegExp(`array_shift\\(\\(\\*${storage[1]}\\)\\)`),
+        new RegExp(`array_shift_or_absent\\(\\(\\*${storage[1]}\\)\\)`),
     );
 });
 

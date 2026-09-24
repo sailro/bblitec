@@ -2536,6 +2536,37 @@ check(
 `,
 );
 
+check(
+    "array-removal-yields-absent-on-empty-arrays",
+    `
+    const items: number[] = [];
+    if ((items.pop() ?? -1) !== -1) throw new Error("pop empty");
+    items.shift();
+    items.pop();
+    items.push(3, 4);
+    const last = items.pop();
+    if (last === undefined || last !== 4) throw new Error("pop value");
+    const first = items.shift();
+    if (first !== 3 || items.shift() !== undefined) throw new Error("shift value");
+    const words: string[] = ["a"];
+    const word = words.pop();
+    if (word !== "a" || words.pop() !== undefined) throw new Error("string pop");
+    const maybe: (number | null)[] = [null];
+    if (maybe.pop() !== null || maybe.pop() !== undefined) throw new Error("nullable pop");
+    class Node { constructor(readonly id: number) {} }
+    const nodes: Node[] = [new Node(1)];
+    const node = nodes.pop();
+    if (!node || node.id !== 1 || nodes.pop()) throw new Error("reference pop");
+    const stack = [5, 6];
+    let sum = 0;
+    let next = stack.pop();
+    while (next !== undefined) { sum += next; next = stack.pop(); }
+    if (sum !== 11) throw new Error("drain " + sum);
+    const seven = [7];
+    if (stack.length !== 0 || seven.pop()! !== 7) throw new Error("asserted pop");
+`,
+);
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });
