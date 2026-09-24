@@ -53,7 +53,7 @@ and lists its unrouted functions and pin gaps. See [collection commands](develop
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
-| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; unsupported field storage |
+| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C | null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C | undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations | Custom thenables; general async iteration |
@@ -69,7 +69,8 @@ A module executed at generation may import its relative siblings without an exte
 `CompileOptions.environment`; absent keys are undefined. Built-ins cannot be overridden; dotenv and host
 variables are not loaded implicitly.
 
-Defaults and short-circuit operands evaluate once and lazily. Destructuring finishes the source before
+Defaults and short-circuit operands evaluate once and lazily. Loose equality between operands of one
+primitive type is strict equality; across types it refuses. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
@@ -133,7 +134,9 @@ Float32 storage; Float64/high-precision combinations refuse.
 ## Asset materialization
 
 Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets;
-`--site-url` sets the base (default `http://localhost/`). Other origins use remote loading.
+`--public-url` serves root-relative assets no public directory holds, and a root-relative asset with
+neither refuses; registry scenes compile with the pinned `lab/public` URL. `--site-url` sets the base
+(default `http://localhost/`). Other origins use remote loading.
 Unsupported dynamic URLs and percent-encoded asset bodies refuse.
 
 ### Runtime HTTP
