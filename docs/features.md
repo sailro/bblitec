@@ -56,7 +56,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
-| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
+| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created and is not settled from a timer or frame callback, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
@@ -75,9 +75,9 @@ left-to-right target writes. Defaults requiring distinct null/undefined states r
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
 
-Dynamic JSON preserves actual fields and object identity through typed locals, arguments, conditionals,
-represented generic returns and record-typed function returns. Source-backed record ownership can trigger compiler replay, preserving
-earlier aliases and initializer counts. Getters permit statements before a final return; early returns
+Dynamic JSON preserves actual fields and object identity through typed locals, arguments (members
+included), conditionals, represented generic returns and record-typed function returns. Source-backed
+record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters permit statements before a final return; early returns
 refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
 
