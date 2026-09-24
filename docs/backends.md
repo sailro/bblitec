@@ -33,19 +33,26 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
 
 ## Compiled binding contract
 
-- SDL binds compiled resources after dead declarations are removed. Sidecars specify stage visibility,
-  resource kind, slot order and uniform size. Large uniform blocks may use read-only storage.
-- SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
-  image/sampler descriptors; integer and multisampled loads use separate images.
-- SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
-- SPIR-V compilation legalizes HLSL without DXC folding floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
+- bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL, MSL and SPIR-V writers with SDL's
+  slots as their binding options and writes the `.slots` sidecar from the same assignment; DXC
+  compiles the HLSL to DXIL. Slots cover the resources the lowered entry point reaches.
+  Sidecars specify stage visibility, resource kind, slot order and uniform size. Large uniform
+  blocks may use read-only storage.
+- SDL integer texture loads occupy storage-texture slots. Vulkan binds a sampled texture and its
+  sampler as one combined image sampler, which Tint's image and sampler both address at the
+  texture's binding; integer and multisampled loads are sampled images after them.
+- Interstage structures place the position first, so separately compiled D3D12 stages link when a
+  fragment reads a prefix of the vertex outputs (a maintained Tint patch).
+- SPIR-V is version 1.3 and preserves varying locations; SDL_GPU devices request Vulkan 1.1.
+  Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
+- Tint's SPIR-V keeps floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.
 - Material pipelines use each task's sample count. Shared uploads retain per-binding sampler/UV state;
   image identity includes bytes and upload flags. Last-owner release retires cached images.
 - Android prefers Vulkan 1.3 helper-invocation discard to preserve masked edges under MSAA;
-  older devices retain the Vulkan 1.0 shader path.
+  older devices retain the Vulkan 1.1 shader path.
 - Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 

@@ -35,6 +35,9 @@ export interface DependencyPatchRecord {
 }
 
 export interface DevelopmentTools {
+    /** bblite-tint, the pinned Tint the offline shader compiler drives
+     *  (tools/tint-sdl, built by tools/build-tint.ps1). */
+    bbliteTint: string | undefined;
     ccache: string | undefined;
     cmake: string | undefined;
     cc: string | undefined;
@@ -51,7 +54,6 @@ export interface DevelopmentTools {
     powershell: string | undefined;
     rmlUiDirectory: string;
     rmlUiInstalled: boolean;
-    tint: string | undefined;
     vcpkg: string | undefined;
     vcpkgRoot: string | undefined;
     vcpkgToolchain: string | undefined;
@@ -350,12 +352,12 @@ export function discoverDevelopmentTools(
         cwd,
         environment.BBLITE_RMLUI_DIR ?? join("artifacts", "tools", "rmlui"),
     );
-    const localTint = resolve(
+    const localBbliteTint = resolve(
         cwd,
         "artifacts",
         "tools",
         "tint",
-        platform === "win32" ? "tint.exe" : "tint",
+        platform === "win32" ? "bblite-tint.exe" : "bblite-tint",
     );
     const localDxc = resolve(
         cwd,
@@ -418,6 +420,12 @@ export function discoverDevelopmentTools(
         existsSync(join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"));
 
     return {
+        bbliteTint:
+            environment.BBLITE_TINT_PATH !== undefined
+                ? findExecutable(environment.BBLITE_TINT_PATH, options)
+                : existsSync(localBbliteTint)
+                  ? localBbliteTint
+                  : undefined,
         ccache:
             environment.CCACHE_PATH !== undefined
                 ? findExecutable(environment.CCACHE_PATH, options)
@@ -452,12 +460,6 @@ export function discoverDevelopmentTools(
             : undefined,
         dawnDirectory,
         dawnInstalled: dawnBuilt,
-        tint:
-            environment.TINT_PATH !== undefined
-                ? findExecutable(environment.TINT_PATH, options)
-                : existsSync(localTint)
-                  ? localTint
-                  : findExecutable("tint", options),
         dxc:
             environment.DXC_PATH !== undefined
                 ? findExecutable(environment.DXC_PATH, options)
