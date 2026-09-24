@@ -34,7 +34,6 @@ import {
  *     textareaRows?: number,
  *     uniform?: boolean,
  * }} Options the check's plugin options
- * @typedef {{ textData?: Array<{ live?: { glyphSlots: number[] } }> }} Manifest the fields read from the generated manifest
  * @typedef {{ width: number, height: number }} Extent
  * @typedef {{ alpha: number, beta: number, radius: number }} OrbitCamera
  * @typedef {[number | null, number, number, number]} GlyphInstance glyph id, x, y, style
@@ -71,7 +70,7 @@ const CAMERA_KEYS = /** @type {const} */ (["alpha", "beta", "radius"]);
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
-    const manifest = /** @type {Manifest} */ (readManifest(context));
+    const manifest = readManifest(context);
     const live = manifest.textData?.[0]?.live;
     assert(live, "the manifest carries no live text data");
     const ids = new Map(live.glyphSlots.map((slot, id) => [slot, id]));
