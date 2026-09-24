@@ -6,7 +6,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
-- [ ] Give opaque engine values and borrowed aliases native capture types, so the remaining shared closure templates move to their owning source units (`closure-captures.ts`, `compiler/source-units.ts`).
+- [ ] Give sprite-renderer and animation-manager values and pinned resource arguments native capture types, so the remaining shared closure templates (doom, sandblox, platformer) move to their owning source units (`closure-captures.ts`, `binding-scopes.ts`).
 - [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
 - [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
 - [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped` and `compileArrayFrom` in `data-lowering.ts`).
