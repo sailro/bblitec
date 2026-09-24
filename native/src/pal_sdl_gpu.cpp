@@ -8648,11 +8648,10 @@ public:
                         scene_surface_extent(engine, graph_scene, width, height);
                     // A layer without a camera draws through the zero block
                     // the pin never writes for it (see `active_camera`).
-                    double graph_aspect = 0.0;
                     std::array<float, 16> graph_matrix{}, graph_view{}, graph_projection{};
                     std::array<float, 4> graph_eye{};
                     if (graph_camera) {
-                        graph_aspect = upstream::effective_aspect_ratio(
+                        const double graph_aspect = upstream::effective_aspect_ratio(
                             *graph_camera, graph_extent.width, graph_extent.height);
                         graph_matrix = upstream::build_view_projection(*graph_camera, graph_aspect);
                         graph_view = upstream::build_view_matrix(
