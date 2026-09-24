@@ -53,6 +53,8 @@ test("every native driver routes DOM input, replay, UI consumption and window ev
                 if (index < 2)
                     return (
                         `struct Driver${index} : SceneInputDriver { using SceneInputDriver::SceneInputDriver;\n` +
+                        cppFunction(source, "Frame& current_frame()") +
+                        "\n" +
                         cppFunction(source, "FramePreparation prepare(") +
                         "\n};"
                     );

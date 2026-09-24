@@ -76,7 +76,7 @@ test("local geometry survives shader, physics, imported-wheel and hierarchy-pool
         ${cppRecord(shared, "struct ShaderDrawMatrices {")}
         ${cppFunction(shared, "inline bool block_is_shared_scene_matrix(")}
         ${cppFunction(shared, "inline void shader_stage_block_floats(")}
-        ${shared.slice(shared.indexOf("struct SharedGeometryIdentity {"), shared.indexOf("/** Drops one mesh's reference"))}
+        ${shared.slice(shared.indexOf("struct SharedGeometryIdentity {"), shared.lastIndexOf("/**", shared.indexOf("inline void release_shared_user(")))}
     }`,
     );
     const consumers: string[] = [];

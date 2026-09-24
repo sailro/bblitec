@@ -46,6 +46,7 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
         writeFileSync(
             join(directory, `${backend}Scene.hpp`),
             [
+                "Frame& current_frame()",
                 "void rebuild_task_draw_lists()",
                 "bool acquire()",
                 "FramePreparation update()",
