@@ -2786,7 +2786,10 @@ function worktreeNativeRoots(): string[] {
     return roots.filter((root) => existsSync(root));
 }
 
-const isPchFile = (name: string): boolean => /^cmake_pch\..*\.pch$/.test(name);
+// CMake's own precompiled headers, and the object clang-cl's shared one is
+// (bblite_shared_pch, native/native-header-cache.cmake).
+const isPchFile = (name: string): boolean =>
+    /^cmake_pch\..*\.pch$|^bblite_pch-[0-9a-f]{16}\.cxx\.obj$/.test(name);
 const isDllFile = (name: string): boolean =>
     name.toLowerCase().endsWith(".dll");
 

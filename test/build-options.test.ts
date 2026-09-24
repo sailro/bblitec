@@ -533,6 +533,17 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         cmake,
         /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/,
     );
+    // Under the object cache the lowered modules compile from
+    // content-addressed copies and clang-cl builds one precompiled header the
+    // trees of a checkout share (executed in native-cache.test.ts).
+    assert.match(
+        cmake,
+        /bblite_content_addressed_sources\(BBLITE_GENERATED_UNITS \$\{BBLITE_GENERATED_SOURCES\}\)/,
+    );
+    assert.match(
+        cmake,
+        /bblite_shared_pch\(\s*TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
+    );
     assert.match(
         cmake,
         /target_sources\(\s*bblite_pal_common\s+PRIVATE\s+"\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_system_fonts\.cpp"/,

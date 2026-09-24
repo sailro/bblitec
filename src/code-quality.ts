@@ -49,7 +49,7 @@ export function nativeCompilationFiles(
     buildDirectory: string,
     root: string,
     ownedFiles: readonly string[],
-    generatedDirectory?: string,
+    generatedRoots: readonly string[] = [],
 ): string[] {
     if (!Array.isArray(database)) {
         throw new Error("compile_commands.json must contain an array.");
@@ -60,10 +60,9 @@ export function nativeCompilationFiles(
             .map((path) => pathKey(resolve(root, path))),
     );
     const files = new Set<string>();
-    const generatedRoot =
-        generatedDirectory === undefined
-            ? undefined
-            : `${pathKey(generatedDirectory)}${sep}`;
+    const generatedPrefixes = generatedRoots.map(
+        (directory) => `${pathKey(directory)}${sep}`,
+    );
     const entries: readonly unknown[] = database;
     for (const [index, entry] of entries.entries()) {
         if (
@@ -92,8 +91,9 @@ export function nativeCompilationFiles(
         const file = resolve(buildDirectory, entry.directory, entry.file);
         if (
             owned.has(pathKey(file)) ||
-            (generatedRoot !== undefined &&
-                pathKey(file).startsWith(generatedRoot) &&
+            (generatedPrefixes.some((prefix) =>
+                pathKey(file).startsWith(prefix),
+            ) &&
                 /\.(?:cpp|cc|cxx)$/.test(file))
         ) {
             files.add(file);
@@ -120,8 +120,9 @@ function commandArguments(entry: object): string[] {
 /**
  * The precompiled headers a build creates: the build target Ninja records
  * dependencies for and the header file it writes. MSVC-style drivers create
- * one with `/Yc` (`/Fo` the object, `/Fp` the header); GNU-style drivers
- * with `-emit-pch`, whose `-o` output is both.
+ * one with `/Yc` (`/Fo` the object, `/Fp` the header); a compile with
+ * `-emit-pch` writes one output that is both, `-o` for GNU-style drivers and
+ * `/Fo` for clang-cl.
  */
 export function precompiledHeaderOutputs(
     database: unknown,
@@ -161,8 +162,8 @@ export function precompiledHeaderOutputs(
         }
         if (argumentsList.includes("-emit-pch")) {
             const index = argumentsList.indexOf("-o");
-            const header = argumentsList[index + 1];
-            if (index >= 0 && header)
+            const header = index >= 0 ? argumentsList[index + 1] : flag("Fo");
+            if (header)
                 outputs.push({
                     target: ninjaPath(
                         relative(buildDirectory, resolve(directory, header)),
@@ -427,12 +428,20 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             database,
             cache?.CMAKE_MAKE_PROGRAM,
         );
+        const nativeCache = resolve(
+            cache?.BBLITE_NATIVE_CACHE_DIR ??
+                join(root, "artifacts", "native-cache"),
+        );
+        // Under the object cache the lowered modules compile from
+        // content-addressed copies; this tree's database names only its own.
         const sources = nativeCompilationFiles(
             database,
             build,
             root,
             files,
-            generatedDirectory,
+            generatedDirectory
+                ? [generatedDirectory, join(nativeCache, "sources")]
+                : [],
         ).filter(
             (file) =>
                 selectedKey === undefined || pathKey(file) === selectedKey,
@@ -446,14 +455,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             resolve(root, "native", "include"),
             resolve(root, "native", "src"),
             ...(generatedDirectory
-                ? [
-                      resolve(generatedDirectory),
-                      resolve(
-                          cache?.BBLITE_NATIVE_CACHE_DIR ??
-                              join(root, "artifacts", "native-cache"),
-                          "headers",
-                      ),
-                  ]
+                ? [resolve(generatedDirectory), join(nativeCache, "headers")]
                 : []),
         ];
         const headerFilter = `^(${headerRoots
