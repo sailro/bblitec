@@ -9,6 +9,7 @@ import type { Value } from "./types.js";
 export interface WorkerLoweringContext extends Pick<
     LoweringServices,
     | "options"
+    | "checker"
     | "dataLowerer"
     | "dataTypes"
     | "unwrap"
@@ -35,7 +36,9 @@ const loop = "bbl::pal::EventLoop::current()";
  * The first position in a message shape without a native structured-clone
  * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
  * crosses by transfer; every other handle, like a browser's platform objects,
- * has no serialization.
+ * has no serialization. A class instance has no faithful native copy: the
+ * browser delivers a plain object of its own data fields, without its
+ * prototype, methods or private fields.
  */
 function uncloneablePosition(
     context: WorkerLoweringContext,
@@ -44,7 +47,8 @@ function uncloneablePosition(
     node: ts.Node,
     seen: Set<string>,
 ): string | undefined {
-    const refuse = (name: string): string => `'${path}' is ${name}`;
+    const refuse = (name: string): string =>
+        `'${path}' is ${name}, which has no native structured-clone codec`;
     switch (type.kind) {
         case "number":
         case "boolean":
@@ -104,7 +108,14 @@ function uncloneablePosition(
                           node,
                           seen,
                       ));
-        case "struct":
+        case "struct": {
+            const instance = context.dataTypes.classStruct(type.name);
+            if (instance)
+                return (
+                    `'${path}' is an instance of class ${instance.declaration.name?.text ?? type.name}, ` +
+                    "which a browser delivers as a plain object without its prototype, methods or " +
+                    "private fields; use a plain object instead"
+                );
             if (seen.has(type.name)) return undefined;
             seen.add(type.name);
             for (const field of context.dataTypes.structFields(
@@ -121,6 +132,7 @@ function uncloneablePosition(
                 if (found) return found;
             }
             return undefined;
+        }
         case "handle":
             return type.handle === "offscreen-canvas"
                 ? undefined
@@ -178,11 +190,22 @@ function requireCloneable(
         node,
         new Set<string>(),
     );
-    if (position)
-        context.fail(
-            node,
-            `Worker message value ${position}, which has no native structured-clone codec.`,
-        );
+    if (position) context.fail(node, `Worker message value ${position}.`);
+}
+
+/**
+ * A message position's data type. A class demands its representation here,
+ * as a stored field does, so `requireCloneable` names it rather than the
+ * position reading as an unmapped shape.
+ */
+function messageDataType(
+    context: WorkerLoweringContext,
+    node: ts.Expression,
+): DataType | undefined {
+    return context.dataTypes.fromStoredTsType(
+        context.checker.getTypeAtLocation(node),
+        node,
+    );
 }
 
 export function isNativeWorkerExpression(
@@ -343,7 +366,7 @@ export function compileWorkerValue(
             owner?.kind === "worker-message-event" &&
             node.name.text === "data"
         ) {
-            const type = context.dataLowerer.dataTypeAt(expression);
+            const type = messageDataType(context, expression);
             if (!type)
                 return context.fail(
                     expression,
@@ -406,7 +429,7 @@ export function compileWorkerValue(
                 "Worker postMessage requires a message and optional transfer list.",
             );
         const argument = argumentAt(node, 0);
-        const type = context.dataLowerer.dataTypeAt(argument);
+        const type = messageDataType(context, argument);
         if (!type)
             return context.fail(
                 argument,

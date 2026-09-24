@@ -189,6 +189,23 @@ test("worker message shapes without a native clone codec refuse at generation", 
         `worker.addEventListener("message", (event: MessageEvent<{ pair: [string, number] }>) => { if (event.data.pair[1] === 1) worker.terminate(); });`,
         /'event\.data\.pair\[\]' is a mixed union/,
     );
+    // A browser clones a class instance into a plain object of its own data
+    // fields: no prototype, methods or #private fields survive the copy.
+    const point = `class Point { #scale = 2; constructor(public x: number, public y: number) {} length(): number { return Math.hypot(this.x, this.y) * this.#scale; } }\n`;
+    const classInstance =
+        /is an instance of class Point, which a browser delivers as a plain object without its prototype, methods or private fields/;
+    refuses(
+        `${point}worker.postMessage(new Point(1, 2));`,
+        new RegExp(`'message' ${classInstance.source}`),
+    );
+    refuses(
+        `${point}const points: Point[] = [new Point(1, 2)];\nworker.postMessage({ points });`,
+        new RegExp(`'message\\.points\\[\\]' ${classInstance.source}`),
+    );
+    refuses(
+        `${point}worker.addEventListener("message", (event: MessageEvent<Point>) => { if (event.data.length() > 1) worker.terminate(); });`,
+        new RegExp(`'event\\.data' ${classInstance.source}`),
+    );
 });
 
 test("buffer-view clone codecs share received buffers and validate views", (t) => {
