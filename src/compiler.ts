@@ -339,10 +339,7 @@ export type {
     CompileResult,
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
-    GeometryTextureTypeName,
-    PostProcessCompositeManifest,
     PostProcessTaskManifest,
-    ShaderMaterialVariantName,
 } from "./compiler/types.js";
 
 /**
