@@ -4351,18 +4351,25 @@ inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
         return;
     }
     record.retired = true;
-    bool reserved =
-        record.asset_indexed || !record.children.empty() || !record.parented_meshes.empty();
-    for (const MeshRecord& other : engine.meshes) {
-        reserved = reserved || std::find(other.children.begin(), other.children.end(), mesh) !=
-                                   other.children.end();
-    }
-    for (const TransformNodeRecord& node : engine.transform_nodes) {
-        for (const TransformNodeChild& child : node.children) {
-            const auto* listed = std::get_if<MeshHandle>(&child);
-            reserved = reserved || (listed && *listed == mesh);
+    const auto listed_as_child = [&engine, mesh] {
+        for (const MeshRecord& other : engine.meshes) {
+            if (std::find(other.children.begin(), other.children.end(), mesh) !=
+                other.children.end()) {
+                return true;
+            }
         }
-    }
+        for (const TransformNodeRecord& node : engine.transform_nodes) {
+            for (const TransformNodeChild& child : node.children) {
+                const auto* listed = std::get_if<MeshHandle>(&child);
+                if (listed && *listed == mesh) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const bool reserved = record.asset_indexed || !record.children.empty() ||
+                          !record.parented_meshes.empty() || listed_as_child();
     ModelGeometry& shared = engine.geometries[geometry];
     if (reserved) {
         shared.slot_reserved = true;
