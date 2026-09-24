@@ -90,6 +90,18 @@ test("reads checker symbols through the named readers in symbols.ts alone", () =
     );
 });
 
+test("pinned readers share one lowering context rather than building their own", () => {
+    // A `LoweringContext` holds nothing beyond its store: readers over the
+    // process's store use `sharedPinnedContext()`, and a lowering over a
+    // caller's store `pinnedContextOver(store)`; both live in context.ts.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).constructs.has("LoweringContext"),
+        ),
+        ["src/lowering/context.ts"],
+    );
+});
+
 test("entry points acquire the dist lock and only its owner sets the nesting marker", () => {
     for (const path of [
         "src/cli.ts",

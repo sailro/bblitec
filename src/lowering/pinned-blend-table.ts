@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { LoweringContext } from "./context.js";
+import { LoweringContext, sharedPinnedContext } from "./context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 
 /**
@@ -333,7 +333,7 @@ export function parseBlendExport(
         const file = store.getSourceFile(module);
         const initializer = exportedConstant(file, importedName);
         if (!initializer) continue;
-        const context = new LoweringContext(store);
+        const context = sharedPinnedContext();
         const depthMode = optionalProperty(
             context,
             objectLiteral(

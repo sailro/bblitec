@@ -30,7 +30,7 @@ import {
     packagedGltfLoaderFacts,
     pinnedGltfFeatureId,
 } from "./gltf-mesh-plan.js";
-import { LoweringContext } from "./lowering/context.js";
+import { pinnedContextOver } from "./lowering/context.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -86,7 +86,7 @@ function gltfLoaderSpecialization(
     store: UpstreamSourceStore,
 ): GltfLoaderSpecialization {
     const facts = packagedGltfLoaderFacts(document);
-    const context = new LoweringContext(store);
+    const context = pinnedContextOver(store);
     const ran = (module: string): boolean =>
         facts.features.has(pinnedGltfFeatureId(context, module));
     return {

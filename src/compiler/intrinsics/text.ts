@@ -24,12 +24,11 @@ import {
     stringLiteral as cppStringLiteral,
 } from "../../cpp-literals.js";
 import type { TransportSchema } from "../../pinned-record-transport.js";
-import { LoweringContext } from "../../lowering/context.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
 import {
     lazyWeightSetterCpp,
     textRecordModel,
 } from "../../lowering/text-records.js";
-import { sharedUpstreamStore } from "../../upstream-source.js";
 
 export interface TextIntrinsicContext
     extends
@@ -713,7 +712,7 @@ let textTransport: TransportSchema | undefined;
 /** The shapes the generation child walks the pin's text records by. */
 function textTransportSchema(): TransportSchema {
     return (textTransport ??= textRecordModel(
-        new LoweringContext(sharedUpstreamStore()),
+        sharedPinnedContext(),
     ).transportSchema());
 }
 

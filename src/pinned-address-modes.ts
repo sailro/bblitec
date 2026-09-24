@@ -1,7 +1,6 @@
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 
 const texture2DModule = "src/texture/texture-2d.ts";
 
@@ -129,9 +128,7 @@ let pinnedRules: PinnedTexture2DRules | undefined;
 
 /** The rules, read once per process from the shared pinned source. */
 function pinnedTexture2DRules(): PinnedTexture2DRules {
-    pinnedRules ??= readPinnedTexture2DRules(
-        new LoweringContext(sharedUpstreamStore()),
-    );
+    pinnedRules ??= readPinnedTexture2DRules(sharedPinnedContext());
     return pinnedRules;
 }
 

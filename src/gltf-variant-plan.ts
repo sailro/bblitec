@@ -14,6 +14,7 @@ import {
 import {
     LoweringContext,
     unexportedDeclarationText,
+    sharedPinnedContext,
 } from "./lowering/context.js";
 import { gltfVariantMaterialSource } from "./lowering/gltf/material-variants.js";
 import {
@@ -141,7 +142,7 @@ export async function gltfVariantPlan(
     if (!names.length) return { baseCount, materials, selections };
     const { schedule, select } = context
         ? variantRunners(context)
-        : (pinnedRunners ??= variantRunners(new LoweringContext()));
+        : (pinnedRunners ??= variantRunners(sharedPinnedContext()));
     const definitions = asRecords(document.materials);
     const baseMaterials = base.materials.map((_, index) => ({ index }));
     const meshes = base.meshes.map((mesh) => ({

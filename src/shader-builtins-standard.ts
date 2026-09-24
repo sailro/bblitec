@@ -1,6 +1,5 @@
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import { pinnedMaterialVertex } from "./pinned-material-vertex.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** The palette capacity in the shared PAL's DeformationUniforms transport. */
 export const DEFORMATION_BONE_SLOTS = 64;
@@ -15,7 +14,7 @@ export function materialVertexWgsl(
     gpuDeformation = false,
     gpuInstancing = false,
     morphStorage = false,
-    context = new LoweringContext(sharedUpstreamStore()),
+    context = sharedPinnedContext(),
 ): string {
     const projected = pinnedMaterialVertex(context, {
         deformation: gpuDeformation,

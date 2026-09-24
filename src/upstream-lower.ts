@@ -37,7 +37,12 @@ import {
     textPipelineStem,
 } from "./pinned-text-pipeline-cpp.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
-import { LoweredSource, LoweringContext } from "./lowering/context.js";
+import {
+    LoweredSource,
+    LoweringContext,
+    sharedPinnedContext,
+    pinnedContextOver,
+} from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { lowerProceduralSkyAtmosphere } from "./lowering/procedural-sky-atmosphere.js";
 import { lowerProceduralSkyLoader } from "./lowering/procedural-sky-loader.js";
@@ -218,7 +223,7 @@ function pinnedMaxLights(context: LoweringContext): number {
  *  max-lights refusal row so it records the constant's value beside
  *  the checked count. */
 export function readPinnedMaxLights(): number {
-    return pinnedMaxLights(new LoweringContext(sharedUpstreamStore()));
+    return pinnedMaxLights(sharedPinnedContext());
 }
 
 /**
@@ -910,7 +915,7 @@ class GeneratedSourceWriter {
     ) {}
 
     public emit(features: string[], options: UpstreamEmitOptions): void {
-        const context = new LoweringContext(this.store);
+        const context = pinnedContextOver(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
         // The generated-source table is the one statement of which units a
         // feature set reaches; each emitter below states only how its unit
@@ -996,7 +1001,7 @@ class GeneratedSourceWriter {
         // billboard pass draws under the same convention.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_depth_state.hpp",
-            pinnedDepthStateHeader(new LoweringContext(this.store)),
+            pinnedDepthStateHeader(context),
         );
         // The pinned default sample count, the same way: the one inline
         // definition of `preferred_sample_count()`, for every scene shape —
@@ -1004,10 +1009,7 @@ class GeneratedSourceWriter {
         // scene compiles no render plan at all.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_surface.hpp",
-            pinnedSurfaceHeader(
-                new LoweringContext(this.store),
-                options.msaaSamples ?? 4,
-            ),
+            pinnedSurfaceHeader(context, options.msaaSamples ?? 4),
         );
         // The pinned TRS composition and the pin's own mirrored-basis
         // determinant. Always emitted, because the consumers sit on both
@@ -1015,19 +1017,19 @@ class GeneratedSourceWriter {
         // its mesh worlds through it, and both geometry loaders read it.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_world_transform.hpp",
-            pinnedWorldTransformHeader(new LoweringContext(this.store)),
+            pinnedWorldTransformHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_matrix.hpp",
-            pinnedMatrixHeader(new LoweringContext(this.store)),
+            pinnedMatrixHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_texture.hpp",
-            pinnedTextureHeader(new LoweringContext(this.store)),
+            pinnedTextureHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
-            pinnedRgbdHeader(new LoweringContext(this.store)),
+            pinnedRgbdHeader(context),
         );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the
@@ -1035,7 +1037,7 @@ class GeneratedSourceWriter {
         // function instead of a float-width PAL transcription.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_inverse_image_processing.hpp",
-            pinnedInverseImageProcessingHeader(new LoweringContext(this.store)),
+            pinnedInverseImageProcessingHeader(context),
         );
         // The pin's tuple normalization, where a scene calls it or the
         // detailed pick's own two bodies import it. Gated rather than
@@ -1046,31 +1048,31 @@ class GeneratedSourceWriter {
         if (gpuMorphStorage) {
             this.tree.write(
                 "upstream/include/bblite/upstream/morph_targets.hpp",
-                morphTargetsHeader(new LoweringContext(this.store)),
+                morphTargetsHeader(context),
             );
         }
         if (features.includes("math:normalize-vec3")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
-                pinnedNormalizeVec3Header(new LoweringContext(this.store)),
+                pinnedNormalizeVec3Header(context),
             );
         }
         if (features.includes("math:quaternion")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_quaternion.hpp",
-                pinnedQuaternionHeader(new LoweringContext(this.store)),
+                pinnedQuaternionHeader(context),
             );
         }
         if (features.includes("math:mat4-invert")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_invert.hpp",
-                pinnedMat4InvertHeader(new LoweringContext(this.store)),
+                pinnedMat4InvertHeader(context),
             );
         }
         if (features.includes("math:mat4-create")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_create.hpp",
-                pinnedMat4CreateHeader(new LoweringContext(this.store)),
+                pinnedMat4CreateHeader(context),
             );
         }
         // The public look-direction quaternion and the private basis fold it
@@ -1079,7 +1081,7 @@ class GeneratedSourceWriter {
         if (features.includes("math:look-direction")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_look_direction.hpp",
-                pinnedLookDirectionHeader(new LoweringContext(this.store)),
+                pinnedLookDirectionHeader(context),
             );
         }
         // The texture-slot table both render backends execute. Emitted for

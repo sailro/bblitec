@@ -2,7 +2,7 @@ import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
-import { LoweringContext } from "../lowering/context.js";
+import { sharedPinnedContext } from "../lowering/context.js";
 import {
     isLibraryTyping,
     libraryTypingFile,
@@ -10,7 +10,6 @@ import {
 import {
     findRepositoryRoot,
     repositoryRelativePath,
-    sharedUpstreamStore,
 } from "../upstream-source.js";
 
 /**
@@ -64,7 +63,7 @@ const erasedInternalMembers: readonly {
  * so this runs on the first compile alone.
  */
 function pinnedInternalDeclarations(): string {
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     return erasedInternalMembers
         .map((erased) => {
             const { file, declaration } = context.interfaceDeclaration(

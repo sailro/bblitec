@@ -28,8 +28,7 @@
  */
 import ts from "typescript";
 import { importPinnedModule } from "./pinned-shader-composer.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 
 /** The pinned module the Standard bridge keeps its index layout in. */
 const STD_PLUGIN_BRIDGE = "src/material/plugin/std-plugin-bridge.ts";
@@ -312,7 +311,7 @@ async function registerPluginBridges(
         },
         stdFlags._registerStdExt,
     );
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const presence = pinnedPluginPresenceBit(context);
     if (standardMaterialPlugins.length > 255)
         throw new Error(

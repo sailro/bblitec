@@ -9,8 +9,7 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
  */
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-import { LoweringContext } from "../lowering/context.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { executeApplicationFunction } from "./executed-application-function.js";
 import type {
@@ -233,7 +232,7 @@ let contract: PinnedPluginContract | undefined;
 
 function pinnedPluginContract(): PinnedPluginContract {
     if (contract) return contract;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const file = context.sourceFile(PLUGIN_BRIDGE);
     const { declaration } = context.functionDeclaration(
         PLUGIN_BRIDGE,

@@ -12,13 +12,12 @@
  * of the variant's name.
  */
 import type ts from "typescript";
-import { LoweringContext } from "../lowering/context.js";
+import { sharedPinnedContext } from "../lowering/context.js";
 import {
     LinearDepthLowerer,
     linearDepthVariantName,
     type LinearDepthMaterialOptions,
 } from "../lowering/linear-depth-lowerer.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import {
     reachFoldedShaderProgram,
     type ShaderMaterialContext,
@@ -33,9 +32,7 @@ let cached: LinearDepthLowerer | undefined;
 
 function linearDepthLowerer(): LinearDepthLowerer {
     if (!cached) {
-        cached = new LinearDepthLowerer(
-            new LoweringContext(sharedUpstreamStore()),
-        );
+        cached = new LinearDepthLowerer(sharedPinnedContext());
     }
     return cached;
 }
