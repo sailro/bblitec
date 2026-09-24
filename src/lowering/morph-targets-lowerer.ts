@@ -37,11 +37,7 @@ function deltaStatements(
     if (
         upload < 0 ||
         selected.map(statementKind).join(",") !==
-            "variable statement,variable statement,for statement" ||
-        !context.expressionMatchesShape(
-            context.variableInitializer(declaration, "deltaData"),
-            "new F32(targetCount * vertexCount * MORPH_FLOATS_PER_VERTEX)",
-        )
+            "variable statement,variable statement,for statement"
     ) {
         context.contractError(
             declaration,
