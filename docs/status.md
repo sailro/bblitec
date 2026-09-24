@@ -26,7 +26,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 11 | <img src="images/scenes/scene11.png" alt="Scene 11 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Spec-Gloss Shark |
 | 12 | <img src="images/scenes/scene12.png" alt="Scene 12 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | PBR Shader Balls |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | PBR Spheres Grid |
-| 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | 0.012 / 0.006 | 0.012 / 0.006 | Flight Helmet |
+| 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | Flight Helmet |
 | 15 | <img src="images/scenes/scene15.png" alt="Scene 15 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Two Spot Lights |
 | 16 | <img src="images/scenes/scene16.png" alt="Scene 16 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Thin Instances |
 | 17 | <img src="images/scenes/scene17.png" alt="Scene 17 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR and Standard Thin Instances |
@@ -41,15 +41,15 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 26 | <img src="images/scenes/scene26.png" alt="Scene 26 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Subsurface |
 | 27 | <img src="images/scenes/scene27.png" alt="Scene 27 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Variants |
 | 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Clearcoat glTF |
-| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Sheen Cloth glTF |
+| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | 0.000 / 0.006 | 0.000 / 0.006 | Sheen Cloth glTF |
 | 30 | <img src="images/scenes/scene30.png" alt="Scene 30 rendering" width="160"> | 0.007 / 0.010 | 0.003 / 0.005 | Volume Testing |
 | 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | Emissive Strength |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Unlit glTF |
-| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.006 | Punctual Lights |
+| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.007 | 0.000 / 0.004 | Punctual Lights |
 | 34 | <img src="images/scenes/scene34.png" alt="Scene 34 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Visibility |
 | 35 | <img src="images/scenes/scene35.png" alt="Scene 35 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Simple Instancing |
 | 36 | <img src="images/scenes/scene36.png" alt="Scene 36 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Basis Universal Texture |
-| 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
+| 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.005 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
 | 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Sphere Drop; Bullet on Havok's sub-steps, speculative landing and rebound |
@@ -146,7 +146,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="160"> | 0.022 / 0.021 | 0.010 / 0.009 | Standard Geometry Outputs |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="160"> | 0.003 / 0.003 | 0.003 / 0.003 | PBR Geometry Outputs |
 | 147 | <img src="images/scenes/scene147.png" alt="Scene 147 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Circle of Confusion |
-| 148 | <img src="images/scenes/scene148.png" alt="Scene 148 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Depth of Field |
+| 148 | <img src="images/scenes/scene148.png" alt="Scene 148 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Depth of Field |
 | 149 | <img src="images/scenes/scene149.png" alt="Scene 149 rendering" width="160"> | 0.007 / 0.009 | 0.000 / 0.000 | Node Material Geometry Outputs |
 | 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Position Animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Transform Animation |
@@ -236,7 +236,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 262 | <img src="images/scenes/scene262.png" alt="Scene 262 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Size |
 | 263 | <img src="images/scenes/scene263.png" alt="Scene 263 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Gravity |
 | 264 | <img src="images/scenes/scene264.png" alt="Scene 264 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Sphere Emitter |
-| 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Environment Test |
+| 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="160"> | 0.000 / 0.007 | 0.000 / 0.007 | Environment Test |
 | 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Negative Scale Spheres |
 | 267 | <img src="images/scenes/scene267.png" alt="Scene 267 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard Vertex Colors |
 | 268 | <img src="images/scenes/scene268.png" alt="Scene 268 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Orthographic Camera |

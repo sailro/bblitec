@@ -1080,7 +1080,6 @@ ${spec.tail}}
         rootDrop: number;
     } {
         const sizeModule = "src/material/pbr/scene-size.ts";
-        const boundsModule = "src/mesh/mesh-world-bounds.ts";
         const { file, declaration } = this.context.functionDeclaration(
             sizeModule,
             "computeSceneSize",
@@ -1394,28 +1393,6 @@ ${spec.tail}}
             );
         }
         const rootDrop = this.context.numericValue(floor.right, file);
-        const { declaration: expand } = this.context.functionDeclaration(
-            boundsModule,
-            "expandWorldAabbForMesh",
-        );
-        for (const marker of [
-            "transformedCenter += coefficient * center[column]!",
-            "transformedRadius += Math.abs(coefficient) * extent[column]!",
-        ]) {
-            if (
-                !this.context.hasNode(
-                    expand,
-                    (node) =>
-                        ts.isBinaryExpression(node) &&
-                        this.context.expressionMatchesShape(node, marker),
-                )
-            ) {
-                this.context.contractError(
-                    expand,
-                    `Expected the pinned OBB-to-AABB term '${marker}'.`,
-                );
-            }
-        }
         return {
             groundDefault,
             skyboxDefault,

@@ -40,6 +40,7 @@ Artifact paths are relative to `generated/<id>/`.
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
 | Pointer offsets | offsetX/offsetY read clientX/clientY: exact for the full-window primary canvas, not target-relative for auxiliary canvases or UI elements |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
+| Camera input | Pinned handlers take SDL relative motion as client-pixel deltas and SDL keyboard state as the held KeyboardEvent.code set |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
 | Skinning | Eight loaded influences reduced to four |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |

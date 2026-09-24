@@ -558,6 +558,18 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
         return "Tab";
     case SDL_SCANCODE_BACKSPACE:
         return "Backspace";
+    case SDL_SCANCODE_PAGEUP:
+        return "PageUp";
+    case SDL_SCANCODE_PAGEDOWN:
+        return "PageDown";
+    case SDL_SCANCODE_HOME:
+        return "Home";
+    case SDL_SCANCODE_END:
+        return "End";
+    case SDL_SCANCODE_INSERT:
+        return "Insert";
+    case SDL_SCANCODE_DELETE:
+        return "Delete";
     case SDL_SCANCODE_F1:
         return "F1";
     case SDL_SCANCODE_F2:
