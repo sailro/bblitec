@@ -2894,6 +2894,72 @@ check(
 `,
 );
 
+check(
+    "absent values spell undefined or null in text",
+    `
+    enum Shape {
+        Box = 0,
+        Ball = 1,
+    }
+    enum Tone {
+        Soft = "soft",
+    }
+    interface Options {
+        label?: string;
+        size?: number;
+        wide?: boolean;
+    }
+    function describe(options: Options): string {
+        return options.label + ":" + options.size + ":" + options.wide;
+    }
+    function main(): void {
+        const items: number[] = [];
+        if ("last " + items.pop() !== "last undefined") throw new Error("absent number");
+        items.push(4);
+        if (\`value \${items.pop()}\` !== "value 4") throw new Error("present number in a template");
+        const flags: boolean[] = [];
+        if ("flag " + flags.shift() !== "flag undefined") throw new Error("absent boolean");
+        const lookup = new Map<string, number>([["a", 1]]);
+        if (\`\${lookup.get("a")}/\${lookup.get("b")}\` !== "1/undefined") throw new Error("map lookups");
+        let maybe: number | null = null;
+        if ("maybe " + maybe !== "maybe null") throw new Error("null number");
+        maybe = 2.5;
+        if ("maybe " + maybe !== "maybe 2.5") throw new Error("present nullable number");
+        if (describe({}) !== "undefined:undefined:undefined") throw new Error("absent fields " + describe({}));
+        if (describe({ label: "x", size: 3, wide: true }) !== "x:3:true") throw new Error("present fields");
+        const shapes: Shape[] = [];
+        shapes.push(Shape.Ball);
+        if ("shape " + shapes.pop() + shapes.pop() !== "shape 1undefined") throw new Error("enum");
+        const tones: Tone[] = [];
+        tones.push(Tone.Soft);
+        if ("tone " + tones.pop() + tones.pop() !== "tone softundefined") throw new Error("string enum");
+        const mixed: Array<number | string> = ["a"];
+        if (\`\${mixed.pop()}|\${mixed.pop()}\` !== "a|undefined") throw new Error("absent union");
+        let text = "sum";
+        text += items.pop();
+        if (text !== "sumundefined") throw new Error("append " + text);
+        if (String(items.pop()) !== "undefined") throw new Error("String of an absent value");
+        const pair: [number, number?] = [1];
+        if ("second " + pair[1] !== "second undefined") throw new Error("missing tuple lane");
+        const omitted: Options = {};
+        if (typeof omitted.size !== "undefined") throw new Error("typeof an omitted field");
+    }
+    main();
+`,
+);
+
+test("text refuses a value that may be either null or undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const spelled = "value " + values[0];
+    `),
+        /may be null or undefined is spelled only once one of them is ruled out/,
+    );
+});
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).
