@@ -26,6 +26,9 @@ import {
     parameterIsReadOnly,
 } from "./user-functions.js";
 import { firstReturn } from "./loop-control.js";
+import { someAnalysisNode } from "./analysis-walk.js";
+import { pinOperand } from "./evaluation-order.js";
+import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     FunctionSpecializations,
     functionDependencies,
@@ -91,6 +94,7 @@ function declaredPrivateNames(
 interface ClassLoweringContext extends Pick<
     LoweringServices,
     | "checker"
+    | "evaluationOrder"
     | "options"
     | "compileAsyncCall"
     | "dataTypes"
@@ -103,6 +107,8 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
+    | "registerNativeBindingType"
+    | "cppString"
     | "identifierIsRebound"
     | "compileValue"
     | "emitStatement"
@@ -132,6 +138,7 @@ interface ClassLoweringContext extends Pick<
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "probeEmission"
+    | "useNativeValue"
     | "unwrap"
     | "fail"
 > {}
@@ -158,8 +165,14 @@ interface ClassLoweringContext extends Pick<
  * rather than a silently different program.
  */
 export class ClassLowerer {
-    private readonly emittedRecursiveMethods =
-        new FunctionSpecializations<string>();
+    /**
+     * Emitted recursive groups: the callable and the native binding a
+     * closure calling it captures.
+     */
+    private readonly emittedRecursiveMethods = new FunctionSpecializations<{
+        cpp: string;
+        binding: NativeCaptureBinding;
+    }>();
     /** Per receiver class, whether a method reaches itself through `this`. */
     private readonly recursiveMethods = new EmissionMap<
         ts.ClassDeclaration,
@@ -189,6 +202,10 @@ export class ClassLowerer {
                 borrowedWrapper: boolean;
             }[];
             returnType: DataType | undefined;
+            /** The group takes its receiver as its first argument. */
+            overReceiver: boolean;
+            /** The group's own `self`, which a closure calling it captures. */
+            binding: NativeCaptureBinding;
         }
     >();
 
@@ -1469,6 +1486,11 @@ export class ClassLowerer {
         argumentList: readonly ts.Expression[],
         callable: "constructor" | "method" | "setter",
     ): Value[] {
+        // An argument a later one touches the storage of, either one
+        // writing it, is evaluated where JavaScript evaluates it (see
+        // `evaluation-order.ts`).
+        const ordered =
+            this.context.evaluationOrder.operandsToPin(argumentList);
         return argumentList.map((argument, index) => {
             const parameter = declaration.parameters[index];
             if (!parameter || !ts.isIdentifier(parameter.name)) {
@@ -1479,10 +1501,13 @@ export class ClassLowerer {
                         : `Class ${callable} received too many arguments.`,
                 );
             }
-            return this.context.compileClassParameterValue(
+            const value = this.context.compileClassParameterValue(
                 parameter.name,
                 argument,
             );
+            return ordered[index] && value.kind !== "callback"
+                ? pinOperand(this.context, value, argument, "class_argument")
+                : value;
         });
     }
 
@@ -1723,10 +1748,7 @@ export class ClassLowerer {
         node: ts.Node,
         work: () => T,
     ): T {
-        const stored =
-            instance.dataType?.kind === "struct" &&
-            this.context.dataTypes.isClassStruct(instance.dataType.name);
-        if (!stored) return work();
+        if (!this.isStoredInstance(instance)) return work();
         if (this.storedReceiverMethods.has(method)) {
             this.context.fail(
                 node,
@@ -1784,7 +1806,9 @@ export class ClassLowerer {
         }
         const activeRecursive = this.activeRecursiveMethods.get(method);
         if (activeRecursive) {
-            if (activeRecursive.instance !== instance) {
+            const overReceiver =
+                activeRecursive.overReceiver && this.isStoredInstance(instance);
+            if (!overReceiver && activeRecursive.instance !== instance) {
                 this.context.fail(
                     call,
                     `Recursive method '${methodName}' cannot switch class instances.`,
@@ -1793,8 +1817,10 @@ export class ClassLowerer {
             return this.compileRecursiveInvocation(
                 call,
                 activeRecursive.cppName,
+                activeRecursive.binding,
                 activeRecursive.parameters,
                 activeRecursive.returnType,
+                overReceiver ? instance.cpp : undefined,
             );
         }
         // A method whose reached fields, parameters, and return all map
@@ -1927,6 +1953,20 @@ export class ClassLowerer {
                 call,
                 method,
                 returnType,
+                false,
+            );
+        }
+        if (
+            this.isStoredInstance(instance) &&
+            this.recursesThroughReceivers(declaration, method)
+        ) {
+            return this.compileRecursiveMethod(
+                instance,
+                methodName,
+                call,
+                method,
+                returnType,
+                true,
             );
         }
         const shared =
@@ -2075,13 +2115,29 @@ export class ClassLowerer {
         }
     }
 
-    /** Emit one native callable for a direct plain-data class recursion. */
+    /** The recursive groups whose bodies are being emitted, by callable. */
+    public activeRecursion(): readonly string[] {
+        return [...this.activeRecursiveMethods.values()].map(
+            (group) => group.cppName,
+        );
+    }
+
+    /**
+     * Emit one native callable for a plain-data class recursion.
+     *
+     * A method that reaches itself through `this` closes over its one
+     * instance. One that reaches itself through other stored instances -- a
+     * tree's `sum()` over its children -- takes its receiver as the first
+     * argument, so every instance runs the one callable; its body reads the
+     * receiver as each class that resolves the method to this declaration.
+     */
     private compileRecursiveMethod(
         instance: Value,
         methodName: string,
         call: ts.CallExpression,
         method: ts.MethodDeclaration,
         returnType: DataType | undefined,
+        overReceiver: boolean,
     ): Value {
         const parameters = method.parameters.map((parameter) => {
             if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken) {
@@ -2121,10 +2177,19 @@ export class ClassLowerer {
             );
         }
 
+        const receiverType = overReceiver ? instance.dataType : undefined;
+        const receiverClasses =
+            receiverType?.kind === "struct"
+                ? this.receiverClasses(receiverType.name, method)
+                : undefined;
         const specialization = this.emittedRecursiveMethods.key(
             this.context.functionEmissionScope(),
-            [instance, functionDependencies(this.context, [method])],
+            [
+                receiverClasses ?? instance,
+                functionDependencies(this.context, [method]),
+            ],
         );
+        const receiverCpp = receiverClasses ? instance.cpp : undefined;
         const previous = this.emittedRecursiveMethods.get(
             method,
             specialization,
@@ -2132,13 +2197,38 @@ export class ClassLowerer {
         if (previous)
             return this.compileRecursiveInvocation(
                 call,
-                previous,
+                previous.cpp,
+                previous.binding,
                 parameters,
                 returnType,
+                receiverCpp,
             );
         const prefix = this.context.allocateUserFunctionPrefix();
         const cppName = `${prefix}recursive_method`;
         const self = `${prefix}recursive_self`;
+        const receiver = `${prefix}receiver`;
+        if (receiverType) {
+            this.context.registerNativeBindingType(
+                receiver,
+                `const ${this.context.dataTypes.cppType(receiverType)}`,
+            );
+            this.context.registerNativeConstBinding(receiver, true);
+        }
+        const body =
+            receiverType?.kind === "struct" && receiverClasses
+                ? this.receiverRecord(
+                      {
+                          ...this.context.dataValue(receiver, receiverType),
+                          nativeLvalue: true,
+                      },
+                      this.context.dataTypes.classHierarchy.commonClass(
+                          receiverClasses,
+                      ),
+                      receiverClasses.length > 1 ? receiverClasses : undefined,
+                      this.context.dataTypes.classStruct(receiverType.name)
+                          ?.type,
+                  )
+                : instance;
         const returnCpp = returnType
             ? this.context.dataTypes.cppType(returnType)
             : "void";
@@ -2166,18 +2256,29 @@ export class ClassLowerer {
                 };
             },
         );
+        const lambdaParameters = [
+            `[[maybe_unused]] auto& ${self}`,
+            ...(receiverType
+                ? [
+                      `[[maybe_unused]] const ${this.context.dataTypes.cppType(receiverType)}& ${receiver}`,
+                  ]
+                : []),
+            ...cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`),
+        ];
         this.context.emit(
-            `auto ${cppName} = bbl::js::make_recursive_group([&]([[maybe_unused]] auto& ${self}${cppParameters.length ? ", " : ""}${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
+            `auto ${cppName} = bbl::js::make_recursive_group([&](${lambdaParameters.join(", ")}) -> ${returnCpp} {`,
         );
         this.context.increaseIndent();
         this.context.bindings.pushScope(prefix);
         const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
+        this.context.defineThis(body);
         this.activeRecursiveMethods.set(method, {
-            instance,
+            instance: body,
             cppName: `${self}.template call<0>`,
             parameters,
             returnType,
+            overReceiver,
+            binding: this.context.registerNativeBinding(self, true, true),
         });
         this.context.beginNativeFunctionBody(returnType);
         try {
@@ -2203,28 +2304,126 @@ export class ClassLowerer {
             this.context.decreaseIndent();
         }
         this.context.emit("});");
-        this.emittedRecursiveMethods.set(
-            method,
-            specialization,
-            `${cppName}.template call<0>`,
-        );
+        const group = {
+            cpp: `${cppName}.template call<0>`,
+            binding: this.context.registerNativeBinding(cppName, true, true),
+        };
+        this.emittedRecursiveMethods.set(method, specialization, group);
         return this.compileRecursiveInvocation(
             call,
-            `${cppName}.template call<0>`,
+            group.cpp,
+            group.binding,
             parameters,
             returnType,
+            receiverCpp,
         );
+    }
+
+    /**
+     * The concrete classes a stored struct holds that resolve `method`'s
+     * name to `method` itself: every receiver a receiver-form recursion can
+     * be called on.
+     */
+    private receiverClasses(
+        structName: string,
+        method: ts.MethodDeclaration,
+    ): ts.ClassDeclaration[] {
+        const stored = this.context.dataTypes.classStruct(structName);
+        const hierarchy = this.context.dataTypes.classHierarchy;
+        const name = method.name.getText();
+        return stored
+            ? hierarchy
+                  .concreteClasses(stored.declaration)
+                  .filter(
+                      (candidate) =>
+                          classMethod(this.table(candidate), name) === method,
+                  )
+            : [];
+    }
+
+    /** Whether an instance is a stored object: a `Ref` rather than a compile-time record. */
+    private isStoredInstance(instance: Value): boolean {
+        return (
+            instance.dataType?.kind === "struct" &&
+            this.context.dataTypes.isClassStruct(instance.dataType.name)
+        );
+    }
+
+    /**
+     * Whether `method` reaches itself through a receiver other than `this`
+     * -- a call written on another instance, directly or in a callback its
+     * body passes on, through the `this` methods it calls, or through the
+     * methods it calls on other instances of local classes.
+     */
+    private recursesThroughReceivers(
+        declaration: ts.ClassDeclaration,
+        method: ts.MethodDeclaration,
+    ): boolean {
+        const table = this.table(declaration);
+        const hierarchy = this.context.dataTypes.classHierarchy;
+        const explored = new EmissionSet<ts.MethodDeclaration>();
+        const reaches = (candidate: ts.MethodDeclaration): boolean => {
+            if (explored.has(candidate) || !candidate.body) return false;
+            explored.add(candidate);
+            return someAnalysisNode(candidate.body, (node) => {
+                if (
+                    !ts.isCallExpression(node) ||
+                    !ts.isPropertyAccessExpression(node.expression)
+                )
+                    return false;
+                if (
+                    node.expression.expression.kind ===
+                    ts.SyntaxKind.ThisKeyword
+                ) {
+                    const called = classMethod(
+                        table,
+                        node.expression.name.text,
+                    );
+                    return called !== undefined && reaches(called);
+                }
+                const called =
+                    this.context.checker.getResolvedSignature(
+                        node,
+                    )?.declaration;
+                if (
+                    node.expression.expression.kind ===
+                    ts.SyntaxKind.SuperKeyword
+                )
+                    return (
+                        called !== undefined &&
+                        ts.isMethodDeclaration(called) &&
+                        reaches(called)
+                    );
+                if (!called || !ts.isMethodDeclaration(called)) return false;
+                // Another instance runs one of the implementations its
+                // class resolves, which may come back to `method`.
+                const implementations = hierarchy.implementations(called);
+                return (
+                    called === method ||
+                    (implementations?.some(
+                        (implementation) =>
+                            implementation === method ||
+                            (implementation !== undefined &&
+                                reaches(implementation)),
+                    ) ??
+                        false)
+                );
+            });
+        };
+        return reaches(method);
     }
 
     private compileRecursiveInvocation(
         call: ts.CallExpression,
         cppName: string,
+        binding: NativeCaptureBinding,
         parameters: readonly {
             declaration: ts.ParameterDeclaration;
             type: DataType;
             borrowedWrapper: boolean;
         }[],
         returnType: DataType | undefined,
+        receiverCpp?: string,
     ): Value {
         if (call.arguments.length > parameters.length) {
             this.context.fail(
@@ -2270,14 +2469,20 @@ export class ClassLowerer {
                 return this.context.compileForDataSink(argument, type);
             },
         );
-        const invocation = `${cppName}(${argumentsCpp.join(", ")})`;
-        if (!returnType) {
-            return { kind: "void", cpp: invocation };
-        }
-        return {
-            ...this.context.dataValue(invocation, returnType),
-            requiresExplicitDiscard: true,
-        };
+        const invocation = `${cppName}(${[
+            ...(receiverCpp === undefined ? [] : [receiverCpp]),
+            ...argumentsCpp,
+        ].join(", ")})`;
+        // A closure calling the group names it, so it captures the group.
+        const value: Value = returnType
+            ? {
+                  ...this.context.dataValue(invocation, returnType),
+                  requiresExplicitDiscard: true,
+                  nativeCaptures: [binding],
+              }
+            : { kind: "void", cpp: invocation, nativeCaptures: [binding] };
+        this.context.useNativeValue(value);
+        return value;
     }
 
     /**

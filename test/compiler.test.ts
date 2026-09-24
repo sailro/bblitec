@@ -4730,7 +4730,35 @@ test("shares a reassigned array binding across stored callbacks", () => {
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\) = `));
     assert.match(
         result.cpp,
-        new RegExp(`array_shift\\(\\(\\*${storage[1]}\\)\\)`),
+        new RegExp(`array_shift_or_absent\\(\\(\\*${storage[1]}\\)\\)`),
+    );
+});
+
+test("reads an operand early only when a later one writes what it touches", () => {
+    const result = compileSource(`
+        let count = 1;
+        function half(value: number): number {
+            return value / 2;
+        }
+        function show(a: number, b: number): string {
+            return a + ":" + b;
+        }
+        count = 3;
+        const pure = show(half(count), half(4));
+        const draws = show(Math.random(), Math.random());
+    `);
+
+    assert.match(
+        result.cpp,
+        /bblscene::show\(bblscene::half\(v_count\), bblscene::half\(4\.0\)\)/,
+    );
+    const first = result.cpp.match(
+        /const double (v_bblite_native_argument_\d+) = bbl::js::random_js\(\);/,
+    );
+    assert.ok(first);
+    assert.match(
+        result.cpp,
+        new RegExp(`bblscene::show\\(${first[1]}, bbl::js::random_js\\(\\)\\)`),
     );
 });
 

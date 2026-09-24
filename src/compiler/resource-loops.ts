@@ -55,6 +55,7 @@ interface ResourceLoopContext
             LoweringServices,
             | "checker"
             | "symbols"
+            | "dataTypes"
             | "canvasSizeProperty"
             | "constArrayLiteral"
             | "knownCollectionCardinality"
@@ -172,7 +173,8 @@ function nativeTransformSet(
 
 /** Follow reached calls with readonly callback parameters bound to their source bodies. */
 export function walkReachedLoopNodes(
-    context: Pick<ResourceLoopContext, "checker" | "symbols">,
+    context: Pick<ResourceLoopContext, "checker" | "symbols"> &
+        Partial<Pick<ResourceLoopContext, "dataTypes">>,
     root: ts.Node,
     visit: (
         node: ts.Node,
@@ -260,44 +262,61 @@ export function walkReachedLoopNodes(
                         ? context.symbols.importedName(callee)
                         : undefined;
                     if (!imported && called) {
-                        let bound:
-                            | Map<ts.Symbol, SupportedFunction | undefined>
-                            | undefined;
-                        for (const [
-                            index,
-                            parameter,
-                        ] of called.parameters.entries()) {
-                            if (
-                                !ts.isParameter(parameter) ||
-                                !ts.isIdentifier(parameter.name) ||
-                                context.checker
-                                    .getTypeAtLocation(parameter)
-                                    .getCallSignatures().length === 0
-                            )
-                                continue;
-                            const symbol = declaredSymbol(
-                                context.checker,
-                                parameter.name,
-                            );
-                            if (!symbol) continue;
-                            const argument =
-                                node.arguments?.[index] ??
-                                parameter.initializer;
-                            bound ??= new Map(callbacks);
-                            bound.set(
-                                symbol,
-                                argument &&
-                                    isSupportedFunction(called) &&
-                                    parameterIsReadOnly(
-                                        context.checker,
-                                        called,
-                                        parameter.name,
-                                    )
-                                    ? callback(argument, callbacks)
-                                    : undefined,
-                            );
+                        // A method call runs whichever override the
+                        // receiver's class resolves; each binds the call's
+                        // callbacks to its own parameters.
+                        const targets = [
+                            called,
+                            ...((ts.isMethodDeclaration(called)
+                                ? context.dataTypes?.classHierarchy.implementations(
+                                      called,
+                                  )
+                                : undefined) ?? []),
+                        ].filter(
+                            (target, index, all): target is typeof called =>
+                                target !== undefined &&
+                                all.indexOf(target) === index,
+                        );
+                        for (const target of targets) {
+                            let bound:
+                                | Map<ts.Symbol, SupportedFunction | undefined>
+                                | undefined;
+                            for (const [
+                                index,
+                                parameter,
+                            ] of target.parameters.entries()) {
+                                if (
+                                    !ts.isParameter(parameter) ||
+                                    !ts.isIdentifier(parameter.name) ||
+                                    context.checker
+                                        .getTypeAtLocation(parameter)
+                                        .getCallSignatures().length === 0
+                                )
+                                    continue;
+                                const symbol = declaredSymbol(
+                                    context.checker,
+                                    parameter.name,
+                                );
+                                if (!symbol) continue;
+                                const argument =
+                                    node.arguments?.[index] ??
+                                    parameter.initializer;
+                                bound ??= new Map(callbacks);
+                                bound.set(
+                                    symbol,
+                                    argument &&
+                                        isSupportedFunction(target) &&
+                                        parameterIsReadOnly(
+                                            context.checker,
+                                            target,
+                                            parameter.name,
+                                        )
+                                        ? callback(argument, callbacks)
+                                        : undefined,
+                                );
+                            }
+                            walkFunction(target, bound ?? callbacks);
                         }
-                        walkFunction(called, bound ?? callbacks);
                     }
                     if (ts.isNewExpression(node)) {
                         const declaration =
@@ -555,6 +574,24 @@ function reachesSpecializingEffect(
 }
 
 /**
+ * An abstract method a call dispatches through: every concrete class under
+ * its class runs a body of its own, which the walk reaches too.
+ */
+function dispatchesToBodies(
+    context: Pick<ResourceLoopContext, "dataTypes">,
+    method: NonNullable<ts.Signature["declaration"]>,
+): boolean {
+    const implementations = ts.isMethodDeclaration(method)
+        ? context.dataTypes.classHierarchy.implementations(method)
+        : undefined;
+    return (
+        implementations !== undefined &&
+        implementations.length > 0 &&
+        implementations.every((implementation) => implementation?.body)
+    );
+}
+
+/**
  * Share function bodies whose reached effects have native representations.
  * A call through a function value runs its own native body; a callback
  * known at generation is lowered inside the shared body, where effects
@@ -595,7 +632,8 @@ export function reachesOpaqueCallee(
         if (
             resolved &&
             !resolved.getSourceFile().isDeclarationFile &&
-            !(isSupportedFunction(resolved) && resolved.body)
+            !(isSupportedFunction(resolved) && resolved.body) &&
+            !dispatchesToBodies(context, resolved)
         )
             opaque = true;
     });

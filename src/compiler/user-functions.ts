@@ -20,6 +20,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
@@ -1103,6 +1104,9 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "classLowerer"
+            | "evaluationOrder"
+            | "cppString"
             | "options"
             | "withAsyncActivation"
             | "compileAsyncCall"
@@ -2901,6 +2905,9 @@ export class UserFunctionLowerer {
                       ? context.activeThis()
                       : undefined,
                   functionDependencies(context, declarations),
+                  // A body calling a method whose recursive group is being
+                  // emitted calls that group, which the next group is not.
+                  context.classLowerer.activeRecursion(),
               ]);
         const previous =
             specialization === undefined
@@ -5201,6 +5208,10 @@ export class UserFunctionLowerer {
                     ));
         const values: Value[] = [];
         const expanded: Value[] = [];
+        // An argument a later one touches the storage of, either one
+        // writing it, is evaluated where JavaScript evaluates it (see
+        // `evaluation-order.ts`).
+        const ordered = context.evaluationOrder.operandsToPin(call.arguments);
         call.arguments.forEach((argument, index) => {
             const sink =
                 rest !== undefined && index >= rest ? expanded : values;
@@ -5292,13 +5303,22 @@ export class UserFunctionLowerer {
                 );
             } else {
                 sink.push(
-                    pinArguments && value.kind !== "callback"
-                        ? context.bindings.pinValueToTemporary(
-                              value,
-                              "call_argument",
-                              argument,
-                          )
-                        : value,
+                    value.kind === "callback"
+                        ? value
+                        : pinArguments
+                          ? context.bindings.pinValueToTemporary(
+                                value,
+                                "call_argument",
+                                argument,
+                            )
+                          : ordered[index]
+                            ? pinOperand(
+                                  context,
+                                  value,
+                                  argument,
+                                  "call_argument",
+                              )
+                            : value,
                 );
             }
         });

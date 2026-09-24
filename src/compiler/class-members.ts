@@ -468,6 +468,32 @@ export class ClassHierarchy {
         );
     }
 
+    /**
+     * The methods a call of `method` can run: the one each concrete class
+     * under its class resolves the name to, once each. Undefined for a
+     * method outside a local class body.
+     */
+    public implementations(
+        method: ts.MethodDeclaration,
+    ): readonly (ts.MethodDeclaration | undefined)[] | undefined {
+        const owner = method.parent;
+        if (
+            !ts.isClassDeclaration(owner) ||
+            owner.getSourceFile().isDeclarationFile ||
+            isStaticMember(method) ||
+            !ts.isMemberName(method.name)
+        )
+            return undefined;
+        const name = method.name.text;
+        return [
+            ...new Set(
+                this.concreteClasses(owner).map((candidate) =>
+                    classMethod(this.table(candidate), name),
+                ),
+            ),
+        ];
+    }
+
     /** The run-time tag of a concrete class within its hierarchy. */
     public tag(declaration: ts.ClassDeclaration): number {
         return this.concreteClasses(this.root(declaration)).indexOf(
