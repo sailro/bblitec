@@ -12,6 +12,7 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
@@ -80,6 +81,11 @@
 // attribute agreement below. Emitted only for a scene that builds a system.
 #if BBLITE_HAS_BILLBOARDS
 #include <bblite/upstream/billboard_system.hpp>
+#endif
+// The 2D layer family's generated header, for the renderer's in-place layer
+// sort its per-frame update runs.
+#if BBLITE_HAS_SPRITE_RENDERER
+#include <bblite/upstream/sprite_layer.hpp>
 #endif
 // Babylon Lite's own composed PBR variants: one entry per material feature
 // set the scene's assets reach, each naming its compiled stages and the byte
@@ -4069,6 +4075,7 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
             static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
+#if BBLITE_HAS_SPRITE_RENDERER
 /**
  * `spriteRendererUpdate` up to its upload: run the renderer's own per-frame
  * hooks with the frame's delta, then sort its layer list in place
@@ -4099,6 +4106,7 @@ inline void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle re
     }
     sort_sprite_renderer_layers(engine, handle_at(engine.sprite_renderers, renderer));
 }
+#endif
 
 /**
  * Whether a standalone driver's pass list still mirrors
