@@ -62,7 +62,7 @@ test("parameterizes a 64 by 64 box grid while retaining every composition row", 
     );
     assert.match(
         result.cpp,
-        /BoxOptions\{static_cast<float>\(\(v_\w+_x \+ 1\.0\)\)/,
+        /BoxOptions\{static_cast<float>\(\(static_cast<double>\(v_\w+_x\) \+ 1\.0\)\)/,
     );
 });
 
@@ -144,17 +144,22 @@ test("inclusive resource loops preserve endpoint values and empty ranges", () =>
             expected ? 1 : 0,
         );
         if (expected) {
+            // The native counter keeps both endpoints: it starts at the
+            // first and compares inclusively against the last.
             assert.match(
                 result.cpp,
-                new RegExp(`double v_\\w+_index = ${start}\\.0;`),
+                new RegExp(`std::int64_t v_\\w+_index = ${start};`),
             );
             assert.match(
                 result.cpp,
                 new RegExp(
-                    `for \\(; v_\\w+_index <= ${end}\\.0; v_\\w+_index\\+\\+\\)`,
+                    `for \\(; v_\\w+_index <= ${end}; \\+\\+v_\\w+_index\\)`,
                 ),
             );
-            assert.match(result.cpp, /\.position\.x = v_\w+_index;/);
+            assert.match(
+                result.cpp,
+                /\.position\.x = static_cast<double>\(v_\w+_index\);/,
+            );
         }
     }
 });
@@ -243,7 +248,7 @@ test("inline return inference does not fold a locally defined Math method", () =
     );
     // The authored bound is 4. It is read from mutable native storage, so
     // folding the spelling Math.round(3) into three construction rows is wrong.
-    assert.match(result.cpp, /for \(; \w+ <= v_count;/);
+    assert.match(result.cpp, /for \(; static_cast<double>\(\w+\) <= v_count;/);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
 });
 
@@ -427,7 +432,8 @@ test("accepts prefix increments and nonzero starts in counted resource loops", (
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 300);
-    assert.match(result.cpp, /for \(; v_\w+_i < 307\.0; \+\+v_\w+_i\)/);
+    assert.match(result.cpp, /std::int64_t v_\w+_i = 7;/);
+    assert.match(result.cpp, /for \(; v_\w+_i < 307; \+\+v_\w+_i\)/);
 });
 
 test("parameterizes resource helpers by resolved call symbols and live numeric arguments", () => {
@@ -952,7 +958,7 @@ test("parameterizes invariant material shape while keeping per-instance uniform 
     assert.equal(result.manifest.sceneMeshes.length, 300);
     assert.match(
         result.cpp,
-        /set_material_diffuse_color\([^;]+bbl::js::Array<double>\{\(v_\w+_i \/ 300\.0\), 0\.5, 1\.0\}/,
+        /set_material_diffuse_color\([^;]+bbl::js::Array<double>\{\(static_cast<double>\(v_\w+_i\) \/ 300\.0\), 0\.5, 1\.0\}/,
     );
 });
 
