@@ -23,8 +23,9 @@
  *   arms refuse by name (their record plumbing does not exist yet); the
  *   solo arm hands the merged geometry and the present-key config to
  *   the PAL, whose build replays `generateSoloNavMesh` — and the
- *   config defaults the PAL bakes are read from the installed
- *   `@recast-navigation/core` at its exact pinned version, not retyped.
+ *   wrapper's config defaults the build fills absent keys from are read
+ *   from the installed packages and emitted into the header it takes
+ *   them from, under the package versions they came from.
  * - `createDebugNavMeshGeometry` and `raycast` pass through to the PAL
  *   arms that carry their pinned arithmetic; the shapes here assert the
  *   pin still spells them the way those arms do.
@@ -45,12 +46,14 @@ import {
     variableInitializer,
 } from "./context.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { doubleLiteral } from "../cpp-literals.js";
+import { sharedUpstreamStore } from "../upstream-source.js";
+
+const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
 /**
  * `recastConfigDefaults` from the installed `@recast-navigation/core`,
- * pinned exact in package.json. The PAL bakes these numbers; reading
- * them from the package keeps them flowing from the pin rather than
- * living twice.
+ * pinned exact in package.json.
  */
 function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
     return wrapperNumericDefaults(
@@ -75,25 +78,169 @@ function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
 }
 
 /**
+ * `bbl::pal::NavBuildDefaults` (bblite/pal_navigation.hpp) field by field
+ * in declaration order, by the `recastConfigDefaults` key each carries.
+ * A key the package grows or drops refuses: the build would miss it, or
+ * read one the package no longer states.
+ */
+const RECAST_CONFIG_FIELDS: readonly (readonly [string, string])[] = [
+    ["borderSize", "border_size"],
+    ["tileSize", "tile_size"],
+    ["cs", "cs"],
+    ["ch", "ch"],
+    ["walkableSlopeAngle", "walkable_slope_angle"],
+    ["walkableHeight", "walkable_height"],
+    ["walkableClimb", "walkable_climb"],
+    ["walkableRadius", "walkable_radius"],
+    ["maxEdgeLen", "max_edge_len"],
+    ["maxSimplificationError", "max_simplification_error"],
+    ["minRegionArea", "min_region_area"],
+    ["mergeRegionArea", "merge_region_area"],
+    ["maxVertsPerPoly", "max_verts_per_poly"],
+    ["detailSampleDist", "detail_sample_dist"],
+    ["detailSampleMaxError", "detail_sample_max_error"],
+];
+
+/** The installed version of one `@recast-navigation` package. */
+function wrapperPackageVersion(name: string): string {
+    const require = createRequire(import.meta.url);
+    const manifest: unknown = JSON.parse(
+        readFileSync(require.resolve(`${name}/package.json`), "utf8"),
+    );
+    if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        !("version" in manifest) ||
+        typeof manifest.version !== "string"
+    ) {
+        throw new Error(`${name}'s package.json names no version.`);
+    }
+    return manifest.version;
+}
+
+/**
+ * The wrapper's build defaults as the PAL build takes them
+ * (`bbl::pal::NavBuildDefaults`), read from the installed packages and
+ * stamped with the versions they came from.
+ *
+ * Only one of `tileCacheGeneratorConfigDefaults`' own three reaches the
+ * build: `tileSize` and `maxObstacles` are what generation proves before
+ * the tile-cache arm is chosen at all, so a default for either would
+ * answer a question already asked.
+ */
+export function navigationBuildDefaultsDeclaration(): string {
+    const config = pinnedRecastConfigDefaults();
+    if (
+        config.size !== RECAST_CONFIG_FIELDS.length ||
+        RECAST_CONFIG_FIELDS.some(([key]) => !config.has(key))
+    ) {
+        throw new Error(
+            "@recast-navigation/core's recastConfigDefaults names " +
+                `[${[...config.keys()].join(", ")}], but ` +
+                "bbl::pal::NavBuildDefaults carries " +
+                `[${RECAST_CONFIG_FIELDS.map(([key]) => key).join(", ")}].`,
+        );
+    }
+    const expectedLayers = pinnedTileCacheDefaults().get(
+        "expectedLayersPerTile",
+    );
+    if (expectedLayers === undefined) {
+        throw new Error(
+            "@recast-navigation/generators' tileCacheGeneratorConfigDefaults " +
+                "no longer defaults expectedLayersPerTile.",
+        );
+    }
+    const fields = [
+        ...RECAST_CONFIG_FIELDS.map(
+            ([key, field]) =>
+                `    .${field} = ${doubleLiteral(config.get(key)!)},`,
+        ),
+        `    .expected_layers_per_tile = ${doubleLiteral(expectedLayers)},`,
+    ];
+    return `/**
+ * \`recastConfigDefaults\` from @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")} and
+ * \`tileCacheGeneratorConfigDefaults.expectedLayersPerTile\` from
+ * @recast-navigation/generators@${wrapperPackageVersion("@recast-navigation/generators")}, read from the installed packages.
+ */
+inline constexpr bbl::pal::NavBuildDefaults navigation_build_defaults{
+${fields.join("\n")}
+};`;
+}
+
+/**
+ * The PAL `NavAgentParams` byte field each `AgentParameters` flag lands
+ * in. Which of them the pinned `addAgent` defaults, and to what, is its
+ * own: `pinnedAgentParamDefaults` reads them.
+ */
+const AGENT_BYTE_FIELDS: ReadonlyMap<string, string> = new Map([
+    ["updateFlags", "update_flags"],
+    ["obstacleAvoidanceType", "obstacle_avoidance_type"],
+    ["queryFilterType", "query_filter_type"],
+]);
+
+let agentContext: LoweringContext | undefined;
+let agentDefaults: readonly (readonly [string, string, number])[] | undefined;
+
+/**
  * The `AgentParameters` fields the pinned `addAgent` resolves with a
  * `?? <default>` before the wrapper's spread ever sees them: the pinned
- * name, the PAL field it lands in, and the number.
- *
- * One copy for both ends, the shape `pinned-material-defaults.ts`
- * already holds for the UBO writers' discarded fallbacks.
- * `intrinsics/navigation.ts` emits these numbers, and `lowerNavigation`
- * builds its pinned-expression assertion out of the same entries — so a
- * moved number fails generation instead of splitting the two sides.
+ * name, the PAL field it lands in, and the pin's number, read from each
+ * `<name>: params.<name> ?? <N>` property of its `agentParams` record.
+ * `intrinsics/navigation.ts` emits these numbers where a scene leaves
+ * the field out.
  */
-export const PINNED_AGENT_PARAM_DEFAULTS: readonly (readonly [
+export function pinnedAgentParamDefaults(): readonly (readonly [
     string,
     string,
     number,
-])[] = [
-    ["updateFlags", "update_flags", 7],
-    ["obstacleAvoidanceType", "obstacle_avoidance_type", 0],
-    ["queryFilterType", "query_filter_type", 0],
-];
+])[] {
+    if (agentDefaults) return agentDefaults;
+    const context: LoweringContext = (agentContext ??= new LoweringContext(
+        sharedUpstreamStore(),
+    ));
+    const { file, declaration } = context.functionDeclaration(
+        NAVIGATION_MODULE,
+        "addAgent",
+    );
+    const agentParams = context.objectInitializer(declaration, "agentParams");
+    const defaults: (readonly [string, string, number])[] = [];
+    for (const property of agentParams.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const initializer = unwrapExpression(property.initializer);
+        if (
+            !ts.isBinaryExpression(initializer) ||
+            initializer.operatorToken.kind !==
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            continue;
+        }
+        const name = context.propertyName(property.name);
+        const path = context.propertyPath(initializer.left);
+        const field = name ? AGENT_BYTE_FIELDS.get(name) : undefined;
+        if (!name || path?.join(".") !== `params.${name}` || !field) {
+            context.contractError(
+                property,
+                "Expected addAgent to default only the agent parameter " +
+                    `bytes [${[...AGENT_BYTE_FIELDS.keys()].join(", ")}], ` +
+                    "each from its own params field.",
+            );
+        }
+        defaults.push([
+            name,
+            field,
+            context.numericValue(initializer.right, file),
+        ]);
+    }
+    if (defaults.length !== AGENT_BYTE_FIELDS.size) {
+        context.contractError(
+            agentParams,
+            "Expected addAgent to default every agent parameter byte " +
+                `[${[...AGENT_BYTE_FIELDS.keys()].join(", ")}].`,
+        );
+    }
+    agentDefaults = defaults;
+    return defaults;
+}
 
 function wrapperNumericDefaults(
     variableName: string,
@@ -148,62 +295,8 @@ export class NavigationLowerer {
      * rather than a run-time test of a fact already settled.
      */
     public lowerNavigation(tileCache: boolean): LoweredSource {
-        const modulePath = "src/navigation/navigation.ts";
+        const modulePath = NAVIGATION_MODULE;
         const symbolName = "createNavMesh";
-
-        // The PAL bakes `recastConfigDefaults`; this is the drift gate.
-        // A bumped @recast-navigation that moves a default fails
-        // generation here, naming the constant to move in
-        // pal_navigation_recast.cpp.
-        const bakedDefaults: readonly (readonly [string, number])[] = [
-            ["borderSize", 0],
-            ["tileSize", 0],
-            ["cs", 0.2],
-            ["ch", 0.2],
-            ["walkableSlopeAngle", 60],
-            ["walkableHeight", 2],
-            ["walkableClimb", 2],
-            ["walkableRadius", 0.5],
-            ["maxEdgeLen", 12],
-            ["maxSimplificationError", 1.3],
-            ["minRegionArea", 8],
-            ["mergeRegionArea", 20],
-            ["maxVertsPerPoly", 6],
-            ["detailSampleDist", 6],
-            ["detailSampleMaxError", 1],
-        ];
-        const packageDefaults = pinnedRecastConfigDefaults();
-        for (const [key, baked] of bakedDefaults) {
-            if (packageDefaults.get(key) !== baked) {
-                throw new Error(
-                    `@recast-navigation/core's recastConfigDefaults.${key} ` +
-                        `is ${packageDefaults.get(key)}, but ` +
-                        `pal_navigation_recast.cpp bakes ${baked}. Move ` +
-                        `the PAL constant with the package.`,
-                );
-            }
-        }
-        if (packageDefaults.size !== bakedDefaults.length) {
-            throw new Error(
-                "recastConfigDefaults grew a key the PAL does not bake.",
-            );
-        }
-
-        // The tile-cache arm's own default, gated the same way. Only one of
-        // that table's three reaches the PAL: `tileSize` and `maxObstacles`
-        // are what generation proves before the arm is chosen at all, so a
-        // default for either would answer a question already asked.
-        const tileCacheDefaults = pinnedTileCacheDefaults();
-        if (tileCacheDefaults.get("expectedLayersPerTile") !== 4) {
-            throw new Error(
-                "@recast-navigation/generators' " +
-                    "tileCacheGeneratorConfigDefaults." +
-                    "expectedLayersPerTile is " +
-                    `${tileCacheDefaults.get("expectedLayersPerTile")}, ` +
-                    "but pal_navigation_recast.cpp bakes 4. Move the PAL " +
-                    "constant with the package.",
-            );
-        }
 
         // _mergeMeshes: the world multiply rows and the winding reversal
         // the emitted merge folds. The pin's worldMatrix is applied as
@@ -387,7 +480,9 @@ export class NavigationLowerer {
         );
 
         // addAgent: the three `?? N` defaults the pinned module resolves
-        // before the wrapper sees them, and the index it hands back.
+        // before the wrapper sees them -- read off these same sites by
+        // `pinnedAgentParamDefaults`, which refuses a shape it does not
+        // know -- and the index it hands back.
         const { declaration: addAgent } = this.context.functionDeclaration(
             modulePath,
             "addAgent",
@@ -396,17 +491,7 @@ export class NavigationLowerer {
             addAgent,
             "agentParams",
         );
-        // The shapes are built FROM the shared table rather than typed
-        // beside it, so the numbers the intrinsic emits and the numbers
-        // the pin resolves are one copy: moving a table entry changes
-        // the expression asserted here and fails against the pin.
-        for (const [name, , value] of PINNED_AGENT_PARAM_DEFAULTS) {
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(agentParams, name),
-                `params.${name} ?? ${value}`,
-                `Agent parameter '${name}'`,
-            );
-        }
+        pinnedAgentParamDefaults();
         this.context.assertExpressionShape(
             this.context.propertyInitializer(agentParams, "userData"),
             "0",
@@ -575,6 +660,7 @@ void create_nav_mesh(
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
 ${obstacleDeclarations}
+${navigationBuildDefaultsDeclaration()}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -732,7 +818,7 @@ void create_nav_mesh(
     bbl::pal::navigation_create_${
         tileCache ? "tile_cache_nav_mesh" : "solo_nav_mesh"
     }(
-        plugin, merged, params);
+        plugin, merged, params, navigation_build_defaults);
 }
 
 /** A double the port carries, at the float width the seam takes. */

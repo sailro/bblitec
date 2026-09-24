@@ -35,6 +35,7 @@ template <auto Allocate> auto boundary_allocate() {
 #undef dtAllocNavMeshQuery
 #undef dtAllocCrowd
 #undef dtAllocTileCache
+#include "navigation_build_defaults.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <unordered_set>
@@ -67,16 +68,17 @@ int main() try {
     const NavMeshGeometry ground{{-10, 0, -10, -10, 0, 10, 10, 0, 10, 10, 0, -10},
                                  {0, 1, 2, 0, 2, 3}};
     const NavMeshBuildParams params{};
+    const NavBuildDefaults& defaults = bbl::upstream::navigation_build_defaults;
     {
         auto keep = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(keep, ground, params);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
         const auto stable_count = allocations.size();
         for (int iteration = 0; iteration < 100; ++iteration) {
             std::weak_ptr<NavigationPluginState> weak;
             {
                 auto plugin = navigation_create_plugin();
                 weak = plugin.ownership;
-                navigation_create_solo_nav_mesh(plugin, ground, params);
+                navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
                 auto crowd = navigation_create_crowd(plugin, 4, 0.5f);
                 const NavAgentParams agent_params{0.2f, 1.8f, 8, 3, 4, 8, 1, 0, 0, 0};
                 const int agent = navigation_add_agent(crowd, 0, 0, 0, agent_params);
@@ -96,7 +98,7 @@ int main() try {
                 "releasing another plugin invalidated the survivor");
         auto crowd = navigation_create_crowd(keep, 4, 0.5f);
         std::weak_ptr<NavigationMeshState> old_mesh = keep.ownership->mesh;
-        navigation_create_solo_nav_mesh(keep, ground, params);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
         require(!old_mesh.expired(), "mesh rebuild invalidated an existing crowd");
         navigation_update_crowd(crowd, 0.1f);
         crowd = {};
@@ -105,7 +107,7 @@ int main() try {
         // Fail each PAL allocation in a solo build. A failed replacement
         // must release intermediates and preserve the previous query/mesh.
         boundary_allocations = 0;
-        navigation_create_solo_nav_mesh(keep, ground, params);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
         const unsigned build_allocations = boundary_allocations;
         for (unsigned failure = 1; failure <= build_allocations; ++failure) {
             const auto before = allocations.size();
@@ -114,7 +116,7 @@ int main() try {
             fail_boundary = failure;
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(keep, ground, params);
+                navigation_create_solo_nav_mesh(keep, ground, params, defaults);
             } catch (const std::runtime_error&) {
                 failed = true;
             }

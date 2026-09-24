@@ -11,9 +11,8 @@
 // declaration to follow, rather than compiling into a scene that sounds
 // subtly wrong.
 //
-// It is the same shape `NavigationLowerer` gives `recastConfigDefaults`
-// and `PhysicsLowerer` gives the four frame phases: emit nothing, and
-// refuse the moment the thing being folded moves.
+// It is the same shape `PhysicsLowerer` gives the four frame phases:
+// emit nothing, and refuse the moment the thing being folded moves.
 //
 // The one statement the fold does NOT emit is asserted hardest.
 // `createAudioEngineAsync` runs `setMainOutVolume(engine._mainOut,

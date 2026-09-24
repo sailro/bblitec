@@ -73,9 +73,35 @@ struct NavOffMeshConnection {
 };
 
 /**
+ * The wrapper's build-config defaults: `recastConfigDefaults` and the
+ * tile-cache arm's `expectedLayersPerTile`, each a JavaScript number as
+ * the installed @recast-navigation packages state it. The generated
+ * navigation header reads them from the packages at generation and hands
+ * them to the build, which narrows each the way `createRcConfig` stores it.
+ */
+struct NavBuildDefaults {
+    double border_size;
+    double tile_size;
+    double cs;
+    double ch;
+    double walkable_slope_angle;
+    double walkable_height;
+    double walkable_climb;
+    double walkable_radius;
+    double max_edge_len;
+    double max_simplification_error;
+    double min_region_area;
+    double merge_region_area;
+    double max_verts_per_poly;
+    double detail_sample_dist;
+    double detail_sample_max_error;
+    double expected_layers_per_tile;
+};
+
+/**
  * The build parameters a reached `createNavMesh` may carry. Absent
- * fields take the wrapper's `recastConfigDefaults` inside the build,
- * exactly as its `{...defaults, ...cfg}` spread does.
+ * fields take the wrapper's defaults (`NavBuildDefaults`) inside the
+ * build, exactly as its `{...defaults, ...cfg}` spread does.
  */
 struct NavMeshBuildParams {
     std::optional<double> cs;
@@ -140,7 +166,8 @@ NavigationHandle navigation_create_plugin();
  * failure spelling when a stage fails.
  */
 void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                     const NavMeshBuildParams& params);
+                                     const NavMeshBuildParams& params,
+                                     const NavBuildDefaults& defaults);
 
 #ifndef BBLITE_HAS_NAV_TILE_CACHE
 #define BBLITE_HAS_NAV_TILE_CACHE 0
@@ -162,7 +189,8 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
  * stage fails.
  */
 void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                           const NavMeshBuildParams& params);
+                                           const NavMeshBuildParams& params,
+                                           const NavBuildDefaults& defaults);
 
 /**
  * One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
