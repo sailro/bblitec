@@ -25,7 +25,9 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
 
 Browser evidence is reused only at its pose, pin and scene module; stale evidence is recaptured and
 --recapture forces it. Only a plain parity run at the registry pose gates or recaptures a golden
-(--recapture-reference). --no-fail, suppressed features, seeked poses and single-sample comparisons
+(--recapture-reference); `npm run corpus:manifest -- --adopt-reference <id> --write` then records the new
+golden's digest and capture time as its provenance, refusing when its source, module, query or host
+page moved. --no-fail, suppressed features, seeked poses and single-sample comparisons
 against MSAA goldens are diagnostic. Shared residuals point to common inputs/behavior; backend-specific
 residuals to translation or transport.
 
