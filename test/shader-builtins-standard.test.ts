@@ -11,6 +11,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { fieldOffsets } from "../src/capture-uniforms.js";
+import { findPinnedTint } from "../src/tint-tool.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import {
@@ -978,9 +979,7 @@ test("pinned local renaming and WGSL formatting do not select shader behavior", 
     );
 });
 
-const tint =
-    process.env["TINT_PATH"] ??
-    join(root, "artifacts", "tools", "tint", "tint.exe");
+const tint = process.env["TINT_PATH"] ?? findPinnedTint(root) ?? "";
 test(
     "all shared vertex transports validate and compile with the installed pinned Tint",
     { skip: !existsSync(tint) },

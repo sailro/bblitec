@@ -1211,7 +1211,10 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "bblite-tint",
             ...(tools.bbliteTint
                 ? { path: tools.bbliteTint }
-                : { problem: "pinned Tint was not built" }),
+                : {
+                      problem:
+                          "not built from this checkout's tools/tint-sdl; run pwsh -File tools/build-tint.ps1",
+                  }),
         });
     }
     if (scope.labSound) {
