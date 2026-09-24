@@ -25,13 +25,13 @@ struct SdlStandaloneTextOps : SdlTextResourceOps {
         return binding;
     }
     std::shared_ptr<void> text_renderer_quad() { return renderer.quad; }
-    void begin_text_renderer_pass(const TextRendererState& renderer) {
+    void begin_text_renderer_pass(const TextRendererState& state) {
         SDL_GPUColorTargetInfo attachment{};
         attachment.texture = target;
-        attachment.clear_color = gpu_clear_color(owner->device, format,
-                                                 {renderer.clear_value.r, renderer.clear_value.g,
-                                                  renderer.clear_value.b, renderer.clear_value.a});
-        attachment.load_op = renderer.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        attachment.clear_color = gpu_clear_color(
+            owner->device, format,
+            {state.clear_value.r, state.clear_value.g, state.clear_value.b, state.clear_value.a});
+        attachment.load_op = state.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
         attachment.store_op = SDL_GPU_STOREOP_STORE;
         owned_pass = SDL_BeginGPURenderPass(command, &attachment, 1, nullptr);
         pass = owned_pass.get();

@@ -25,12 +25,12 @@ struct DawnStandaloneTextOps : DawnTextResourceOps {
         return binding;
     }
     std::shared_ptr<void> text_renderer_quad() { return renderer.quad; }
-    void begin_text_renderer_pass(const TextRendererState& renderer) {
+    void begin_text_renderer_pass(const TextRendererState& state) {
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         attachment.view = target;
-        attachment.clearValue = {renderer.clear_value.r, renderer.clear_value.g,
-                                 renderer.clear_value.b, renderer.clear_value.a};
-        attachment.loadOp = renderer.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
+        attachment.clearValue = {state.clear_value.r, state.clear_value.g, state.clear_value.b,
+                                 state.clear_value.a};
+        attachment.loadOp = state.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
         attachment.storeOp = WGPUStoreOp_Store;
         WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         descriptor.colorAttachmentCount = 1;
