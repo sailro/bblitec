@@ -17,6 +17,7 @@ import {
     uniformUsage,
     type WgslStruct,
 } from "./capture-uniforms.js";
+import { withoutPinnedProvenance } from "./pinned-provenance.js";
 
 /**
  * Pairing the browser's instrumented capture with the native one.
@@ -1445,7 +1446,9 @@ export function buildRenderDiff(
     // The arm comparison set: the composed pinned variants, which are what
     // the browser's own modules should be byte-for-byte, plus the deployed
     // .native.wgsl payload so a deployment that drifted from its source
-    // shows up as a split group instead of staying invisible.
+    // shows up as a split group instead of staying invisible. A deployed
+    // module is compared without the provenance line it opens with, which
+    // the browser's module has no counterpart of.
     const nativeArmTexts = new Map<string, string>();
     const variantDirectory = join(
         generatedDirectory,
@@ -1465,7 +1468,9 @@ export function buildRenderDiff(
         if (!name.endsWith(".native.wgsl")) continue;
         nativeArmTexts.set(
             `shaders/${name}`,
-            readFileSync(join(nativeShaderDirectory, name), "utf8"),
+            withoutPinnedProvenance(
+                readFileSync(join(nativeShaderDirectory, name), "utf8"),
+            ),
         );
     }
     // `pbrOrphans` rides beside the serialized arm sets, not inside them:

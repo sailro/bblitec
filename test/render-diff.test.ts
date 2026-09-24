@@ -19,6 +19,13 @@ import {
     type TextureUpload,
     type UniformField,
 } from "../src/render-diff.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { withoutPinnedProvenance } from "../src/pinned-provenance.js";
+
+/** The line a whole deployed pinned module opens with, as the lowering writes it. */
+function deployedProvenance(modulePath: string, symbolName: string): string {
+    return `// ${new LoweringContext().provenance(modulePath, symbolName)}\n`;
+}
 
 const header = `
 struct PbrUniforms {
@@ -530,6 +537,25 @@ test("matches shader arms by normalized content and opens the closest near miss"
     assert.equal(report.nearMiss?.line, 5);
     assert.deepEqual(report.nearMiss?.browserLines, ["  let arm = 2.0;", "}"]);
     assert.deepEqual(report.nearMiss?.nativeLines, ["  let arm = 3.0;", "}"]);
+});
+
+test("a deployed module drops exactly the provenance line the lowering writes", () => {
+    const module = "struct S { a : f32 }\n@fragment\nfn main() { }\n";
+    const provenance = deployedProvenance(
+        "src/sprite/billboard-pipeline.ts",
+        "makeBillboardWgsl",
+    );
+    assert.equal(withoutPinnedProvenance(provenance + module), module);
+    // Another opening comment is the module's own.
+    assert.equal(
+        withoutPinnedProvenance(`// billboard\n${module}`),
+        `// billboard\n${module}`,
+    );
+    // Only the opening line is the deployment's.
+    assert.equal(
+        withoutPinnedProvenance(module + provenance),
+        module + provenance,
+    );
 });
 
 test("two shaders sharing no line are not reported as a near miss", () => {
@@ -1246,14 +1272,18 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
             JSON.stringify({ "pass.drawIndexed(6,4,0,0)": 12 }),
         );
         // The browser composes the sprite program; the deployed
-        // .native.wgsl twin is byte-equal, so the arm comparison pairs
-        // them instead of reporting a one-sided module.
+        // .native.wgsl twin is the same module under the provenance line
+        // the lowering opens it with, so the arm comparison pairs them
+        // instead of reporting a one-sided module.
         const spriteModule =
             "// sprite2d\n@fragment\nfn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\n";
         writeFileSync(join(capture, "shaders", "00-sprite.wgsl"), spriteModule);
         writeFileSync(
             join(generated, "upstream", "shaders", "sprite.frag.native.wgsl"),
-            spriteModule,
+            deployedProvenance(
+                "src/sprite/sprite-renderer.ts",
+                "makeSpriteWgsl",
+            ) + spriteModule,
         );
         const nativeCapture = join(capture, "native-gpu.json");
         writeFileSync(
