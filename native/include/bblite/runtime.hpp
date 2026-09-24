@@ -4291,6 +4291,20 @@ inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
 }
 
 /**
+ * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
+ * parent `record` names, a transform node or a mesh. The traversal
+ * `children` lists are the pin's own arrays and keep their entries.
+ */
+inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
+    if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
+        std::erase(node->parented_meshes, mesh);
+    }
+    if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
+        std::erase(parent->parented_meshes, mesh);
+    }
+}
+
+/**
  * Stores a new mesh record and returns its handle.
  *
  * The pin's JavaScript collector frees a disposed mesh once nothing
@@ -4308,14 +4322,7 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
         const std::uint32_t slot = engine.free_mesh_slots.back();
         engine.free_mesh_slots.pop_back();
         MeshRecord& retired = engine.meshes[slot];
-        const MeshHandle stale{slot, retired.generation};
-        if (retired.transform_parent.value < engine.transform_nodes.size()) {
-            std::erase(engine.transform_nodes[retired.transform_parent.value].parented_meshes,
-                       stale);
-        }
-        if (retired.parent.value < engine.meshes.size()) {
-            std::erase(engine.meshes[retired.parent.value].parented_meshes, stale);
-        }
+        unregister_from_parents(engine, retired, MeshHandle{slot, retired.generation});
         record.generation = retired.generation + 1;
         retired = std::move(record);
         engine.mesh_material_scenes.erase(slot);
