@@ -613,6 +613,9 @@ export class DataTypeRegistry {
     private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
+    /** The records and enums a parsed document is read into, each with a `json_read`. */
+    private readonly jsonDecodedStructs = new EmissionMap<string, ts.Node>();
+    private readonly jsonDecodedEnums = new EmissionSet<string>();
     private readonly partialRecords = new EmissionSet<
         ts.Symbol | ts.Type | string
     >();
@@ -3332,6 +3335,96 @@ export class DataTypeRegistry {
         visit(dataType);
     }
 
+    /**
+     * A parsed document stored as `type` (`JSON.parse(text) as T`): read
+     * member by member by `bbl::js::json_decode`, which throws a TypeError
+     * naming a member of another type where JavaScript would keep it.
+     */
+    public jsonDecodeCpp(type: DataType, json: string, node: ts.Node): string {
+        const visit = (current: DataType): void => {
+            switch (current.kind) {
+                case "enum":
+                    this.enumFindStringCpp(current, "value", node);
+                    this.jsonDecodedEnums.add(current.name);
+                    return;
+                case "struct":
+                    if (this.jsonDecodedStructs.has(current.name)) return;
+                    this.jsonDecodedStructs.set(current.name, node);
+                    this.cppType(current);
+                    for (const field of this.structFields(current.name, node))
+                        visit(field.type);
+                    return;
+                case "optional":
+                    visit(current.inner);
+                    return;
+                case "vector":
+                    visit(current.element);
+                    return;
+                case "number":
+                case "boolean":
+                case "string":
+                case "json":
+                    return;
+                default:
+                    this.fail(
+                        node,
+                        `A parsed JSON document is not read into a '${current.kind}' value.`,
+                    );
+            }
+        };
+        visit(type);
+        return `bbl::js::json_decode<${this.cppType(type)}>(${json})`;
+    }
+
+    /** Whether a parsed document is read into a record anywhere. */
+    public readsParsedDocuments(): boolean {
+        return this.jsonDecodedStructs.size > 0;
+    }
+
+    private renderJsonDecoders(used: ReadonlySet<string>): string[] {
+        const structs = [...this.jsonDecodedStructs.keys()].filter((name) =>
+            used.has(name),
+        );
+        const enums = [...this.jsonDecodedEnums];
+        if (structs.length === 0 && enums.length === 0) return [];
+        const target = (name: string): string =>
+            `${name}${this.isReferenceStruct(name) ? "Data" : ""}`;
+        const signature = (type: string): string =>
+            `inline void json_read(const bbl::js::JsonValue& json, ${type}& value, [[maybe_unused]] std::string_view key)`;
+        const lines = [
+            ...enums.map((name) => `${signature(name)};`),
+            ...structs.map((name) => `${signature(target(name))};`),
+            "",
+        ];
+        for (const name of enums) {
+            lines.push(
+                `${signature(name)} {`,
+                '    if (!json.is_string()) bbl::js::json_read_mismatch(key, "a string");',
+                `    const auto found = ${name}_find_string(json.string_value());`,
+                `    if (!found) bbl::js::json_read_mismatch(key, ${stringLiteral(`one of ${name}'s strings`)});`,
+                "    value = *found;",
+                "}",
+                "",
+            );
+        }
+        for (const name of structs) {
+            lines.push(
+                `${signature(target(name))} {`,
+                '    if (!json.is_object()) bbl::js::json_read_mismatch(key, "an object");',
+            );
+            for (const field of this.structsByName.get(name)!.fields) {
+                const key = stringLiteral(field.sourceName);
+                lines.push(
+                    field.defaultWhenMissing
+                        ? `    if (const auto member = json.get(${key}); !member.is_undefined()) json_read(member, value.${field.name}, ${key});`
+                        : `    json_read(json.get(${key}), value.${field.name}, ${key});`,
+                );
+            }
+            lines.push("}", "");
+        }
+        return lines;
+    }
+
     /** One conversion contract for dynamic sinks and reflected native fields. */
     public jsonValueCpp(
         type: DataType,
@@ -3757,6 +3850,7 @@ export class DataTypeRegistry {
         }
         lines.push(...this.renderJsonCodecs(used.structs));
         lines.push(...this.renderJsonObjectViews(used.structs));
+        lines.push(...this.renderJsonDecoders(used.structs));
         lines.push("}  // namespace bblscene");
         return {
             standalone: lines

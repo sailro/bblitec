@@ -448,6 +448,9 @@ public:
         return native_ && native_->type() == typeid(T);
     }
 
+    /** Whether this object is a view of native storage rather than parsed members. */
+    [[nodiscard]] bool native_view() const { return static_cast<bool>(native_); }
+
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(array_);
         visitor(object_);
@@ -1080,6 +1083,84 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
         result.push_back(element.to_string());
     }
     return result;
+}
+
+// A parsed document stored where a record type is represented
+// (`JSON.parse(text) as T`), read into T member by member. JavaScript keeps
+// whatever the document holds; typed storage cannot, so a member of another
+// type throws a TypeError naming it where the document is stored. The
+// generated records add their own `json_read` overloads beside the structs.
+
+[[noreturn]] inline void json_read_mismatch(std::string_view key, std::string_view expected) {
+    throw NamedError("TypeError", "Parsed JSON member '" + std::string(key) + "' is not " +
+                                      std::string(expected) + ".");
+}
+
+inline void json_read(const JsonValue& json, double& value, std::string_view key) {
+    if (!json.is_number())
+        json_read_mismatch(key, "a number");
+    value = json.to_number();
+}
+
+inline void json_read(const JsonValue& json, bool& value, std::string_view key) {
+    if (!json.is_boolean())
+        json_read_mismatch(key, "a boolean");
+    value = json.strict_equals(true);
+}
+
+inline void json_read(const JsonValue& json, std::string& value, std::string_view key) {
+    if (!json.is_string())
+        json_read_mismatch(key, "a string");
+    value = json.string_value();
+}
+
+inline void json_read(const JsonValue& json, JsonValue& value, std::string_view) { value = json; }
+
+template <typename T>
+void json_read(const JsonValue& json, Nullable<T>& value, std::string_view key) {
+    if (json.is_null() || json.is_undefined()) {
+        value = std::nullopt;
+        return;
+    }
+    T present{};
+    json_read(json, present, key);
+    value = std::move(present);
+}
+
+template <typename T>
+void json_read(const JsonValue& json, Array<T>& values, std::string_view key) {
+    if (!json.is_array())
+        json_read_mismatch(key, "an array");
+    Array<T> read;
+    read.reserve(json.elements().size());
+    for (const JsonValue& element : json.elements()) {
+        T item{};
+        json_read(element, item, key);
+        read.push_back(std::move(item));
+    }
+    values = std::move(read);
+}
+
+/** An empty handle is the document's `null`; a native record viewed as JSON would lose its identity. */
+template <typename T> void json_read(const JsonValue& json, Ref<T>& value, std::string_view key) {
+    if (json.is_null() || json.is_undefined()) {
+        value = {};
+        return;
+    }
+    if (!json.is_object())
+        json_read_mismatch(key, "an object");
+    if (json.native_view())
+        json_read_mismatch(key,
+                           "a parsed object; a native record viewed as JSON keeps its identity");
+    auto read = make_ref<T>();
+    json_read(json, *read, key);
+    value = std::move(read);
+}
+
+template <typename T> [[nodiscard]] T json_decode(const JsonValue& json) {
+    T value{};
+    json_read(json, value, "(document)");
+    return value;
 }
 
 } // namespace bbl::js

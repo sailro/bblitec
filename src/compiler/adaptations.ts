@@ -12,6 +12,7 @@ export interface AdaptationContext extends Pick<
     | "erasedBrowserInstrumentation"
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
+    | "dataTypes"
     | "options"
     | "jsRandomReached"
     | "voxelFileStorageReached"
@@ -275,6 +276,20 @@ export function compileAdaptations(
             validation: [
                 "synchronous promise compiler and native execution fixture",
                 "pending-activation refusal tests",
+            ],
+        });
+    }
+    if (context.dataTypes.readsParsedDocuments()) {
+        adaptations.push({
+            id: "typed-json-read",
+            category: "language",
+            sourceSemantics:
+                "A parsed document asserted to a record type keeps whatever members it holds.",
+            nativeSemantics:
+                "Stored as the record, the document is read member by member; a member of another type throws a TypeError naming it where the document is stored.",
+            risk: "low",
+            validation: [
+                "native typed-read fixture against a JavaScript oracle",
             ],
         });
     }
