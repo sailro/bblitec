@@ -127,6 +127,7 @@ and performance.
 | NT-12 | low | 8-way backend `#if` matrix. | `pal_gpu_dispatch.hpp` table. | fixed |
 | NT-13 | med | `synchronize()`'s internal order (overlay refresh, rematch, draw lists, plan-mesh sync, storage publication, submit, camera update) is written per backend and still differs (storage publication). | A shared `synchronize_scene<Backend>` in the frame conductor owning the order, with backend hooks (with NT-4). | open |
 | NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | One `cmake -P` record script invoked by builders and doctor; artifacts record their variants; portfiles read PATCHES from the manifest. | open |
+| NT-15 | low | Three Dawn invalid-handle checks raise `GpuTransportError` (reaching the device-recovery listeners) where the SDL_GPU equivalents raise `std::runtime_error`. | One classification for an invalid handle on both backends. | open |
 
 ## Generated C++ (GC)
 
@@ -148,7 +149,7 @@ and performance.
 | GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | `float32Literal` and `floatLiteral` spell a float32-midpoint double as `Math.fround` stores it; table literals defer to them. | fixed |
 | GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
 | GC-16 | med | Physics node refs, property-animation targets, animated-mesh bindings and light include/exclude lists name a mesh by slot without its generation (`mesh_slot_handle` stopgap), so the retired-mesh check cannot see them. | Store `MeshHandle`s. | open |
-| GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | Route them through `handle_at`; keep the slot allocator raw. | open |
+| GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | `runtime.hpp` render-task, material, asset, storage-buffer and CSM helpers go through `handle_at`/`handle_find` (one shared validity predicate); the slot allocator stays raw. | fixed |
 | GC-18 | med | `handle_at` checks a generation only when the handle type carries one, so slot-only references (`PhysicsNodeRef`, `mesh_slot_handle` callers) pass unchecked and retirement scans child lists to protect them. | Store `MeshHandle`s (a variant for physics nodes), make a generation-carrying table reject generation-less handles at compile time, delete `mesh_slot_handle`. | open |
 | GC-19 | low | Slot reuse waits on `composition_feature_rows_initialized`, and `composition_feature_mesh` falls back to the creation ordinal, because composition rows have two identities. | Assign the row in `store_mesh_record` (clones take their source's). | open |
 

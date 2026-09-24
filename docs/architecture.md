@@ -79,7 +79,8 @@ belong to scene identity. Property and glTF animation retain separate playback c
 ## Runtime and memory
 
 - Handles reach engine records only through `bbl::handle_at`, which checks the table bound and, for meshes,
-  the slot generation; resolve them again after storage growth.
+  the slot generation, or `bbl::handle_find` where a missing record is an expected state (null where
+  `handle_at` refuses); resolve them again after storage growth.
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.

@@ -11161,25 +11161,12 @@ public:
 #if BBLITE_PINNED_MATERIALS
                     // A colour task that is not a caster pass reads its OWN
                     // pass block, which is the rule the SDL_GPU backend states
-                    // as `if (!shadow_task)` around its own push.
-                    //
-                    // It used to be written only for a task the scene gave its
-                    // own camera, on the reading that a second camera is the
-                    // only thing that moves the view-projection. It is not: the
-                    // matrix is built from the task's aspect, and that comes from
-                    // the task's TARGET. A task rendering the scene camera into
-                    // a target the canvas's shape does not share -- scene 187
-                    // renders into half the canvas width -- then drew through
-                    // the frame's matrix and came out squeezed by exactly the
-                    // ratio of the two extents.
-                    //
-                    // `!shadow_task` is the other half, and dropping it was a
-                    // regression: `task_matrix` is deliberately the ZERO matrix
-                    // for a caster pass, which has no camera view-projection to
-                    // build, so writing the block there hands every receiver a
-                    // zeroed one. Six shadow scenes and a demo moved on Dawn
-                    // alone while SDL_GPU stayed byte-identical -- which is the
-                    // differential naming the side before anything was read.
+                    // as `if (!shadow_task)` around its own push. Every such
+                    // task writes it, camera or not: the matrix is built from
+                    // the task's aspect, which comes from the task's target
+                    // (scene 187 renders into half the canvas width). A caster
+                    // pass writes none: its `task_matrix` is the zero matrix,
+                    // and a written block would hand every receiver zeros.
                     if (target_record.has_color && !shadow_task && task_camera) {
                         // The task's own pass block, in the pin's own shape: the
                         // frame's writer over the task's camera and matrix.
