@@ -218,6 +218,7 @@ async function transcodeTexture(
             );
             return (await runPageGlobal(server, "__transcodeBasis", {
                 serverName: "basis transcode server",
+                shared: true,
                 browserRequirement:
                     "Transcoding a Basis Universal texture requires Chrome or Edge.",
                 browserArgs: webgpuComputeBrowserArgs,

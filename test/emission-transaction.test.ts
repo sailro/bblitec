@@ -8,6 +8,7 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionTransaction,
+    emissionTransactionStatistics,
     EmissionWeakMap,
     EmissionWeakSet,
 } from "../src/compiler/emission-transaction.js";
@@ -50,6 +51,41 @@ test("declined emission restores object graphs and shared identities in place", 
     assert.deepEqual([...state.bytes], [1, 2]);
     assert.equal(state[symbol].enabled, true);
     assert.equal("leaked" in state, false);
+});
+
+test("rollback rewrites only the objects a declined probe changed", () => {
+    const unchanged = { count: 1 },
+        changed = { count: 1, label: "a", hidden: true };
+    const state = {
+        unchanged,
+        changed,
+        list: [unchanged],
+        lookup: new Map([["key", unchanged]]),
+    };
+    const before = emissionTransactionStatistics();
+    new EmissionTransaction(state).run(() => {
+        changed.count = 2;
+        Reflect.deleteProperty(changed, "label");
+        Object.defineProperty(changed, "hidden", { enumerable: false });
+        return false;
+    }, Boolean);
+    const after = emissionTransactionStatistics();
+    assert.deepEqual(
+        {
+            transactions: after.transactions - before.transactions,
+            rollbacks: after.rollbacks - before.rollbacks,
+            capturedObjects: after.capturedObjects - before.capturedObjects,
+            restoredObjects: after.restoredObjects - before.restoredObjects,
+        },
+        {
+            transactions: 1,
+            rollbacks: 1,
+            capturedObjects: 5,
+            restoredObjects: 1,
+        },
+    );
+    assert.deepEqual(Object.keys(changed), ["count", "hidden", "label"]);
+    assert.deepEqual(changed, { count: 1, label: "a", hidden: true });
 });
 
 test("nested commits remain reversible by their enclosing probe", () => {

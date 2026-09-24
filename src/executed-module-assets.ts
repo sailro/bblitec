@@ -172,6 +172,7 @@ window.__runModuleExport = () =>
     );
     const result: unknown = await runPageGlobal(server, "__runModuleExport", {
         serverName: `${relativePath} server`,
+        shared: true,
         browserRequirement:
             "Baking a scene module's own output requires Chrome or Edge.",
         browserArgs: canvasBakeBrowserArgs,

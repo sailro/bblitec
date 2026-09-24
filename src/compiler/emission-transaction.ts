@@ -2,14 +2,136 @@ type Undo = () => void;
 
 const transactions: EmissionTransaction[] = [];
 let nextTransaction = 1;
-const collectionBirths = new WeakMap<object, number>();
-const managedArrays = new WeakSet<object>();
+/** Collections and arrays that journal their own writes, by the transaction open at their creation. */
+const births = new WeakMap<object, number>();
+
+/** Transactions opened and declined, objects snapshotted, and objects a rollback found changed. */
+export interface EmissionTransactionStatistics {
+    transactions: number;
+    rollbacks: number;
+    capturedObjects: number;
+    restoredObjects: number;
+}
+
+const statistics: EmissionTransactionStatistics = {
+    transactions: 0,
+    rollbacks: 0,
+    capturedObjects: 0,
+    restoredObjects: 0,
+};
+
+export function emissionTransactionStatistics(): EmissionTransactionStatistics {
+    return { ...statistics };
+}
 
 function journalCollection(collection: object, snapshot: () => Undo): void {
     for (const transaction of transactions) {
-        if (collectionBirths.get(collection)! < transaction.id)
+        if (births.get(collection)! < transaction.id)
             transaction.recordCollection(collection, snapshot);
     }
+}
+
+function sameKeys(
+    current: readonly PropertyKey[],
+    captured: readonly PropertyKey[],
+): boolean {
+    if (current.length !== captured.length) return false;
+    for (let index = 0; index < current.length; ++index)
+        if (current[index] !== captured[index]) return false;
+    return true;
+}
+
+function sameDescriptor(
+    current: PropertyDescriptor,
+    captured: PropertyDescriptor,
+): boolean {
+    if (
+        current.enumerable !== captured.enumerable ||
+        current.configurable !== captured.configurable
+    )
+        return false;
+    if ("value" in captured)
+        return (
+            "value" in current &&
+            current.writable === captured.writable &&
+            Object.is(current.value, captured.value)
+        );
+    return (
+        !("value" in current) &&
+        current.get === captured.get &&
+        current.set === captured.set
+    );
+}
+
+/** Redefine only the properties a declined probe changed, in captured order. */
+function restoreProperties(
+    value: object,
+    keys: readonly PropertyKey[],
+    descriptors: readonly PropertyDescriptor[],
+): void {
+    const current = Reflect.ownKeys(value);
+    let restored = false;
+    if (!sameKeys(current, keys)) {
+        restored = true;
+        const captured = new Set(keys);
+        for (const key of current)
+            if (!captured.has(key)) Reflect.deleteProperty(value, key);
+    }
+    for (let index = 0; index < keys.length; ++index) {
+        const key = keys[index]!,
+            descriptor = descriptors[index]!,
+            now = Reflect.getOwnPropertyDescriptor(value, key);
+        if (!now || !sameDescriptor(now, descriptor)) {
+            restored = true;
+            Object.defineProperty(value, key, descriptor);
+        }
+    }
+    if (restored) ++statistics.restoredObjects;
+}
+
+function restoreBytes(bytes: Uint8Array, snapshot: Uint8Array): void {
+    for (let index = 0; index < snapshot.length; ++index) {
+        if (bytes[index] !== snapshot[index]) {
+            ++statistics.restoredObjects;
+            bytes.set(snapshot);
+            return;
+        }
+    }
+}
+
+function sameArray(value: unknown[], entries: readonly unknown[]): boolean {
+    if (value.length !== entries.length) return false;
+    for (let index = 0; index < entries.length; ++index) {
+        const present = index in entries;
+        if (
+            index in value !== present ||
+            (present && !Object.is(value[index], entries[index]))
+        )
+            return false;
+    }
+    return true;
+}
+
+function sameMap(
+    value: Map<unknown, unknown>,
+    entries: readonly (readonly [unknown, unknown])[],
+): boolean {
+    if (value.size !== entries.length) return false;
+    let index = 0;
+    for (const [key, entry] of value.entries()) {
+        const captured = entries[index++]!;
+        if (!Object.is(key, captured[0]) || !Object.is(entry, captured[1]))
+            return false;
+    }
+    return true;
+}
+
+function sameSet(value: Set<unknown>, entries: readonly unknown[]): boolean {
+    if (value.size !== entries.length) return false;
+    let index = 0;
+    for (const entry of value)
+        if (!Object.is(entry, entries[index++])) return false;
+    return true;
 }
 
 /** AST nodes, checker types and symbols are immutable compiler inputs. */
@@ -34,6 +156,7 @@ export class EmissionTransaction {
     private closed = false;
 
     public constructor(root: object, opaque: readonly object[] = []) {
+        ++statistics.transactions;
         for (const value of opaque) this.visited.add(value);
         this.capture(root);
         transactions.push(this);
@@ -43,21 +166,23 @@ export class EmissionTransaction {
         if (
             value === null ||
             typeof value !== "object" ||
-            this.visited.has(value) ||
-            isCompilerInput(value)
+            births.has(value) ||
+            this.visited.has(value)
         )
             return;
         this.visited.add(value);
         if (
-            value instanceof EmissionMap ||
-            value instanceof EmissionSet ||
-            managedArrays.has(value)
+            value instanceof WeakMap ||
+            value instanceof WeakSet ||
+            isCompilerInput(value)
         )
             return;
-        if (value instanceof WeakMap || value instanceof WeakSet) return;
+        ++statistics.capturedObjects;
         if (Array.isArray(value)) {
             const entries: unknown[] = value.slice();
             this.undo.push(() => {
+                if (sameArray(value, entries)) return;
+                ++statistics.restoredObjects;
                 value.length = entries.length;
                 for (let index = 0; index < entries.length; ++index) {
                     if (index in entries) value[index] = entries[index];
@@ -72,6 +197,8 @@ export class EmissionTransaction {
         } else if (value instanceof Map) {
             const entries: [unknown, unknown][] = [...value.entries()];
             this.undo.push(() => {
+                if (sameMap(value, entries)) return;
+                ++statistics.restoredObjects;
                 value.clear();
                 for (const [key, entry] of entries) value.set(key, entry);
             });
@@ -82,6 +209,8 @@ export class EmissionTransaction {
         } else if (value instanceof Set) {
             const entries: unknown[] = [...value];
             this.undo.push(() => {
+                if (sameSet(value, entries)) return;
+                ++statistics.restoredObjects;
                 value.clear();
                 for (const entry of entries) value.add(entry);
             });
@@ -93,26 +222,21 @@ export class EmissionTransaction {
                 value.byteLength,
             );
             const snapshot = bytes.slice();
-            this.undo.push(() => bytes.set(snapshot));
+            this.undo.push(() => restoreBytes(bytes, snapshot));
             return;
         } else if (value instanceof ArrayBuffer) {
             const bytes = new Uint8Array(value),
                 snapshot = bytes.slice();
-            this.undo.push(() => bytes.set(snapshot));
+            this.undo.push(() => restoreBytes(bytes, snapshot));
             return;
         }
-        const descriptors = Object.getOwnPropertyDescriptors(value);
-        this.undo.push(() => {
-            for (const key of Reflect.ownKeys(value)) {
-                if (!Object.hasOwn(descriptors, key))
-                    Reflect.deleteProperty(value, key);
-            }
-            Object.defineProperties(value, descriptors);
-        });
-        for (const key of Reflect.ownKeys(value)) {
-            const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+        const keys = Reflect.ownKeys(value);
+        const descriptors: PropertyDescriptor[] = [];
+        for (const key of keys)
+            descriptors.push(Reflect.getOwnPropertyDescriptor(value, key)!);
+        this.undo.push(() => restoreProperties(value, keys, descriptors));
+        for (const descriptor of descriptors)
             if ("value" in descriptor) this.capture(descriptor.value);
-        }
     }
 
     public record(undo: Undo): void {
@@ -130,9 +254,10 @@ export class EmissionTransaction {
             throw new Error("Emission transactions must close in order.");
         transactions.pop();
         this.closed = true;
-        if (!commit)
-            for (let index = this.undo.length - 1; index >= 0; --index)
-                this.undo[index]!();
+        if (commit) return;
+        ++statistics.rollbacks;
+        for (let index = this.undo.length - 1; index >= 0; --index)
+            this.undo[index]!();
     }
 
     public run<T>(probe: () => T, answered: (result: T) => boolean): T {
@@ -151,7 +276,7 @@ export class EmissionTransaction {
 export class EmissionMap<K, V> extends Map<K, V> {
     public constructor(entries?: Iterable<readonly [K, V]> | null) {
         super();
-        collectionBirths.set(this, transactions.at(-1)?.id ?? 0);
+        births.set(this, transactions.at(-1)?.id ?? 0);
         for (const [key, value] of entries ?? []) {
             for (const transaction of transactions) {
                 transaction.capture(key);
@@ -247,7 +372,7 @@ export class EmissionMap<K, V> extends Map<K, V> {
 export class EmissionSet<T> extends Set<T> {
     public constructor(values?: Iterable<T> | null) {
         super();
-        collectionBirths.set(this, transactions.at(-1)?.id ?? 0);
+        births.set(this, transactions.at(-1)?.id ?? 0);
         for (const value of values ?? []) {
             for (const transaction of transactions) transaction.capture(value);
             super.add(value);
@@ -371,7 +496,7 @@ export function emissionArray<T>(values: T[] = []): T[] {
             return Reflect.defineProperty(target, key, descriptor);
         },
     });
-    managedArrays.add(proxy);
+    births.set(proxy, createdIn);
     return proxy;
 }
 

@@ -183,6 +183,7 @@ async function runPrefilterInChromium(
         server,
         {
             serverName: "HDR prefilter server",
+            shared: true,
             browserRequirement:
                 "Exact HDR GGX prefiltering requires Chrome or Edge.",
             browserArgs: webgpuComputeBrowserArgs,
