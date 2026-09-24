@@ -392,7 +392,11 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
-import { ClassLowerer, staticClassMember } from "./compiler/classes.js";
+import {
+    ClassLowerer,
+    rejectClassStaticBlocks,
+    staticClassMember,
+} from "./compiler/classes.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import {
     assertDeterministicRandomUnreached,
@@ -1819,6 +1823,13 @@ class Compiler implements LoweringServices {
         );
         if (main) {
             this.hasMainEntry = true;
+            // Module scope beside `main` is not the program, but a class
+            // static block there still runs when the module evaluates.
+            for (const statement of this.sourceFile.statements) {
+                if (ts.isClassDeclaration(statement)) {
+                    rejectClassStaticBlocks(this, statement);
+                }
+            }
             return main.body!.statements;
         }
 

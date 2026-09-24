@@ -2192,6 +2192,35 @@ test("class static blocks refuse explicitly", () => {
     `),
         /Class static blocks are outside the supported subset/,
     );
+    // Declared beside `main` and never referenced: the module still
+    // evaluates the class.
+    assert.throws(
+        () =>
+            compileSource(`
+        class Unused { static { console.log("static block"); } }
+        async function main(): Promise<void> {
+            console.log("main");
+        }
+        main();
+    `),
+        /Class static blocks are outside the supported subset/,
+    );
+    // Declared in an imported module that nothing else makes observable.
+    const directory = resolve("artifacts/class-static-block-module");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "feature.ts"),
+        `class Unused { static { console.log("static block"); } }
+        export function describe(): string { return "feature"; }`,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                'import { describe } from "./feature.js"; console.log(describe());',
+                { fileName: join(directory, "entry.ts") },
+            ),
+        /Class static blocks are outside the supported subset/,
+    );
 });
 
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
