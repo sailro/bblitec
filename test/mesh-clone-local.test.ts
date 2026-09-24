@@ -237,6 +237,9 @@ int main() {
             "/WX",
             "/EHsc",
             "/O2",
+            // The morph-shadow range cache is one of the arrays a released
+            // geometry frees, in the scenes that carry it.
+            "/DBBLITE_SHADOW_MORPH_BOUNDS=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",

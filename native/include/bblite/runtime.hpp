@@ -1954,12 +1954,13 @@ struct ModelGeometry {
     /** The loader reversed source triangles for its baked material convention. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
+#if BBLITE_SHADOW_MORPH_BOUNDS
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
     // this is a WeakMap cache keyed on the mesh and invalidated when its
     // positions or target list change; a geometry's deltas cannot change
-    // once loaded, so there is nothing here to invalidate. Empty in every
-    // scene that never enables morph-target shadows.
+    // once loaded, so there is nothing here to invalidate. Only a scene
+    // that enables morph-target shadows carries it.
     //
     // `mutable` because it is memoization of immutable data and nothing
     // else: the caster collector reads the engine through a const
@@ -1968,6 +1969,7 @@ struct ModelGeometry {
     // differ. The alternative is folding it afresh every frame for every
     // target, which is what the pin's cache exists to avoid.
     mutable std::vector<std::array<Vec3, 2>> morph_bounds;
+#endif
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
@@ -2035,7 +2037,9 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.local_normals);
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
+#if BBLITE_SHADOW_MORPH_BOUNDS
     release_storage(geometry.morph_bounds);
+#endif
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
