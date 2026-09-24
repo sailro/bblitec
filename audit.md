@@ -56,7 +56,7 @@ and performance.
 | RDN-9 | low | UI composite WGSL duplicated. | One compositor per backend. | fixed |
 | RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
 | RDN-11 | low | Recast wrapper defaults copied without version provenance. | Emitted from the pinned wrapper packages, whose versions are recorded. | fixed |
-| RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Query half-extents and the 2048-node pool are emitted from the pinned wrapper and read by every search. Remaining: the generator config transforms are still hand-ported. | partial |
+| RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Query half-extents and the 2048-node pool are emitted from the pinned wrapper and read by every search. Each generator's build-config step (`generateSoloNavMeshData`/`generateTileCache`: region areas squared, detail sampling in cells, tile grid, padded tile extent) is lowered from the installed generators package into the generated navigation header and handed to the PAL over `NavRcConfig`; the hand port is deleted. | fixed |
 | RDN-13 | low | The pin sorts sprite `_layers` in place; native builds a fresh permutation each frame, so ties after an order change differ. | Stable in-place sort. | open |
 | RDN-14 | low | Billboard sorting under a floating origin and Sprite2D pivots use float where the pin uses numbers (205/206 identical today). | Double lanes. | open |
 | RDN-15 | low | `update_surface_cameras` gives every scene the primary frame delta, wrong for a scene with its own `fixedDeltaMs`. | Per-scene delta. | open |
@@ -65,6 +65,9 @@ and performance.
 | RDN-18 | low | A camera-less overlay or utility layer projects through the base camera on Dawn and the SDL_GPU swapchain overlay, and through none on SDL_GPU graph layers; the pin uses each layer's `cfg.cam ?? scene.camera`. | Align both backends on the pin. | open |
 | RDN-19 | low | Animation seek harness and glTF group operations (`set_animation_current_time`, `set_animation_speed_ratio`, `go_to_frame`, additive setters) take float where the pin passes numbers. | Double parameters. | open |
 | RDN-20 | med | The camera-less pass contract is ~26 `if (camera)` arms per backend, and render-task-base's `cfg.cam ?? scene.camera` / `cfg.clrColor ?? sc.clearColor` resolution is transcribed in each backend. | Lower the pass resolution once into an `upstream::` function; one shared pass-camera builder yielding the zero block; lowered pinned early returns do the per-renderable skips. | open |
+| RDN-21 | med | Tile-cache builds defaulted `expectedLayersPerTile` to the wrapper's 4; the pinned `_createNavMeshFromMerged` resolves `?? 1` first. | `createNavMesh` emits the pinned default read from the module; the PAL requires the key. | fixed |
+| RDN-22 | low | The PAL threw on a refused obstacle add, leaving the generated null check dead. | The PAL returns an empty optional and the generated layer refuses. | fixed |
+| RDN-23 | low | Arithmetic the generators hand to Detour after the config step is hand-ported in the PAL: solo `NavMeshCreateParams` walkable values and `buildBvTree`, tile-cache params and `maxTiles`, the tile/poly bit split (`dtIlog2`/`dtNextPow2`), `NavMeshParams.tileWidth`, `getBoundingBox` and `createRcConfig`'s spread. | Extend the step lowering to the arguments the generators pass to those Detour calls. | open |
 
 ## Compiler core (CC)
 
