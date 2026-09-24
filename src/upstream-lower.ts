@@ -8,8 +8,10 @@ import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
 import type { ShaderModuleDeclaration } from "./shader-composition.js";
 import {
+    reflectWgslBindingStruct,
     reflectWgslModule,
     reflectWgslStruct,
+    sameWgslMembers,
     wgslEntryPoints,
 } from "./shader-ir.js";
 import {
@@ -121,14 +123,6 @@ import {
 } from "./lowering/node-particle-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
 import { SpriteAnimationLowerer } from "./lowering/sprite-animation-lowerer.js";
-import {
-    billboardFragmentWgsl,
-    billboardVertexWgsl,
-} from "./shader-builtins-billboard.js";
-import {
-    spriteFragmentWgsl,
-    spriteVertexWgsl,
-} from "./shader-builtins-sprite.js";
 import {
     pinnedSplatShShader,
     pinnedSplatShader,
@@ -636,8 +630,9 @@ const SHADER_FAMILIES = {
     node: { vertex: "vs_main", fragment: "fs_main", pinnedBindings: true },
     /**
      * A pinned module deployed whole -- the Gaussian-splat module, the
-     * utility passes -- each stage entering where the module declares it
-     * does (`wholeModuleShader`).
+     * utility passes, the background arms, the sprite and billboard
+     * programs -- each stage entering where the module declares it does
+     * (`wholeModuleShader`).
      */
     pinnedModule: { vertex: "", fragment: "", pinnedBindings: true },
     /**
@@ -665,8 +660,9 @@ const SHADER_FAMILIES = {
         pinnedBindings: true,
     },
     /**
-     * Everything this repository authors or specializes: the sprite and
-     * billboard stages, and the Dawn utility passes.
+     * Everything this repository authors or specializes: the scene vertex
+     * stage, the blit, depth-only and diagnostic stages, and the retained-UI
+     * modules.
      */
     owned: {
         vertex: "mainVertex",
@@ -677,41 +673,59 @@ const SHADER_FAMILIES = {
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
-export interface SpriteVertexPermutation {
-    output: string;
+/** A reached sprite permutation, and the suffix its programs' stems take. */
+export interface SpriteProgramPermutation {
+    suffix: string;
     uvScroll: boolean;
     depthHosted: boolean;
 }
 
-/** The independently reached pure-2D/depth and base/UV-scroll vertex rows. */
-export function spriteVertexPermutations(options: {
+/** The independently reached pure-2D/depth and base/UV-scroll rows. */
+export function spritePermutations(options: {
     pure: boolean;
     depthHosted: boolean;
     uvScroll: boolean;
-}): SpriteVertexPermutation[] {
-    const permutations: SpriteVertexPermutation[] = [];
+}): SpriteProgramPermutation[] {
+    const permutations: SpriteProgramPermutation[] = [];
     const add = (
-        output: string,
+        suffix: string,
         uvScroll: boolean,
         depthHosted: boolean,
     ): void => {
-        permutations.push({ output, uvScroll, depthHosted });
+        permutations.push({ suffix, uvScroll, depthHosted });
     };
     if (options.pure) {
-        add("sprite.vert.native.wgsl", false, false);
+        add("", false, false);
     }
     if (options.depthHosted) {
-        add("sprite_depth.vert.native.wgsl", false, true);
+        add("_depth", false, true);
     }
     if (options.uvScroll && options.pure) {
-        add("sprite_uvscroll.vert.native.wgsl", true, false);
+        add("_uvscroll", true, false);
     }
     if (options.uvScroll && options.depthHosted) {
-        add("sprite_depth_uvscroll.vert.native.wgsl", true, true);
+        add("_depth_uvscroll", true, true);
     }
     return permutations;
 }
 
+/**
+ * A sprite program's stem: the stock program (0) or a custom one (its
+ * 1-based index), under a permutation. `sprite_program_stem`
+ * (pal_gpu_shared.hpp) names the same file from a layer's record.
+ */
+export function spriteProgramStem(
+    program: number,
+    permutation: SpriteProgramPermutation,
+): string {
+    const base =
+        program === 0
+            ? "sprite"
+            : program === 1
+              ? "sprite_custom"
+              : `sprite_custom_${program}`;
+    return `${base}${permutation.suffix}`;
+}
 /** Extra pinned origins implemented by the consolidated sprite_2d.cpp. */
 export const spriteCoreAdditionalProvenance = [
     {
@@ -846,6 +860,39 @@ function wholeModuleShader(
             },
         ],
     };
+}
+
+/**
+ * A billboard module binds the pin's per-pass scene block at group 0
+ * binding 0, which both backends fill from the mirrored `SceneUniforms`;
+ * a module declaring any other layout there refuses generation.
+ */
+function assertBillboardSceneBlock(
+    stem: string,
+    wgsl: string,
+    sceneWgsl: string,
+): void {
+    const declared = reflectWgslBindingStruct(wgsl, {
+        group: 0,
+        binding: 0,
+        name: "scene",
+    });
+    const mirrored = reflectWgslBindingStruct(sceneWgsl, {
+        group: 0,
+        binding: 0,
+        name: "scene",
+    });
+    if (
+        !declared ||
+        !mirrored ||
+        !sameWgslMembers(declared.members, mirrored.members)
+    ) {
+        refuseGeneration(
+            stem,
+            `Pinned ${stem} no longer binds the pin's scene block as ` +
+                "`scene` at @group(0) @binding(0).",
+        );
+    }
 }
 
 class GeneratedSourceWriter {
@@ -2474,83 +2521,60 @@ ${wgsl}`,
                 // A pure-2D scene has no renderer block to deploy it, so it
                 // deploys here; the renderer block below skips a second copy.
                 deployMipBlit();
-                const composeSpriteShader = (
-                    options: {
-                        uvScroll?: boolean;
-                        fragment?: string;
-                        extraTextures?: readonly string[];
-                        depthHosted?: boolean;
-                    } = {},
-                ) =>
-                    sprites.shaderSource(
-                        options.uvScroll ?? false,
-                        options.fragment,
-                        options.extraTextures ?? [],
-                        options.depthHosted ?? false,
-                    );
-                const shader = composeSpriteShader();
+                // Each program is the module the pin composes for a layer's
+                // permutation, deployed whole: both of its stages compile
+                // from it, so a custom program carries its own vertex stage
+                // and every stage of a pipeline shares one module's groups.
                 const provenance = context.provenance(
                     "src/sprite/sprite-pipeline.ts",
                     "makeSpriteWgsl",
                 );
-                const needsPureVertex =
-                    options.pureSpriteVertex !== false ||
-                    particlePrograms.plainSprite ||
-                    particlePrograms.sprite2dMultiply;
-                for (const permutation of spriteVertexPermutations({
-                    pure: needsPureVertex,
+                const customProvenance = context.provenance(
+                    "src/sprite/sprite-custom-shader.ts",
+                    "makeCustomSpriteWgsl",
+                );
+                const permutations = spritePermutations({
+                    pure:
+                        options.pureSpriteVertex !== false ||
+                        particlePrograms.plainSprite ||
+                        particlePrograms.sprite2dMultiply,
                     depthHosted: features.includes("sprite:2d-depth-host"),
                     uvScroll: features.includes("sprite:uv-scroll"),
-                })) {
-                    const permutationShader = composeSpriteShader({
+                });
+                for (const permutation of permutations) {
+                    const reached = {
+                        hasDepth: permutation.depthHosted,
                         uvScroll: permutation.uvScroll,
-                        depthHosted: permutation.depthHosted,
-                    });
-                    composedShaders.push({
-                        output: `upstream/shaders/${permutation.output}`,
-                        data: spriteVertexWgsl(provenance, permutationShader),
-                    });
+                    };
+                    // The stock program, only where a plain layer draws
+                    // with it: a scene whose every layer opts into a custom
+                    // shader compiles none.
+                    if (
+                        options.plainSpriteLayer ||
+                        particlePrograms.plainSprite
+                    ) {
+                        composedShaders.push(
+                            wholeModuleShader(
+                                spriteProgramStem(0, permutation),
+                                sprites.module(reached),
+                                provenance,
+                            ),
+                        );
+                    }
+                    // The pin composes one module per descriptor, from the
+                    // same prologue with the caller's body spliced in, so a
+                    // custom program is a module of its own per permutation.
+                    for (const [customIndex, custom] of customs.entries()) {
+                        composedShaders.push(
+                            wholeModuleShader(
+                                spriteProgramStem(customIndex + 1, permutation),
+                                sprites.module(reached, custom),
+                                customProvenance,
+                            ),
+                        );
+                    }
                 }
-                // The stock fragment, only where a plain layer draws with
-                // it: a custom layer keeps this vertex stage but brings its
-                // own fragment, so a scene whose every layer opts in would
-                // compile and deploy a stage nothing loads.
-                if (options.plainSpriteLayer || particlePrograms.plainSprite) {
-                    composedShaders.push({
-                        output: "upstream/shaders/sprite.frag.native.wgsl",
-                        data: spriteFragmentWgsl(provenance, shader),
-                    });
-                }
-                // The pin composes one module per descriptor, from the same
-                // prologue with the caller's body spliced in, so the custom
-                // program is a second file rather than an edit of the first
-                // — a renderer can hold both, and a plain layer draws the
-                // stock shader as it does when the fx hook is null.
-                for (const [customIndex, custom] of customs.entries()) {
-                    const customShader = composeSpriteShader({
-                        fragment: custom.fragment,
-                        extraTextures: custom.extraTextures,
-                    });
-                    const customProvenance = context.provenance(
-                        "src/sprite/sprite-custom-shader.ts",
-                        "makeCustomSpriteWgsl",
-                    );
-                    // Only the fragment: the pin composes the custom module
-                    // from the same prologue, so the vertex stage is the
-                    // stock text and a custom layer pairs the stock vertex
-                    // with this fragment. That also keeps the uv-scroll
-                    // vertex free to combine with it rather than needing a
-                    // fourth file for the pair.
-                    composedShaders.push({
-                        output:
-                            customIndex === 0
-                                ? "upstream/shaders/sprite_custom.frag.native.wgsl"
-                                : `upstream/shaders/sprite_custom_${customIndex + 1}.frag.native.wgsl`,
-                        data: spriteFragmentWgsl(
-                            customProvenance,
-                            customShader,
-                        ),
-                    });
+                if (customs.length > 0) {
                     generated.push({
                         modulePath: "src/sprite/sprite-custom-shader.ts",
                         symbolName: "makeCustomSpriteWgsl",
@@ -2558,8 +2582,7 @@ ${wgsl}`,
                 }
                 generated.push({
                     modulePath: "src/sprite/sprite-pipeline.ts",
-                    symbolName:
-                        "makeSpritePrologueWgsl,makeSpriteWgsl,buildSpriteLayerUbo",
+                    symbolName: "makeSpriteWgsl,buildSpriteLayerUbo",
                 });
             }
         }
@@ -2606,78 +2629,122 @@ ${wgsl}`,
             const customBillboard = options.spriteCustomShaders.find(
                 (entry) => entry.family === "billboard",
             );
+            // A billboard program binds the pin's per-pass scene block, so
+            // a scene whose composed families emit no header to carry the
+            // shared per-pass mirrors has them hoisted here, as a
+            // Standard-only scene hoists them into its own header.
+            const core = billboards.lowerCore();
+            const hoistsSharedMirrors =
+                (options.pinnedVariants ?? []).length === 0 &&
+                (options.pinnedStandardVariants ?? []).length === 0 &&
+                (options.nodeVariants ?? []).length === 0;
             this.writeSource(
                 "upstream/src/billboard_system.cpp",
-                billboards.lowerCore(),
+                hoistsSharedMirrors
+                    ? {
+                          ...core,
+                          header: `${core.header}${sharedPinnedMirrors(context, features)}`,
+                      }
+                    : core,
                 generated,
                 "upstream/include/bblite/upstream/billboard_system.hpp",
             );
-            const shader = billboards.shaderSource();
-            const provenance = context.provenance(
-                "src/sprite/billboard-pipeline.ts",
-                "makeBillboardWgsl",
-            );
-            // Unlike the 2D family, a billboard program is always a pair:
-            // the pin's composer exposes the view distance and the world
-            // position to a custom body, so each program's vertex stage
-            // travels with its fragment.
+            // Each program is the module the pin composes for a system,
+            // deployed whole: the pin's scene group at 0, the system's own
+            // at 1. `billboard_draw_plan` (pal_gpu_shared.hpp) names the
+            // same stems from a system's record.
+            const sceneWgsl = new RendererLowerer(
+                context,
+            ).compiledSceneUniformsWgsl();
             const pushBillboardProgram = (
-                name: string,
-                composed: ReturnType<typeof billboards.shaderSource>,
-                module?: { modulePath: string; symbolName: string },
+                stem: string,
+                wgsl: string,
+                module: { modulePath: string; symbolName: string },
             ): void => {
-                const own = module
-                    ? context.provenance(module.modulePath, module.symbolName)
-                    : provenance;
+                assertBillboardSceneBlock(stem, wgsl, sceneWgsl);
                 composedShaders.push(
-                    {
-                        output: `upstream/shaders/${name}.vert.native.wgsl`,
-                        data: billboardVertexWgsl(own, composed),
-                    },
-                    {
-                        output: `upstream/shaders/${name}.frag.native.wgsl`,
-                        data: billboardFragmentWgsl(own, composed),
-                    },
+                    wholeModuleShader(
+                        stem,
+                        wgsl,
+                        context.provenance(
+                            module.modulePath,
+                            module.symbolName,
+                        ),
+                    ),
                 );
-                if (module) generated.push(module);
+                if (
+                    !generated.some(
+                        (entry) => entry.symbolName === module.symbolName,
+                    )
+                )
+                    generated.push(module);
             };
-            // The stock pair, only where a plain system draws with it. Unlike
-            // the 2D family a custom billboard brings its own vertex stage
-            // too, so a scene whose every system opts in loads neither half.
+            const stock = {
+                modulePath: "src/sprite/billboard-pipeline.ts",
+                symbolName: "makeBillboardWgsl",
+            };
+            const axisLocked = features.includes(
+                "sprite:billboard-axis-locked",
+            );
+            const cutout = features.includes("sprite:billboard-cutout");
+            // The stock facing program, only where a plain system draws with
+            // it; the axis-locked and cutout arms where scene code reached
+            // them. A cutout system with alpha-to-coverage draws the
+            // transparent arm, which the pin's composer also emits for it.
             if (
                 options.plainBillboardSystem ||
                 particlePrograms.plainBillboard
             ) {
-                pushBillboardProgram("billboard", shader);
-            }
-            if (features.includes("sprite:billboard-cutout")) {
-                // The cutout arm discards below the cutoff and is otherwise
-                // the same stage, so like the second orientation it costs
-                // one file rather than a pair.
-                composedShaders.push({
-                    output: "upstream/shaders/billboard_cutout.frag.native.wgsl",
-                    data: billboardFragmentWgsl(
-                        provenance,
-                        billboards.shaderSource("facing", "cutout"),
-                    ),
-                });
-            }
-            // The billboard mirror of the 2D custom program, and the one
-            // place the two families differ: the pin's billboard composer
-            // exposes `viewDist` and the world position to a custom body, so
-            // its vertex stage writes two varyings the stock one does not and
-            // the pair travels together.
-            if (customBillboard) {
-                const shader = billboards.shaderSource(
-                    "facing",
-                    "transparent",
-                    customBillboard.fragment,
-                    customBillboard.extraTextures,
+                pushBillboardProgram(
+                    "billboard",
+                    billboards.module("facing", "transparent"),
+                    stock,
                 );
-                pushBillboardProgram("billboard_custom", shader, {
+            }
+            if (axisLocked) {
+                pushBillboardProgram(
+                    "billboard_axis_locked",
+                    billboards.module("axis-locked", "transparent"),
+                    stock,
+                );
+            }
+            if (cutout) {
+                pushBillboardProgram(
+                    "billboard_cutout",
+                    billboards.module("facing", "cutout"),
+                    stock,
+                );
+            }
+            if (axisLocked && cutout) {
+                pushBillboardProgram(
+                    "billboard_axis_locked_cutout",
+                    billboards.module("axis-locked", "cutout"),
+                    stock,
+                );
+            }
+            // The pin's custom composer takes the system's orientation, so
+            // each reached orientation has its own custom module.
+            if (customBillboard) {
+                const custom = {
                     modulePath: "src/sprite/billboard-custom-shader.ts",
                     symbolName: "makeCustomBillboardWgsl",
-                });
+                };
+                pushBillboardProgram(
+                    "billboard_custom",
+                    billboards.module("facing", "transparent", customBillboard),
+                    custom,
+                );
+                if (axisLocked) {
+                    pushBillboardProgram(
+                        "billboard_custom_axis_locked",
+                        billboards.module(
+                            "axis-locked",
+                            "transparent",
+                            customBillboard,
+                        ),
+                        custom,
+                    );
+                }
             }
             // The particle family's Multiply program, whose module the pin
             // writes itself. Mode 4 draws it and then the STOCK program over
@@ -2686,7 +2753,7 @@ ${wgsl}`,
             if (particlePrograms.billboardMultiply) {
                 pushBillboardProgram(
                     "billboard_particle_multiply",
-                    billboards.particleMultiplyShaderSource("facing"),
+                    billboards.particleMultiplyModule("facing"),
                     {
                         modulePath:
                             "src/particle/particle-billboard-renderable.ts",
@@ -2694,22 +2761,9 @@ ${wgsl}`,
                     },
                 );
             }
-            if (features.includes("sprite:billboard-axis-locked")) {
-                // The pin's composer swaps only the basis function; the
-                // fragment stage is the same text, so the second orientation
-                // costs one vertex stage rather than a pair.
-                composedShaders.push({
-                    output: "upstream/shaders/billboard_axis_locked.vert.native.wgsl",
-                    data: billboardVertexWgsl(
-                        provenance,
-                        billboards.shaderSource("axis-locked"),
-                    ),
-                });
-            }
             generated.push({
                 modulePath: "src/sprite/billboard-pipeline.ts",
-                symbolName:
-                    "makeBillboardWgsl,makeBillboardBasisWgsl,buildBillboardSystemUbo",
+                symbolName: "makeBillboardBasisWgsl,buildBillboardSystemUbo",
             });
         }
     }

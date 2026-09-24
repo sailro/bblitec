@@ -74,13 +74,14 @@ struct DawnSpriteLayerResources {
     // The custom shader's extra textures, in the order they bind after
     // the atlas.
     std::vector<DawnSampledTexture> extras;
-    WGPUBindGroup vertex_group = nullptr;
-    WGPUBindGroup texture_group = nullptr;
-    WGPUBindGroup fragment_group = nullptr;
+    // The one group the program's module declares, and where it sits: 0
+    // for a pure-2D layer, 1 behind the depth host's scene group.
+    WGPUBindGroup sprite_group = nullptr;
+    std::uint32_t sprite_group_index = 0;
     // The groups this layer's pipeline is laid out with. They belong to the
     // layer for the same reason the pipeline does: a custom shader adds the
-    // fx block to the fragment group, so the interface is the layer's.
-    std::array<WGPUBindGroupLayout, 4> group_layouts{};
+    // fx block and extra pairs to the group, so the interface is the layer's.
+    std::vector<WGPUBindGroupLayout> group_layouts;
     // Which layer this belongs to; the SDL_GPU sibling carries the same key
     // and for the same reason -- the pin keys `sr._layerGpu` by the layer.
     Sprite2DLayerHandle layer{};
@@ -229,40 +230,39 @@ inline void release_dawn_sprite_atlas_bindings(std::vector<DawnSpriteAtlasBindin
     bindings.clear();
 }
 
-/** The vertex stage a layer's plan draws with. */
-inline const char* sprite_vertex_stem(const SpriteLayerPipelinePlan& plan) {
-    return plan.has_depth ? (plan.scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
-                          : (plan.scroll ? "sprite_uvscroll.vert" : "sprite.vert");
-}
+/** A layer's program on Dawn: the pin's module under its stem, and its two stages. */
+struct DawnSpriteProgram {
+    std::string vertex;
+    std::string fragment;
+    DawnSpriteProgram(std::uint32_t custom_shader, const SpriteLayerPipelinePlan& plan)
+        : vertex(sprite_program_stem(custom_shader, plan) + ".vert"),
+          fragment(sprite_program_stem(custom_shader, plan) + ".frag") {}
+    std::array<DawnLayoutStage, 2> stages() const {
+        return {{{vertex, WGPUShaderStage_Vertex}, {fragment, WGPUShaderStage_Fragment}}};
+    }
+};
 
 /**
- * The four bind-group layouts one layer's pipeline is laid out with, each
- * from what the layer's two modules declare in that group (their `.slots`
- * layout lines).
- *
- * The generated WGSL is written in the SDL_GPU grouping -- vertex uniforms
- * at 1, the atlas pair and a custom program's extra pairs at 2, fragment
- * uniforms at 3 -- so group 0 is declared by neither module and lays out
- * empty, which keeps the pipeline layout's group indexes lined up with it.
- * A custom-shader layer's fragment declares the fx block beside its layer
- * block, which is why these belong to the layer rather than to the pass.
+ * The bind-group layouts one layer's pipeline is laid out with, each from
+ * what the program's two stages declare in that group (their `.slots`
+ * layout lines). The pin's module declares one group -- 0 for a pure-2D
+ * layer, 1 behind the depth host's scene group -- and a group before it
+ * lays out empty, which keeps the pipeline layout's group indexes lined up
+ * with the module's.
  */
-inline std::array<WGPUBindGroupLayout, 4>
+inline std::vector<WGPUBindGroupLayout>
 create_dawn_sprite_layer_layouts(WGPUDevice device, const SpriteLayerPipelinePlan& plan,
                                  std::uint32_t custom_shader) {
-    const std::string fragment = sprite_fragment_shader_name(custom_shader);
-    const std::array<DawnLayoutStage, 2> stages{{
-        {sprite_vertex_stem(plan), WGPUShaderStage_Vertex},
-        {fragment, WGPUShaderStage_Fragment},
-    }};
-    std::array<WGPUBindGroupLayout, 4> layouts{};
+    const DawnSpriteProgram program(custom_shader, plan);
+    const auto stages = program.stages();
+    std::vector<WGPUBindGroupLayout> layouts(dawn_reflected_group_count(stages));
     for (std::uint32_t group = 0; group < layouts.size(); ++group)
         layouts[group] = create_dawn_reflected_layout(device, stages, group);
     return layouts;
 }
 
 /**
- * One layer's pipeline and the shader modules it names.
+ * One layer's pipeline and the module it names.
  *
  * The uvScroll opt-in widens a layer's instance stride and adds an
  * attribute, so the layout participates in pipeline identity. Standalone
@@ -271,16 +271,14 @@ create_dawn_sprite_layer_layouts(WGPUDevice device, const SpriteLayerPipelinePla
  * layouts, with ownership held by that first layer.
  */
 inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
-    WGPUDevice device, const std::array<WGPUBindGroupLayout, 4>& group_layouts,
+    WGPUDevice device, const std::vector<WGPUBindGroupLayout>& group_layouts,
     const SpriteBlendDescriptor& blend, const SpriteLayerPipelinePlan& plan,
     std::uint32_t custom_shader, WGPUTextureFormat target_format, WGPUTextureFormat depth_format,
     std::uint32_t sample_count) {
-    DawnShaderModule vertex_module{load_wgsl_module(device, sprite_vertex_stem(plan))};
-    // The custom program replaces the fragment stage alone -- the pin
-    // composes it from the same prologue -- so it pairs with whichever
-    // vertex stage the layout chose.
-    const std::string fragment_name = sprite_fragment_shader_name(custom_shader);
-    DawnShaderModule fragment_module{load_wgsl_module(device, fragment_name)};
+    // The program's one module, deployed whole under the fragment stem;
+    // both stages enter where it declares them.
+    DawnShaderModule module{
+        load_wgsl_module(device, DawnSpriteProgram(custom_shader, plan).fragment)};
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
@@ -340,8 +338,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
         color_target.blend = &blend_state;
     }
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = fragment_module;
-    fragment_state.entryPoint = string_view("mainFragment");
+    fragment_state.module = module;
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
 
@@ -352,8 +349,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
 
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.module = module;
     descriptor.vertex.bufferCount = 1;
     descriptor.vertex.buffers = &instance_layout;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
@@ -373,9 +369,8 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     descriptor.fragment = &fragment_state;
     DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
     pipeline_layout.reset();
-    // The modules live only until the pipeline names them.
-    vertex_module.reset();
-    fragment_module.reset();
+    // The module lives only until the pipeline names it.
+    module.reset();
     if (!pipeline) {
         dawn_error("wgpuDeviceCreateRenderPipeline sprite");
     }
@@ -390,7 +385,7 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
     const DawnSpriteAtlasBinding& atlas_binding, WGPUTextureFormat target_format,
     WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined, std::uint32_t sample_count = 1u,
     WGPURenderPipeline shared_pipeline = nullptr,
-    std::array<WGPUBindGroupLayout, 4> shared_group_layouts = {}) {
+    std::vector<WGPUBindGroupLayout> shared_group_layouts = {}) {
     const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
     DawnSpriteLayer gpu{device};
     gpu.layer = handle;
@@ -422,57 +417,51 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
     gpu.atlas_view = atlas_binding.view;
     gpu.sampler = atlas_binding.sampler;
 
-    WGPUBindGroupEntry vertex_binding = WGPU_BIND_GROUP_ENTRY_INIT;
-    vertex_binding.binding = 0;
-    vertex_binding.buffer = gpu.layer_uniforms;
-    vertex_binding.size = 64;
-    WGPUBindGroupDescriptor vertex_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    vertex_group.layout = gpu.group_layouts[1];
-    vertex_group.entryCount = 1;
-    vertex_group.entries = &vertex_binding;
-    gpu.vertex_group = wgpuDeviceCreateBindGroup(device, &vertex_group);
-
-    std::vector<WGPUBindGroupEntry> texture_bindings;
-    append_dawn_texture_pair(texture_bindings, gpu.atlas_view, gpu.sampler);
     for (const PixelsTexture& extra : layer.custom_textures) {
         gpu.extras.push_back(upload_dawn_extra_texture(device, queue, extra));
-        append_dawn_texture_pair(texture_bindings, gpu.extras.back());
     }
-    WGPUBindGroupDescriptor texture_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    texture_group.layout = gpu.group_layouts[2];
-    texture_group.entryCount = static_cast<std::uint32_t>(texture_bindings.size());
-    texture_group.entries = texture_bindings.data();
-    gpu.texture_group = wgpuDeviceCreateBindGroup(device, &texture_group);
-
-    std::array<WGPUBindGroupEntry, 2> fragment_bindings{};
-    fragment_bindings[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    fragment_bindings[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    fragment_bindings[0].binding = 0;
-    fragment_bindings[0].buffer = gpu.layer_uniforms;
-    fragment_bindings[0].size = 64;
     if (layer.custom_shader) {
         gpu.fx_uniforms = dawn_sprite_uniform_buffer(device, upstream::sprite_fx_ubo_bytes);
-        fragment_bindings[1].binding = 1;
-        fragment_bindings[1].buffer = gpu.fx_uniforms;
-        fragment_bindings[1].size = upstream::sprite_fx_ubo_bytes;
     }
-    WGPUBindGroupDescriptor fragment_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    fragment_group.layout = gpu.group_layouts[3];
-    fragment_group.entryCount = layer.custom_shader ? 2u : 1u;
-    fragment_group.entries = fragment_bindings.data();
-    gpu.fragment_group = wgpuDeviceCreateBindGroup(device, &fragment_group);
+    // The one group the program's module declares, each binding served by
+    // the name the pin's composer declares it under.
+    const DawnSpriteProgram program(layer.custom_shader, sprite_layer_pipeline_plan(layer));
+    const auto stages = program.stages();
+    const std::uint32_t groups = static_cast<std::uint32_t>(gpu.group_layouts.size());
+    if (groups == 0 || dawn_reflected_layout(stages, groups - 1).empty())
+        dawn_error("sprite program " + program.fragment + " declares no group.");
+    for (std::uint32_t group = 0; group + 1 < groups; ++group) {
+        if (!dawn_reflected_layout(stages, group).empty())
+            dawn_error("sprite program " + program.fragment + " declares more than one group.");
+    }
+    gpu.sprite_group_index = groups - 1;
+    gpu.sprite_group = create_dawn_reflected_group(
+        device, gpu.group_layouts[gpu.sprite_group_index], stages, gpu.sprite_group_index,
+        [&](std::string_view name, WGPUBindGroupEntry& entry) {
+            if (name == "L") {
+                entry.buffer = gpu.layer_uniforms;
+                entry.size = sizeof(gpu.uploaded_layer_ubo);
+            } else if (name == "fx" && gpu.fx_uniforms) {
+                entry.buffer = gpu.fx_uniforms;
+                entry.size = upstream::sprite_fx_ubo_bytes;
+            } else if (name == "atlasTex") {
+                entry.textureView = gpu.atlas_view;
+            } else if (name == "atlasSamp") {
+                entry.sampler = gpu.sampler;
+            } else {
+                return serve_dawn_extra_texture(name, layer.custom_texture_names, gpu.extras,
+                                                entry);
+            }
+            return true;
+        });
     return gpu;
 }
 
 /** Release one layer's GPU objects. */
 inline void release_dawn_sprite_layer_resources([[maybe_unused]] WGPUDevice device,
                                                 DawnSpriteLayerResources& layer) noexcept {
-    if (layer.vertex_group)
-        wgpuBindGroupRelease(layer.vertex_group);
-    if (layer.texture_group)
-        wgpuBindGroupRelease(layer.texture_group);
-    if (layer.fragment_group) {
-        wgpuBindGroupRelease(layer.fragment_group);
+    if (layer.sprite_group) {
+        wgpuBindGroupRelease(layer.sprite_group);
     }
     release_dawn_extra_textures(layer.extras);
     if (layer.owns_pipeline && layer.pipeline) {
@@ -666,9 +655,8 @@ inline void upload_dawn_sprite_pass(WGPUDevice device, WGPUQueue queue, Engine& 
 inline void record_dawn_sprite_layer(WGPURenderPassEncoder encoder,
                                      const Sprite2DLayerRecord& layer, const DawnSpriteLayer& gpu) {
     wgpuRenderPassEncoderSetPipeline(encoder, gpu.pipeline);
-    wgpuRenderPassEncoderSetBindGroup(encoder, 1, gpu.vertex_group, 0, nullptr);
-    wgpuRenderPassEncoderSetBindGroup(encoder, 2, gpu.texture_group, 0, nullptr);
-    wgpuRenderPassEncoderSetBindGroup(encoder, 3, gpu.fragment_group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(encoder, gpu.sprite_group_index, gpu.sprite_group, 0,
+                                      nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(encoder, 0, gpu.instances, 0,
                                          static_cast<std::uint64_t>(layer.count) *
                                              layer.instance_floats_per_sprite * sizeof(float));
@@ -726,7 +714,7 @@ create_dawn_scene_sprite_pass(WGPUDevice device, WGPUQueue queue, DawnMipGenerat
             throw std::runtime_error("A scene-attached Sprite2D layer must have depth enabled.");
         }
         WGPURenderPipeline shared_pipeline = nullptr;
-        std::array<WGPUBindGroupLayout, 4> shared_group_layouts{};
+        std::vector<WGPUBindGroupLayout> shared_group_layouts;
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
             if (sprite_scene_pipeline_compatible(engine.sprite_layers[pass.handles[previous].value],
                                                  handle_at(engine.sprite_layers, handle))) {
@@ -774,7 +762,7 @@ inline void sync_dawn_scene_sprite_pass_pipelines(WGPUDevice device, WGPUQueue q
         const Sprite2DLayerHandle handle = pass.handles[index];
         const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
         WGPURenderPipeline shared_pipeline = nullptr;
-        std::array<WGPUBindGroupLayout, 4> shared_group_layouts{};
+        std::vector<WGPUBindGroupLayout> shared_group_layouts;
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
             if (sprite_scene_pipeline_compatible(engine.sprite_layers[pass.handles[previous].value],
                                                  layer)) {

@@ -21,11 +21,7 @@ import {
     vertexAttributeTableCpp,
     vertexFormatFloats,
 } from "./pinned-vertex-attributes.js";
-import {
-    extraTextureBindingsWgsl,
-    extraTextureRecords,
-} from "../shader-builtins-sprite-fx.js";
-import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
@@ -51,33 +47,17 @@ const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 const pickSpriteModule = "src/sprite/picking/pick-sprite-2d.ts";
 
-/** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
-export interface SpriteShaderSource {
-    /** `Lr` struct body, one field per line, as the pin declares it. */
-    layerStructFields: string;
-    /** `I` struct body: the per-instance vertex attributes. */
-    instanceStructFields: string;
-    /** `O` struct body: the interpolants. */
-    varyingStructFields: string;
-    /** The `vs` body between its braces. */
-    vertexBody: string;
-    /** The `fs` body between its braces. */
-    fragmentBody: string;
-    /**
-     * `SpriteFx` struct body, present only for a custom-shader layer. The
-     * pin declares the block in the same builder that splices the caller's
-     * fragment in, because a body that never names `fx` still has it bound.
-     */
-    fxStructFields?: string | undefined;
-    /**
-     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group, and empty when the body
-     * named none. Emitted by the pin's own builder, so the pair it writes
-     * per texture is the pin's.
-     */
-    extraTextureBindings: string;
+/** A reached sprite permutation: the depth host and uv-scroll opt-ins. */
+export interface SpritePermutation {
+    hasDepth: boolean;
+    uvScroll: boolean;
 }
 
+/** A custom-shader program: the caller's fragment body and its extra textures. */
+export interface SpriteCustomProgram {
+    fragment: string;
+    extraTextures: readonly string[];
+}
 /**
  * Lowers Babylon Lite's Sprite2D path.
  *
@@ -1092,93 +1072,46 @@ ${body}
     // -----------------------------------------------------------------
 
     /**
-     * Reconstructs the shader the pin builds for the reached permutation
-     * selected depth/uv permutation by evaluating its
-     * own template rather than by transcribing the result. Anything the
-     * evaluator cannot fold is a contract failure, so a changed shader
-     * stops generation instead of silently keeping this copy.
+     * The module the pin hands WebGPU for a layer's permutation, built by
+     * evaluating its own builder: `makeSpriteWgsl`, or -- for a
+     * custom-shader layer -- `makeCustomSpriteWgsl`, which composes the
+     * caller's body with the same prologue, its extra textures and the fx
+     * block. It is deployed whole: each stage enters where the module
+     * declares it does, the compiler keeps what that entry point reads, and
+     * the compaction re-homes the pin's one group for SDL_GPU. Anything the
+     * evaluator cannot fold is a contract failure, so a changed builder
+     * stops generation.
      */
-    public shaderSource(
-        uvScroll = false,
-        customFragment?: string,
-        extraTextures: readonly string[] = [],
-        hasDepth = false,
-    ): SpriteShaderSource {
-        const permutation = new Map<string, ShaderTextBinding>([
-            ["hasDepth", hasDepth],
-            ["spriteGroupIndex", hasDepth ? "1" : "0"],
-            ["uvScroll", uvScroll],
+    public module(
+        permutation: SpritePermutation,
+        custom?: SpriteCustomProgram,
+    ): string {
+        // The pin's own call: `makeSpriteWgsl(hasDepth, hasDepth ? 1 : 0,
+        // uvScroll)`, the depth host's scene group taking group 0.
+        const parameters = new Map<string, ShaderTextBinding>([
+            ["hasDepth", permutation.hasDepth],
+            ["spriteGroupIndex", permutation.hasDepth ? "1" : "0"],
+            ["uvScroll", permutation.uvScroll],
         ]);
-        // A custom-shader layer keeps the engine's vertex stage and
-        // replaces only the fragment body, which the pin expresses by
-        // composing the same prologue with the caller's text -- so one
-        // builder yields both halves here.
-        const composed =
-            customFragment === undefined
-                ? undefined
-                : this.shaderText.evaluate(
-                      customShaderModule,
-                      "makeCustomSpriteWgsl",
-                      new Map<string, ShaderTextBinding>([
-                          ...permutation,
-                          ["extraTextures", extraTextureRecords(extraTextures)],
-                          ["fragment", customFragment],
-                      ]),
-                  );
-        const prologue =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpritePrologueWgsl",
-                permutation,
-            );
-        const full =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpriteWgsl",
-                permutation,
-            );
-        return {
-            layerStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct Lr {`,
-                "sprite layer uniform struct",
-            ),
-            instanceStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct I {`,
-                "sprite instance struct",
-            ),
-            varyingStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct O {`,
-                "sprite varying struct",
-            ),
-            vertexBody: this.shaderText.braced(
-                prologue,
-                packagedWgsl`fn vs(in: I) -> O {`,
-                "sprite vertex stage",
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
-                "sprite fragment stage",
-            ),
-            fxStructFields: composed
-                ? this.shaderText.braced(
-                      composed,
-                      packagedWgsl`struct SpriteFx {`,
-                      "sprite fx uniform struct",
-                  )
-                : undefined,
-            extraTextureBindings: extraTextureBindingsWgsl(
-                this.shaderText,
-                extraTextures,
-            ),
-        };
+        return custom === undefined
+            ? this.shaderText.evaluate(
+                  pipelineModule,
+                  "makeSpriteWgsl",
+                  parameters,
+              )
+            : this.shaderText.evaluate(
+                  customShaderModule,
+                  "makeCustomSpriteWgsl",
+                  new Map<string, ShaderTextBinding>([
+                      ...parameters,
+                      [
+                          "extraTextures",
+                          extraTextureRecords(custom.extraTextures),
+                      ],
+                      ["fragment", custom.fragment],
+                  ]),
+              );
     }
-
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------

@@ -9866,9 +9866,13 @@ public:
                                      built.atlas_mip_levels);
                 }
             }
+            // The scene block each program binds at its group 0: the pass's
+            // own, over the matrices the frame draws billboards with.
+            const upstream::SceneUniforms billboard_block =
+                billboard_scene_block(scene, engine, camera, matrix, frame_view);
             for (DawnBillboardPass& billboard : state.billboard_passes) {
-                upload_dawn_billboard_pass(state.queue, scene, engine, billboard, matrix,
-                                           frame_view, delta_ms);
+                upload_dawn_billboard_pass(state.queue, scene, engine, billboard, billboard_block,
+                                           delta_ms);
             }
         }
 #endif

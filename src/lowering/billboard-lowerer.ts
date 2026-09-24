@@ -1,16 +1,12 @@
 import ts from "typescript";
 import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
-import {
-    extraTextureBindingsWgsl,
-    extraTextureRecords,
-} from "../shader-builtins-sprite-fx.js";
+import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
-import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import {
     type PinnedBinding,
@@ -40,7 +36,7 @@ const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
  * identical, so this is the whole difference between the two families of
  * billboard.
  */
-type BillboardOrientation = "facing" | "axis-locked";
+export type BillboardOrientation = "facing" | "axis-locked";
 
 /**
  * Which depth path a system draws through. The pin's `DEPTH_MODE_TABLE`
@@ -49,37 +45,12 @@ type BillboardOrientation = "facing" | "axis-locked";
  * selects a fragment arm, a pipeline state, and (per the module doc) the
  * slot the system draws in.
  */
-type BillboardDepthMode = "transparent" | "cutout";
+export type BillboardDepthMode = "transparent" | "cutout";
 
-/** The billboard shader, split into the pieces each backend re-homes. */
-export interface BillboardShaderSource {
-    /**
-     * Whether the vertex stage reads the system block. Derived from the
-     * pin's own basis rather than from a table here — an orientation that
-     * starts reading the lock axis picks the binding up by itself — but
-     * carried as a value so the WGSL emitter and the two PALs cannot state
-     * it differently.
-     */
-    vertexReadsSystemBlock: boolean;
-    systemStructFields: string;
-    basisFunction: string;
-    instanceStructFields: string;
-    varyingStructFields: string;
-    vertexBody: string;
-    fragmentBody: string;
-    /**
-     * `SpriteFx` struct body, present only for a custom-shader system. The
-     * block is bound whether or not the caller's body names `fx`, which is
-     * why it rides the source rather than being sniffed out of the text.
-     */
-    fxStructFields?: string | undefined;
-    /**
-     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group, and empty when the body
-     * named none. Emitted by the pin's own builder, so the pair it writes
-     * per texture is the pin's.
-     */
-    extraTextureBindings: string;
+/** A custom-shader program: the caller's fragment body and its extra textures. */
+export interface BillboardCustomProgram {
+    fragment: string;
+    extraTextures: readonly string[];
 }
 
 /**
@@ -547,139 +518,61 @@ inline double billboard_sort_compare(
     // -----------------------------------------------------------------
 
     /**
-     * The WGSL for the permutation scene code reaches, reconstructed by
-     * folding the pin's own builders.
+     * The module the pin hands WebGPU for a system's program, built by
+     * evaluating its own builder: `makeBillboardWgsl` for the stock
+     * program, or `makeCustomBillboardWgsl`, the pin's second composer,
+     * which keeps the world-space vertex stage, exposes the view distance
+     * and world position to the caller's body, and adds the fx block and
+     * extra textures. It is deployed whole, the pin's scene group at 0 and
+     * the system's own at 1, and the compaction re-homes both for SDL_GPU.
      */
-    public shaderSource(
-        orientation: BillboardOrientation = "facing",
-        depthMode: BillboardDepthMode = "transparent",
-        customFragment?: string,
-        extraTextures: readonly string[] = [],
-    ): BillboardShaderSource {
-        const permutation = new Map<string, ShaderTextBinding>([
-            ["orientation", orientation],
-            ["depthMode", depthMode],
-            ["alphaToCoverage", false],
-        ]);
-        // The custom composer is the pin's own second builder, not this one
-        // with a body swapped in: it keeps the world-space vertex stage and
-        // the varying contract, and adds the fx block the caller may read.
-        const composed =
-            customFragment === undefined
-                ? undefined
-                : this.shaderText.evaluate(
-                      customShaderModule,
-                      "makeCustomBillboardWgsl",
-                      // The three the pin's own composer takes: it has no
-                      // depth or coverage arm, so binding those would pre-fill
-                      // a parameter a later pin could add under either name.
-                      new Map<string, ShaderTextBinding>([
-                          ["orientation", orientation],
-                          ["extraTextures", extraTextureRecords(extraTextures)],
-                          ["fragment", customFragment],
-                      ]),
-                  );
-        const full =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeBillboardWgsl",
-                permutation,
-            );
-        const basis = this.shaderText.evaluate(
-            pipelineModule,
-            "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([["orientation", orientation]]),
-        );
-        return {
-            ...this.bracedShaderSections(full, basis, "billboard"),
-            fxStructFields: composed
-                ? this.shaderText.braced(
-                      composed,
-                      packagedWgsl`struct SpriteFx {`,
-                      "billboard fx uniform struct",
-                  )
-                : undefined,
-            extraTextureBindings: extraTextureBindingsWgsl(
-                this.shaderText,
-                extraTextures,
-            ),
-        };
+    public module(
+        orientation: BillboardOrientation,
+        depthMode: BillboardDepthMode,
+        custom?: BillboardCustomProgram,
+    ): string {
+        return custom === undefined
+            ? this.shaderText.evaluate(
+                  pipelineModule,
+                  "makeBillboardWgsl",
+                  new Map<string, ShaderTextBinding>([
+                      ["orientation", orientation],
+                      ["depthMode", depthMode],
+                      ["alphaToCoverage", false],
+                  ]),
+              )
+            : this.shaderText.evaluate(
+                  customShaderModule,
+                  "makeCustomBillboardWgsl",
+                  // The three the pin's own composer takes: it has no
+                  // depth or coverage arm, so binding those would pre-fill
+                  // a parameter a later pin could add under either name.
+                  new Map<string, ShaderTextBinding>([
+                      ["orientation", orientation],
+                      [
+                          "extraTextures",
+                          extraTextureRecords(custom.extraTextures),
+                      ],
+                      ["fragment", custom.fragment],
+                  ]),
+              );
     }
 
     /**
-     * The six pieces every billboard-family program splits into, extracted
-     * from one composed module under a family's own error labels. Both
-     * composers emit the same struct and stage markers, so the extraction
-     * is stated once and each caller adds only what its family declares
-     * beyond it.
-     */
-    private bracedShaderSections(
-        full: string,
-        basis: string,
-        labelPrefix: string,
-    ): Omit<BillboardShaderSource, "fxStructFields" | "extraTextureBindings"> {
-        return {
-            vertexReadsSystemBlock: basis.includes("billboards."),
-            systemStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct S {`,
-                `${labelPrefix} system uniform struct`,
-            ),
-            basisFunction: basis,
-            instanceStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct I {`,
-                `${labelPrefix} instance struct`,
-            ),
-            varyingStructFields: this.shaderText.braced(
-                full,
-                packagedWgsl`struct O {`,
-                `${labelPrefix} varying struct`,
-            ),
-            vertexBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn vs(in: I) -> O {`,
-                `${labelPrefix} vertex stage`,
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
-                `${labelPrefix} fragment stage`,
-            ),
-        };
-    }
-
-    /**
-     * The particle family's private Multiply program.
+     * The particle family's private Multiply module.
      *
      * It is a third billboard composer, not this one with a fragment swapped
      * in: `particle-billboard-renderable.ts` writes its own whole module so
      * the Multiply-only bundle carries no `SpriteFx` declaration, layout
-     * entry or per-frame write at all. Its vertex half is byte-identical to
-     * the stock stage today, and it is still taken from the pin's own
-     * builder — a builder that starts differing has to move what we deploy,
-     * not be caught by a comparison here.
+     * entry or per-frame write at all.
      */
-    public particleMultiplyShaderSource(
-        orientation: BillboardOrientation,
-    ): BillboardShaderSource {
-        const full = this.shaderText.evaluate(
+    public particleMultiplyModule(orientation: BillboardOrientation): string {
+        return this.shaderText.evaluate(
             particleMultiplyModule,
             "makeMultiplyWgsl",
             new Map<string, ShaderTextBinding>([["orientation", orientation]]),
         );
-        const basis = this.shaderText.evaluate(
-            pipelineModule,
-            "makeBillboardBasisWgsl",
-            new Map<string, string | boolean>([["orientation", orientation]]),
-        );
-        return {
-            ...this.bracedShaderSections(full, basis, "particle multiply"),
-            extraTextureBindings: "",
-        };
     }
-
     /**
      * `packBillboardPickUbo`, translated from `billboard-pick-pipeline.ts`.
      *

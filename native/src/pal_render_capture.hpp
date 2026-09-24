@@ -1281,8 +1281,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.handle("material", invalid_handle);
         json.handle("geometry", invalid_handle);
         json.field("billboardSystem", handle.value);
-        json.field("vertexStem", plan.vertex_stem);
-        json.field("fragmentStem", plan.fragment_stem);
+        json.field("programStem", plan.program_stem);
         json.field("orientation", plan.axis_locked ? "axisLocked" : "facing");
         json.field("depthMode", billboard_depth_mode_name(system.depth_mode));
         json.field("depthWrites", plan.cutout_writes_depth);

@@ -10,8 +10,11 @@ import {
 } from "../src/lowering/pinned-shader-builders.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
-import { spriteFragmentWgsl } from "../src/shader-builtins-sprite.js";
-import { billboardFragmentWgsl } from "../src/shader-builtins-billboard.js";
+import {
+    reflectWgslBindings,
+    wgslEntryPoints,
+    reflectWgslModule,
+} from "../src/shader-ir.js";
 
 /** The body scenes 92 and 94 pass, which reads `fx` and nothing else. */
 const TINT_BODY =
@@ -20,6 +23,19 @@ const TINT_BODY =
 function billboards(): BillboardLowerer {
     return new BillboardLowerer(new LoweringContext());
 }
+
+function sprites(): SpriteLowerer {
+    return new SpriteLowerer(new LoweringContext());
+}
+
+/** Each binding a module declares, as `group:binding name`. */
+function bindings(wgsl: string): string[] {
+    return reflectWgslBindings(wgsl).map(
+        ({ group, binding, name }) => `${group}:${binding} ${name}`,
+    );
+}
+
+const pure = { hasDepth: false, uvScroll: false };
 
 test("runs the pinned extra-binding loop over a bound list", () => {
     const text = new PinnedShaderBuilders(new LoweringContext());
@@ -70,110 +86,83 @@ test("executed pinned builders bind by the pin's own parameter names", () => {
     );
 });
 
-test("re-homes the extra-texture bindings after the atlas", () => {
-    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
-        false,
-        "return textureSample(paletteTex,paletteSamp,in.uv);",
-        ["palette"],
+test("binds the extra textures and fx block where the pin's composer puts them", () => {
+    const body = "return textureSample(paletteTex,paletteSamp,in.uv);";
+    const custom = { fragment: body, extraTextures: ["palette"] };
+    // The pin's one group: the layer block and the atlas pair, then the
+    // extra pairs and the fx block the custom composer appends. The module
+    // is deployed as the pin composes it, so these are its own numbers.
+    assert.deepEqual(bindings(sprites().module(pure, custom)), [
+        "0:0 L",
+        "0:1 atlasTex",
+        "0:2 atlasSamp",
+        "0:3 paletteTex",
+        "0:4 paletteSamp",
+        "0:5 fx",
+    ]);
+    // The billboard family's composer puts them in the system's group 1,
+    // after the pin's scene block at group 0.
+    const billboard = bindings(
+        billboards().module("facing", "transparent", custom),
     );
-    // The pin binds its extras after the atlas inside one group; this
-    // backend keeps fragment textures in a group of their own, so the pair
-    // lands after the atlas pair there.
-    assert.equal(
-        shader.extraTextureBindings,
-        "@group(2)@binding(2)var paletteTex:texture_2d<f32>;" +
-            "@group(2)@binding(3)var paletteSamp:sampler;",
-    );
-    assert.match(
-        spriteFragmentWgsl("test", shader),
-        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\)@binding\(2\)var paletteTex/,
-    );
-    // The billboard family re-homes them the same way, through the same
-    // helper — which is the reason it is one helper.
-    const billboard = billboards().shaderSource(
-        "facing",
-        "transparent",
-        "return textureSample(paletteTex,paletteSamp,in.uv);",
-        ["palette"],
-    );
-    assert.equal(billboard.extraTextureBindings, shader.extraTextureBindings);
-    assert.match(
-        billboardFragmentWgsl("test", billboard),
-        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\)@binding\(2\)var paletteTex/,
-    );
+    assert.equal(billboard[0], "0:0 scene");
+    assert.ok(billboard.includes("1:0 billboards"));
+    assert.ok(billboard.includes("1:1 atlasTex"));
+    assert.ok(billboard.some((row) => row.endsWith(" paletteTex")));
+    assert.ok(billboard.some((row) => row.endsWith(" fx")));
     // A body that names none declares none.
-    assert.equal(
-        new SpriteLowerer(new LoweringContext()).shaderSource(false, TINT_BODY)
-            .extraTextureBindings,
-        "",
+    assert.ok(
+        !bindings(
+            sprites().module(pure, { fragment: TINT_BODY, extraTextures: [] }),
+        ).some((row) => row.endsWith("Tex") && !row.endsWith(" atlasTex")),
     );
 });
 
 test("composes the custom sprite program from the pin's own builder", () => {
-    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
-        false,
-        TINT_BODY,
-    );
-    // The caller's body, verbatim, inside the stage the engine owns.
-    assert.equal(shader.fragmentBody, TINT_BODY);
-    // The fx struct is the pin's, not a copy: its padding slots are the
-    // ones `writeSpriteFxUbo` skips.
-    assert.match(shader.fxStructFields ?? "", /time:f32/);
-    assert.match(shader.fxStructFields ?? "", /params:vec4f/);
-    // The vertex stage is untouched, which is why a custom layer draws with
-    // the stock vertex shader.
-    const plain = new SpriteLowerer(new LoweringContext()).shaderSource();
-    assert.equal(shader.vertexBody, plain.vertexBody);
-    assert.equal(plain.fxStructFields, undefined);
+    const custom = sprites().module(pure, {
+        fragment: TINT_BODY,
+        extraTextures: [],
+    });
+    // The caller's body, verbatim, inside the module the engine composes,
+    // with the pin's fx struct -- its padding slots are the ones
+    // `writeSpriteFxUbo` skips.
+    assert.ok(custom.includes(TINT_BODY));
+    assert.match(custom, /time:f32/);
+    assert.match(custom, /params:vec4f/);
+    // One vertex and one fragment entry point, each stage compiled from
+    // the one module.
+    const module = reflectWgslModule(custom);
+    assert.equal(wgslEntryPoints(module, "vertex").length, 1);
+    assert.equal(wgslEntryPoints(module, "fragment").length, 1);
+    // A plain layer's module declares no fx block.
+    assert.ok(!sprites().module(pure).includes("SpriteFx"));
 });
 
-test("composes the pinned depth-hosted sprite vertex permutation", () => {
-    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
-        false,
-        undefined,
-        [],
-        true,
-    );
-    assert.match(shader.instanceStructFields, /@location\(6\)z:f32/);
-    assert.match(shader.vertexBody, /out\.p=vec4f\(n,1 - in\.z,1\)/);
-});
-
-test("declares both fragment uniform blocks for a custom sprite layer", () => {
-    const wgsl = spriteFragmentWgsl(
-        "test",
-        new SpriteLowerer(new LoweringContext()).shaderSource(false, TINT_BODY),
-    );
-    // The fx block sits beside the layer block, and both are declared
-    // whether or not this body reads them — the one it leaves alone does not
-    // reach the compiled shader, and which slots the survivors took is
-    // published beside that shader rather than decided from the text.
-    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> L: Lr/);
-    assert.match(wgsl, /@group\(3\) @binding\(1\) var<uniform> fx/);
-    // A plain layer has no fx block to declare.
-    assert.ok(
-        !spriteFragmentWgsl(
-            "test",
-            new SpriteLowerer(new LoweringContext()).shaderSource(),
-        ).includes("SpriteFx"),
-    );
+test("composes the pinned depth-hosted sprite permutation", () => {
+    const module = sprites().module({ hasDepth: true, uvScroll: false });
+    assert.match(module, /@location\(6\)z:f32/);
+    assert.match(module, /out\.p=vec4f\(n,1 - in\.z,1\)/);
+    // The depth host's scene group takes group 0, so the sprite's own
+    // group is 1.
+    assert.deepEqual(bindings(module), [
+        "1:0 L",
+        "1:1 atlasTex",
+        "1:2 atlasSamp",
+    ]);
 });
 
 test("gives the custom billboard program its own vertex stage", () => {
-    const custom = billboards().shaderSource(
-        "facing",
-        "transparent",
-        TINT_BODY,
-    );
-    const plain = billboards().shaderSource();
+    const custom = billboards().module("facing", "transparent", {
+        fragment: TINT_BODY,
+        extraTextures: [],
+    });
+    const plain = billboards().module("facing", "transparent");
     // The pin's billboard composer exposes the view distance and the world
-    // position to a custom body, so unlike the 2D family its vertex stage
-    // is not the stock one.
-    assert.notEqual(custom.vertexBody, plain.vertexBody);
-    assert.match(custom.varyingStructFields, /viewDist/);
-    assert.equal(custom.fragmentBody, TINT_BODY);
-    const wgsl = billboardFragmentWgsl("test", custom);
-    assert.match(wgsl, /@group\(3\) @binding\(0\) var<uniform> billboards/);
-    assert.match(wgsl, /@group\(3\) @binding\(1\) var<uniform> fx/);
+    // position to a custom body, so unlike the stock program its vertex
+    // stage writes two more varyings.
+    assert.match(custom, /viewDist/);
+    assert.doesNotMatch(plain, /viewDist/);
+    assert.ok(custom.includes(TINT_BODY));
 });
 
 test("refuses pixels that generation cannot produce", () => {

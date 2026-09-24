@@ -154,22 +154,26 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
     return texture.release();
 }
 
-/** Appends one texture and its sampler at the next two bindings. */
-inline void append_dawn_texture_pair(std::vector<WGPUBindGroupEntry>& into, WGPUTextureView view,
-                                     WGPUSampler sampler) {
-    WGPUBindGroupEntry sampled = WGPU_BIND_GROUP_ENTRY_INIT;
-    sampled.binding = static_cast<std::uint32_t>(into.size());
-    sampled.textureView = view;
-    WGPUBindGroupEntry sampler_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    sampler_entry.binding = static_cast<std::uint32_t>(into.size() + 1u);
-    sampler_entry.sampler = sampler;
-    into.push_back(sampled);
-    into.push_back(sampler_entry);
-}
-
-inline void append_dawn_texture_pair(std::vector<WGPUBindGroupEntry>& into,
-                                     const DawnSampledTexture& texture) {
-    append_dawn_texture_pair(into, texture.view, texture.sampler);
+/**
+ * Serves a custom shader's extra texture pair by the names the pin's
+ * composer declares it under -- `<name>Tex` and `<name>Samp` -- from the
+ * uploads kept in the descriptor's own order. False for any other name.
+ */
+inline bool serve_dawn_extra_texture(std::string_view declared,
+                                     const std::vector<std::string>& names,
+                                     const std::vector<DawnSampledTexture>& extras,
+                                     WGPUBindGroupEntry& entry) {
+    for (std::size_t index = 0; index < names.size() && index < extras.size(); ++index) {
+        if (declared == names[index] + "Tex") {
+            entry.textureView = extras[index].view;
+            return true;
+        }
+        if (declared == names[index] + "Samp") {
+            entry.sampler = extras[index].sampler;
+            return true;
+        }
+    }
+    return false;
 }
 
 inline void wait_for(WGPUInstance instance, WGPUFuture future) {
