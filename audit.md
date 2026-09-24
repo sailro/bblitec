@@ -68,7 +68,7 @@ and performance.
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | CC-1 | high | Nullable resource kinds classified by bare type name. | Declaration-origin checks; user `class Mesh`/`interface Material` compile. | fixed |
-| CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | Extract recorder, scopes, declarations, property access, conditions, browser predicates. | open |
+| CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | `SceneManifestRecorder`, `BindingScopes`, `ConditionLowerer`, browser predicates in `BrowserErasure`, `DeclarationLowerer` and `PropertyAccessLowerer` own their slices behind narrow contexts (19,183 → 10,725 lines; 448 → 349 service members; output identical). Remaining: closures, async/lifecycle, option adapters, the native-emission registry, assets and the `note*` admissions. | partial |
 | CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Needs generic support first: absent file-picker globals, escaping Promise `resolve`, `FileReader`, `JSON.parse(text) as T`. | open |
 | CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared; pinned and scene-code `Math.max/min` lower through one `math_extreme` at any arity (float writer lanes `math_extreme_lane`; camera controls included); pinned Uint32Array stores use `to_uint32`. Remaining: hand templates that spell `std::max`/`std::min` (RDT-1). | fixed |
 | CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` (bare names, `globalThis`, `window.`/`self.` members) at 185 sites; user declarations named `Number`, `String`, `Object` or `Map` lower as user code. Remaining: the platform timer arm accepts only bare names, and `undefined` has 12 hand checks. | partial |
@@ -78,11 +78,12 @@ and performance.
 | CC-9 | med | String and presence facts spelled per site. | String tests through `isStringValue` (5 → 32 callers); presence through `optionalPresentCpp`/`presenceCpp` (literal `has_value()` 61 → 12). Remaining: `truthinessCpp`, `optionalFoundCpp` and `conditionFromValue` sites each need a truthiness-versus-presence proof. | partial |
 | CC-10 | med | Methods inlined at every call; constant tables wrapped each element. | Tables emit typed literals (tetris `renderer.cpp` 1.96 → 0.83 MB). Method sharing is blocked by `canShareFunctionBody` refusals (function-typed parameters, retained-canvas reads). | partial |
 | CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `resolvedSymbol`/`aliasTarget` replace 19 alias idioms (`getAliasedSymbol` only in `symbols.ts`). Remaining: 93 raw lookups, mostly deliberate unresolved reads; value positions change imported-name behaviour. | partial |
-| CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators, folds, boolean comparisons and `instanceof`. Remaining: condition lowerer extraction. | partial |
+| CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators, folds, boolean comparisons and `instanceof`; `ConditionLowerer` owns conditions, and the static evaluator and data lowerer reach it directly. | fixed |
 | CC-13 | low | Literal `renderCanvas` id, silent GitHub asset fallback, `offsetX` as `clientX`. | Canvas keyed on `createEngine`; `--public-url` or refusal; offsets recorded as an adaptation. | fixed |
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
 | CC-16 | med | Lazy singletons (`let c: C \| null = null; c = new C()`) refused. | Rebound locals store their declared type. | fixed |
+| CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | One lookup spelling; a lookup hook for the two folds. | open |
 
 ## Lowering layer (LW)
 
@@ -109,10 +110,10 @@ and performance.
 | NT-4 | med | Feature families written twice inside two monoliths. | Paired family units, then shared orchestration. | open |
 | NT-5 | low | Enum mappings duplicated within each backend. | One formats header per backend. | fixed |
 | NT-6 | low | Standalone Run classes repeat phase boilerplate. | `RendererRun<Derived>`. | fixed |
-| NT-7 | high | Dawn/LabSound patch changes neither rebuilt nor refused installs. | Patch digests recorded and checked at configure and setup. | open |
-| NT-8 | med | Patches in 3 places, 5 mechanisms, no inventory. | `native/patches/manifest.json` and `patches:check`. | open |
-| NT-9 | med | RmlUi order by `zz` prefixes; zero-context hunks. | Numbered patches with context. | open |
-| NT-10 | low | Patches lack purpose headers; stale upstream notes. | Headers mirrored in the manifest. | open |
+| NT-7 | high | Dawn/LabSound patch changes neither rebuilt nor refused installs. | Dawn, LabSound, RmlUi and trimmed-SDL artifacts record their source and ordered patch digests; configure refuses a differing record and `dev:setup` rebuilds it. | fixed |
+| NT-8 | med | Patches in 3 places, 5 mechanisms, no inventory. | `native/patches/manifest.json` lists all 50 patches over 7 libraries; builders apply them one way; `patches:check` (in `lint`, and doctor) fails on orphans, headers, order, pins and consumers. | fixed |
+| NT-9 | med | RmlUi order by `zz` prefixes; zero-context hunks. | RmlUi patches renumbered in effective order with 3-line context; the old and new series produce byte-identical trees. | fixed |
+| NT-10 | low | Patches lack purpose headers; stale upstream notes. | Every owned patch opens with a purpose header mirrored in the manifest; upstream states corrected. | fixed |
 | NT-11 | low | Single-backend builds deployed both backends' shaders. | Deploy and payload checks filter by compiled backend. | fixed |
 | NT-12 | low | 8-way backend `#if` matrix. | `pal_gpu_dispatch.hpp` table. | fixed |
 
@@ -182,10 +183,10 @@ and performance.
 | TL-9 | low | Two JSON report writers. | One record module. | fixed |
 | TL-10 | low | Help/parser/doc drift. | Shared flag specs; generated usage. | fixed |
 | TL-11 | low | Dead entry points and aliases. | Deleted. | fixed |
-| TL-12 | low | Duplicated walkers and runners. | Shared in tooling. | partial |
+| TL-12 | low | Duplicated walkers and runners. | Walkers, runners and the record writer shared in `tooling/`; `validation-resume.ts` deleted. | fixed |
 | TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
 | TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
-| TL-15 | low | Package `.staging/` folders accumulate. | Remove after packaging. | open |
+| TL-15 | low | Package `.staging/` folders accumulate. | A published run removes its staging folder; a failed one keeps it. | fixed |
 | TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
 
 ## Building (BD)
@@ -196,17 +197,17 @@ and performance.
 | BD-2 | high | Emission transactions deep-copied compiler state (72.7% of quake generation). | Diff-based capture/rollback (quake −40% CPU); UI metadata answered without a probe. Remaining: journal plain compiler state. | partial |
 | BD-3 | med | Largest apps generated last. | Ordered by recorded cost. | fixed |
 | BD-4 | high | `demos:release` on Windows failed since 2026-09-18. | Array-preserving parallel arguments. | fixed |
-| BD-5 | med | ccache full and path-keyed per worktree. | `base_dir`, 25 GiB. | open |
-| BD-6 | med | No PCH under ccache. | Clang PCH with cache sloppiness. | open |
+| BD-5 | med | ccache full and path-keyed per worktree. | `base_dir`, 25 GiB. | fixed |
+| BD-6 | med | No PCH under ccache. | Clang PCH with cache sloppiness. | fixed |
 | BD-7 | med | Every unit receives all feature macros; header folder keyed on all headers. | Per-unit macros and header identity. | open |
 | BD-8 | med | Backend units compile once per scene shape. | Capability-independent code in shared units. | open |
 | BD-9 | med | `main.cpp` is each large app's critical path. | With GC-10. | open |
 | BD-10 | low | Shipping carries SDL software blitting and the MSVC demangler. | Demangler removed. Remaining: SDL blitter references. | partial |
-| BD-11 | med | Trimmed SDL records no patch set. | With NT-7. | open |
-| BD-12 | low | Two SDL trim options are not options. | Removed; guard requires a declared option. | open |
+| BD-11 | med | Trimmed SDL records no patch set. | The trimmed SDL records its patch set under NT-7's check. | fixed |
+| BD-12 | low | Two SDL trim options are not options. | Removed; the guard requires a declared (BOOL or INTERNAL) option. | fixed |
 | BD-13 | low | Packages ship vcpkg SDL's 349 KB licence. | Windows packages ship the trimmed SDL's notices (5,196 B). Remaining: Android/iOS copy vcpkg's notice; the shipping profile still installs vcpkg SDL. | partial |
-| BD-14 | low | `--plan` failed before generation. | Plan generates first. | open |
-| BD-15 | low | Startup failures discarded output. | Output tail; long paths refused. | open |
+| BD-14 | low | `--plan` failed before generation. | Plan generates first. | fixed |
+| BD-15 | low | Startup failures discarded output. | Output tail; long paths refused. | fixed |
 | BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Key the shared install by manifest identity. | open |
 
 ## Workers (WK)
