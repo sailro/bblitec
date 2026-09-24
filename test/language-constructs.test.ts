@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -7,9 +6,8 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 // The generic TypeScript user-code surface: every source below runs its own
@@ -832,32 +830,8 @@ async function executeGeneratedAssertions(
     await t.test(
         "generated C++ executes the same assertions",
         { skip: !native },
-        () => {
-            const directory = resolve("artifacts/language-constructs", name);
-            mkdirSync(directory, { recursive: true });
-            const cpp = join(directory, "check.cpp"),
-                exe = join(directory, "check.exe");
-            writeFileSync(cpp, source);
-            runNativeFixtureCompiler(native!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
-                "/fp:precise",
-                "/utf-8",
-                "/I",
-                "native/include",
-                "/I",
-                join(nativeFixtureVcpkgRoot, "include"),
-                `/Fo:${directory}/`,
-                `/Fe:${exe}`,
-                cpp,
-            ]);
-            execFileSync(exe, { stdio: "pipe" });
-        },
+        () =>
+            runGeneratedProgram(native!, `language-constructs/${name}`, source),
     );
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 
@@ -163,6 +163,41 @@ export function runNativeFixtureCompiler(
             { cause: error },
         );
     }
+}
+
+/**
+ * Compiles one generated translation unit in `artifacts/<name>` and runs it:
+ * a failed assertion or an uncaught throw in the program fails the caller.
+ */
+export function runGeneratedProgram(
+    tools: WindowsBuildTools,
+    name: string,
+    cpp: string,
+): void {
+    const directory = resolve("artifacts", name);
+    mkdirSync(directory, { recursive: true });
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(source, cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/fp:precise",
+        "/utf-8",
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        source,
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */
