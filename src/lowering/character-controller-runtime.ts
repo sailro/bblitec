@@ -89,13 +89,10 @@ ${characterControllerAdapter(defaultRotation, defaultScale, asleep.kind === ts.S
 export function characterCollisionObservableSource(
     context: LoweringContext,
 ): string {
-    const observable = context
-        .sourceFile(characterControllerModule)
-        .statements.find(
-            (node): node is ts.ClassDeclaration =>
-                ts.isClassDeclaration(node) &&
-                node.name?.text === "CharacterCollisionObservable",
-        )!;
+    const observable = context.classDeclaration(
+        characterControllerModule,
+        "CharacterCollisionObservable",
+    ).declaration;
     for (const [name, source] of [
         [
             "add",

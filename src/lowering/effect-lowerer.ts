@@ -154,10 +154,9 @@ export class EffectLowerer {
 
     public constructor(private readonly context: LoweringContext) {
         this.assertPassContract();
-        const file = this.context.sourceFile(effectModule);
-        this.vertexWgsl = this.context.stringValue(
-            this.context.variableInitializer(file, "DEFAULT_VERTEX_WGSL"),
-            file,
+        this.vertexWgsl = this.context.pinnedString(
+            effectModule,
+            "DEFAULT_VERTEX_WGSL",
         );
     }
 
@@ -442,10 +441,9 @@ export class UniformEffectLowerer {
     private readonly vertexWgsl: string;
 
     public constructor(private readonly context: LoweringContext) {
-        const file = this.context.sourceFile(uniformEffectModule);
-        this.vertexWgsl = this.context.stringValue(
-            this.context.variableInitializer(file, "DEFAULT_VERTEX_WGSL"),
-            file,
+        this.vertexWgsl = this.context.pinnedString(
+            uniformEffectModule,
+            "DEFAULT_VERTEX_WGSL",
         );
         this.assertPassContract();
     }

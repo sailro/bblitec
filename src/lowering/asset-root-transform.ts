@@ -19,15 +19,10 @@ export function assetRootTransformSource(context: LoweringContext): string {
     )) {
         const quaternion = descriptor.nativeField === "rotation_quaternion";
         const className = quaternion ? "ObservableQuat" : "ObservableVec3";
-        const file = context.sourceFile(
+        const { file, declaration: owner } = context.classDeclaration(
             `src/math/${quaternion ? "observable-quat" : "observable-vec3"}.ts`,
+            className,
         );
-        const owner = context.findNodes(
-            file,
-            (node): node is ts.ClassDeclaration =>
-                ts.isClassDeclaration(node) && node.name?.text === className,
-        )[0];
-        if (!owner) context.contractError(file, `Expected ${className}.`);
         const bindings = new Map<string, PinnedBinding>([
             ["v", scalar("value")],
             ["this._version", scalar("root.root_quaternion_version")],
