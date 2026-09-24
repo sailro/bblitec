@@ -1,10 +1,11 @@
 import type { RenderedCpp } from "../pinned-numeric-expression.js";
 import ts from "typescript";
-import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
+import { doubleLiteral } from "../../cpp-literals.js";
 import {
     findNodes,
     nullishDefault,
     numericValue,
+    topLevelFunctionDeclaration,
     unwrapExpression,
 } from "../context.js";
 
@@ -112,19 +113,14 @@ export function topLevelFunction(
     file: ts.SourceFile,
     symbolName: string,
 ): ts.FunctionDeclaration & { body: ts.Block } {
-    const declaration = file.statements.find(
-        (statement): statement is ts.FunctionDeclaration =>
-            ts.isFunctionDeclaration(statement) &&
-            statement.name?.text === symbolName &&
-            statement.body !== undefined,
-    );
-    if (!declaration?.body) {
+    const declaration = topLevelFunctionDeclaration(file, symbolName);
+    if (!declaration) {
         throw new Error(
             `Pinned function '${symbolName}' with a body was not found ` +
                 `in ${file.fileName}.`,
         );
     }
-    return declaration as ts.FunctionDeclaration & { body: ts.Block };
+    return declaration;
 }
 
 /**
@@ -192,7 +188,7 @@ export function refuseModule(symbol: string, reason: string): never {
  * `Math.PI`, arithmetic over those (the spot default `Math.PI / 4`) or a
  * module constant -- refused in this family's voice.
  */
-export function pinnedNumericValue(
+function pinnedNumericValue(
     symbol: string,
     file: ts.SourceFile,
     expression: ts.Expression,
@@ -206,41 +202,6 @@ export function pinnedNumericValue(
                 "uses a constant this lowering cannot evaluate",
             ),
     });
-}
-
-/** The `a.b.c` property path of an assignment target, or undefined. */
-export function pinnedPropertyPath(
-    expression: ts.Expression,
-): string[] | undefined {
-    const node = unwrapExpression(expression);
-    if (ts.isIdentifier(node)) {
-        return [node.text];
-    }
-    if (ts.isPropertyAccessExpression(node)) {
-        const owner = pinnedPropertyPath(node.expression);
-        return owner ? [...owner, node.name.text] : undefined;
-    }
-    return undefined;
-}
-
-/** Every `path = …` assignment under `root`, matched by property path. */
-export function pinnedAssignments(
-    root: ts.Node,
-    path: string,
-): ts.BinaryExpression[] {
-    const result: ts.BinaryExpression[] = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            pinnedPropertyPath(node.left)?.join(".") === path
-        ) {
-            result.push(node);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(root);
-    return result;
 }
 
 /**
@@ -286,58 +247,9 @@ export function featureMethod(
     return found[0]!;
 }
 
-export const pinnedFloatLiteral = (literal: ts.NumericLiteral): string =>
-    floatLiteral(Number(literal.text));
-
 export function identifierText(expression: ts.Expression): string | undefined {
     const node = unwrapExpression(expression);
     return ts.isIdentifier(node) ? node.text : undefined;
-}
-
-/** A left-associated `a (+|-) b (+|-) c` chain as parts and operators. */
-export function additiveChainParts(expression: ts.Expression): {
-    parts: ts.Expression[];
-    operators: ("+" | "-")[];
-} {
-    const node = unwrapExpression(expression);
-    if (
-        ts.isBinaryExpression(node) &&
-        (node.operatorToken.kind === ts.SyntaxKind.PlusToken ||
-            node.operatorToken.kind === ts.SyntaxKind.MinusToken)
-    ) {
-        const left = additiveChainParts(node.left);
-        return {
-            parts: [...left.parts, node.right],
-            operators: [
-                ...left.operators,
-                node.operatorToken.kind === ts.SyntaxKind.PlusToken ? "+" : "-",
-            ],
-        };
-    }
-    return { parts: [expression], operators: [] };
-}
-
-/** `Math.<name>(...)` → the call, or undefined. */
-export function mathCall(
-    expression: ts.Expression,
-    name: string,
-): ts.CallExpression | undefined {
-    const node = unwrapExpression(expression);
-    return ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        identifierText(node.expression.expression) === "Math" &&
-        node.expression.name.text === name
-        ? node
-        : undefined;
-}
-
-export function isMathPi(expression: ts.Expression): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isPropertyAccessExpression(node) &&
-        identifierText(node.expression) === "Math" &&
-        node.name.text === "PI"
-    );
 }
 
 /**
@@ -423,24 +335,6 @@ export function pinnedRootFlip(file: ts.SourceFile): {
         );
     }
     return { lane: flips[0]!, sign: -1 };
-}
-
-/**
- * Resolves an identifier argument back to its `const` declaration
- * inside `root`, for tying a call argument to the binding whose
- * initializer carries the pinned default.
- */
-export function declarationOf(
-    root: ts.Node,
-    name: string,
-): ts.VariableDeclaration | undefined {
-    return findNodes(
-        root,
-        (node): node is ts.VariableDeclaration =>
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === name,
-    )[0];
 }
 
 /**

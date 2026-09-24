@@ -1414,7 +1414,14 @@ ${spec.tail}}
             "transformedCenter += coefficient * center[column]!",
             "transformedRadius += Math.abs(coefficient) * extent[column]!",
         ]) {
-            if (!expand.getText().includes(marker)) {
+            if (
+                !this.context.hasNode(
+                    expand,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        this.context.expressionMatchesShape(node, marker),
+                )
+            ) {
                 this.context.contractError(
                     expand,
                     `Expected the pinned OBB-to-AABB term '${marker}'.`,

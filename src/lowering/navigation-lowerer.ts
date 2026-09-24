@@ -37,7 +37,13 @@
 import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    LoweredSource,
+    LoweringContext,
+    numericValue,
+    unwrapExpression,
+    variableInitializer,
+} from "./context.js";
 import { pinnedHeader } from "./pinned-header.js";
 
 /**
@@ -101,25 +107,8 @@ function wrapperNumericDefaults(
         ts.ScriptTarget.Latest,
         true,
     );
-    let literal: ts.ObjectLiteralExpression | undefined;
-    const visit = (node: ts.Node): void => {
-        if (literal) {
-            return;
-        }
-        if (
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === variableName &&
-            node.initializer &&
-            ts.isObjectLiteralExpression(node.initializer)
-        ) {
-            literal = node.initializer;
-            return;
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    if (!literal) {
+    const literal = unwrapExpression(variableInitializer(file, variableName));
+    if (!ts.isObjectLiteralExpression(literal)) {
         throw new Error(
             `${moduleSpecifier} no longer declares ${variableName} as an ` +
                 "object literal.",
@@ -135,14 +124,16 @@ function wrapperNumericDefaults(
         }
         if (
             !ts.isPropertyAssignment(property) ||
-            !ts.isIdentifier(property.name) ||
-            !ts.isNumericLiteral(property.initializer)
+            !ts.isIdentifier(property.name)
         ) {
             throw new Error(
                 `${variableName} no longer holds plain numeric defaults.`,
             );
         }
-        defaults.set(property.name.text, Number(property.initializer.text));
+        defaults.set(
+            property.name.text,
+            numericValue(property.initializer, file),
+        );
     }
     return defaults;
 }

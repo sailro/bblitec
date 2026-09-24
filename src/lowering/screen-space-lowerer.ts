@@ -339,21 +339,8 @@ void pack_mat4_into_f32(
      * never a lowered write past the array.
      */
     private uniformSizeContract(): string {
-        const floats = (module: string, name: string): number => {
-            const initializer = this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    this.context.sourceFile(module),
-                    name,
-                ),
-            );
-            if (!ts.isNumericLiteral(initializer)) {
-                this.context.contractError(
-                    initializer,
-                    `Expected ${name} to be a numeric literal.`,
-                );
-            }
-            return Number(initializer.text);
-        };
+        const floats = (module: string, name: string): number =>
+            this.context.pinnedNumber(module, name);
         const temporalBytes =
             4 * floats(TEMPORAL_MODULE, SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS);
         let producerBytes: number | undefined;
@@ -1344,6 +1331,14 @@ class FrameWalker {
         });
     }
 
+    /** Whether a pinned expression reads the named binding anywhere. */
+    private reads(expression: ts.Expression, name: string): boolean {
+        return this.context.hasNode(
+            expression,
+            (node) => ts.isIdentifier(node) && node.text === name,
+        );
+    }
+
     private scope(bindings: Map<string, PinnedBinding>) {
         const calls = pinnedNumericMathCallsWithHypot();
         calls.set("Math.round", pinnedRoundCall);
@@ -1626,7 +1621,6 @@ class FrameWalker {
             );
             const device = this.recogniseDeviceCall(
                 expression,
-                file,
                 {
                     buffer: "producerUniformBuffer!",
                     data: "producerUniformData",
@@ -1645,8 +1639,7 @@ class FrameWalker {
             return undefined;
         }
         if (ts.isIfStatement(statement)) {
-            const condition = statement.expression.getText(file);
-            if (condition.includes("producerBindGroup")) {
+            if (this.reads(statement.expression, "producerBindGroup")) {
                 if (
                     !this.context.hasCall(
                         statement.thenStatement,
@@ -1804,18 +1797,17 @@ class FrameWalker {
      */
     private recogniseDeviceCall(
         expression: ts.Expression,
-        file: ts.SourceFile,
         upload: { buffer: string; data: string },
         drawLabel: string,
     ): "upload" | "pass" | undefined {
         if (!ts.isCallExpression(expression)) return undefined;
-        const callee = expression.expression.getText(file);
-        if (callee === "engine._device.queue.writeBuffer") {
-            this.assertUpload(expression, file, upload.buffer, upload.data);
+        const callee = this.context.propertyPath(expression.expression);
+        if (callee?.join(".") === "engine._device.queue.writeBuffer") {
+            this.assertUpload(expression, upload.buffer, upload.data);
             return "upload";
         }
-        if (!callee.startsWith("pass.")) return undefined;
-        if (callee === "pass.draw") {
+        if (callee?.[0] !== "pass" || callee.length < 2) return undefined;
+        if (callee.join(".") === "pass.draw") {
             this.context.assertExpressionShape(
                 expression,
                 "pass.draw(3)",
@@ -1827,18 +1819,15 @@ class FrameWalker {
 
     private assertUpload(
         call: ts.CallExpression,
-        file: ts.SourceFile,
         buffer: string,
         data: string,
     ): void {
+        const [target, offset, source] = call.arguments;
         if (
             call.arguments.length !== 3 ||
-            call.arguments[0]!.getText(file) !== buffer ||
-            call.arguments[1]!.getText(file) !== "0" ||
-            !this.context
-                .unwrapExpression(call.arguments[2]!)
-                .getText(file)
-                .startsWith(data)
+            !this.context.expressionMatchesShape(target!, buffer) ||
+            !this.context.expressionMatchesShape(offset!, "0") ||
+            !this.context.expressionMatchesShape(source!, data)
         ) {
             this.context.contractError(
                 call,
@@ -1949,19 +1938,14 @@ class FrameWalker {
             ts.isBinaryExpression,
         )) {
             const split = this.context.nullishDefault(candidate);
-            if (!split) continue;
-            const key = split.left.getText(file);
-            if (!key.startsWith("inputs.") || resolveBindings.has(key))
-                continue;
-            const literal = this.context.unwrapExpression(split.right);
-            if (!ts.isNumericLiteral(literal)) {
-                this.context.contractError(
-                    literal,
-                    `Expected the resolve default of ${key} to be a number.`,
-                );
-            }
+            const path = split && this.context.propertyPath(split.left);
+            if (!split || path?.[0] !== "inputs" || path.length < 2) continue;
+            const key = path.join(".");
+            if (resolveBindings.has(key)) continue;
             resolveBindings.set(key, {
-                cpp: doubleLiteral(Number(literal.text)),
+                cpp: doubleLiteral(
+                    this.context.numericValue(split.right, file),
+                ),
                 type: "scalar",
             });
         }
@@ -2031,7 +2015,6 @@ class FrameWalker {
             if (
                 this.recogniseDeviceCall(
                     expression,
-                    file,
                     { buffer: "uniformBuffer!", data: "uniformData" },
                     "the resolve triangle draw",
                 )
@@ -2044,10 +2027,20 @@ class FrameWalker {
                 expression.left.getText(file) ===
                     "renderPassDescriptor.colorAttachments"
             ) {
-                const text = expression.right.getText(file);
+                const assigned = (name: string, value: string): boolean =>
+                    this.context.hasNode(
+                        expression.right,
+                        (node) =>
+                            ts.isPropertyAssignment(node) &&
+                            this.context.propertyName(node.name) === name &&
+                            this.context.expressionMatchesShape(
+                                node.initializer,
+                                value,
+                            ),
+                    );
                 if (
-                    !text.includes("stable._colorView!") ||
-                    !text.includes('loadOp: "clear"')
+                    !assigned("view", "stable._colorView!") ||
+                    !assigned("loadOp", '"clear"')
                 ) {
                     this.context.contractError(
                         expression,
@@ -2059,7 +2052,7 @@ class FrameWalker {
             return false;
         }
         if (ts.isIfStatement(statement)) {
-            if (statement.expression.getText(file).includes("bindGroup")) {
+            if (this.reads(statement.expression, "bindGroup")) {
                 if (
                     !this.context.hasCall(
                         statement.thenStatement,

@@ -165,7 +165,11 @@ export class CompressedTextureLowerer {
             file,
             (node): node is ts.ForStatement =>
                 ts.isForStatement(node) &&
-                node.condition?.getText(file) === "i < ASTC_BLOCKS.length",
+                node.condition !== undefined &&
+                this.context.expressionMatchesShape(
+                    node.condition,
+                    "i < ASTC_BLOCKS.length",
+                ),
         )[0];
         if (!loop?.initializer || !loop.incrementor)
             this.context.contractError(
@@ -177,7 +181,18 @@ export class CompressedTextureLowerer {
             "i++",
             "ASTC format loop increment",
         );
-        if (loop.initializer.getText(file) !== "let i = 0")
+        const counter = ts.isVariableDeclarationList(loop.initializer)
+            ? loop.initializer.declarations
+            : [];
+        if (
+            !ts.isVariableDeclarationList(loop.initializer) ||
+            (loop.initializer.flags & ts.NodeFlags.Let) === 0 ||
+            counter.length !== 1 ||
+            !ts.isIdentifier(counter[0]!.name) ||
+            counter[0]!.name.text !== "i" ||
+            !counter[0]!.initializer ||
+            !this.context.expressionMatchesShape(counter[0]!.initializer, "0")
+        )
             this.context.contractError(
                 loop,
                 "Pinned ASTC loop no longer starts at zero.",

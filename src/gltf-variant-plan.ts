@@ -11,7 +11,10 @@ import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
-import { LoweringContext } from "./lowering/context.js";
+import {
+    LoweringContext,
+    unexportedDeclarationText,
+} from "./lowering/context.js";
 import { gltfVariantMaterialSource } from "./lowering/gltf/material-variants.js";
 import {
     transpileCommonJs,
@@ -81,7 +84,7 @@ function variantRunners(context: LoweringContext): {
     );
     const select = createJavaScriptFunction(
         transpileCommonJs(
-            `${declaration.getText().replace(/^export\s+/, "")}\nreturn selectVariant;`,
+            `${unexportedDeclarationText(declaration)}\nreturn selectVariant;`,
             "gltf-variant-select.ts",
         ),
     )() as Select;
