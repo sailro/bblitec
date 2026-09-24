@@ -835,7 +835,6 @@ class Compiler implements LoweringServices {
             | "node-input"
             | "node-geometry"
             | "material-colors"
-            | "baseColorFactor"
             | "diffuseColor";
         node: ts.Node;
         message: string;
@@ -989,12 +988,11 @@ class Compiler implements LoweringServices {
                     "Node input bindings support one registered scene until per-scene binding snapshots are represented.",
                 );
         }
-        const colorAdmission = this.deferredAdmissionFailures.find(
-            (failure) =>
-                (failure.capability === "baseColorFactor" ||
-                    failure.capability === "diffuseColor") &&
-                this.materialColorReads.includes(failure.capability),
-        );
+        const colorAdmission = this.materialColorReads.includes("diffuseColor")
+            ? this.deferredAdmissionFailures.find(
+                  (failure) => failure.capability === "diffuseColor",
+              )
+            : undefined;
         if (colorAdmission)
             this.fail(colorAdmission.node, colorAdmission.message);
         if (this.materialColorReads.length) {
@@ -7404,14 +7402,12 @@ class Compiler implements LoweringServices {
         this.materialColorReads.push(property);
     }
 
-    public noteMaterialColorObjectWrite(
-        node: ts.Node,
-        property: "baseColorFactor" | "diffuseColor",
-    ): void {
+    public noteLegacyDiffuseColorWrite(node: ts.Node): void {
         this.deferredAdmissionFailures.push({
-            capability: property,
+            capability: "diffuseColor",
             node,
-            message: `Reading material.${property} requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.`,
+            message:
+                "Reading material.diffuseColor requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.",
         });
     }
 

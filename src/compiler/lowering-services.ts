@@ -640,10 +640,8 @@ export interface LoweringServices {
     noteCameraVectorCopy(value: Value, site: ts.Node): void;
     noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
     noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-    noteMaterialColorObjectWrite(
-        node: ts.Node,
-        property: "baseColorFactor" | "diffuseColor",
-    ): void;
+    /** A legacy tuple written into `diffuseColor`, which a numeric read of it refuses. */
+    noteLegacyDiffuseColorWrite(node: ts.Node): void;
     noteMaterialColorRenderBoundary(
         node: ts.Node,
         reason: string,

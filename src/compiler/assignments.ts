@@ -533,7 +533,7 @@ export interface AssignmentContext
             | "meshTransformDirtyEntry"
             | "reachFeature"
             | "reachJsData"
-            | "noteMaterialColorObjectWrite"
+            | "noteLegacyDiffuseColorWrite"
             | "noteMaterialColorRead"
             | "noteMaterialColorRenderBoundary"
             | "propertyName"
@@ -2621,10 +2621,7 @@ function emitTargetPropertyAssignment(
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
-                context.noteMaterialColorObjectWrite(
-                    expression.right,
-                    "diffuseColor",
-                );
+                context.noteLegacyDiffuseColorWrite(expression.right);
             } else if (!ts.isObjectLiteralExpression(shape)) {
                 // A named or returned array can also be mutated through its other
                 // owner. A fresh literal has no external alias until a getter is read.
