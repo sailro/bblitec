@@ -30,6 +30,7 @@ import {
     lowerObjectComponents,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const CONTACT = screenSpaceFactsOfKind("scalar");
 const GI = screenSpaceFactsOfKind("color");
@@ -240,7 +241,7 @@ ScreenSpaceFrameDecision screen_space_frame(
     if (handle.value >= engine.frame_tasks.size()) {
         throw std::runtime_error("Invalid screen-space task handle.");
     }
-    FrameTaskRecord& record = engine.frame_tasks[handle.value];
+    FrameTaskRecord& record = ${recordAt("engine.frame_tasks", "handle")};
     if (record.kind != FrameTaskKind::screen_space) {
         throw std::runtime_error(
             "A frame task that is not a screen-space effect was run as one.");
@@ -606,7 +607,7 @@ ${body}`;
         return task.light_direction.value;
     }
     const Vec3& direction =
-        engine.lights.at(task.light_direction.light.value).direction;
+        ${recordAt("engine.lights", "task.light_direction.light")}.direction;
     return Vec3d{
         static_cast<double>(direction.x),
         static_cast<double>(direction.y),
@@ -947,7 +948,7 @@ ScreenSpaceFrameDecision ${facts.frameFunction}(
     const ScreenSpaceFrameInputs& inputs) {
     ScreenSpaceTemporalState& state = task.state;
     ScreenSpaceFrameDecision decision{};
-    const CameraRecord& camera = engine.cameras.at(task.camera.value);
+    const CameraRecord& camera = ${recordAt("engine.cameras", "task.camera")};
     // The pin reads the camera's stored world matrix for its view, its
     // view-projection and its position alike; composed once here, the
     // three reads below take the same lanes the separate builders would.
@@ -1028,8 +1029,8 @@ TaskHandle create_screen_space_task(
         throw std::runtime_error("Screen-space depth source is invalid.");
     }
     const RenderTargetRecord& source =
-        engine.render_targets[options.source.value];
-    RenderTargetRecord& depth = engine.render_targets[options.depth.value];
+        ${recordAt("engine.render_targets", "options.source")};
+    RenderTargetRecord& depth = ${recordAt("engine.render_targets", "options.depth")};
     if (source.samples != 1) {
         throw std::runtime_error(
             options.name + ": sourceTexture must be single-sample.");

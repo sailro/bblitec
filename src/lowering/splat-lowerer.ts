@@ -48,6 +48,7 @@ import {
 } from "../compiler/assets.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -1001,7 +1002,7 @@ ${body}
         });
         return `// ${this.context.provenance(SORT_MODULE_MESH, "createGaussianSplattingMesh.updateData")}
 js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat) {
-    const auto& retained = engine.splat_meshes[splat.value].splats_data;
+    const auto& retained = ${recordAt("engine.splat_meshes", "splat")}.splats_data;
     if (!retained) {
         throw std::runtime_error("The splat source buffer was not retained by this scene.");
     }
@@ -1015,7 +1016,7 @@ void update_splat_data(
     if (!buffer.retains_storage()) {
         throw std::runtime_error("updateData requires retained ArrayBuffer storage; borrowed native vectors cannot outlive their producer.");
     }
-    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    SplatMeshRecord& mesh = ${recordAt("engine.splat_meshes", "splat")};
     upstream::SplatGeometry geometry = upstream::build_splat_geometry(
         std::span<const std::uint8_t>(buffer.data(), buffer.byte_length()));
     if (${numeric.expression(guard.expression)}) {
@@ -1105,7 +1106,7 @@ void update_splat_data(
     // four the stock one reads. They package to a sidecar named off the
     // row buffer, because the row file is upstream's own .splat layout.
     SplatMeshRecord& record =
-        scene.engine->splat_meshes[handle.value];
+        ${recordAt("scene.engine->splat_meshes", "handle")};
     record.sh_degree = upstream::splat_sh_degree;
     record.sh_textures = upstream::build_splat_sh_textures(
         pal::read_binary_file(path + "${SPLAT_HARMONICS_SUFFIX}"),
@@ -1281,7 +1282,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
     const SplatMeshHandle handle = load_splat(scene, path);
     // The one lane ${symbol} writes on the cloud it attached, observed by
     // running that loader at generation rather than restated here.
-    scene.engine->splat_meshes[handle.value].rotation =
+    ${recordAt("scene.engine->splat_meshes", "handle")}.rotation =
         Vec3{${this.context.floatLiteral(x)}, ${this.context.floatLiteral(
             y,
         )}, ${this.context.floatLiteral(z)}};
@@ -1980,7 +1981,7 @@ namespace bbl {
 void bake_current_transform_into_vertices(
     Engine& engine,
     SplatMeshHandle splat) {
-    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    SplatMeshRecord& mesh = ${recordAt("engine.splat_meshes", "splat")};
     const js::ArrayBuffer original = splat_data(engine, splat);
     // \`mesh.worldMatrix\` — the same composition every other consumer of a
     // cloud's world reads, re-derived rather than cached.

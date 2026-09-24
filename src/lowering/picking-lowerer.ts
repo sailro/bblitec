@@ -18,6 +18,7 @@ import {
     lowerPinnedFunction,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -571,7 +572,7 @@ GpuPickerRecord& picker_record(
     if (picker.value >= engine.gpu_pickers.size()) {
         throw std::runtime_error("Invalid GPU picker handle.");
     }
-    return engine.gpu_pickers[picker.value];
+    return ${recordAt("engine.gpu_pickers", "picker")};
 }
 
 } // namespace
@@ -646,7 +647,7 @@ std::string picked_node_name(
     const PickingInfo& info) {
     switch (info.picked_kind) {
         case PickedNodeKind::mesh:
-            return engine.meshes[info.picked_index].name;
+            return ${recordAt("engine.meshes", "MeshHandle{info.picked_index, info.state->picked_generation}")}.name;
         case PickedNodeKind::splat_mesh:
             return engine.splat_meshes[info.picked_index].name;
         // A billboard sprite is not a node: the pin leaves
@@ -1185,7 +1186,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
         resolved ? mesh_cpu_normals(engine, mesh) : std::vector<float>{},
         resolved ? mesh_cpu_indices(engine, mesh)
                  : std::vector<std::uint32_t>{},
-        resolved ? upstream::mesh_world_matrix(engine, engine.meshes[mesh.value])
+        resolved ? upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh")})
                  : std::array<float, 16>{},
         info,
         use_world_coordinates);
@@ -1421,7 +1422,7 @@ double picked_distance(const Scene& scene, const PickingInfo& info) {
     if (!info.picked_point || !scene.engine) return 0.0;
     const Engine& engine = *scene.engine;
     if (scene.camera.value >= engine.cameras.size()) return 0.0;
-    const CameraRecord& camera = engine.cameras[scene.camera.value];
+    const CameraRecord& camera = ${recordAt("engine.cameras", "scene.camera")};
     const std::array<double, 3>& point = *info.picked_point;
 ${body}
 }`;

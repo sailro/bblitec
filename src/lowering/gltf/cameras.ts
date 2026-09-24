@@ -1,6 +1,7 @@
 import type ts from "typescript";
 import { floatLiteral } from "../../cpp-literals.js";
 import { pinnedRootFlip } from "./shared.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /** Native storage for source-constructed cameras; live pose scheduling is separate. */
 export function lowerGltfCamerasCpp(parser: ts.SourceFile): {
@@ -35,7 +36,7 @@ void write_gltf_camera_parent_world(CameraRecord& camera, Matrix node_world, con
                 return Vec3d{lanes[0].as_number(), lanes[1].as_number(), lanes[2].as_number()};
             };
             const auto handle = create_free_camera(engine, vector("position"), vector("target"));
-            auto& camera = engine.cameras.at(handle.value);
+            auto& camera = ${recordAt("engine.cameras", "handle")};
             camera.name = required(prepared, "name").as_string();
             camera.fov = required(prepared, "fov").as_number();
             camera.near_plane = required(prepared, "nearPlane").as_number();
@@ -63,7 +64,7 @@ void write_gltf_camera_parent_world(CameraRecord& camera, Matrix node_world, con
         poseRefresh: `
             for (const AnimatedCameraBinding& binding : animation_runtime->camera_nodes) {
                 if (binding.camera.value >= engine.cameras.size() || binding.node >= animation_runtime->nodes.size()) continue;
-                write_gltf_camera_parent_world(engine.cameras[binding.camera.value],
+                write_gltf_camera_parent_world(${recordAt("engine.cameras", "binding.camera")},
                     compute_animated_world(binding.node), binding.local);
             }
 `,

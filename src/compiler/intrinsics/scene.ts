@@ -9,6 +9,7 @@ import {
     type CameraDeferralContext,
     compileCameraDeferralOptions,
 } from "./gizmo.js";
+import { recordAt } from "../record-access.js";
 
 export interface SceneIntrinsicContext
     extends
@@ -330,14 +331,14 @@ export function compileSceneIntrinsic(
             const engine = context.requireEngine(camera, call);
             for (const { member, cpp } of deferrals) {
                 context.emit(
-                    `${engine}.cameras[${camera.cpp}.value].${member} = ${cpp};`,
+                    `${recordAt(`${engine}.cameras`, camera.cpp)}.${member} = ${cpp};`,
                 );
             }
             const cleanup = context.captureManagedClosureLines(() => {
                 context.useNativeValue(camera);
                 const owner = context.requireEngine(camera, call);
                 context.emit(
-                    `auto& record = ${owner}.cameras[${camera.cpp}.value];`,
+                    `auto& record = ${recordAt(`${owner}.cameras`, camera.cpp)};`,
                 );
                 context.emit(
                     "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",

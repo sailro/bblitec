@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerSurfaceRenderTargetSize } from "./render-target-size.js";
 import { lowerRenderTargetLifecycle } from "./render-target-lifecycle.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const renderTargetModule = "src/engine/render-target.ts";
 const rttModule = "src/texture/rtt.ts";
@@ -185,7 +186,7 @@ RenderTargetTexture create_render_target_texture(
     }
     const RenderTargetHandle target =
         create_render_target(engine, options);
-${this.surface ? "    if (surface_sized) engine.render_targets[target.value].lifecycle = make_render_target_lifecycle(engine, true);" : ""}
+${this.surface ? `    if (surface_sized) ${recordAt("engine.render_targets", "target")}.lifecycle = make_render_target_lifecycle(engine, true);` : ""}
     RenderTextureRef depth;
     if (options.sampled_depth) {
         depth = render_target_texture(target);

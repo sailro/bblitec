@@ -30,6 +30,7 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -1238,7 +1239,7 @@ ${body}
                         `${indent}const Sprite2DLayerHandle layer_handle = ` +
                             `layers[static_cast<std::size_t>(${lowerer.expression(read.argumentExpression)})];`,
                         `${indent}const Sprite2DLayerRecord& layer = ` +
-                            "engine.sprite_layers[layer_handle.value];",
+                            `${recordAt("engine.sprite_layers", "layer_handle")};`,
                     ];
                 }
                 if (name === "drawOrder") {
@@ -1622,8 +1623,8 @@ inline std::vector<std::size_t> sprite_layer_draw_order(
         draw_order.end(),
         [&](std::size_t left, std::size_t right) {
             return upstream::compare_sprite_layers(
-                       engine.sprite_layers[renderer.layers[left].value],
-                       engine.sprite_layers[renderer.layers[right].value]) < 0.0;
+                       ${recordAt("engine.sprite_layers", "renderer.layers[left]")},
+                       ${recordAt("engine.sprite_layers", "renderer.layers[right]")}) < 0.0;
         });
     return draw_order;
 }
@@ -1754,7 +1755,7 @@ void set_sprite_2d_shader_params(
     Engine& engine,
     Sprite2DLayerHandle layer_handle,
     Vec4 params) {
-    engine.sprite_layers[layer_handle.value].shader_params = params;
+    ${recordAt("engine.sprite_layers", "layer_handle")}.shader_params = params;
 }
 
 // setSprite2DUvOffset: the two floats sit right after the base layout, and
@@ -1765,7 +1766,7 @@ void set_sprite_2d_uv_offset(
     double index,
     Vec2 uv_offset) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (index < 0.0 ||
         index >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
@@ -1879,7 +1880,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     SpriteRenderTextureHandle texture,
     GridSpriteAtlasOptions options) {
     const SpriteRenderTextureRecord& source =
-        engine.sprite_render_textures[texture.value];
+        ${recordAt("engine.sprite_render_textures", "texture")};
     SpriteAtlasRecord atlas;
     atlas.width = source.width;
     atlas.height = source.height;
@@ -1912,7 +1913,7 @@ SpriteRenderTextureHandle create_sprite_render_texture(
 void dispose_sprite_render_texture(
     Engine& engine,
     SpriteRenderTextureHandle texture) {
-    engine.sprite_render_textures[texture.value].disposed = true;
+    ${recordAt("engine.sprite_render_textures", "texture")}.disposed = true;
 }
 
 void set_sprite_renderer_target(
@@ -1921,7 +1922,7 @@ void set_sprite_renderer_target(
     SpriteRenderTextureHandle target,
     bool has_target) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     record.has_target = has_target;
     record.target = target;
 }
@@ -2094,7 +2095,7 @@ void add_depth_hosted_sprite_layer(
     Scene& scene,
     Sprite2DLayerHandle layer_handle) {
     const Sprite2DLayerRecord& layer =
-        scene.engine->sprite_layers[layer_handle.value];
+        ${recordAt("scene.engine->sprite_layers", "layer_handle")};
     if (layer.depth_mode == Sprite2DDepthMode::none) {
         throw std::runtime_error(
             "Depth-hosted sprites require depth != none.");
@@ -2109,7 +2110,7 @@ void set_sprite_2d_alpha_to_coverage(
     Sprite2DLayerHandle layer_handle,
     bool enabled) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (layer.alpha_to_coverage == enabled) return;
     layer.alpha_to_coverage = enabled;
     layer.pipeline_version += 1u;
@@ -2267,9 +2268,9 @@ double add_sprite_2d_index(
     Sprite2DLayerHandle layer_handle,
     Sprite2DProps props) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     if (!props.has_position_px) {
         throw std::runtime_error(
             "addSprite2DIndex: positionPx required.");
@@ -2298,14 +2299,14 @@ void update_sprite_2d_index(
     double index_value,
     Sprite2DProps props) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (!(index_value >= 0.0) ||
         index_value >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
             "updateSprite2DIndex: index out of range.");
     }
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const std::uint32_t index =
         static_cast<std::uint32_t>(index_value);
     write_sprite_instance(
@@ -2330,7 +2331,7 @@ double add_sprite_2d(
     Sprite2DProps props) {
     const double index = add_sprite_2d_index(engine, layer_handle, props);
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t id = layer.next_sprite_id;
     if (id == invalid_handle) {
         throw std::runtime_error("addSprite2D: handle id space exhausted.");
@@ -2359,7 +2360,7 @@ bool sprite_2d_id_alive(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     const Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     return sprite_2d_slot_of(layer, sprite_id) < layer.count;
 }
 
@@ -2372,7 +2373,7 @@ void set_sprite_2d_frame_id(
     std::uint32_t sprite_id,
     double frame) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index =
         sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
@@ -2380,7 +2381,7 @@ void set_sprite_2d_frame_id(
             "setSprite2DFrameIndex: index out of range");
     }
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const SpriteFrame& atlas_frame =
         atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
     const std::size_t base =
@@ -2409,7 +2410,7 @@ void remove_sprite_2d_id(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
     // removeSprite2D: a handle already gone does nothing, which is what
     // lets an animation's own removeWhenFinished race a scene's own remove.
@@ -2471,7 +2472,7 @@ void clear_sprite_2d_layer(
     Engine& engine,
     Sprite2DLayerHandle layer_handle) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     // The pin's clear runs the handle hooks' own clear first, so a layer
     // emptied under live handles answers "gone" rather than naming a slot
     // it no longer has.
@@ -2506,7 +2507,7 @@ double sprite_2d_handle_index(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     const Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
         throw std::runtime_error(
@@ -2541,7 +2542,7 @@ SpriteRendererHandle create_sprite_renderer(
             throw std::runtime_error(
                 "SpriteRenderer received an unknown layer.");
         }
-        if (engine.sprite_layers[layer.value].depth_mode !=
+        if (${recordAt("engine.sprite_layers", "layer")}.depth_mode !=
             Sprite2DDepthMode::none) {
             throw std::runtime_error(
                 "SpriteRenderer requires layers with depth == none.");
@@ -2560,7 +2561,7 @@ void add_sprite_renderer_layer(
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     if (record.disposed) {
         throw std::runtime_error(
             "SpriteRenderer has been disposed.");
@@ -2569,7 +2570,7 @@ void add_sprite_renderer_layer(
         throw std::runtime_error(
             "SpriteRenderer received an unknown layer.");
     }
-    if (engine.sprite_layers[layer.value].depth_mode !=
+    if (${recordAt("engine.sprite_layers", "layer")}.depth_mode !=
         Sprite2DDepthMode::none) {
         throw std::runtime_error(
             "SpriteRenderer requires layers with depth == none.");
@@ -2594,7 +2595,7 @@ bool remove_sprite_renderer_layer(
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     std::vector<Sprite2DLayerHandle>& layers = record.layers;
     const auto found = std::find_if(
         layers.begin(),
@@ -2634,7 +2635,7 @@ void dispose_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     if (record.disposed) return;
     unregister_sprite_renderer(engine, renderer);
     record.disposed = true;
@@ -2656,7 +2657,7 @@ void sprite_renderer_before_update(
     Engine& engine,
     SpriteRendererHandle renderer,
     std::function<void(double)> callback) {
-    engine.sprite_renderers[renderer.value].before_update.push_back(
+    ${recordAt("engine.sprite_renderers", "renderer")}.before_update.push_back(
         std::move(callback));
 }
 
@@ -3038,7 +3039,7 @@ Sprite2DLayerHandle enable_sprite_2d_y_sort(
     Sprite2DLayerHandle layer_handle,
     double default_bias) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (layer.depth_mode != Sprite2DDepthMode::none) {
         throw std::runtime_error(
             "enableSprite2DYSort requires a layer with depth == none.");
@@ -3098,7 +3099,7 @@ bool sprite_2d_y_sort_enabled(
     const Engine& engine,
     Sprite2DLayerHandle layer_handle) {
     return static_cast<bool>(
-        engine.sprite_layers[layer_handle.value].y_sort);
+        ${recordAt("engine.sprite_layers", "layer_handle")}.y_sort);
 }
 
 // sprite-2d-handle-y-sort.ts#setSprite2DYSortHandleBias: resolve the
@@ -3110,7 +3111,7 @@ void set_sprite_2d_y_sort_bias_id(
     std::uint32_t sprite_id,
     double bias) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
         throw std::runtime_error(

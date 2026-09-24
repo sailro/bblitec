@@ -4,6 +4,7 @@ import { LoweringContext } from "../context.js";
 import { lowerPinnedFunction } from "../pinned-function-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "../pinned-operators.js";
 import type { GltfLoaderOptions } from "./loader.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /**
  * An animated KHR_lights_punctual light, as the pin builds it: the light is
@@ -225,7 +226,7 @@ export function gltfAnimationPoseTransportCpp(
 ${
     light
         ? `            for(const auto& binding:animation_runtime->light_nodes) {
-                auto& light=engine.lights.at(binding.light.value);
+                auto& light=${recordAt("engine.lights", "binding.light")};
                 const Matrix light_world=upstream::matrix_product(
                     ${light.root},compute_animated_world(binding.node));
                 light.position={light_world[12],light_world[13],light_world[14]};
@@ -423,7 +424,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
             const auto& groups=engine.assets.at(animation_runtime->asset_index).animation_groups;
             for(std::size_t index=0;index<animation_runtime->clips.size();++index) {
                 auto& clip=animation_runtime->clips[index];
-                const auto manager_owned=!engine.animation_groups.at(groups.at(index).value).animation_owner.expired();
+                const auto manager_owned=!${recordAt("engine.animation_groups", "groups.at(index)")}.animation_owner.expired();
                 gltf_tick_animation(clip,delta_ms,clip.speed_ratio,manager_owned,true,clip.pose->requires_engine,true,
                     [&](){${syncMask}},
                     [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
@@ -433,7 +434,7 @@ ${
     options.vat
         ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
         const auto skeleton_binding=[animation_runtime,&engine](MeshHandle mesh)->std::pair<GltfAnimationPoseSkeleton*,AnimatedMeshBinding*> {
-            if(mesh.value>=engine.meshes.size()||engine.meshes[mesh.value].has_vat)return {};
+            if(mesh.value>=engine.meshes.size()||${recordAt("engine.meshes", "mesh")}.has_vat)return {};
             for(const auto& skeleton:animation_runtime->source_skeletons.entries)
                 for(const auto index:skeleton->meshes) {
                     auto& binding=animation_runtime->meshes.at(index);

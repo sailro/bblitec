@@ -8,6 +8,7 @@ import {
 } from "../option-helpers.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { recordAt } from "../record-access.js";
 
 export interface CameraIntrinsicContext
     extends
@@ -318,7 +319,7 @@ export function compileCameraIntrinsic(
                 kind: "data",
                 cpp:
                     `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { ` +
-                    `${engine}.cameras[camera.value].controls_enabled = false; }}`,
+                    `${recordAt(`${engine}.cameras`, "camera")}.controls_enabled = false; }}`,
                 dataType: { kind: "function", parameters: [] },
             };
         }
@@ -416,7 +417,7 @@ export function compileCameraIntrinsic(
             // the float-store rule is stated where it is ported.
             const position =
                 `bbl::upstream::camera_position(` +
-                `${engine}.cameras[${camera.cpp}.value])`;
+                `${recordAt(`${engine}.cameras`, camera.cpp)})`;
             const cppType = context.dataTypes.cppType(resultType);
             // Built through the data lowerer rather than braced here: the
             // reference-vs-value fork is stated in `structAggregate` alone,
@@ -471,7 +472,7 @@ export function compileCameraIntrinsic(
                     `([&]() { const double aspect = ${aspect}; ` +
                     `const auto matrix = ` +
                     `bbl::upstream::build_view_projection(` +
-                    `${engine}.cameras.at(${camera.cpp}.value), aspect); ` +
+                    `${recordAt(`${engine}.cameras`, camera.cpp)}, aspect); ` +
                     `return bbl::js::F32Array(` +
                     `matrix.begin(), matrix.end()); }());`,
             );

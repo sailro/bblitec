@@ -2,6 +2,7 @@ import {
     gltfMaterialPropertyFields,
     gltfMaterialTextureFields,
 } from "./material-projection.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 const transforms = [
     ["uScale", "u_scale"],
@@ -149,7 +150,7 @@ struct GltfAnimationPointerMaterial {
 
     GltfAnimationPointerMaterial(Engine& engine, MaterialHandle material, GltfPbrValue properties)
         : handle(material), props(std::move(properties)) {
-        const auto& record = engine.materials.at(handle.value);
+        const auto& record = ${recordAt("engine.materials", "handle")};
         if (record.source_base_color_factor) props.set("baseColorFactor", GltfPbrValue{record.source_base_color_factor});
         orm_generation = record.orm_texture_generation;
         occlusion_generation = record.occlusion_texture_generation;
@@ -195,7 +196,7 @@ ${transforms.map(([key, field]) => `        texture.set(${JSON.stringify(key)}, 
         props.set(key, texture);
     }
     void refresh(Engine& engine) {
-        const auto& material = engine.materials.at(handle.value);
+        const auto& material = ${recordAt("engine.materials", "handle")};
         if (orm_generation != material.orm_texture_generation) {
             replace_texture("ormTexture", material.orm_transform); orm_generation = material.orm_texture_generation;
         }
@@ -219,7 +220,7 @@ ${refresh}
         }
     }
     void publish(Engine& engine) {
-        auto& material = engine.materials.at(handle.value);
+        auto& material = ${recordAt("engine.materials", "handle")};
         const std::array<std::optional<double>, ${slots.length}> source = {${readSource.join(", ")}};
 ${publish}
         if (const auto base = props.get("baseColorFactor"); !base.nullish()) {
@@ -259,7 +260,7 @@ struct GltfAnimationPointerLight {
         if (const auto found = fields.find("spot"); found != fields.end()) props.set("angle", GltfPbrValue{&found->second.as_object().at("angle")});
         if (fields.at("bumpVersion").as_boolean()) props.set("_bumpLightVersion", GltfPbrValue{true});
         props.set("__nativeLight", GltfPbrValue{static_cast<double>(handle.value)});
-        observe(engine.lights.at(handle.value));
+        observe(${recordAt("engine.lights", "handle")});
     }
     void observe(const LightRecord& light) {
         observed_source = source();
@@ -275,7 +276,7 @@ struct GltfAnimationPointerLight {
             gltf_pointer_number(props, "specular", 0), gltf_pointer_number(props, "specular", 1), gltf_pointer_number(props, "specular", 2)};
     }
     void refresh(const Engine& engine) {
-        const auto& light = engine.lights.at(handle.value);
+        const auto& light = ${recordAt("engine.lights", "handle")};
         const std::array<double, 9> current = {light.intensity, light.range, light.angle, light.diffuse_color.r, light.diffuse_color.g,
             light.diffuse_color.b, light.specular_color.r, light.specular_color.g, light.specular_color.b};
         for (std::size_t index = 0; index < current.size(); ++index) {
@@ -285,7 +286,7 @@ struct GltfAnimationPointerLight {
         }
     }
     void publish(Engine& engine, const std::function<void(Engine&, LightHandle, double)>& set_angle) {
-        auto& light = engine.lights.at(handle.value);
+        auto& light = ${recordAt("engine.lights", "handle")};
         const auto values = source();
         const std::array<std::pair<std::size_t, float*>, 4> float_fields = {{{1, &light.range},
             {6, &light.specular_color.r}, {7, &light.specular_color.g}, {8, &light.specular_color.b}}};

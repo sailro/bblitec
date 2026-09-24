@@ -70,6 +70,7 @@ import {
     SHAPE_PARAMETERS,
     shapeParameterStorage,
 } from "../compiler/intrinsics/physics.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /**
  * The five geometry lanes both pinned bags declare, as a struct body.
@@ -2594,10 +2595,10 @@ struct PhysicsNodePose {
     const Engine& engine,
     PhysicsNodeRef node) {
     if (node.kind == PhysicsNodeKind::transform_node) {
-        const TransformNodeRecord& record = engine.transform_nodes[node.value];
+        const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
         return PhysicsNodePose{record.position, record.rotation_quaternion};
     }
-    const MeshRecord& mesh = engine.meshes[node.value];
+    const MeshRecord& mesh = ${recordAt("engine.meshes", "node")};
     return PhysicsNodePose{mesh.position, mesh.rotation_quaternion};
 }
 
@@ -2617,7 +2618,7 @@ void write_node_pose(
     Vec3d position,
     Vec4 rotation) {
     if (node.kind == PhysicsNodeKind::transform_node) {
-        TransformNodeRecord& record = engine.transform_nodes[node.value];
+        TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
         record.position = position;
         record.rotation_quaternion = rotation;
         record.has_rotation_quaternion = true;
@@ -2626,11 +2627,11 @@ void write_node_pose(
             TransformNodeHandle{node.value});
         return;
     }
-    MeshRecord& mesh = engine.meshes[node.value];
+    MeshRecord& mesh = ${recordAt("engine.meshes", "node")};
     mesh.position = position;
     mesh.rotation_quaternion = rotation;
     mesh.has_rotation_quaternion = true;
-    mark_mesh_runtime_transform(engine, MeshHandle{node.value});
+    mark_mesh_runtime_transform(engine, mesh_slot_handle(engine, node.value));
 }
 
 /** The quaternion half both sync directions read out of a transform. */
@@ -3292,8 +3293,8 @@ std::string physics_body_node_name(PhysicsBody body) {
     const auto& live = owning_body_record(body);
     const auto& engine = *live.owner.lock()->engine;
     return live.node.kind == PhysicsNodeKind::mesh
-        ? engine.meshes.at(live.node.value).name
-        : engine.transform_nodes.at(live.node.value).name;
+        ? ${recordAt("engine.meshes", "live.node")}.name
+        : ${recordAt("engine.transform_nodes", "live.node")}.name;
 }
 void remove_physics_body(PhysicsWorldHandle handle, PhysicsBody body) {
     auto& world = physics_world_record(handle);
@@ -3648,7 +3649,7 @@ PhysicsAggregate create_physics_aggregate(
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
     mark_mesh_runtime_transform(engine, mesh);
-    const MeshRecord& record = engine.meshes[mesh.value];
+    const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     const MeshBounds bounds = mesh_bounds(engine, record);
 ${
     thin

@@ -2,6 +2,7 @@ import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -329,7 +330,7 @@ FrameTaskRecord& task_record(Engine& engine, TaskHandle handle) {
     if (handle.value >= engine.frame_tasks.size()) {
         throw std::runtime_error("Invalid frame task handle.");
     }
-    return engine.frame_tasks[handle.value];
+    return ${recordAt("engine.frame_tasks", "handle")};
 }
 
 TaskHandle append_task(Engine& engine, FrameTaskRecord task) {

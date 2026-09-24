@@ -7,6 +7,7 @@ import {
 } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { recordAt } from "../compiler/record-access.js";
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -241,7 +242,7 @@ ${body}
             .map(
                 (vector) => `
 void set_${kind}_light_${vector}(Engine& engine, LightHandle light, Vec3 value) {
-    auto& record = engine.lights[light.value];
+    auto& record = ${recordAt("engine.lights", "light")};
     record.${vector} = value;
 }`,
             )
@@ -279,7 +280,7 @@ ${setters}
 ${
     kind === "spot"
         ? `void set_spot_light_angle(Engine& engine, LightHandle light, double angle) {
-    refresh_spot_light_cone(engine.lights[light.value], angle);
+    refresh_spot_light_cone(${recordAt("engine.lights", "light")}, angle);
 }`
         : ""
 }

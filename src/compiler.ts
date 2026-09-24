@@ -421,6 +421,7 @@ import {
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
+import { recordAt } from "./compiler/record-access.js";
 
 export type {
     CompileAsset,
@@ -7492,9 +7493,7 @@ class Compiler implements LoweringServices {
             const engine = this.requireEngine(owner, expression);
             return {
                 kind: "data",
-                cpp:
-                    `${engine}.sprite_renderers.at(` +
-                    `static_cast<std::size_t>(${owner.cpp}.value)).layers`,
+                cpp: `${recordAt(`${engine}.sprite_renderers`, owner.cpp)}.layers`,
                 dataType: {
                     kind: "vector",
                     element: {
@@ -10263,7 +10262,7 @@ class Compiler implements LoweringServices {
                     );
                 this.emit(`${engineCpp}.surface_canvas = ${canvas.cpp};`);
                 this.emit(
-                    `${engineCpp}.ui_elements[${canvas.cpp}.value].client_rect_requested = true;`,
+                    `${recordAt(`${engineCpp}.ui_elements`, canvas.cpp)}.client_rect_requested = true;`,
                 );
                 surfaceCanvas = true;
                 this.reachFeature("renderer:surface", call);
@@ -15042,7 +15041,7 @@ class Compiler implements LoweringServices {
                         drag,
                         _disposePointer: {
                             kind: "data",
-                            cpp: `${engine}.edit_gizmos[${cpp}.value].dispose_pointer`,
+                            cpp: `${recordAt(`${engine}.edit_gizmos`, cpp)}.dispose_pointer`,
                             dataType: {
                                 kind: "function",
                                 parameters: [],
@@ -15054,7 +15053,7 @@ class Compiler implements LoweringServices {
         }
         if (owner.kind === "pointer-drag") {
             const engine = this.requireEngine(owner, expression);
-            const record = `${engine}.edit_gizmos[${owner.cpp}.value]`;
+            const record = `${recordAt(`${engine}.edit_gizmos`, owner.cpp)}`;
             if (
                 expression.name.text === "enabled" ||
                 expression.name.text === "dragging" ||
@@ -15142,7 +15141,7 @@ class Compiler implements LoweringServices {
         ) {
             const engine = this.requireEngine(owner, expression);
             const vector = expression.name.text;
-            const record = `${engine}.lights[${owner.cpp}.value]`;
+            const record = `${recordAt(`${engine}.lights`, owner.cpp)}`;
             const component = (name: "x" | "y" | "z"): Value => ({
                 kind: "number",
                 cpp: `${record}.${vector}.${name}`,
@@ -15208,7 +15207,7 @@ class Compiler implements LoweringServices {
             // generation resolves it from the pinned facade's identity.
             return {
                 kind: "render-target",
-                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.output_target`,
+                cpp: `${recordAt(`${this.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.output_target`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
@@ -15226,7 +15225,7 @@ class Compiler implements LoweringServices {
             if (field === undefined) return undefined;
             return {
                 kind: "render-target",
-                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].screen_space.${field}`,
+                cpp: `${recordAt(`${this.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.screen_space.${field}`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
@@ -16402,7 +16401,7 @@ class Compiler implements LoweringServices {
     private cameraVectorProperties(
         vector: NonNullable<Value["cameraVector"]>,
     ): Record<string, Value> {
-        const record = `${vector.owner.engineCpp}.cameras[${vector.owner.cpp}.value].${vector.field}`;
+        const record = `${recordAt(`${vector.owner.engineCpp}.cameras`, vector.owner.cpp)}.${vector.field}`;
         return Object.fromEntries(
             ["x", "y", "z"].map((axis) => [
                 axis,
@@ -16426,10 +16425,10 @@ class Compiler implements LoweringServices {
             owner.kind === "asset-root"
                 ? transform.nativeField === "rotation"
                     ? `bbl::asset_root_rotation(${engine}, ${owner.cpp})`
-                    : `${engine}.assets[${owner.cpp}.value].root_${transform.nativeField}`
+                    : `${recordAt(`${engine}.assets`, owner.cpp)}.root_${transform.nativeField}`
                 : owner.kind === "scene-node"
                   ? `bbl::scene_node_${transform.nativeField}(${engine}, ${owner.cpp})`
-                  : `${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}[${owner.cpp}.value].${transform.nativeField}`;
+                  : `${recordAt(`${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}`, owner.cpp)}.${transform.nativeField}`;
         return Object.fromEntries(
             transform.components.map((name) => [
                 name,
@@ -18478,8 +18477,8 @@ class Compiler implements LoweringServices {
                         "bbl::RenderTargetOptions{scene.state->default_render_task_samples, true, true, false, 0u, 0u});",
                     "        auto resolve_target = bbl::create_render_target(engine, " +
                         "bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});",
-                    "        engine.render_targets[target.value].surface_canvas = scene.surface_canvas;",
-                    "        engine.render_targets[resolve_target.value].surface_canvas = scene.surface_canvas;",
+                    `        ${recordAt("engine.render_targets", "target")}.surface_canvas = scene.surface_canvas;`,
+                    `        ${recordAt("engine.render_targets", "resolve_target")}.surface_canvas = scene.surface_canvas;`,
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
                         'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
                         `${handleCppType("camera")}{}, false, true, true, true});`,

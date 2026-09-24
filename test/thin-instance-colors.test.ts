@@ -75,7 +75,8 @@ test(
             executable = join(output, "check.exe");
         writeFileSync(
             source,
-            `#include <bblite/js_data.hpp>
+            `#include <bblite/checked_handles.hpp>
+#include <bblite/js_data.hpp>
 #include <cassert>
 namespace bbl {
 struct MeshHandle { unsigned value; };

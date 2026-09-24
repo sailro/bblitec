@@ -18,6 +18,7 @@ import {
     lowerObjectComponents,
     lowerTupleComponents,
 } from "../pinned-function-lowerer.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /**
  * The names one pinned closure reads from OUTSIDE itself.
@@ -665,7 +666,7 @@ double add_thin_instance(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<float>& matrix) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
 ${this.thinRuntimeBuilderAssignment("addThinInstance")}
     if (matrix.size() < 16) {
         throw std::runtime_error(
@@ -765,7 +766,7 @@ void remove_thin_instance(
     Engine& engine,
     MeshHandle mesh,
     double index) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced) {
         throw std::runtime_error(
             "removeThinInstance requires thin instances bound by setThinInstances.");
@@ -803,7 +804,7 @@ void remove_thin_instance(
 // through \`mesh.thinInstances!\`, so a mesh with no pool fails here rather
 // than reading a zero -- which is the same failure, at the same call.
 double thin_instance_count(const Engine& engine, MeshHandle mesh) {
-    const MeshRecord& record = engine.meshes[mesh.value];
+    const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced) {
         throw std::runtime_error(
             "mesh.thinInstances is not bound on this mesh.");
@@ -888,7 +889,7 @@ void enable_thin_instance_gpu_culling(
     Engine& engine,
     MeshHandle mesh,
     bool enabled) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced) {
         throw std::runtime_error(
             "enableThinInstanceGpuCulling requires mesh.thinInstances.");
@@ -2267,7 +2268,7 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
         throw std::runtime_error(
             "Invalid direct morph target mesh or vertex count.");
     }
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (
         record.geometry == invalid_handle ||
         record.geometry >= engine.geometries.size()) {
@@ -2346,7 +2347,7 @@ void set_morph_target_weights(
         throw std::runtime_error(
             "Invalid direct morph target mesh.");
     }
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.gpu_deformation) {
         throw std::runtime_error(
             "Morph target weights require an attached morph target.");
@@ -2492,7 +2493,7 @@ void update_mesh_positions(
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid mesh handle.");
     }
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (record.geometry >= engine.geometries.size()) {
         throw std::runtime_error(
             "mesh attribute updates require procedural geometry");
@@ -2613,7 +2614,7 @@ void update_mesh_positions(
         const body = (
             name: "setThinInstanceColors" | "setThinInstanceColor",
         ): string => `
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced) throw std::runtime_error("Thin-instance colors require mesh.thinInstances.");
     ${
         name === "setThinInstanceColors"
@@ -2674,7 +2675,7 @@ void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index,
         });
         return `// The native culling adaptation draws all active instances; retain the authored bound.
 void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
 ${body}
 }
 
@@ -2724,7 +2725,7 @@ void set_thin_instances(
     MeshHandle mesh,
     std::vector<float>& matrices,
     double count) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
 ${this.thinRuntimeBuilderAssignment("setThinInstances")}
     const std::uint32_t previous_count = record.instance_count;
     const std::size_t capacity = std::min(
@@ -2756,7 +2757,7 @@ void set_thin_instance_count(
     Engine& engine,
     MeshHandle mesh,
     double count) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced ||
         record.instance_source == nullptr) {
         return;
@@ -2790,7 +2791,7 @@ void set_thin_instance_matrix(
     MeshHandle mesh,
     double index,
     const std::vector<float>& matrix) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced || record.instance_source == nullptr) {
         throw std::runtime_error(
             "setThinInstanceMatrix requires thin instances bound by setThinInstances.");
@@ -2813,7 +2814,7 @@ void set_thin_instance_matrix(
 // _dirtyMax = count). The pinned helper non-null asserts
 // mesh.thinInstances, so a flush without a bound pool fails explicitly.
 void flush_thin_instances(Engine& engine, MeshHandle mesh) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced ||
         record.instance_source == nullptr) {
         throw std::runtime_error(
@@ -2835,7 +2836,7 @@ void upload_thin_instance_matrices(
     MeshHandle mesh,
     const std::vector<float>& matrices,
     double count) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (!record.thin_instanced) {
         throw std::runtime_error(
             "A direct thin-instance upload requires an established pool.");

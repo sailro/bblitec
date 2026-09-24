@@ -4238,6 +4238,16 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
 }
 
 /**
+ * The handle of the mesh `slot` holds now, for a table that names a mesh by
+ * its slot alone (a physics body's node, a property-animation target). Such
+ * a table carries no generation, so it cannot tell its own mesh from a
+ * later occupant of a reused slot.
+ */
+inline MeshHandle mesh_slot_handle(const Engine& engine, std::uint32_t slot) {
+    return MeshHandle{slot, engine.meshes.at(slot).generation};
+}
+
+/**
  * The generated composition-table row a draw of `mesh` reads: the row
  * renderer startup or a mesh profile assigned, else the record's creation
  * ordinal -- the tables are in creation order, and a reused slot is not.

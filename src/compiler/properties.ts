@@ -41,6 +41,7 @@ import {
     compositeScalarAccessors,
     compositeScalarFunction,
 } from "../lowering/post-process-accessors.js";
+import { recordAt } from "./record-access.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -355,7 +356,7 @@ export function nativeLocation(
 ): string {
     if (rule.record) {
         const [collection, field] = rule.record;
-        return `${engineCpp}.${collection}[${ownerCpp}.value].${field}`;
+        return `${recordAt(`${engineCpp}.${collection}`, ownerCpp)}.${field}`;
     }
     return `${ownerCpp}.${rule.field!}`;
 }
@@ -992,7 +993,7 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: "bbl::MaterialTextureSlot::normal",
         textureStorage: "file",
         optionalFound: (ownerCpp, engineCpp) =>
-            `${engineCpp}.materials[${ownerCpp}.value].normal_texture.has_image()`,
+            `${recordAt(`${engineCpp}.materials`, ownerCpp)}.normal_texture.has_image()`,
     },
     {
         owner: "material",
@@ -1003,7 +1004,7 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: "bbl::MaterialTextureSlot::orm",
         textureStorage: "file",
         optionalFound: (ownerCpp, engineCpp) =>
-            `${engineCpp}.materials[${ownerCpp}.value].metallic_roughness_texture.has_image()`,
+            `${recordAt(`${engineCpp}.materials`, ownerCpp)}.metallic_roughness_texture.has_image()`,
     },
     {
         owner: "material",
@@ -1014,7 +1015,7 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: "bbl::MaterialTextureSlot::emissive",
         textureStorage: "file",
         optionalFound: (ownerCpp, engineCpp) =>
-            `${engineCpp}.materials[${ownerCpp}.value].emissive_texture.has_image()`,
+            `${recordAt(`${engineCpp}.materials`, ownerCpp)}.emissive_texture.has_image()`,
     },
     {
         // The separate UV2 occlusion carrier. Unlike the other four slots its
@@ -1027,7 +1028,7 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: "bbl::MaterialTextureSlot::occlusion",
         textureStorage: "file",
         optionalFound: (ownerCpp, engineCpp) =>
-            `${engineCpp}.materials[${ownerCpp}.value].occlusion_texture.has_image()`,
+            `${recordAt(`${engineCpp}.materials`, ownerCpp)}.occlusion_texture.has_image()`,
     },
     {
         // The corpus creates a generator, assigns it to its light, and then

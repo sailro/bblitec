@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const CREATE_MODULE = "src/skeleton/create-skeleton.ts";
 const UPDATE_MODULE = "src/skeleton/update-skeleton-bone-matrices.ts";
@@ -62,7 +63,7 @@ SceneSkeletonRecord& scene_skeleton_record(
         throw std::runtime_error(
             "SceneSkeletonHandle names no such skeleton.");
     }
-    return engine.scene_skeletons[skeleton.value];
+    return ${recordAt("engine.scene_skeletons", "skeleton")};
 }
 
 // The pin stores the caller's Float32Array as skeleton.boneMatrices and
@@ -88,8 +89,8 @@ void publish_scene_palette(
     const SceneSkeletonRecord& skeleton) {
     for (const MeshHandle mesh : skeleton.meshes) {
         if (mesh.value >= engine.meshes.size()) continue;
-        engine.meshes[mesh.value].bone_matrices = skeleton.bone_matrices;
-        ++engine.meshes[mesh.value].bone_matrices_version;
+        ${recordAt("engine.meshes", "mesh")}.bone_matrices = skeleton.bone_matrices;
+        ++${recordAt("engine.meshes", "mesh")}.bone_matrices_version;
     }
 }
 
@@ -149,7 +150,7 @@ void attach_scene_skeleton(
     }
     SceneSkeletonRecord& record =
         scene_skeleton_record(engine, skeleton);
-    MeshRecord& mesh_record = engine.meshes[mesh.value];
+    MeshRecord& mesh_record = ${recordAt("engine.meshes", "mesh")};
     if (
         mesh_record.geometry == invalid_handle ||
         mesh_record.geometry >= engine.geometries.size()) {

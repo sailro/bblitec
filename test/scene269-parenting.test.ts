@@ -77,7 +77,7 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
     );
     assert.match(
         source,
-        /for \(const MeshHandle mesh : engine\.assets\[child\.value\]\.meshes\) \{\s*set_mesh_parent\(engine, mesh, parent\);/,
+        /for \(const MeshHandle mesh : bbl::handle_at\(engine\.assets, child\)\.meshes\) \{\s*set_mesh_parent\(engine, mesh, parent\);/,
     );
     assert.match(
         source,

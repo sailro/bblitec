@@ -11,6 +11,7 @@ import {
     lowerWorldAabbHelpers,
     worldAabbArrayCopies,
 } from "./world-bounds-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
 const DDS_BACKGROUND_MODULE = "src/material/pbr/background-dds-environment.ts";
@@ -514,7 +515,7 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= scene.engine->meshes.size()) continue;
         const MeshRecord& mesh =
-            scene.engine->meshes[handle.value];
+            ${recordAt("scene.engine->meshes", "handle")};
         if (mesh.geometry >=
             scene.engine->geometries.size()) {
             continue;
@@ -545,10 +546,10 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     double skybox_size = requested_skybox_size;
     if (
         scene.camera.value < scene.engine->cameras.size() &&
-        scene.engine->cameras[scene.camera.value].kind ==
+        ${recordAt("scene.engine->cameras", "scene.camera")}.kind ==
             CameraKind::arc_rotate) {
         const CameraRecord& camera =
-            scene.engine->cameras[scene.camera.value];
+            ${recordAt("scene.engine->cameras", "scene.camera")};
         if (
             camera.upper_radius_limit &&
             *camera.upper_radius_limit != 0.0) {

@@ -5,6 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Source tracking decisions; native scene generations own binding replacement/retirement. */
 export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
@@ -76,7 +77,7 @@ export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
         [
             "mesh.material",
             {
-                cpp: "(engine.meshes[mesh.value].material.value != invalid_handle)",
+                cpp: `(${recordAt("engine.meshes", "mesh")}.material.value != invalid_handle)`,
                 type: "bool",
             },
         ],
@@ -93,7 +94,7 @@ export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
         [
             "tracked.push",
             (args) =>
-                `record.render_meshes.push_back(RenderTaskMesh{${args[0]}, engine.meshes[${args[0]}.value].material, true})`,
+                `record.render_meshes.push_back(RenderTaskMesh{${args[0]}, ${recordAt("engine.meshes", args[0]!)}.material, true})`,
         ],
         [
             "addMesh",

@@ -9,6 +9,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { SCENE_NODE_TRANSFORMS } from "../scene-node-transform-descriptor.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Public synthetic-root TRS over the loader's flattened, mirrored mesh worlds. */
 export function assetRootTransformSource(context: LoweringContext): string {
@@ -86,7 +87,7 @@ ${pinnedQuaternionMath(context)}
 
 void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {
     for (const auto mesh : root.meshes) {
-        auto& record = engine.meshes.at(mesh.value);
+        auto& record = ${recordAt("engine.meshes", "mesh")};
         record.outer_position = root.root_position;
         record.outer_rotation = root.root_rotation;
         // Native imported worlds already contain the initial root (-1,1,1).
@@ -135,11 +136,11 @@ std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset)
         .rotation_quaternion = root.root_rotation_quaternion});
 }
 void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent) {
-    auto& record = engine.lights.at(light.value);
+    auto& record = ${recordAt("engine.lights", "light")};
     if (parent.value == invalid_handle) {
         record.parent_world_matrix = {};
     } else {
-        (void)engine.assets.at(parent.value);
+        (void)${recordAt("engine.assets", "parent")};
         record.parent_world_matrix = [&engine, parent] { return asset_root_world_matrix(engine, parent); };
     }
 }

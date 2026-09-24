@@ -123,7 +123,7 @@ test("bumps the caster-list identity on every re-registration", () => {
     ]).source;
     assert.match(
         source,
-        /void set_shadow_task_caster_meshes\([\s\S]{0,900}\+\+engine\.shadow_generators\[generator\.value\]\.caster_list_version;/,
+        /void set_shadow_task_caster_meshes\([\s\S]{0,900}\+\+bbl::handle_at\(engine\.shadow_generators, generator\)\.caster_list_version;/,
     );
 });
 

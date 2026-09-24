@@ -9,6 +9,7 @@ import {
     type LocalCubemapJson,
     type LocalCubemapPlan,
 } from "../../pinned-local-cubemap.js";
+import { recordAt } from "../record-access.js";
 
 export interface LocalCubemapIntrinsicContext
     extends
@@ -203,7 +204,7 @@ export function compileLocalCubemapIntrinsic(
             delete material.localCubemapCandidates;
             return {
                 kind: "void",
-                cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment.reset()`,
+                cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment.reset()`,
             };
         }
         material.localCubemapCandidates = maxCandidates;
@@ -213,7 +214,7 @@ export function compileLocalCubemapIntrinsic(
             context.expectSameEngine(first, set, call);
             return {
                 kind: "void",
-                cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment = ${set.cpp}`,
+                cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment = ${set.cpp}`,
             };
         }
     }
@@ -296,6 +297,6 @@ export function compileLocalCubemapIntrinsic(
           }
         : {
               kind: "void",
-              cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment = ${cpp}`,
+              cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment = ${cpp}`,
           };
 }

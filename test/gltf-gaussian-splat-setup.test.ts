@@ -158,7 +158,8 @@ test("native Gaussian setup creates fresh clouds and appends source results on e
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
     writeFileSync(
         file,
-        `#include <nlohmann/json.hpp>
+        `#include <bblite/checked_handles.hpp>
+#include <nlohmann/json.hpp>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -207,6 +208,8 @@ ${contexts.map((_, index) => `    assert(variant_${index}::check() == cases.at($
         `/Fe:${executable}`,
         "/I",
         resolve(nativeFixtureVcpkgRoot, "include"),
+        "/I",
+        resolve("native/include"),
         file,
     ]);
     assert.equal(

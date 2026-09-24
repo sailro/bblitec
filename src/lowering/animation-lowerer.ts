@@ -15,6 +15,7 @@ import {
 } from "./pinned-function-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -445,7 +446,7 @@ const AnimationGroupRecord& group_record(
     if (group.value >= engine.animation_groups.size()) {
         throw std::runtime_error("Invalid animation group handle.");
     }
-    return engine.animation_groups[group.value];
+    return ${recordAt("engine.animation_groups", "group")};
 }
 
 AssetRecord& group_asset(
@@ -1328,7 +1329,7 @@ void add_animation_groups(
             throw std::runtime_error(
                 "Invalid animation group handle.");
         }
-        auto& record = engine.animation_groups[group.value];
+        auto& record = ${recordAt("engine.animation_groups", "group")};
         register_animation_group(manager, record.animation_owner, record.name, [&] {
             owner.ordered_groups.push_back(AnimationGroupReference::from_gltf(group));
             owner.gltf_groups.push_back(group);
@@ -1344,7 +1345,7 @@ void set_animation_weight(
         throw std::runtime_error(
             "Invalid animation group handle.");
     }
-    engine.animation_groups[group.value].weight =
+    ${recordAt("engine.animation_groups", "group")}.weight =
         checked_animation_weight(weight);
 }
 
@@ -1628,7 +1629,7 @@ float& animation_weight_fade_target_weight(
         throw std::runtime_error(
             "Invalid animation group handle.");
     }
-    return engine.animation_groups[target.gltf_group.value].weight;
+    return ${recordAt("engine.animation_groups", "target.gltf_group")}.weight;
 }
 
 ${this.lowerWeightFadeUpdate()}
@@ -1931,7 +1932,7 @@ ${this.propertyWriterArms("mesh", "        ")}
             throw std::runtime_error(
                 "Property animation path does not belong to a mesh.");
     }
-    mark_mesh_runtime_transform(engine, MeshHandle{target.index});
+    mark_mesh_runtime_transform(engine, mesh_slot_handle(engine, target.index));
 }
 
 void apply_group_at(
@@ -2036,7 +2037,7 @@ void tick_animation_group_reference(
         return;
     }
     if (reference.gltf_group.value >= engine.animation_groups.size()) return;
-    const AnimationGroupRecord& group = engine.animation_groups[reference.gltf_group.value];
+    const AnimationGroupRecord& group = ${recordAt("engine.animation_groups", "reference.gltf_group")};
     if (group.asset >= engine.assets.size()) return;
     AssetRecord& asset = engine.assets[group.asset];
     const auto owner = group.animation_owner.lock();

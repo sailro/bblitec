@@ -71,7 +71,7 @@ test("scene camera bindings preserve nullable-handle presence", () => {
         result.cpp.indexOf(guardedCamera[0]),
     );
     const cameraRead = result.cpp.indexOf(
-        `.cameras[${guardedCamera[1]}.value].alpha`,
+        `.cameras, ${guardedCamera[1]}).alpha`,
         guard,
     );
     assert.ok(guard >= 0);
@@ -183,7 +183,7 @@ test("a class-held scene camera narrows through the Handles-style guard", () => 
         "bbl::upstream::build_view_projection(",
         guard,
     );
-    const handleValidation = result.cpp.indexOf(".cameras.at(", projection);
+    const handleValidation = result.cpp.indexOf("bbl::handle_at(", projection);
     assert.ok(guard >= 0);
     assert.ok(projection > guard);
     assert.ok(handleValidation > projection);
@@ -269,11 +269,10 @@ test("projection intrinsic keeps f32 lanes and widens ArrayLike calls once", () 
 
     assert.match(
         result.cpp,
-        /const double aspect = \(v_engine\.cameras\[v_camera\.value\]\.radius \/ 3\.0\); const auto matrix = bbl::upstream::build_view_projection\(\s*v_engine\.cameras\.at\(v_camera\.value\),\s*aspect\)/,
+        /const double aspect = \(bbl::handle_at\(v_engine\.cameras, v_camera\)\.radius \/ 3\.0\); const auto matrix = bbl::upstream::build_view_projection\(\s*bbl::handle_at\(v_engine\.cameras, v_camera\),\s*aspect\)/,
     );
     assert.equal(
-        result.cpp.match(/\.cameras\[v_camera\.value\]\.radius \/ 3\.0/g)
-            ?.length,
+        result.cpp.match(/\.cameras, v_camera\)\.radius \/ 3\.0/g)?.length,
         1,
     );
     const projectionStorage = result.cpp.match(

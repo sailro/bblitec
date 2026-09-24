@@ -129,11 +129,11 @@ test("compiles pinned scene 2 directional light colors", () => {
     assert.ok(result.manifest.features.includes("material:standard"));
     assert.match(
         result.cpp,
-        /\.lights\[v_light\.value\]\.diffuse_color = bbl::Color3\{1\.0f, 0\.0f, 0\.0f\}/,
+        /\.lights, v_light\)\.diffuse_color = bbl::Color3\{1\.0f, 0\.0f, 0\.0f\}/,
     );
     assert.match(
         result.cpp,
-        /\.lights\[v_light\.value\]\.specular_color = bbl::Color3\{0\.0f, 1\.0f, 0\.0f\}/,
+        /\.lights, v_light\)\.specular_color = bbl::Color3\{0\.0f, 1\.0f, 0\.0f\}/,
     );
 });
 
@@ -479,11 +479,11 @@ test("lowers a light vector set to its own kind's entry point", () => {
     `);
     assert.match(
         point.cpp,
-        /bbl::set_point_light_position\([^;]*bbl::Vec3\{2\.0f, [^,]*\.position\.y, [^}]*\.position\.z\}\);/,
+        /bbl::set_point_light_position\([^;]*bbl::Vec3\{2\.0f, bbl::handle_at\([^)]*\)\.position\.y, [^}]*\.position\.z\}\);/,
     );
     assert.match(
         point.cpp,
-        /bbl::set_point_light_position\([^;]*bbl::Vec3\{[^,]*\.position\.x, [^,]*\.position\.y, 4\.0f\}\);/,
+        /bbl::set_point_light_position\([^;]*bbl::Vec3\{bbl::handle_at\([^)]*\)\.position\.x, bbl::handle_at\([^)]*\)\.position\.y, 4\.0f\}\);/,
     );
 });
 
@@ -3485,11 +3485,11 @@ test("copies inlined handle parameters before a factory can reallocate their own
 
     assert.match(
         result.cpp,
-        /auto v_fn\d+_material = v_engine\.meshes\[v_source\.value\]\.material;/,
+        /auto v_fn\d+_material = bbl::handle_at\(v_engine\.meshes, v_source\)\.material;/,
     );
     assert.doesNotMatch(
         result.cpp,
-        /auto&& v_fn\d+_material = v_engine\.meshes\[v_source\.value\]\.material;/,
+        /auto&& v_fn\d+_material = bbl::handle_at\(v_engine\.meshes, v_source\)\.material;/,
     );
 });
 
@@ -5592,7 +5592,7 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
     );
     assert.doesNotMatch(
         result.cpp,
-        /\.materials\[[^\]]+\.value\]\.occlusion_strength =/,
+        /\.materials, [^\]]+\)\.occlusion_strength =/,
     );
 
     const defaultResult = compileSource(`
@@ -6187,7 +6187,7 @@ test("preserves scene-code internal metallic F0 creation state", () => {
     );
     assert.doesNotMatch(
         result.cpp,
-        /\.materials\[[^\]]+\.value\]\.(?:metallic_f0_factor|specular_weight) =/,
+        /\.materials, [^\]]+\)\.(?:metallic_f0_factor|specular_weight) =/,
     );
 
     const defaultResult = compileMaterial("");
@@ -7838,7 +7838,7 @@ test("snapshots scalar members of records retained by classes", () => {
     `);
     assert.match(
         result.cpp,
-        /auto v_\w*return_makeVehicle_bodyRestY_\d+ = bbl::js::make_gc_shared<double>\(v_engine\.meshes\[v_\w*body\.value\]\.position\.y\);/,
+        /auto v_\w*return_makeVehicle_bodyRestY_\d+ = bbl::js::make_gc_shared<double>\(bbl::handle_at\(v_engine\.meshes, v_\w*body\)\.position\.y\);/,
     );
     assert.match(
         result.cpp,
@@ -7963,7 +7963,7 @@ test("binds inline engine creation exactly once", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `write_camera_scalar\\(${engine}\\.cameras\\[\\w+\\.value\\], &bbl::CameraRecord::alpha,`,
+            `write_camera_scalar\\(bbl::handle_at\\(${engine}\\.cameras, \\w+\\), &bbl::CameraRecord::alpha,`,
         ),
     );
 });
@@ -8103,7 +8103,7 @@ test("captures function-local const values once", () => {
 
     assert.match(
         result.cpp,
-        /double v_captured = v_engine\.cameras\[v_camera\.value\]\.radius/,
+        /double v_captured = bbl::handle_at\(v_engine\.cameras, v_camera\)\.radius/,
     );
     assert.match(
         result.cpp,
@@ -12790,7 +12790,10 @@ test("exposes getContainerMeshes through the asset's flattened mesh collection",
         }
     `);
 
-    assert.match(result.cpp, /engine\.assets\[v_container\.value\]\.meshes/);
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.assets, v_container\)\.meshes/,
+    );
     assert.match(result.cpp, /for \(const bbl::MeshHandle/);
     assert.equal(result.manifest.sceneMeshes[0]?.assetPbrMaterial, true);
 });
@@ -12837,11 +12840,11 @@ test("keeps setParent descendants local after parent-only runtime motion", () =>
 
     assert.match(
         result.cpp,
-        /\.meshes\[v_parent\.value\]\.position\.x \+= 1\.0;\s*bbl::mark_mesh_runtime_transform\([^,]+, v_parent\);/,
+        /\.meshes, v_parent\)\.position\.x \+= 1\.0;\s*bbl::mark_mesh_runtime_transform\([^,]+, v_parent\);/,
     );
     assert.doesNotMatch(
         result.cpp,
-        /\+\+[^;]*\.meshes\[v_parent\.value\]\.transform_version/,
+        /\+\+[^;]*\.meshes, v_parent\)\.transform_version/,
     );
 });
 
@@ -12898,7 +12901,7 @@ test("stores mesh visibility in the live mesh record", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /\.meshes\[v_anchor\.value\]\.visible = false;/);
+    assert.match(result.cpp, /\.meshes, v_anchor\)\.visible = false;/);
     assert.ok(result.manifest.features.includes("mesh:visible"));
 });
 
@@ -12934,16 +12937,16 @@ test("folds a light include set to the meshes its ids name", () => {
     // frame's alias of the caller's handle.
     assert.match(
         result.cpp,
-        /v_fn1_light = v_light;[\s\S]*?\.lights\[v_fn1_light\.value\]\.included_meshes = \{v_box\.value, v_ball\.value\};/,
+        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box\.value, v_ball\.value\};/,
     );
     assert.match(
         result.cpp,
-        /v_fn2_light = v_other;[\s\S]*?\.lights\[v_fn2_light\.value\]\.included_meshes = \{v_ball\.value\};/,
+        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\.value\};/,
     );
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its
     // own plain data and stay.
-    assert.doesNotMatch(result.cpp, /\.meshes\[[^\]]*\]\.id\b/);
+    assert.doesNotMatch(result.cpp, /\.meshes, [^)]*\)\.id\b/);
     assert.ok(result.manifest.features.includes("light:included-meshes"));
 });
 
@@ -13131,7 +13134,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
 
     assert.equal(
         result.cpp.match(
-            /for \(const bbl::MeshHandle .*?\.assets\[.*?\.value\]\.meshes\)/g,
+            /for \(const bbl::MeshHandle .*?\.assets, .*?\)\.meshes\)/g,
         )?.length,
         1,
     );
@@ -15636,7 +15639,7 @@ test("retains Scene 117's nullable sprite pick record and all hit fields", () =>
     );
     assert.match(
         result.cpp,
-        /pick_sprite_2d\(v_engine, v_engine\.sprite_renderers\.at\([\s\S]*?\)\.layers,/,
+        /pick_sprite_2d\(v_engine, bbl::handle_at\(v_engine\.sprite_renderers, [\s\S]*?\)\.layers,/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -15689,7 +15692,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // component, and the float-store rule stated where it is ported.
     assert.match(
         result.cpp,
-        /const bbl::Vec3d eye = bbl::upstream::camera_position\(v_engine\.cameras\[v_camera\.value\]\); return bblscene::Vec3\{eye\.x, eye\.y, eye\.z\}/,
+        /const bbl::Vec3d eye = bbl::upstream::camera_position\(bbl::handle_at\(v_engine\.cameras, v_camera\)\); return bblscene::Vec3\{eye\.x, eye\.y, eye\.z\}/,
     );
 });
 
@@ -15948,7 +15951,7 @@ test("passes direct SpriteRenderer.layers to another renderer natively", () => {
 
     assert.match(
         result.cpp,
-        /SpriteRendererOptions\{v_engine\.sprite_renderers\.at\([^;]*?\.layers,/,
+        /SpriteRendererOptions\{bbl::handle_at\(v_engine\.sprite_renderers, [^;]*?\.layers,/,
     );
     assert.doesNotMatch(result.cpp, /array_to_vector\([^;]*sprite_renderers/);
 });
@@ -17140,11 +17143,11 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     );
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
+        /\[\[maybe_unused\]\] double v_x = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.x;/,
     );
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
+        /\[\[maybe_unused\]\] double v_z = bbl::handle_at\(v_engine\.cameras, v_cam\)\.target\.z;/,
     );
 });
 
@@ -17171,15 +17174,15 @@ test("reads FreeCamera position components", () => {
 
     assert.match(
         result.cpp,
-        /double v_x = v_engine\.cameras\[v_camera\.value\]\.position\.x;/,
+        /double v_x = bbl::handle_at\(v_engine\.cameras, v_camera\)\.position\.x;/,
     );
     assert.match(
         result.cpp,
-        /const double \w+ = v_engine\.cameras\[v_camera\.value\]\.position\.x;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::position, &bbl::Vec3d::z,/,
+        /const double \w+ = bbl::handle_at\(v_engine\.cameras, v_camera\)\.position\.x;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::position, &bbl::Vec3d::z,/,
     );
     assert.match(
         result.cpp,
-        /const double \w+ = v_engine\.cameras\[v_fn\d+_camera\.value\]\.position\.z;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::target, &bbl::Vec3d::x,/,
+        /const double \w+ = bbl::handle_at\(v_engine\.cameras, v_fn\d+_camera\)\.position\.z;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::target, &bbl::Vec3d::x,/,
     );
 });
 
@@ -17322,7 +17325,7 @@ test("reads a TransformNode name in a runtime template", () => {
 
     assert.match(
         result.cpp,
-        /v_engine\.transform_nodes\[v_root\.value\]\.name/,
+        /bbl::handle_at\(v_engine\.transform_nodes, v_root\)\.name/,
     );
     assert.match(result.cpp, /bbl::add_to_scene\(v_scene, v_root\)/);
     assert.match(result.cpp, /bbl::set_transform_node_rotation\(/);
@@ -18943,7 +18946,7 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // property read emits.
     assert.match(
         result.cpp,
-        /for \(const bbl::AnimationGroupHandle [^ ]+ : v_engine\.assets\[v_container\.value\]\.animation_groups\)/,
+        /for \(const bbl::AnimationGroupHandle [^ ]+ : bbl::handle_at\(v_engine\.assets, v_container\)\.animation_groups\)/,
     );
     // The finds resolved against the materialized document: idle is
     // animation 0, sad_pose animation 2 — no search loop, no found flag.
@@ -19230,10 +19233,10 @@ test("fuses a mesh-material map/find and replaces an asset occlusion texture bef
     );
 
     assert.match(result.cpp, /for \(const bbl::MeshHandle/);
-    assert.match(result.cpp, /\.materials\[[^\]]+\]\.name/);
+    assert.match(result.cpp, /\.materials, [^)]+\)\.name/);
     assert.match(
         result.cpp,
-        /if \([^\n]*material\.value != bbl::invalid_handle[^\n]*\) \{[\s\S]*?const bbl::js::Nullable<std::string>[^\n]*\.materials\[/,
+        /if \([^\n]*material\.value != bbl::invalid_handle[^\n]*\) \{[\s\S]*?const bbl::js::Nullable<std::string>[^\n]*\.materials, /,
     );
     assert.match(result.cpp, /optional_compare[^\n]*== "metalmat"/);
     assert.match(result.cpp, /bbl::set_pbr_occlusion_solid_texture\(/);
@@ -19518,7 +19521,7 @@ test("reads a container's Gaussian splats as the asset's own collection", () => 
     });
     assert.match(
         cpp,
-        /v_engine\.assets\[v_container\.value\]\.gaussian_splats\.size\(\)/,
+        /bbl::handle_at\(v_engine\.assets, v_container\)\.gaussian_splats\.size\(\)/,
     );
     assert.match(
         cpp,
@@ -19604,7 +19607,7 @@ test("bakes a Canvas2D helper reached through an inlined parameter", () => {
     // carries the discard the value feeds.
     assert.match(
         result.cpp,
-        /v_engine\.materials\[[A-Za-z0-9_]+\.value\]\.alpha_cutoff = 0\.25f;/,
+        /bbl::handle_at\(v_engine\.materials, [A-Za-z0-9_]+\)\.alpha_cutoff = 0\.25f;/,
     );
 });
 
@@ -20463,11 +20466,11 @@ test("reads a container's flow-graph runtimes and graphs as its own collection",
         }
         void main();
     `);
-    assert.match(result.cpp, /assets\[[^\]]*\]\.flow_graph_runtimes\.size\(\)/);
+    assert.match(result.cpp, /assets, [^)]*\)\.flow_graph_runtimes\.size\(\)/);
     // The declared graphs are the document's own list, not the runtimes'.
     assert.match(
         result.cpp,
-        /const bbl::FlowGraphHandle [\w]+ = [\w]+ \? [\w.]*assets\[[^\]]*\]\.flow_graphs\[/,
+        /const bbl::FlowGraphHandle [\w]+ = [\w]+ \? bbl::handle_at\([\w.]*assets, [^)]*\)\.flow_graphs\[/,
     );
 });
 

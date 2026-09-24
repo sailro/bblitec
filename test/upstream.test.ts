@@ -444,7 +444,7 @@ test("generates property animation evaluation and seeking", () => {
     assert.match(lowered.source, /mesh\.has_rotation_quaternion = true/);
     assert.match(
         lowered.source,
-        /mark_mesh_runtime_transform\(engine, MeshHandle\{target\.index\}\);/,
+        /mark_mesh_runtime_transform\(engine, mesh_slot_handle\(engine, target\.index\)\);/,
     );
 });
 
@@ -658,7 +658,7 @@ test("flows SceneNode transforms and the pinned spot cone into light factories",
     assert.match(spot, /refresh_spot_light_cone\(light, angle\);/);
     assert.match(
         spot,
-        /refresh_spot_light_cone\(engine\.lights\[light\.value\], angle\);/,
+        /refresh_spot_light_cone\(bbl::handle_at\(engine\.lights, light\), angle\);/,
     );
     for (const source of [
         lightLowerer.lowerFactory(),
@@ -810,7 +810,7 @@ test("generates GLB framing validation from upstream constants", () => {
     // it does not evaluate animation channels during load.
     assert.match(
         adapter.source,
-        /publish_gltf_deformation\(engine\.meshes\[mesh_record_index\],[\s\S]*?mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights\);/,
+        /publish_gltf_deformation\(bbl::handle_at\(engine\.meshes, mesh_handle\),[\s\S]*?mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights\);/,
     );
     assert.doesNotMatch(
         adapter.source,
@@ -1422,11 +1422,11 @@ test("generates ArcRotate and default camera factories from upstream constants",
     assert.match(framing.source, /double radius = \(diag \* 1\.5\);/);
     assert.match(
         framing.source,
-        /engine\.cameras\[cam\.value\]\.near_plane = \(radius \* 0\.01\);/,
+        /bbl::handle_at\(engine\.cameras, cam\)\.near_plane = \(radius \* 0\.01\);/,
     );
     assert.match(
         framing.source,
-        /engine\.cameras\[cam\.value\]\.far_plane = \(radius \* 1000\.0\);/,
+        /bbl::handle_at\(engine\.cameras, cam\)\.far_plane = \(radius \* 1000\.0\);/,
     );
     assert.match(free.source, /camera\.kind = CameraKind::free/);
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);

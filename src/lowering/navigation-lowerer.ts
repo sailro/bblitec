@@ -48,6 +48,7 @@ import {
 import { pinnedHeader } from "./pinned-header.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -743,7 +744,7 @@ void create_nav_mesh(
         if (handle.value >= engine.meshes.size()) {
             throw std::runtime_error("Invalid mesh handle for navmesh");
         }
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         if (mesh.geometry >= engine.geometries.size()) {
             throw std::runtime_error(
                 "Mesh '" + mesh.name +

@@ -1,3 +1,4 @@
+import { recordAt } from "../compiler/record-access.js";
 /** Table rows are composition identities, independent of native allocation order. */
 export interface MeshProfileTable {
     sceneRows: readonly number[];
@@ -19,7 +20,7 @@ MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_
     if (mesh.value >= engine.meshes.size() || profile >= scene_mesh_profile_rows.size()) {
         throw std::runtime_error("A runtime mesh names no generated composition profile.");
     }
-    engine.meshes[mesh.value].composition_feature_row = scene_mesh_profile_rows[profile];
+    ${recordAt("engine.meshes", "mesh")}.composition_feature_row = scene_mesh_profile_rows[profile];
     return mesh;
 }
 

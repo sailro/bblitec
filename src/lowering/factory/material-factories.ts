@@ -8,6 +8,7 @@ import { MeshBuilderLowerer } from "./mesh-builders.js";
 import { assertAsyncSceneBuilder } from "../scene-deferred.js";
 import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -246,9 +247,9 @@ MaterialHandle create_node_material(
 
 void queue_node_material_group(Scene& scene, MeshHandle mesh) {
     Engine& engine = *scene.engine;
-    const MaterialHandle material = engine.meshes.at(mesh.value).material;
+    const MaterialHandle material = ${recordAt("engine.meshes", "mesh")}.material;
     if (material.value >= engine.materials.size() ||
-        !engine.materials[material.value].node_material) return;
+        !${recordAt("engine.materials", "material")}.node_material) return;
     auto& groups = scene.state->node_material_groups;
     const auto found = std::find_if(groups.begin(), groups.end(),
         [material](const auto& group) {
@@ -271,10 +272,10 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
         for (const MeshHandle mesh : group->meshes) {
             // _buildGroup is keyed by the material at addToScene, but its
             // builder reads each mesh's current material when it runs.
-            const auto current = engine.meshes.at(mesh.value).material;
+            const auto current = ${recordAt("engine.meshes", "mesh")}.material;
             if (std::find(captured.begin(), captured.end(), current.value) !=
                 captured.end()) continue;
-            auto& record = engine.materials.at(current.value);
+            auto& record = ${recordAt("engine.materials", "current")};
             if (!record.node_inputs) {
                 throw std::runtime_error("Deferred node group lost its node material.");
             }
@@ -427,7 +428,7 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
     if (handle.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid shader material handle.");
     }
-    MaterialRecord& material = engine.materials[handle.value];
+    MaterialRecord& material = ${recordAt("engine.materials", "handle")};
     if (!material.shader_material) {
         throw std::runtime_error("Material is not a shader material.");
     }
@@ -519,7 +520,7 @@ void set_shader_storage_buffer(
     StorageBufferHandle buffer) {
     MaterialRecord& record = shader_material(engine, material);
     if (buffer.value >= engine.storage_buffers.size() ||
-        engine.storage_buffers[buffer.value].disposed) {
+        ${recordAt("engine.storage_buffers", "buffer")}.disposed) {
         throw std::runtime_error("Invalid shader storage buffer.");
     }
     if (record.shader_storage_buffers.size() <= slot) {
@@ -536,7 +537,7 @@ void set_shader_csm_texture(
     ShadowGeneratorHandle generator) {
     MaterialRecord& record = shader_material(engine, material);
     if (generator.value >= engine.shadow_generators.size() ||
-        engine.shadow_generators[generator.value].filter !=
+        ${recordAt("engine.shadow_generators", "generator")}.filter !=
             ShadowFilter::csm_directional) {
         throw std::runtime_error("Invalid CSM receiver texture.");
     }
@@ -1103,7 +1104,7 @@ void set_material_base_color_file(
     Engine& engine,
     MaterialHandle material,
     FileTexture texture) {
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.base_color_srgb = texture.srgb;
     record.source_albedo_texture = texture;
     record.base_color_texture = std::move(texture.data);
@@ -1117,9 +1118,9 @@ void set_material_orm_file(
     Engine& engine,
     MaterialHandle material,
     FileTexture texture) {
-    engine.materials[material.value].metallic_roughness_texture =
+    ${recordAt("engine.materials", "material")}.metallic_roughness_texture =
         std::move(texture.data);
-    ++engine.materials[material.value].orm_texture_generation;
+    ++${recordAt("engine.materials", "material")}.orm_texture_generation;
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
@@ -1129,11 +1130,11 @@ void set_pbr_unlit(
     Engine& engine,
     MaterialHandle material,
     std::optional<Color3> unlit_color) {
-    engine.materials[material.value].unlit = true;
+    ${recordAt("engine.materials", "material")}.unlit = true;
     // The pin guards the store, so a call without a tint leaves whatever
     // tint the material already carries rather than resetting it.
     if (unlit_color) {
-        engine.materials[material.value].unlit_color = *unlit_color;
+        ${recordAt("engine.materials", "material")}.unlit_color = *unlit_color;
     }
 }
 
@@ -1141,7 +1142,7 @@ void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,
     Color3 color) {
-    engine.materials[material.value].emissive_factor = color;
+    ${recordAt("engine.materials", "material")}.emissive_factor = color;
 }
 
 // set-metallic-reflectance.ts conditionally copies the supplied fields and
@@ -1155,7 +1156,7 @@ void set_pbr_metallic_reflectance(
     Color3 color,
     FileTexture metallic_texture,
     FileTexture reflectance_texture) {
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.has_metallic_reflectance = true;
     if (has_color) {
         record.metallic_reflectance_color = color;
@@ -1182,7 +1183,7 @@ void set_pbr_subsurface(
     float minimum_thickness,
     float maximum_thickness,
     FileTexture thickness_texture) {
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.has_subsurface = true;
     record.subsurface_intensity = intensity;
     record.subsurface_color = color;
@@ -1195,7 +1196,7 @@ void set_pbr_subsurface(
 }
 
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {
-    engine.materials[material.value].skybox_mode = true;
+    ${recordAt("engine.materials", "material")}.skybox_mode = true;
 }
 
 ${solidTextureDataFunction}
@@ -1206,7 +1207,7 @@ void set_pbr_occlusion_solid_texture(
     if (material.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid PBR material handle.");
     }
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.occlusion_texture = solid_texture_data(texture);
     record.has_occlusion_texture = true;
     ++record.occlusion_texture_generation;
@@ -1230,7 +1231,7 @@ void set_pbr_sheen(
     if (!enabled) {
         return;
     }
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.sheen_color = color;
     record.sheen_roughness = roughness;
     record.sheen_intensity = intensity;
@@ -1243,7 +1244,7 @@ void set_pbr_sheen_texture(
     Engine& engine,
     MaterialHandle material,
     FileTexture texture) {
-    engine.materials[material.value].sheen_color_texture =
+    ${recordAt("engine.materials", "material")}.sheen_color_texture =
         std::move(texture.data);
 }
 
@@ -1258,7 +1259,7 @@ void set_pbr_clearcoat(
     if (!enabled) {
         return;
     }
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.clearcoat_intensity = intensity;
     record.clearcoat_roughness = roughness;
     record.clearcoat_index_of_refraction = index_of_refraction;
@@ -1281,7 +1282,7 @@ void set_pbr_iridescence(
     if (!enabled) {
         return;
     }
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.iridescence_intensity = intensity;
     record.iridescence_index_of_refraction = index_of_refraction;
     record.iridescence_minimum_thickness = minimum_thickness;
@@ -1299,7 +1300,7 @@ void set_pbr_lightmap(
     MaterialHandle material,
     FileTexture texture,
     float level) {
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.lightmap_texture = std::move(texture.data);
     record.lightmap_texture_srgb = texture.srgb;
     record.lightmap_level = level;
@@ -1319,7 +1320,7 @@ void set_pbr_anisotropy(
     if (!enabled) {
         return;
     }
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.has_anisotropy = true;
     record.anisotropy_intensity = intensity;
     record.anisotropy_direction = direction;
@@ -1653,7 +1654,7 @@ MaterialRecord& standard_slot_material(
     if (material.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid material handle.");
     }
-    return engine.materials[material.value];
+    return ${recordAt("engine.materials", "material")};
 }
 
 } // namespace
@@ -2129,7 +2130,7 @@ MaterialHandle create_no_color_material_view(
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
-    const MaterialRecord& source_record = engine.materials[source.value];
+    const MaterialRecord& source_record = ${recordAt("engine.materials", "source")};
     if (source_record.standard_material != standard) {
         throw std::runtime_error(
             "No-color material view family does not match its source.");
@@ -2168,7 +2169,7 @@ MaterialHandle create_node_no_color_material_view(
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
-    const MaterialRecord& source_record = engine.materials[source.value];
+    const MaterialRecord& source_record = ${recordAt("engine.materials", "source")};
     if (!source_record.node_material) {
         throw std::runtime_error(
             "Node no-color material view does not match its source.");
@@ -2216,7 +2217,7 @@ MaterialHandle create_esm_shadow_material_view(
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
-    const MaterialRecord& source_record = engine.materials[source.value];
+    const MaterialRecord& source_record = ${recordAt("engine.materials", "source")};
     if (!material_is(source_record, family)) {
         throw std::runtime_error(
             "ESM shadow material view family does not match its source.");

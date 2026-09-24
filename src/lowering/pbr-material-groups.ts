@@ -7,6 +7,7 @@ import {
     lowerMaterialPublication,
     materialPublicationTransport,
 } from "./material-publication.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 
@@ -318,8 +319,8 @@ bool pbr_mesh_list_contains(const std::vector<MeshHandle>& meshes, MeshHandle me
     return std::any_of(meshes.begin(), meshes.end(), [mesh](MeshHandle value) { return value.value == mesh.value; });
 }
 const MaterialRecord* pbr_mesh_material(const Scene& scene, MeshHandle mesh) {
-    const auto material = scene.engine->meshes.at(mesh.value).material;
-    return material.value < scene.engine->materials.size() ? &scene.engine->materials[material.value] : nullptr;
+    const auto material = ${recordAt("scene.engine->meshes", "mesh")}.material;
+    return material.value < scene.engine->materials.size() ? &${recordAt("scene.engine->materials", "material")} : nullptr;
 }
 std::uint64_t source_material_group_key(const MaterialRecord& material) {
     return material.source_pbr_group_builder ? 1 : material.source_group_builder;
@@ -337,7 +338,7 @@ void store_scene_material_group(Scene& scene, std::uint64_t builder, const std::
     if (builder == 1) scene.state->pbr_material_group = group;
 }
 void complete_scene_material_group(Scene& scene, MaterialHandle material) {
-    const auto group = scene_material_group(scene, source_material_group_key(scene.engine->materials.at(material.value)));
+    const auto group = scene_material_group(scene, source_material_group_key(${recordAt("scene.engine->materials", "material")}));
     if (group) {
         const auto outputs = capture_material_outputs(scene, group->meshes);
         append_material_outputs(scene, outputs);
@@ -517,7 +518,7 @@ function lowerPbrGroupBuild(context: LoweringContext): string {
                         "PBR group current material",
                     );
                     return [
-                        `${indent}const auto& mat = scene.engine->materials.at(scene.engine->meshes.at(m.value).material.value);`,
+                        `${indent}const auto& mat = ${recordAt("scene.engine->materials", `${recordAt("scene.engine->meshes", "m")}.material`)};`,
                     ];
                 }
                 return undefined;
@@ -720,7 +721,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
                             "runtimeBuild",
                             [
                                 "mesh._runtimeThinBuild",
-                                "const bool runtimeBuild = scene.engine->meshes.at(mesh.value).source_runtime_thin_builder;",
+                                `const bool runtimeBuild = ${recordAt("scene.engine->meshes", "mesh")}.source_runtime_thin_builder;`,
                             ],
                         ],
                         [
@@ -755,7 +756,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
                         )
                     )
                         return [
-                            `${indent}runtime_builds.push_back({mesh, scene.engine->meshes.at(mesh.value).material});`,
+                            `${indent}runtime_builds.push_back({mesh, ${recordAt("scene.engine->meshes", "mesh")}.material});`,
                         ];
                     if (
                         context.expressionMatchesShape(
@@ -773,7 +774,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
                         )
                     )
                         return [
-                            `${indent}first_builds.push_back({mesh, scene.engine->meshes.at(mesh.value).material});`,
+                            `${indent}first_builds.push_back({mesh, ${recordAt("scene.engine->meshes", "mesh")}.material});`,
                         ];
                     if (
                         context.expressionMatchesShape(
@@ -1289,7 +1290,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
         [
             "mesh.material",
             {
-                cpp: "scene.engine->meshes.at(mesh.value).material.value",
+                cpp: `${recordAt("scene.engine->meshes", "mesh")}.material.value`,
                 type: "scalar",
             },
         ],
@@ -1471,7 +1472,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                     "Runtime build dispatch order",
                 );
                 return [
-                    `${indent}queue_runtime_pbr_group(scene, pair ? *entry.material : scene.engine->meshes.at(mesh.value).material, mesh, pending);`,
+                    `${indent}queue_runtime_pbr_group(scene, pair ? *entry.material : ${recordAt("scene.engine->meshes", "mesh")}.material, mesh, pending);`,
                 ];
             }
             return undefined;
@@ -1594,7 +1595,7 @@ double source_group_mesh_index(const std::vector<MeshHandle>& meshes, MeshHandle
 }
 void queue_runtime_pbr_group(Scene& scene, MaterialHandle material, MeshHandle mesh, std::vector<SourceRuntimeGroupBuild>& pending) {
 ${lower(a.file, [a.declaration.body!.statements[0]!])}
-    const auto builder = source_material_group_key(scene.engine->materials.at(material.value));
+    const auto builder = source_material_group_key(${recordAt("scene.engine->materials", "material")});
     if (!builder) return;
 ${lower(b.file, [b.declaration.body!.statements[0]!])}
 ${lower(move.file, moveBody)}

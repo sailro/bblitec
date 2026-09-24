@@ -349,7 +349,7 @@ test("caches opaque visibility at build and retains transparent bindings", () =>
     );
     assert.match(
         appendDraw,
-        /if \(!mesh_draws\(engine\.meshes\[item\.mesh\.value\]\)\) \{\s*\r?\n\s*return;/,
+        /if \(!mesh_draws\(bbl::handle_at\(engine\.meshes, item\.mesh\)\)\) \{\s*\r?\n\s*return;/,
     );
     assert.ok(
         appendDraw.indexOf("list.visibility_candidates.push_back(command)") <

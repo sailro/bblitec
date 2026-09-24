@@ -72,6 +72,7 @@ import {
     type RecordEntry,
     type ValueModel,
 } from "./pinned-partial-evaluator.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** A graph-authored name as one C++ identifier fragment. */
 function identifier(name: string): string {
@@ -2625,7 +2626,7 @@ struct FlowGraphMeshNode {
 
 std::optional<FlowGraphMeshNode> flow_graph_mesh_node(const Scene& scene, MeshHandle mesh) {
     for (const auto& runtime : scene.state->flow_graphs) {
-        const AssetRecord& asset = scene.engine->assets.at(runtime->asset_scope.value);
+        const AssetRecord& asset = ${recordAt("scene.engine->assets", "runtime->asset_scope")};
         for (std::size_t index = 0; index < asset.meshes.size() && index < asset.mesh_nodes.size(); ++index) {
             if (asset.meshes[index] == mesh && asset.mesh_nodes[index] != std::numeric_limits<std::size_t>::max()) {
                 return FlowGraphMeshNode{runtime->asset_scope, asset.mesh_nodes[index]};
@@ -2784,7 +2785,7 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
                 stderr,
                 "[bblite trace] flow-graph attach asset=%s runtimes=%zu\\n",
                 entry.asset,
-                scene.engine->assets.at(asset.value).flow_graph_runtimes.size());
+                ${recordAt("scene.engine->assets", "asset")}.flow_graph_runtimes.size());
         }
         return;
     }

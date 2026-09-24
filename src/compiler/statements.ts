@@ -58,6 +58,7 @@ import {
     isRecursiveImportedMeshWalk,
     type HandleCollectionTarget,
 } from "./handle-collections.js";
+import { recordAt } from "./record-access.js";
 
 export interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -3408,7 +3409,7 @@ export class StatementLowerer {
             return value;
         });
         context.emit(
-            `bbl::set_camera_vector(${vector.owner.engineCpp}.cameras[${handle}.value], &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`,
+            `bbl::set_camera_vector(${recordAt(`${vector.owner.engineCpp}.cameras`, handle)}, &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`,
         );
         return true;
     }
@@ -3554,7 +3555,7 @@ export class StatementLowerer {
             return true;
         }
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].` +
+            `${recordAt(`${engine}.meshes`, target.cpp)}.` +
                 `${transform.nativeField} = ${vector};`,
         );
         // Baked ordinary geometry includes its parent world matrix. Mark
@@ -3796,7 +3797,7 @@ export class StatementLowerer {
         const engine = context.requireEngine(task, call);
         // The pin's own `opts.material ?? mesh.material`: a call with no
         // override draws the mesh with the material it already carries.
-        let materialCpp = `${engine}.meshes[${mesh.cpp}.value].material`;
+        let materialCpp = `${recordAt(`${engine}.meshes`, mesh.cpp)}.material`;
         let materialOverride = false;
         if (call.arguments.length === 2 + offset) {
             const options = context.expectObjectLiteral(

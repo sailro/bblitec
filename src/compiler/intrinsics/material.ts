@@ -39,6 +39,7 @@ import type {
     SceneMeshNamePredicate,
     ScenePbrLightmapManifest,
 } from "../types.js";
+import { recordAt } from "../record-access.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -812,7 +813,7 @@ function compileMarkMaterialUboDirty(
     const engine = context.requireEngine(material, call);
     for (const [field, value] of material.materialUboArrayFields ?? []) {
         context.emit(
-            `${engine}.materials[${material.cpp}.value].${field} = ${value.cpp};`,
+            `${recordAt(`${engine}.materials`, material.cpp)}.${field} = ${value.cpp};`,
         );
     }
     return {
@@ -1179,7 +1180,7 @@ function compileSetShadowOnly(
         opacity,
         falloff,
     });
-    const record = `${context.requireEngine(material, call)}.materials.at(${material.cpp}.value)`;
+    const record = `${recordAt(`${context.requireEngine(material, call)}.materials`, material.cpp)}`;
     return {
         kind: "void",
         cpp: `${record}.shadow_only = true; ${record}.shadow_only_color = {${color.map(floatLiteral).join(", ")}}; ${record}.shadow_only_opacity = ${floatLiteral(opacity)}; ${record}.shadow_only_falloff = ${floatLiteral(falloff)}; ${record}.alpha_mode = bbl::MaterialAlphaMode::blend`,

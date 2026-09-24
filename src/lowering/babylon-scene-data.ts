@@ -5,6 +5,7 @@ import {
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export function lowerBabylonSceneData(
     context: LoweringContext,
@@ -349,11 +350,11 @@ export function lowerBabylonSceneData(
                 const field = expression.left.name.text;
                 if (field === "diffuse" || field === "specular")
                     return [
-                        `${indent}engine.lights.at(pl.value).${field}_color = babylon_color3(${lowerer.expression(expression.right)});`,
+                        `${indent}${recordAt("engine.lights", "pl")}.${field}_color = babylon_color3(${lowerer.expression(expression.right)});`,
                     ];
                 if (field === "range")
                     return [
-                        `${indent}engine.lights.at(pl.value).range = static_cast<float>(${lowerer.expression(expression.right)}.get<double>());`,
+                        `${indent}${recordAt("engine.lights", "pl")}.range = static_cast<float>(${lowerer.expression(expression.right)}.get<double>());`,
                     ];
                 if (
                     field === "excludedMeshIds" ||
@@ -374,7 +375,7 @@ export function lowerBabylonSceneData(
                         );
                     return lightMeshLists
                         ? [
-                              `${indent}engine.lights.at(pl.value).${field === "excludedMeshIds" ? "excluded_meshes" : "included_meshes"} = resolve_babylon_light_meshes(${lowerer.expression(value.arguments[0]!)}, meshes_by_id, nodes);`,
+                              `${indent}${recordAt("engine.lights", "pl")}.${field === "excludedMeshIds" ? "excluded_meshes" : "included_meshes"} = resolve_babylon_light_meshes(${lowerer.expression(value.arguments[0]!)}, meshes_by_id, nodes);`,
                           ]
                         : [];
                 }

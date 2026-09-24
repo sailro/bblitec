@@ -12,6 +12,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Pinned validation, staging reuse and promise coalescing; PAL owns copy/map transport. */
 export function lowerStorageReadback(context: LoweringContext): LoweredSource {
@@ -347,6 +348,6 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
         modulePath: path,
         symbolName: "readStorageBuffer",
         header: "",
-        source: `#include <bblite/pal_gpu_storage_readback.hpp>\nnamespace bbl {\n// ${context.provenance(path, "readStorageBuffer")}\njs::Promise<js::ArrayBuffer> read_gpu_storage_buffer(StorageBufferHandle buffer,std::optional<double> offset_input,std::optional<double> length_input) {\n    auto engine=buffer.engine.lock();\n    if(!engine || buffer.value>=engine->storage_buffers.size() || !engine->storage_buffers[buffer.value].gpu) return js::Promise<js::ArrayBuffer>::rejected(std::make_exception_ptr(std::runtime_error("StorageBuffer is not a live registered allocation.")));\n    auto& buffer_record=engine->storage_buffers[buffer.value];\n    const auto owner=buffer_record.gpu;\n    if(!owner->readback_state) owner->readback_state=js::make_gc_shared<pal::StorageReadbackState>();\n    const auto state=owner->readback_state;\n    const double byteOffset=offset_input.value_or(${initialLowerer.expression(offsetDefault)});\n    const double byteLength=length_input.value_or(${initialLowerer.expression(lengthDefault)});\n${body}\n}\n}\n`,
+        source: `#include <bblite/pal_gpu_storage_readback.hpp>\nnamespace bbl {\n// ${context.provenance(path, "readStorageBuffer")}\njs::Promise<js::ArrayBuffer> read_gpu_storage_buffer(StorageBufferHandle buffer,std::optional<double> offset_input,std::optional<double> length_input) {\n    auto engine=buffer.engine.lock();\n    if(!engine || buffer.value>=engine->storage_buffers.size() || !${recordAt("engine->storage_buffers", "buffer")}.gpu) return js::Promise<js::ArrayBuffer>::rejected(std::make_exception_ptr(std::runtime_error("StorageBuffer is not a live registered allocation.")));\n    auto& buffer_record=${recordAt("engine->storage_buffers", "buffer")};\n    const auto owner=buffer_record.gpu;\n    if(!owner->readback_state) owner->readback_state=js::make_gc_shared<pal::StorageReadbackState>();\n    const auto state=owner->readback_state;\n    const double byteOffset=offset_input.value_or(${initialLowerer.expression(offsetDefault)});\n    const double byteLength=length_input.value_or(${initialLowerer.expression(lengthDefault)});\n${body}\n}\n}\n`,
     };
 }

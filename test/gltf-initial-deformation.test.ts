@@ -368,7 +368,7 @@ test("native initial deformation carries source palette products and static morp
         executable = resolve(directory, "check.exe");
     const initialize = cppSection(
         loader,
-        "                engine.meshes[mesh_record_index]\n                    .gpu_deformation = true;",
+        "                bbl::handle_at(engine.meshes, mesh_handle)\n                    .gpu_deformation = true;",
         "                // mesh.skeleton upstream:",
     );
     writeFileSync(
@@ -401,7 +401,7 @@ void check(const nlohmann::json& input) {
     const auto read_matrix = [](const Accessor& view, std::size_t bone) { Matrix result{};
         std::copy_n(view.values.begin() + bone * 16, 16, result.begin()); return result; };
     Engine engine; engine.geometries.emplace_back(); engine.meshes.emplace_back();
-    engine.meshes[0].geometry = 0; const std::uint32_t mesh_record_index = 0;
+    engine.meshes[0].geometry = 0; const MeshHandle mesh_handle{0, 0};
     const auto morph_default_weights = input.at("weights").get<std::vector<float>>();
     if (deformed_geometry) {
 ${initialize}
