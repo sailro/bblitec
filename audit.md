@@ -32,7 +32,7 @@ and performance.
 | RDT-8 | med | `assertPinnedShaderFormulas` guarded formulas no longer copied. | Deleted with its flags. | fixed |
 | RDT-9 | med | `shader-ir.ts` regex raw-module fallback; user WGSL constant rewritten by regex. | Full typed WGSL front end; raw path deleted. | fixed |
 | RDT-10 | low | Plugin `getCustomCode` had its own evaluator. | Shares the pinned shader-text folding. | fixed |
-| RDT-11 | low | Pinned defaults copied into tables and checked. | Material defaults and billboard epsilon read from the pin; post-process and navigation in progress. | partial |
+| RDT-11 | low | Pinned defaults copied into tables and checked. | Material, billboard, post-process and navigation defaults read or emitted from the pin. | fixed |
 | RDT-12 | low | Hand SDL blit, stale comment, predeclared shader programs. | Comment fixed. The predeclared programs are live (alpha-card gate); the pinned blit differs in LOD and group, so only a measured vertex lift remains. | partial |
 
 ## Re-derivation in native code (RDN)
@@ -49,7 +49,8 @@ and performance.
 | RDN-8 | med | Pick orchestration restated per backend. | Shared preparation, clears and decode; lowered pointer mapping. | fixed |
 | RDN-9 | low | UI composite WGSL duplicated. | One compositor per backend. | fixed |
 | RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
-| RDN-11 | low | Recast wrapper defaults copied without version provenance. | In progress with RDT-11. | open |
+| RDN-11 | low | Recast wrapper defaults copied without version provenance. | Emitted from the pinned wrapper packages, whose versions are recorded. | fixed |
+| RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Lower them from the pinned wrapper or emit their constants. | open |
 
 ## Compiler core (CC)
 
@@ -170,7 +171,7 @@ and performance.
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | BD-1 | high | Each native edit recreated every scene's build tree (short ninja path). | Tool paths compare by final spelling. | fixed |
-| BD-2 | high | Emission transactions deep-copied compiler state (72.7% of quake generation). | Diff-based capture/rollback (quake −40% CPU). Remaining: journal plain compiler state; answer UI metadata without a probe. | partial |
+| BD-2 | high | Emission transactions deep-copied compiler state (72.7% of quake generation). | Diff-based capture/rollback (quake −40% CPU); UI metadata answered without a probe. Remaining: journal plain compiler state. | partial |
 | BD-3 | med | Largest apps generated last. | Ordered by recorded cost. | fixed |
 | BD-4 | high | `demos:release` on Windows failed since 2026-09-18. | Array-preserving parallel arguments. | fixed |
 | BD-5 | med | ccache full and path-keyed per worktree. | `base_dir`, 25 GiB. | open |
