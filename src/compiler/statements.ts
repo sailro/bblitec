@@ -96,6 +96,7 @@ export interface StatementLoweringContext extends Pick<
     | "isFoldedFlattenLoop"
     | "handleCollectionIterationTarget"
     | "bindDataIterationVariable"
+    | "registerNativeBindingType"
     | "activeNativeReturnType"
     | "prefersNativeDataIteration"
     | "activeInlineWrapper"
@@ -2888,6 +2889,14 @@ export class StatementLowerer {
             indexed?.kind === "array-index"
                 ? indexed.indexCpp
                 : context.allocateTemporaryCppName("item");
+        const container = target.container.dataType;
+        // A span views a constant table: its items are constant, and a
+        // closure capturing one borrows it as such.
+        if (container?.kind === "span" && indexed?.kind !== "array-index")
+            context.registerNativeBindingType(
+                item,
+                `const ${context.dataTypes.cppType(container.element)}`,
+            );
         const lines = context.captureEmittedLines(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             try {
