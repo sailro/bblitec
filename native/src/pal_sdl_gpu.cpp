@@ -8552,12 +8552,14 @@ public:
 #if BBLITE_HAS_CLUSTERED_LIGHTS
         // The cluster binning, in the same place the splat sort runs and
         // for the same reason: it reads this frame's camera and the draw
-        // below reads what it wrote. The pinned updater returns without a
-        // camera (clustered.ts).
+        // below reads what it wrote. The pin's updater runs for every
+        // colour pass over its camera and target, and its refresh returns
+        // without a camera (render-task-base.ts, clustered.ts).
         if (ClusteredLightContainer* clustered =
-                camera ? upstream::clustered_container(engine, scene.clustered_lights) : nullptr) {
-            upload_clustered_lights(state.device, *clustered, frame_view, frame_projection,
-                                    camera->near_plane, camera->far_plane, state.clustered);
+                upstream::clustered_container(engine, scene.clustered_lights)) {
+            upload_clustered_lights(state.device, *clustered, camera,
+                                    static_cast<double>(surface_extent.width),
+                                    static_cast<double>(surface_extent.height), state.clustered);
         }
 #endif
 

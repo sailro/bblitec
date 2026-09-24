@@ -25,6 +25,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
     type PinnedNumericScope,
+    type PinnedRecordShape,
 } from "../src/lowering/pinned-numeric-lowerer.js";
 
 function lower(
@@ -743,4 +744,148 @@ test("stores an in-place method back over its own receiver as the mutation", () 
         },
     );
     assert.equal(copied.trim(), "indices = copy_of(indices);");
+});
+
+// The pin's own growable lists of object records (`_ClusteredActiveLight[]`):
+// the shared translator owns JavaScript's array operations over them, so a
+// caller names only the native struct each element is.
+const itemShape: PinnedRecordShape = {
+    cpp: "Item",
+    members: [
+        {
+            name: "node",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `(*${owner}.node)`, type: "opaque" }],
+                    [
+                        ".weight",
+                        { cpp: `${owner}.node->weight`, type: "scalar" },
+                    ],
+                ]),
+            store: (value) => `&${value}`,
+        },
+        {
+            name: "depth",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.depth`, type: "scalar" }],
+                ]),
+            store: (value) => value,
+        },
+        {
+            name: "extra",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    [
+                        "",
+                        {
+                            cpp: `${owner}.extra`,
+                            type: "opaque",
+                            absentCpp: `${owner}.extra == nullptr`,
+                        },
+                    ],
+                ]),
+            store: (value) => `&${value}`,
+            absent: "nullptr",
+        },
+    ],
+};
+const nodeShape: PinnedRecordShape = {
+    cpp: "Node",
+    members: [
+        {
+            name: "weight",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.weight`, type: "scalar" }],
+                ]),
+            store: (value) => value,
+        },
+    ],
+};
+
+test("lowers JavaScript's array operations over a record list", () => {
+    const emitted = lower(
+        "items.length = 0;\n" +
+            "for (const node of nodes) { if (node.weight > 0) { items.push({ node, depth: node.weight * 2 }); } }\n" +
+            "items.sort((a, b) => a.depth - b.depth);\n" +
+            "for (let i = 0; i < items.length; i++) { const { node, depth } = items[i]!; total += node.weight + depth; }\n" +
+            "const first = nodes[0]!; total += first.weight;",
+        [
+            ["items", { cpp: "items", type: "record-list", record: itemShape }],
+            ["nodes", { cpp: "nodes", type: "record-list", record: nodeShape }],
+            ["total", { cpp: "total", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /items\.clear\(\);/);
+    assert.match(emitted, /for \(const auto& node : nodes\)/);
+    // Members in the struct's order; the optional one left out is absent.
+    assert.match(
+        emitted,
+        /items\.push_back\(Item\{&node, \(node\.weight \* 2\.0\), nullptr\}\);/,
+    );
+    // ES2019's stable sort, under the comparator's own `< 0`.
+    assert.match(
+        emitted,
+        /std::stable_sort\(items\.begin\(\), items\.end\(\), \[&\]\(const Item& a, const Item& b\) \{ return \(\(a\.depth - b\.depth\)\) < 0\.0; \}\);/,
+    );
+    assert.match(emitted, /i < static_cast<double>\(items\.size\(\)\)/);
+    assert.match(
+        emitted,
+        /const auto& (pinned_\d+_\d+) = items\[static_cast<std::size_t>\(i\)\];\n\s+total \+= \(\1\.node->weight \+ \1\.depth\);/,
+    );
+    assert.match(
+        emitted,
+        /const auto& first = nodes\[static_cast<std::size_t>\(0\.0\)\];\ntotal \+= first\.weight;/,
+    );
+});
+
+test("refuses a record list store it cannot mean", () => {
+    const items: [string, PinnedBinding] = [
+        "items",
+        { cpp: "items", type: "record-list", record: itemShape },
+    ];
+    assert.throws(
+        () => lower("items.length = 2;", [items]),
+        /list length store other than 0/,
+    );
+    assert.throws(
+        () => lower("items.push({ depth: 1 });", [items]),
+        /Item literal without 'node'/,
+    );
+    assert.throws(
+        () =>
+            lower("const sorted = items.sort((a, b) => a.depth - b.depth);", [
+                items,
+            ]),
+        /record list sort/,
+    );
+});
+
+test("keeps a truth-initialized local boolean through logical stores", () => {
+    const emitted = lower(
+        "let dirty = a !== b; let flags = 0; flags |= 2; dirty ||= (flags & 2) !== 0; const fresh = Number.NaN;",
+        [
+            ["a", { cpp: "a", type: "scalar" }],
+            ["b", { cpp: "b", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /bool dirty = \(a != b\);/);
+    assert.match(emitted, /flags = bbl::js::bitwise_or\(flags, 2\.0\);/);
+    assert.match(
+        emitted,
+        /dirty = dirty \|\| \(\(bbl::js::bitwise_and\(flags, 2\.0\) != 0\.0\)\);/,
+    );
+    assert.match(
+        emitted,
+        /const double fresh = std::numeric_limits<double>::quiet_NaN\(\);/,
+    );
+    assert.throws(
+        () => lower("let total = 1; total ||= 2;"),
+        /'\|\|=' over a non-boolean/,
+    );
+    assert.throws(
+        () => lower("let dirty = false; dirty = 3;"),
+        /non-boolean store into a boolean local/,
+    );
 });
