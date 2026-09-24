@@ -399,6 +399,15 @@
       "inheritedFromVcpkg": false
     },
     {
+      "library": "sdl3",
+      "order": 10,
+      "file": "native/patches/sdl3/0010-no-joystick-device-names.patch",
+      "purpose": "Unnamed keyboards and mice named without the gamepad table when joysticks are compiled out",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["trimmed"],
+      "inheritedFromVcpkg": false
+    },
+    {
       "library": "sdl3-image",
       "order": 1,
       "file": "native/vcpkg-overlay-ports/sdl3-image/dependencies.diff",
