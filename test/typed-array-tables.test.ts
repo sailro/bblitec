@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { float32Literal } from "../src/cpp-literals.js";
+import { float32Literal, floatLiteral } from "../src/cpp-literals.js";
 import {
     float32TableLiteral,
     typedArrayTable,
@@ -159,6 +159,9 @@ test("float32 literals read back in C++ as Math.fround of the number", () => {
     assert.equal(float32Literal(1 + 2 ** -24), "1.0f");
     assert.equal(float32Literal(-(1 + 2 ** -24)), "-1.0f");
     assert.equal(float32Literal(1 + 3 * 2 ** -24), "1.0000002f");
+    // Every float write shares the rule: only a midpoint double changes spelling.
+    assert.equal(floatLiteral(1 + 2 ** -24), "1.0f");
+    assert.equal(floatLiteral(0.30000000000000004), "0.30000000000000004f");
     // An exact decimal midpoint reads back as JavaScript's even neighbour on
     // both paths, but no literal stands at one: 33565870 is passed over.
     assert.equal(float32Literal(33565870), "33565872.0f");

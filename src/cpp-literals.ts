@@ -9,6 +9,10 @@
  * `1e+21.0f` — not C++.
  */
 export function floatLiteral(value: number): string {
+    // C++ rounds the decimal once, straight to float; JavaScript rounds the
+    // double. They differ only for a double exactly halfway between two
+    // floats, whose shortest decimal lies past the midpoint.
+    if (isFloat32Midpoint(value)) return float32Literal(value);
     // `String(-0)` is `"0"`, which loses the sign bit. Every emitter that
     // byte-preserves a block cares — a folded uniform whose default is
     // negative zero must upload negative zero.
