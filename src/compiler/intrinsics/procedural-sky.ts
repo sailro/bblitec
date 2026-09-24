@@ -129,7 +129,7 @@ export function compileProceduralSkyIntrinsic(
     );
     const owner = sun
         ? undefined
-        : context.pinValueToTemporary(
+        : context.bindings.pinValueToTemporary(
               context.compileValue(argumentAt(call, 0)),
               "sky_owner",
               call,

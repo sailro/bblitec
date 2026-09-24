@@ -221,17 +221,14 @@ interface ClassLoweringContext extends Pick<
     | "lookupIdentifierValue"
     | "identifierIsRebound"
     | "compileValue"
-    | "pinValueToTemporary"
     | "emitStatement"
-    | "bindParameterValue"
+    | "bindings"
     | "bindClassParameterValue"
     | "compileClassParameterValue"
     | "bindClassField"
     | "bindNullableClassField"
     | "bindUninitializedClassDataField"
     | "bindOptionalResourceValue"
-    | "pushScope"
-    | "popScope"
     | "allocateUserFunctionPrefix"
     | "allocateTemporaryCppName"
     | "reachJsData"
@@ -444,7 +441,9 @@ export class ClassLowerer {
             return undefined;
         }
 
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         try {
             this.bindParameters(method, call.arguments, undefined, true);
             const instance = this.construct(fallback!, owner);
@@ -467,7 +466,9 @@ export class ClassLowerer {
             }
             this.context.emit("try {");
             this.context.increaseIndent();
-            this.context.pushScope(this.context.allocateUserFunctionPrefix());
+            this.context.bindings.pushScope(
+                this.context.allocateUserFunctionPrefix(),
+            );
             try {
                 for (const statement of tryStatement.tryBlock.statements.slice(
                     0,
@@ -497,7 +498,7 @@ export class ClassLowerer {
                 // statements against those live fields. Direct parameter-to-
                 // field assignments are the wiring already emitted above and
                 // must not run twice.
-                this.context.pushScope(
+                this.context.bindings.pushScope(
                     this.context.allocateUserFunctionPrefix(),
                 );
                 const previousThis = this.context.activeThis();
@@ -508,7 +509,7 @@ export class ClassLowerer {
                         const target = targets[index]!;
                         const resourceValue =
                             successfulConstructorResourceKinds.has(value.kind);
-                        this.context.bindParameterValue(
+                        this.context.bindings.bindParameterValue(
                             parameter,
                             resourceValue
                                 ? {
@@ -528,10 +529,10 @@ export class ClassLowerer {
                     }
                 } finally {
                     this.context.defineThis(previousThis);
-                    this.context.popScope();
+                    this.context.bindings.popScope();
                 }
             } finally {
-                this.context.popScope();
+                this.context.bindings.popScope();
                 this.context.decreaseIndent();
             }
             this.context.emit("} catch (...) {");
@@ -541,7 +542,7 @@ export class ClassLowerer {
             this.context.emit("}");
             return instance;
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -646,7 +647,9 @@ export class ClassLowerer {
         // rather than only after construction has already returned.
         this.context.registerClassInstance(instance, declaration);
 
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -772,7 +775,7 @@ export class ClassLowerer {
             }
         } finally {
             this.context.defineThis(previousThis);
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
         return instance;
     }
@@ -1198,7 +1201,9 @@ export class ClassLowerer {
                 call.arguments,
                 "method",
             );
-            this.context.pushScope(this.context.allocateUserFunctionPrefix());
+            this.context.bindings.pushScope(
+                this.context.allocateUserFunctionPrefix(),
+            );
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
@@ -1221,7 +1226,7 @@ export class ClassLowerer {
                 };
             } finally {
                 this.context.defineThis(previousThis);
-                this.context.popScope();
+                this.context.bindings.popScope();
             }
         }
         if (this.methodRecurses(declaration, method)) {
@@ -1256,7 +1261,9 @@ export class ClassLowerer {
                 this.context.defineThis(previousThis);
             }
         }
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -1301,7 +1308,7 @@ export class ClassLowerer {
                 : { kind: "void", cpp: "" };
         } finally {
             this.context.defineThis(previousThis);
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -1321,7 +1328,9 @@ export class ClassLowerer {
         const argumentValue =
             evaluatedArgument ??
             this.compileClassArguments(setter, [value], "setter")[0]!;
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -1344,7 +1353,7 @@ export class ClassLowerer {
             this.context.emit(needsFunctionScope ? "}();" : "}");
         } finally {
             this.context.defineThis(previousThis);
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -1443,7 +1452,7 @@ export class ClassLowerer {
             `auto ${cppName} = bbl::js::make_recursive_group([&]([[maybe_unused]] auto& ${self}${cppParameters.length ? ", " : ""}${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
         );
         this.context.increaseIndent();
-        this.context.pushScope(prefix);
+        this.context.bindings.pushScope(prefix);
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         this.activeRecursiveMethods.set(method, {
@@ -1460,7 +1469,7 @@ export class ClassLowerer {
                         parameter.name,
                         true,
                     );
-                this.context.bindParameterValue(parameter.identifier, {
+                this.context.bindings.bindParameterValue(parameter.identifier, {
                     ...this.context.dataValue(parameter.name, parameter.type),
                     ...(parameter.readOnly ? { readOnly: true as const } : {}),
                 });
@@ -1472,7 +1481,7 @@ export class ClassLowerer {
             this.context.endNativeFunctionBody();
             this.activeRecursiveMethods.delete(method);
             this.context.defineThis(previousThis);
-            this.context.popScope();
+            this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("});");
@@ -1533,7 +1542,7 @@ export class ClassLowerer {
                         value.dataType &&
                         dataTypesEqual(value.dataType, type)
                     ) {
-                        return this.context.pinValueToTemporary(
+                        return this.context.bindings.pinValueToTemporary(
                             value,
                             "function_argument",
                             argument,
@@ -1658,7 +1667,9 @@ export class ClassLowerer {
             call.arguments,
             "method",
         );
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -1691,7 +1702,9 @@ export class ClassLowerer {
             }
             this.context.emit(`if (!(${condition.cpp})) {`);
             this.context.increaseIndent();
-            this.context.pushScope(this.context.allocateUserFunctionPrefix());
+            this.context.bindings.pushScope(
+                this.context.allocateUserFunctionPrefix(),
+            );
             try {
                 for (const statement of leading.slice(1)) {
                     this.context.emitStatement(statement);
@@ -1722,7 +1735,7 @@ export class ClassLowerer {
                     }
                 }
             } finally {
-                this.context.popScope();
+                this.context.bindings.popScope();
                 this.context.decreaseIndent();
             }
             this.context.emit("}");
@@ -1734,7 +1747,7 @@ export class ClassLowerer {
             };
         } finally {
             this.context.defineThis(previousThis);
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -1806,7 +1819,7 @@ export class ClassLowerer {
                         parameter,
                     );
                     if (parameterType?.kind === "optional") {
-                        this.context.bindParameterValue(
+                        this.context.bindings.bindParameterValue(
                             parameter.name,
                             this.context.dataValue(
                                 `${this.context.dataTypes.cppType(parameterType)}{std::nullopt}`,
@@ -1819,7 +1832,7 @@ export class ClassLowerer {
                             parameterType.name,
                         )
                     ) {
-                        this.context.bindParameterValue(
+                        this.context.bindings.bindParameterValue(
                             parameter.name,
                             this.context.dataValue(
                                 `${this.context.dataTypes.cppType(parameterType)}{}`,
@@ -1827,10 +1840,13 @@ export class ClassLowerer {
                             ),
                         );
                     } else {
-                        this.context.bindParameterValue(parameter.name, {
-                            kind: "json-null",
-                            cpp: "",
-                        });
+                        this.context.bindings.bindParameterValue(
+                            parameter.name,
+                            {
+                                kind: "json-null",
+                                cpp: "",
+                            },
+                        );
                     }
                     if (
                         parameterProperties &&
@@ -1867,9 +1883,12 @@ export class ClassLowerer {
                       ? this.context.compileValue(argument)
                       : undefined;
             if (staticRecord?.kind === "record") {
-                this.context.bindParameterValue(parameter.name, staticRecord);
+                this.context.bindings.bindParameterValue(
+                    parameter.name,
+                    staticRecord,
+                );
             } else if (evaluatedArgument) {
-                this.context.bindParameterValue(
+                this.context.bindings.bindParameterValue(
                     parameter.name,
                     evaluatedArgument,
                 );

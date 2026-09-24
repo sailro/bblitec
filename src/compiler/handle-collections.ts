@@ -66,9 +66,7 @@ interface HandleCollectionLoopContext extends Pick<
     | "emit"
     | "increaseIndent"
     | "decreaseIndent"
-    | "pushScope"
-    | "popScope"
-    | "bindLocalValue"
+    | "bindings"
 > {}
 
 /**
@@ -104,14 +102,14 @@ export function emitHandleCollectionLoop<
         `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
     );
     context.increaseIndent();
-    context.pushScope(context.allocateBlockPrefix());
+    context.bindings.pushScope(context.allocateBlockPrefix());
     try {
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
             ...(extraBinding ?? {}),
         });
-        context.bindLocalValue(
+        context.bindings.bindLocalValue(
             binding,
             target.elementTemplate
                 ? withNativeMetadata(value, target.elementTemplate)
@@ -119,7 +117,7 @@ export function emitHandleCollectionLoop<
         );
         emitBody(context);
     } finally {
-        context.popScope();
+        context.bindings.popScope();
         context.decreaseIndent();
     }
     context.emit("}");
@@ -359,13 +357,12 @@ interface HandleCollectionsContext
         Pick<
             LoweringServices,
             | "guardStaticConstructionRead"
-            | "meshWalks"
+            | "sceneManifest"
             | "checker"
             | "symbols"
             | "dataTypes"
             | "options"
             | "assetPayloads"
-            | "reachedNodeParticles"
             | "unwrap"
             | "importedName"
             | "fail"
@@ -373,18 +370,16 @@ interface HandleCollectionsContext
             | "emitStatement"
             | "libraryGlobal"
             | "isInRuntimeControlFlow"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "cppString"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "resolveStaticExpression"
             | "probeStaticArrayLiteral"
             | "requireEngine"
             | "expectKind"
             | "expectSameEngine"
             | "expectArgumentCount"
-            | "addSceneLight"
         > {}
 
 /**
@@ -460,10 +455,10 @@ export class HandleCollections {
             parameter: declaration.parameters[0]!.name.getText(),
             body: `{ ${proof.helpers.map((helper) => helper.getText()).join("\n")} ${declaration.body!.statements.map((statement) => statement.getText()).join("\n")} }`,
         });
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         try {
             this.context.emitStatement(proof.mapStatement);
-            const map = this.context.lookup(proof.map);
+            const map = this.context.bindings.lookup(proof.map);
             if (
                 map.dataType?.kind !== "map" ||
                 map.dataType.key.kind !== "string" ||
@@ -481,19 +476,19 @@ export class HandleCollections {
                 walk,
                 proof.child,
                 (context) => {
-                    const child = context.lookup(proof.child);
-                    context.bindLocalValue(proof.ownerName, {
+                    const child = context.bindings.lookup(proof.child);
+                    context.bindings.bindLocalValue(proof.ownerName, {
                         kind: "string",
                         cpp: `${recordAt(`${target.engineCpp}.meshes`, child.cpp)}.scene_node_name`,
                         dataType: { kind: "string" },
                     });
-                    context.bindLocalValue(proof.output, map);
+                    context.bindings.bindLocalValue(proof.output, map);
                     context.emitStatement(proof.collect);
                 },
             );
             return { ...map, engineCpp: target.engineCpp };
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -617,7 +612,7 @@ export class HandleCollections {
         if (!ts.isIdentifier(unwrapped)) {
             return undefined;
         }
-        const value = this.context.lookupOptional(unwrapped);
+        const value = this.context.bindings.lookupOptional(unwrapped);
         return value?.kind === "handle-collection" && value.handleCollection
             ? value
             : undefined;
@@ -829,10 +824,11 @@ export class HandleCollections {
         if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon")
             return target;
         const key = JSON.stringify(walk);
-        let index = this.context.meshWalks.findIndex(
+        let index = this.context.sceneManifest.meshWalks.findIndex(
             (candidate) => JSON.stringify(candidate) === key,
         );
-        if (index < 0) index = this.context.meshWalks.push(walk) - 1;
+        if (index < 0)
+            index = this.context.sceneManifest.meshWalks.push(walk) - 1;
         const demanded = (owner.asset.meshWalks ??= []);
         if (!demanded.includes(index)) demanded.push(index);
         return {
@@ -1347,7 +1343,7 @@ export class HandleCollections {
     ): readonly Value[] | undefined {
         const unwrapped = this.context.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
-            ? this.context.lookupOptional(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
             : ts.isCallExpression(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped) ||
@@ -1430,7 +1426,7 @@ export class HandleCollections {
                 "A scene light is missing its generated light kind.",
             );
         }
-        this.context.addSceneLight(scene, light, light.lightKind);
+        this.context.sceneManifest.addSceneLight(scene, light, light.lightKind);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
@@ -1479,10 +1475,12 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]
-                ?.native ||
-            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]
-                ?.native
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                set.nodeParticleSetIndex
+            ]?.native ||
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                system.nodeParticleSetIndex
+            ]?.native
         ) {
             this.context.fail(
                 call,
@@ -1490,7 +1488,7 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.buffers.some(
+            this.context.sceneManifest.reachedNodeParticles.buffers.some(
                 (buffer) =>
                     buffer.set === set.nodeParticleSetIndex ||
                     buffer.set === system.nodeParticleSetIndex,
@@ -1501,7 +1499,7 @@ export class HandleCollections {
                 "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.",
             );
         }
-        this.context.reachedNodeParticles.steps.push({
+        this.context.sceneManifest.reachedNodeParticles.steps.push({
             op: "push-system",
             set: set.nodeParticleSetIndex,
             fromSet: system.nodeParticleSetIndex,
@@ -1535,7 +1533,7 @@ export class HandleCollections {
         if (callee.name.text !== "push") return undefined;
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
-        const tuple = this.context.lookupOptional(owner);
+        const tuple = this.context.bindings.lookupOptional(owner);
         if (tuple?.kind !== "tuple" || !tuple.tupleElements) {
             return undefined;
         }
@@ -1706,16 +1704,19 @@ export class HandleCollections {
             truthinessCpp: "true",
             engineCpp: context.requireEngine(owner, collection),
         };
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            context.bindLocalValue(predicate.parameters[0]!.name, root);
-            if (context.compileCondition(predicate.body) !== "true")
+            context.bindings.bindLocalValue(
+                predicate.parameters[0]!.name,
+                root,
+            );
+            if (context.conditions.compileCondition(predicate.body) !== "true")
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
                 );
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         return root;
     }
@@ -1805,8 +1806,8 @@ export class HandleCollections {
                     context.emit(`if (${selected.optionalFoundCpp}) {`);
                     context.increaseIndent();
                 }
-                context.bindLocalValue(predicateParameter, selected);
-                const test = context.compileCondition(
+                context.bindings.bindLocalValue(predicateParameter, selected);
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);
@@ -2145,8 +2146,8 @@ export class HandleCollections {
             target,
             predicateParameter,
             (context) => {
-                const item = context.lookup(predicateParameter).cpp;
-                const test = context.compileCondition(
+                const item = context.bindings.lookup(predicateParameter).cpp;
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);
@@ -2250,7 +2251,7 @@ export class HandleCollections {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
-            const value = this.context.lookupOptional(resolved);
+            const value = this.context.bindings.lookupOptional(resolved);
             return value?.kind === "string" ? value.staticString : undefined;
         }
         return undefined;
@@ -2469,7 +2470,7 @@ export class HandleCollections {
     private lookupHandleOperand(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 return handleKinds.includes(value.kind) &&
                     value.animationGroupSource !== "property"

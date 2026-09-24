@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { compileComputeUniformArenaIntrinsic } from "./compute-uniform-arena.js";
 import {
     compileProceduralSkyIntrinsic,
@@ -137,7 +138,9 @@ export interface IntrinsicContext
         GizmoIntrinsicContext,
         VatIntrinsicContext,
         TextIntrinsicContext,
-        EffectIntrinsicContext {}
+        EffectIntrinsicContext {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * Intrinsics a large counted loop may call without being unrolled.

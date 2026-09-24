@@ -32,11 +32,17 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | --- | --- |
 | `program.ts`, `symbols.ts`, `type-facts.ts` | TypeScript program, declaration origin and symbol resolution, nullable-union members |
 | Expressions, statements, assignments, `intrinsics/` | Source lowering |
+| `declarations.ts` | Variable declarations and binding patterns |
+| `properties.ts` | Property rules and property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
+| `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
 | `emission-transaction.ts` | Rollback on declined or failed lowering |
-| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal, scope and compiler interface |
+| `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
+| `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
+| `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
+| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
 
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and

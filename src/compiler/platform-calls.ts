@@ -84,7 +84,7 @@ interface PlatformCallContext
             | "canvasReadbackFunctions"
             | "checker"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileFrameCallback"
             | "compileNumber"
             | "compilePlatformCallback"
@@ -96,7 +96,7 @@ interface PlatformCallContext
             | "dataTypes"
             | "emit"
             | "engineHasStarted"
-            | "evaluateBrowserValue"
+            | "browserErasure"
             | "evaluator"
             | "expectArgumentCount"
             | "expectKind"
@@ -105,16 +105,13 @@ interface PlatformCallContext
             | "hasPresentationHost"
             | "hoistForwardCallbackBindings"
             | "probeEmission"
-            | "isBrowserOnlyExpression"
             | "isCanvasElement"
             | "libraryGlobal"
             | "isInFrameCallback"
             | "isNativeHostUiLookup"
-            | "isPrimaryCanvas2DContextCall"
-            | "lookupOptional"
+            | "bindings"
             | "objectProperty"
             | "options"
-            | "pinValueToTemporary"
             | "emitDiscardedValue"
             | "reachFeature"
             | "reachJsData"
@@ -160,7 +157,9 @@ export class PlatformCalls {
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "addEventListener" &&
-            !this.context.isBrowserOnlyExpression(callee.expression)
+            !this.context.browserErasure.isBrowserOnlyExpression(
+                callee.expression,
+            )
         ) {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
@@ -330,7 +329,7 @@ export class PlatformCalls {
             callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
-                ? this.context.lookupOptional(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
                 : ts.isPropertyAccessExpression(receiver) ||
                     ts.isElementAccessExpression(receiver)
                   ? this.context.compileValue(receiver)
@@ -474,7 +473,7 @@ export class PlatformCalls {
         this.context.expectArgumentCount(call, 1, 1);
         const argument = this.context.unwrap(argumentAt(call, 0));
         const stored = ts.isIdentifier(argument)
-            ? this.context.lookupOptional(argument)
+            ? this.context.bindings.lookupOptional(argument)
             : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.
@@ -675,7 +674,8 @@ export class PlatformCalls {
             }
             const onceExpression = this.context.objectProperty(options, "once");
             if (onceExpression) {
-                const compiled = this.context.compileCondition(onceExpression);
+                const compiled =
+                    this.context.conditions.compileCondition(onceExpression);
                 if (compiled !== "true" && compiled !== "false") {
                     this.context.fail(
                         onceExpression,
@@ -894,7 +894,7 @@ export class PlatformCalls {
                 };
             }
         }
-        if (this.context.isPrimaryCanvas2DContextCall(call)) {
+        if (this.context.browserErasure.isPrimaryCanvas2DContextCall(call)) {
             if (
                 this.context.defaultEngine() &&
                 !this.context.hasPresentationHost()
@@ -1598,7 +1598,7 @@ export class PlatformCalls {
                 node: ts.Expression,
             ): Value => {
                 const { nativeBinding, ...expression } = value;
-                return this.context.pinValueToTemporary(
+                return this.context.bindings.pinValueToTemporary(
                     expression,
                     label,
                     node,

@@ -55,7 +55,7 @@ export interface EffectIntrinsicContext
             | "compileBoolean"
             | "compileNumber"
             | "compileStaticString"
-            | "recordEffect"
+            | "sceneManifest"
             | "emit"
             | "fail"
         > {}
@@ -295,7 +295,7 @@ export function compileEffectIntrinsic(
                 );
             }
             const nameExpression = context.objectProperty(object, "name");
-            const index = context.recordEffect({
+            const index = context.sceneManifest.recordEffect({
                 family: "uniform-effect",
                 name: nameExpression
                     ? context.compileStaticString(nameExpression)
@@ -353,7 +353,7 @@ export function compileEffectIntrinsic(
                 );
             }
             const nameExpression = context.objectProperty(object, "name");
-            const index = context.recordEffect({
+            const index = context.sceneManifest.recordEffect({
                 family: "effect",
                 // The pin's own default when the descriptor names none.
                 name: nameExpression

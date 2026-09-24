@@ -58,7 +58,7 @@ export function compileComputeUniformArenaIntrinsic(
             sourceExpression,
             "Uniform slot updates require ArrayBuffer views.",
         );
-    const source = context.pinValueToTemporary(
+    const source = context.bindings.pinValueToTemporary(
         value,
         "uniform_slot_source",
         sourceExpression,

@@ -268,7 +268,7 @@ test("a declined resource-producing probe leaves generated code and composition 
             !injected &&
             ts.isIdentifier(expression) &&
             expression.text === "values" &&
-            this.context.lookupOptional(expression)?.kind === "data"
+            this.context.bindings.lookupOptional(expression)?.kind === "data"
         ) {
             injected = true;
             const declaration = this.context.sourceFile.statements.find(

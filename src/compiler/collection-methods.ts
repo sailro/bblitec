@@ -38,7 +38,7 @@ export function compileCollectionForEach(
     // A non-const copy states that intent to clang's range-loop-construct.
     lowerer.context.emit(`for (auto ${entry} : ${source}) {`);
     lowerer.context.increaseIndent();
-    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     lowerer.context.enterRuntimeIteration();
     lowerer.context.enterRuntimeControlFlow();
     try {
@@ -71,7 +71,7 @@ export function compileCollectionForEach(
     } finally {
         lowerer.context.leaveRuntimeControlFlow();
         lowerer.context.leaveRuntimeIteration();
-        lowerer.context.popScope();
+        lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("}");

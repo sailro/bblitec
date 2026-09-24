@@ -182,23 +182,19 @@ export interface DataLoweringContext
             | "takeNativeTemporary"
             | "registerSharedNativeFunction"
             | "checker"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "dataTypes"
             | "classLowerer"
             | "compileValue"
-            | "pinValueToTemporary"
-            | "materializeEscapingValue"
             | "emitDiscardedValue"
             | "compileNumber"
             | "castNumber"
-            | "compileCondition"
+            | "conditions"
             | "cppString"
             | "propertyName"
             | "recordDataAssignmentMetadata"
-            | "recordDataLightSlot"
-            | "declaredDataProperty"
-            | "readResolvedProperty"
+            | "sceneManifest"
+            | "propertyAccess"
             | "resolveStaticExpression"
             | "unwrap"
             | "emit"
@@ -207,8 +203,6 @@ export interface DataLoweringContext
             | "allocateTemporaryCppName"
             | "increaseIndent"
             | "decreaseIndent"
-            | "pushScope"
-            | "popScope"
             | "allocateBlockPrefix"
             | "compileCallbackWithValues"
             | "captureManagedClosureLines"
@@ -226,12 +220,10 @@ export interface DataLoweringContext
             | "isInRuntimeControlFlow"
             | "enterRuntimeIteration"
             | "leaveRuntimeIteration"
-            | "invalidateStaticElements"
             | "recordArrayPush"
             | "knownCollectionCardinality"
             | "recordCollectionKey"
             | "recordCollectionClear"
-            | "invalidateRecordProperties"
             | "reachJsData"
             | "reachJson"
             | "reachFeature"
@@ -337,7 +329,7 @@ export class DataLowerer {
             if (target?.kind === "boolean" && !target.dataStore) {
                 return {
                     kind: "boolean",
-                    cpp: `(${target.cpp} = ${this.context.compileCondition(expression.right)})`,
+                    cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
                     dataType: { kind: "boolean" },
                     impure: true,
                 };
@@ -359,7 +351,7 @@ export class DataLowerer {
         if (scalar?.kind === "boolean") {
             return {
                 kind: "boolean",
-                cpp: `(${scalar.cpp} = ${this.context.compileCondition(expression.right)})`,
+                cpp: `(${scalar.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
                 dataType: { kind: "boolean" },
                 impure: true,
             };
@@ -916,7 +908,7 @@ export class DataLowerer {
             // through the one table every other read site uses.
             const declared = unwrapped.questionDotToken
                 ? undefined
-                : this.context.declaredDataProperty(unwrapped);
+                : this.context.propertyAccess.declaredDataProperty(unwrapped);
             if (declared) {
                 return declared;
             }
@@ -1021,7 +1013,10 @@ export class DataLowerer {
             return (
                 this.compilePropertyFromValue(owner, unwrapped) ??
                 (mode === "read"
-                    ? this.context.readResolvedProperty(owner, unwrapped)
+                    ? this.context.propertyAccess.readResolvedProperty(
+                          owner,
+                          unwrapped,
+                      )
                     : undefined)
             );
         }
@@ -1115,7 +1110,7 @@ export class DataLowerer {
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
             const selected = ts.isCallExpression(access)
-                ? this.context.pinValueToTemporary(
+                ? this.context.bindings.pinValueToTemporary(
                       owner,
                       "optional_chain",
                       access.expression,
@@ -1187,7 +1182,7 @@ export class DataLowerer {
         let selected: Value | undefined;
         const selectedLines = this.context.captureEmittedLines(() => {
             if (snapshotPresentOwner) {
-                presentOwner = this.context.pinValueToTemporary(
+                presentOwner = this.context.bindings.pinValueToTemporary(
                     presentOwner,
                     "optional_receiver",
                     ts.isCallExpression(access) ? access.expression : undefined,
@@ -1326,7 +1321,10 @@ export class DataLowerer {
             access,
             (presentOwner) =>
                 this.propertyRead(presentOwner, access) ??
-                this.context.readResolvedProperty(presentOwner, access),
+                this.context.propertyAccess.readResolvedProperty(
+                    presentOwner,
+                    access,
+                ),
         );
     }
 
@@ -1906,7 +1904,7 @@ export class DataLowerer {
         // a flag another source supplied selects the value once already.
         const left =
             computed.ownedCpp !== undefined
-                ? this.context.pinValueToTemporary(
+                ? this.context.bindings.pinValueToTemporary(
                       computed,
                       "nullish",
                       expression.left,
@@ -1916,7 +1914,7 @@ export class DataLowerer {
                     computed.optionalFoundCpp ===
                         this.referencePresence(computed.cpp) &&
                     !cppIdentifierPattern.test(computed.cpp)
-                  ? this.context.pinValueToTemporary(
+                  ? this.context.bindings.pinValueToTemporary(
                         computed,
                         "nullish",
                         expression.left,
@@ -1940,7 +1938,10 @@ export class DataLowerer {
                 : `([&]() -> ${this.context.dataTypes.cppType(type)} {\n${lines.join("\n")}\nreturn ${cpp};\n}())`;
         };
         if (isJsonValue(left)) {
-            const value = this.context.pinValueToTemporary(left, "nullish");
+            const value = this.context.bindings.pinValueToTemporary(
+                left,
+                "nullish",
+            );
             const type: DataType = { kind: "json" };
             const fallback = fallbackForSink(type);
             return this.leafValue(
@@ -2124,7 +2125,7 @@ export class DataLowerer {
                         : {}),
                 };
             }
-            const temp = this.context.pinValueToTemporary(
+            const temp = this.context.bindings.pinValueToTemporary(
                 left,
                 "nullish",
                 expression.left,
@@ -3854,7 +3855,7 @@ export class DataLowerer {
             if (!whenTrue || !whenFalse) {
                 return undefined;
             }
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             return condition === "true"
@@ -4137,7 +4138,7 @@ export class DataLowerer {
         const item = this.context.allocateTemporaryCppName("array_from_item");
         const element = range.element;
         const lines = this.context.captureEmittedLines(() => {
-            this.context.pushScope(this.context.allocateBlockPrefix());
+            this.context.bindings.pushScope(this.context.allocateBlockPrefix());
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
@@ -4169,7 +4170,7 @@ export class DataLowerer {
             } finally {
                 this.context.leaveRuntimeIteration();
                 this.context.leaveRuntimeControlFlow();
-                this.context.popScope();
+                this.context.bindings.popScope();
             }
         });
         this.context.emit(`for (auto ${item} : ${source}) {`);
@@ -4351,7 +4352,7 @@ export class DataLowerer {
             `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
         );
         this.context.increaseIndent();
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         this.context.enterRuntimeIteration();
         try {
             const arguments_: Value[] = [
@@ -4377,7 +4378,7 @@ export class DataLowerer {
             this.context.emit(`${output}.push_back(${value});`);
         } finally {
             this.context.leaveRuntimeIteration();
-            this.context.popScope();
+            this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("}");
@@ -4903,7 +4904,7 @@ export class DataLowerer {
             `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
         );
         this.context.increaseIndent();
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         const indexCapture = this.context.registerNativeBinding(
             index,
             false,
@@ -5008,7 +5009,7 @@ export class DataLowerer {
                 this.context.leaveRuntimeControlFlow();
             }
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("}");
@@ -5034,7 +5035,10 @@ export class DataLowerer {
         value: Value,
         preserveCardinality = false,
     ): void {
-        this.context.invalidateStaticElements(value, preserveCardinality);
+        this.context.bindings.invalidateStaticElements(
+            value,
+            preserveCardinality,
+        );
     }
 
     /** A retained mutable alias can invalidate both an array snapshot and its length. */
@@ -5560,7 +5564,7 @@ export class DataLowerer {
                     unwrapped.expression.expression.expression.expression,
                 )
             ) {
-                const imageData = this.context.lookupOptional(
+                const imageData = this.context.bindings.lookupOptional(
                     unwrapped.expression.expression.expression.expression,
                 );
                 const pixels = imageData?.recordProperties?.data;
@@ -5604,7 +5608,7 @@ export class DataLowerer {
             }
             // Constructor arguments evaluate left-to-right, including an
             // owner or numeric expression that changes another binding.
-            const buffer = this.context.pinValueToTemporary(
+            const buffer = this.context.bindings.pinValueToTemporary(
                 source,
                 "view_buffer",
                 unwrapped,
@@ -5633,7 +5637,7 @@ export class DataLowerer {
             // record retains its final element as a delayed expression.
             // Capturing that view also retains its backing buffer without
             // exposing the constructor's temporary arguments to a closure.
-            return this.context.pinValueToTemporary(
+            return this.context.bindings.pinValueToTemporary(
                 {
                     kind: "data",
                     cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
@@ -6022,7 +6026,9 @@ export class DataLowerer {
                 left.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken
             ) {
-                const condition = this.context.compileCondition(left.left);
+                const condition = this.context.conditions.compileCondition(
+                    left.left,
+                );
                 const empty = this.context.dataTypes.absentValue(dataType);
                 if (condition === "false") return empty;
                 const selected = this.compileForSink(left.right, dataType);
@@ -6039,7 +6045,7 @@ export class DataLowerer {
             ts.isConditionalExpression(unwrapped) &&
             dataType.kind !== "boolean"
         ) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             return this.compileConditionalForSink(
@@ -7149,7 +7155,7 @@ export class DataLowerer {
                 this.context.emit(
                     `static_cast<void>(${narrowed.cpp}.erase(${keyCpp}));`,
                 );
-                this.context.invalidateRecordProperties(narrowed);
+                this.context.bindings.invalidateRecordProperties(narrowed);
                 return;
             }
         }
@@ -7418,7 +7424,7 @@ export class DataLowerer {
                 entry.dataType.value,
             );
             this.context.emit(`${entry.owner.cpp}.set(${key}, ${value});`);
-            this.context.invalidateRecordProperties(entry.owner);
+            this.context.bindings.invalidateRecordProperties(entry.owner);
         });
     }
 
@@ -7435,7 +7441,9 @@ export class DataLowerer {
         if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
             return nullish;
         }
-        const truthy = this.context.compileCondition(expression.left);
+        const truthy = this.context.conditions.compileCondition(
+            expression.left,
+        );
         if (kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
             return truthy;
         }
@@ -7476,7 +7484,7 @@ export class DataLowerer {
 
     /** String-valued logical operators keep the selected value and a lazy RHS. */
     public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
-        const left = this.context.pinValueToTemporary(
+        const left = this.context.bindings.pinValueToTemporary(
             this.context.compileValue(expression.left),
             "logical_left",
             expression.left,
@@ -7606,7 +7614,9 @@ export class DataLowerer {
                 scalarKind === "number"
                     ? this.context.compileNumber(expression.right, "double")
                     : scalarKind === "boolean"
-                      ? this.context.compileCondition(expression.right)
+                      ? this.context.conditions.compileCondition(
+                            expression.right,
+                        )
                       : scalarKind === "string"
                         ? this.compileKnownValueForSink(
                               this.context.compileValue(expression.right),
@@ -7635,7 +7645,7 @@ export class DataLowerer {
                     : undefined;
                 if (rootValue) {
                     this.invalidateStaticElements(rootValue);
-                    this.context.invalidateRecordProperties(rootValue);
+                    this.context.bindings.invalidateRecordProperties(rootValue);
                 }
             }
         });
@@ -7679,7 +7689,7 @@ export class DataLowerer {
             return false;
         }
         if (isJsonRootedExpression(this.context, left.expression)) {
-            const owner = this.context.pinValueToTemporary(
+            const owner = this.context.bindings.pinValueToTemporary(
                 this.context.compileValue(left.expression),
                 "assignment_owner",
             );
@@ -7691,7 +7701,7 @@ export class DataLowerer {
                     );
                 const key = ts.isPropertyAccessExpression(left)
                     ? this.context.cppString(left.name.text)
-                    : this.context.pinValueToTemporary(
+                    : this.context.bindings.pinValueToTemporary(
                           {
                               kind: "string",
                               cpp: compileJsonPropertyKey(
@@ -7901,7 +7911,7 @@ export class DataLowerer {
                     // This write may execute zero or many times. The source
                     // value still mutates natively, but its complete
                     // generation snapshot no longer exists on every path.
-                    this.context.invalidateRecordProperties(narrowed);
+                    this.context.bindings.invalidateRecordProperties(narrowed);
                 } else if (
                     keyValue.staticString !== undefined &&
                     narrowed.recordProperties !== undefined
@@ -7919,7 +7929,7 @@ export class DataLowerer {
                 } else if (keyValue.staticString === undefined) {
                     // A dynamic key means no finite property snapshot is
                     // complete enough for a generation-time consumer.
-                    this.context.invalidateRecordProperties(narrowed);
+                    this.context.bindings.invalidateRecordProperties(narrowed);
                 }
                 this.context.emit(`${narrowed.cpp}.set(${key}, ${value});`);
                 return true;
@@ -7945,7 +7955,7 @@ export class DataLowerer {
                 this.context.emit(
                     `${entry.owner.cpp}.set(${entry.keyCpp}, ${value});`,
                 );
-                this.context.invalidateRecordProperties(entry.owner);
+                this.context.bindings.invalidateRecordProperties(entry.owner);
                 return true;
             }
         }
@@ -8075,7 +8085,7 @@ export class DataLowerer {
                 );
             }
             this.context.emit(
-                `${target.cpp} = ${this.context.compileCondition(expression.right)};`,
+                `${target.cpp} = ${this.context.conditions.compileCondition(expression.right)};`,
             );
             invalidateRootRecordSnapshot();
             return true;
@@ -8297,7 +8307,7 @@ export class DataLowerer {
             } else {
                 // Keep the RHS identity across writes to the assignment
                 // targets, reusing an already stable result when possible.
-                value = this.context.pinValueToTemporary(
+                value = this.context.bindings.pinValueToTemporary(
                     value,
                     "destructure_source",
                 );
@@ -8567,12 +8577,12 @@ export class DataLowerer {
                     : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`,
             );
             this.invalidateStaticElements(target);
-            this.context.invalidateRecordProperties(target);
+            this.context.bindings.invalidateRecordProperties(target);
             const root = rootIdentifier(name, (node) =>
                 this.context.unwrap(node),
             );
             const owner = root && this.context.lookupIdentifierValue(root);
-            if (owner) this.context.invalidateRecordProperties(owner);
+            if (owner) this.context.bindings.invalidateRecordProperties(owner);
         }
     }
 
@@ -9135,7 +9145,7 @@ export class DataLowerer {
             if (!ts.isIdentifier(candidate)) {
                 return false;
             }
-            const bound = this.context.lookupOptional(candidate);
+            const bound = this.context.bindings.lookupOptional(candidate);
             return (
                 bound?.kind === "json-null" ||
                 (candidate.text === "undefined" && bound === undefined)
@@ -9147,11 +9157,11 @@ export class DataLowerer {
             (ts.isCallExpression(left) || ts.isCallExpression(right))
         ) {
             const dynamic = this.context.probeEmission(() => {
-                const a = this.context.pinValueToTemporary(
+                const a = this.context.bindings.pinValueToTemporary(
                     this.context.compileValue(left),
                     "comparison_left",
                 );
-                const b = this.context.pinValueToTemporary(
+                const b = this.context.bindings.pinValueToTemporary(
                     this.context.compileValue(right),
                     "comparison_right",
                 );

@@ -1,3 +1,4 @@
+import type { BindingScopes } from "./binding-scopes.js";
 import { EmissionSet } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -176,40 +177,33 @@ export interface ExpressionContext
             | "options"
             | "referenceSearch"
             | "evaluator"
-            | "reachedNodeParticles"
+            | "sceneManifest"
             | "dataLowerer"
-            | "bindDataTuple"
             | "classLowerer"
             | "userFunctions"
             | "nativeFunctions"
             | "symbols"
-            | "variableScopes"
+            | "bindings"
             | "unwrap"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
-            | "invalidateRecordProperties"
             | "emitLogicalAssignment"
             | "resolveRecordValue"
             | "expectKind"
             | "expectSameEngine"
             | "activeThis"
-            | "lookup"
-            | "lookupOptional"
             | "resolveThisField"
             | "resolveStaticExpression"
             | "canvasSizeValue"
-            | "compilePropertyAccess"
-            | "readResolvedProperty"
+            | "propertyAccess"
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
-            | "materializeEscapingValue"
             | "captureRecordScopes"
             | "probeEmission"
             | "recordAccessor"
             | "requireEngine"
-            | "meshHasThinInstancePool"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "castNumber"
             | "compileBoolean"
@@ -222,13 +216,10 @@ export interface ExpressionContext
             | "propertyName"
             | "namesLocalFunction"
             | "cppString"
-            | "isBrowserOnlyExpression"
-            | "isBrowserOnlyHandler"
+            | "browserErasure"
             | "libraryGlobal"
-            | "isDeferredCallbackCall"
             | "compileFrameCallback"
             | "requireDefaultEngine"
-            | "evaluateBrowserValue"
             | "handleCollections"
             | "handleCollectionIterationTarget"
             | "assetRootElementAccess"
@@ -260,7 +251,9 @@ export interface ExpressionContext
             | "isInNativeFunctionBody"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * One operand of a string concatenation, spelled as what `bbl::js::concat`
@@ -515,8 +508,11 @@ export class ExpressionLowerer {
                 this.context.dataLowerer.compileAssignmentValue(unwrapped);
             if (assignment) return assignment;
             if (
-                this.context.isBrowserOnlyExpression(unwrapped) &&
-                this.context.evaluateBrowserValue(unwrapped) !== undefined
+                this.context.browserErasure.isBrowserOnlyExpression(
+                    unwrapped,
+                ) &&
+                this.context.browserErasure.evaluateBrowserValue(unwrapped) !==
+                    undefined
             ) {
                 // A chain the deployment answers (`qs.get("drive") ||
                 // "Studio"`) is its folded constant wherever it is read,
@@ -587,7 +583,7 @@ export class ExpressionLowerer {
                     "Private brand checks are outside the supported subset.",
                 );
             }
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 const narrowed =
                     value.kind === "data"
@@ -672,7 +668,7 @@ export class ExpressionLowerer {
             }
             const namespace = this.compileModuleNamespace(unwrapped);
             if (namespace) return namespace;
-            return this.context.lookup(unwrapped);
+            return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const mathFunction = mathFunctionValue(this.context, unwrapped);
@@ -733,7 +729,8 @@ export class ExpressionLowerer {
                 "read",
             );
             const property =
-                data ?? this.context.compilePropertyAccess(unwrapped);
+                data ??
+                this.context.propertyAccess.compilePropertyAccess(unwrapped);
             if (isJsonValue(property))
                 return this.context.dataLowerer.narrowOptional(
                     property,
@@ -760,7 +757,9 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
-            const query = this.context.evaluateBrowserValue(unwrapped)
+            const query = this.context.browserErasure.evaluateBrowserValue(
+                unwrapped,
+            )
                 ? undefined
                 : compileSearchParams(this.context.dataLowerer, unwrapped);
             if (query) return query;
@@ -851,7 +850,9 @@ export class ExpressionLowerer {
                 this.context.registerClassInstance(instance, classDeclaration);
                 return instance;
             }
-            if (this.context.isBrowserOnlyExpression(unwrapped)) {
+            if (
+                this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
+            ) {
                 return this.compileBrowserValue(unwrapped);
             }
             this.context.fail(unwrapped, "Unsupported constructor expression.");
@@ -896,7 +897,9 @@ export class ExpressionLowerer {
             if (this.isNavigatorGetGamepadsCall(unwrapped)) {
                 return this.compileCall(unwrapped);
             }
-            if (this.context.isBrowserOnlyExpression(unwrapped)) {
+            if (
+                this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
+            ) {
                 return this.compileBrowserValue(unwrapped);
             }
         }
@@ -984,7 +987,7 @@ export class ExpressionLowerer {
                 tupleElements: unwrapped.elements.map((element, index) => {
                     const value = this.laneValue(element);
                     return index < lastEffect
-                        ? this.context.pinValueToTemporary(
+                        ? this.context.bindings.pinValueToTemporary(
                               value,
                               "array_member",
                               element,
@@ -1085,12 +1088,12 @@ export class ExpressionLowerer {
             // Library callback rest arguments can be inferred as any even when their
             // supplied native values are concrete strings. Preserve ordinary + semantics.
             const concatenated = this.context.probeEmission(() => {
-                const left = this.context.pinValueToTemporary(
+                const left = this.context.bindings.pinValueToTemporary(
                     this.compileValue(unwrapped.left),
                     "plus_left",
                     unwrapped.left,
                 );
-                const right = this.context.pinValueToTemporary(
+                const right = this.context.bindings.pinValueToTemporary(
                     this.compileValue(unwrapped.right),
                     "plus_right",
                     unwrapped.right,
@@ -1163,7 +1166,8 @@ export class ExpressionLowerer {
             };
         }
         if (ts.isTypeOfExpression(unwrapped)) {
-            const browser = this.context.evaluateBrowserValue(unwrapped);
+            const browser =
+                this.context.browserErasure.evaluateBrowserValue(unwrapped);
             if (browser?.kind === "string") {
                 return staticStringValue(browser.value, (text) =>
                     this.context.cppString(text),
@@ -1189,7 +1193,7 @@ export class ExpressionLowerer {
                         this.context.checker,
                         expression,
                     )) &&
-                !this.context.lookupOptional(expression)
+                !this.context.bindings.lookupOptional(expression)
             ) {
                 return {
                     kind: "string",
@@ -1202,7 +1206,7 @@ export class ExpressionLowerer {
             // flow type lists only its declared lanes. typeof observes the
             // stored value before narrowing it to one of those lanes.
             const storedOperand = ts.isIdentifier(expression)
-                ? this.context.lookupOptional(expression)
+                ? this.context.bindings.lookupOptional(expression)
                 : undefined;
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
@@ -1298,7 +1302,7 @@ export class ExpressionLowerer {
                 // dispatcher: a concise callback commonly returns
                 // `!set.has(value)`, which is boolean but not a static
                 // literal expression.
-                cpp: this.context.compileCondition(unwrapped),
+                cpp: this.context.conditions.compileCondition(unwrapped),
                 ...(staticBoolean === undefined ? {} : { staticBoolean }),
             };
         }
@@ -1307,10 +1311,10 @@ export class ExpressionLowerer {
         if (this.context.evaluator.isComparisonExpression(unwrapped)) {
             return {
                 kind: "boolean",
-                cpp: this.context.compileCondition(unwrapped),
+                cpp: this.context.conditions.compileCondition(unwrapped),
             };
         }
-        if (this.context.isBrowserOnlyExpression(unwrapped)) {
+        if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             return this.compileBrowserValue(unwrapped);
         }
         // `const camera = (scene.camera = createArcRotateCamera(...))`: an
@@ -1449,7 +1453,7 @@ export class ExpressionLowerer {
                       );
             const value =
                 known === undefined && index <= lastEffect
-                    ? this.context.pinValueToTemporary(
+                    ? this.context.bindings.pinValueToTemporary(
                           compiled,
                           "template_part",
                           span.expression,
@@ -1674,7 +1678,8 @@ export class ExpressionLowerer {
                 this.context.emitDiscardedValue(value);
             }
         }
-        const browserValue = this.context.evaluateBrowserValue(expression);
+        const browserValue =
+            this.context.browserErasure.evaluateBrowserValue(expression);
         return this.materializeBrowserPrimitive(expression, {
             kind: "browser",
             cpp: "",
@@ -1731,7 +1736,7 @@ export class ExpressionLowerer {
         const delay = staticNumberValue(this.context, argumentAt(call, 1));
         if (delay !== 0) {
             if (
-                this.context.isBrowserOnlyHandler(
+                this.context.browserErasure.isBrowserOnlyHandler(
                     this.context.unwrap(argumentAt(call, 0)),
                 )
             ) {
@@ -1801,7 +1806,7 @@ export class ExpressionLowerer {
             containsEvaluatedCall(expression) &&
             !value.nativeBinding
         ) {
-            return this.context.pinValueToTemporary(
+            return this.context.bindings.pinValueToTemporary(
                 value,
                 "resource_member",
                 expression,
@@ -2247,7 +2252,7 @@ export class ExpressionLowerer {
     private compileCall(call: ts.CallExpression): Value {
         const target = this.context.unwrap(call.expression);
         const hostFunction = ts.isIdentifier(target)
-            ? this.context.lookupOptional(target)?.hostFunction
+            ? this.context.bindings.lookupOptional(target)?.hostFunction
             : ts.isPropertyAccessExpression(target)
               ? this.context.probeEmission(() => {
                     try {
@@ -2273,7 +2278,7 @@ export class ExpressionLowerer {
         if (windowService) return windowService;
         const imported = this.context.symbols.importedName(call.expression);
         const boundIntrinsic = ts.isIdentifier(target)
-            ? this.context.lookupOptional(target)?.intrinsicName
+            ? this.context.bindings.lookupOptional(target)?.intrinsicName
             : undefined;
         if (imported || boundIntrinsic) {
             const name = boundIntrinsic ?? imported!;
@@ -2353,7 +2358,7 @@ export class ExpressionLowerer {
         // because the frame conductor already has that boundary and the
         // corpus reaches `stopEngine` through it -- the freeze a physics
         // scene pins its measured pose with.
-        if (this.context.isDeferredCallbackCall(call)) {
+        if (this.context.browserErasure.isDeferredCallbackCall(call)) {
             return this.compileDeferredCallback(call);
         }
         // A pure module-URL helper is a compile-time string whether it feeds a
@@ -2568,7 +2573,8 @@ export class ExpressionLowerer {
             isParseFloatCallee(callee, this.context) &&
             call.arguments.length === 1
         ) {
-            const settled = this.context.evaluateBrowserValue(call);
+            const settled =
+                this.context.browserErasure.evaluateBrowserValue(call);
             if (settled?.kind === "number" && Number.isFinite(settled.value)) {
                 // The value is returned already settled rather than through
                 // `materializeBrowserPrimitive`: that helper renders its cpp
@@ -2646,7 +2652,7 @@ export class ExpressionLowerer {
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
                 ts.isIdentifier(callee.expression)
-                    ? this.context.lookupOptional(callee.expression)
+                    ? this.context.bindings.lookupOptional(callee.expression)
                     : ts.isPropertyAccessExpression(callee) &&
                         ts.isPropertyAccessExpression(callee.expression) &&
                         callee.expression.expression.kind ===
@@ -2675,7 +2681,7 @@ export class ExpressionLowerer {
             if (
                 ts.isIdentifier(argument) &&
                 argument.text === "undefined" &&
-                !this.context.lookupOptional(argument)
+                !this.context.bindings.lookupOptional(argument)
             ) {
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
@@ -2741,7 +2747,7 @@ export class ExpressionLowerer {
             // already spells for every kind.
             this.context.expectArgumentCount(call, 1, 1);
             return booleanValue(
-                this.context.compileCondition(argumentAt(call, 0)),
+                this.context.conditions.compileCondition(argumentAt(call, 0)),
             );
         }
 
@@ -2752,7 +2758,7 @@ export class ExpressionLowerer {
         const fetched = this.context.compileStaticFetch(call, callee);
         if (fetched) return fetched;
 
-        const bound = this.context.lookupOptional(callee);
+        const bound = this.context.bindings.lookupOptional(callee);
         if (bound?.kind === "callback") {
             const recursive =
                 this.context.userFunctions.compileNativeCallbackCall(
@@ -3000,7 +3006,7 @@ export class ExpressionLowerer {
         }
         if (ts.isIdentifier(unwrapped)) {
             const bound = this.staticContainer(
-                this.context.lookupOptional(unwrapped),
+                this.context.bindings.lookupOptional(unwrapped),
             );
             if (bound) return bound;
             const resolved = this.context.resolveStaticExpression(unwrapped);
@@ -3102,7 +3108,7 @@ export class ExpressionLowerer {
                     return { kind: "void", cpp: "" } satisfies Value;
                 }
                 return method === "map"
-                    ? this.context.pinValueToTemporary(
+                    ? this.context.bindings.pinValueToTemporary(
                           result,
                           "mapped_result",
                           callback,
@@ -3213,7 +3219,9 @@ export class ExpressionLowerer {
                 "Array binding callback requires a tuple element.",
             );
         }
-        this.context.pushScope(this.context.allocateUserFunctionPrefix());
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
         try {
             const pattern = callback.parameters[0]!.name;
             pattern.elements.forEach((binding, index) => {
@@ -3235,7 +3243,7 @@ export class ExpressionLowerer {
                         "Static tuple callback binding exceeds the tuple width.",
                     );
                 }
-                this.context.bindLocalValue(binding.name, value);
+                this.context.bindings.bindLocalValue(binding.name, value);
             });
             callback.parameters.slice(1).forEach((parameter, index) => {
                 if (
@@ -3255,7 +3263,10 @@ export class ExpressionLowerer {
                         "Static tuple callback declares more parameters than the operation supplies.",
                     );
                 }
-                this.context.bindCompileTimeValue(parameter.name, value);
+                this.context.bindings.bindCompileTimeValue(
+                    parameter.name,
+                    value,
+                );
             });
             if (ts.isBlock(callback.body)) {
                 const statements = callback.body.statements;
@@ -3294,7 +3305,7 @@ export class ExpressionLowerer {
             }
             return this.context.compileValue(callback.body);
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -3312,7 +3323,10 @@ export class ExpressionLowerer {
         ts.setOriginalNode(property, access);
         ts.setTextRange(property.name, access.argumentExpression);
         ts.setOriginalNode(property.name, access.argumentExpression);
-        const value = this.context.readResolvedProperty(owner, property);
+        const value = this.context.propertyAccess.readResolvedProperty(
+            owner,
+            property,
+        );
         if (value) this.context.emitDiscardedValue(key);
         return value;
     }
@@ -3378,7 +3392,7 @@ export class ExpressionLowerer {
         }
         const ownerExpression = this.context.unwrap(unwrapped.expression);
         if (ts.isConditionalExpression(ownerExpression)) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 ownerExpression.condition,
             );
             const selectedOwner =
@@ -3845,9 +3859,10 @@ export class ExpressionLowerer {
         // for a static record's optional field: the selected value is a
         // string, not native optional storage merely because the checker
         // still exposes the unselected `undefined` branch.
-        const browserCondition = this.context.evaluateBrowserValue(
-            unwrapped.condition,
-        );
+        const browserCondition =
+            this.context.browserErasure.evaluateBrowserValue(
+                unwrapped.condition,
+            );
         const foldedCondition =
             browserCondition?.kind === "boolean"
                 ? browserCondition.value
@@ -3856,7 +3871,9 @@ export class ExpressionLowerer {
                 : !containsEvaluatedCall(unwrapped.condition)
                   ? this.context.probeEmission(
                         () =>
-                            this.context.compileCondition(unwrapped.condition),
+                            this.context.conditions.compileCondition(
+                                unwrapped.condition,
+                            ),
                         (condition) =>
                             condition === "true" || condition === "false",
                     )
@@ -3946,7 +3963,7 @@ export class ExpressionLowerer {
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))
         ) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             if (condition === "true" || condition === "false") {
@@ -4006,7 +4023,9 @@ export class ExpressionLowerer {
                     : {}),
             };
         }
-        const condition = this.context.compileCondition(unwrapped.condition);
+        const condition = this.context.conditions.compileCondition(
+            unwrapped.condition,
+        );
         if (condition === "true" || condition === "false") {
             return this.compileValue(
                 condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
@@ -4045,7 +4064,7 @@ export class ExpressionLowerer {
                     operand.kind === ts.SyntaxKind.NullKeyword ||
                     (ts.isIdentifier(operand) &&
                         operand.text === "undefined" &&
-                        !this.context.lookupOptional(operand))
+                        !this.context.bindings.lookupOptional(operand))
                 );
             };
             const tested = absent(guard.left)
@@ -4352,7 +4371,10 @@ export class ExpressionLowerer {
                         ),
             );
         return asyncReceiver
-            ? this.context.materializeEscapingValue(record, "async_receiver")
+            ? this.context.bindings.materializeEscapingValue(
+                  record,
+                  "async_receiver",
+              )
             : record;
     }
 
@@ -4637,7 +4659,7 @@ export class ExpressionLowerer {
                                 level > 0 &&
                                 element.dataType?.kind === "tuple"
                             ) {
-                                const cpp = this.context.bindDataTuple(
+                                const cpp = this.context.bindings.bindDataTuple(
                                     element,
                                     element.dataType.arity,
                                 );
@@ -4690,7 +4712,7 @@ export class ExpressionLowerer {
         const regexpType =
             this.context.checker.getTypeAtLocation(regexpExpression);
         const boundRegexp = ts.isIdentifier(regexpExpression)
-            ? this.context.lookupOptional(regexpExpression)
+            ? this.context.bindings.lookupOptional(regexpExpression)
             : undefined;
         const regexpOwner =
             boundRegexp?.kind === "regexp"
@@ -4835,7 +4857,7 @@ export class ExpressionLowerer {
             ts.isNewExpression(receiver)
         ) {
             const receiverValue = ts.isIdentifier(receiver)
-                ? (this.context.lookupOptional(receiver) ??
+                ? (this.context.bindings.lookupOptional(receiver) ??
                   this.compileModuleNamespace(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()

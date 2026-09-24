@@ -37,10 +37,9 @@ interface AsyncContext extends Pick<
     | "emit"
     | "emitDiscardedValue"
     | "unwrap"
-    | "lookupOptional"
+    | "bindings"
     | "libraryGlobal"
-    | "isBrowserOnlyLocalCall"
-    | "isBrowserOnlyExpression"
+    | "browserErasure"
     | "fail"
 > {}
 
@@ -138,7 +137,9 @@ export class AsyncLowerer {
                     "This await needs an asynchronous realm activation.",
                 );
             const erasedVoid =
-                context.isBrowserOnlyExpression(node.expression) &&
+                context.browserErasure.isBrowserOnlyExpression(
+                    node.expression,
+                ) &&
                 ((context.checker.getAwaitedType(
                     context.checker.getTypeAtLocation(node.expression),
                 )?.flags ?? 0) &
@@ -386,7 +387,8 @@ export class AsyncLowerer {
                 )
         )
             return undefined;
-        if (context.isBrowserOnlyLocalCall(node)) return undefined;
+        if (context.browserErasure.isBrowserOnlyLocalCall(node))
+            return undefined;
         const values = node.arguments.map((argument) =>
             this.pinArgument(context.compileValue(argument)),
         );
@@ -924,7 +926,8 @@ export class AsyncLowerer {
             evaluated ||
             !inline ||
             (ts.isIdentifier(inline) &&
-                context.lookupOptional(inline)?.dataType?.kind === "function")
+                context.bindings.lookupOptional(inline)?.dataType?.kind ===
+                    "function")
         ) {
             const value = evaluated ?? context.compileValue(callback);
             const type =

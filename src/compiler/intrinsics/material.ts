@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
@@ -54,25 +55,10 @@ export interface MaterialIntrinsicContext
             LoweringServices,
             | "engineHasStarted"
             | "hasRegisteredScene"
-            | "recordScenePbrSheen"
-            | "recordScenePbrPlugins"
-            | "recordScenePbrNoColorView"
-            | "recordScenePbrUnlit"
+            | "sceneManifest"
             | "recordAssetSceneUnlit"
-            | "recordScenePbrSkybox"
-            | "recordScenePbrGammaAlbedo"
-            | "recordScenePbrShadowOnly"
-            | "recordSceneMaterialSlot"
-            | "recordScenePbrClearCoat"
-            | "recordScenePbrIridescence"
-            | "recordScenePbrLightmap"
-            | "recordAssetSceneLightmap"
             | "pbrLightmapEnabled"
             | "boundPixelsTextures"
-            | "recordScenePbrAnisotropy"
-            | "recordScenePbrEmissive"
-            | "recordScenePbrMetallicReflectance"
-            | "recordScenePbrSubsurface"
             | "expectSameEngine"
             | "requireDefaultEngine"
             | "requireEngine"
@@ -104,7 +90,9 @@ export interface MaterialIntrinsicContext
             | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 function compileStorageBufferData(
     context: MaterialIntrinsicContext,
@@ -288,7 +276,7 @@ function foldedLightmapMeshWalk(
         !ts.isPropertyAccessExpression(subject) ||
         subject.name.text !== "meshes" ||
         !ts.isIdentifier(subject.expression) ||
-        context.lookupOptional(subject.expression)?.kind !== "scene"
+        context.bindings.lookupOptional(subject.expression)?.kind !== "scene"
     ) {
         context.fail(
             walk.expression,
@@ -618,7 +606,7 @@ function compileCreatePbrMaterial(
         }
         if (plugins) {
             const folded = foldMaterialPluginList(context, plugins, "pbr");
-            context.recordScenePbrPlugins(
+            context.sceneManifest.recordScenePbrPlugins(
                 folded.manifests,
                 scenePbrMaterialIndex,
             );
@@ -672,7 +660,7 @@ function compileCreateGridMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
     const options = call.arguments[0]
@@ -716,7 +704,7 @@ function compileCreateStandardNoColorMaterialView(
     context.reachFeature("material:no-color-view", call);
     context.reachFeature("renderer:scene", call);
     if (importedName === "createStandardNoColorMaterialView") {
-        context.recordSceneMaterialSlot();
+        context.sceneManifest.recordSceneMaterialSlot();
         return {
             kind: "material",
             cpp: `bbl::create_standard_no_color_material_view(${engineCpp}, ${source.cpp})`,
@@ -727,7 +715,7 @@ function compileCreateStandardNoColorMaterialView(
         kind: "material",
         cpp: `bbl::create_pbr_no_color_material_view(${engineCpp}, ${source.cpp})`,
         engineCpp,
-        scenePbrMaterialIndex: context.recordScenePbrNoColorView(
+        scenePbrMaterialIndex: context.sceneManifest.recordScenePbrNoColorView(
             source.scenePbrMaterialIndex,
         ),
     };
@@ -826,7 +814,7 @@ function compileCreateShaderMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const materialSlot = context.recordSceneMaterialSlot();
+    const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
@@ -960,7 +948,7 @@ function compileCreateLinearDepthMaterial(
     // fixed-function state read from the properties beside them.
     // What a caller settles is the near/far pair the one custom
     // uniform carries.
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
     const defaults = linearDepthDefaultPlanes();
@@ -1106,7 +1094,10 @@ function compileSetPbrEmissive(
         material.materialUboArrayFields ??
         (material.materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
-    context.recordScenePbrEmissive(channels, material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrEmissive(
+        channels,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:emissive", call);
     return {
         kind: "void",
@@ -1128,7 +1119,9 @@ function compileSetPbrGammaAlbedo(
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    context.recordScenePbrGammaAlbedo(material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrGammaAlbedo(
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:pbr-gamma-albedo", call);
     return {
         kind: "void",
@@ -1175,11 +1168,14 @@ function compileSetShadowOnly(
     const falloff = falloffValue
         ? compileStaticNumber(context, falloffValue, "Shadow-only falloff")
         : 1;
-    context.recordScenePbrShadowOnly(material.scenePbrMaterialIndex, {
-        color,
-        opacity,
-        falloff,
-    });
+    context.sceneManifest.recordScenePbrShadowOnly(
+        material.scenePbrMaterialIndex,
+        {
+            color,
+            opacity,
+            falloff,
+        },
+    );
     const record = `${recordAt(`${context.requireEngine(material, call)}.materials`, material.cpp)}`;
     return {
         kind: "void",
@@ -1221,7 +1217,9 @@ function compileSetPbrUnlit(
     if (container) {
         context.recordAssetSceneUnlit(container, tint?.channels, call);
     } else {
-        context.recordScenePbrUnlit(material.scenePbrMaterialIndex);
+        context.sceneManifest.recordScenePbrUnlit(
+            material.scenePbrMaterialIndex,
+        );
     }
     return {
         kind: "void",
@@ -1246,7 +1244,7 @@ function compileSetPbrSkybox(
     context.reachFeature("material:pbr", call);
     // The pin's setter registers the skybox extension alone; the composed
     // variant carries the arm, and no transmission unit is reached.
-    context.recordScenePbrSkybox(material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrSkybox(material.scenePbrMaterialIndex);
     return {
         kind: "void",
         cpp:
@@ -1280,7 +1278,7 @@ function compileSetPbrMetallicReflectance(
             context.expectSameEngine(material, texture, call);
         }
     }
-    context.recordScenePbrMetallicReflectance(
+    context.sceneManifest.recordScenePbrMetallicReflectance(
         reflectance.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1309,7 +1307,7 @@ function compileSetPbrSubsurface(
     if (subsurface.thicknessTexture) {
         context.expectSameEngine(material, subsurface.thicknessTexture, call);
     }
-    context.recordScenePbrSubsurface(
+    context.sceneManifest.recordScenePbrSubsurface(
         subsurface.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1340,7 +1338,7 @@ function compileSetPbrClearCoat(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const clearCoat = context.compileClearCoatOptions(argumentAt(call, 1));
-    context.recordScenePbrClearCoat(
+    context.sceneManifest.recordScenePbrClearCoat(
         clearCoat.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1375,7 +1373,7 @@ function compileSetPbrIridescence(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const iridescence = context.compileIridescenceOptions(argumentAt(call, 1));
-    context.recordScenePbrIridescence(
+    context.sceneManifest.recordScenePbrIridescence(
         iridescence.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1513,13 +1511,13 @@ function compileSetPbrLightmap(
     // call just composed.
     context.boundPixelsTextures.add(texture.cpp);
     if (material.assetPbrMaterial) {
-        context.recordAssetSceneLightmap(
+        context.sceneManifest.recordAssetSceneLightmap(
             foldedLightmapMeshWalk(context, call),
             lightmap,
             call,
         );
     } else {
-        context.recordScenePbrLightmap(
+        context.sceneManifest.recordScenePbrLightmap(
             lightmap,
             material.scenePbrMaterialIndex,
         );
@@ -1550,7 +1548,7 @@ function compileSetPbrAnisotropy(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const anisotropy = context.compileAnisotropyOptions(argumentAt(call, 1));
-    context.recordScenePbrAnisotropy(
+    context.sceneManifest.recordScenePbrAnisotropy(
         anisotropy.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1604,7 +1602,10 @@ function compileSetPbrSheen(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const sheen = context.compileSheenOptions(argumentAt(call, 1));
-    context.recordScenePbrSheen(sheen.manifest, material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrSheen(
+        sheen.manifest,
+        material.scenePbrMaterialIndex,
+    );
     const engine = context.requireEngine(material, call);
     context.reachFeature("material:sheen", call);
     if (sheen.albedoScaling) {
@@ -1652,7 +1653,7 @@ function compileCreateStandardMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 0);
     const engine = context.requireDefaultEngine(call);
     context.reachFeature("material:standard", call);
@@ -1676,7 +1677,7 @@ function compileParseNodeMaterialFromSnippet(
     // same compiler over the same graph
     // (`src/pinned-node-material.ts`), so what the call reaches here
     // is the graph's index in the composed table.
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 2, 3);
     const engine = context.requireEngine(
         context.compileValue(argumentAt(call, 0)),

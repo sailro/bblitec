@@ -17,6 +17,11 @@ import {
     isAssignmentExpression,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
+import { isNativeBrowserFileExpression } from "./browser-file.js";
+import { writesUnobservedCanvasMetadata } from "./canvas-instrumentation.js";
+import { staticClassMember } from "./classes.js";
+import { platformHandleKind } from "./data-types.js";
+import { declaredInDomLibrary } from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
@@ -102,16 +107,15 @@ export interface BrowserErasureContext extends Pick<
     | "unwrap"
     | "canvasSizeProperty"
     | "isCanvasElement"
-    | "lookupOptional"
+    | "bindings"
     | "resolveThisField"
     | "libraryGlobal"
-    | "isBrowserDomValue"
-    | "isBrowserOnlyLocalCall"
+    | "checker"
+    | "dataTypes"
+    | "erasedBrowserExpressions"
     | "isNativeUiHelperCall"
     | "isNativeHostUiLookup"
-    | "isBrowserOnlyNullableClassFactoryCall"
     | "isNativeUiValueExpression"
-    | "isNativeBrowserFileExpression"
     | "platformDocumentHidden"
     | "referenceSearch"
     | "options"
@@ -270,7 +274,7 @@ type HelperOutcome =
     | { returned: true; value: NonNullable<Value["browserValue"]> }
     | { returned: false };
 
-type BrowserGlobalContext = Pick<
+export type BrowserGlobalContext = Pick<
     BrowserErasureContext,
     "unwrap" | "libraryGlobal"
 >;
@@ -452,6 +456,483 @@ export class BrowserErasure {
         Value["browserValue"] | undefined
     >();
 
+    private readonly browserUtilitySources = new EmissionMap<
+        ts.SourceFile,
+        boolean
+    >();
+
+    /**
+     * Whether a callback only reports: its body observes or mutates browser
+     * state and nothing else.
+     *
+     * The entry reporter and `setTimeout`'s browser-only arm ask this of the
+     * same shapes, so it is one question with one answer.
+     *
+     * NOT `statementIsBrowserOnly`, which looks deeper but answers a
+     * different question: it is what decides whether a statement inside a
+     * RETAINED function may be erased, and it deliberately excludes console
+     * and document so an unresolved guard stays a refusal rather than
+     * swallowing a nested call. Reporting is exactly what those globals do.
+     */
+    public isBrowserOnlyHandler(handler: ts.Expression): boolean {
+        const body =
+            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
+                ? handler.body
+                : undefined;
+        if (body && ts.isBlock(body)) {
+            return body.statements.every(
+                (statement) =>
+                    ts.isExpressionStatement(statement) &&
+                    this.isBrowserOnlyExpression(statement.expression),
+            );
+        }
+        // A concise body is the expression itself; anything that is not a
+        // function literal is asked directly, which lets a bare
+        // `console.error` pass and a named recovery routine not.
+        return this.isBrowserOnlyExpression(body ?? handler);
+    }
+
+    /**
+     * An imported helper with no route to Babylon and no native input can
+     * only observe or mutate browser state. Erasing the call as one unit is
+     * both safer and more faithful than trying to lower implementation
+     * details such as fetch wrappers, streams, timers, and DOM progress UI.
+     *
+     * The two guards are deliberately conservative: every explicit argument
+     * must be a browser value or literal configuration, and the declaration's
+     * entire module must reach no Babylon import. A helper receiving an engine,
+     * mesh, runtime data, or callback therefore stays on the ordinary inliner.
+     */
+    public isBrowserOnlyLocalCall(call: ts.CallExpression): boolean {
+        // A helper receiving retained controls has native effects even when
+        // its returned interface consists entirely of void methods (focus,
+        // navigation, click). Do not erase that interface as browser chrome.
+        if (
+            call.arguments.some((argument, index) => {
+                if (
+                    this.context.isCanvasElement(argument) &&
+                    writesUnobservedCanvasMetadata(
+                        this.context.checker,
+                        this.context.sourceFiles(),
+                        call,
+                        index,
+                        this.context.options.nativeHostUi,
+                    )
+                )
+                    return false;
+                if (this.context.isNativeUiValueExpression(argument))
+                    return true;
+                const value = this.context.unwrap(argument);
+                const type = ts.isIdentifier(value)
+                    ? this.context.bindings.lookupOptional(value)?.dataType
+                    : undefined;
+                return (
+                    type?.kind === "vector" &&
+                    type.element.kind === "handle" &&
+                    type.element.handle === "ui-element"
+                );
+            })
+        )
+            return false;
+        const callee = this.context.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            this.isBrowserOnlyNullableClassFactoryCall(call)
+        ) {
+            return true;
+        }
+        if (!ts.isIdentifier(callee)) return false;
+        const declaration = this.context.symbols
+            .valueSymbol(callee)
+            ?.declarations?.find(ts.isFunctionDeclaration);
+        if (!declaration?.body) return false;
+        const resultType = this.context.checker.getTypeAtLocation(call);
+        // An async browser setup helper exposes `Promise<void>` at the call
+        // site, but its observable result after the surrounding `await` is
+        // still void. Inspect the promised value rather than rejecting the
+        // Promise object's own `then`/`catch` surface as native application
+        // data.
+        const observableResult =
+            this.context.checker.getAwaitedType(resultType) ?? resultType;
+        let writeOnlyObjectResult = false;
+        if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
+            const directlyDom =
+                declaredInDomLibrary(observableResult.symbol) ||
+                declaredInDomLibrary(observableResult.aliasSymbol);
+            if (!directlyDom) {
+                writeOnlyObjectResult =
+                    observableResult.getProperties().length > 0 &&
+                    observableResult.getProperties().every((property) => {
+                        const propertyDeclaration =
+                            property.valueDeclaration ??
+                            property.declarations?.[0];
+                        if (!propertyDeclaration) return false;
+                        const propertyType =
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                propertyDeclaration,
+                            );
+                        const signatures = propertyType.getCallSignatures();
+                        return (
+                            signatures.length > 0 &&
+                            signatures.every(
+                                (signature) =>
+                                    (this.context.checker.getReturnTypeOfSignature(
+                                        signature,
+                                    ).flags &
+                                        ts.TypeFlags.Void) !==
+                                    0,
+                            )
+                        );
+                    });
+                const carriesNativeData = observableResult
+                    .getProperties()
+                    .some((property) => {
+                        const declaration =
+                            property.valueDeclaration ??
+                            property.declarations?.[0];
+                        if (!declaration) return false;
+                        const propertyType =
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                declaration,
+                            );
+                        return (
+                            propertyType.getCallSignatures().length === 0 &&
+                            this.context.dataTypes.fromTsType(
+                                propertyType,
+                                declaration,
+                            ) !== undefined
+                        );
+                    });
+                if (carriesNativeData) {
+                    // A DOM-using helper may still return an application
+                    // record whose native fields are polled later (the
+                    // platformer input controller). Erase its DOM statements
+                    // individually rather than tainting the whole object.
+                    return false;
+                }
+            }
+        }
+        if (writeOnlyObjectResult) {
+            let reachesBrowser = false;
+            let reachesBabylon = false;
+            const visit = (root: ts.Node): void =>
+                forEachAnalysisNode(root, (node) => {
+                    if (ts.isTypeNode(node)) {
+                        return "skip";
+                    }
+                    if (ts.isIdentifier(node)) {
+                        if (
+                            this.context.symbols.importedName(node) !==
+                            undefined
+                        ) {
+                            reachesBabylon = true;
+                        }
+                        if (
+                            ["document", "window", "globalThis"].includes(
+                                node.text,
+                            ) &&
+                            this.context.libraryGlobal(node) !== undefined
+                        ) {
+                            reachesBrowser = true;
+                        }
+                    }
+                });
+            visit(declaration.body);
+            if (reachesBrowser && !reachesBabylon) {
+                return true;
+            }
+        }
+        const hasBrowserInput = call.arguments.some((argument) => {
+            if (!this.isBrowserOnlyExpression(argument)) return false;
+            const value = this.evaluateBrowserValue(argument);
+            // A query-resolved primitive is ordinary input to a helper,
+            // including helpers in modules with no Babylon imports.
+            return (
+                !value ||
+                (!isPrimitiveBrowserValue(value) &&
+                    value.kind !== "search-params")
+            );
+        });
+        const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
+        if (
+            !hasBrowserInput ||
+            (!returnsVoid &&
+                !call.arguments.every((argument) =>
+                    this.isBrowserHelperArgument(argument),
+                ))
+        ) {
+            return false;
+        }
+        const source = declaration.getSourceFile();
+        return this.isBrowserUtilitySource(source);
+    }
+
+    /**
+     * A static factory for a nullable DOM-only class has no native object to
+     * construct. This recognizes the deliberately narrow shape used by
+     * optional browser overlays: the class lives in a module with no Babylon
+     * imports, owns at least one DOM field, and exposes no native-readable
+     * public state (only void methods).
+     */
+    public isBrowserOnlyNullableClassFactoryCall(
+        call: ts.CallExpression,
+    ): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const found = staticClassMember(
+            this.context.checker,
+            this.context.unwrap(callee.expression),
+            callee.name,
+        );
+        const method = found?.table.staticMethods.get(found.name);
+        if (!found || !method?.body) return false;
+        const { declaration } = found.table;
+
+        const result = this.context.checker.getAwaitedType(
+            this.context.checker.getTypeAtLocation(call),
+        );
+        if (!result || (result.flags & ts.TypeFlags.Union) === 0) {
+            return false;
+        }
+        const resultMembers = (result as ts.UnionType).types;
+        const nullable = resultMembers.some(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+                0,
+        );
+        const concrete = resultMembers.filter(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
+                0,
+        );
+        if (
+            !nullable ||
+            concrete.length !== 1 ||
+            !(concrete[0]!.symbol?.declarations ?? []).includes(declaration)
+        ) {
+            return false;
+        }
+
+        const isPrivateOrProtected = (member: ts.ClassElement): boolean =>
+            (ts.getCombinedModifierFlags(member) &
+                (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) !==
+            0;
+        const isStatic = (member: ts.ClassElement): boolean =>
+            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !==
+            0;
+        const domOwned = declaration.members.some(
+            (member) =>
+                ts.isPropertyDeclaration(member) &&
+                this.typeComesFromDom(
+                    this.context.checker.getTypeAtLocation(member),
+                ),
+        );
+        if (!domOwned) return false;
+
+        // Retained canvases are part of the native UI surface. Do not classify
+        // a helper which owns one as a browser-only decoration merely because
+        // its public API happens to be write-only. Such helpers (for example a
+        // decoded pixel-art HUD) must pass through ordinary class lowering so
+        // their bounded Canvas2D calls can be rewritten onto the PAL.
+        const ownsRetainedCanvas = declaration.members.some((member) => {
+            if (!ts.isPropertyDeclaration(member)) return false;
+            const type = this.context.checker.getTypeAtLocation(member);
+            const members =
+                (type.flags & ts.TypeFlags.Union) !== 0
+                    ? (type as ts.UnionType).types
+                    : [type];
+            return members.some((candidate) => {
+                const name = candidate.getSymbol()?.getName();
+                return (
+                    name === "HTMLCanvasElement" ||
+                    name === "OffscreenCanvas" ||
+                    name === "CanvasRenderingContext2D"
+                );
+            });
+        });
+        if (ownsRetainedCanvas) return false;
+
+        const publicSurfaceIsWriteOnly = declaration.members.every((member) => {
+            if (
+                isStatic(member) ||
+                isPrivateOrProtected(member) ||
+                ts.isConstructorDeclaration(member)
+            ) {
+                return true;
+            }
+            if (!ts.isMethodDeclaration(member)) return false;
+            const signature =
+                this.context.checker.getSignatureFromDeclaration(member);
+            return (
+                signature !== undefined &&
+                (this.context.checker.getReturnTypeOfSignature(signature)
+                    .flags &
+                    ts.TypeFlags.Void) !==
+                    0
+            );
+        });
+        return (
+            publicSurfaceIsWriteOnly &&
+            this.isBrowserUtilitySource(declaration.getSourceFile())
+        );
+    }
+
+    private typeComesFromDom(type: ts.Type): boolean {
+        const members =
+            (type.flags & ts.TypeFlags.Union) !== 0
+                ? (type as ts.UnionType).types
+                : [type];
+        return members.some((member) => declaredInDomLibrary(member.symbol));
+    }
+
+    private isBrowserUtilitySource(source: ts.SourceFile): boolean {
+        const cached = this.browserUtilitySources.get(source);
+        if (cached !== undefined) return cached;
+        let reachesBabylon = false;
+        const visit = (root: ts.Node): void =>
+            forEachAnalysisNode(root, (node) => {
+                if (reachesBabylon) return "skip";
+                if (
+                    ts.isIdentifier(node) &&
+                    this.context.symbols.importedName(node) !== undefined
+                ) {
+                    reachesBabylon = true;
+                    return "skip";
+                }
+            });
+        visit(source);
+        const browserOnly = !reachesBabylon;
+        this.browserUtilitySources.set(source, browserOnly);
+        return browserOnly;
+    }
+
+    private isBrowserHelperArgument(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (this.isBrowserOnlyExpression(unwrapped)) return true;
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNumericLiteral(unwrapped) ||
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+            unwrapped.kind === ts.SyntaxKind.NullKeyword
+        ) {
+            return true;
+        }
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            return unwrapped.properties.every(
+                (property) =>
+                    ts.isPropertyAssignment(property) &&
+                    this.isBrowserHelperArgument(property.initializer),
+            );
+        }
+        if (ts.isArrayLiteralExpression(unwrapped)) {
+            return unwrapped.elements.every(
+                (element) =>
+                    ts.isExpression(element) &&
+                    this.isBrowserHelperArgument(element),
+            );
+        }
+        return false;
+    }
+
+    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        const candidate =
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+                ? this.context.unwrap(unwrapped.left)
+                : unwrapped;
+        if (ts.isCallExpression(candidate)) {
+            const callee = this.context.unwrap(candidate.expression);
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                callee.name.text === "getGamepads" &&
+                this.context.libraryGlobal(callee.expression) === "navigator"
+            ) {
+                return false;
+            }
+        }
+        return this.isBrowserOnlyNode(expression);
+    }
+
+    public isBrowserDomValue(expression: ts.Expression): boolean {
+        const type = this.context.checker.getTypeAtLocation(expression);
+        const members =
+            (type.flags & ts.TypeFlags.Union) !== 0
+                ? (type as ts.UnionType).types
+                : [type];
+        // Gamepads are platform handles the native input model reads.
+        if (
+            members.some((member) => {
+                const handle = platformHandleKind(member);
+                return handle === "gamepad" || handle === "gamepad-button";
+            })
+        ) {
+            return false;
+        }
+        const directlyDom = members.some((member) =>
+            declaredInDomLibrary(member.symbol),
+        );
+        if (directlyDom) return true;
+        const unwrapped = this.context.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            const bound = this.context.bindings.lookupOptional(unwrapped);
+            if (
+                bound &&
+                bound.kind !== "browser" &&
+                (bound.kind !== "node-particle-2d-binding" ||
+                    bound.nodeParticleLive)
+            ) {
+                // A local function can bridge DOM setup and return an ordinary
+                // native record. Once that record is bound, its data fields do
+                // not become browser-only merely because the initializer also
+                // registered DOM listeners.
+                return false;
+            }
+            const declaration =
+                this.context.symbols.valueSymbol(unwrapped)?.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                declaration.initializer !== unwrapped &&
+                this.isBrowserOnlyExpression(declaration.initializer)
+            ) {
+                return true;
+            }
+        }
+        return (
+            (ts.isPropertyAccessExpression(unwrapped) ||
+                ts.isElementAccessExpression(unwrapped)) &&
+            this.isBrowserDomValue(unwrapped.expression)
+        );
+    }
+
+    public evaluateBrowserValue(
+        expression: ts.Expression,
+    ): Value["browserValue"] | undefined {
+        const value = this.browserValueOf(expression);
+        this.recordBrowserExpression(expression);
+        return value;
+    }
+
+    private recordBrowserExpression(expression: ts.Expression): void {
+        this.context.erasedBrowserExpressions.add(
+            this.context.unwrap(expression).pos,
+        );
+    }
+
+    /** Platform-backed browser APIs that remain ordinary expression values. */
+    public isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean {
+        return this.isPrimaryCanvas2DContext(call, (expression) =>
+            this.evaluateBrowserValue(expression),
+        );
+    }
+
     /** A real DOM RAF call, preserving ordinary lexical shadowing. */
     public isDefaultRequestAnimationFrameCall(
         call: ts.CallExpression,
@@ -506,14 +987,14 @@ export class BrowserErasure {
         return this.context.libraryGlobal(call.expression) === "setTimeout";
     }
 
-    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
+    private isBrowserOnlyNode(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
             ["set", "toString"].includes(unwrapped.expression.name.text) &&
-            this.evaluateBrowserValue(unwrapped.expression.expression)?.kind ===
+            this.browserValueOf(unwrapped.expression.expression)?.kind ===
                 "search-params"
         )
             return false;
@@ -529,7 +1010,7 @@ export class BrowserErasure {
         if (ts.isCallExpression(unwrapped) && this.isNativeUiCall(unwrapped)) {
             return false;
         }
-        if (this.context.isNativeBrowserFileExpression(unwrapped)) {
+        if (isNativeBrowserFileExpression(this.context, unwrapped)) {
             return false;
         }
         // `import.meta.url` is the browser module's deployment URL. Native
@@ -593,7 +1074,7 @@ export class BrowserErasure {
         }
         if (
             ts.isCallExpression(unwrapped) &&
-            this.context.isBrowserOnlyLocalCall(unwrapped)
+            this.isBrowserOnlyLocalCall(unwrapped)
         ) {
             return true;
         }
@@ -611,7 +1092,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            this.context.lookupOptional(unwrapped.expression)
+            this.context.bindings.lookupOptional(unwrapped.expression)
                 ?.recordProperties?.[unwrapped.name.text]
         ) {
             // A native record may retain a DOM-declared structural type at
@@ -625,7 +1106,7 @@ export class BrowserErasure {
                 unwrapped.name.text === "top" ||
                 unwrapped.name.text === "width" ||
                 unwrapped.name.text === "height") &&
-            this.evaluateBrowserValue(unwrapped.expression)?.kind === "dom-rect"
+            this.browserValueOf(unwrapped.expression)?.kind === "dom-rect"
         ) {
             // Native has no CSS offset around its render surface; its size is
             // the live engine surface. All four reached DOMRect coordinates
@@ -645,7 +1126,7 @@ export class BrowserErasure {
             ) {
                 return true;
             }
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
             // A FROZEN pure-2D particle binding has no native counterpart
             // and the corpus only reports it, so a read of one erases
@@ -655,15 +1136,14 @@ export class BrowserErasure {
                 bound === "browser" ||
                 (bound === "node-particle-2d-binding" &&
                     !value?.nodeParticleLive) ||
-                (bound === undefined &&
-                    this.context.isBrowserDomValue(unwrapped))
+                (bound === undefined && this.isBrowserDomValue(unwrapped))
             );
         }
         if (
             (ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped)) &&
             !this.isNativeDomBridge(unwrapped) &&
-            this.context.isBrowserDomValue(unwrapped)
+            this.isBrowserDomValue(unwrapped)
         ) {
             return true;
         }
@@ -672,7 +1152,7 @@ export class BrowserErasure {
             this.context.libraryGlobal(unwrapped.expression) ===
                 "URLSearchParams"
         ) {
-            return this.evaluateBrowserValue(unwrapped) !== undefined;
+            return this.browserValueOf(unwrapped) !== undefined;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -694,16 +1174,14 @@ export class BrowserErasure {
             // the deployment answers about it: a folded value is not a
             // place to write.
             return isAssignmentExpression(unwrapped)
-                ? operands.some((operand) =>
-                      this.isBrowserOnlyExpression(operand),
-                  )
+                ? operands.some((operand) => this.isBrowserOnlyNode(operand))
                 : this.browserOperandsTaint(operands, unwrapped);
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(unwrapped.operand);
+            return this.isBrowserOnlyNode(unwrapped.operand);
         }
         if (ts.isCallExpression(unwrapped)) {
-            if (this.context.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
+            if (this.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
                 return true;
             }
             if (
@@ -716,7 +1194,7 @@ export class BrowserErasure {
                 return true;
             }
             const browserArgument = unwrapped.arguments.some((argument) =>
-                this.isBrowserOnlyExpression(argument),
+                this.isBrowserOnlyNode(argument),
             );
             // `Number(x)` joins `isNaN` and `parseFloat` as a conversion
             // over a browser-derived value: it is how every physics scene
@@ -761,8 +1239,8 @@ export class BrowserErasure {
                     browserArgument &&
                     unwrapped.arguments.some(
                         (argument) =>
-                            this.isBrowserOnlyExpression(argument) &&
-                            this.evaluateBrowserValue(argument) === undefined,
+                            this.isBrowserOnlyNode(argument) &&
+                            this.browserValueOf(argument) === undefined,
                     )
                 );
             }
@@ -774,10 +1252,10 @@ export class BrowserErasure {
         return false;
     }
 
-    public isPrimaryCanvas2DContextCall(
+    private isPrimaryCanvas2DContext(
         call: ts.CallExpression,
         evaluate = (expression: ts.Expression) =>
-            this.evaluateBrowserValue(expression),
+            this.browserValueOf(expression),
     ): boolean {
         const callee = this.context.unwrap(call.expression);
         if (
@@ -799,7 +1277,7 @@ export class BrowserErasure {
     private isNativeUiCall(call: ts.CallExpression): boolean {
         if (
             this.context.isNativeHostUiLookup(call) ||
-            this.isPrimaryCanvas2DContextCall(call)
+            this.isPrimaryCanvas2DContext(call)
         )
             return true;
         const callee = this.context.unwrap(call.expression);
@@ -844,7 +1322,7 @@ export class BrowserErasure {
                 return { kind: "ui-element", cpp: "" };
             }
             if (ts.isIdentifier(unwrapped)) {
-                return this.context.lookupOptional(unwrapped);
+                return this.context.bindings.lookupOptional(unwrapped);
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped) &&
@@ -898,7 +1376,7 @@ export class BrowserErasure {
         const method = expression.expression.name.text;
         return (
             (method === "requestPointerLock" &&
-                this.context.isBrowserDomValue(receiver)) ||
+                this.isBrowserDomValue(receiver)) ||
             (method === "exitPointerLock" &&
                 this.context.libraryGlobal(receiver) === "document")
         );
@@ -923,11 +1401,11 @@ export class BrowserErasure {
     ): boolean {
         let answered = false;
         for (const operand of operands) {
-            if (!this.isBrowserOnlyExpression(operand)) continue;
-            if (this.evaluateBrowserValue(operand) === undefined) return true;
+            if (!this.isBrowserOnlyNode(operand)) continue;
+            if (this.browserValueOf(operand) === undefined) return true;
             answered = true;
         }
-        return answered && this.evaluateBrowserValue(whole) !== undefined;
+        return answered && this.browserValueOf(whole) !== undefined;
     }
 
     /**
@@ -941,22 +1419,24 @@ export class BrowserErasure {
         receiver: ts.Expression,
         whole: ts.Expression,
     ): boolean {
-        if (!this.isBrowserOnlyExpression(receiver)) return false;
-        const answered = this.evaluateBrowserValue(receiver);
+        if (!this.isBrowserOnlyNode(receiver)) return false;
+        const answered = this.browserValueOf(receiver);
         return (
             !(answered && hasNativeSpelling(answered)) ||
-            this.evaluateBrowserValue(whole) !== undefined
+            this.browserValueOf(whole) !== undefined
         );
     }
 
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        const value = this.evaluateBrowserValue(expression);
-        return this.browserTruthy(value);
+        const value = this.browserValueOf(expression);
+        const condition = this.browserTruthy(value);
+        this.recordBrowserExpression(expression);
+        return condition;
     }
 
-    public evaluateBrowserValue(
+    private browserValueOf(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
@@ -1024,7 +1504,7 @@ export class BrowserErasure {
                 // corresponds to the browser reference at DPR 1.
                 return { kind: "number", value: 1 };
             }
-            const bound = this.context.lookupOptional(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound !== undefined) {
                 if (bound.browserValue !== undefined) return bound.browserValue;
                 if (bound.kind === "json-null") return { kind: "null" };
@@ -1068,7 +1548,7 @@ export class BrowserErasure {
             const resolved = this.context.constantInitializer(unwrapped);
             return resolved === undefined || resolved === unwrapped
                 ? undefined
-                : this.evaluateBrowserValue(resolved);
+                : this.browserValueOf(resolved);
         }
         if (
             ts.isNewExpression(unwrapped) &&
@@ -1077,9 +1557,7 @@ export class BrowserErasure {
         ) {
             if (this.context.options.runtimeSearchParams) return undefined;
             const argument = unwrapped.arguments?.[0];
-            const over = argument
-                ? this.evaluateBrowserValue(argument)
-                : undefined;
+            const over = argument ? this.browserValueOf(argument) : undefined;
             if (argument && over?.kind !== "string") return undefined;
             return {
                 kind: "search-params",
@@ -1101,7 +1579,7 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
             unwrapped.expression.name.text === "style" &&
-            this.context.isBrowserDomValue(unwrapped)
+            this.isBrowserDomValue(unwrapped)
         ) {
             // CSS state has no native object. Treat a read as absent so a
             // HUD's own idempotence guard (style.display === "flex") folds
@@ -1111,7 +1589,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "tabIndex" &&
-            this.context.isBrowserDomValue(unwrapped.expression)
+            this.isBrowserDomValue(unwrapped.expression)
         ) {
             // Native keyboard events target the SDL surface directly. Treat
             // that surface as the focusable canvas the entry page establishes.
@@ -1128,8 +1606,8 @@ export class BrowserErasure {
                 unwrapped.expression.expression.expression,
             ) === "window" &&
             unwrapped.expression.arguments.length === 1 &&
-            this.evaluateBrowserValue(argumentAt(unwrapped.expression, 0))
-                ?.kind === "string"
+            this.browserValueOf(argumentAt(unwrapped.expression, 0))?.kind ===
+                "string"
         ) {
             // The native executable is an SDL desktop surface with mouse
             // hover and a fine pointer. A coarse/no-hover media query is the
@@ -1137,7 +1615,7 @@ export class BrowserErasure {
             return { kind: "boolean", value: false };
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            const operand = this.evaluateBrowserValue(unwrapped.operand);
+            const operand = this.browserValueOf(unwrapped.operand);
             if (
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
                     unwrapped.operator === ts.SyntaxKind.MinusToken) &&
@@ -1160,7 +1638,7 @@ export class BrowserErasure {
                 : { kind: "boolean", value: !truthy };
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            const left = this.evaluateBrowserValue(unwrapped.left);
+            const left = this.browserValueOf(unwrapped.left);
             if (
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken
@@ -1172,7 +1650,7 @@ export class BrowserErasure {
                     return left;
                 }
                 return truthy
-                    ? this.evaluateBrowserValue(unwrapped.right)
+                    ? this.browserValueOf(unwrapped.right)
                     : undefined;
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
@@ -1181,7 +1659,7 @@ export class BrowserErasure {
                     return left;
                 }
                 return truthy === false
-                    ? this.evaluateBrowserValue(unwrapped.right)
+                    ? this.browserValueOf(unwrapped.right)
                     : undefined;
             }
             if (
@@ -1198,7 +1676,7 @@ export class BrowserErasure {
                     return undefined;
                 }
                 return left.kind === "null"
-                    ? this.evaluateBrowserValue(unwrapped.right)
+                    ? this.browserValueOf(unwrapped.right)
                     : left;
             }
             const numeric = new EmissionMap<
@@ -1212,7 +1690,7 @@ export class BrowserErasure {
                 [ts.SyntaxKind.PercentToken, (a, b) => a % b],
             ]).get(unwrapped.operatorToken.kind);
             if (numeric) {
-                const right = this.evaluateBrowserValue(unwrapped.right);
+                const right = this.browserValueOf(unwrapped.right);
                 if (left?.kind !== "number" || right?.kind !== "number") {
                     return undefined;
                 }
@@ -1227,7 +1705,7 @@ export class BrowserErasure {
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsToken
             ) {
-                const right = this.evaluateBrowserValue(unwrapped.right);
+                const right = this.browserValueOf(unwrapped.right);
                 if (
                     !left ||
                     !right ||
@@ -1255,7 +1733,7 @@ export class BrowserErasure {
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsEqualsToken
             ) {
-                const right = this.evaluateBrowserValue(unwrapped.right);
+                const right = this.browserValueOf(unwrapped.right);
                 const equal = strictlyEqualBrowserValues(left, right);
                 if (equal === undefined) return undefined;
                 return {
@@ -1273,7 +1751,7 @@ export class BrowserErasure {
             // comparison is the ordinary numeric one.
             const relational = relationalOperator(unwrapped.operatorToken.kind);
             if (relational) {
-                const right = this.evaluateBrowserValue(unwrapped.right);
+                const right = this.browserValueOf(unwrapped.right);
                 if (left?.kind !== "number" || right?.kind !== "number") {
                     return undefined;
                 }
@@ -1285,7 +1763,7 @@ export class BrowserErasure {
             return undefined;
         }
         if (ts.isCallExpression(unwrapped)) {
-            if (this.context.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
+            if (this.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
                 // A native build has no instance of a DOM-only class. Model
                 // the erased nullable factory as its absent branch so guards
                 // over the result remain deterministic.
@@ -1299,7 +1777,7 @@ export class BrowserErasure {
                     unwrapped.expression.name.text === "getElementById" &&
                     unwrapped.arguments.length === 1
                 ) {
-                    const elementId = this.evaluateBrowserValue(
+                    const elementId = this.browserValueOf(
                         argumentAt(unwrapped, 0),
                     );
                     if (
@@ -1318,16 +1796,14 @@ export class BrowserErasure {
                 // The receiver is evaluated rather than looked up, because
                 // the corpus writes the query read both ways: bound to a
                 // local first, and read straight off the constructor.
-                const owner = this.evaluateBrowserValue(
+                const owner = this.browserValueOf(
                     unwrapped.expression.expression,
                 );
                 const method = unwrapped.expression.name.text;
                 if (
                     method === "getBoundingClientRect" &&
                     unwrapped.arguments.length === 0 &&
-                    this.context.isBrowserDomValue(
-                        unwrapped.expression.expression,
-                    )
+                    this.isBrowserDomValue(unwrapped.expression.expression)
                 ) {
                     // The primary canvas starts at the client origin. Its
                     // CSS extent is independent of its backing resolution.
@@ -1343,14 +1819,14 @@ export class BrowserErasure {
                     // every parameter reads as absent, as before.
                     const argument = unwrapped.arguments[0];
                     const key = argument
-                        ? this.evaluateBrowserValue(argument)
+                        ? this.browserValueOf(argument)
                         : undefined;
                     if (key?.kind !== "string") return undefined;
                     const parameters = new URLSearchParams(owner.search);
                     if (method === "has") {
                         const valueArgument = unwrapped.arguments[1];
                         const value = valueArgument
-                            ? this.evaluateBrowserValue(valueArgument)
+                            ? this.browserValueOf(valueArgument)
                             : undefined;
                         if (valueArgument && value?.kind !== "string")
                             return undefined;
@@ -1372,9 +1848,7 @@ export class BrowserErasure {
                 isParseFloatCallee(unwrapped.expression, this.context) &&
                 unwrapped.arguments.length === 1
             ) {
-                const argument = this.evaluateBrowserValue(
-                    argumentAt(unwrapped, 0),
-                );
+                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 const text = argument?.kind === "string" ? argument.value : "";
                 return {
                     kind: "number",
@@ -1385,9 +1859,7 @@ export class BrowserErasure {
                 this.context.libraryGlobal(unwrapped.expression) === "Number" &&
                 unwrapped.arguments.length === 1
             ) {
-                const argument = this.evaluateBrowserValue(
-                    argumentAt(unwrapped, 0),
-                );
+                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 // Only the kinds JavaScript converts to a NUMBER fold; an
                 // opaque browser object or the search-params record does
                 // not, and is listed by what it IS rather than by what it
@@ -1414,9 +1886,7 @@ export class BrowserErasure {
                 };
             }
             if (this.context.libraryGlobal(unwrapped.expression) === "isNaN") {
-                const argument = this.evaluateBrowserValue(
-                    argumentAt(unwrapped, 0),
-                );
+                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 return argument?.kind === "number"
                     ? {
                           kind: "boolean",
@@ -1430,9 +1900,7 @@ export class BrowserErasure {
                     "Number" &&
                 unwrapped.expression.name.text === "isFinite"
             ) {
-                const argument = this.evaluateBrowserValue(
-                    argumentAt(unwrapped, 0),
-                );
+                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 return argument?.kind === "number"
                     ? {
                           kind: "boolean",
@@ -1459,9 +1927,7 @@ export class BrowserErasure {
                 // from that table, and stays unfoldable here too.
                 const fold = mathUnaryFold(unwrapped.expression.name.text);
                 if (fold === undefined) return undefined;
-                const argument = this.evaluateBrowserValue(
-                    argumentAt(unwrapped, 0),
-                );
+                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 return argument?.kind === "number"
                     ? { kind: "number", value: fold(argument.value) }
                     : undefined;
@@ -1476,11 +1942,11 @@ export class BrowserErasure {
         // query does not reach costs nothing.
         if (ts.isConditionalExpression(unwrapped)) {
             const taken = this.browserTruthy(
-                this.evaluateBrowserValue(unwrapped.condition),
+                this.browserValueOf(unwrapped.condition),
             );
             return taken === undefined
                 ? undefined
-                : this.evaluateBrowserValue(
+                : this.browserValueOf(
                       taken ? unwrapped.whenTrue : unwrapped.whenFalse,
                   );
         }
@@ -1574,13 +2040,13 @@ export class BrowserErasure {
         >();
         let browserArgument = false;
         for (const [index, parameter] of declaration.parameters.entries()) {
-            const value = this.evaluateBrowserValue(call.arguments[index]!);
+            const value = this.browserValueOf(call.arguments[index]!);
             if (value === undefined || !ts.isIdentifier(parameter.name))
                 return undefined;
             bindings.set(parameter.name.text, value);
             browserArgument ||=
                 !isPrimitiveBrowserValue(value) &&
-                this.isBrowserOnlyExpression(call.arguments[index]!);
+                this.isBrowserOnlyNode(call.arguments[index]!);
         }
         this.helperBodies.push({ body, bindings });
         let result: Value["browserValue"] | undefined;
@@ -1613,7 +2079,7 @@ export class BrowserErasure {
             if (
                 (ts.isIdentifier(node) ||
                     ts.isPropertyAccessExpression(node)) &&
-                this.isBrowserOnlyExpression(node)
+                this.isBrowserOnlyNode(node)
             ) {
                 reads = true;
                 return;
@@ -1656,9 +2122,7 @@ export class BrowserErasure {
                     ) {
                         return undefined;
                     }
-                    const value = this.evaluateBrowserValue(
-                        declaration.initializer,
-                    );
+                    const value = this.browserValueOf(declaration.initializer);
                     if (value === undefined) return undefined;
                     this.helperBodies
                         .at(-1)
@@ -1668,7 +2132,7 @@ export class BrowserErasure {
             }
             if (ts.isIfStatement(statement)) {
                 const taken = this.browserTruthy(
-                    this.evaluateBrowserValue(statement.expression),
+                    this.browserValueOf(statement.expression),
                 );
                 if (taken === undefined) return undefined;
                 const branch = taken
@@ -1685,7 +2149,7 @@ export class BrowserErasure {
             }
             if (ts.isReturnStatement(statement)) {
                 const value = statement.expression
-                    ? this.evaluateBrowserValue(statement.expression)
+                    ? this.browserValueOf(statement.expression)
                     : undefined;
                 return value === undefined
                     ? undefined
@@ -1996,7 +2460,7 @@ export class BrowserErasure {
             (call.expression.name.text === "assign" ||
                 call.expression.name.text === "defineProperty") &&
             call.arguments[0] !== undefined &&
-            this.isBrowserOnlyExpression(call.arguments[0]);
+            this.isBrowserOnlyNode(call.arguments[0]);
         const deviceEvent =
             ts.isPropertyAccessExpression(call.expression) &&
             call.expression.name.text === "addEventListener" &&

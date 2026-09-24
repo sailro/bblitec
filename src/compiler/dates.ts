@@ -40,7 +40,7 @@ export function compileDateTimeFormatMethod(
             `Intl.DateTimeFormat.${method} is not lowered.`,
         );
     lowerer.context.expectArgumentCount(call, 0, 0);
-    const timeZone = lowerer.context.pinValueToTemporary(
+    const timeZone = lowerer.context.bindings.pinValueToTemporary(
         { kind: "string", cpp: `*(${owner.cpp})` },
         "resolved_time_zone",
     );
@@ -102,7 +102,7 @@ export function compileDateMethod(
             return { kind: "number", cpp: `*(${owner.cpp})` };
         case "setTime": {
             context.expectArgumentCount(call, 1, 1);
-            const receiver = context.pinValueToTemporary(
+            const receiver = context.bindings.pinValueToTemporary(
                 owner,
                 "date_receiver",
             );

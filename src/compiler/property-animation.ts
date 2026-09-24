@@ -48,7 +48,7 @@ interface PropertyAnimationTargetContext extends Pick<
     | "useNativeValue"
     | "registerNativeBinding"
     | "cppString"
-    | "materializeEscapingValue"
+    | "bindings"
 > {}
 
 /** Callback writers bound to the owner resolved when the group is created. */
@@ -171,7 +171,7 @@ export class PropertyAnimationTargetLowerer {
                         `Property animation path '${path}' requires a scalar track for a numeric data field.`,
                     );
                 }
-                const retained = context.materializeEscapingValue(
+                const retained = context.bindings.materializeEscapingValue(
                     owner,
                     "property_animation_owner",
                 );

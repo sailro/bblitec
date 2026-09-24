@@ -17,8 +17,7 @@ export interface AdaptationContext extends Pick<
     | "browserTextureFunctions"
     | "canvasReadbackFunctions"
     | "assets"
-    | "reachedShaderPrograms"
-    | "geometryOutputTasks"
+    | "sceneManifest"
     | "defaultRenderTaskAdapted"
     | "uiDegradedStyleProperties"
     | "uiScopedSheetSelectors"
@@ -754,11 +753,11 @@ export function compileAdaptations(
             ],
         });
     }
-    if (context.reachedShaderPrograms.length > 0) {
+    if (context.sceneManifest.reachedShaderPrograms.length > 0) {
         adaptations.push({
             id: "typed-reached-shader-variants",
             category: "rendering",
-            sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${context.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
+            sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${context.sceneManifest.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
             nativeSemantics:
                 "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits the target-selected HLSL or MSL source; register normalization and DXC emit the selected SDL-compatible DXIL or SPIR-V artifact.",
             risk: "high",
@@ -774,7 +773,7 @@ export function compileAdaptations(
         adaptations.push({
             id: "sdl-gpu-frame-graph",
             category: "rendering",
-            sourceSemantics: `Babylon Lite frame-graph tasks execute with ${context.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
+            sourceSemantics: `Babylon Lite frame-graph tasks execute with ${context.sceneManifest.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
             nativeSemantics:
                 "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, shader semantics, and source-derived integer viewport/scissor bounds while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
             risk: "high",

@@ -26,7 +26,7 @@ export interface PickingIntrinsicContext
             | "checker"
             | "compileNumber"
             | "requireEngine"
-            | "compileCondition"
+            | "conditions"
             | "fail"
         > {}
 
@@ -244,7 +244,9 @@ export function compilePickingIntrinsic(
                     `bbl::picked_normal(${info.cpp}, ` +
                     `${
                         call.arguments.length === 2
-                            ? context.compileCondition(argumentAt(call, 1))
+                            ? context.conditions.compileCondition(
+                                  argumentAt(call, 1),
+                              )
                             : "false"
                     })`,
                 dataType: {

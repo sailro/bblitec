@@ -20,7 +20,6 @@ import {
 } from "../lowering/line-lowerer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import {
-    reachedShaderProgram,
     reachFoldedShaderProgram,
     type ShaderMaterialContext,
 } from "./shader-material.js";
@@ -84,7 +83,7 @@ export function lineMaterialPermutation(
     name: string,
     node: ts.Node,
 ): LineMaterialPermutation | undefined {
-    const program = reachedShaderProgram(context, name, node);
+    const program = context.sceneManifest.reachedShaderProgram(name, node);
     if (!program.topology) {
         return undefined;
     }

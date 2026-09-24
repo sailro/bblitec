@@ -11,12 +11,12 @@ const textureType: DataType = {
     inner: { kind: "handle", handle: "texture" },
 };
 
-interface NodeInputContext extends Pick<
+export interface NodeInputContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "allocateTemporaryCppName"
     | "emit"
     | "dataLowerer"
@@ -78,7 +78,7 @@ function isInput(
     const node = context.unwrap(expression);
     if (
         ts.isIdentifier(node) &&
-        context.lookupOptional(node)?.kind === "node-input"
+        context.bindings.lookupOptional(node)?.kind === "node-input"
     )
         return true;
     return (

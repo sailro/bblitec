@@ -48,7 +48,7 @@ function admitsInstrumentation(source: string): boolean {
         ) {
             result = writesUnobservedCanvasMetadata(
                 checker,
-                program,
+                program.getSourceFiles(),
                 node,
                 0,
                 nativeHostUi,

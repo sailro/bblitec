@@ -68,7 +68,7 @@ export function compileUniformBufferIntrinsic(
                 ? "Uniform buffer sources require numeric sizes or ArrayBuffer views."
                 : "Uniform buffer updates require ArrayBuffer views.",
         );
-    const source = context.pinValueToTemporary(
+    const source = context.bindings.pinValueToTemporary(
         value,
         "uniform_source",
         sourceExpression,
@@ -101,7 +101,7 @@ export function compileUniformBufferLabel(
         const write = (options: Value): void => {
             if (options.kind === "json-null" || options.kind === "void") return;
             if (options.dataType?.kind === "optional") {
-                const retained = context.pinValueToTemporary(
+                const retained = context.bindings.pinValueToTemporary(
                     options,
                     "uniform_options",
                     optionsExpression,

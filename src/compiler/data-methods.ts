@@ -478,7 +478,10 @@ export function compileDataMethodCall(
             // Receiver elements are evaluated before either endpoint, even
             // when the selected interval later excludes them.
             const elements = tupleOwnerElements.map((value) =>
-                lowerer.context.pinValueToTemporary(value, "slice_member"),
+                lowerer.context.bindings.pinValueToTemporary(
+                    value,
+                    "slice_member",
+                ),
             );
             const begin = call.arguments[0]
                 ? lowerer.context.compileValue(call.arguments[0])
@@ -677,7 +680,7 @@ export function compileDataMethodCall(
                     dynamicOwner,
                 ];
                 return storedCallback
-                    ? lowerer.context.pinValueToTemporary(
+                    ? lowerer.context.bindings.pinValueToTemporary(
                           lowerer.compileFunctionValueCall(
                               storedCallback,
                               arguments_,
@@ -699,7 +702,7 @@ export function compileDataMethodCall(
     // keeps an omitted method endpoint from constructing it again for size().
     let constructedOwner: Value | undefined;
     if (ts.isNewExpression(ownerExpression) && dynamicOwner?.kind === "data") {
-        constructedOwner = lowerer.context.pinValueToTemporary(
+        constructedOwner = lowerer.context.bindings.pinValueToTemporary(
             dynamicOwner,
             "constructed_receiver",
             ownerExpression,
@@ -1319,7 +1322,7 @@ function compileArraySort(state: ArrayMethodState): Value {
         `std::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
     );
     lowerer.context.increaseIndent();
-    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
         try {
@@ -1371,7 +1374,7 @@ function compileArraySort(state: ArrayMethodState): Value {
             lowerer.context.leaveRuntimeIteration();
         }
     } finally {
-        lowerer.context.popScope();
+        lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("});");
@@ -1600,7 +1603,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
         `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
     );
     lowerer.context.increaseIndent();
-    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
         try {
@@ -1657,7 +1660,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
             lowerer.context.leaveRuntimeIteration();
         }
     } finally {
-        lowerer.context.popScope();
+        lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("}");
@@ -1991,7 +1994,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
                       ...(index < lastEffect ? { cpp: prepared } : {}),
                   };
                   delete snapshot.nativeBinding;
-                  const pinned = lowerer.context.pinValueToTemporary(
+                  const pinned = lowerer.context.bindings.pinValueToTemporary(
                       snapshot,
                       "array_handle",
                       argument,
@@ -2288,7 +2291,7 @@ function compileMapDataMethod(
         }
         lowerer.context.recordCollectionClear(narrowed);
         if (lowerer.context.isInRuntimeControlFlow()) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (narrowed.recordProperties) {
             for (const key of Object.keys(narrowed.recordProperties)) {
                 delete narrowed.recordProperties[key];
@@ -2326,11 +2329,11 @@ function compileMapDataMethod(
         if (method === "delete") {
             lowerer.context.recordCollectionKey(narrowed, keyValue, true);
             if (lowerer.context.isInRuntimeControlFlow()) {
-                lowerer.context.invalidateRecordProperties(narrowed);
+                lowerer.context.bindings.invalidateRecordProperties(narrowed);
             } else if (staticKey !== undefined && narrowed.recordProperties) {
                 delete narrowed.recordProperties[staticKey];
             } else if (staticKey === undefined) {
-                lowerer.context.invalidateRecordProperties(narrowed);
+                lowerer.context.bindings.invalidateRecordProperties(narrowed);
             }
             return {
                 kind: "boolean",
@@ -2437,11 +2440,11 @@ function compileMapDataMethod(
                 ? String(keyValue.staticNumber)
                 : undefined);
         if (lowerer.context.isInRuntimeControlFlow()) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (staticKey !== undefined && narrowed.recordProperties) {
             narrowed.recordProperties[staticKey] = assignedValue;
         } else if (staticKey === undefined) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         }
         return {
             kind: "data",
@@ -2796,7 +2799,8 @@ function compileStringDataMethod(
                 value = { ...value };
                 delete value.staticString;
             }
-            return lowerer.context.pinValueToTemporary(value, label).cpp;
+            return lowerer.context.bindings.pinValueToTemporary(value, label)
+                .cpp;
         };
         const source = snapshot(narrowed, "replace_source", argumentsMayChange);
         const pattern = lowerer.context.compileValue(argumentAt(call, 0));
@@ -3082,7 +3086,9 @@ function compileDataViewAccessor(
     const littleEndian = accessor.wide
         ? [
               call.arguments[fixed]
-                  ? lowerer.context.compileCondition(call.arguments[fixed])
+                  ? lowerer.context.conditions.compileCondition(
+                        call.arguments[fixed],
+                    )
                   : "false",
           ]
         : [];

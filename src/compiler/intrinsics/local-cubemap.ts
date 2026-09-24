@@ -18,14 +18,14 @@ export interface LocalCubemapIntrinsicContext
             LoweringServices,
             | "options"
             | "localCubemapState"
-            | "scenePbrMaterials"
+            | "sceneManifest"
             | "registerAsset"
             | "expectSameEngine"
             | "engineHasStarted"
             | "hasRegisteredScene"
             | "emit"
             | "cppString"
-            | "compileCondition"
+            | "conditions"
             | "fail"
         > {}
 
@@ -175,7 +175,9 @@ export function compileLocalCubemapIntrinsic(
     const first = context.compileValue(argumentAt(call, 0));
     if (name === "setPbrLocalEnvironmentProbeDebug") {
         context.expectKind(first, "pbr-local-probe-set", argumentAt(call, 0));
-        const enabled = context.compileCondition(argumentAt(call, 1));
+        const enabled = context.conditions.compileCondition(
+            argumentAt(call, 1),
+        );
         if ((enabled !== "true" && enabled !== "false") || !first.localCubemap)
             context.fail(
                 call,
@@ -199,7 +201,9 @@ export function compileLocalCubemapIntrinsic(
                 "Local environments currently require a statically known scene PBR material.",
             );
         const material =
-            context.scenePbrMaterials[first.scenePbrMaterialIndex]!;
+            context.sceneManifest.scenePbrMaterials[
+                first.scenePbrMaterialIndex
+            ]!;
         if (name === "clearPbrLocalEnvironment") {
             delete material.localCubemapCandidates;
             return {

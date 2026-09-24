@@ -1,6 +1,5 @@
 import type ts from "typescript";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
-import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
     CompiledAnisotropyOptions,
@@ -39,37 +38,13 @@ import type {
 import type {
     CompileAsset,
     DefaultRenderTaskEmission,
-    CompiledNodeMaterial,
-    CompiledNodeParticles,
-    CompiledShaderProgram,
-    CompiledComputeProgram,
     Feature,
     GeometryOutputTaskManifest,
-    LightKind,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
-    ScreenSpaceTaskManifest,
     ResolvedCompileOptions,
-    SceneMeshNamePredicate,
-    ShadowCasterMeshManifest,
-    ShadowGeneratorManifest,
-    ScenePbrClearCoatManifest,
-    ScenePbrAnisotropyManifest,
-    ScenePbrIridescenceManifest,
-    ScenePbrLightmapManifest,
-    ScenePbrMaterialManifest,
-    ScenePbrMetallicReflectanceManifest,
-    ScenePbrSheenManifest,
-    ScenePbrSubsurfaceManifest,
-    SplatFragmentManifest,
-    SpriteCustomShaderManifest,
-    EffectManifest,
     FrameCallbackSignature,
     Value,
     ValueKind,
-    VariableBinding,
 } from "./types.js";
-import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type {
     CapturedClosure,
     NativeCaptureBinding,
@@ -80,9 +55,13 @@ import type {
     ParameterizedResourceLoop,
     ResourceLoop,
 } from "./resource-loops.js";
-import type { ClusteredContainerState } from "./types.js";
 import type { ClassLowerer } from "./classes.js";
-import type { CompiledTextData } from "../pinned-text-data.js";
+import type { SceneManifestRecorder } from "./scene-manifest.js";
+import type { BindingScopes } from "./binding-scopes.js";
+import type { ConditionLowerer } from "./conditions.js";
+import type { BrowserErasure } from "./browser-erasure.js";
+import type { DeclarationLowerer } from "./declarations.js";
+import type { PropertyAccessLowerer } from "./properties.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -122,7 +101,6 @@ export interface LoweringServices {
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
-    isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean;
     hoistForwardCallbackBindings(callback: ts.Expression, before: number): void;
     platformEventCallbackIdentity(callback: Value, node: ts.Node): string;
     compilePlatformCallback(
@@ -139,6 +117,12 @@ export interface LoweringServices {
     readonly symbols: CompilerSymbols;
     readonly evaluator: StaticEvaluator;
     readonly handleCollections: HandleCollections;
+    readonly sceneManifest: SceneManifestRecorder;
+    readonly bindings: BindingScopes;
+    readonly conditions: ConditionLowerer;
+    readonly browserErasure: BrowserErasure;
+    readonly declarations: DeclarationLowerer;
+    readonly propertyAccess: PropertyAccessLowerer;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -149,7 +133,6 @@ export interface LoweringServices {
     voxelFileStorageReached: boolean;
     readonly browserTextureFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
-    readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
     setAssetDecoderConfiguration(
@@ -157,27 +140,16 @@ export interface LoweringServices {
         node: ts.Node,
     ): void;
     readonly assetPayloads: Map<string, string>;
-    readonly reachedTextData: CompiledTextData[];
-    readonly reachedComputePrograms: CompiledComputeProgram[];
-    readonly reachedShaderPrograms: CompiledShaderProgram[];
-    readonly reachedNodeMaterials: CompiledNodeMaterial[];
-    readonly meshWalks: CompiledMeshWalk[];
-    readonly reachedNodeParticles: CompiledNodeParticles;
     readonly boundPixelsTextures: Set<string>;
     readonly erasedBrowserExpressions: Set<number>;
     readonly erasedBrowserInstrumentation: Set<number>;
     readonly unwrappedAwaitExpressions: Set<number>;
-    readonly geometryOutputTasks: GeometryOutputTaskManifest[];
-    readonly postProcessTasks: PostProcessTaskManifest[];
-    readonly postProcessComposites: PostProcessCompositeManifest[];
-    readonly screenSpaceTasks: ScreenSpaceTaskManifest[];
     readonly localCubemapState: {
         maxCandidates?: number;
     };
     hasMainEntry: boolean;
     defaultRenderTaskAdapted: boolean;
     isNativeHostUiLookup(call: ts.CallExpression): boolean;
-    isBrowserOnlyHandler(handler: ts.Expression): boolean;
     emitStatement(statement: ts.Statement): void;
     statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     emitExpressionAsStatement(expression: ts.Expression): void;
@@ -199,18 +171,11 @@ export interface LoweringServices {
     recordTextAttachment(node: ts.Node): void;
     assertTextDisposal(node: ts.Node): void;
     emitDiscardedValue(value: Value): void;
-    emitVariableDeclaration(declaration: ts.VariableDeclaration): void;
     emitAssignment(expression: ts.BinaryExpression): void;
     /** `??=`, `||=`, `&&=` over a data-model target; any other target refuses. */
     emitLogicalAssignment(expression: ts.BinaryExpression): void;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
-    /** Binds an object pattern from a record or struct value. */
-    bindObjectPattern(
-        pattern: ts.ObjectBindingPattern,
-        value: Value,
-        source?: ts.Node,
-    ): void;
     recordDataAssignmentMetadata(
         target: Value,
         source: ts.Expression,
@@ -240,7 +205,6 @@ export interface LoweringServices {
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
     compileBrowserGeneratedString(call: ts.CallExpression): Value | undefined;
-    compilePropertyAccess(expression: ts.PropertyAccessExpression): Value;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileStaticFetch(
         call: ts.CallExpression,
@@ -327,7 +291,6 @@ export interface LoweringServices {
         name: string;
         id: number;
     };
-    recordRuntimeMeshProfile(index: number): void;
     guardStaticConstructionRead(operation: string): void;
     reachLinearDepthMaterial(
         node: ts.Node,
@@ -340,8 +303,6 @@ export interface LoweringServices {
         name: string,
         node: ts.Node,
     ): LineMaterialPermutation | undefined;
-    recordEffect(effect: EffectManifest): number;
-    selectToneMapping(name: string, node: ts.Node): void;
     compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
@@ -417,9 +378,7 @@ export interface LoweringServices {
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
-    isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
     isNativeUiHelperCall(call: ts.CallExpression): boolean;
-    isBrowserOnlyNullableClassFactoryCall(call: ts.CallExpression): boolean;
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -443,7 +402,6 @@ export interface LoweringServices {
     compileVec2(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
-    compileCondition(expression: ts.Expression): string;
     meshTransformDirtyEntry():
         "mark_mesh_dirty" | "mark_mesh_runtime_transform";
     compileFrameCallback(
@@ -513,7 +471,6 @@ export interface LoweringServices {
     probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
-    cppLocalName(sourceName: string): string;
     sourceFiles(): readonly ts.SourceFile[];
     reachThrow(): void;
     emitDataVectorOfStructs(
@@ -800,14 +757,7 @@ export interface LoweringServices {
     ): "width" | "height" | undefined;
     staticCanvasSize(expression: ts.Expression): number | undefined;
     canvasSizeValue(expression: ts.Expression): Value | undefined;
-    isBrowserOnlyExpression(expression: ts.Expression): boolean;
     isBoundedNestedFrameYield(expression: ts.Expression): boolean;
-    isBrowserDomValue(expression: ts.Expression): boolean;
-    isNativeBrowserFileExpression(expression: ts.Expression): boolean;
-    isDeferredCallbackCall(call: ts.CallExpression): boolean;
-    evaluateBrowserValue(
-        expression: ts.Expression,
-    ): Value["browserValue"] | undefined;
     isBrowserInstrumentationCall(call: ts.CallExpression): boolean;
     platformDocumentHidden(): string | undefined;
     compilePlatformCall(call: ts.CallExpression): Value | undefined;
@@ -819,7 +769,6 @@ export interface LoweringServices {
     emitPlatformEventListener(call: ts.CallExpression): boolean;
     isCanvasElement(expression: ts.Expression): boolean;
     isFrameYield(expression: ts.Expression): boolean;
-    frameDrainCondition(expression: ts.Expression): ts.Expression | undefined;
     emitFramePollAwait(call: ts.CallExpression): boolean;
     emitFrameYieldRequeue(expression: ts.Expression): void;
     promiseLatchCondition(expression: ts.Expression): string | undefined;
@@ -828,34 +777,18 @@ export interface LoweringServices {
     moduleFunctionDeclaration(
         identifier: ts.Identifier,
     ): ts.FunctionDeclaration | undefined;
-    lookupOptional(identifier: ts.MemberName): Value | undefined;
     refuseBorrowedPlatformEventEscape(
         value: Value,
         node: ts.Node,
         destination: string,
     ): void;
-    declaredDataProperty(
-        expression: ts.PropertyAccessExpression,
-    ): Value | undefined;
-    readResolvedProperty(
-        owner: Value,
-        expression: ts.PropertyAccessExpression,
-    ): Value | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
-    lookup(identifier: ts.Identifier): Value;
-    bindPendingLet(identifier: ts.Identifier, value: Value): void;
-    rebindVariable(identifier: ts.Identifier, value: Value): void;
-    defineVariable(identifier: ts.Identifier, value: Value): void;
-    bindLocalValue(identifier: ts.Identifier, value: Value): void;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
-    bindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
-    rebindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
     materializeStaticNativeValue(
         identifier: ts.Identifier,
         value: Value,
     ): Value;
-    bindParameterValue(identifier: ts.Identifier, value: Value): void;
     bindClassParameterValue(
         identifier: ts.Identifier,
         argument: ts.Expression,
@@ -864,22 +797,6 @@ export interface LoweringServices {
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): Value;
-    materializeEscapingValue(
-        value: Value,
-        label: string,
-        node?: ts.Expression,
-    ): Value;
-    pinValueToTemporary(
-        value: Value,
-        label: string,
-        node?: ts.Expression,
-    ): Value;
-    bindDataTuple(
-        value: Value,
-        arity: number,
-        label?: string,
-        initializerBoundary?: number,
-    ): string;
     compileCallbackWithValues(
         declaration:
             | ts.Identifier
@@ -916,16 +833,12 @@ export interface LoweringServices {
     compilePhysicsCollisionCallback(expression: ts.Expression): string;
     compilePhysicsTriggerCallback(expression: ts.Expression): string;
     compilePhysicsCharacterCallback(expression: ts.Expression): string;
-    invalidateStaticElements(value: Value, preserveCardinality?: boolean): void;
     knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
     recordArrayPush(value: Value, added: number | undefined): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
-    invalidateRecordProperties(value: Value): void;
-    pushScope(cppPrefix: string, propagateRebindings?: boolean): void;
-    popScope(): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
     expectShaderVariant(value: Value, variant: string, node: ts.Node): void;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
@@ -934,144 +847,7 @@ export interface LoweringServices {
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;
     requirePresentationHost(node: ts.Node): string;
-    get scenePbrMaterials(): ScenePbrMaterialManifest[];
-    recordScenePbrNoColorView(sourceIndex: number | undefined): number;
-    recordSceneMaterialSlot(): number;
-    currentGltfAssetCount(): number;
-    recordScenePbrUnlit(index: number | undefined): void;
-    recordScenePbrSkybox(index: number | undefined): void;
-    recordScenePbrGammaAlbedo(index: number | undefined): void;
-    recordScenePbrShadowOnly(
-        index: number | undefined,
-        options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
-    ): void;
-    recordScenePbrPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        index: number | undefined,
-    ): void;
-    recordStandardMaterialPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        material: NonNullable<Value["standardMaterialInput"]>,
-    ): number;
-    withBoundParameters<T>(
-        parameters: readonly {
-            name: ts.Identifier;
-            value: Value;
-            compileTime?: boolean;
-        }[],
-        work: () => T,
-    ): T;
-    recordScenePbrSheen(
-        sheen: ScenePbrSheenManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrClearCoat(
-        clearCoat: ScenePbrClearCoatManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrEmissive(
-        color: readonly [number, number, number] | undefined,
-        index: number | undefined,
-    ): void;
-    recordScenePbrIridescence(
-        iridescence: ScenePbrIridescenceManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrLightmap(
-        lightmap: ScenePbrLightmapManifest,
-        index: number | undefined,
-    ): void;
     pbrLightmapEnabled(): boolean;
-    recordAssetSceneLightmap(
-        meshNamePredicate: SceneMeshNamePredicate,
-        lightmap: ScenePbrLightmapManifest,
-        node: ts.Node,
-    ): void;
-    recordScenePbrSubsurface(
-        subsurface: ScenePbrSubsurfaceManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrAnisotropy(
-        anisotropy: ScenePbrAnisotropyManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrMetallicReflectance(
-        reflectance: ScenePbrMetallicReflectanceManifest,
-        index: number | undefined,
-    ): void;
-    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
-    recordPureSpriteVertex(): void;
-    spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
-    recordSpriteCustomShader(shader: SpriteCustomShaderManifest): void;
-    recordSplatFragments(
-        fragments: readonly SplatFragmentManifest[],
-        node: ts.Node,
-    ): void;
-    recordShadowGenerator(
-        entry: Omit<ShadowGeneratorManifest, "casters"> & {
-            lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        },
-    ): number;
-    recordDataLightSlot(value: Value, index: number): void;
-    shadowGeneratorLight(
-        index: number,
-        node: ts.Node,
-    ): {
-        lightIndex: number;
-    };
-    recordThinInstanceColorMesh(sceneMeshIndex: number | undefined): void;
-    recordSceneMeshMaterial(
-        meshIndex: number,
-        material: {
-            pbrMaterial: number | null;
-            nodeMaterial: number | null;
-            standardMaterial: boolean;
-            standardMaterialPluginIndex?: number | undefined;
-            sceneShaderVariant?: string | undefined;
-            sceneShaderVariants?: readonly string[] | undefined;
-        },
-    ): void;
-    recordUnknownSceneMeshMaterial(materialIndex: number): void;
-    recordUnknownSceneMaterialAssignment(): void;
-    recordUnknownStandardMeshMaterial(): void;
-    recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
-    recordSceneMeshDeformation(
-        meshIndex: number,
-        property: "skinned" | "morphTargets",
-        site: ts.Node,
-    ): void;
-    recordShadowCasters(
-        generatorIndex: number,
-        casters: readonly ShadowCasterMeshManifest[],
-    ): void;
-    recordDynamicShadowCasters(generatorIndex: number): void;
-    recordDynamicShadowCastersForUnknownGenerator(): void;
-    esmGeneratorOrdinal(): number;
-    recordShadowReceiver(sceneMeshIndex: number): void;
-    recordDynamicShadowReceivers(): void;
-    recordSceneMeshId(meshCpp: string, id: string, node: ts.Node): void;
-    resolveSceneMeshIds(ids: readonly string[], node: ts.Node): string[];
-    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
-    addDynamicSceneLight(): void;
-    removeSceneLight(scene: Value, light: Value): void;
-    recordToneMappingEnabledMutation(): void;
-    recordThinInstanceMesh(sceneMeshIndex: number | undefined): void;
-    meshHasThinInstancePool(owner: Value): boolean;
-    recordThinInstanceGpuCulling(sceneMeshIndex: number | undefined): void;
-    meshMayHaveThinInstanceGpuCulling(owner: Value): boolean;
-    recordSceneMesh(
-        kind: string,
-        streams?: {
-            hasUv2: boolean;
-            hasTangents: boolean;
-            hasColors: boolean;
-            runtimeStreams?: true;
-        },
-    ): number;
-    reachClusteredContainer(
-        state: ClusteredContainerState,
-        node: ts.Node,
-    ): void;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     gltfAlreadyLoaded(): boolean;
     compileSceneRegistration(scene: Value, node: ts.Node): string;
@@ -1082,14 +858,6 @@ export interface LoweringServices {
     importedName(identifier: ts.Identifier): string | undefined;
     requiresStaticIteration(statement: ts.Statement): boolean;
     eraseBrowserInstrumentation(position: number): void;
-    recordGeometryOutputTask(manifest: GeometryOutputTaskManifest): void;
-    recordCopyTask(name: string): void;
-    recordPostProcessTask(manifest: PostProcessTaskManifest): void;
-    recordPostProcessComposite(
-        manifest: PostProcessCompositeManifest,
-        site: ts.Node,
-    ): void;
-    recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void;
     expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,

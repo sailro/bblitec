@@ -18,9 +18,8 @@ export type ObjectStaticContext = Pick<
     | "allocateTemporaryCppName"
     | "emit"
     | "emitDiscardedValue"
-    | "pinValueToTemporary"
     | "isInRuntimeControlFlow"
-    | "invalidateRecordProperties"
+    | "bindings"
     | "lookupIdentifierValue"
     | "resolveRecordValue"
     | "unwrap"
@@ -238,7 +237,10 @@ function compileObjectEntries(
             tupleElements: [
                 staticStringValue(key, (text) => context.cppString(text)),
                 value.cpp && value.kind !== "callback"
-                    ? context.pinValueToTemporary(value, "object_entry")
+                    ? context.bindings.pinValueToTemporary(
+                          value,
+                          "object_entry",
+                      )
                     : value,
             ],
         })),
@@ -405,12 +407,12 @@ function compileObjectAssign(
         }
         // The stores changed fields whose generation snapshot lives on the
         // binding the target was read from, not only on this read of it.
-        context.invalidateRecordProperties(target);
+        context.bindings.invalidateRecordProperties(target);
         const bound = ts.isIdentifier(targetExpression)
             ? context.lookupIdentifierValue(targetExpression)
             : undefined;
         if (bound) {
-            context.invalidateRecordProperties(bound);
+            context.bindings.invalidateRecordProperties(bound);
         }
         return target;
     }

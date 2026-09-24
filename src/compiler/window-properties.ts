@@ -10,7 +10,7 @@ type Context = Pick<
     | "options"
     | "checker"
     | "unwrap"
-    | "lookupOptional"
+    | "bindings"
     | "libraryGlobal"
     | "dataTypes"
     | "dataLowerer"
@@ -40,7 +40,7 @@ export class WindowProperties {
         const owner = context.unwrap(node.expression);
         const global = context.libraryGlobal(owner);
         const alias = ts.isIdentifier(owner)
-            ? context.lookupOptional(owner)
+            ? context.bindings.lookupOptional(owner)
             : undefined;
         if (
             !["window", "globalThis"].includes(global ?? "") &&

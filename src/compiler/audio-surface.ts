@@ -21,7 +21,7 @@ interface AudioReceiverContext
         PropertyContext,
         Pick<
             LoweringServices,
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "compileValue"
             | "unwrap"
@@ -54,13 +54,13 @@ interface AudioCallContext
             | "registerAsset"
             | "dataLowerer"
             | "options"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "dataTypes"
             | "hoistForwardCallbackBindings"
             | "compilePlatformCallback"
             | "platformEventCallbackIdentity"
-            | "pinValueToTemporary"
+            | "bindings"
             | "emitDiscardedValue"
         > {}
 
@@ -269,7 +269,7 @@ function resolveAudioReceiver(
         return AUDIO_KINDS.has(narrowed.kind) ? narrowed : undefined;
     };
     if (ts.isIdentifier(node)) {
-        const bound = context.lookupOptional(node);
+        const bound = context.bindings.lookupOptional(node);
         return bound && AUDIO_KINDS.has(bound.kind)
             ? bound
             : narrowedAudioData(bound);
@@ -505,7 +505,7 @@ export function compileAudioMethodCall(
                     );
                 const selected = { ...receiver };
                 delete selected.nativeBinding;
-                const target = context.pinValueToTemporary(
+                const target = context.bindings.pinValueToTemporary(
                     selected,
                     "audio_event_target",
                     callee.expression,
@@ -533,7 +533,7 @@ export function compileAudioMethodCall(
                         delete value.nativeBinding;
                         const snapshot =
                             value.kind === "data"
-                                ? context.pinValueToTemporary(
+                                ? context.bindings.pinValueToTemporary(
                                       value,
                                       "audio_event_callback",
                                       callback,

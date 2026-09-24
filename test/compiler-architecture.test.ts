@@ -144,11 +144,14 @@ test("the compiler delegates intrinsic families and feature lowering", () => {
     const compiler = sourceFacts("src/compiler.ts");
     assert.ok(compiler.calls.has("compileRegisteredIntrinsic"));
     assert.ok(compiler.calls.has("emitPropertyAssignment"));
-    assert.ok(compiler.calls.has("readProperty"));
+    assert.ok(
+        sourceFacts("src/compiler/properties.ts").calls.has("readProperty"),
+    );
     for (const name of [
         "StaticEvaluator",
         "UserFunctionLowerer",
         "StatementLowerer",
+        "PropertyAccessLowerer",
     ]) {
         assert.ok(compiler.constructs.has(name), name);
     }
@@ -163,7 +166,7 @@ test("the compiler delegates intrinsic families and feature lowering", () => {
         "adaptations",
         "assets",
         "output-projection",
-        "scene-materials",
+        "scene-manifest",
         "module-initializers",
         "sprite-atlas-record",
     ])

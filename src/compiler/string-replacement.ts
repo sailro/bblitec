@@ -102,7 +102,7 @@ export function replacementCallback(
     }
     context.emit(`const auto ${adapter} = [&](${parameters}) -> std::string {`);
     context.increaseIndent();
-    context.pushScope(context.allocateBlockPrefix());
+    context.bindings.pushScope(context.allocateBlockPrefix());
     context.enterRuntimeControlFlow();
     context.enterRuntimeIteration();
     try {
@@ -140,7 +140,7 @@ export function replacementCallback(
     } finally {
         context.leaveRuntimeIteration();
         context.leaveRuntimeControlFlow();
-        context.popScope();
+        context.bindings.popScope();
         context.decreaseIndent();
     }
     context.emit("};");

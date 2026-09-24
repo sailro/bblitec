@@ -117,7 +117,7 @@ function valueVector(
         lowerer.context.reachJsData();
         const elements = value.tupleElements ?? [];
         elements.forEach((entry, index) =>
-            lowerer.context.recordDataLightSlot(entry, index),
+            lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );
         return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
             .map((entry) =>
@@ -224,7 +224,7 @@ function valueSpan(
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
         (value.tupleElements ?? []).forEach((entry, index) =>
-            lowerer.context.recordDataLightSlot(entry, index),
+            lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );
         return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${(
             value.tupleElements ?? []

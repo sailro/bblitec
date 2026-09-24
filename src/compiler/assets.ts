@@ -1,5 +1,6 @@
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type { BindingLookup } from "./binding-scopes.js";
 // Asset registration: from a scene URL to a packaged local file.
 //
 // A reached asset URL registers once per (kind, source) pair and maps
@@ -555,7 +556,9 @@ interface StaticGraphDocumentContext
     extends
         ExecutedModuleReferenceContext,
         StaticJsonContext,
-        Pick<LoweringServices, "lookupOptional" | "fail"> {}
+        Pick<LoweringServices, "fail"> {
+    readonly bindings: BindingLookup;
+}
 
 type StaticGraphDocument =
     | { kind: "literal"; graph: Record<string, unknown> }
@@ -589,7 +592,7 @@ export function staticGraphDocument(
     }
     const unwrapped = context.unwrap(expression);
     const carried = ts.isIdentifier(unwrapped)
-        ? context.lookupOptional(unwrapped)?.staticJson
+        ? context.bindings.lookupOptional(unwrapped)?.staticJson
         : undefined;
     if (carried !== undefined) {
         if (

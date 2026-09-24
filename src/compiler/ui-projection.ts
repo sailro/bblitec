@@ -142,7 +142,7 @@ interface UiProjectionContext extends Pick<
     | "sourceFiles"
     | "checker"
     | "compileBoolean"
-    | "compileCondition"
+    | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
     | "compileStringLiteral"
@@ -163,9 +163,8 @@ interface UiProjectionContext extends Pick<
     | "libraryGlobal"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
-    | "lookupOptional"
+    | "bindings"
     | "options"
-    | "pinValueToTemporary"
     | "probeEmission"
     | "reachFeature"
     | "registerAsset"
@@ -329,7 +328,7 @@ export class UiProjection {
                     return undefined;
                 const selected = { ...narrowed };
                 delete selected.nativeBinding;
-                const snapshot = this.context.pinValueToTemporary(
+                const snapshot = this.context.bindings.pinValueToTemporary(
                     selected,
                     "event_target",
                     expression,
@@ -363,7 +362,7 @@ export class UiProjection {
             );
         };
         if (ts.isIdentifier(owner)) {
-            return asElement(this.context.lookupOptional(owner));
+            return asElement(this.context.bindings.lookupOptional(owner));
         }
         if (
             ts.isPropertyAccessExpression(owner) &&
@@ -413,7 +412,7 @@ export class UiProjection {
                 return asElement(
                     value?.kind === "data" &&
                         value.dataType?.kind === "optional"
-                        ? this.context.pinValueToTemporary(
+                        ? this.context.bindings.pinValueToTemporary(
                               value,
                               "ui_lookup",
                               owner,
@@ -593,7 +592,10 @@ export class UiProjection {
             );
         }
         if (ts.isIdentifier(value)) {
-            return this.context.lookupOptional(value)?.kind === "ui-element";
+            return (
+                this.context.bindings.lookupOptional(value)?.kind ===
+                "ui-element"
+            );
         }
         if (ts.isPropertyAccessExpression(value)) {
             return this.uiElementMetadata(value) !== undefined;
@@ -2976,7 +2978,7 @@ export class UiProjection {
         if (ts.isConditionalExpression(unwrapped)) {
             recordCandidates(unwrapped);
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
                 `${this.compileUiStyleString(unwrapped.whenFalse)})`
             );
@@ -3513,7 +3515,7 @@ export class UiProjection {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
                 `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
             );
@@ -4019,7 +4021,7 @@ export class UiProjection {
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, site);
         const { nativeBinding, ...receiver } = element;
-        const styleElement = this.context.pinValueToTemporary(
+        const styleElement = this.context.bindings.pinValueToTemporary(
             receiver,
             "style_receiver",
         );

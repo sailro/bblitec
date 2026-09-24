@@ -80,7 +80,7 @@ export interface MeshIntrinsicContext
         Pick<
             LoweringServices,
             | "dataTypes"
-            | "recordSceneMeshMaterial"
+            | "sceneManifest"
             | "compileBoxOptions"
             | "compileGroundOptions"
             | "compileGroundFromHeightMapOptions"
@@ -95,7 +95,7 @@ export interface MeshIntrinsicContext
             | "compileVec3"
             | "vec3FromRecord"
             | "compileNumber"
-            | "compileCondition"
+            | "conditions"
             | "reachJsData"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
@@ -103,11 +103,6 @@ export interface MeshIntrinsicContext
             | "allocateTemporaryCppName"
             | "emit"
             | "isEntryBodyScope"
-            | "recordThinInstanceMesh"
-            | "recordThinInstanceColorMesh"
-            | "recordThinInstanceGpuCulling"
-            | "meshHasThinInstancePool"
-            | "meshMayHaveThinInstanceGpuCulling"
             | "requireEngine"
             | "expectSameEngine"
             | "markAssetRootReparented"
@@ -704,11 +699,14 @@ function compileCreateMeshFromCsg2(
     const meshes: Value[] = [];
     for (const output of baked) {
         const geometry = compileBakedMesh(context, output.geometry);
-        const sceneMeshIndex = context.recordSceneMesh("from-data", {
-            hasUv2: false,
-            hasTangents: false,
-            hasColors: false,
-        });
+        const sceneMeshIndex = context.sceneManifest.recordSceneMesh(
+            "from-data",
+            {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            },
+        );
         const cpp = context.allocateTemporaryCppName("csg2_mesh");
         context.emit({
             kind: "declaration",
@@ -729,7 +727,7 @@ function compileCreateMeshFromCsg2(
             context.emit(
                 `${recordAt(`${engine.cpp}.meshes`, cpp)}.material = ${material.cpp};`,
             );
-            context.recordSceneMeshMaterial(sceneMeshIndex, {
+            context.sceneManifest.recordSceneMeshMaterial(sceneMeshIndex, {
                 pbrMaterial: null,
                 nodeMaterial: null,
                 standardMaterial: true,
@@ -953,7 +951,7 @@ function compileSetMeshVisible(
         cpp:
             `bbl::set_mesh_visible(` +
             `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
-            `${context.compileCondition(argumentAt(call, 1))})`,
+            `${context.conditions.compileCondition(argumentAt(call, 1))})`,
     };
 }
 
@@ -1208,7 +1206,8 @@ function compileCloneTransformNode(
         // name, its material, its transform) must land on the
         // clone rather than on the mesh it was taken from.
         const engine = context.requireEngine(source, call);
-        const sceneMeshIndex = context.recordSceneMesh("mesh-clone");
+        const sceneMeshIndex =
+            context.sceneManifest.recordSceneMesh("mesh-clone");
         return {
             kind: "mesh",
             sceneMeshIndex,
@@ -1330,7 +1329,7 @@ function compileCreateMeshFromData(
     // answer what the composed Standard or PBR variant would need,
     // so the pairing refuses where it is known — at the material
     // assignment — rather than composing against a guess.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: streams[1]!.present === true,
         hasTangents: streams[2]!.present === true,
         hasColors: streams[3]!.present === true,
@@ -1488,7 +1487,7 @@ function compileCreateHierarchyInstancePool(
     // snapshotting mesh worlds. Native loading has already flattened
     // those links, and the scene core owns the same matrix helpers.
     context.reachFeature("mesh:parenting", call);
-    context.recordThinInstanceMesh(undefined);
+    context.sceneManifest.recordThinInstanceMesh(undefined);
     context.emit(
         `const ${handleCppType("hierarchy-instance-pool")} ${pool} = ` +
             `bbl::create_hierarchy_instance_pool(` +
@@ -1610,7 +1609,7 @@ function compileSetThinInstances(
     }
     const count = context.compileNumber(argumentAt(call, 2));
     context.reachFeature("mesh:thin-instances", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1635,7 +1634,7 @@ function compileSetThinInstanceColors(
     context.reachFeature("mesh:thin-instance-colors", call);
     // The pin's ShaderMaterial reads this stream's presence off the
     // mesh to decide its instanced prelude, so the record notes it.
-    context.recordThinInstanceColorMesh(
+    context.sceneManifest.recordThinInstanceColorMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1657,7 +1656,7 @@ function compileSetThinInstanceColor(
         .slice(1)
         .map((argument) => context.compileNumber(argument, "double"));
     context.reachFeature("mesh:thin-instance-colors", call);
-    context.recordThinInstanceColorMesh(
+    context.sceneManifest.recordThinInstanceColorMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1691,7 +1690,7 @@ function compileSetThinInstanceCount(
     const count = context.compileNumber(argumentAt(call, 1));
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1715,7 +1714,7 @@ function compileSetThinInstanceMatrix(
         "f32array",
     );
     context.reachFeature("mesh:thin-instances-dynamic", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1736,7 +1735,7 @@ function compileFlushThinInstances(
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1764,7 +1763,7 @@ function compileAddThinInstance(
     );
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1787,7 +1786,7 @@ function compileRemoveThinInstance(
     const index = context.compileNumber(argumentAt(call, 1), "double");
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
-    context.recordThinInstanceMesh(
+    context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1814,7 +1813,7 @@ function compileEnableThinInstanceGpuCulling(
     const mesh = context.compileValue(argumentAt(call, 0));
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
     const enabled = call.arguments[1]
-        ? context.compileCondition(call.arguments[1])
+        ? context.conditions.compileCondition(call.arguments[1])
         : pinnedParameterFlag(
                 "src/mesh/thin-instance.ts",
                 "enableThinInstanceGpuCulling",
@@ -1827,7 +1826,7 @@ function compileEnableThinInstanceGpuCulling(
     // a mesh generation resolved and never bound a pool on fails at
     // its own line -- the same failure, at the same call. A mesh
     // arriving as a runtime handle keeps the emitted call's own.
-    if (!context.meshHasThinInstancePool(mesh)) {
+    if (!context.sceneManifest.meshHasThinInstancePool(mesh)) {
         context.fail(
             call,
             "enableThinInstanceGpuCulling requires a " +
@@ -1838,7 +1837,7 @@ function compileEnableThinInstanceGpuCulling(
     }
     if (
         enabled === "false" &&
-        !context.meshMayHaveThinInstanceGpuCulling(mesh)
+        !context.sceneManifest.meshMayHaveThinInstanceGpuCulling(mesh)
     ) {
         // `_gpuCullingEnabled` starts false and nothing reached so
         // far on this mesh could have set it, so the pinned body
@@ -1851,7 +1850,7 @@ function compileEnableThinInstanceGpuCulling(
         return { kind: "void", cpp: "" };
     }
     context.reachFeature("mesh:thin-instance-gpu-culling", call);
-    context.recordThinInstanceGpuCulling(
+    context.sceneManifest.recordThinInstanceGpuCulling(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
     );
     return {
@@ -1927,7 +1926,7 @@ function compileCreateBox(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("box");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("box");
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -1950,7 +1949,7 @@ function compileCreateGround(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("ground");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("ground");
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -1975,7 +1974,7 @@ function compileCreateGroundFromHeightMap(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("ground");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("ground");
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -2011,7 +2010,7 @@ function compileCreatePlane(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("plane");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("plane");
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -2034,7 +2033,7 @@ function compileCreateSphere(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("sphere");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("sphere");
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -2136,7 +2135,7 @@ function compileCreateMeshFromCsg(
     const baked = bakeCsgMesh(plan, meshName);
     const geometry = compileBakedMesh(context, baked);
     context.reachJsData();
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2346,7 +2345,7 @@ function compileCreateTube(
     // outside it (the lowering pins the defaults that keep them
     // unreachable), and the radius/tessellation defaults stay
     // unduplicated by requiring the scene to name both.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2397,7 +2396,7 @@ function compileCreateExtrudeShape(
     // A 2D shape swept along a 3D path. `cap` is unreached and
     // refuses by name; `scale` and `rotation` take the factory's
     // own `??` defaults.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2461,7 +2460,7 @@ function compileCreateRibbon(
     // The reached subset is the path array alone. `closeArray`,
     // `closePath` and `offset` are the pin's own defaults, folded
     // here so the record carries what the builder reads.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2502,7 +2501,7 @@ function compileCreatePolyhedron(
     // three sizes through `sizeX ?? size ?? 1`. Both happen here,
     // because the type selects a TABLE ROW and the row is what the
     // record carries.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2610,7 +2609,7 @@ function compileCreateCylinder(
     // The pinned option set, with `diameter` resolved here because
     // the emitted record carries the two ends the builder actually
     // reads. Each default is the factory's own `??` value.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2704,7 +2703,7 @@ function compileCreateCapsule(
     // the emitted body supplies every default itself -- including
     // the two that fall back to another resolved local
     // (`radiusTop` to `radius`, each cap to `capSubdivisions`).
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2764,7 +2763,7 @@ function compileCreateDisc(
     // value, folded into a named constant at generation, so an
     // omitted option is the pin's answer rather than one restated
     // here.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2822,7 +2821,7 @@ function compileCreateTorusKnot(
     // omitted option is the pin's answer rather than one restated
     // here. The mesh arrives through `create_mesh_from_data`, so it
     // carries no primitive of its own.
-    const sceneMeshIndex = context.recordSceneMesh("from-data", {
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
@@ -2881,7 +2880,7 @@ function compileCreateTorus(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const sceneMeshIndex = context.recordSceneMesh("torus");
+    const sceneMeshIndex = context.sceneManifest.recordSceneMesh("torus");
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));

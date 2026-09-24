@@ -71,17 +71,16 @@ export interface StatementLoweringContext extends Pick<
     | "checker"
     | "symbols"
     | "dataTypes"
-    | "reachedNodeParticles"
+    | "sceneManifest"
     | "handleCollections"
     | "constructsLocalClass"
-    | "lookupOptional"
+    | "bindings"
     | "resolveStaticExpression"
     | "reachThrow"
     | "reachFeature"
     | "reachJsData"
     | "cppString"
     | "emitDataAssignment"
-    | "bindPendingLet"
     | "emitOptionalResourceAssignment"
     | "assignOptionalResourceValue"
     | "emitDataPostfix"
@@ -102,7 +101,6 @@ export interface StatementLoweringContext extends Pick<
     | "meshTransformDirtyEntry"
     | "captureEmittedLines"
     | "canShareFunctionBody"
-    | "pinValueToTemporary"
     | "useNativeValue"
     | "emitFinallyGuard"
     | "emitEngineFinally"
@@ -111,9 +109,8 @@ export interface StatementLoweringContext extends Pick<
     | "captureHoistedLines"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "bindDataTuple"
     | "dataLowerer"
-    | "emitVariableDeclaration"
+    | "declarations"
     | "emitAssignment"
     | "emitLogicalAssignment"
     | "emitDelete"
@@ -123,18 +120,14 @@ export interface StatementLoweringContext extends Pick<
     | "checkNodeGeometryMutation"
     | "emitDiscardedValue"
     | "emitAwaitExpression"
-    | "compileCondition"
-    | "isBrowserOnlyExpression"
-    | "isDeferredCallbackCall"
+    | "conditions"
+    | "browserErasure"
     | "libraryGlobal"
     | "compileNumber"
     | "compileEnumSwitchLabel"
     | "expectStaticArrayLiteral"
     | "probeStaticArrayLiteral"
     | "constArrayLiteral"
-    | "bindLocalValue"
-    | "bindCompileTimeValue"
-    | "lookup"
     | "expectKind"
     | "expectSameEngine"
     | "requireEngine"
@@ -147,7 +140,6 @@ export interface StatementLoweringContext extends Pick<
     | "emitFrameYieldRequeue"
     | "emitFramePollAwait"
     | "isBoundedNestedFrameYield"
-    | "frameDrainCondition"
     | "promiseLatchCondition"
     | "emitStartContinuationGate"
     | "requireDefaultEngine"
@@ -172,11 +164,8 @@ export interface StatementLoweringContext extends Pick<
     | "enterStaticIteration"
     | "leaveStaticIteration"
     | "emit"
-    | "rebindVariable"
     | "increaseIndent"
     | "decreaseIndent"
-    | "pushScope"
-    | "popScope"
     | "allocateBlockPrefix"
     | "fail"
 > {}
@@ -487,7 +476,7 @@ export class StatementLowerer {
         }
         if (ts.isVariableStatement(statement)) {
             for (const declaration of statement.declarationList.declarations) {
-                context.emitVariableDeclaration(declaration);
+                context.declarations.emitVariableDeclaration(declaration);
             }
             return;
         }
@@ -666,7 +655,7 @@ export class StatementLowerer {
                 const symbol = context.symbols.valueSymbol(node);
                 if (!symbol || seen.has(symbol)) return false;
                 if (bindings.has(symbol)) return true;
-                const value = context.lookupOptional(node);
+                const value = context.bindings.lookupOptional(node);
                 if (value?.parameterBinding) return false;
                 if (
                     value?.staticNumber !== undefined ||
@@ -926,7 +915,7 @@ export class StatementLowerer {
             }
         }
         context.increaseIndent();
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
             if (nestedBreak) {
                 // The switch itself was lowered to an if/else chain. A
@@ -944,7 +933,7 @@ export class StatementLowerer {
                 context.emit("} while (false);");
             }
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             context.decreaseIndent();
         }
     }
@@ -982,7 +971,9 @@ export class StatementLowerer {
         // not make a later element skip the statement following the `if`.
         this.loweredTerminators.delete(statement);
         if (
-            context.isBrowserOnlyExpression(statement.expression) &&
+            context.browserErasure.isBrowserOnlyExpression(
+                statement.expression,
+            ) &&
             this.statementIsBrowserOnly(context, statement.thenStatement) &&
             (!statement.elseStatement ||
                 this.statementIsBrowserOnly(context, statement.elseStatement))
@@ -993,7 +984,9 @@ export class StatementLowerer {
             // condition lowerer and its pinned static deductions.
             return;
         }
-        const condition = context.compileCondition(statement.expression);
+        const condition = context.conditions.compileCondition(
+            statement.expression,
+        );
         // A condition the compiler already settled leaves only the branch it
         // takes. The corpus guards a value this port folded — `!system` over
         // a particle system the bake resolved — and emitting
@@ -1088,7 +1081,7 @@ export class StatementLowerer {
         if (
             ts.isCallExpression(effect) &&
             effect.arguments.length === 0 &&
-            context.isBrowserOnlyExpression(effect)
+            context.browserErasure.isBrowserOnlyExpression(effect)
         ) {
             // Pointer-lock and similar zero-argument DOM effects are often
             // written behind their own browser-only state guard, sometimes
@@ -1099,7 +1092,7 @@ export class StatementLowerer {
         if (
             ts.isCallExpression(expression) &&
             ts.isIdentifier(expression.expression) &&
-            context.isBrowserOnlyExpression(expression)
+            context.browserErasure.isBrowserOnlyExpression(expression)
         ) {
             return true;
         }
@@ -1114,7 +1107,7 @@ export class StatementLowerer {
         const browserLocal = (candidate: ts.Expression): boolean => {
             const value = context.unwrap(candidate);
             if (ts.isIdentifier(value)) {
-                const bound = context.lookupOptional(value);
+                const bound = context.bindings.lookupOptional(value);
                 return (
                     bound?.kind === "browser" &&
                     bound.browserValue?.kind !== "search-params"
@@ -1326,7 +1319,7 @@ export class StatementLowerer {
                 context.emit(`std::exception_ptr ${suspendedCatch};`);
             context.emit("try {");
             context.increaseIndent();
-            context.pushScope(context.allocateBlockPrefix());
+            context.bindings.pushScope(context.allocateBlockPrefix());
             try {
                 for (const child of statement.tryBlock.statements) {
                     this.emit(context, child);
@@ -1337,7 +1330,7 @@ export class StatementLowerer {
                         break;
                 }
             } finally {
-                context.popScope();
+                context.bindings.popScope();
                 context.decreaseIndent();
             }
             const catchCpp =
@@ -1356,14 +1349,14 @@ export class StatementLowerer {
                       : "} catch (...) {",
             );
             context.increaseIndent();
-            context.pushScope(context.allocateBlockPrefix());
+            context.bindings.pushScope(context.allocateBlockPrefix());
             try {
                 if (
                     catchCpp &&
                     catchDeclaration &&
                     ts.isIdentifier(catchDeclaration.name)
                 ) {
-                    context.bindLocalValue(
+                    context.bindings.bindLocalValue(
                         catchDeclaration.name,
                         suspendedCatch
                             ? errorValue(
@@ -1392,7 +1385,7 @@ export class StatementLowerer {
                         break;
                 }
             } finally {
-                context.popScope();
+                context.bindings.popScope();
                 context.decreaseIndent();
             }
             context.emit("}");
@@ -1405,7 +1398,7 @@ export class StatementLowerer {
                     "that erases to nothing.",
             );
         }
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
             for (const child of statement.tryBlock.statements) {
                 this.emit(context, child);
@@ -1416,7 +1409,7 @@ export class StatementLowerer {
                     break;
             }
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
     }
 
@@ -1446,7 +1439,7 @@ export class StatementLowerer {
                 const directBrowserArgument =
                     ts.isCallExpression(node.parent) &&
                     node.parent.parent === statement &&
-                    context.isBrowserOnlyExpression(node.parent);
+                    context.browserErasure.isBrowserOnlyExpression(node.parent);
                 if (
                     !ts.isStatement(statement) ||
                     !(
@@ -1480,7 +1473,7 @@ export class StatementLowerer {
             completion: frame.completion,
         }));
         for (const { frame } of completions) frame.completion = "normal";
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
             return context.captureHoistedLines(
                 () => {
@@ -1497,7 +1490,7 @@ export class StatementLowerer {
                 block,
             );
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             for (const { frame, completion } of completions) {
                 if (frame.completion === "normal")
                     frame.completion = completion;
@@ -1644,13 +1637,15 @@ export class StatementLowerer {
     ): void {
         context.emit("{");
         context.increaseIndent();
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
             if (statement.initializer) {
                 if (ts.isVariableDeclarationList(statement.initializer)) {
                     for (const declaration of statement.initializer
                         .declarations) {
-                        context.emitVariableDeclaration(declaration);
+                        context.declarations.emitVariableDeclaration(
+                            declaration,
+                        );
                     }
                 } else {
                     this.emitExpression(context, statement.initializer);
@@ -1689,7 +1684,7 @@ export class StatementLowerer {
                     }
                     context.emit(`for (; ${condition}; ${header}) {`);
                     context.increaseIndent();
-                    context.pushScope(context.allocateBlockPrefix());
+                    context.bindings.pushScope(context.allocateBlockPrefix());
                     try {
                         const statements = ts.isBlock(statement.statement)
                             ? statement.statement.statements
@@ -1700,7 +1695,7 @@ export class StatementLowerer {
                             }
                         });
                     } finally {
-                        context.popScope();
+                        context.bindings.popScope();
                     }
                     context.decreaseIndent();
                     context.emit("}");
@@ -1708,7 +1703,7 @@ export class StatementLowerer {
                 statement,
             );
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             context.decreaseIndent();
         }
         context.emit("}");
@@ -1733,7 +1728,7 @@ export class StatementLowerer {
         body: ts.Statement,
         bind: () => void,
     ): "normal" | "break" | "continue" {
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         const completion: {
             iteration: ts.IterationStatement;
             completion: "normal" | "break" | "continue";
@@ -1754,7 +1749,7 @@ export class StatementLowerer {
         } finally {
             context.leaveStaticIteration();
             this.staticIterationCompletions.pop();
-            context.popScope();
+            context.bindings.popScope();
         }
         return completion.completion;
     }
@@ -1849,7 +1844,7 @@ export class StatementLowerer {
                 statement,
                 statement.statement,
                 () => {
-                    context.bindCompileTimeValue(indexBinding, {
+                    context.bindings.bindCompileTimeValue(indexBinding, {
                         kind: "number",
                         cpp: `${index}.0`,
                         staticNumber: index,
@@ -1918,7 +1913,7 @@ export class StatementLowerer {
         let condition = "";
         const lines = this.inRuntimeControlFlow(context, () =>
             context.captureEmittedLines(() => {
-                condition = context.compileCondition(expression);
+                condition = context.conditions.compileCondition(expression);
             }),
         );
         const checkpoint = context.workerCheckpointCpp();
@@ -2133,7 +2128,7 @@ export class StatementLowerer {
             ? expression
             : context.constArrayLiteral(expression);
         const binding = ts.isIdentifier(expression)
-            ? context.lookupOptional(expression)
+            ? context.bindings.lookupOptional(expression)
             : undefined;
         const bound =
             binding?.tupleElements ??
@@ -2339,14 +2334,14 @@ export class StatementLowerer {
                 "break/continue in an entity loop is not lowered; a container's entities are one root.",
             );
         }
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            context.bindLocalValue(declaration.name, target);
+            context.bindings.bindLocalValue(declaration.name, target);
             for (const nested of bodyStatements(statement)) {
                 this.emit(context, nested);
             }
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         return true;
     }
@@ -2556,7 +2551,7 @@ export class StatementLowerer {
         const cppType =
             context.handleCollections.staticHandleTableCppType(kind)!;
         const values = elements.map((element) =>
-            context.pinValueToTemporary(element, "handle_element"),
+            context.bindings.pinValueToTemporary(element, "handle_element"),
         );
         for (const value of values) context.useNativeValue(value);
         const table = context.allocateTemporaryCppName("handle_table");
@@ -2608,9 +2603,9 @@ export class StatementLowerer {
             // light's scene slot) are visible through every alias after the
             // loop. Plain-data lanes still get native iteration storage.
             if (isHandleKind(value.kind)) {
-                context.bindCompileTimeValue(name, value);
+                context.bindings.bindCompileTimeValue(name, value);
             } else {
-                context.bindLocalValue(name, value);
+                context.bindings.bindLocalValue(name, value);
             }
             return;
         }
@@ -2640,11 +2635,11 @@ export class StatementLowerer {
             }
             const element = value.tupleElements![index];
             if (element) {
-                context.bindLocalValue(binding.name, element);
+                context.bindings.bindLocalValue(binding.name, element);
             } else {
                 // JavaScript binds an omitted tuple lane to `undefined`;
                 // optional trailing tuple members use that path routinely.
-                context.bindCompileTimeValue(binding.name, {
+                context.bindings.bindCompileTimeValue(binding.name, {
                     kind: "json-null",
                     cpp: "std::nullopt",
                 });
@@ -2778,7 +2773,7 @@ export class StatementLowerer {
                     "A statically expanded resource iteration requires an unchanged array size.",
                 );
             }
-            const range = context.pinValueToTemporary(
+            const range = context.bindings.pinValueToTemporary(
                 target.container,
                 "resource_range",
                 statement.expression,
@@ -2833,7 +2828,7 @@ export class StatementLowerer {
                 ? indexed.indexCpp
                 : context.allocateTemporaryCppName("item");
         const lines = context.captureEmittedLines(() => {
-            context.pushScope(context.allocateBlockPrefix());
+            context.bindings.pushScope(context.allocateBlockPrefix());
             try {
                 context.bindDataIterationVariable(
                     declaration.name,
@@ -2856,7 +2851,7 @@ export class StatementLowerer {
                     statement,
                 );
             } finally {
-                context.popScope();
+                context.bindings.popScope();
             }
         });
         if (indexed) {
@@ -2912,7 +2907,10 @@ export class StatementLowerer {
         propagateRebindings = false,
     ): void {
         context.increaseIndent();
-        context.pushScope(context.allocateBlockPrefix(), propagateRebindings);
+        context.bindings.pushScope(
+            context.allocateBlockPrefix(),
+            propagateRebindings,
+        );
         try {
             const statements = ts.isBlock(statement)
                 ? statement.statements
@@ -2926,7 +2924,7 @@ export class StatementLowerer {
                     break;
             }
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             context.decreaseIndent();
         }
     }
@@ -2990,7 +2988,7 @@ export class StatementLowerer {
             assignmentOperator !== undefined
         ) {
             if (ts.isIdentifier(unwrapped.left)) {
-                const target = context.lookup(unwrapped.left);
+                const target = context.bindings.lookup(unwrapped.left);
                 const operator = assignmentOperator;
                 if (
                     operator === "=" &&
@@ -3002,7 +3000,7 @@ export class StatementLowerer {
                 if (target.kind === "pending-let" && operator === "=") {
                     // `let set;` bound by its first assignment: a
                     // compile-time record, in the declaring scope.
-                    context.bindPendingLet(
+                    context.bindings.bindPendingLet(
                         unwrapped.left,
                         context.compileValue(unwrapped.right),
                     );
@@ -3012,7 +3010,9 @@ export class StatementLowerer {
                     target.kind === "number" &&
                     operator === "=" &&
                     ts.isCallExpression(rightExpression) &&
-                    context.isDeferredCallbackCall(rightExpression)
+                    context.browserErasure.isDeferredCallbackCall(
+                        rightExpression,
+                    )
                 ) {
                     const scheduled = context.compileValue(rightExpression);
                     if (scheduled.kind === "void") {
@@ -3038,7 +3038,7 @@ export class StatementLowerer {
                     );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit(
-                        `${target.cpp} = ${context.compileCondition(unwrapped.right)};`,
+                        `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     );
                 } else if (operator === "+=" && isStringValue(target)) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
@@ -3085,12 +3085,15 @@ export class StatementLowerer {
                         unwrapped.left,
                         (wrapped) => context.unwrap(wrapped),
                     );
-                    if (leftName) context.rebindVariable(leftName, right);
+                    if (leftName)
+                        context.bindings.rebindVariable(leftName, right);
                     return;
                 } else if (
                     target.kind === "json-null" &&
                     operator === "=" &&
-                    (context.isBrowserOnlyExpression(unwrapped.right) ||
+                    (context.browserErasure.isBrowserOnlyExpression(
+                        unwrapped.right,
+                    ) ||
                         context.unwrap(unwrapped.right).kind ===
                             ts.SyntaxKind.NullKeyword)
                 ) {
@@ -3122,7 +3125,7 @@ export class StatementLowerer {
         }
         if (isUpdateExpression(unwrapped)) {
             if (ts.isIdentifier(unwrapped.operand)) {
-                const target = context.lookup(unwrapped.operand);
+                const target = context.bindings.lookup(unwrapped.operand);
                 context.expectKind(target, "number", unwrapped.operand);
                 const operator =
                     unwrapped.operator === ts.SyntaxKind.PlusPlusToken
@@ -3241,7 +3244,7 @@ export class StatementLowerer {
                 return;
             }
         }
-        const drain = context.frameDrainCondition(unwrapped);
+        const drain = context.browserErasure.frameDrainCondition(unwrapped);
         if (drain) {
             // A bounded multi-frame wait, which the single-frame yield
             // below deliberately refuses to stand in for. The condition is
@@ -3252,7 +3255,7 @@ export class StatementLowerer {
                 `bbl::defer_capture_until(` +
                     `${context.requireDefaultEngine(unwrapped)}, ` +
                     `[&]() { return ` +
-                    `${context.compileCondition(drain)}; });`,
+                    `${context.conditions.compileCondition(drain)}; });`,
             );
             return;
         }
@@ -3321,7 +3324,7 @@ export class StatementLowerer {
                     "Tuple resource assignment supports identifier targets.",
                 );
             }
-            const target = context.lookup(element);
+            const target = context.bindings.lookup(element);
             if (!target.optionalStorageCpp) {
                 context.fail(
                     element,
@@ -3421,7 +3424,7 @@ export class StatementLowerer {
         if (cameraAlias)
             return this.emitCameraVectorSet(context, call, cameraAlias);
         const alias = ts.isIdentifier(owner)
-            ? context.lookupOptional(owner)?.sceneNodeVector
+            ? context.bindings.lookupOptional(owner)?.sceneNodeVector
             : undefined;
         if (alias) {
             return this.emitSceneNodeVectorSet(
@@ -3658,7 +3661,7 @@ export class StatementLowerer {
                 );
             }
             const components = tupleComponents(
-                context.bindDataTuple(value, arity, "spread"),
+                context.bindings.bindDataTuple(value, arity, "spread"),
                 arity,
             );
             return precision === "float"

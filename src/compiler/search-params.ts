@@ -81,10 +81,16 @@ export function compileSearchParamsMethod(
         );
     const minimum = method === "toString" ? 0 : method === "set" ? 2 : 1;
     context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
-    const receiver = context.pinValueToTemporary(owner, "query_receiver");
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "query_receiver",
+    );
     const arguments_ = call.arguments.map((argument) => {
         const compiled = context.compileValue(argument);
-        const value = context.pinValueToTemporary(compiled, "query_argument");
+        const value = context.bindings.pinValueToTemporary(
+            compiled,
+            "query_argument",
+        );
         return lowerer.compileKnownValueForSink(
             value,
             { kind: "string" },

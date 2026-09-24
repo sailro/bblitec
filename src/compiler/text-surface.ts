@@ -44,15 +44,14 @@ const textKinds = [
     "text-vector",
 ];
 
-interface TextSurfaceContext extends Pick<
+export interface TextSurfaceContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "pinValueToTemporary"
     | "emit"
     | "expectKind"
     | "fail"
@@ -248,7 +247,7 @@ function possibleTextOwner(
     // Resolving a record member may execute its getter. Type classification
     // must precede the one admitted owner evaluation below.
     const known = ts.isIdentifier(node)
-        ? context.lookupOptional(node)
+        ? context.bindings.lookupOptional(node)
         : undefined;
     if (known && textKinds.includes(known.kind)) return true;
     const type = context.checker.getTypeAtLocation(node);
@@ -313,7 +312,7 @@ export function compileTextMutation(
     ) {
         const vector = ownerValue(context, node.expression.expression);
         if (!vector || vector.kind !== "text-vector") return undefined;
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             vector,
             "text_owner",
             node.expression.expression,
@@ -358,7 +357,7 @@ export function compileTextMutation(
             left,
             "Computed text property writes are not represented.",
         );
-    const owner = context.pinValueToTemporary(
+    const owner = context.bindings.pinValueToTemporary(
         value,
         "text_owner",
         left.expression,

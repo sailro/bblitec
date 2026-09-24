@@ -14,7 +14,7 @@ export interface RetainedOption {
 
 export type RetainedOptionsContext = Pick<
     LoweringServices,
-    "fail" | "pinValueToTemporary" | "dataTypes" | "emit"
+    "fail" | "bindings" | "dataTypes" | "emit"
 >;
 
 /** Project named options from a closed record or an owned typed record. */
@@ -47,7 +47,11 @@ export function retainedOptions(
     if (value.kind !== "data" || value.dataType?.kind !== "struct")
         return context.fail(site, "Options require a retained record.");
     const type = value.dataType;
-    const owner = context.pinValueToTemporary(value, "options_owner", site);
+    const owner = context.bindings.pinValueToTemporary(
+        value,
+        "options_owner",
+        site,
+    );
     const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
     return context.dataTypes.structFields(type.name, site).map((field) => ({
         name: field.sourceName,

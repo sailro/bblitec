@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -39,23 +40,22 @@ export interface SpriteIntrinsicContext
             | "expectSameEngine"
             | "compileVec3"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "compileVec2"
             | "compileVec4"
             | "registerSpriteAtlasAsset"
             | "probePixelsAsset"
             | "allocateTemporaryCppName"
-            | "bindDataTuple"
+            | "bindings"
             | "compileSpriteAtlas"
-            | "recordPlainSpriteProgram"
-            | "recordPureSpriteVertex"
-            | "spriteCustomShaders"
-            | "recordSpriteCustomShader"
+            | "sceneManifest"
             | "emit"
             | "propertyName"
             | "fail"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * The pin's billboard blend descriptors are pure-data exports a scene
@@ -173,7 +173,7 @@ function customShaderOption(
 ): { program: string; textures: string; textureNames: string } {
     const named = property(options, "customShader");
     if (!named) {
-        context.recordPlainSpriteProgram(family);
+        context.sceneManifest.recordPlainSpriteProgram(family);
         return { program: "0u", textures: "{}", textureNames: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
@@ -414,7 +414,7 @@ function tupleOption(
         // Bound before its lanes are read, because `tupleComponents` reads
         // the base once per lane -- the rule `bindDataTuple` states.
         return tupleComponents(
-            context.bindDataTuple(value, arity, `sprite_${name}`),
+            context.bindings.bindDataTuple(value, arity, `sprite_${name}`),
             arity,
         );
     }
@@ -1214,7 +1214,9 @@ function compileUpdateSprite2DIndex(
     };
     const unwrappedOptions = context.unwrap(options);
     if (ts.isConditionalExpression(unwrappedOptions)) {
-        const condition = context.compileCondition(unwrappedOptions.condition);
+        const condition = context.conditions.compileCondition(
+            unwrappedOptions.condition,
+        );
         return {
             kind: "void",
             cpp:
@@ -1283,7 +1285,7 @@ function compilePlaySprite2DAnimation(
     );
     const number = (index: number): string =>
         context.compileNumber(argumentAt(call, index), "double");
-    const loop = context.compileCondition(argumentAt(call, 4));
+    const loop = context.conditions.compileCondition(argumentAt(call, 4));
     const options = optionsRecord(context, call.arguments[6], importedName);
     if (property(options, "onEnd")) {
         context.fail(
@@ -1706,7 +1708,7 @@ function compileCreateSprite2DCustomShader(
     const family =
         importedName === "createSprite2DCustomShader" ? "sprite" : "billboard";
     const extraNames = extras.map(({ name }) => name);
-    const familyShaders = context
+    const familyShaders = context.sceneManifest
         .spriteCustomShaders()
         .filter((entry) => entry.family === family);
     const existingIndex = familyShaders.findIndex(
@@ -1735,7 +1737,7 @@ function compileCreateSprite2DCustomShader(
         call,
     );
     if (existingIndex < 0) {
-        context.recordSpriteCustomShader({
+        context.sceneManifest.recordSpriteCustomShader({
             family,
             fragment: fragment.staticString,
             extraTextures: extraNames,
@@ -1906,7 +1908,7 @@ function compileCreateSpriteRenderer(
     const clearValue = tupleClearValue(context, options, call);
     context.reachFeature("sprite:2d", call);
     context.reachFeature("renderer:sprite", call);
-    context.recordPureSpriteVertex();
+    context.sceneManifest.recordPureSpriteVertex();
     return {
         kind: "sprite-renderer",
         cpp:

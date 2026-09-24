@@ -497,24 +497,15 @@ export interface AssignmentContext
             | "checker"
             | "dataTypes"
             | "dataLowerer"
-            | "recordSceneMeshMaterial"
-            | "recordUnknownSceneMeshMaterial"
-            | "recordUnknownStandardMeshMaterial"
-            | "recordUnknownSceneMaterialAssignment"
-            | "recordSceneMeshAssetPbrMaterial"
-            | "recordSceneMeshDeformation"
+            | "sceneManifest"
             | "engineHasStarted"
             | "hasRegisteredScene"
-            | "recordToneMappingEnabledMutation"
-            | "reachedNodeParticles"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "resolveRecordValue"
             | "compileRecordSetter"
-            | "selectToneMapping"
-            | "lookup"
             | "compileValue"
             | "compileForDataSink"
             | "bindClassDataField"
@@ -533,12 +524,10 @@ export interface AssignmentContext
             | "expectKind"
             | "expectSameEngine"
             | "requireEngine"
-            | "meshHasThinInstancePool"
             | "assertAssetRootWritable"
             | "eraseBrowserInstrumentation"
-            | "isBrowserOnlyExpression"
+            | "browserErasure"
             | "isNativeUiValueExpression"
-            | "isBrowserDomValue"
             | "emit"
             | "allocateTemporaryCppName"
             | "meshTransformDirtyEntry"
@@ -547,21 +536,14 @@ export interface AssignmentContext
             | "noteMaterialColorObjectWrite"
             | "noteMaterialColorRead"
             | "noteMaterialColorRenderBoundary"
-            | "recordShadowReceiver"
-            | "recordDynamicShadowReceivers"
-            | "recordSceneMeshId"
-            | "resolveSceneMeshIds"
             | "propertyName"
             | "probeStaticArrayLiteral"
             | "staticStringElements"
             | "compileStaticString"
-            | "withBoundParameters"
             | "withRecordScopes"
             | "compileStoredDataFunction"
             | "cppString"
             | "dataValue"
-            | "recordScenePbrPlugins"
-            | "recordStandardMaterialPlugins"
             | "fail"
         > {}
 
@@ -646,7 +628,7 @@ function emitNodeParticleScalarAssignment(
                 "node-particle set.",
         );
     }
-    if (context.reachedNodeParticles.sets[set]?.native) {
+    if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
         context.emit(
             `bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`,
         );
@@ -661,7 +643,7 @@ function emitNodeParticleScalarAssignment(
                 "simulation runs at generation.",
         );
     }
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "scalar",
         set,
         system,
@@ -693,8 +675,9 @@ function emitNodeParticleTextureAssignment(
         "node-particle system texture",
     );
     if (
-        context.reachedNodeParticles.sets[target.nodeParticleSetIndex!]
-            ?.native &&
+        context.sceneManifest.reachedNodeParticles.sets[
+            target.nodeParticleSetIndex!
+        ]?.native &&
         context.isRuntimeResourceConstruction()
     ) {
         context.fail(
@@ -722,7 +705,7 @@ function emitNodeParticleTextureAssignment(
                 "node-particle set.",
         );
     }
-    const program = context.reachedNodeParticles;
+    const program = context.sceneManifest.reachedNodeParticles;
     if (
         program.billboards.some(
             (frozen) => frozen.set === set && frozen.system === system,
@@ -1022,7 +1005,7 @@ function emitWriteOnlyNumberExpandoAssignment(
 
     const ownerExpression = context.unwrap(assertedOwner);
     if (!ts.isIdentifier(ownerExpression)) return false;
-    const owner = context.lookup(ownerExpression);
+    const owner = context.bindings.lookup(ownerExpression);
     if (owner.kind !== "mesh") return false;
 
     // This is an expando only when the type before the assertion did not expose
@@ -1107,7 +1090,7 @@ function emitBridgeOriginWrite(
     const owner =
         context.resolveRecordValue(origin.expression) ??
         (originIdentifier
-            ? context.lookupOptional(originIdentifier)
+            ? context.bindings.lookupOptional(originIdentifier)
             : undefined);
     if (owner?.kind !== "node-particle-2d-bridge") return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -1163,7 +1146,7 @@ export function emitPropertyAssignment(
     const operator = assignmentOperator(context, expression);
     const left = expression.left;
     const regexpOwner = ts.isIdentifier(left.expression)
-        ? (context.lookupOptional(left.expression) ??
+        ? (context.bindings.lookupOptional(left.expression) ??
           (context.checker.getTypeAtLocation(left.expression).symbol?.name ===
           "RegExp"
               ? context.compileValue(left.expression)
@@ -1217,9 +1200,8 @@ export function emitPropertyAssignment(
             left.expression.kind === ts.SyntaxKind.ThisKeyword
                 ? context.resolveThisField(left.name.text)
                 : ts.isIdentifier(left.expression)
-                  ? context.lookupOptional(left.expression)?.recordProperties?.[
-                        left.name.text
-                    ]
+                  ? context.bindings.lookupOptional(left.expression)
+                        ?.recordProperties?.[left.name.text]
                   : undefined;
         if (
             existing &&
@@ -1264,8 +1246,8 @@ export function emitPropertyAssignment(
         return;
     }
     if (
-        context.isBrowserOnlyExpression(left) ||
-        context.isBrowserDomValue(left)
+        context.browserErasure.isBrowserOnlyExpression(left) ||
+        context.browserErasure.isBrowserDomValue(left)
     ) {
         context.eraseBrowserInstrumentation(expression.pos);
         return;
@@ -1412,7 +1394,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1423,7 +1405,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1433,7 +1415,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "dataset" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const target = context.lookup(left.expression.expression);
+        const target = context.bindings.lookup(left.expression.expression);
         if (target.kind === "browser") {
             context.eraseBrowserInstrumentation(expression.pos);
             return;
@@ -1444,7 +1426,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "imageProcessing" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (
@@ -1481,7 +1463,10 @@ export function emitPropertyAssignment(
                         `${toneMappingExportNames().join(", ")}.`,
                 );
             }
-            context.selectToneMapping(value.staticString, expression.right);
+            context.sceneManifest.selectToneMapping(
+                value.staticString,
+                expression.right,
+            );
             return;
         }
         if (property === "toneMappingEnabled") {
@@ -1490,7 +1475,7 @@ export function emitPropertyAssignment(
                 expression,
                 `image-processing property '${property}'`,
             );
-            context.recordToneMappingEnabledMutation();
+            context.sceneManifest.recordToneMappingEnabledMutation();
             context.emit(
                 `${scene.cpp}.environment.tone_mapping_enabled = ${context.compileBoolean(expression.right)};`,
             );
@@ -1511,7 +1496,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "camera" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (property === "viewport") {
@@ -2356,7 +2341,7 @@ function emitTargetPropertyAssignment(
     // it can through a local. Compile the complete owner path so the same
     // assignment table serves both spellings.
     const target = ts.isIdentifier(targetExpression)
-        ? context.lookup(targetExpression)
+        ? context.bindings.lookup(targetExpression)
         : context.compileValue(targetExpression);
     const property = left.name.text;
     if (
@@ -2631,7 +2616,8 @@ function emitTargetPropertyAssignment(
                         context.checker.getTypeAtLocation(expression.right),
                     )) ||
                 (ts.isIdentifier(expression.right) &&
-                    context.lookupOptional(expression.right)?.kind === "tuple");
+                    context.bindings.lookupOptional(expression.right)?.kind ===
+                        "tuple");
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
@@ -2837,7 +2823,7 @@ function emitLocalMatrixAssignment(
         if (
             !ts.isIdentifier(value) ||
             value.text !== "undefined" ||
-            context.lookupOptional(value)
+            context.bindings.lookupOptional(value)
         ) {
             context.fail(
                 expression.right,
@@ -2994,7 +2980,7 @@ function emitIdAssignment(
     const { expression, target, property } = state;
     if (target.kind === "mesh" && property === "id") {
         requireSimpleAssignment(context, expression, "mesh id");
-        context.recordSceneMeshId(
+        context.sceneManifest.recordSceneMeshId(
             target.cpp,
             context.compileStaticString(expression.right),
             expression,
@@ -3035,9 +3021,9 @@ function emitReceiveShadowsAssignment(
             // A handle read from a runtime collection has no generation-known
             // mesh row. Keep both composed states; the emitted record lane is
             // the runtime half of the same key used by both material families.
-            context.recordDynamicShadowReceivers();
+            context.sceneManifest.recordDynamicShadowReceivers();
         } else {
-            context.recordShadowReceiver(target.sceneMeshIndex);
+            context.sceneManifest.recordShadowReceiver(target.sceneMeshIndex);
         }
         // The record lane too, which the node family reads per draw:
         // its receiver mixes each light's factor by `receivesShadow`
@@ -3081,7 +3067,7 @@ function emitPluginsAssignment(
             family,
         );
         if (target.scenePbrMaterialIndex !== undefined) {
-            context.recordScenePbrPlugins(
+            context.sceneManifest.recordScenePbrPlugins(
                 plugins.manifests,
                 target.scenePbrMaterialIndex,
             );
@@ -3095,7 +3081,7 @@ function emitPluginsAssignment(
         // -- gating the setter's definition on the opt-in instead would
         // leave this call undefined for a scene that never made it.
         context.reachFeature("material:plugin-index", expression);
-        const pluginIndex = context.recordStandardMaterialPlugins(
+        const pluginIndex = context.sceneManifest.recordStandardMaterialPlugins(
             plugins.manifests,
             target.standardMaterialInput ?? {},
         );
@@ -3156,7 +3142,7 @@ function emitIncludedOnlyMeshIdsAssignment(
             expression,
             "light includedOnlyMeshIds",
         );
-        const meshes = context.resolveSceneMeshIds(
+        const meshes = context.sceneManifest.resolveSceneMeshIds(
             staticMeshIdSet(context, expression.right),
             expression.right,
         );
@@ -3245,7 +3231,7 @@ function emitMaterialAssignment(
             );
         }
         if (meshProfile !== undefined) {
-            context.recordSceneMeshMaterial(meshProfile, {
+            context.sceneManifest.recordSceneMeshMaterial(meshProfile, {
                 pbrMaterial: material.scenePbrMaterialIndex ?? null,
                 nodeMaterial: material.nodeMaterialIndex ?? null,
                 standardMaterial: material.standardMaterial === true,
@@ -3257,19 +3243,21 @@ function emitMaterialAssignment(
                 sceneShaderVariants: material.possibleSceneShaderVariants,
             });
             if (material.assetPbrMaterial) {
-                context.recordSceneMeshAssetPbrMaterial(meshProfile);
+                context.sceneManifest.recordSceneMeshAssetPbrMaterial(
+                    meshProfile,
+                );
             }
         }
         if (
             target.sceneMeshIndex === undefined &&
             material.scenePbrMaterialIndex !== undefined
         ) {
-            context.recordUnknownSceneMeshMaterial(
+            context.sceneManifest.recordUnknownSceneMeshMaterial(
                 material.scenePbrMaterialIndex,
             );
         }
         if (meshProfile === undefined && material.standardMaterial) {
-            context.recordUnknownStandardMeshMaterial();
+            context.sceneManifest.recordUnknownStandardMeshMaterial();
         }
         if (
             material.scenePbrMaterialIndex === undefined &&
@@ -3277,7 +3265,7 @@ function emitMaterialAssignment(
             material.nodeMaterialIndex === undefined &&
             material.shaderVariant === undefined
         ) {
-            context.recordUnknownSceneMaterialAssignment();
+            context.sceneManifest.recordUnknownSceneMaterialAssignment();
         }
         return true;
     }
@@ -3354,7 +3342,7 @@ function emitSkeletonAssignment(
         // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
         // and a scene-code mesh's feature word is derived from its recorded
         // streams rather than from a glTF primitive.
-        context.recordSceneMeshDeformation(
+        context.sceneManifest.recordSceneMeshDeformation(
             target.sceneMeshIndex,
             "skinned",
             expression,
@@ -3406,7 +3394,7 @@ function emitMorphTargetsAssignment(
             );
         }
         const engine = context.requireEngine(target, expression);
-        context.recordSceneMeshDeformation(
+        context.sceneManifest.recordSceneMeshDeformation(
             target.sceneMeshIndex,
             "morphTargets",
             expression,

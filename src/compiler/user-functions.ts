@@ -1,3 +1,4 @@
+import type { BindingScopes } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
@@ -1006,26 +1007,17 @@ export interface UserFunctionContext
             | "canReplaySharedCallEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
-            | "compileCondition"
+            | "conditions"
             | "withRecordScopes"
-            | "isBrowserOnlyExpression"
-            | "evaluateBrowserValue"
+            | "browserErasure"
             | "isInFrameCallback"
             | "compileForDataSink"
             | "compileStoredDataFunction"
             | "dataValue"
             | "emitStatement"
             | "statementTerminatesAfterLowering"
-            | "bindLocalValue"
-            | "bindObjectPattern"
-            | "bindCompileTimeValue"
-            | "rebindCompileTimeValue"
-            | "bindParameterValue"
-            | "materializeEscapingValue"
-            | "pinValueToTemporary"
-            | "bindDataTuple"
-            | "pushScope"
-            | "popScope"
+            | "bindings"
+            | "declarations"
             | "allocateUserFunctionPrefix"
             | "allocateTemporaryCppName"
             | "reachJsData"
@@ -1040,7 +1032,6 @@ export interface UserFunctionContext
             | "registerNativeBinding"
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
-            | "invalidateRecordProperties"
             | "registerNativeTemporary"
             | "registerNativeFunction"
             | "registerSharedNativeFunction"
@@ -1052,7 +1043,9 @@ export interface UserFunctionContext
             | "increaseIndent"
             | "decreaseIndent"
             | "fail"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * The browser-only nullable fallback shape two success-path matchers share:
@@ -1285,13 +1278,13 @@ export class UserFunctionLowerer {
         value: Value,
     ): void {
         if (ts.isIdentifier(parameter.name)) {
-            context.bindParameterValue(parameter.name, value);
+            context.bindings.bindParameterValue(parameter.name, value);
             return;
         }
         if (ts.isObjectBindingPattern(parameter.name)) {
             // `({ a, b = 1 }: Options)`: the pattern binds from the
             // argument exactly as a destructuring declaration would.
-            context.bindObjectPattern(parameter.name, value);
+            context.declarations.bindObjectPattern(parameter.name, value);
             return;
         }
         const elements =
@@ -1316,7 +1309,7 @@ export class UserFunctionLowerer {
                     "Callback tuple bindings require identifiers.",
                 );
             if (element.dotDotDotToken) {
-                context.bindParameterValue(
+                context.bindings.bindParameterValue(
                     element.name,
                     context.dataLowerer.arrayRestValue(
                         value,
@@ -1345,7 +1338,7 @@ export class UserFunctionLowerer {
                     "Array-bound callback parameter reads beyond the supplied tuple.",
                 );
             }
-            context.bindParameterValue(element.name, lane!);
+            context.bindings.bindParameterValue(element.name, lane!);
         });
     }
 
@@ -1366,7 +1359,7 @@ export class UserFunctionLowerer {
             ts.isIdentifier(parameter.name) &&
             parameterIsReadOnly(this.checker, declaration, parameter.name)
         ) {
-            context.bindCompileTimeValue(parameter.name, value);
+            context.bindings.bindCompileTimeValue(parameter.name, value);
             return;
         }
         this.bindParameter(context, parameter, value);
@@ -1541,7 +1534,7 @@ export class UserFunctionLowerer {
                 pinArguments,
             );
             if (result.kind !== "void")
-                result = context.pinValueToTemporary(
+                result = context.bindings.pinValueToTemporary(
                     result,
                     "shared_result",
                     ts.isExpression(call) ? call : undefined,
@@ -1712,11 +1705,12 @@ export class UserFunctionLowerer {
         expected?: ts.Type,
     ): Value {
         if (
-            context.isBrowserOnlyExpression(argument) &&
+            context.browserErasure.isBrowserOnlyExpression(argument) &&
             !ts.isCallExpression(argument) &&
             !ts.isIdentifier(argument)
         ) {
-            const browserValue = context.evaluateBrowserValue(argument);
+            const browserValue =
+                context.browserErasure.evaluateBrowserValue(argument);
             return {
                 kind: "browser",
                 cpp: "",
@@ -1993,7 +1987,7 @@ export class UserFunctionLowerer {
                         parameter.name,
                     )
                 )
-                    context.invalidateRecordProperties(evaluated);
+                    context.bindings.invalidateRecordProperties(evaluated);
                 const borrowedReference = borrowsReferenceParameter(
                     context,
                     parameter.name,
@@ -2043,7 +2037,7 @@ export class UserFunctionLowerer {
                                       context.useNativeValue(value);
                                       return value.cpp;
                                   }
-                                  return context.pinValueToTemporary(
+                                  return context.bindings.pinValueToTemporary(
                                       value,
                                       "function_argument",
                                       argument,
@@ -2293,7 +2287,7 @@ export class UserFunctionLowerer {
             // Every sibling must survive suspension. Materialize the group with
             // the stored-function body/ownership protocol, including sync peers.
             context.reachJsData();
-            context.pushScope(context.allocateUserFunctionPrefix());
+            context.bindings.pushScope(context.allocateUserFunctionPrefix());
             try {
                 const entries = declarations.map((declaration) => {
                     const type = context.dataTypes.fromTsType(
@@ -2317,7 +2311,7 @@ export class UserFunctionLowerer {
                         ...context.dataValue(`(*${name})`, type),
                         sharedStorageCpp: name,
                     };
-                    context.bindCompileTimeValue(
+                    context.bindings.bindCompileTimeValue(
                         this.declarationIdentifier(declaration),
                         value,
                     );
@@ -2339,7 +2333,7 @@ export class UserFunctionLowerer {
                     call,
                 );
             } finally {
-                context.popScope();
+                context.bindings.popScope();
             }
         }
         const argumentExpressions =
@@ -2353,7 +2347,7 @@ export class UserFunctionLowerer {
             return isHandleKind(value.kind) &&
                 expression &&
                 !ts.isIdentifier(unwrapExpression(expression))
-                ? context.pinValueToTemporary(
+                ? context.bindings.pinValueToTemporary(
                       value,
                       "resource_argument",
                       expression,
@@ -2708,13 +2702,13 @@ export class UserFunctionLowerer {
         // These symbol bindings exist only while the specialized bodies are
         // generated. A later source call may observe different compile-time
         // class/resource arguments and receives its own local specialization.
-        context.pushScope(context.allocateUserFunctionPrefix());
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             for (const entry of recursive ? entries : []) {
                 const identifier = this.declarationIdentifier(
                     entry.declaration,
                 );
-                context.bindLocalValue(identifier, entry.value);
+                context.bindings.bindLocalValue(identifier, entry.value);
             }
             const pending = new EmissionSet(entries);
             while (pending.size > 0) {
@@ -2745,7 +2739,7 @@ export class UserFunctionLowerer {
                 );
             }
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         if (localGroup) {
             const bodies = entries
@@ -2809,7 +2803,7 @@ export class UserFunctionLowerer {
             return withNativeMetadata(result, metadata);
         if (result.kind !== "data") return result;
         if (metadata.recordProperties && result.dataType?.kind === "struct")
-            result = context.pinValueToTemporary(
+            result = context.bindings.pinValueToTemporary(
                 result,
                 "shared_return",
                 ts.isExpression(call) ? call : undefined,
@@ -2911,7 +2905,7 @@ export class UserFunctionLowerer {
             ? context.dataTypes.cppType(entry.returnType)
             : "void";
         let returnMetadata: Value | undefined;
-        context.pushScope(context.allocateUserFunctionPrefix());
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             const parameterDeclarations: string[] = [];
             const parameterNames: string[] = [];
@@ -3102,7 +3096,7 @@ export class UserFunctionLowerer {
                                     compileTime &&
                                     ts.isIdentifier(parameter.name)
                                 ) {
-                                    context.bindCompileTimeValue(
+                                    context.bindings.bindCompileTimeValue(
                                         parameter.name,
                                         value,
                                     );
@@ -3259,7 +3253,7 @@ export class UserFunctionLowerer {
             if (localGroup) localGroup.accept(closure);
             else context.emit(`${entry.cppName} = ${closure};`);
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         return returnMetadata;
     }
@@ -3331,7 +3325,7 @@ export class UserFunctionLowerer {
         body?: CallbackInvocationOptions,
     ): Value {
         const bound = ts.isIdentifier(declaration)
-            ? context.lookupOptional(declaration)
+            ? context.bindings.lookupOptional(declaration)
             : undefined;
         if (bound?.nativePromiseSettlement)
             return context.dataLowerer.compilePromiseSettlement(
@@ -3638,16 +3632,22 @@ export class UserFunctionLowerer {
                 ...(asynchronous ? { sharedStorageCpp: selfOwnerCpp! } : {}),
             };
             if (context.lookupIdentifierValue(selfIdentifier)) {
-                context.rebindCompileTimeValue(selfIdentifier, selfValue);
+                context.bindings.rebindCompileTimeValue(
+                    selfIdentifier,
+                    selfValue,
+                );
             } else {
-                context.bindCompileTimeValue(selfIdentifier, selfValue);
+                context.bindings.bindCompileTimeValue(
+                    selfIdentifier,
+                    selfValue,
+                );
             }
             this.activeStoredDataFunctions.set(declaration, {
                 cpp: selfValue.cpp,
                 dataType,
             });
         }
-        context.pushScope(prefix);
+        context.bindings.pushScope(prefix);
         context.beginNativeFunctionBody(
             bodyResult,
             asynchronous && !promiseType,
@@ -3766,7 +3766,7 @@ export class UserFunctionLowerer {
                 : compileBody();
         } finally {
             context.endNativeFunctionBody();
-            context.popScope();
+            context.bindings.popScope();
             if (selfIdentifier) {
                 this.activeStoredDataFunctions.delete(declaration);
             }
@@ -3872,7 +3872,7 @@ export class UserFunctionLowerer {
         callNode: ts.Node,
     ): Value {
         const bound = ts.isIdentifier(declaration)
-            ? context.lookupOptional(declaration)
+            ? context.bindings.lookupOptional(declaration)
             : undefined;
         if (
             bound?.kind === "callback" ||
@@ -3936,7 +3936,7 @@ export class UserFunctionLowerer {
             );
         }
         this.active.add(ir.declaration);
-        context.pushScope(context.allocateUserFunctionPrefix());
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             ir.parameters.forEach((parameter, index) => {
                 const argument = arguments_[index];
@@ -3960,7 +3960,9 @@ export class UserFunctionLowerer {
             for (const statement of ir.statements) {
                 context.emitStatement(statement);
             }
-            const condition = context.compileCondition(ir.returnExpression);
+            const condition = context.conditions.compileCondition(
+                ir.returnExpression,
+            );
             return {
                 kind: "boolean",
                 cpp: condition,
@@ -3972,7 +3974,7 @@ export class UserFunctionLowerer {
                 dataType: { kind: "boolean" },
             };
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             this.active.delete(ir.declaration);
         }
     }
@@ -3997,7 +3999,7 @@ export class UserFunctionLowerer {
                 call: callNode,
                 arguments: arguments_,
             });
-        context.pushScope(context.allocateUserFunctionPrefix());
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             ir.parameters.forEach((parameter, index) => {
                 const argument = arguments_[index];
@@ -4098,7 +4100,7 @@ export class UserFunctionLowerer {
             }
             return this.lowerReturnedValue(context, ir, ir.returnExpression);
         } finally {
-            context.popScope();
+            context.bindings.popScope();
             this.active.delete(ir.declaration);
             this.invocations.delete(ir.declaration);
         }
@@ -4262,18 +4264,20 @@ export class UserFunctionLowerer {
                     };
                 }
                 if (ts.isBlock(statement)) {
-                    context.pushScope(context.allocateUserFunctionPrefix());
+                    context.bindings.pushScope(
+                        context.allocateUserFunctionPrefix(),
+                    );
                     let outcome: Outcome;
                     try {
                         outcome = walk(statement.statements);
                     } finally {
-                        context.popScope();
+                        context.bindings.popScope();
                     }
                     if (outcome.kind !== "continue") return outcome;
                 } else if (firstReturn([statement])) {
                     if (!ts.isIfStatement(statement))
                         return { kind: "dynamic" };
-                    const condition = context.compileCondition(
+                    const condition = context.conditions.compileCondition(
                         statement.expression,
                     );
                     if (condition !== "true" && condition !== "false")
@@ -4316,8 +4320,12 @@ export class UserFunctionLowerer {
             // expression OVER that state, so it is read here rather than
             // at the use site, where the next call would have moved it.
             ...(ir.returnNeedsSnapshot
-                ? context.pinValueToTemporary(returned, label, expression)
-                : context.materializeEscapingValue(
+                ? context.bindings.pinValueToTemporary(
+                      returned,
+                      label,
+                      expression,
+                  )
+                : context.bindings.materializeEscapingValue(
                       returned,
                       label,
                       expression,
@@ -4827,7 +4835,7 @@ export class UserFunctionLowerer {
                     // A numeric tuple's lanes are its arguments, read off
                     // one bound evaluation of the tuple.
                     const arity = spread.dataType.arity;
-                    const bound = context.bindDataTuple(
+                    const bound = context.bindings.bindDataTuple(
                         spread,
                         arity,
                         "spread_tuple",
@@ -4903,7 +4911,7 @@ export class UserFunctionLowerer {
             } else {
                 sink.push(
                     pinArguments && value.kind !== "callback"
-                        ? context.pinValueToTemporary(
+                        ? context.bindings.pinValueToTemporary(
                               value,
                               "call_argument",
                               argument,

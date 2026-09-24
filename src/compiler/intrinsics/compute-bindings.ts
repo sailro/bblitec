@@ -33,7 +33,7 @@ export function compileComputeBindingsIntrinsic(
     context.expectArgumentCount(call, 2, 2);
     const shaderValue = context.compileValue(argumentAt(call, 0));
     context.expectKind(shaderValue, "compute-shader", call);
-    const shader = context.pinValueToTemporary(
+    const shader = context.bindings.pinValueToTemporary(
         shaderValue,
         "binding_shader",
         call,

@@ -41,8 +41,7 @@ export interface EngineOptionContext
             LoweringServices,
             | "noteTemporalRecordBoundary"
             | "symbols"
-            | "geometryOutputTasks"
-            | "recordCopyTask"
+            | "sceneManifest"
             | "unwrap"
             | "propertyName"
             | "compileValue"
@@ -425,7 +424,7 @@ export function compileGeometryTaskOptions(
         );
     }
     const manifest: GeometryOutputTaskManifest = {
-        shaderIndex: context.geometryOutputTasks.length,
+        shaderIndex: context.sceneManifest.geometryOutputTasks.length,
         attachments,
         emitColor: target !== undefined,
     };
@@ -460,7 +459,7 @@ export function compileCopyTaskOptions(
     const name = nameExpression
         ? context.compileStringLiteral(nameExpression)
         : "copy-task";
-    context.recordCopyTask(name);
+    context.sceneManifest.recordCopyTask(name);
     const sourceCpp = compileTextureReference(context, object, "sourceTexture");
     const targetExpression = context.objectProperty(object, "targetTexture");
     const resolveExpression = context.objectProperty(object, "resolveTexture");

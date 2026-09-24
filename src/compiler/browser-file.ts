@@ -10,12 +10,12 @@ import { isStringValue, type Value } from "./types.js";
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-interface BrowserFileContext extends Pick<
+export interface BrowserFileContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"
     | "resolveStaticExpression"
-    | "lookupOptional"
+    | "bindings"
     | "libraryGlobal"
     | "propertyName"
     | "compileValue"
@@ -41,7 +41,7 @@ const knownAcceptMimeExtensions = new EmissionMap<string, readonly string[]>([
 
 type DefaultGlobalContext = Pick<
     BrowserFileContext,
-    "libraryGlobal" | "lookupOptional" | "unwrap"
+    "libraryGlobal" | "bindings" | "unwrap"
 >;
 
 function isDefaultGlobal(
@@ -233,7 +233,7 @@ export function compileBrowserFileCall(
     }
     const receiver = context.unwrap(callee.expression);
     const boundReceiver = ts.isIdentifier(receiver)
-        ? context.lookupOptional(receiver)
+        ? context.bindings.lookupOptional(receiver)
         : undefined;
     const receiverType = context.checker.getTypeAtLocation(receiver);
     const receiverMayBeFile =
@@ -290,11 +290,13 @@ export function compileBrowserFileElementAccess(
         : undefined;
     const mayBeFileList =
         (ts.isIdentifier(ownerExpression) &&
-            context.lookupOptional(ownerExpression)?.kind === "file-list") ||
+            context.bindings.lookupOptional(ownerExpression)?.kind ===
+                "file-list") ||
         (propertyFiles &&
             ((propertyBase &&
                 ts.isIdentifier(propertyBase) &&
-                context.lookupOptional(propertyBase)?.kind === "ui-element") ||
+                context.bindings.lookupOptional(propertyBase)?.kind ===
+                    "ui-element") ||
                 ownerType.getSymbol()?.getName() === "FileList"));
     if (!mayBeFileList) return undefined;
     const owner = context.compileValue(expression.expression);
@@ -438,10 +440,7 @@ export function validateFileAccept(
  * still owned by that producer's Chromium path.
  */
 export function isNativeBrowserFileExpression(
-    context: Pick<
-        BrowserFileContext,
-        "libraryGlobal" | "lookupOptional" | "unwrap"
-    >,
+    context: Pick<BrowserFileContext, "libraryGlobal" | "bindings" | "unwrap">,
     expression: ts.Expression,
 ): boolean {
     const value = context.unwrap(expression);
@@ -475,7 +474,7 @@ export function isNativeBrowserFileExpression(
     if (
         filesOwner &&
         ts.isIdentifier(filesOwner) &&
-        context.lookupOptional(filesOwner)?.kind === "ui-element"
+        context.bindings.lookupOptional(filesOwner)?.kind === "ui-element"
     ) {
         return true;
     }

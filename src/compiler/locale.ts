@@ -125,7 +125,7 @@ export function compileLocaleStringMethod(
             fields = options.recordProperties ?? {};
         } else if (options.dataType?.kind === "struct") {
             const type = options.dataType;
-            const cpp = context.pinValueToTemporary(
+            const cpp = context.bindings.pinValueToTemporary(
                 options,
                 "collation_options",
             ).cpp;
