@@ -11065,7 +11065,8 @@ public:
                                                                         target.depth_format),
                                                 1)};
                                         std::array<WGPUBindGroupEntry, 2> entries{
-                                            WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+                                            {WGPU_BIND_GROUP_ENTRY_INIT,
+                                             WGPU_BIND_GROUP_ENTRY_INIT}};
                                         entries[0].binding = 0;
                                         entries[0].buffer = render_task.view_projection;
                                         entries[0].size = 64;
