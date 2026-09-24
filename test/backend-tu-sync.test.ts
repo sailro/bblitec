@@ -241,7 +241,7 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
     );
     assert.match(
         dawn,
-        /dawn_mesh\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(previous_instances\)/,
+        /dawn_mesh\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(dawn_mesh\.instances\)/,
     );
     const releaseMesh = dawn.slice(
         dawn.indexOf("void release_gpu_resources(DawnMeshResources&"),

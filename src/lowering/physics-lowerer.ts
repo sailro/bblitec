@@ -2205,7 +2205,7 @@ void write_node_pose(
         record.position = position;
         record.rotation_quaternion = rotation;
         record.has_rotation_quaternion = true;
-        mark_transform_node_runtime_transform(engine, *transform_node);
+        mark_transform_node_dirty(engine, *transform_node);
         return;
     }
     const MeshHandle handle = std::get<MeshHandle>(node);
@@ -2213,7 +2213,7 @@ void write_node_pose(
     mesh.position = position;
     mesh.rotation_quaternion = rotation;
     mesh.has_rotation_quaternion = true;
-    mark_mesh_runtime_transform(engine, handle);
+    mark_mesh_dirty(engine, handle);
 }
 
 /** The quaternion half both sync directions read out of a transform. */
@@ -2986,7 +2986,6 @@ PhysicsAggregate create_physics_aggregate(
     const PhysicsAggregateOptions& options) {
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
-    mark_mesh_runtime_transform(engine, mesh);
     const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     const MeshBounds bounds = mesh_bounds(engine, record);
 ${

@@ -220,8 +220,9 @@ own extent refresh.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
-upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing.
-Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
+upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing. Only the
+scene strategy registers, so a loss with an active sprite, text, effect or frame-graph context refuses with
+the pin's own message. Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery. On Windows, application iteration
 stalls during the modal window move/resize loop.
@@ -304,7 +305,9 @@ existing geometry. Imported geometry resizing refuses.
 Local/world transforms, visibility, parenting and bounded imported walks/cloning are represented.
 Meshes may parent to meshes or transform nodes; transform nodes require transform-node parents.
 Parent assignment and child insertion are separate. Synthetic glTF roots expose position, scaling,
-Euler/quaternion rotation and copied world matrices. Broader imported hierarchy cloning refuses;
+Euler/quaternion rotation and copied world matrices. When scene code writes node transforms, a static
+glTF primitive's record carries its node's TRS under the node's loaded parent world; matrix nodes and
+deformed or instanced primitives keep their loaded world. Broader imported hierarchy cloning refuses;
 descendant/child-mesh queries remain limited.
 Detached imported leaves share geometry.
 Opaque cached lists require visibility invalidation; transparent/transmissive visibility is live.
@@ -316,7 +319,8 @@ Intensity and diffuse-color setters retain validation and unchanged-value behavi
 
 ### Clustered lights
 
-PBR clustered containers compose shaders at generation and update bins/data textures natively.
+PBR clustered containers compose shaders at generation. The container and light factories, the container's
+addition and its per-frame refresh are lowered from the pinned bodies; the refresh keys its camera by handle.
 
 ## Materials and material state
 

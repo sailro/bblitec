@@ -59,7 +59,7 @@ test("source units link shared types, tables and calls across equal module basen
     assert.ok(units.every(({ source }) => !source.endsWith("unused.ts")));
     assert.match(
         result.cppFiles.get("sources/application.hpp")!,
-        /extern const .*weights;/,
+        /const .*& weights\(\);/,
     );
     assert.doesNotMatch(result.cppFiles.get("main.cpp")!, /double step\(/);
     assert.deepEqual(

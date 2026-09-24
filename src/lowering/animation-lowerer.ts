@@ -1875,7 +1875,7 @@ ${this.propertyWriterArms("mesh", "        ")}
             throw std::runtime_error(
                 "Property animation path does not belong to a mesh.");
     }
-    mark_mesh_runtime_transform(engine, target.mesh);
+    mark_mesh_dirty(engine, target.mesh);
 }
 
 void apply_group_at(

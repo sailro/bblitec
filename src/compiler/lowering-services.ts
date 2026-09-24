@@ -415,8 +415,6 @@ export interface LoweringServices {
     compileVec2(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
-    meshTransformDirtyEntry():
-        "mark_mesh_dirty" | "mark_mesh_runtime_transform";
     compileFrameCallback(
         expression: ts.Expression,
         signature?: FrameCallbackSignature,
@@ -693,6 +691,9 @@ export interface LoweringServices {
         | undefined;
     requiresStaticDataIteration(statement: ts.Node): boolean;
     canShareFunctionBody(body: ts.Node): boolean;
+    reachesOnlyClosedEffects(body: ts.Node): boolean;
+    reachesOpaqueCallee(body: ts.Node): boolean;
+    emitReusableNativeBody<T>(declaration: ts.Node, emitBody: () => T): T;
     compileSharedMethod(
         declaration: ts.MethodDeclaration,
         call: ts.CallExpression,

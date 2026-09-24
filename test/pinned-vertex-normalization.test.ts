@@ -62,10 +62,9 @@ test("vertex normalization derives the pin's common f32 normal/tangent operation
     assert.doesNotMatch(source, /\bdouble\b|hypot|normalize_vec3_object/);
     const pal = readFileSync(resolve("native/src/pal_gpu_shared.hpp"), "utf8");
     assert.doesNotMatch(pal, /inline Vec3 normalize_vec3\(/);
-    assert.equal(
-        pal.match(/upstream::normalize_baked_direction\(/g)?.length,
-        2,
-    );
+    // The PAL uploads the source lanes; no direction is normalized on the
+    // CPU before the vertex stage's own normalize.
+    assert.doesNotMatch(pal, /normalize_baked_direction\(/);
 });
 
 test("vertex normalization tolerates formatting and local shader aliases", () => {

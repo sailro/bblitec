@@ -276,8 +276,8 @@ export function pinnedPbrVertexOutputs(
 
 /**
  * Project the pinned material computations onto the specialized PAL stage.
- * Only transport is native: pre-baked worlds, uniform bone columns, two-target
- * attributes, and the shared varying locations. The builders own every sum,
+ * Only transport is native: the mesh world as its own uniform, uniform bone
+ * columns, two-target attributes, and the shared varying locations. The builders own every sum,
  * normalization, cross product, matrix application and storage-morph index.
  */
 export function pinnedMaterialVertex(
@@ -394,12 +394,12 @@ export function pinnedMaterialVertex(
     const directionVector = direction.expression.right;
     const transformDirection = (
         value: string,
-        world: string,
+        world: ShaderExpression,
     ): ShaderExpression => ({
         ...direction,
         expression: {
             ...directionProduct,
-            left: path(world),
+            left: world,
             right: {
                 ...directionVector,
                 arguments: [path(value), directionVector.arguments[1]!],
@@ -489,10 +489,10 @@ export function pinnedMaterialVertex(
                 last.value.kind === "binary" &&
                 last.value.operator === "*" &&
                 isPath(last.value.left, "mesh", "world"),
-            "pre-baked palette world",
+            "palette world",
         );
-        // World is already in each palette entry. The pin's influence sum stays
-        // ordered; only this now-redundant outer world application is removed.
+        // The pin's influence sum stays ordered; its outer `mesh.world`
+        // applies with every draw's below.
         skin.push({ kind: "let", name: "skin", value: last.value.right });
         const skinInputs = new Map([
             ["joints", path("input", "joints")],
@@ -543,7 +543,7 @@ export function pinnedMaterialVertex(
             assign("worldTangent", bind(output("worldTangent"), "skin")),
             assign(
                 "worldBitangent",
-                transformDirection("worldBitangent", "skin"),
+                transformDirection("worldBitangent", path("skin")),
             ),
         );
         statements.push({
@@ -588,14 +588,15 @@ export function pinnedMaterialVertex(
             last?.kind === "assign" && isPath(last.target, "finalWorld"),
             "instance world assignment",
         );
+        // The pin's own `finalWorld` product, over the mesh block's world:
+        // a draw without a pool reads the identity instance stream, so this
+        // one product carries every draw's world in an instancing build.
         instance.push({
             kind: "let",
             name: "instanceMatrix",
             value: last.value,
         });
-        const bindings = new Map<string, ShaderExpression>([
-            ["mesh.world", path("instanceUniforms", "parentWorld")],
-        ]);
+        const bindings = new Map<string, ShaderExpression>();
         for (let column = 0; column < 4; ++column)
             bindings.set(
                 `world${column}`,
@@ -607,11 +608,33 @@ export function pinnedMaterialVertex(
             ),
             assign("worldPosition", bind(output("worldPos"), "instanceMatrix")),
             ...["worldNormal", "worldTangent", "worldBitangent"].map((name) =>
-                assign(name, transformDirection(name, "instanceMatrix")),
+                assign(name, transformDirection(name, path("instanceMatrix"))),
             ),
         );
         origins.push(
             context.provenance(instanceModule, "createThinInstanceFragment"),
+        );
+    } else {
+        // The template's own `finalWorld = mesh.world` applications. A
+        // deformation build's skinning arm already took the template's
+        // normalized directions through the palette, so its world carries
+        // them as they stand; otherwise the template's own normalize runs
+        // here, once.
+        const world = path("mesh", "world");
+        statements.push(
+            assign("worldPosition", bind(output("worldPos"))),
+            ...(options.deformation
+                ? ["worldNormal", "worldTangent"].map((name) =>
+                      assign(name, transformDirection(name, world)),
+                  )
+                : [
+                      assign("worldNormal", bind(output("worldNormal"))),
+                      assign("worldTangent", bind(output("worldTangent"))),
+                  ]),
+            assign(
+                "worldBitangent",
+                transformDirection("worldBitangent", world),
+            ),
         );
     }
     const clip = mapShaderExpression(output("clipPos"), (expression) => {
@@ -626,7 +649,7 @@ export function pinnedMaterialVertex(
                     expression.right.arguments.length === 2 &&
                     isPath(expression.right.arguments[0]!, positionName) &&
                     isNumber(expression.right.arguments[1], 1),
-                "pre-transformed position",
+                "world-space clip position",
             );
             return expression.right;
         }
@@ -660,7 +683,8 @@ export function pinnedMaterialVertex(
                       ...(options.morphStorage ? ["morph", "morphDeltas"] : []),
                   ]
                 : []),
-            ...(options.instancing ? ["instanceUniforms"] : []),
+            // The mesh block carries the world alone.
+            "mesh.world",
         ]),
         requireShape,
     );
@@ -947,6 +971,10 @@ function attributeMorph(projection: MorphProjection): ShaderStatement[] {
     return result;
 }
 
+/**
+ * Refuse a reference outside `names`: a name binds its whole root, and a
+ * dotted `root.member` entry binds that one member of the root.
+ */
 function checkReferences(
     statements: ShaderStatement[],
     names: Set<string>,
@@ -956,7 +984,8 @@ function checkReferences(
         mapShaderExpression(expression, (node) => {
             if (node.kind === "path")
                 requireShape(
-                    scope.has(node.parts[0]!),
+                    scope.has(node.parts[0]!) ||
+                        scope.has(node.parts.slice(0, 2).join(".")),
                     `unbound input '${node.parts.join(".")}'`,
                 );
             if (node.kind === "call")

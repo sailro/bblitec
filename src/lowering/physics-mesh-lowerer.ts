@@ -247,15 +247,11 @@ void append_physics_mesh_geometry(
         if (record.geometry < engine.geometries.size()) {
             const auto& geometry = engine.geometries.at(record.geometry);
             if (!geometry.vertices.empty()) {
-                if (geometry.vertex_space != VertexSpace::local && !record.detached_imported_mesh) {
-                    throw std::runtime_error("Physics mesh accumulation requires source-local geometry and a represented source world matrix.");
-                }
                 const auto mesh_to_body = physics_matrix_product(root_to_body, physics_node_world(engine, node));
                 const std::uint32_t index_offset = static_cast<std::uint32_t>(positions.size());
                 positions.reserve(positions.size() + geometry.vertices.size());
                 for (const auto& vertex : geometry.vertices) {
-                    const auto& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-                    const double x = position.x, y = position.y, z = position.z;
+                    const double x = vertex.position.x, y = vertex.position.y, z = vertex.position.z;
                     // getVertices writes through Float32Array before the PAL consumes its span.
                     positions.push_back({${lanes.join(", ")}});
                 }

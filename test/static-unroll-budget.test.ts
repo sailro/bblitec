@@ -100,7 +100,7 @@ test("folds a large handle-tuple for...of into a static table and one native loo
 
     // One body, not three hundred.
     assert.equal(result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length, 1);
-    assert.equal(result.cpp.match(/mark_mesh_runtime_transform/g)?.length, 1);
+    assert.equal(result.cpp.match(/mark_mesh_dirty/g)?.length, 1);
     // The table holds the bound handle locals and the loop walks it.
     assert.match(
         result.cpp,
@@ -217,7 +217,7 @@ test("a large data-only static nest keeps its outer loop native", () => {
     // body; the 96-iteration leaf already exceeds the per-loop ceiling.
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_x < 16\.0; v_block\d+_x\+\+\) \{/,
+        /for \(; v_block\d+_x < 16; \+\+v_block\d+_x\) \{/,
     );
     assert.equal(result.cpp.match(/push_back\(1\.0\)/g)?.length, 1);
 });
@@ -301,7 +301,7 @@ test(
             void add_to_scene(Scene& scene, MeshHandle mesh) {
                 assert(mesh.value == registered++); scene.meshes.push_back(mesh);
             }
-            void mark_mesh_runtime_transform(Engine&, MeshHandle mesh) { assert(mesh.value == updated++ % 16); }
+            void mark_mesh_dirty(Engine&, MeshHandle mesh) { assert(mesh.value == updated++ % 16); }
             void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
                 assert(created == 16 && registered == 16);
                 callback(16); callback(16);

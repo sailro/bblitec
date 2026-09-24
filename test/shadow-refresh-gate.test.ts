@@ -24,7 +24,7 @@ const header = pinnedShadowHeader(new LoweringContext());
 test("emits the pinned caster version sum over transform and thin-instance versions", () => {
     assert.match(
         header,
-        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,400}sum \+= mesh\.transform_version \+ mesh\.instance_version;/,
+        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,800}sum \+= mesh\.transform_version \+ mesh\.instance_version;/,
     );
 });
 

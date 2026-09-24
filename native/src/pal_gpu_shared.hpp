@@ -667,21 +667,12 @@ inline std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_sa
 
 namespace bbl::pal {
 
-/** Apply a cloned imported root after the mesh's own/deformation world. */
 #if BBLITE_HAS_PBR_RENDERER
-inline std::array<float, 16> outer_draw_world(const std::array<float, 16>& world,
-                                              const MeshRecord& record) {
-    if (upstream::outer_transform_is_identity(record))
-        return world;
-    return upstream::matrix_product(upstream::outer_transform_matrix(record), world);
-}
-
 /**
  * The floating-origin offset, or the zero vector when the mode is off.
  *
- * The `#if` lives here rather than at each call site for the same reason
- * `draw_world` below holds its own: a consumer asks what the offset is and
- * gets one answer, whichever build it is in.
+ * The `#if` lives here rather than at each call site: a consumer asks what
+ * the offset is and gets one answer, whichever build it is in.
  */
 inline Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
                                           [[maybe_unused]] const Engine& engine) {
@@ -693,142 +684,20 @@ inline Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
 }
 
 /**
- * The world one draw carries, from the base world its family chose.
- *
- * Ordinarily that base IS the drawn world -- this port bakes a mesh's TRS
- * into its vertices, so the base carries only the conventions around it (the
- * PBR X mirror, a thin-instanced pool's parent, a skinned draw's palette
- * entry) -- and the clone offset is added after it.
- *
- * Under floating origin the vertices are LOCAL, so the mesh's own TRS comes
- * back into the matrix and the whole product is rebuilt eye-relative in
- * double. Every family asks here, so which frame a draw is in is one answer
- * rather than one per family.
+ * The world one mesh draw's block carries: the pin's `mesh.worldMatrix`,
+ * packed the way every material family packs it -- `packMat4IntoF32` over
+ * the stored f32 matrix, or under floating origin
+ * `packMat4IntoF32WithOffset` over the double composition. A thin-instance
+ * matrix, a bone palette and a morph compose on top of it inside the vertex
+ * stage, as the pin's `finalWorld` does, so every family and pass asks here.
  */
-inline std::array<float, 16> draw_world(const std::array<float, 16>& base, const MeshRecord& record,
-                                        [[maybe_unused]] const Scene& scene,
-                                        [[maybe_unused]] const Engine& engine) {
+inline std::array<float, 16> mesh_block_world([[maybe_unused]] const Scene& scene,
+                                              const Engine& engine, const MeshRecord& record) {
 #if BBLITE_FLOATING_ORIGIN
-    return upstream::mesh_world_eye_relative(record, base, floating_origin_offset(scene, engine));
+    return upstream::mesh_world_eye_relative(engine, record, floating_origin_offset(scene, engine));
 #else
-#if BBLITE_HAS_PBR_RENDERER
-    if (record.gpu_world_transform) {
-        return outer_draw_world(
-            upstream::matrix_product(base, upstream::mesh_world_matrix(engine, record)), record);
-    }
+    return upstream::mesh_world_matrix(engine, record);
 #endif
-    return outer_draw_world(base, record);
-#endif
-}
-
-#if BBLITE_HAS_PBR_RENDERER
-/** World after scene-authored deformation of an unbaked local stream. */
-inline std::array<float, 16> scene_deformation_draw_world(const MeshRecord& record,
-                                                          [[maybe_unused]] const Scene& scene,
-                                                          const Engine& engine) {
-#if BBLITE_FLOATING_ORIGIN
-    return draw_world(
-        std::array<float, 16>{
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-        },
-        record, scene, engine);
-#else
-    // Bypass draw_world's gpu_world_transform branch: this already is the
-    // complete hierarchy world, so that branch would compose it twice.
-    return outer_draw_world(upstream::mesh_world_matrix(engine, record), record);
-#endif
-}
-
-/** The world that accompanies a live palette/storage pose in either pass. */
-inline std::array<float, 16> deformed_draw_world(bool skeleton_draw, const MeshRecord& record,
-                                                 const Scene& scene, const Engine& engine) {
-    if ((skeleton_draw && record.scene_skeleton) ||
-        (!skeleton_draw && record.bone_matrices.empty() && record.scene_morph_targets)) {
-        return scene_deformation_draw_world(record, scene, engine);
-    }
-    // The loader folds node world into its joint palettes. A morph-only
-    // animated node carries that world in its single palette entry instead.
-    if (!skeleton_draw && !record.bone_matrices.empty()) {
-        return draw_world(record.bone_matrices[0], record, scene, engine);
-    }
-    return draw_world(
-        std::array<float, 16>{
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-        },
-        record, scene, engine);
-}
-
-#endif
-
-#if BBLITE_GPU_INSTANCING
-/**
- * The instance parent world one thin-instanced draw carries.
- *
- * The pin composes `finalWorld = mesh.world * instanceWorld` and uploads
- * the instance stream UNOFFSET -- `thin-instance-gpu.ts` packs it through
- * the precision-only `packMat4IntoF32`, never `packMat4IntoF32WithOffset`
- * -- so under floating origin the whole eye-relative subtraction belongs
- * to `mesh.world`, which is this matrix. Subtracting per instance as well
- * would bias the translation twice; scene 204's own source says so, and the
- * large-world page's "thin-instance per-instance world matrices" line is
- * the scene it is covered by rather than a second bake.
- *
- * Only the BASE differs between the two frames, so the frame itself stays
- * `draw_world`'s single answer. `build_instance_parent_world` composes the
- * record's TRS onto the recorded parent because a pooled mesh keeps LOCAL
- * vertices with the mode off, and `mesh_world_eye_relative` composes that
- * same TRS because every mesh keeps local vertices with it on -- so the
- * eye-relative base is the recorded parent alone and the TRS is composed
- * exactly once, in double, before the single float store.
- *
- * A record with no pool of its own is the case `build_instance_parent_world`
- * returns early for: nothing composes onto its recorded parent, and no draw
- * of it reaches the thin-instance vertex arm that reads this block, so it
- * takes the same answer in either frame rather than paying a compose the
- * shader never looks at.
- *
- * Deliberately not cached: the answer is a pure function of the record and
- * eye, while a backend-local cache would add ordering-dependent state.
- */
-inline std::array<float, 16> instance_parent_draw_world(const MeshRecord& record,
-                                                        [[maybe_unused]] const Scene& scene,
-                                                        [[maybe_unused]] const Engine& engine) {
-#if BBLITE_FLOATING_ORIGIN
-    if (record.thin_instanced) {
-        return draw_world(record.instance_parent_matrix, record, scene, engine);
-    }
-#endif
-    return outer_draw_world(upstream::build_instance_parent_world(record), record);
 }
 #endif
 
@@ -840,8 +709,6 @@ inline std::array<float, 16> instance_parent_draw_world(const MeshRecord& record
  * answer belongs to the frame graph, so it is settled once with the task's
  * textures rather than re-scanned per frame.
  */
-#endif
-
 inline bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
     for (const FrameTaskRecord& record : engine.frame_tasks) {
         if (record.kind == FrameTaskKind::render &&
@@ -1616,114 +1483,40 @@ private:
 
 #endif
 
-// The CPU vertex bake and the shader draw world compose a mesh's world
-// through the pin's own `upstream::mesh_local_matrix`, which the render
-// plan emits — so both belong to a scene that HAS a mesh renderer. A
-// sprite-only, effect-only or scene-less program includes no render plan
-// (see the guarded include at the top of this file) and calls neither.
-#if BBLITE_HAS_PBR_RENDERER
-inline std::vector<GpuVertex>
-transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const MeshRecord& mesh) {
-    // Thin-instanced meshes keep local-space vertices: the pinned vertex
-    // stage composes mesh.world * instanceWorld, so the record transform
-    // reaches the shader through the instance parent-world uniform
-    // instead of the baked vertex positions. Baking through an identity
-    // transform keeps the exact byte path older instanced scenes
-    // validated (including the normal renormalization).
-    static const MeshRecord identity_transform{};
-    // A floating-origin scene keeps LOCAL vertices for the same reason a
-    // thin-instanced mesh does: its transform reaches the vertex stage
-    // through a matrix instead. Baking it here would quantize the
-    // far-from-origin translation into float32 before the eye-relative
-    // subtraction could recover the remainder -- which is the whole point
-    // of the mode.
-    // Scene-authored deformation keeps local vertices too: the pin morphs
-    // and skins in mesh-local space and composes
-    // `finalWorld = mesh.world * influence`, so baking the record's
-    // transform here would apply it before the bones instead of after
-    // them. A glTF skin needs no entry in this list -- the loader already
-    // leaves its record at rest and folds the mesh world into the palette.
-    const MeshRecord& trs =
-#if BBLITE_FLOATING_ORIGIN
-        identity_transform;
-#else
-        mesh.thin_instanced || mesh.gpu_world_transform || mesh.scene_skeleton ||
-                mesh.scene_morph_targets
-            ? identity_transform
-            : mesh;
-#endif
-    // A static imported primitive normally carries its node world baked into
-    // geometry.vertices. If scene code later turns a clone into a hierarchy
-    // instance pool, the pin's vertex stage composes mesh.world *
-    // instanceWorld and therefore needs the loader-retained local copy; using
-    // the baked vertices would apply the descendant node world twice.
-    const bool restores_runtime_instance_vertices =
-        mesh.thin_instanced && geometry.vertex_space == VertexSpace::world;
-    const std::vector<ModelVertex>& source_vertices =
-        (mesh.gpu_deformation || mesh.live_imported_transform ||
-         restores_runtime_instance_vertices) &&
-                geometry.bind_vertices.size() == geometry.vertices.size()
-            ? geometry.bind_vertices
-            : geometry.vertices;
-    // One composition per mesh: the record and its parent chain decide it,
-    // so it sits above the loop rather than being rebuilt per vertex.
-    const std::array<float, 16> world = upstream::mesh_world_matrix(engine, trs);
+/**
+ * One mesh's vertex buffer: its geometry's local lanes, uploaded once as the
+ * pin's own `createMappedBuffer` uploads them. A node's world never enters
+ * these bytes -- it reaches the vertex stage through the mesh block
+ * (`mesh_block_world`) -- so a transform-only change uploads nothing.
+ *
+ * The two `local_*` lanes repeat the position and the normal for the
+ * geometry arms that name them; the morph lanes carry the geometry's first
+ * two targets for the vertex-attribute morph transport.
+ */
+inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
+                                                [[maybe_unused]] const MeshRecord& mesh) {
     std::vector<GpuVertex> result;
-    result.reserve(source_vertices.size());
-    for (std::size_t vertex_index = 0; vertex_index < source_vertices.size(); ++vertex_index) {
-        const ModelVertex detached_vertex = mesh.detached_imported_mesh
-                                                ? detached_imported_vertex(geometry, vertex_index)
-                                                : ModelVertex{};
-        const ModelVertex& vertex =
-            mesh.detached_imported_mesh ? detached_vertex : source_vertices[vertex_index];
-        const ModelVertex& normal_vertex = mesh.gpu_deformation && geometry.flat_normals
-                                               ? geometry.vertices[vertex_index]
-                                               : vertex;
-        const Vec3& local_normal = geometry.local_normals.size() == source_vertices.size()
-                                       ? geometry.local_normals[vertex_index]
-                                       : vertex.normal;
-        // The pin's own vertex stage, performed here because this port bakes
-        // a scene-code mesh's world into the buffer it draws: the matrix is
-        // float32 exactly as `allocateMat4()` leaves it, so this multiply is
-        // the arithmetic the GPU would have run on the same bytes.
-        const Vec3 position = upstream::transform_position(world, vertex.position);
-        const Vec3 normal = upstream::normalize_baked_direction(
-            upstream::transform_direction(world, normal_vertex.normal));
-        // `T_local` is the tangent's xyz; its `w` is the handedness the
-        // bitangent reads and travels unchanged.
-        const Vec3 tangent = upstream::normalize_baked_direction(
-            upstream::transform_direction(world, Vec3{
-                                                     vertex.tangent.x,
-                                                     vertex.tangent.y,
-                                                     vertex.tangent.z,
-                                                 }));
-        result.push_back(GpuVertex{
-            {position.x, position.y, position.z},
-            {normal.x, normal.y, normal.z},
-            {
-                tangent.x,
-                tangent.y,
-                tangent.z,
-                vertex.tangent.w,
-            },
+    result.reserve(geometry.vertices.size());
+#if BBLITE_GPU_DEFORMATION
+    const auto morph_lane = [&](const std::vector<std::vector<Vec3>>& targets, std::size_t target,
+                                std::size_t vertex_index) {
+        if (targets.size() <= target)
+            return std::array<float, 3>{};
+        const Vec3& delta = targets[target][vertex_index];
+        return std::array<float, 3>{delta.x, delta.y, delta.z};
+    };
+#endif
+    for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
+        const ModelVertex& vertex = geometry.vertices[vertex_index];
+        GpuVertex packed{
+            {vertex.position.x, vertex.position.y, vertex.position.z},
+            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+            {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
             {vertex.uv.x, vertex.uv.y},
-            {
-                vertex.local_position.x,
-                vertex.local_position.y,
-                vertex.local_position.z,
-            },
+            {vertex.position.x, vertex.position.y, vertex.position.z},
             {vertex.uv2.x, vertex.uv2.y},
-            {
-                vertex.color.x,
-                vertex.color.y,
-                vertex.color.z,
-                vertex.color.w,
-            },
-            {
-                local_normal.x,
-                local_normal.y,
-                local_normal.z,
-            },
+            {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
+            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
 #if BBLITE_GPU_DEFORMATION
             {
                 static_cast<float>(vertex.joints[0]),
@@ -1732,6 +1525,8 @@ transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const 
                 static_cast<float>(vertex.joints[3]),
             },
             {
+                // A deformed mesh with no skin weights reads the identity
+                // palette entry, so the influence sum is the identity.
                 mesh.gpu_deformation &&
                         vertex.weights.x + vertex.weights.y + vertex.weights.z + vertex.weights.w <=
                             0.0f
@@ -1741,54 +1536,12 @@ transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const 
                 vertex.weights.z,
                 vertex.weights.w,
             },
-            {
-                geometry.morph_positions.size() > 0 ? -geometry.morph_positions[0][vertex_index].x
-                                                    : 0.0f,
-                geometry.morph_positions.size() > 0 ? geometry.morph_positions[0][vertex_index].y
-                                                    : 0.0f,
-                geometry.morph_positions.size() > 0 ? geometry.morph_positions[0][vertex_index].z
-                                                    : 0.0f,
-            },
-            {
-                geometry.morph_positions.size() > 1 ? -geometry.morph_positions[1][vertex_index].x
-                                                    : 0.0f,
-                geometry.morph_positions.size() > 1 ? geometry.morph_positions[1][vertex_index].y
-                                                    : 0.0f,
-                geometry.morph_positions.size() > 1 ? geometry.morph_positions[1][vertex_index].z
-                                                    : 0.0f,
-            },
-            {
-                geometry.morph_normals.size() > 0 ? -geometry.morph_normals[0][vertex_index].x
-                                                  : 0.0f,
-                geometry.morph_normals.size() > 0 ? geometry.morph_normals[0][vertex_index].y
-                                                  : 0.0f,
-                geometry.morph_normals.size() > 0 ? geometry.morph_normals[0][vertex_index].z
-                                                  : 0.0f,
-            },
-            {
-                geometry.morph_normals.size() > 1 ? -geometry.morph_normals[1][vertex_index].x
-                                                  : 0.0f,
-                geometry.morph_normals.size() > 1 ? geometry.morph_normals[1][vertex_index].y
-                                                  : 0.0f,
-                geometry.morph_normals.size() > 1 ? geometry.morph_normals[1][vertex_index].z
-                                                  : 0.0f,
-            },
-            {
-                geometry.morph_tangents.size() > 0 ? -geometry.morph_tangents[0][vertex_index].x
-                                                   : 0.0f,
-                geometry.morph_tangents.size() > 0 ? geometry.morph_tangents[0][vertex_index].y
-                                                   : 0.0f,
-                geometry.morph_tangents.size() > 0 ? geometry.morph_tangents[0][vertex_index].z
-                                                   : 0.0f,
-            },
-            {
-                geometry.morph_tangents.size() > 1 ? -geometry.morph_tangents[1][vertex_index].x
-                                                   : 0.0f,
-                geometry.morph_tangents.size() > 1 ? geometry.morph_tangents[1][vertex_index].y
-                                                   : 0.0f,
-                geometry.morph_tangents.size() > 1 ? geometry.morph_tangents[1][vertex_index].z
-                                                   : 0.0f,
-            },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
             {
                 static_cast<std::uint32_t>(vertex.joints[0]),
@@ -1798,25 +1551,22 @@ transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const 
             },
 #endif
 #endif
-        });
+        };
+#if BBLITE_GPU_DEFORMATION
+        const auto store = [](float (&lane)[3], const std::array<float, 3>& value) {
+            std::copy(value.begin(), value.end(), lane);
+        };
+        store(packed.morph_position_0, morph_lane(geometry.morph_positions, 0, vertex_index));
+        store(packed.morph_position_1, morph_lane(geometry.morph_positions, 1, vertex_index));
+        store(packed.morph_normal_0, morph_lane(geometry.morph_normals, 0, vertex_index));
+        store(packed.morph_normal_1, morph_lane(geometry.morph_normals, 1, vertex_index));
+        store(packed.morph_tangent_0, morph_lane(geometry.morph_tangents, 0, vertex_index));
+        store(packed.morph_tangent_1, morph_lane(geometry.morph_tangents, 1, vertex_index));
+#endif
+        result.push_back(packed);
     }
     return result;
 }
-
-/** Local-space vertex lanes for material families whose own world matrix is
- *  bound per draw. Keeping these immutable avoids rebaking and re-uploading
- *  a whole vertex buffer for every transform-only animation step. */
-inline std::vector<GpuVertex> local_vertices(const Engine& engine, const ModelGeometry& geometry,
-                                             const MeshRecord* source = nullptr) {
-    static const MeshRecord identity_transform{};
-    if (source != nullptr && source->detached_imported_mesh) {
-        MeshRecord detached_transform;
-        detached_transform.detached_imported_mesh = true;
-        return transformed_vertices(engine, geometry, detached_transform);
-    }
-    return transformed_vertices(engine, geometry, identity_transform);
-}
-#endif
 
 /**
  * What identifies one immutable shader-geometry upload in a backend cache.
@@ -1956,19 +1706,7 @@ inline std::size_t find_or_create_program(std::vector<Program>& programs, Matche
     return programs.size() - 1;
 }
 
-/**
- * The ordinary mesh TRS as a column-major world matrix.
- *
- * The same composition the CPU vertex bake reads, so moving a transform into
- * a shader uniform changes the storage location rather than the scene
- * meaning -- and, like the bake, it belongs to a scene that has a mesh
- * renderer to emit that composition.
- */
 #if BBLITE_HAS_PBR_RENDERER
-inline std::array<float, 16> shader_draw_world(const Engine& engine, const MeshRecord& mesh) {
-    return outer_draw_world(upstream::mesh_world_matrix(engine, mesh), mesh);
-}
-
 #if BBLITE_HAS_PICKING
 #if BBLITE_DEFORM_PICKING
 /** Match the pin's skeleton/morph projection key for this live candidate. */
@@ -2088,9 +1826,6 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
                     "Detailed picking requires the selected thin-instance world matrix.");
         }
 #endif
-        constexpr std::array<float, 16> identity_world{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-                                                       0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-                                                       0.0f, 0.0f, 0.0f, 1.0f};
 #if BBLITE_DEFORM_PICKING
         candidate.deform = pick_mesh_projection(engine, pick_mesh);
 #if BBLITE_GPU_INSTANCING
@@ -2099,16 +1834,10 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         }
 #endif
 #endif
-        candidate.uniforms.world =
-#if BBLITE_GPU_INSTANCING
-            candidate.thin ? instance_parent_draw_world(pick_mesh, scene, engine) :
-#endif
-#if BBLITE_DEFORM_PICKING
-            candidate.deform >= 0 ? deformed_draw_world(pick_mesh.skinned, pick_mesh, scene, engine)
-            :
-#endif
-            pick_mesh.gpu_world_transform ? shader_draw_world(engine, pick_mesh)
-                                          : identity_world;
+        // `gpu-picker.ts` copies `mesh.worldMatrix` as stored, with no
+        // floating-origin offset: the projection arms compose the instance
+        // matrix or the palette on top of it in the vertex stage.
+        candidate.uniforms.world = upstream::mesh_world_matrix(engine, pick_mesh);
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
         const std::uint32_t id_count =
@@ -2130,12 +1859,10 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
  * above, and for the same reason: what the CPU solve is handed is what
  * the two backends must not drift on.
  *
- * The ray is the pin's `info.ray = detailed ? pickRay : null`. The world
- * is `upstream::mesh_world_matrix`, which is BOTH what the pin passes
- * (`mesh.worldMatrix`) and what `transformed_vertices` baked into the
- * buffer the pass drew, so the same matrix un-bakes the varying and maps
- * the interpolated normal. Upstream snapshots it before an asynchronous
- * readback; here the draw and the readback are one synchronous call, so
+ * The ray is the pin's `info.ray = detailed ? pickRay : null`, and the
+ * world is `mesh.worldMatrix`, the matrix the pass drew the mesh's local
+ * lanes through. Upstream snapshots it before an asynchronous readback;
+ * here the draw and the readback are one synchronous call, so
  * `copyDetailedWorldMatrix`'s reason -- an animation tick between them --
  * cannot arise.
  */
@@ -2146,31 +1873,8 @@ inline void finish_detailed_pick(const Engine& engine, PickingInfo& info,
     populate_pick_ray(info, view_projection, sample_x, sample_y, width, height);
     if (info.picked_kind != PickedNodeKind::mesh)
         return;
-    const MeshRecord& hit_mesh = engine.meshes[info.picked_index];
     PickDetailReadback detail = readback;
-    detail.world =
-#if BBLITE_DEFORM_PICKING
-        // A skinned record's own TRS stays at rest because its palette
-        // carries the node world, so `mesh_world_matrix` answers the
-        // identity for one -- and the pin transforms the REST normal by
-        // `mesh.worldMatrix`, which is that node world and not the skin.
-        // The pose pass keeps it for exactly this read.
-        pick_mesh_projection(engine, hit_mesh) >= 0 && !hit_mesh.scene_skeleton &&
-                !hit_mesh.scene_morph_targets
-            ? hit_mesh.deform_node_world
-            :
-#endif
-            upstream::mesh_world_matrix(engine, hit_mesh);
-    detail.world_baked = !hit_mesh.gpu_world_transform
-#if BBLITE_DEFORM_PICKING
-                         // A deforming mesh's buffer carries no world at all: its vertices
-                         // are the BIND pose and its transform travels in the palette, so
-                         // the varying is already the rest position the solve wants and
-                         // un-baking it through a matrix it never carried is what turned
-                         // the barycentric weights into 36 and -16.
-                         && pick_mesh_projection(engine, hit_mesh) < 0
-#endif
-        ;
+    detail.world = upstream::mesh_world_matrix(engine, engine.meshes[info.picked_index]);
     info.detail = detail;
 }
 #endif
@@ -2256,8 +1960,8 @@ inline std::optional<std::array<float, 16>> shader_world_view(const std::array<f
 
 /**
  * One background-plan vertex (the skybox and ground quads) in GpuVertex
- * layout: the local-normal lane mirrors the normal and every deformation
- * lane stays zero. Both backends upload the plan quads from this one
+ * layout: the local-normal lane mirrors the normal, and the local-position
+ * lane and every deformation lane stay zero. Both backends upload the plan quads from this one
  * packing, so the vertex bytes cannot differ between them.
  */
 #endif
@@ -2273,11 +1977,7 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
             vertex.tangent.w,
         },
         {vertex.uv.x, vertex.uv.y},
-        {
-            vertex.local_position.x,
-            vertex.local_position.y,
-            vertex.local_position.z,
-        },
+        {}, // local position
         {vertex.uv2.x, vertex.uv2.y},
         {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
         {vertex.normal.x, vertex.normal.y, vertex.normal.z},
@@ -2303,10 +2003,10 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
  *
  * `addThinInstance` doubles a full pool, so a mesh registered with sixteen
  * rows can be drawing thirty-two of them a frame later. Both backends size
- * every instance buffer -- matrices, the PBR family's mirror-conjugated
- * copy, and the colour lane -- from the same row count at registration, so
- * this is one question rather than three, and it is asked before the
- * version-gated upload that would otherwise write past the end.
+ * both instance buffers -- matrices and the colour lane -- from the same
+ * row count at registration, so this is one question rather than two, and
+ * it is asked before the version-gated upload that would otherwise write
+ * past the end.
  */
 inline bool thin_instance_pool_grew(const MeshRecord& record, std::uint32_t allocated_rows) {
     return record.thin_instanced &&
@@ -2317,83 +2017,6 @@ inline std::size_t thin_instance_active_count(const MeshRecord& record) {
     return std::min(static_cast<std::size_t>(record.instance_count),
                     record.instance_matrices.size());
 }
-
-#if BBLITE_PBR_VARIANTS > 0
-/**
- * The same vertices in Babylon's own convention.
- *
- * Two facts make this necessary rather than cosmetic. The loader stores a glTF
- * mesh through the native X mirror and reconciles `tangent.w` against it, where
- * Babylon keeps position, normal and tangent unmirrored and carries the mirror
- * in the mesh block's world matrix -- the browser's own block for Scene 7 is
- * `diag(-1, 1, 1, 1)`, not the identity. And a mirror flips handedness, so a
- * bitangent built with `cross()` inside the pin's own vertex stage comes out
- * negated when it is fed pre-mirrored data. Undoing the mirror here, and pairing
- * it with the mirroring world matrix, is what lets the pin's stage run unedited.
- *
- * The morph deltas carry the same mirror and are undone with it.
- */
-inline std::vector<GpuVertex> pinned_convention_vertices(const std::vector<GpuVertex>& source,
-                                                         bool mirrored_x) {
-    std::vector<GpuVertex> result = source;
-    for (GpuVertex& vertex : result) {
-        vertex.position[0] = -vertex.position[0];
-        vertex.normal[0] = -vertex.normal[0];
-        vertex.tangent[0] = -vertex.tangent[0];
-        // The local lanes stay untouched: the loader stores them RAW from
-        // the glTF (no native mirror), which is exactly the pin's own
-        // convention -- the LOCAL_POSITION geometry arm reads them as the
-        // browser reads its unmirrored attribute.
-        // `gltf-loader` multiplies the authored sign by -1 for a right-handed
-        // node and by +1 for a mirrored one; the pin's stage wants the authored
-        // value, so the same factor undoes it.
-        vertex.tangent[3] *= mirrored_x ? 1.0f : -1.0f;
-#if BBLITE_GPU_DEFORMATION
-        vertex.morph_position_0[0] = -vertex.morph_position_0[0];
-        vertex.morph_position_1[0] = -vertex.morph_position_1[0];
-        vertex.morph_normal_0[0] = -vertex.morph_normal_0[0];
-        vertex.morph_normal_1[0] = -vertex.morph_normal_1[0];
-        vertex.morph_tangent_0[0] = -vertex.morph_tangent_0[0];
-        vertex.morph_tangent_1[0] = -vertex.morph_tangent_1[0];
-#endif
-    }
-    return result;
-}
-
-/**
- * The instance matrices paired with the PBR family's pinned vertex stream.
- *
- * That stream reverses the native vertex X mirror and the mesh block carries
- * it instead. Therefore its instance matrix is always the mirror conjugation
- * of the record's matrix. For glTF, the record already stores M*A*M and this
- * involutive operation recovers the authored A. For scene-code pools, the
- * record stores authored A and this produces M*A*M, which is what cancels the
- * pinned stream's extra vertex mirror. The ordinary/Standard instance stream
- * continues to consume the record bytes directly.
- */
-inline void pinned_instance_matrices(const MeshRecord& record, std::size_t count,
-                                     std::vector<std::array<float, 16>>& result) {
-    const std::size_t bounded_count = std::min(count, record.instance_matrices.size());
-    result.assign(record.instance_matrices.begin(),
-                  record.instance_matrices.begin() + bounded_count);
-    for (std::array<float, 16>& matrix : result) {
-        for (std::size_t column = 0; column < 4; ++column) {
-            for (std::size_t row = 0; row < 4; ++row) {
-                if ((row == 0) != (column == 0)) {
-                    matrix[column * 4 + row] = -matrix[column * 4 + row];
-                }
-            }
-        }
-    }
-}
-
-inline std::vector<std::array<float, 16>> pinned_instance_matrices(const MeshRecord& record) {
-    std::vector<std::array<float, 16>> result;
-    pinned_instance_matrices(record, record.instance_matrices.size(), result);
-    return result;
-}
-
-#endif
 
 #if BBLITE_PINNED_MATERIALS
 /**
@@ -2562,91 +2185,6 @@ inline bool pinned_lists_have_pinned_draws(const upstream::RenderDrawLists& list
     return false;
 }
 
-/** The identity, for a skinned draw whose palette already carries everything,
- *  and for the two families whose vertices are baked with their world. */
-inline std::array<float, 16> pinned_identity_world() {
-    return {
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-}
-
-/** Converts a native-convention world to the pin's raw imported lanes. */
-inline std::array<float, 16> pinned_x_mirrored_world(std::array<float, 16> world) {
-    world[0] = -world[0];
-    world[1] = -world[1];
-    world[2] = -world[2];
-    world[3] = -world[3];
-    return world;
-}
-
-#endif
-
-#if BBLITE_PBR_VARIANTS > 0
-/** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
-inline std::array<float, 16> pinned_mesh_world() {
-    return {
-        -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f,  0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-}
-
-#if BBLITE_GPU_INSTANCING
-/**
- * The pin's mesh world for a thin-instanced draw: the instanced node's own
- * world in Babylon's convention.
- *
- * The pin composes `finalWorld = mesh.world * instanceWorld`; the instance
- * stream is local to the mesh, so `mesh.world` must include the record's TRS
- * as well as its recorded parent. `instance_parent_draw_world` is already the
- * shared Standard/transcribed answer for that product, including clone outer
- * transforms and the one floating-origin subtraction. Apply the PBR root
- * mirror after it: with column vectors this negates the completed world's
- * first column and leaves its translation intact. An identity node collapses
- * this to `pinned_mesh_world()`.
- */
-inline std::array<float, 16> pinned_instanced_world(const MeshRecord& record, const Scene& scene,
-                                                    const Engine& engine) {
-    return pinned_x_mirrored_world(instance_parent_draw_world(record, scene, engine));
-}
-#endif
-
-/**
- * The pin's mesh-block world for one draw, whichever convention arm it rides.
- *
- * Skinned draws take the identity (the palette carries everything), an
- * animated no-skin mesh takes its single palette entry as the pin's
- * finalWorld, a thin-instanced or LOCAL_POSITION draw takes the real node
- * world beside unbaked position data, and everything else takes the bare
- * mirror over baked vertices. Shared because the same chain decides the
- * block in the SDL draw and both of Dawn's write sites.
- */
-inline std::array<float, 16> pinned_draw_world(bool skeleton_draw, bool world_from_palette,
-                                               bool uses_local_position, const MeshRecord& record,
-                                               const Scene& scene, const Engine& engine) {
-    if (skeleton_draw || world_from_palette || record.scene_morph_targets) {
-        return deformed_draw_world(skeleton_draw, record, scene, engine);
-    }
-    if (record.gpu_world_transform) {
-        // `pinned_convention_vertices` applies the Babylon X mirror to the
-        // local stream. The live native world therefore precedes the mirror:
-        // (world * mirror) * (mirror * local) == world * local.
-        return outer_draw_world(
-            upstream::matrix_product(upstream::mesh_world_matrix(engine, record),
-                                     pinned_mesh_world()),
-            record);
-    }
-#if BBLITE_GPU_INSTANCING
-    if (pinned_record_instanced(record)) {
-        return pinned_instanced_world(record, scene, engine);
-    }
-#endif
-    if (uses_local_position) {
-        return draw_world(pinned_x_mirrored_world(record.instance_parent_matrix), record, scene,
-                          engine);
-    }
-    return draw_world(pinned_mesh_world(), record, scene, engine);
-}
 #endif
 
 #if BBLITE_STANDARD_SHADOWS
@@ -2971,9 +2509,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
         const std::size_t active_instances = thin_instance_active_count(record);
         if (generator.filter == ShadowFilter::csm_directional && record.thin_instanced &&
             active_instances > 0) {
-            const std::array<float, 16> parent =
-                outer_draw_world(upstream::build_instance_parent_world(record), record);
-            std::copy(parent.begin(), parent.end(), caster.world.begin());
+            caster.world = upstream::mesh_world_matrix_f64(engine, record);
             for (std::size_t index = 0; index < active_instances; ++index) {
                 const std::array<float, 16>& instance = record.instance_matrices[index];
                 if (!upstream::csm_instance_contributes(instance))
@@ -2985,7 +2521,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
             continue;
         }
 #endif
-        caster.world = upstream::shadow_caster_world(engine, record);
+        caster.world = upstream::mesh_world_matrix_f64(engine, record);
         casters.push_back(caster);
     }
 }
@@ -3469,26 +3005,25 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
 }
 
 #if BBLITE_PINNED_MATERIAL_VARIANTS
+/** The pin's `MeshUniforms` for one mesh: its world and its light selection. */
 inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
-                                                const std::array<float, 16>& world,
                                                 MeshHandle mesh) {
     upstream::MeshUniforms block{};
-    block.world = world;
+    block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
     pinned_mesh_light_selection(scene, engine, mesh, block);
-    // The velocity geometry arm's tail. The native worlds are constant
-    // frame to frame (node motion re-bakes vertices), so the previous
-    // world is the world itself and the flag stays on: the composed
-    // vertex then measures camera motion, which is what the pin's
-    // tracked previous clip reduces to for a static world. The generic
-    // lambda makes the access dependent: outside a template, both
-    // `if constexpr` branches must compile, and most scenes' mirrored
+    // The velocity geometry arm's tail. No previous world is tracked, so
+    // the previous world is the world itself and the flag stays on: the
+    // composed vertex then measures camera motion alone, which is what the
+    // pin's tracked previous clip reduces to for a mesh that did not move.
+    // The generic lambda makes the access dependent: outside a template,
+    // both `if constexpr` branches must compile, and most scenes' mirrored
     // MeshUniforms carries no velocity tail.
     [&](auto& dependent) {
         if constexpr (requires {
                           dependent.previousWorld;
                           dependent.velocityEnabled;
                       }) {
-            dependent.previousWorld = world;
+            dependent.previousWorld = block.world;
             dependent.velocityEnabled = 1.0f;
         }
     }(block);
@@ -3501,9 +3036,7 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
  * A node graph's per-draw mesh block (`node-renderable.ts`).
  *
  * The pin packs the mesh's world matrix, `receiveShadows ? 1 : 0` in the
- * shadow lane, and the same light selection every family uses. The world is
- * the identity for baked vertices. Scene-authored morphs keep local vertices
- * and deltas, so their block carries the live world after deformation.
+ * shadow lane, and the same light selection every family uses.
  *
  * The shadow lane is a VALUE here where it is a composition key for the
  * other two families: `node-shadow.ts` mixes each light's factor by it
@@ -3511,34 +3044,10 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
  * draws a receiving mesh and a non-receiving one alike.
  */
 inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engine& engine,
-                                                  MeshHandle mesh,
-                                                  bool uses_local_attributes = false) {
+                                                  MeshHandle mesh) {
     upstream::NodeMeshUniforms block{};
     const MeshRecord& record = handle_at(engine.meshes, mesh);
-    if (!uses_local_attributes) {
-        block.world = record.scene_morph_targets
-                          ? scene_deformation_draw_world(record, scene, engine)
-                          : draw_world(pinned_identity_world(), record, scene, engine);
-    } else {
-        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
-        if (geometry.vertex_space == VertexSpace::local) {
-            block.world = scene_deformation_draw_world(record, scene, engine);
-        } else if (geometry.vertex_space == VertexSpace::world &&
-                   geometry.local_normals.size() == geometry.vertices.size() &&
-                   !record.gpu_world_transform && !record.live_imported_transform &&
-                   record.parent.value == invalid_handle &&
-                   record.transform_parent.value == invalid_handle && record.position.x == 0.0 &&
-                   record.position.y == 0.0 && record.position.z == 0.0 &&
-                   record.scaling.x == 1.0 && record.scaling.y == 1.0 && record.scaling.z == 1.0 &&
-                   !record.has_rotation_quaternion && record.rotation.x == 0.0 &&
-                   record.rotation.y == 0.0 && record.rotation.z == 0.0) {
-            block.world = draw_world(pinned_x_mirrored_world(record.instance_parent_matrix), record,
-                                     scene, engine);
-        } else {
-            throw std::runtime_error("Node geometry local attributes require scene-local geometry "
-                                     "or a static glTF world with retained source normals.");
-        }
-    }
+    block.world = mesh_block_world(scene, engine, record);
     if (record.receives_shadows) {
         block.receivesShadow[0] = 1.0f;
     }
@@ -3574,36 +3083,6 @@ inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engi
  * or vertex-colour presence. Both are checked rather than assumed: an
  * unresolved draw returns `npos` and takes the transcribed path.
  */
-/**
- * Whether a composed variant has been measured to match, by property.
- *
- * The whole point of executing Babylon's own stages is that a difference is a
- * difference in inputs, not in a formula -- so a variant runs here only once the
- * inputs it needs have been measured against the browser's own buffers. Every
- * disqualifier below names an open measurement rather than a scene:
- *
- *  - an extension arm: each contributes its own material-UBO fields through a
- *    lowered writer that no capture has been diffed against.
- *  - `skeleton`: measured, not resolved. The browser's own palette for Scene 7 is
- *    `diag(100, 100, 100, 1)` (its bone texture upload in
- *    `artifacts/capture/scene7/tex-uploads.json`, rgba32float 48x1), so it
- *    carries no mirror and the loader's `native_matrix` conjugation is a no-op on
- *    it; the mesh block carries the mirror instead. Both vertex conventions were
- *    tried against that -- unmirrored 2.522 MAD, mirrored 1.954, against 0.056
- *    transcribed -- so neither the palette nor the mirror is the remaining
- *    difference. The next measurement is our own palette and mesh block dumped
- *    and diffed against those two captured buffers, not more algebra.
- *  - refraction: needs the scene-colour grab bound through the pin's own
- *    mid-pass break rather than our slot order.
- *  - skeleton or morph: the palette and the morph deltas both carry the mirror.
- *
- * Everything else takes the transcribed path, so widening this list is a
- * measurement rather than a rewrite.
- *
- * Shared by both backends: which draws Babylon's own stages can run is a
- * property of the scene and the variant, not of the API binding them, so a
- * second copy could only drift.
- */
 /** Whether a variant's vertex stage samples the bone palette. */
 inline bool pinned_variant_skeleton(std::size_t variant) {
     return upstream::pbr_variants[variant].key.find("skeleton") != std::string_view::npos;
@@ -3615,7 +3094,9 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
  * The key carries the composed fragment ids, so this reads the same way
  * the skeleton test above does. The two are mutually exclusive by
  * construction: `_computeMeshFeatures` writes MSH_VAT where it would have
- * written MSH_HAS_SKELETON, never both.
+ * written MSH_HAS_SKELETON, never both. A baked draw reads the VAT rows --
+ * the palettes the live path uploads, copied by the bake -- and neither arm
+ * changes the world the mesh block carries.
  */
 inline bool pinned_variant_vat(std::size_t variant) {
     return upstream::pbr_variants[variant].key.find("vat") != std::string_view::npos;
@@ -3781,39 +3262,12 @@ pinned_variant_for_draw(const Scene& scene, const Engine& engine,
     if (upstream::pbr_variants.empty()) {
         return npos;
     }
-    // A mesh whose node transform is not baked into its vertices carries it
-    // in the record's parent matrix, which the composed stages consume; a
-    // record without it cannot resolve a variant and errors at the draw.
-    bool has_bones = false;
-    if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-        // An animated node needs no guard: the PAL re-transforms its vertices
-        // on the CPU when `transform_version` moves, so the GPU always sees
-        // world space and the pin's `finalWorld` stays the identity. An
-        // instanced mesh resolves the pin's own thin-instance arm -- its
-        // renderable features carry MSH_HAS_THIN_INSTANCES -- and the draw
-        // binds the per-instance matrix buffer as the arm's second stream.
-        // `bone_matrices` is not only a skin: the glTF loader pushes the mesh's
-        // own world matrix into it for an *animated* mesh with no skin at all,
-        // and the transcribed vertex stage takes the transform from there. A
-        // non-skeleton variant reads no palette, so such a draw would lose its
-        // animation — Scenes 39, 242 and 254 measured 4.2 to 11.9 MAD that way
-        // against 0.000 transcribed. A skeleton variant reads the palette the
-        // pin's own stage samples, so the check keys on the resolved variant
-        // below rather than refusing every mesh that carries bones. Skins need
-        // no `transform_version` guard either, animated node or not: the
-        // pin's updater conjugates `invMeshWorld` into the palette at bind
-        // time and excludes skinned-mesh nodes from scene-graph animation, so
-        // every node motion a skin can see arrives through the joint worlds
-        // our palette already carries. The 2.5 and 4.5 MAD once filed against
-        // node-animated skins were the missing flat-normal fragment arm --
-        // Scenes 255 and 245 measure 0.000 on both backends through this path
-        // with the arm composed, and Scene 7 measures its pinned 0.047
-        // against 0.056 transcribed.
-        if (!record.bone_matrices.empty()) {
-            has_bones = true;
-        }
-    }
+    // An animated node moves through its world, which every variant's mesh
+    // block carries; an instanced mesh resolves the pin's own thin-instance
+    // arm -- its renderable features carry MSH_HAS_THIN_INSTANCES -- and the
+    // draw binds the per-instance matrix buffer as the arm's second stream.
+    const bool has_bones = draw.item.mesh.value < engine.meshes.size() &&
+                           !handle_at(engine.meshes, draw.item.mesh).bone_matrices.empty();
     const PinnedVariantKey key = pinned_variant_key(scene, engine, draw);
     if (!key.resolved)
         return npos;
@@ -3837,75 +3291,12 @@ pinned_variant_for_draw(const Scene& scene, const Engine& engine,
         return npos;
     }
     // A skeleton variant needs the palette to exist or the deformation is
-    // lost. The reverse -- a palette on a non-skeleton variant -- is the
-    // animated no-skin mesh, whose single palette entry is the mesh's own
-    // world; the draw passes it as the pin's finalWorld against the mirrored
-    // buffer, the same convention the skinned draw measured.
+    // lost.
     const bool skeleton_variant = pinned_variant_skeleton(variant);
     if (skeleton_variant && !has_bones) {
         return npos;
     }
     return variant;
-}
-
-/**
- * The convention arms one pinned draw rides.
- *
- * A skinned draw takes the identity world with the MIRRORED vertex
- * buffer: the loader's palette is the mirror-conjugated
- * `jointWorld * IBM` (`M A M`), so against mirrored vertices the product
- * collapses to the browser's own `M * jointWorld * IBM * v_unmirrored`,
- * and adding the mirror world on top double-applies it -- the finding the
- * Dawn backend's captured mesh blocks localised (world = bare mirror,
- * palette translation 1.66 vs the browser's 0). An animated no-skin mesh
- * rides the same convention with one matrix: its palette entry is
- * `M * world * M`, passed as the pin's finalWorld against the mirrored
- * buffer. Derived once so the backends cannot disagree about which draw
- * takes which arm.
- */
-struct PinnedDrawConventions {
-    bool skeleton_draw;
-    bool world_from_palette;
-    bool mirrored_vertices;
-    /**
-     * A baked draw. Its texture rows ARE the palettes the live path
-     * uploads -- mirror-conjugated the same way, because the bake copies
-     * `bone_matrices` unchanged -- so it rides the skinned arm's world and
-     * vertex conventions exactly. What it does NOT share is the per-frame
-     * palette upload: `attachVat` dropped the live skeleton.
-     */
-    bool vat_draw;
-    /** Identity world with the mirrored buffer: the skinned arm, either
-     *  live or baked. */
-    bool identity_world;
-};
-
-inline PinnedDrawConventions pinned_draw_conventions(std::size_t variant,
-                                                     const MeshRecord& record) {
-    const bool skeleton_draw = pinned_variant_skeleton(variant);
-    const bool vat_draw = pinned_variant_vat(variant);
-    const bool world_from_palette = !skeleton_draw && !vat_draw && !record.bone_matrices.empty();
-    return PinnedDrawConventions{
-        skeleton_draw,
-        world_from_palette,
-        skeleton_draw || vat_draw || world_from_palette || record.scene_morph_targets,
-        vat_draw,
-        skeleton_draw || vat_draw,
-    };
-}
-
-/** The effective mesh block shared by backend uploads and CPU captures. */
-inline upstream::MeshUniforms pinned_draw_mesh_block(const Scene& scene, const Engine& engine,
-                                                     const upstream::RenderDrawCommand& draw,
-                                                     std::size_t variant,
-                                                     const PinnedDrawConventions& conventions) {
-    const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-    return pinned_mesh_block(scene, engine,
-                             pinned_draw_world(conventions.identity_world,
-                                               conventions.world_from_palette,
-                                               upstream::pbr_variants[variant].uses_local_position,
-                                               record, scene, engine),
-                             draw.item.mesh);
 }
 
 /**
@@ -4187,68 +3578,6 @@ standard_variant_for_draw(const Scene& scene, const Engine& engine,
     return upstream::standard_variant_for(key.features,
                                           static_cast<std::uint32_t>(key.mesh_features),
                                           geometry_task, key.plugin_index);
-}
-
-/**
- * The pin's mesh-block world for one Standard draw.
- *
- * The native side bakes a mesh's TRS into its vertices, so the pin's
- * `finalWorld` collapses to the identity — the Standard families carry no
- * glTF X-mirror. A thin-instanced draw keeps local vertices and rides the
- * pin's own `mesh.world * instanceWorld` product, so it takes the record's
- * parent TRS. A LOCAL_POSITION geometry variant reads the raw position
- * attribute, so its draw binds the unbaked local lanes and needs the
- * pin's node world back: the TRS the loader baked away and recorded in
- * `instance_parent_matrix` (the identity for a mesh that never had one —
- * scene 145's browser blocks carry exactly that TRS beside
- * localMatrix-applied vertex uploads, so `world * local` reproduces the
- * baked product). A record whose own transform is live bakes at packing
- * time instead and records no such world, so it is refused by name
- * rather than rendered with a silently-wrong varying.
- */
-inline std::array<float, 16> standard_draw_world(const MeshRecord& record, bool uses_local_position,
-                                                 const Scene& scene, const Engine& engine) {
-    if (record.scene_morph_targets) {
-        return scene_deformation_draw_world(record, scene, engine);
-    }
-#if BBLITE_GPU_INSTANCING
-    if (pinned_record_instanced(record)) {
-        return instance_parent_draw_world(record, scene, engine);
-    }
-#endif
-    if (uses_local_position) {
-        const bool identity_transform =
-            record.position.x == 0.0f && record.position.y == 0.0f && record.position.z == 0.0f &&
-            record.scaling.x == 1.0f && record.scaling.y == 1.0f && record.scaling.z == 1.0f &&
-            !record.has_rotation_quaternion && record.rotation.x == 0.0f &&
-            record.rotation.y == 0.0f && record.rotation.z == 0.0f;
-        if (!identity_transform) {
-            throw std::runtime_error("A LOCAL_POSITION geometry variant over a transformed "
-                                     "Standard mesh is not wired: the baked vertices and the "
-                                     "raw position attribute disagree.");
-        }
-        return draw_world(record.instance_parent_matrix, record, scene, engine);
-    }
-    return draw_world(
-        std::array<float, 16>{
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f,
-            1.0f,
-        },
-        record, scene, engine);
 }
 
 /**
@@ -5899,8 +5228,8 @@ struct ShaderPassMatrices {
 /**
  * One shader draw's own matrix lanes, derived once and consumed
  * identically by both backends' draw loops and the render capture: the
- * mesh world fold, the world-view-projection product, and the
- * world-view product when the pass carries a view. The record owns the
+ * mesh block's world (`_shaderWorldMatrix`), the world-view-projection
+ * product, and the world-view product when the pass carries a view. The record owns the
  * storage the patched ShaderPassMatrices points into, so keep it alive
  * through the block writes made against `apply`'s result.
  */
@@ -5909,8 +5238,9 @@ struct ShaderDrawMatrices {
     std::array<float, 16> world_view_projection;
     std::optional<std::array<float, 16>> world_view;
 
-    ShaderDrawMatrices(const Engine& engine, const MeshRecord& mesh, const ShaderPassMatrices& pass)
-        : world(shader_draw_world(engine, mesh)),
+    ShaderDrawMatrices(const Scene& scene, const Engine& engine, const MeshRecord& mesh,
+                       const ShaderPassMatrices& pass)
+        : world(mesh_block_world(scene, engine, mesh)),
           world_view_projection(upstream::matrix_product(pass.view_projection, world)),
           world_view(shader_world_view(pass.view, world)) {}
 
@@ -5999,9 +5329,7 @@ inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
 inline void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
                                       const ShaderPassMatrices& pass,
                                       const MaterialRecord& material, std::vector<float>& floats) {
-    // Declared here rather than reusing `pinned_identity_world`, which
-    // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
-    // this function without it.
+    // The world a pass without a mesh (a full-screen shader) reads.
     static constexpr std::array<float, 16> identity{
         1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
@@ -6417,9 +5745,7 @@ inline bool frame_profile_due(long frame, double elapsed_ms) {
 inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_ms,
                                     double update_ms, double upload_ms,
                                     const std::optional<double>& write_ms, double encode_submit_ms,
-                                    std::size_t render_items, std::size_t draw_commands,
-                                    std::size_t transformed_meshes,
-                                    std::size_t transformed_vertices) {
+                                    std::size_t render_items, std::size_t draw_commands) {
     std::ostringstream line;
     line << std::fixed << std::setprecision(3) << "[cpu][frame] frame=" << frame
          << " total_ms=" << total_ms << " acquire_ms=" << acquire_ms << " update_ms=" << update_ms
@@ -6427,8 +5753,7 @@ inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_
     if (write_ms.has_value())
         line << " write_ms=" << *write_ms;
     line << " encode_submit_ms=" << encode_submit_ms << " render_items=" << render_items
-         << " draw_commands=" << draw_commands << " transformed_meshes=" << transformed_meshes
-         << " transformed_vertices=" << transformed_vertices << '\n';
+         << " draw_commands=" << draw_commands << '\n';
     std::fputs(line.str().c_str(), stderr);
 }
 
@@ -6488,7 +5813,6 @@ inline void MemoryProfile::print(long frame, const bbl::Engine& engine, std::siz
             continue;
         ++live_geometries;
         geometry_bytes += geometry.vertices.size() * sizeof(bbl::ModelVertex) +
-                          geometry.bind_vertices.size() * sizeof(bbl::ModelVertex) +
                           geometry.indices.size() * sizeof(std::uint32_t);
         for (const auto* targets :
              {&geometry.morph_positions, &geometry.morph_normals, &geometry.morph_tangents}) {

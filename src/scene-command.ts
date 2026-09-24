@@ -1065,7 +1065,7 @@ function buildSetup(): SharedBuildSetup {
         ...(windows?.environment ?? setupEnvironment(tools)),
         CMAKE_COMMAND: tools.cmake,
         ...(vcpkg ? { VCPKG_ROOT: vcpkg.root } : {}),
-        ...(tools.tint ? { TINT_PATH: tools.tint } : {}),
+        ...(tools.bbliteTint ? { BBLITE_TINT_PATH: tools.bbliteTint } : {}),
         ...(tools.dxc ? { DXC_PATH: tools.dxc } : {}),
     };
     sharedBuildSetup = {
@@ -1199,7 +1199,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         needsOfflineShaders(backend, process.env.BBLITE_SHADER_TARGET)
     ) {
         const target = shaderTarget();
-        if (target !== "metal") {
+        if (target === "d3d12" || target === "all") {
             checks.push({
                 label: "DXC",
                 ...(tools.dxc
@@ -1208,9 +1208,9 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             });
         }
         checks.push({
-            label: "Tint",
-            ...(tools.tint
-                ? { path: tools.tint }
+            label: "bblite-tint",
+            ...(tools.bbliteTint
+                ? { path: tools.bbliteTint }
                 : { problem: "pinned Tint was not built" }),
         });
     }
@@ -1384,7 +1384,7 @@ function runDevelopmentSetup(): void {
         tools.dawnInstalled && !staleRecord(records, "dawn"),
         "tools/build-dawn.ps1",
     );
-    buildPinned(!!tools.tint, "tools/build-tint.ps1");
+    buildPinned(!!tools.bbliteTint, "tools/build-tint.ps1");
     buildPinned(
         tools.labSoundInstalled && !staleRecord(records, "labsound"),
         "tools/build-labsound.ps1",

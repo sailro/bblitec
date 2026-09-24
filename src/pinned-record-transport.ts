@@ -37,7 +37,7 @@ export type TransportShape =
     | { readonly kind: "typed"; readonly element: "f32" | "u32" | "u8" }
     | { readonly kind: "optional"; readonly value: TransportShape }
     | { readonly kind: "variant"; readonly members: readonly TransportShape[] }
-    | { readonly kind: "weakmap" | "function" };
+    | { readonly kind: "weakmap" | "weakset" | "function" };
 
 export interface TransportRecord {
     readonly reference: boolean;
@@ -245,6 +245,7 @@ export function transportGraph(
             case "object":
             case "buffer":
             case "weakmap":
+            case "weakset":
             case "function":
                 return fail(`a ${current.kind} does not cross from generation`);
         }

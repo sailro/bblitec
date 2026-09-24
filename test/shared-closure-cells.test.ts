@@ -145,7 +145,7 @@ test("a named local function handed to a listener-installing helper shares the c
     );
     assert.match(
         result.cpp,
-        /bbl::on_dom_pointer\(v_engine, bbl::DomEventTarget::canvas\(\), "pointerup", \d+u, bbl::js::make_closure\(std::tuple\{v_destination\}/,
+        /bbl::on_dom_pointer\(v_engine, bbl::DomEventTarget::canvas\(\), "pointerup", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_destination\}/,
     );
     assert.match(
         result.cpp,

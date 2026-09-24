@@ -38,7 +38,7 @@ namespace upstream {
 std::array<float,16> mesh_world_matrix(Engine&, const MeshRecord&) { return {1,0,0,0,0,1,0,0,0,0,1,0,2,3,4,1}; }
 std::array<float,16> transform_node_world(Engine&, TransformNodeHandle) { return {${parent.join(",")}}; }
 }
-void set_mesh_rotation_quaternion(Engine& engine, MeshHandle handle, Vec4 q, bool) { engine.meshes[handle.value].rotation_quaternion = q; }
+void set_mesh_rotation_quaternion(Engine& engine, MeshHandle handle, Vec4 q) { engine.meshes[handle.value].rotation_quaternion = q; }
 ${lowerRotationPointerDrag(context)}
 }
 int main() {

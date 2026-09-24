@@ -57,12 +57,11 @@ template <class Function, class... Args> void count_gpu_draw(Function function, 
 }
 struct SdlMesh {
     SDL_GPUBuffer* vertices;
-    SDL_GPUBuffer* pinned_instances;
+    SDL_GPUBuffer* instances;
     SDL_GPUBuffer* instance_colors;
 };
 struct DawnMesh {
     WGPUBuffer instances;
-    WGPUBuffer pinned_instances;
     WGPUBuffer instance_colors;
     unsigned instance_count = 7;
 };
@@ -73,8 +72,8 @@ int main() {
     using namespace bbl::pal;
     SDL_GPUBuffer vertices{1}, matrices{2}, colors{3};
     SdlMesh sdl{&vertices, &matrices, &colors};
-    WGPUBufferImpl dawn_vertices{1}, dawn_matrices{2}, dawn_colors{3}, standard_matrices{4};
-    DawnMesh dawn{&standard_matrices, &dawn_matrices, &dawn_colors};
+    WGPUBufferImpl dawn_vertices{1}, dawn_matrices{2}, dawn_colors{3};
+    DawnMesh dawn{&dawn_matrices, &dawn_colors};
     Engine engine;
     engine.meshes.resize(1);
     auto& record = engine.meshes[0];
@@ -97,14 +96,13 @@ int main() {
                 assert(bound == expected);
                 bound.clear();
                 WGPURenderPipeline pipeline = nullptr;
-                encode_variant_draw(
-                    nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
-                    instance_streams_for(record, dawn, InstanceMatrixSource::pinned),
-                    &dawn_vertices, 6);
+                encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
+                                    instance_streams_for(record, dawn), &dawn_vertices, 6);
                 assert(bound == expected && instances_drawn == (pool ? 7u : 1u));
-                const auto standard =
-                    instance_streams_for(record, dawn, InstanceMatrixSource::standard);
-                assert(standard.matrices == (pool ? &standard_matrices : nullptr));
+                // Every family reads the one instance stream: the pin's
+                // matrices, composed under the mesh world in the vertex stage.
+                assert(instance_streams_for(record, dawn).matrices ==
+                       (pool ? &dawn_matrices : nullptr));
             }
     assert(pipeline_binds == 0);
 }

@@ -167,8 +167,10 @@ test("derives the view transpose from the pinned getViewMatrix store map", () =>
         plan.source,
         /const double cx = static_cast<double>\(world\[12\]\);/,
     );
-    assert.match(plan.source, /view\[0\] = world\[0\];/);
-    assert.match(plan.source, /view\[6\] = world\[9\];/);
+    // The Float32Array store converts explicitly: a floating-origin world
+    // is double (GC-20).
+    assert.match(plan.source, /view\[0\] = static_cast<float>\(world\[0\]\);/);
+    assert.match(plan.source, /view\[6\] = static_cast<float>\(world\[9\]\);/);
     assert.match(plan.source, /view\[11\] = 0\.0f;/);
     assert.match(
         plan.source,
@@ -436,11 +438,9 @@ test("a plain stamp with no literal transparency to classify it refuses", () => 
 });
 
 test("adopts the pinned transparent sort center: the draw world's translation", () => {
-    // The pinned families store sortCenter = worldMatrix[12..14]; the
-    // record carries that world as instance_parent_matrix composed with
-    // the live TRS position and, for imported root clones, the outer
-    // post-deformation translation. The pinned lines are anchored inside
-    // lowerRenderPlan, so drift throws there.
+    // The pinned families store sortCenter = worldMatrix[12..14], which is
+    // the record's mesh_world_matrix translation. The pinned lines are
+    // anchored inside lowerRenderPlan, so drift throws there.
     for (const [modulePath, marker] of [
         [
             "src/material/pbr/pbr-renderable.ts",
@@ -460,18 +460,7 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
     assert.match(plan.source, /pin-adopted\(sort-center\)/);
     assert.match(
         plan.source,
-        /const std::array<float, 16>& parent = mesh\.instance_parent_matrix;/,
-    );
-    assert.match(
-        plan.source,
-        // The row accumulates in double -- `mesh.position` is the record's
-        // own width -- and narrows once before the imported root's outer
-        // rotation and translation are applied.
-        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\]\),/,
-    );
-    assert.match(
-        plan.source,
-        /transform_position\(\s*outer_transform_matrix\(mesh\),\s*local_center\)/,
+        /const std::array<float, 16> world = mesh_world_matrix\(engine, mesh\);\s*const Vec3 center\{world\[12\], world\[13\], world\[14\]\};/,
     );
     assert.match(
         plan.source,

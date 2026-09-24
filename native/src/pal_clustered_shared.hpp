@@ -16,16 +16,20 @@ struct ClusteredUploads {
 };
 
 /**
- * The pin's per-frame refresh, then every write it made that this backend
- * has not uploaded yet: the params block, and each data texture over the
- * region its `writeDataTexture` stated. A count is published only after
- * its upload succeeded, so a failed one is retried by the next frame.
+ * The scene's updater, `_clusteredLightUpdater?.(camera, width, height)`:
+ * the pin's refresh over the refresh state the container keeps once its
+ * build returned, then every write it made that this backend has not
+ * uploaded yet -- the params block, and each data texture over the region
+ * its `writeDataTexture` stated. A count is published only after its
+ * upload succeeded, so a failed one is retried by the next frame.
  */
 template <class Params, class Texture>
-void sync_clustered_payloads(ClusteredLightContainer& container, ClusteredUploads& uploaded,
-                             CameraRecord* camera, double target_width, double target_height,
-                             Params&& params, Texture&& texture) {
-    upstream::refresh_clustered_lights(container, camera, target_width, target_height);
+void sync_clustered_payloads(Engine& engine, ClusteredLightContainer& container,
+                             ClusteredUploads& uploaded, CameraHandle camera, double target_width,
+                             double target_height, Params&& params, Texture&& texture) {
+    if (container.refresh)
+        upstream::refresh_clustered_lights(engine, container, *container.refresh, camera,
+                                           target_width, target_height);
     if (uploaded.params != container.params_write) {
         params(container.params.data(), container.params.size() * sizeof(std::uint32_t));
         uploaded.params = container.params_write;

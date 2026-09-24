@@ -26,7 +26,6 @@ function specialization(
 ): AssetSpecializationFeatures {
     return {
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         maxSkinJoints: 0,
         nonTrianglePrimitives: false,
@@ -80,7 +79,6 @@ function emitOptions(
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
@@ -294,7 +292,6 @@ function everythingOnInputs(): FeatureActivationInputs {
         assetJoinedFeatures: new Map([["light:directional", "a.glb"]]),
         specialization: specialization({
             gpuDeformation: true,
-            animatedWorldBounds: true,
             morphStorage: true,
             nonTrianglePrimitives: true,
             nodeVisibility: true,
@@ -325,7 +322,6 @@ function everythingOnInputs(): FeatureActivationInputs {
                 { shaderIndex: 0, attachments: [], emitColor: true },
             ],
             gpuDeformation: true,
-            animatedWorldBounds: true,
             morphStorage: true,
             nonTrianglePrimitives: true,
             nodeVisibility: true,

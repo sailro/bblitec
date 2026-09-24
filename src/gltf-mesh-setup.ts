@@ -1,12 +1,29 @@
 import { asIndex, asObject } from "./gltf-document.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 
+interface RecordedVec3 {
+    x: number;
+    y: number;
+    z: number;
+}
+
+/** The glTF node a primitive's mesh hangs under, as the pin built it. */
+export interface RecordedSetupNode {
+    position: RecordedVec3;
+    rotationQuaternion: RecordedVec3 & { w: number };
+    scaling: RecordedVec3;
+    /** A glTF `matrix` node's raw local, which its TRS does not drive. */
+    _localMatrix?: unknown;
+    parent?: { worldMatrix: Float32Array } | null;
+}
+
 export interface RecordedMeshSetup {
     _gpu: { indexFormat: string };
     boundMin: ArrayLike<number>;
     boundMax: ArrayLike<number>;
     worldMatrix: Float32Array;
     visible?: boolean;
+    parent?: RecordedSetupNode | null;
     _primitive?: {
         topology?: string;
         frontFace?: string;
@@ -20,27 +37,25 @@ export interface RecordedMeshSetup {
     } | null;
 }
 
-export interface WorldBounds {
-    minX: number;
-    minY: number;
-    minZ: number;
-    maxX: number;
-    maxY: number;
-    maxZ: number;
-}
-export interface SourceWorldBounds {
-    emptyWorldAabb(): WorldBounds;
-    expandWorldAabbForMesh(bounds: WorldBounds, mesh: RecordedMeshSetup): void;
+/**
+ * The primitive's glTF node, for a scene that writes node transforms: its
+ * own TRS as the pin's node stores it, and the world of the node above it.
+ */
+export interface GltfMeshSetupNode {
+    translation: [number, number, number];
+    rotation: [number, number, number, number];
+    scaling: [number, number, number];
+    parentWorld: number;
 }
 
 export interface GltfMeshSetup {
     world: number;
     bounds: number;
-    worldBounds: number;
     topology: string;
     clockwise: boolean;
     visible: boolean;
     instances?: { matrices: number; count: number };
+    node?: GltfMeshSetupNode;
 }
 
 function topology(value: unknown): string {
@@ -55,11 +70,51 @@ function topology(value: unknown): string {
     return value;
 }
 
+/**
+ * The primitive's own node, read off the pin's live hierarchy: absent for a
+ * `matrix` node, whose TRS the pin does not compose.
+ */
+function packageSetupNode(
+    mesh: RecordedMeshSetup,
+    packer: GltfGeometryPacker,
+): GltfMeshSetupNode | undefined {
+    const node = mesh.parent;
+    if (!node || node._localMatrix !== undefined) return undefined;
+    const parentWorld = node.parent?.worldMatrix;
+    const { position, rotationQuaternion, scaling } = node;
+    const translation: [number, number, number] = [
+        position.x,
+        position.y,
+        position.z,
+    ];
+    const rotation: [number, number, number, number] = [
+        rotationQuaternion.x,
+        rotationQuaternion.y,
+        rotationQuaternion.z,
+        rotationQuaternion.w,
+    ];
+    const scale: [number, number, number] = [scaling.x, scaling.y, scaling.z];
+    if (
+        !(parentWorld instanceof Float32Array) ||
+        parentWorld.length !== 16 ||
+        [...translation, ...rotation, ...scale, ...parentWorld].some(
+            (value) => !Number.isFinite(value),
+        )
+    )
+        throw new Error("Invalid constructed glTF node transform.");
+    return {
+        translation,
+        rotation,
+        scaling: scale,
+        parentWorld: packer.float32(parentWorld, 4),
+    };
+}
+
 /** Transport source-owned placement, bounds and instance matrices. */
 export function packageMeshSetup(
     mesh: RecordedMeshSetup,
-    source: SourceWorldBounds,
     packer: GltfGeometryPacker,
+    nodeTransforms = false,
 ): GltfMeshSetup {
     const primitive = mesh._primitive;
     const primitiveTopology = topology(primitive?.topology ?? "triangle-list");
@@ -94,21 +149,11 @@ export function packageMeshSetup(
         mesh.boundMax.length !== 3
     )
         throw new Error("Invalid constructed glTF mesh placement.");
-    const worldBounds = source.emptyWorldAabb();
-    source.expandWorldAabbForMesh(worldBounds, mesh);
     const bounds = new Float32Array(6);
     bounds.set(mesh.boundMin);
     bounds.set(mesh.boundMax, 3);
-    const world = new Float32Array([
-        worldBounds.minX,
-        worldBounds.minY,
-        worldBounds.minZ,
-        worldBounds.maxX,
-        worldBounds.maxY,
-        worldBounds.maxZ,
-    ]);
     if (
-        [mesh.worldMatrix, bounds, world].some((values) =>
+        [mesh.worldMatrix, bounds].some((values) =>
             values.some((value) => !Number.isFinite(value)),
         )
     )
@@ -116,7 +161,6 @@ export function packageMeshSetup(
     const result: GltfMeshSetup = {
         world: packer.float32(mesh.worldMatrix, 4),
         bounds: packer.float32(bounds, 3),
-        worldBounds: packer.float32(world, 3),
         topology: primitiveTopology,
         clockwise: primitive?.frontFace === "cw",
         visible: mesh.visible !== false,
@@ -136,7 +180,22 @@ export function packageMeshSetup(
             count: instances.count,
         };
     }
+    if (nodeTransforms) {
+        const node = packageSetupNode(mesh, packer);
+        if (node) result.node = node;
+    }
     return result;
+}
+
+function readLanes(value: unknown, length: number): number[] | undefined {
+    if (!Array.isArray(value) || value.length !== length) return undefined;
+    const lanes: number[] = [];
+    for (const lane of value) {
+        if (typeof lane !== "number" || !Number.isFinite(lane))
+            return undefined;
+        lanes.push(lane);
+    }
+    return lanes;
 }
 
 export function readMeshSetup(
@@ -145,16 +204,13 @@ export function readMeshSetup(
 ): GltfMeshSetup {
     const setup = asObject(value);
     const world = asIndex(setup?.world),
-        bounds = asIndex(setup?.bounds),
-        worldBounds = asIndex(setup?.worldBounds);
+        bounds = asIndex(setup?.bounds);
     if (
         !setup ||
         world === undefined ||
         world >= accessorCount ||
         bounds === undefined ||
         bounds >= accessorCount ||
-        worldBounds === undefined ||
-        worldBounds >= accessorCount ||
         typeof setup.clockwise !== "boolean" ||
         typeof setup.visible !== "boolean"
     )
@@ -162,7 +218,6 @@ export function readMeshSetup(
     const result: GltfMeshSetup = {
         world,
         bounds,
-        worldBounds,
         topology: topology(setup.topology),
         clockwise: setup.clockwise,
         visible: setup.visible,
@@ -178,6 +233,27 @@ export function readMeshSetup(
         )
             throw new Error("Invalid packaged glTF instance storage.");
         result.instances = { matrices, count };
+    }
+    if (setup.node !== undefined) {
+        const node = asObject(setup.node);
+        const translation = readLanes(node?.translation, 3),
+            rotation = readLanes(node?.rotation, 4),
+            scaling = readLanes(node?.scaling, 3),
+            parentWorld = asIndex(node?.parentWorld);
+        if (
+            !translation ||
+            !rotation ||
+            !scaling ||
+            parentWorld === undefined ||
+            parentWorld >= accessorCount
+        )
+            throw new Error("Invalid packaged glTF node transform.");
+        result.node = {
+            translation: [translation[0]!, translation[1]!, translation[2]!],
+            rotation: [rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!],
+            scaling: [scaling[0]!, scaling[1]!, scaling[2]!],
+            parentWorld,
+        };
     }
     return result;
 }

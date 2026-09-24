@@ -4,6 +4,7 @@ import {
     someAnalysisNode,
 } from "./analysis-walk.js";
 import type { CompilerSymbols } from "./symbols.js";
+import type { Value } from "./types.js";
 import { isUpdateExpression } from "./syntax.js";
 import {
     staticNumberValue,
@@ -121,6 +122,18 @@ export function integerLoopCounter(
 /** A counter read as the JavaScript number it holds. */
 export function integerCounterRead(cppName: string): string {
     return `static_cast<double>(${cppName})`;
+}
+
+/**
+ * The native counter a value reads, while its C++ is still that read: a
+ * value re-bound under its own name (a shared body's parameter) keeps the
+ * metadata but reads its own storage.
+ */
+export function integerCounterOf(value: Value | undefined): string | undefined {
+    const counter = value?.integerCounterCpp;
+    return counter !== undefined && value!.cpp === integerCounterRead(counter)
+        ? counter
+        : undefined;
 }
 
 /** The condition compared natively, when it tests the counter against an integer. */

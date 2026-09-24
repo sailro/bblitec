@@ -438,6 +438,23 @@ inline void push_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const vo
                                    static_cast<Uint32>(bytes));
 }
 
+/** A device for the offline compiler's DXIL, SPIR-V or MSL stages. Its SPIR-V
+ *  is version 1.3, Tint's minimum, which a Vulkan 1.1 instance consumes; SDL's
+ *  default instance requests 1.0. The other backends ignore the Vulkan options. */
+inline SDL_GPUDevice* create_compiled_shader_device(bool debug) {
+    SDL_GPUVulkanOptions vulkan{};
+    vulkan.vulkan_api_version = (1u << 22) | (1u << 12); // VK_MAKE_API_VERSION(0, 1, 1, 0)
+    const auto properties = SDL_CreateProperties();
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vulkan);
+    SDL_GPUDevice* device = SDL_CreateGPUDeviceWithProperties(properties);
+    SDL_DestroyProperties(properties);
+    return device;
+}
+
 inline void create_sdl_gpu_device(const EngineOptions& engine_options, const DeviceOptions& options,
                                   SdlGpuDevice& state) {
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
@@ -454,7 +471,7 @@ inline void create_sdl_gpu_device(const EngineOptions& engine_options, const Dev
         gpu_error("SDL_CreateWindow");
 #if defined(__ANDROID__)
     // Prefer helper invocations for discard, retaining derivatives at masked
-    // edges. SDL's default Vulkan 1.0 device does not enable this feature.
+    // edges. The Vulkan 1.1 fallback device does not enable this feature.
     VkPhysicalDeviceVulkan13Features features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features.shaderDemoteToHelperInvocation = VK_TRUE;
@@ -473,9 +490,7 @@ inline void create_sdl_gpu_device(const EngineOptions& engine_options, const Dev
                                true);
 #endif
     if (!state.device)
-        state.device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV |
-                                               SDL_GPU_SHADERFORMAT_MSL,
-                                           options.gpu_debug, nullptr);
+        state.device = create_compiled_shader_device(options.gpu_debug);
     if (!state.device)
         gpu_error("SDL_CreateGPUDevice");
     if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) {

@@ -16,7 +16,7 @@ import {
 
 const tools = optionalNativeFixtureTools();
 
-test("mesh clone demand retains local glTF geometry", () => {
+test("cloneTransformNode over a loaded mesh reaches the mesh clone", () => {
     const result =
         compileSource(`import {createEngine, loadGltf, getContainerMeshes, cloneTransformNode} from "@babylonjs/lite";
         const engine = await createEngine({});
@@ -26,7 +26,7 @@ test("mesh clone demand retains local glTF geometry", () => {
 });
 
 test(
-    "detached mesh clones preserve pinned parent, local geometry and shared ownership",
+    "detached mesh clones keep their TRS, leave the loaded hierarchy and share their geometry",
     { skip: !tools },
     async () => {
         interface Node {
@@ -66,56 +66,47 @@ namespace bbl { ${cppFunction(lowerer, "MeshHandle clone_mesh_node(")} }
 int main() {
     bbl::Engine engine;
     bbl::ModelGeometry geometry;
-    geometry.vertex_space = bbl::VertexSpace::world;
     bbl::ModelVertex vertex;
-    vertex.position = {100,200,300}; vertex.local_position = {1,2,3};
+    vertex.position = {1,2,3}; vertex.normal = {-1,0,0};
     geometry.vertices.push_back(vertex);
-    vertex.position = {-1,2,3}; vertex.normal = {-1,0,0}; vertex.tangent = {-1,0,0,-1};
-    geometry.bind_vertices.push_back(vertex);
     engine.geometries.push_back(std::move(geometry));
+    // A loaded primitive: its node's world, root mirror included, is its
+    // parent world, and its winding was reconciled against that mirror.
     bbl::MeshRecord mesh; mesh.geometry = 0;
     mesh.name = "source"; mesh.parent = bbl::MeshHandle{12}; mesh.transform_parent = bbl::TransformNodeHandle{13};
     mesh.outer_position = {4,5,6}; mesh.outer_rotation = {1,2,3};
+    mesh.position = {7,8,9};
+    mesh.parent_world = std::array<float, 16>{-1,0,0,0, 0,1,0,0, 0,0,1,0, 10,20,30,1};
+    mesh.clockwise_front_face = true; mesh.authored_clockwise_front_face = true;
     engine.meshes.push_back(mesh);
     const auto cloned = bbl::clone_mesh_node(engine, bbl::MeshHandle{0});
     const auto second = bbl::clone_mesh_node(engine, cloned);
     const auto& result = engine.meshes.at(second.value);
+    // The pin's clone keeps its own TRS and its local lanes, and leaves the
+    // node hierarchy: no parent, no loaded parent world, no root edit.
     assert(result.parent.value == bbl::invalid_handle && result.transform_parent.value == bbl::invalid_handle);
     assert(result.detached_imported_mesh && result.outer_position.x == 0 && result.outer_rotation.y == 0);
+    assert(!result.parent_world && !result.clockwise_front_face && !result.authored_clockwise_front_face);
+    assert(result.position.x == 7 && result.position.y == 8 && result.position.z == 9);
     assert(result.geometry == 0 && engine.geometries[0].owners == 3);
     assert(!engine.meshes[0].detached_imported_mesh && engine.meshes[0].parent.value == 12);
-    assert(engine.geometries[0].vertices[0].position.x == 100);
-    const auto local = bbl::detached_imported_vertex(engine.geometries[0], 0);
-    assert(local.position.x == 1 && local.position.y == 2 && local.position.z == 3);
-    assert(local.normal.x == 1 && local.tangent.x == 1 && local.tangent.w == 1);
-    bbl::Vec3 low{}, high{};
-    bbl::apply_mesh_bound_overrides(result, low, high);
-    assert(low.x == 1 && high.z == 3);
-    // A .babylon mesh keeps its loader's local vertices, which went through
-    // no mirror.
-    bbl::ModelGeometry babylon_geometry = engine.geometries[0];
-    babylon_geometry.vertex_space = bbl::VertexSpace::local;
-    engine.geometries.push_back(std::move(babylon_geometry));
+    assert(engine.meshes[0].parent_world && engine.meshes[0].clockwise_front_face);
+    assert(engine.geometries[0].vertices[0].position.x == 1 && engine.geometries[0].vertices[0].normal.x == -1);
+    // A .babylon mesh keeps its own TRS on the record; its clone drops the
+    // parent node's world in the same way.
     bbl::MeshRecord babylon;
-    babylon.geometry = 1;
-    babylon.imported_clone_trs = bbl::ImportedMeshTrs{{9,8,7}, {0,.5f,0}, {2,3,4}};
+    babylon.geometry = 0;
+    babylon.position = {9,8,7}; babylon.rotation = {0,.5f,0}; babylon.scaling = {2,3,4};
+    babylon.parent_world = std::array<float, 16>{2,0,0,0, 0,2,0,0, 0,0,2,0, 1,1,1,1};
     const bbl::MeshHandle babylon_source{static_cast<std::uint32_t>(engine.meshes.size())};
     engine.meshes.push_back(babylon);
     const auto babylon_clone = bbl::clone_mesh_node(engine, babylon_source);
     auto& cloned_babylon = engine.meshes.at(babylon_clone.value);
     assert(cloned_babylon.position.x == 9 && cloned_babylon.rotation.y == .5f && cloned_babylon.scaling.z == 4);
-    assert(bbl::detached_imported_vertex(engine.geometries[1], 0).normal.x == -1);
+    assert(!cloned_babylon.parent_world && cloned_babylon.detached_imported_mesh);
     cloned_babylon.position = {1,1,1};
-    cloned_babylon.transform_version = 1;
     const auto recloned_babylon = bbl::clone_mesh_node(engine, babylon_clone);
     assert(engine.meshes.at(recloned_babylon.value).position.x == 1);
-    engine.meshes.at(babylon_source.value).transform_version = 1;
-    bool refused = false;
-    try { bbl::clone_mesh_node(engine, babylon_source); }
-    catch (const std::runtime_error& error) {
-        refused = std::string(error.what()).find("source transform ownership") != std::string::npos;
-    }
-    assert(refused);
     std::puts("mesh-clone-local: ok");
 }
 `,
@@ -175,7 +166,7 @@ int main() {
     scene.engine = &engine;
     engine.geometries.resize(1);
     auto& geometry = engine.geometries[0];
-    auto arrays = std::tie(geometry.vertices, geometry.bind_vertices, geometry.local_normals,
+    auto arrays = std::tie(geometry.vertices,
         geometry.morph_positions, geometry.morph_bounds, geometry.morph_normals,
         geometry.morph_tangents, geometry.indices);
     std::apply([](auto&... values) { (values.resize(4), ...); }, arrays);

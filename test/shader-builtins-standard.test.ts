@@ -163,17 +163,15 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                       },
                   ]
                 : []),
-            ...(instancing
-                ? [
-                      {
-                          name: "instanceUniforms",
-                          type: "InstanceUniforms",
-                          group: 1,
-                          binding: deformation ? 2 : 1,
-                          addressSpace: "uniform",
-                      },
-                  ]
-                : []),
+            // Every draw's mesh block, after the scene and deformation
+            // blocks: the pin's `mesh.world`.
+            {
+                name: "mesh",
+                type: "MeshUniforms",
+                group: 1,
+                binding: deformation ? 2 : 1,
+                addressSpace: "uniform",
+            },
         ]);
         const structure = (name: string) => {
             const found = module.structs.find((value) => value.name === name);
@@ -242,11 +240,10 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                 parseWgslFunction(helper),
             );
         }
-        if (instancing)
-            assert.deepEqual(
-                fieldOffsets(structure("InstanceUniforms").members),
-                { offsets: [0], size: 64 },
-            );
+        assert.deepEqual(fieldOffsets(structure("MeshUniforms").members), {
+            offsets: [0],
+            size: 64,
+        });
         if (morphStorage) {
             assert.deepEqual(
                 fieldOffsets(structure("morphUniforms").members.slice(0, 4)),
@@ -263,14 +260,16 @@ test("shared vertex projections preserve every PAL binding, varying and optional
         );
         assert.ok(
             !module.entryPoint.statements.some((statement) =>
-                statementUsesPath(statement, (parts) =>
-                    [
-                        "mesh",
-                        "scene",
-                        "boneSampler",
-                        "joints1",
-                        "weights1",
-                    ].includes(parts[0]!),
+                statementUsesPath(
+                    statement,
+                    (parts) =>
+                        [
+                            "scene",
+                            "boneSampler",
+                            "joints1",
+                            "weights1",
+                        ].includes(parts[0]!) ||
+                        (parts[0] === "mesh" && parts[1] !== "world"),
                 ),
             ),
         );
@@ -695,10 +694,14 @@ test("the executed pin and specialized stages agree on weighted positions and ma
         const native = nativeModule(
             materialVertexWgsl(deformation, instancing, morphStorage),
         );
+        // The skinned transport applies the palette and the mesh world in
+        // turn, where the pin multiplies them first; the rest share the
+        // pin's matrix order, so they compare under a real world.
+        const meshWorld = deformation && !instancing ? identity : world;
         const scope = new Map<string, Value>([
             ["input", input],
             ["uniforms", { viewProjection: world }],
-            ["instanceUniforms", { parentWorld: world }],
+            ["mesh", { world: meshWorld }],
             [
                 "deformation",
                 {
@@ -764,7 +767,7 @@ test("the executed pin and specialized stages agree on weighted positions and ma
             "vertex",
         );
         const originalScope = new Map<string, Value>(Object.entries(input));
-        originalScope.set("mesh", { world: identity });
+        originalScope.set("mesh", { world: instancing ? identity : meshWorld });
         originalScope.set("scene", { viewProjection: world });
         originalScope.set("boneSampler", bones.flat());
         originalScope.set("morph", {
@@ -839,7 +842,7 @@ test("pin arithmetic changes flow through skinning, morphing, tangent frames and
             instanceModule,
             "mesh.world*instanceWorld",
             "instanceWorld*mesh.world",
-            /instanceWorld \* instanceUniforms\.parentWorld/,
+            /instanceWorld \* mesh\.world/,
         ],
     ] as const) {
         const projected = materialVertexWgsl(

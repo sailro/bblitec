@@ -6,23 +6,20 @@
 #include <sstream>
 
 using namespace bbl;
-struct Resource {
-    int id;
-    std::string label;
-};
-using Lease = std::shared_ptr<Resource>;
-struct RenderResources {
-    Lease uniform, instances, styles;
-};
-struct AtlasResources {
-    Lease curves, bands, metadata;
-};
+
+/** The event log and failure switch the JavaScript recorder device keeps. */
 struct Ops {
     int next = 1;
     std::string fail;
     std::ofstream events{"events.txt"}, bytes{"writes.bin", std::ios::binary};
+    template <class T> void part(const T& value) {
+        if constexpr (std::is_floating_point_v<T>)
+            events << js::number_to_string(static_cast<double>(value)) << ' ';
+        else
+            events << value << ' ';
+    }
     template <class... T> void event(const T&... values) {
-        ((events << values << ' '), ...);
+        (part(values), ...);
         events << '\n';
     }
     void failure(const std::string& operation) {
@@ -32,123 +29,151 @@ struct Ops {
             throw std::runtime_error(operation);
         }
     }
-    Lease resource(const std::string& label, std::size_t size) {
-        failure("create:" + label);
-        auto lease = std::make_shared<Resource>(Resource{next++, label});
-        event("create", label, lease->id, size);
-        return lease;
-    }
-    void destroy(const Lease& lease) { event("destroy", lease->id); }
-    void write(const Lease& lease, std::size_t offset, std::span<const std::uint8_t> data) {
-        failure("write:" + lease->label);
-        event("write", lease->id, offset, data.size());
+    void write(std::span<const std::uint8_t> data) {
         bytes.write(reinterpret_cast<const char*>(data.data()),
                     static_cast<std::streamsize>(data.size()));
     }
-    static RenderResources& render(TextGpuState& gpu) {
-        if (!gpu.backend)
-            gpu.backend = std::make_shared<RenderResources>();
-        return *std::static_pointer_cast<RenderResources>(gpu.backend);
+};
+
+/** A recorded GPU object: its id, label and, for a texture, itself as view. */
+struct Resource final : TextGpuObject, std::enable_shared_from_this<Resource> {
+    Ops* ops = nullptr;
+    int id = 0;
+    std::string label;
+    void destroy() override { ops->event("destroy", id); }
+    TextGpuHandle create_view() override { return shared_from_this(); }
+};
+inline int id_of(const TextGpuHandle& handle) {
+    const auto resource = std::dynamic_pointer_cast<Resource>(handle);
+    return resource ? resource->id : 0;
+}
+inline TextGpuHandle named(int id) {
+    auto resource = std::make_shared<Resource>();
+    resource->id = id;
+    resource->label = "fixed";
+    return resource;
+}
+
+/** A recorded render bundle: its commands, replayed as events. */
+struct Bundle final : TextGpuObject {
+    std::vector<std::function<void(Ops&)>> commands;
+};
+struct RecorderEncoder final : TextGpuEncoder {
+    Ops& ops;
+    std::shared_ptr<Bundle> bundle;
+    explicit RecorderEncoder(Ops& target, bool recording = false) : ops(target) {
+        if (recording)
+            bundle = std::make_shared<Bundle>();
     }
-    static const RenderResources& render(const TextGpuState& gpu) {
-        return *std::static_pointer_cast<RenderResources>(gpu.backend);
+    void record(std::function<void(Ops&)> command) {
+        if (bundle)
+            bundle->commands.push_back(std::move(command));
+        else
+            command(ops);
     }
-    static AtlasResources& atlas(TextAtlasGpuState& gpu) {
-        if (!gpu.backend)
-            gpu.backend = std::make_shared<AtlasResources>();
-        return *std::static_pointer_cast<AtlasResources>(gpu.backend);
+    void set_pipeline(const TextGpuHandle& pipeline) override {
+        const int id = id_of(pipeline);
+        record([id](Ops& target) { target.event("pipeline", id); });
     }
-    static const AtlasResources& atlas(const TextAtlasGpuState& gpu) {
-        return *std::static_pointer_cast<AtlasResources>(gpu.backend);
+    void set_vertex_buffer(double slot, const TextGpuHandle& buffer) override {
+        const int id = id_of(buffer);
+        record([slot, id](Ops& target) { target.event("vertex", slot, id); });
     }
-    void create_renderable_buffer(TextGpuState& gpu, TextBufferKind kind, std::size_t count) {
-        auto& state = render(gpu);
-        if (kind == TextBufferKind::uniform) {
-            auto p = resource("text-renderable-ubo", count);
-            state.uniform = p;
-            gpu.destroy_uniform = [this, p] { destroy(p); };
+    void set_bind_group(double index, const TextGpuHandle& group) override {
+        if (index != 0)
+            throw std::runtime_error("bind group slot");
+        const int id = id_of(group);
+        record([id](Ops& target) { target.event("bind", id); });
+    }
+    void draw(double a, double b, double c, double d) override {
+        record([a, b, c, d](Ops& target) { target.event("draw", a, b, c, d); });
+    }
+    TextGpuHandle finish() override { return std::exchange(bundle, nullptr); }
+    void execute_bundles(const js::Array<TextGpuHandle>& bundles) override {
+        for (const auto& handle : bundles)
+            for (const auto& command : std::dynamic_pointer_cast<Bundle>(handle)->commands)
+                command(ops);
+    }
+    void end() override { ops.event("end"); }
+};
+
+/** The JavaScript recorder device, as the pinned functions call it. */
+struct RecorderDevice final : TextGpuDevice {
+    Ops& ops;
+    TextPipelineSet pipelines;
+    int bundles = 0;
+    RecorderDevice(Ops& target, TextPipelineSet set) : ops(target), pipelines(std::move(set)) {}
+    std::shared_ptr<Resource> resource(const std::optional<std::string>& label, double size) {
+        const std::string name = label.value_or("");
+        ops.failure("create:" + name);
+        auto created = std::make_shared<Resource>();
+        created->ops = &ops;
+        created->id = ops.next++;
+        created->label = name;
+        ops.event("create", name, created->id, size);
+        return created;
+    }
+    TextGpuHandle create_buffer(const TextBufferDescriptor& descriptor) override {
+        auto created = resource(descriptor.label, descriptor.size);
+        created->size = descriptor.size;
+        return created;
+    }
+    TextGpuHandle create_texture(const TextTextureDescriptor& descriptor) override {
+        return resource(descriptor.label, descriptor.size.width * descriptor.size.height * 16);
+    }
+    TextGpuHandle create_bind_group(const TextBindGroupDescriptor& descriptor) override {
+        ops.failure("group");
+        auto group = std::make_shared<Resource>();
+        group->ops = &ops;
+        group->id = ops.next++;
+        std::ostringstream line;
+        line << "group " << group->id << ' ' << id_of(descriptor.layout) << ' ';
+        for (const auto& entry : descriptor.entries) {
+            const auto* binding = std::get_if<TextBufferBinding>(&entry.resource);
+            line << id_of(binding ? binding->buffer : std::get<TextGpuHandle>(entry.resource))
+                 << ' ';
         }
-        if (kind == TextBufferKind::instances) {
-            auto p = resource("text-instance", count);
-            state.instances = p;
-            gpu.destroy_instances = [this, p] { destroy(p); };
-        }
-        if (kind == TextBufferKind::styles) {
-            auto p = resource("text-styles", count);
-            state.styles = p;
-            gpu.destroy_styles = [this, p] { destroy(p); };
-        }
-    }
-    void create_atlas_texture(TextAtlasGpuState& gpu, TextAtlasTextureKind kind, std::size_t width,
-                              std::size_t rows) {
-        auto& state = atlas(gpu);
-        if (kind == TextAtlasTextureKind::curves) {
-            auto p = resource("text-slug-curves", width * rows * 16);
-            state.curves = p;
-            gpu.destroy_curves = [this, p] { destroy(p); };
-        } else {
-            auto p = resource("text-slug-bands", width * rows * 16);
-            state.bands = p;
-            gpu.destroy_bands = [this, p] { destroy(p); };
-        }
-    }
-    void create_atlas_metadata(TextAtlasGpuState& gpu, std::size_t count) {
-        auto p = resource("text-glyph-metadata", count);
-        atlas(gpu).metadata = p;
-        gpu.destroy_metadata = [this, p] { destroy(p); };
-    }
-    void write_renderable_buffer(TextGpuState& gpu, TextBufferKind kind, std::size_t offset,
-                                 std::span<const std::uint8_t> data) {
-        const auto& state = render(gpu);
-        write(kind == TextBufferKind::uniform     ? state.uniform
-              : kind == TextBufferKind::instances ? state.instances
-                                                  : state.styles,
-              offset, data);
-    }
-    void write_atlas_texture(TextAtlasGpuState& gpu, TextAtlasTextureKind kind,
-                             std::span<const std::uint8_t> data, std::size_t row_bytes,
-                             std::size_t width, std::size_t rows) {
-        if (row_bytes != width * 16 || row_bytes * rows > data.size())
-            throw std::runtime_error("texture extent");
-        const auto& state = atlas(gpu);
-        write(kind == TextAtlasTextureKind::curves ? state.curves : state.bands, 0,
-              data.first(row_bytes * rows));
-    }
-    void write_atlas_metadata(TextAtlasGpuState& gpu, std::span<const std::uint8_t> data) {
-        write(atlas(gpu).metadata, 0, data);
-    }
-    std::shared_ptr<void> create_bind_group(TextGpuState& gpu, const TextAtlasGpuState& atlas_gpu,
-                                            const std::shared_ptr<void>& layout) {
-        failure("group");
-        auto group = std::make_shared<Resource>(Resource{next++, "group"});
-        const auto& r = render(gpu);
-        const auto& a = atlas(atlas_gpu);
-        event("group", group->id, id(layout), r.uniform->id, a.curves->id, a.bands->id,
-              a.metadata->id, r.styles->id);
+        ops.events << line.str() << '\n';
         return group;
     }
-    static int id(const std::shared_ptr<void>& value) {
-        return value ? std::static_pointer_cast<Resource>(value)->id : 0;
+    TextGpuEncoderHandle
+    create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor& descriptor) override {
+        if (descriptor.color_formats.size() != 1 || descriptor.sample_count != 1.0)
+            throw std::runtime_error("bundle descriptor");
+        ++bundles;
+        return std::make_shared<RecorderEncoder>(ops, true);
     }
-    void set_quad_vertex_buffer(const std::shared_ptr<void>& quad) { event("vertex", 0, id(quad)); }
-    void set_instance_vertex_buffer(const TextGpuState& gpu) {
-        event("vertex", 1, render(gpu).instances->id);
+    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
+                      double data_offset, double size) override {
+        const auto target = std::dynamic_pointer_cast<Resource>(buffer);
+        ops.failure("write:" + target->label);
+        ops.event("write", target->id, offset, size);
+        ops.write(
+            {data.data() + static_cast<std::size_t>(data_offset), static_cast<std::size_t>(size)});
     }
-    void set_pipeline(const std::shared_ptr<void>& pipeline) { event("pipeline", id(pipeline)); }
-    void set_bind_group(const std::shared_ptr<void>& group) { event("bind", id(group)); }
-    void draw(std::size_t a, std::size_t b, std::size_t c, std::size_t d) {
-        event("draw", a, b, c, d);
+    void write_texture(const TextTexelCopyTextureInfo& destination, const js::ArrayBuffer& data,
+                       const TextTexelCopyBufferLayout& layout, const TextExtent3D& size) override {
+        const auto target = std::dynamic_pointer_cast<Resource>(destination.texture);
+        const double count = layout.bytes_per_row.value_or(0) * size.height;
+        ops.failure("write:" + target->label);
+        ops.event("write", target->id, 0.0, count);
+        ops.write({data.data() + static_cast<std::size_t>(layout.offset.value_or(0)),
+                   static_cast<std::size_t>(count)});
     }
+    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
+                                  bool, const std::shared_ptr<const void>&,
+                                  const std::string&) override {
+        return pipelines;
+    }
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override { return pipelines.cache; }
 };
-std::vector<std::uint8_t> pattern(std::size_t count, std::size_t seed) {
+
+/** The pin's records, filled as the fixtures' JavaScript twins are. */
+js::TypedArray<float> pattern_floats(std::size_t count, std::size_t seed) {
     std::vector<std::uint8_t> bytes(count);
     for (std::size_t i = 0; i < count; ++i)
         bytes[i] = static_cast<std::uint8_t>((i * 37 + seed) & 255);
-    return bytes;
-}
-// The pin's records, filled as the fixtures' JavaScript twins are.
-js::TypedArray<float> pattern_floats(std::size_t count, std::size_t seed) {
-    return js::TypedArray<float>(js::ArrayBuffer(pattern(count, seed)));
+    return js::TypedArray<float>(js::ArrayBuffer(std::move(bytes)));
 }
 std::shared_ptr<SharedAtlas> text_atlas() {
     auto atlas = std::make_shared<SharedAtlas>();

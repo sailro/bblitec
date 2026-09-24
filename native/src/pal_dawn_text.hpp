@@ -36,32 +36,27 @@ inline const char* dawn_text_format_name(WGPUTextureFormat format) {
     }
 }
 
-/** One device's text pipeline cache; source records retain their own leases. */
-struct DawnTextRenderer {
-    std::shared_ptr<DawnTextDevice> owner = std::make_shared<DawnTextDevice>();
-    std::shared_ptr<DawnTextLayout> layout;
+/**
+ * The pin's `GPUDevice` for text on Dawn: WebGPU objects over Dawn's own, and
+ * the per-device pipeline cache `getOrCreateTextPipeline` reads.
+ */
+struct DawnTextGpuDevice final : DawnTextGpuResources {
+    /** The target formats this device's passes draw into. */
+    WGPUTextureFormat color_format = WGPUTextureFormat_Undefined;
+    WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined;
+    std::shared_ptr<DawnTextGpuLayout> layout;
     std::shared_ptr<DawnTextPipelineLayoutLease> pipeline_layout;
-    std::shared_ptr<DawnTextBuffer> quad;
-#if BBLITE_HAS_TEXT_RENDERABLE
-    TextScenePass scene;
-#endif
+    TextPipelineDeviceCacheHandle cache;
     std::map<std::tuple<const upstream::TextPipelineInfo*, WGPUTextureFormat, WGPUTextureFormat>,
-             std::shared_ptr<DawnTextPipelineLease>>
+             std::shared_ptr<DawnTextGpuPipeline>>
         pipelines;
 
-    DawnTextRenderer(WGPUDevice device, WGPUQueue queue, bool capture) {
-        owner->device = device;
-        owner->queue = queue;
-        owner->capture = TextGpuCapture(capture);
-    }
-    ~DawnTextRenderer() { owner->retire(); }
-    DawnTextRenderer(const DawnTextRenderer&) = delete;
-    DawnTextRenderer& operator=(const DawnTextRenderer&) = delete;
+    using DawnTextGpuResources::DawnTextGpuResources;
 
-    void ensure_layout() {
-        if (layout)
-            return;
-        auto created = std::make_shared<DawnTextLayout>();
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override {
+        if (cache)
+            return cache;
+        auto created = std::make_shared<DawnTextGpuLayout>();
         std::vector<WGPUBindGroupLayoutEntry> entries;
         for (const auto& row : upstream::text_binding_layout) {
             WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -90,29 +85,62 @@ struct DawnTextRenderer {
         WGPUPipelineLayoutDescriptor pipeline_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
         pipeline_descriptor.bindGroupLayoutCount = 1;
         pipeline_descriptor.bindGroupLayouts = &group;
-        auto created_pipeline_layout = retain_dawn_text_resource<DawnTextPipelineLayoutLease>(
+        pipeline_layout = retain_dawn_text_resource<DawnTextPipelineLayoutLease>(
             owner, wgpuDeviceCreatePipelineLayout(owner->device, &pipeline_descriptor));
-        DawnTextResourceOps ops{owner};
-        auto created_quad = std::make_shared<DawnTextBuffer>(
-            ops.create_buffer(WGPUBufferUsage_Vertex, sizeof(upstream::text_quad_corners), "quad"));
-        wgpuQueueWriteBuffer(owner->queue, created_quad->lease->get(), 0,
+        auto quad = std::make_shared<DawnTextGpuBuffer>();
+        quad->size = sizeof(upstream::text_quad_corners);
+        WGPUBufferDescriptor quad_info = WGPU_BUFFER_DESCRIPTOR_INIT;
+        quad_info.size = sizeof(upstream::text_quad_corners);
+        quad_info.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+        quad->lease = retain_dawn_text_resource<DawnTextBufferLease>(
+            owner, wgpuDeviceCreateBuffer(owner->device, &quad_info), "quad",
+            sizeof(upstream::text_quad_corners));
+        wgpuQueueWriteBuffer(owner->queue, quad->lease->get(), 0,
                              upstream::text_quad_corners.data(),
                              sizeof(upstream::text_quad_corners));
         owner->capture.write(
-            created_quad->lease->capture_id, 0u,
+            quad->lease->capture_id, 0u,
             {reinterpret_cast<const std::uint8_t*>(upstream::text_quad_corners.data()),
              sizeof(upstream::text_quad_corners)});
-        layout = std::move(created);
-        pipeline_layout = std::move(created_pipeline_layout);
-        quad = std::move(created_quad);
+        layout = created;
+        cache = std::make_shared<TextPipelineDeviceCache>();
+        cache->bind_group_layout = std::move(created);
+        cache->quad_vertex_buffer = std::move(quad);
+        return cache;
     }
 
-    TextPipelineBinding pipeline(const upstream::TextPipelineInfo& info,
-                                 WGPUTextureFormat color_format, WGPUTextureFormat depth_format) {
-        ensure_layout();
-        const auto key = std::tuple{&info, color_format, depth_format};
+    TextPipelineSet text_pipeline(const std::string& format, double sample_count,
+                                  const std::optional<std::string>& depth_stencil_format,
+                                  bool depth_write, const std::shared_ptr<const void>& owner_object,
+                                  const std::string& depth_compare) override {
+        if (format != dawn_text_format_name(color_format))
+            throw std::runtime_error("Text pipeline format differs from the Dawn target: " +
+                                     format);
+        const auto samples = text_gpu_u32(text_gpu_size(sample_count));
+        const bool has_depth = depth_stencil_format.has_value();
+        if (has_depth && *depth_stencil_format != dawn_text_format_name(depth_format))
+            throw std::runtime_error("Text pipeline depth format differs from the Dawn target: " +
+                                     *depth_stencil_format);
+        if (has_depth && depth_compare != "greater-equal")
+            throw std::runtime_error("Unmapped text depth compare: " + depth_compare);
+        const bool alpha_to_coverage =
+            text_pipeline_alpha_to_coverage(sample_count, depth_write, owner_object);
+        TextPipelineSet result;
+        result.cache = text_pipeline_cache();
+        result.pipeline =
+            pipeline(text_pipeline_info(samples, has_depth, depth_write, alpha_to_coverage));
+        result.variant_pipeline = text_weight_installed
+                                      ? pipeline(text_pipeline_info(samples, has_depth, depth_write,
+                                                                    alpha_to_coverage, true))
+                                      : result.pipeline;
+        return result;
+    }
+
+    std::shared_ptr<DawnTextGpuPipeline> pipeline(const upstream::TextPipelineInfo& info) {
+        const auto depth_target = info.has_depth ? depth_format : WGPUTextureFormat_Undefined;
+        const auto key = std::tuple{&info, color_format, depth_target};
         if (const auto found = pipelines.find(key); found != pipelines.end())
-            return {found->second, found->second, layout, quad};
+            return found->second;
         auto vertex = retain_dawn_text_resource<DawnTextShaderLease>(
             owner, load_wgsl_module(owner->device, info.vertex_shader));
         auto fragment_module = retain_dawn_text_resource<DawnTextShaderLease>(
@@ -159,7 +187,7 @@ struct DawnTextRenderer {
         fragment.targetCount = 1;
         fragment.targets = &target;
         WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
-        depth.format = depth_format;
+        depth.format = depth_target;
         depth.depthCompare = dawn_depth_compare(info.depth_compare);
         depth.depthWriteEnabled = info.depth_write ? WGPUOptionalBool_True : WGPUOptionalBool_False;
         WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
@@ -183,15 +211,44 @@ struct DawnTextRenderer {
             fragment_constants(info.fragment_constants);
         vertex_constants.apply(descriptor.vertex);
         fragment_constants.apply(fragment);
-        auto created = retain_dawn_text_resource<DawnTextPipelineLease>(
+        auto created = std::make_shared<DawnTextGpuPipeline>();
+        created->pipeline = retain_dawn_text_resource<DawnTextPipelineLease>(
             owner, wgpuDeviceCreateRenderPipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled())
             created->capture =
                 text_pipeline_capture(info, dawn_text_format_name(color_format),
-                                      info.has_depth ? dawn_text_format_name(depth_format) : "");
+                                      info.has_depth ? dawn_text_format_name(depth_target) : "");
         pipelines.emplace(key, created);
-        // The admitted source installs no variant resolver; the pin aliases it.
-        return {created, created, layout, quad};
+        return created;
+    }
+};
+
+/** The Dawn text device, and the scene pass that draws the scene's text through it. */
+struct DawnTextRenderer {
+    std::shared_ptr<DawnTextGpuDevice> device;
+#if BBLITE_HAS_TEXT_RENDERABLE
+    TextScenePass scene;
+#endif
+    DawnTextRenderer(WGPUDevice gpu, WGPUQueue queue, bool capture)
+        : device(std::make_shared<DawnTextGpuDevice>(gpu, queue, capture)) {}
+    // Its resources retire with the Dawn device they belong to, even while
+    // the engine surface or a text record still names the device.
+    ~DawnTextRenderer() { device->owner->retire(); }
+    DawnTextRenderer(const DawnTextRenderer&) = delete;
+    DawnTextRenderer& operator=(const DawnTextRenderer&) = delete;
+    /** A pass encoder over a render pass the frame opened. */
+    std::shared_ptr<DawnTextPassEncoder> borrow_pass(WGPURenderPassEncoder pass) {
+        auto encoder = std::make_shared<DawnTextPassEncoder>();
+        encoder->owner = device->owner;
+        encoder->pass = pass;
+        return encoder;
+    }
+    /** The frame's command encoder for passes the pin begins itself. */
+    std::shared_ptr<DawnTextCommandEncoder> command_encoder(WGPUCommandEncoder encoder) {
+        auto result = std::make_shared<DawnTextCommandEncoder>();
+        result->owner = device->owner;
+        result->encoder = encoder;
+        return result;
     }
 };
 

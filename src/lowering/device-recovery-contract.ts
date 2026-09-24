@@ -136,27 +136,6 @@ async function rebuildRecoverableTextures(engine: EngineContext, state: DeviceLo
     );
     check(
         "device-lost-recovery-run",
-        "assertEveryActiveContextKindIsRecoverable",
-        `
-function assertEveryActiveContextKindIsRecoverable(engine: EngineContext, handlers: ReadonlyMap<string, DeviceLostRecoveryRegistration>): void {
-    const unrecoverable = new Set<string>();
-    for (const surface of engine.surfaces) {
-        for (const context of surface._renderingContexts) {
-            if (!handlers.has(context._kind)) {
-                unrecoverable.add(context._kind);
-            }
-        }
-    }
-    if (unrecoverable.size) {
-        throw new Error(\`Device-lost recovery cannot rebuild registered rendering contexts of kind: \${Array.from(unrecoverable).sort().join(", ")}. \` +
-            \`Recovering around them would leave them bound to the lost device and crash the browser's renderer process on the next frame. \` +
-            \`Enable that kind's device-lost recovery before the device is lost, or unregister the context.\`);
-    }
-}
-`,
-    );
-    check(
-        "device-lost-recovery-run",
         "runRecoveryStep",
         `
 async function runRecoveryStep<T>(description: string, action: () => T | Promise<T>): Promise<T> {

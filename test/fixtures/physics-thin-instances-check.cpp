@@ -14,7 +14,7 @@ void flush_thin_instances(Engine& engine, MeshHandle mesh) {
     ++engine.meshes.at(mesh.value).instance_version;
 }
 TransformNodeHandle create_transform_node(Engine&, std::string, Vec3d, Vec4, Vec3) { std::abort(); }
-void set_transform_node_position(Engine&, TransformNodeHandle, Vec3d, bool) { std::abort(); }
+void set_transform_node_position(Engine&, TransformNodeHandle, Vec3d) { std::abort(); }
 } // namespace bbl
 namespace p = bbl::pal;
 namespace u = bbl::upstream;

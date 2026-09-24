@@ -104,6 +104,7 @@ interface ClassLoweringContext extends Pick<
     | "canShareFunctionBody"
     | "compileSharedMethod"
     | "registerNativeBinding"
+    | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
     | "registerNativeBindingType"
@@ -808,6 +809,7 @@ export class ClassLowerer {
                         `${this.context.dataTypes.classHierarchy.tag(declaration)};`,
                 );
             }
+            this.context.registerNativeBindingType(cpp, cppType);
             writable(instance).cpp = cpp;
             writable(instance).dataType = structType;
             for (const field of layout) {
@@ -1343,6 +1345,10 @@ export class ClassLowerer {
                 `${this.context.dataTypes.cppType(value.dataType)} ` +
                     `${bound} = ${source};`,
             );
+            this.context.registerNativeBindingType(
+                bound,
+                this.context.dataTypes.cppType(value.dataType),
+            );
             instanceCpp = bound;
         }
         // A computed receiver's identity and presence spellings follow the
@@ -1846,18 +1852,14 @@ export class ClassLowerer {
         const returnsVoid =
             !effectiveReturn ||
             (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        // A function argument is bound at generation, so the shared body is
+        // specialized per callback like any other captured argument.
         const sharedBody =
-            method.parameters.every((parameter) => {
-                const type = this.context.dataTypes.fromTsType(
-                    this.context.checker.getTypeAtLocation(parameter),
-                    parameter,
-                );
-                return (
+            method.parameters.every(
+                (parameter) =>
                     ts.isIdentifier(parameter.name) &&
-                    !parameter.dotDotDotToken &&
-                    (!type || !this.context.dataTypes.carriesFunction(type))
-                );
-            }) && this.context.canShareFunctionBody(method.body);
+                    !parameter.dotDotDotToken,
+            ) && this.context.canShareFunctionBody(method.body);
         const mappedReturnType = returnsVoid
             ? undefined
             : sharedBody

@@ -193,7 +193,12 @@ export function compileAudioIntrinsic(
                 audioMainBusCpp: `${engine}_main_bus`,
                 nativeCompanionCaptures: {
                     audioMainBusCpp: [
-                        context.registerNativeBinding(`${engine}_main_bus`),
+                        context.registerNativeBinding(
+                            `${engine}_main_bus`,
+                            false,
+                            false,
+                            "bbl::pal::AudioNodeHandle",
+                        ),
                     ],
                 },
             };

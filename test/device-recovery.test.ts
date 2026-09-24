@@ -50,9 +50,16 @@ test("unchanged device-loss scene retains polling predicates, GPU identities and
         result.cpp,
         /defer_capture_until\([^\n]+canvas_dataset\([^\n]+"ready"/,
     );
+    // The poll predicate is a shared body; the deferred start calls it.
+    const predicate = result.cpp.match(
+        /defer_start_continuation_until\([^\n]+\[&\]\(\)[^\n]*bblscene::(bbl_recursive_fn\d+_group)\)\(\)/,
+    )?.[1];
+    assert.ok(predicate);
     assert.match(
         result.cpp,
-        /defer_start_continuation_until\([^\n]+\[&\]\(\).*canvas_dataset\([^\n]+"preLossReady"/,
+        new RegExp(
+            `\\n\\w+ ${predicate}\\([^\\n]*\\) \\{\\n[^}]*canvas_dataset\\([^\\n]+"preLossReady"`,
+        ),
     );
     assert.ok(
         result.manifest.scenePbrMaterials?.some(
@@ -185,11 +192,6 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "settleRebuiltTextureOwnership(engine);",
         ],
         [
-            "device-lost-recovery-run",
-            "if (!handlers.has(context._kind))",
-            "if (handlers.has(context._kind))",
-        ],
-        [
             "recovery-rebuild",
             "engine._pbrFallbackTex = undefined",
             "engine._pbrFallbackTex = null",
@@ -268,6 +270,38 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "arm(engine, state); registration._onRecoveryFailed?.(error)",
         ),
         /arm_device_recovery\(engine, state\);\n\s*\(registration->on_failed/,
+    );
+    // The run's context-kind assertion is lowered too (RDN-28): every
+    // registered context's pinned kind, checked against the in-flight
+    // registrations' kinds, refused with the pin's own sorted message.
+    assert.match(
+        pinned,
+        /kinds\.insert\(kinds\.end\(\), bbl::text_renderer_count\(engine\), std::string\("text-renderer"\)\);/,
+    );
+    assert.match(pinned, /registration->kind = "scene";/);
+    assert.match(
+        pinned,
+        /if \(!std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context; \}\)\) \{\n\s*unrecoverable\.add\(context\);/,
+    );
+    assert.match(
+        pinned,
+        /std::string\("Device-lost recovery cannot rebuild registered rendering contexts of kind: "\) \+ bbl::js::array_join\(bbl::js::string_array_sort\(bbl::js::array_from_iterable<std::string>\(unrecoverable\)\), std::string\(", "\)\)/,
+    );
+    assert.match(
+        pinned,
+        /engine\.stopped = true;\n\s*assert_every_active_context_kind_is_recoverable\(engine, state\.in_flight\);/,
+    );
+    assert.match(
+        lowerDeviceRecovery(
+            new LoweringContext(
+                new EditedStore(
+                    "device-lost-recovery-run",
+                    "if (!handlers.has(context._kind))",
+                    "if (handlers.has(context._kind))",
+                ),
+            ),
+        ).source,
+        /if \(std::ranges::any_of\(handlers,/,
     );
 });
 

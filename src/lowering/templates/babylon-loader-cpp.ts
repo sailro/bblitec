@@ -35,7 +35,6 @@ export function babylonLoaderCpp(
     cameraParser: string | undefined,
     lowered: BabylonLoaderLoweredSegments,
     lightMeshLists = false,
-    meshClones = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
@@ -204,7 +203,9 @@ ${lowered.submeshDefaults}
 
 ${lowered.hierarchy}
 
-// Project the linked source hierarchy into native baked geometry and traversal order.
+// Project the linked source hierarchy into native records and traversal
+// order: a mesh keeps its own TRS and local vertices, and composes under its
+// parent nodes' world, which the pin's node hierarchy holds.
 void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
     const std::vector<BabylonHierarchyNode>& nodes, const std::vector<std::size_t>& roots) {
     std::vector<std::array<float, 16>> worlds(nodes.size());
@@ -226,24 +227,8 @@ void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
     };
     for (std::size_t index = 0; index < nodes.size(); ++index) {
         const auto& node = nodes[index];
-        const auto& matrix = world(world, index);
-        if (node.mesh.value == invalid_handle) continue;
-        auto& mesh = ${recordAt("engine.meshes", "node.mesh")};
-        mesh.instance_parent_matrix = matrix;
-        auto& geometry = engine.geometries.at(mesh.geometry);
-        geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-        geometry.bounds_max = Vec3{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
-        for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
-            auto& vertex = geometry.vertices[vertex_index];
-            vertex.position = upstream::transform_position(matrix, vertex.local_position);
-            vertex.normal = upstream::normalize_baked_direction(upstream::transform_direction(matrix, geometry.local_normals.at(vertex_index)));
-            geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
-            geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
-            geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
-            geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
-            geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
-            geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
-        }
+        if (node.mesh.value == invalid_handle || node.parent == invalid_handle) continue;
+        ${recordAt("engine.meshes", "node.mesh")}.parent_world = world(world, node.parent);
     }
     std::vector<std::size_t> pending(roots.rbegin(), roots.rend());
     std::vector<bool> seen(nodes.size());
@@ -305,18 +290,21 @@ std::uint32_t upload_babylon_mesh(Engine& engine, const std::vector<float>& posi
     const auto vertex_count = positions.size() / 3;
     ModelGeometry geometry;
     geometry.vertices.resize(vertex_count);
-    geometry.local_normals.resize(vertex_count);
-${meshClones ? "    geometry.bind_vertices.resize(vertex_count);" : ""}
+    geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    geometry.bounds_max = Vec3{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
     for (std::size_t index = 0; index < vertex_count; ++index) {
         ModelVertex vertex;
-        vertex.local_position = Vec3{positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]};
-        vertex.position = vertex.local_position;
+        vertex.position = Vec3{positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]};
         vertex.normal = Vec3{normals[index * 3], normals[index * 3 + 1], normals[index * 3 + 2]};
         if (!uvs.empty()) vertex.uv = Vec2{uvs.at(index * 2), uvs.at(index * 2 + 1)};
         if (!uvs2.empty()) vertex.uv2 = Vec2{uvs2.at(index * 2), uvs2.at(index * 2 + 1)};
-        geometry.local_normals[index] = vertex.normal;
         geometry.vertices[index] = vertex;
-${meshClones ? "        geometry.bind_vertices[index] = vertex;" : ""}
+        geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
+        geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
+        geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
+        geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
+        geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
+        geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
     }
     geometry.indices = indices;
     return store_geometry_record(engine, std::move(geometry));
@@ -330,13 +318,11 @@ std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode
     mesh.geometry = geometry;
     mesh.material = material;
     mesh.receives_shadows = receives_shadows;
-${
-    meshClones
-        ? `    mesh.imported_clone_trs = ImportedMeshTrs{
-        Vec3{static_cast<float>(transform.position.x), static_cast<float>(transform.position.y), static_cast<float>(transform.position.z)},
-        transform.rotation, transform.scaling};`
-        : ""
-}
+    mesh.position = transform.position;
+    mesh.rotation = transform.rotation;
+    mesh.scaling = transform.scaling;
+    mesh.has_rotation_quaternion = transform.has_rotation_quaternion;
+    mesh.rotation_quaternion = transform.rotation_quaternion;
     BabylonHierarchyNode node;
     node.id = id;
     node.transform = transform;

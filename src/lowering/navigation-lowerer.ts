@@ -742,18 +742,7 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 // src/scene/world-matrix-state.ts composeTrsLocalMatrix +
 // _mergeMeshes: the pin multiplies each mesh's CPU positions through
 // its worldMatrix and reverses the winding (i, i+2, i+1) over a running
-// vertex base. What differs here is only where that world already is,
-// which the geometry records as its vertex space.
-//
-// VertexSpace::world is the glTF loader's static arm: it baked the
-// mirrored node world into every position — measured on nav_test.glb,
-// each baked position equals the pin's stream value — so the rows are
-// the identity and the positions pass through, and a scene-code TRS on
-// top would need composing that world again, so it refuses.
-// VertexSpace::local keeps the transform on the record, exactly as the
-// pin keeps _cpuPositions local, so the rows are the composed TRS
-// above. VertexSpace::mirrored_local carries half a world and the node
-// matrix arrives per draw, so it refuses by name.
+// vertex base.
 void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
@@ -773,51 +762,20 @@ void create_nav_mesh(
         }
         const ModelGeometry& geometry =
             engine.geometries[mesh.geometry];
-        if (geometry.vertex_space == VertexSpace::mirrored_local) {
-            throw std::runtime_error(
-                "createNavMesh is lowered for meshes whose vertices are "
-                "local or fully world-baked; mesh '" + mesh.name +
-                "' is animated or instanced, so its node matrix reaches "
-                "the draw rather than its geometry.");
-        }
-        const bool baked_world =
-            geometry.vertex_space == VertexSpace::world;
-        if (baked_world &&
-            (mesh.position.x != 0.0f || mesh.position.y != 0.0f ||
-             mesh.position.z != 0.0f ||
-             mesh.rotation.x != 0.0f || mesh.rotation.y != 0.0f ||
-             mesh.rotation.z != 0.0f ||
-             mesh.has_rotation_quaternion ||
-             mesh.scaling.x != 1.0f || mesh.scaling.y != 1.0f ||
-             mesh.scaling.z != 1.0f)) {
-            throw std::runtime_error(
-                "createNavMesh is lowered for imported meshes at their "
-                "loaded transform; mesh '" + mesh.name +
-                "' carries scene-code TRS on top of a baked world, "
-                "which the merge does not compose.");
-        }
         merged.positions.reserve(
             merged.positions.size() +
             geometry.vertices.size() * 3);
-        if (baked_world) {
-            for (const ModelVertex& vertex : geometry.vertices) {
-                merged.positions.push_back(vertex.position.x);
-                merged.positions.push_back(vertex.position.y);
-                merged.positions.push_back(vertex.position.z);
-            }
-        } else {
-            const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
-            for (const ModelVertex& vertex : geometry.vertices) {
-                const double x = vertex.position.x;
-                const double y = vertex.position.y;
-                const double z = vertex.position.z;
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[0] + y * wm[4] + z * wm[8] + wm[12]));
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[1] + y * wm[5] + z * wm[9] + wm[13]));
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[2] + y * wm[6] + z * wm[10] + wm[14]));
-            }
+        const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
+        for (const ModelVertex& vertex : geometry.vertices) {
+            const double x = vertex.position.x;
+            const double y = vertex.position.y;
+            const double z = vertex.position.z;
+            merged.positions.push_back(static_cast<float>(
+                x * wm[0] + y * wm[4] + z * wm[8] + wm[12]));
+            merged.positions.push_back(static_cast<float>(
+                x * wm[1] + y * wm[5] + z * wm[9] + wm[13]));
+            merged.positions.push_back(static_cast<float>(
+                x * wm[2] + y * wm[6] + z * wm[10] + wm[14]));
         }
         merged.indices.reserve(
             merged.indices.size() + geometry.indices.size());

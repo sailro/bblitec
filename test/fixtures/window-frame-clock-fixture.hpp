@@ -11,7 +11,7 @@ public:
     using Clock = WindowFrameClock::Clock;
     static inline bool enabled = false;
 
-    explicit FixtureWindowFrameClock(bool = false) {}
+    explicit FixtureWindowFrameClock(bool = false, bool = false) {}
     bool available() const { return enabled; }
     std::optional<Clock::time_point> take_latest() {
         if (!enabled)

@@ -1,26 +1,54 @@
 #include "pal_sdl_gpu_text_resources.hpp"
 #include <cassert>
 
+using namespace bbl;
+using namespace bbl::pal;
+
+// The WebGPU half of the SDL text device, without its pipeline cache.
+struct Device final : SdlTextGpuResources {
+    using SdlTextGpuResources::SdlTextGpuResources;
+    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
+                                  bool, const std::shared_ptr<const void>&,
+                                  const std::string&) override {
+        throw std::logic_error("no pipelines");
+    }
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override {
+        throw std::logic_error("no pipelines");
+    }
+};
+
 int main() {
-    using namespace bbl;
-    using namespace bbl::pal;
-    auto owner = std::make_shared<SdlTextDevice>();
-    SdlTextResourceOps ops{owner};
-    TextGpuState first, second;
-    // Uniform creation is the SDL CPU/push transport; no native device is needed.
-    ops.create_renderable_buffer(first, TextBufferKind::uniform, 96);
-    ops.create_renderable_buffer(second, TextBufferKind::uniform, 96);
-    TextAtlasGpuState atlas;
-    atlas.backend = std::make_shared<SdlTextAtlasResources>();
-    auto group = std::static_pointer_cast<SdlTextGroup>(ops.create_bind_group(first, atlas, {}));
+    // Uniform buffers are the SDL CPU/push transport; no native device is needed.
+    auto device = std::make_shared<Device>(nullptr, false);
+    const auto uniform = [](Device& owner) {
+        return owner.create_buffer(TextBufferDescriptor{std::string("text-renderable-ubo"), 96,
+                                                        text_buffer_usage_uniform | 0x08});
+    };
+    auto layout = std::make_shared<SdlTextGpuLayout>();
+    layout->bindings = {{0u, TextBindingRole::uniform}};
+    const auto group_of = [&](const TextGpuHandle& buffer) {
+        TextBindGroupDescriptor descriptor;
+        descriptor.layout = layout;
+        descriptor.entries = {TextBindGroupEntry{0, TextBufferBinding{buffer, {}, {}}}};
+        return sdl_text_object<SdlTextGpuGroup>(device->create_bind_group(descriptor));
+    };
+    const auto write = [](Device& owner, const TextGpuHandle& buffer, double offset,
+                          const std::array<std::uint8_t, 4>& bytes) {
+        owner.write_buffer(buffer, offset,
+                           js::ArrayBuffer(std::vector<std::uint8_t>(bytes.begin(), bytes.end())),
+                           0, 4);
+    };
+    auto first = uniform(*device), second = uniform(*device);
+    auto group = group_of(first);
     const std::array<std::uint8_t, 4> front{11, 12, 13, 14}, rear{21, 22, 23, 24};
-    ops.write_renderable_buffer(first, TextBufferKind::uniform, 80, front);
-    ops.write_renderable_buffer(second, TextBufferKind::uniform, 80, rear);
+    write(*device, first, 80, front);
+    write(*device, second, 80, rear);
     assert(group->uniform->bytes[80] == 11 && group->uniform->bytes[84] == 0);
+    // The source destroys the renderable's buffer while its group still holds it.
     const auto old = group->uniform;
-    first.destroy_uniform();
-    ops.create_renderable_buffer(first, TextBufferKind::uniform, 96);
-    ops.write_renderable_buffer(first, TextBufferKind::uniform, 80, rear);
+    first->destroy();
+    first = uniform(*device);
+    write(*device, first, 80, rear);
     assert(group->uniform == old && group->uniform->bytes[80] == 11);
     bool destroyed = false;
     try {
@@ -29,29 +57,25 @@ int main() {
         destroyed = true;
     }
     assert(destroyed);
-    auto replacement =
-        std::static_pointer_cast<SdlTextGroup>(ops.create_bind_group(first, atlas, {}));
+    auto replacement = group_of(first);
     assert(replacement->uniform != old && replacement->uniform->bytes[80] == 21);
     bool range = false;
     try {
-        ops.write_renderable_buffer(first, TextBufferKind::uniform, 94, front);
+        write(*device, first, 94, front);
     } catch (const std::runtime_error&) {
         range = true;
     }
     assert(range && replacement->uniform->bytes[94] == 0);
-    owner->retire();
+    device->owner->retire();
     assert(replacement->uniform->destroyed && group->uniform->destroyed);
-    assert(owner->resources.tracked_resource_count() == 0);
+    assert(device->owner->resources.tracked_resource_count() == 0);
 
-    auto captured_owner = std::make_shared<SdlTextDevice>();
-    captured_owner->capture = TextGpuCapture(true);
-    SdlTextResourceOps captured_ops{captured_owner};
-    TextGpuState captured_gpu;
-    captured_ops.create_renderable_buffer(captured_gpu, TextBufferKind::uniform, 96);
-    captured_ops.write_renderable_buffer(captured_gpu, TextBufferKind::uniform, 80, front);
-    const auto& receipt = captured_owner->capture.resources().at(0);
+    auto captured = std::make_shared<Device>(nullptr, true);
+    const auto buffer = uniform(*captured);
+    write(*captured, buffer, 80, front);
+    const auto& receipt = captured->owner->capture.resources().at(0);
     assert(receipt.role == "uniform-shadow");
     assert(receipt.written_ranges.at(0).offset == 80 && receipt.written_ranges.at(0).bytes == 4);
     assert(receipt.uploaded_bytes.at(80) == 11);
-    captured_owner->retire();
+    captured->owner->retire();
 }

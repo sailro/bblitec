@@ -406,7 +406,7 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     const writer = emittedBody("void write_node_pose(");
     assert.match(writer, /mesh\.position = position;/);
     assert.match(writer, /mesh\.rotation_quaternion = rotation;/);
-    assert.match(writer, /mark_mesh_runtime_transform\(engine, handle\);/);
+    assert.match(writer, /mark_mesh_dirty\(engine, handle\);/);
     assert.doesNotMatch(lowered.source, /mark_physics_mesh_dirty/);
 });
 

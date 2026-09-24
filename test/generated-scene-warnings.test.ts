@@ -122,7 +122,6 @@ function runScene(
 namespace bbl {
 Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
 void mark_mesh_dirty(Engine&, MeshHandle) {}
-void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
 }
 ${observer}
 `,

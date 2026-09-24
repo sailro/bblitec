@@ -20,6 +20,7 @@
 import ts from "typescript";
 
 import { javascriptModuleUrl } from "./data-url.js";
+import { webgpuFlagNamespaces } from "./webgpu-flags.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { isRelativeSpecifier } from "./typescript-module-specifiers.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -42,36 +43,9 @@ import {
  * order right: every pinned import in generation goes through this module,
  * and a snapshot taken once cannot be corrected afterwards.
  *
- * The values are the WebGPU specification's, and they reach no artifact —
- * generation reads the WGSL and the binding tables a descriptor carries,
+ * Generation reads the WGSL and the binding tables a descriptor carries,
  * never its usage masks.
  */
-const webgpuFlagNamespaces: Readonly<
-    Record<string, Readonly<Record<string, number>>>
-> = {
-    GPUShaderStage: { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 },
-    GPUTextureUsage: {
-        COPY_SRC: 1,
-        COPY_DST: 2,
-        TEXTURE_BINDING: 4,
-        STORAGE_BINDING: 8,
-        RENDER_ATTACHMENT: 16,
-    },
-    GPUBufferUsage: {
-        MAP_READ: 1,
-        MAP_WRITE: 2,
-        COPY_SRC: 4,
-        COPY_DST: 8,
-        INDEX: 16,
-        VERTEX: 32,
-        UNIFORM: 64,
-        STORAGE: 128,
-        INDIRECT: 256,
-        QUERY_RESOLVE: 512,
-    },
-    GPUColorWrite: { RED: 1, GREEN: 2, BLUE: 4, ALPHA: 8, ALL: 15 },
-};
-
 for (const [name, values] of Object.entries(webgpuFlagNamespaces)) {
     const host = globalThis as unknown as Record<string, unknown>;
     if (host[name] === undefined) host[name] = values;

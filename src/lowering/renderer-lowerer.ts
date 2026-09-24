@@ -661,10 +661,8 @@ export class RendererLowerer {
         ]) {
             this.context.functionDeclaration(renderTaskModule, symbol);
         }
-        // The mesh world is composed from these on EVERY plan now -- the
-        // CPU vertex bake reads it for any scene that draws a mesh -- so
-        // the assertion is unconditional too. It used to sit behind
-        // `gpuInstancing`, which was the only consumer at the time.
+        // The mesh world is composed from these on EVERY plan -- every
+        // draw's mesh block reads it -- so the assertion is unconditional.
         // (multiplyMat4IntoBuffer needs no entry: the multiply writer resolves
         // its declaration on every plan.)
         this.context.functionDeclaration(
@@ -1273,21 +1271,20 @@ std::array<float, 16> build_view_matrix(
 // the mesh record, kept as a plain function so a fixture can stand in for
 // it.
 std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
-// One mesh's world matrix: its own composition under its parent chain.
+// One mesh's \`worldMatrix\`: its own composition under its parent chain.
 //
 // world-matrix-state.ts resolves a node's world as parent.worldMatrix
-// times local, recursively, so a mesh under a transform
-// node reaches the vertex stage through that product. A mesh with no
-// parent is its own local matrix, which is every mesh the port drew before
-// the hierarchy existed.
+// times local, recursively. A mesh's parent is a mesh, a transform node or
+// the node world its loader recorded (\`parent_world\`, the imported root's
+// live edit on its left); a factory mesh with none is its own local matrix.
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh);
-// Apply the imported clone root's outer rotation and translation without
-// narrowing the matrix. Shadow fitting and floating-origin packing share it.
-std::array<double, 16> apply_mesh_outer_transform(
-    const MeshRecord& mesh,
-    std::array<double, 16> world);
+// The same world at the composition's own double width, for a consumer
+// that subtracts an eye before narrowing.
+std::array<double, 16> mesh_world_matrix_f64(
+    const Engine& engine,
+    const MeshRecord& mesh);
 // The corresponding world matrix for the parent kind setParent accepts.
 std::array<float, 16> transform_node_world(
     const Engine& engine,
@@ -1308,29 +1305,16 @@ bool refresh_mirrored_meshes(Scene& scene, Engine& engine);`
 }\
 ${
     options.floatingOrigin
-        ? `// A mesh's own world matrix, eye-relative.
-//
-// This port bakes a mesh's TRS into its vertices, which at large-world
-// coordinates quantizes them before anything can recover the remainder --
-// so a floating-origin scene keeps LOCAL vertices, exactly as the pin
-// always does, and reaches the vertex stage through this matrix instead.
-// The camera's world translation is subtracted from the composed
-// translation in double, before the single float store, which is the
-// whole precision-recovery trick (pack-mat4-with-offset.ts).
+        ? `// A mesh's world matrix, eye-relative: the camera's world translation is
+// subtracted from the double composition before the single float store,
+// the precision-recovery trick of pack-mat4-with-offset.ts.
 std::array<float, 16> mesh_world_eye_relative(
+    const Engine& engine,
     const MeshRecord& mesh,
-    const std::array<float, 16>& base,
     Vec3d eye);`
         : ""
 }\
-${
-    options.gpuInstancing
-        ? `std::array<float, 16> build_instance_parent_world(
-    const MeshRecord& mesh);
-
-${pinnedInstanceAttributesCpp(this.context)}`
-        : ""
-}\
+${options.gpuInstancing ? pinnedInstanceAttributesCpp(this.context) : ""}\
 ${
     options.picking
         ? `// src/picking/gpu-picker.ts: the picker walks the scene's meshes and
@@ -1827,30 +1811,9 @@ void sort_transparent_draws(
         const MeshRecord& mesh = ${recordAt("engine.meshes", "command.item.mesh")};
         // pin-adopted(sort-center): both pinned families store sortCenter =
         // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
-        // the draw world's translation -- never the bounds center. The
-        // record splits that world into the loader-baked node world
-        // (instance_parent_matrix, identity for scene-code meshes), the live
-        // TRS whose translation is mesh.position (identity for loader-baked
-        // meshes), and an imported clone root's post-deformation translation.
-        // The pinned center is their composed world translation.
-        const std::array<float, 16>& parent = mesh.instance_parent_matrix;
-        // The pin's own statement, at the record's width: mesh.position
-        // is a double, so each row accumulates in double and narrows once
-        // -- the same single store every other world composition makes.
-        const Vec3 local_center{
-            static_cast<float>(
-                parent[0] * mesh.position.x + parent[4] * mesh.position.y +
-                parent[8] * mesh.position.z + parent[12]),
-            static_cast<float>(
-                parent[1] * mesh.position.x + parent[5] * mesh.position.y +
-                parent[9] * mesh.position.z + parent[13]),
-            static_cast<float>(
-                parent[2] * mesh.position.x + parent[6] * mesh.position.y +
-                parent[10] * mesh.position.z + parent[14]),
-        };
-        const Vec3 center = transform_position(
-            outer_transform_matrix(mesh),
-            local_center);
+        // the draw world's translation -- never the bounds center.
+        const std::array<float, 16> world = mesh_world_matrix(engine, mesh);
+        const Vec3 center{world[12], world[13], world[14]};
         const Vec3 delta{
             center.x - eye.x,
             center.y - eye.y,
@@ -2015,17 +1978,19 @@ std::array<float, 16> transform_node_world(
         local);
 }
 
+// The root a record composes under when no mesh or transform node parents
+// it: the node world a loader recorded, with the imported root's live edit
+// on its left, or nothing at all for a factory mesh.
+std::optional<std::array<float, 16>> mesh_root_world(const MeshRecord& mesh) {
+    if (outer_transform_is_identity(mesh)) return mesh.parent_world;
+    const std::array<float, 16> outer = outer_transform_matrix(mesh);
+    return mesh.parent_world ? matrix_product(outer, *mesh.parent_world) : outer;
+}
+
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh) {
     std::array<float, 16> local = mesh_local_matrix(mesh);
-    // The clone offset is deliberately NOT folded here. A cloned imported
-    // root's outer translation is applied by the draw world AFTER
-    // deformation -- the clone shares its source's skeleton and morph
-    // resources, so the bake that produces those vertices must not carry
-    // it. The CPU vertex bake and the navigation merge read this matrix
-    // and neither wants it; the shader draw world adds it, as it always
-    // did.
     if (mesh.parent.value < engine.meshes.size()) {
         return matrix_product(
             mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh.parent")}),
@@ -2036,7 +2001,8 @@ std::array<float, 16> mesh_world_matrix(
             transform_node_world(engine, mesh.transform_parent),
             local);
     }
-    return local;
+    const std::optional<std::array<float, 16>> root = mesh_root_world(mesh);
+    return root ? matrix_product(*root, local) : local;
 }
 
 ${
@@ -2046,14 +2012,13 @@ ${
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
-        // The pin compares the live determinant to its authored sign. Native
-        // loading has already baked the glTF node world into the geometry
-        // and reconciled its indices/front-face state, so that stored state
-        // is the equivalent baseline. XORing the live parent transform with
-        // it preserves imported winding and still flips procedural geometry.
+        // The pin compares the live determinant to its authored sign. A
+        // loader reconciled its indices and front face against the world it
+        // loaded, and recorded the baseline that world's handedness XORs
+        // back to that state, so an imported mesh keeps its winding and a
+        // procedural one still flips.
         const bool transform_mirrored =
-            pinned_mat4_determinant3(matrix_product(
-                outer_transform_matrix(mesh), mesh_world_matrix(engine, mesh))) < 0.0;
+            pinned_mat4_determinant3(mesh_world_matrix(engine, mesh)) < 0.0;
         const bool clockwise_front_face =
             mesh.authored_clockwise_front_face != transform_mirrored;
         if (
@@ -2079,77 +2044,49 @@ ${
     return trs_matrix(mesh);
 }
 
-// The imported clone root's outer transform on the left of a mesh's world,
-// at the composition's own double width: the same pinned Euler-to-quaternion
-// and composeMat4IntoBuffer walk the draw path narrows to f32
-// (outer_transform_matrix), multiplied through the pinned writer's F64 arm.
-// Shadow fitting and floating-origin packing share it, and both subtract an
-// eye from the result before narrowing.
-std::array<double, 16> apply_mesh_outer_transform(
-    const MeshRecord& mesh,
-    std::array<double, 16> world) {
-    return outer_transform_product(mesh, world);
+// The same world at the composition's own double width: the record's TRS in
+// double under its loaded parent world, the imported root's outer transform
+// on the left through the pinned writer's F64 arm. A mesh under a mesh or a
+// transform node reads the stored f32 chain. Shadow fitting and
+// floating-origin packing share it, and both subtract an eye from the result
+// before narrowing.
+std::array<double, 16> mesh_world_matrix_f64(
+    const Engine& engine,
+    const MeshRecord& mesh) {
+    std::array<double, 16> world{};
+    if (
+        mesh.parent.value < engine.meshes.size() ||
+        mesh.transform_parent.value < engine.transform_nodes.size()) {
+        const std::array<float, 16> parented = mesh_world_matrix(engine, mesh);
+        std::copy(parented.begin(), parented.end(), world.begin());
+        return world;
+    }
+    const std::array<double, 16> local = trs_local_matrix(mesh);
+    if (!mesh.parent_world) return outer_transform_product(mesh, local);
+    std::array<double, 16> root{};
+    std::copy(mesh.parent_world->begin(), mesh.parent_world->end(), root.begin());
+    root = outer_transform_product(mesh, root);
+    mat4_multiply_into_f64(world, 0, root, 0, local, 0);
+    return world;
 }
 
 ${
     options.floatingOrigin
         ? `// The eye-relative world of one mesh, declared above.
 //
-// The composition is the pin's own composeTrsLocalMatrix, in double, and
-// the subtraction is packMat4IntoF32WithOffset's: the offset is the
+// packMat4IntoF32WithOffset over the double composition: the offset is the
 // active camera's world translation, taken off the same matrix the view
 // transpose reads, and large - large = small runs at full double width
 // before the single float store rounds the small remainder.
 std::array<float, 16> mesh_world_eye_relative(
+    const Engine& engine,
     const MeshRecord& mesh,
-    const std::array<float, 16>& base,
     Vec3d eye) {
-    const std::array<double, 16> local = trs_local_matrix(mesh);
-    // The family's own base world, kept: the PBR convention's X mirror, a
-    // thin-instanced pool's parent, an animated mesh's palette entry. The
-    // eye-relative frame replaces where a mesh sits, never which convention
-    // its family draws it under -- inserting the subtraction BESIDE the arm
-    // chain instead of inside it is what dropped the mirror. The product
-    // is the pinned multiply's F64 arm, the composition's own width.
-    std::array<double, 16> world_local{};
-    mat4_multiply_into_f64(world_local, 0, base, 0, local, 0);
-    world_local = apply_mesh_outer_transform(mesh, world_local);
-    world_local[12] -= eye.x;
-    world_local[13] -= eye.y;
-    world_local[14] -= eye.z;
-    return narrow_mat4(world_local);
-}
-
-`
-        : ""
-}\
-${
-    options.gpuInstancing
-        ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
-// src/math/compose-mat4-into-buffer.ts composeMat4IntoBuffer: a thin-instanced mesh
-// reaches the vertex stage's mesh.world (the instance parent-world
-// uniform) from its record TRS, composed in JavaScript double precision
-// and stored to f32 exactly like the pinned Float32Array world matrix.
-// src/math/quat-euler.ts eulerXYZToQuatTuple converts Euler records the way the
-// pinned Euler proxy writes the quaternion source of truth (non-zero
-// Euler angles inherit the recorded std::sin/cos-versus-V8 ULP caveat).
-// The pinned-parent multiply keeps the src/math/multiply-mat4-into-buffer.ts
-// accumulation order, so a loader-built glTF pool (identity record TRS)
-// reproduces instance_parent_matrix byte for byte and a user pool
-// (identity parent) reproduces the composed TRS byte for byte.
-std::array<float, 16> build_instance_parent_world(
-    const MeshRecord& mesh) {
-    if (!mesh.thin_instanced) {
-        return mesh.instance_parent_matrix;
-    }
-    const std::array<double, 16> local = trs_local_matrix(mesh);
-    // The pinned multiply, translated whole: the parent is the f32 matrix
-    // the loader recorded and the composed TRS stays f64, which is the
-    // pinned accumulation's own width for both.
-    std::array<float, 16> result{};
-    mat4_multiply_into(
-        result, 0, mesh.instance_parent_matrix, 0, local, 0);
-    return result;
+    std::array<double, 16> world = mesh_world_matrix_f64(engine, mesh);
+    world[12] -= eye.x;
+    world[13] -= eye.y;
+    world[14] -= eye.z;
+    return narrow_mat4(world);
 }
 
 `
@@ -2991,9 +2928,11 @@ ${
                 ts.isElementAccessExpression(rhs) ||
                 ts.isNonNullExpression(rhs)
             ) {
+                // The Float32Array store rounds; a double-precision camera
+                // world (floating origin) converts explicitly.
                 lines.set(
                     index,
-                    `    view[${index}] = world[${this.pinnedElementIndex(rhs, "w")}];\n`,
+                    `    view[${index}] = static_cast<float>(world[${this.pinnedElementIndex(rhs, "w")}]);\n`,
                 );
                 continue;
             }
@@ -3102,10 +3041,8 @@ ${
      * `sort_transparent_draws` adopts the pinned sort center: both pinned
      * mesh families store `sortCenter` = the world-matrix translation
      * (`pbr-renderable.ts` / `standard-renderable.ts`, anchored below),
-     * which the record carries as `instance_parent_matrix` composed with
-     * the live TRS position and an imported clone root's post-deformation
-     * translation — the retired scaled-rotated bounds center was an
-     * invention of this port.
+     * read off `mesh_world_matrix` — the retired scaled-rotated bounds
+     * center was an invention of this port.
      */
     private assertPinnedDrawListRules(): void {
         const { declaration: buildBindings } = this.context.functionDeclaration(

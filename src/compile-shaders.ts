@@ -33,15 +33,9 @@ import {
 import {
     assertReflectedBindings,
     assertUniformBufferCap,
+    parseStageLayoutRecord,
     prepareSdlUniformAdaptation,
     sdlUniformSource,
-    normalizeTintHlslBindings,
-    remapPinnedVariantRegisters,
-    sdlSpirvSource,
-    sdlMslSource,
-    shaderStageSlots,
-    computeShaderSlotMetadata,
-    stageLayoutBindings,
     type SdlUniformAdaptation,
 } from "./shader-bindings.js";
 import {
@@ -52,74 +46,70 @@ import {
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { repositoryModuleClosure } from "./bake-cache.js";
 
-interface BinaryFormat {
-    kind: "dxil" | "spirv";
-    extension: ".dxil" | ".spv" | ".demote.spv";
-    flags: readonly string[];
-    magic: readonly number[];
+/**
+ * The offline shader compiler. bblite-tint (tools/tint-sdl) compiles each
+ * declared stage of a `.native.wgsl` module with the pinned Tint and emits its
+ * HLSL, MSL and SPIR-V already addressed at SDL_GPU's slots, with the `.slots`
+ * sidecar the native loader reads; DXC compiles the HLSL to DXIL.
+ */
+
+/** DXC's DXIL product: the one binary bblite-tint does not write. */
+const dxil = {
+    extension: ".dxil",
+    flags: ["-O3"],
+    magic: [0x44, 0x58, 0x42, 0x43],
+} as const;
+
+/** bblite-tint's option writing each of its products. */
+const tintProductOptions: ReadonlyMap<string, string> = new Map([
+    [".hlsl", "--hlsl"],
+    [".msl", "--msl"],
+    [".spv", "--spirv"],
+    [".demote.spv", "--spirv-demote"],
+    [".slots", "--slots"],
+]);
+
+export interface OfflineShaderFormats {
+    /** bblite-tint's products (`.demote.spv` for fragment stages only). */
+    tint: string[];
+    /** Whether DXC compiles each stage's HLSL to DXIL. */
+    dxil: boolean;
 }
 
-const binaryFormats: readonly BinaryFormat[] = [
-    {
-        kind: "dxil",
-        extension: ".dxil",
-        flags: ["-O3"],
-        magic: [0x44, 0x58, 0x42, 0x43],
-    },
-    // Legalize SDL resource bindings without folding floating-point branches
-    // such as x/x == 1; leave arithmetic optimization to the Vulkan driver.
-    {
-        kind: "spirv",
-        extension: ".spv",
-        flags: [
-            "-spirv",
-            "-fspv-target-env=vulkan1.0",
-            "-Oconfig=--legalize-hlsl",
-        ],
-        magic: [3, 2, 0x23, 7],
-    },
-    {
-        kind: "spirv",
-        extension: ".demote.spv",
-        flags: [
-            "-spirv",
-            "-fspv-target-env=vulkan1.0",
-            "-fspv-extension=SPV_EXT_demote_to_helper_invocation",
-            "-Oconfig=--legalize-hlsl",
-        ],
-        magic: [3, 2, 0x23, 7],
-    },
-];
-
-export function offlineShaderFormats(target: OfflineShaderTarget): {
-    tint: string[];
-    binaries: readonly BinaryFormat[];
-} {
+export function offlineShaderFormats(
+    target: OfflineShaderTarget,
+): OfflineShaderFormats {
+    const metal = target === "metal" || target === "all";
+    const vulkan = target === "vulkan" || target === "all";
     return {
-        tint: compiledShaderArtifactExtensions.filter(
-            (extension) =>
-                !binaryFormats.some(
-                    (format) => format.extension === extension,
-                ) &&
-                (extension !== ".msl" ||
-                    target === "metal" ||
-                    target === "all"),
+        tint: compiledShaderArtifactExtensions.filter((extension) =>
+            extension === dxil.extension
+                ? false
+                : extension === ".msl"
+                  ? metal
+                  : extension === ".spv" || extension === ".demote.spv"
+                    ? vulkan
+                    : true,
         ),
-        binaries: binaryFormats.filter(
-            (format) =>
-                target === "all" ||
-                (format.kind === "dxil"
-                    ? target === "d3d12"
-                    : target === "vulkan"),
-        ),
+        dxil: target === "d3d12" || target === "all",
     };
+}
+
+type StageKind = "vertex" | "fragment" | "compute";
+
+function stageKind(stem: string): StageKind {
+    return stem.endsWith(".comp")
+        ? "compute"
+        : stem.endsWith(".vert")
+          ? "vertex"
+          : "fragment";
 }
 
 export interface ShaderCompilationOptions {
     directories: readonly string[];
     repositoryRoot?: string;
     target?: OfflineShaderTarget;
-    tools?: Pick<DevelopmentTools, "dxc" | "tint">;
+    tools?: Pick<DevelopmentTools, "dxc" | "bbliteTint">;
     environment?: NodeJS.ProcessEnv;
     cold?: boolean;
 }
@@ -212,17 +202,6 @@ function lines(text: string): string[] {
     return result;
 }
 
-function reflectionText(
-    source: string,
-    stdout: string,
-    stderr: string,
-): string {
-    const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return [...lines(stderr), ...lines(stdout)]
-        .join(EOL)
-        .replace(new RegExp(`^${escaped}(?=:\\d+:\\d+ )`, "gm"), "source.wgsl");
-}
-
 function cacheArtifact(path: string, bytes: Uint8Array): void {
     const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
     try {
@@ -233,13 +212,10 @@ function cacheArtifact(path: string, bytes: Uint8Array): void {
     }
 }
 
-function readValidBinary(
-    path: string,
-    format: BinaryFormat,
-): Buffer | undefined {
+function readValidDxil(path: string): Buffer | undefined {
     if (!existsSync(path)) return undefined;
     const bytes = readFileSync(path);
-    return format.magic.every((byte, index) => bytes[index] === byte)
+    return dxil.magic.every((byte, index) => bytes[index] === byte)
         ? bytes
         : undefined;
 }
@@ -307,7 +283,7 @@ export function compileOfflineShaders(
         throw new Error(
             "No generated shader directories found. Generate a scene first.",
         );
-    const needsDxc = formats.binaries.length > 0;
+    const needsDxc = formats.dxil;
     if (needsDxc && (!tools.dxc || !existsSync(tools.dxc)))
         throw new Error(
             `DXC not found for target ${target}; install tools/shader-compiler or set DXC_PATH.`,
@@ -331,8 +307,11 @@ export function compileOfflineShaders(
             .map((path) => `${basename(path)}:${digestUpper(path)}`)
             .join("|"),
     );
-    const tintHash =
-        tools.tint && existsSync(tools.tint) ? digestUpper(tools.tint) : "";
+    const tint =
+        tools.bbliteTint && existsSync(tools.bbliteTint)
+            ? tools.bbliteTint
+            : undefined;
+    const tintHash = tint ? digestUpper(tint) : "";
     const dxcHash = needsDxc && tools.dxc ? digestUpper(tools.dxc) : "";
     const implementationHash = shaderCompilerIdentity();
     const pinPath = join(root, "upstream", "tint.json");
@@ -374,7 +353,7 @@ export function compileOfflineShaders(
         const tree = new GeneratedTree(directory);
         const selectedExtensions = new Set([
             ...formats.tint,
-            ...formats.binaries.map((format) => format.extension),
+            ...(formats.dxil ? [dxil.extension] : []),
         ]);
         for (const name of filesIn(directory)) {
             const extension = compiledShaderArtifactExtensions.find(
@@ -404,27 +383,35 @@ export function compileOfflineShaders(
                 throw new Error(
                     `${source} is not declared in composition.json.`,
                 );
-            if (!tools.tint || !tintHash)
+            if (!tint)
                 throw new Error(
-                    "Reached WGSL requires pinned Tint; run tools/build-tint.ps1 or set TINT_PATH.",
+                    "Reached WGSL requires bblite-tint; run tools/build-tint.ps1 or set BBLITE_TINT_PATH.",
                 );
             let wgsl: string | undefined;
             let uniformAdaptation: SdlUniformAdaptation | undefined;
             for (const stage of sourceStages) {
-                const vertex = stage.stem.endsWith(".comp")
-                    ? "compute"
-                    : stage.stem.endsWith(".vert");
+                const kind = stageKind(stage.stem);
+                // A native module's stages share one interstage structure
+                // whose position both read: placing it first lets a D3D12
+                // fragment read a prefix of the vertex locations. A pinned
+                // fragment that omits the position keeps Tint's order.
+                const positionFirst =
+                    !stage.pinnedBindings && kind !== "compute";
+                const products = formats.tint.filter(
+                    (extension) =>
+                        extension !== ".demote.spv" || kind === "fragment",
+                );
                 const constants = shaderStageConstants(stage);
                 const key = sha256(
-                    `tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|pinned:${stage.pinnedBindings}|vertex:${vertex}|constants:${constants}|formats:${formats.tint.join(",")}|wgsl:${digestUpper(source)}`,
+                    `tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|stage:${kind}|positionFirst:${positionFirst}|constants:${constants}|formats:${products.join(",")}|wgsl:${digestUpper(source)}`,
                 );
                 const cacheBase = join(cacheRoot, `tint-${key}`);
                 if (
-                    formats.tint.every((extension) =>
+                    products.every((extension) =>
                         existsSync(`${cacheBase}${extension}`),
                     )
                 ) {
-                    for (const extension of formats.tint)
+                    for (const extension of products)
                         tree.write(
                             `${stage.stem}${extension}`,
                             readFileSync(`${cacheBase}${extension}`),
@@ -433,111 +420,90 @@ export function compileOfflineShaders(
                     continue;
                 }
                 const outputBase = join(directory, stage.stem);
-                const pendingHlsl = `${outputBase}.pending-hlsl`;
-                const pendingMsl = `${outputBase}.pending-msl`;
-                const pendingWgsl = `${outputBase}.pending-sdl.wgsl`;
-                const stageArgs = [
-                    "--entry-point",
-                    stage.entryPoint,
-                    ...(constants ? ["--overrides", constants] : []),
-                ];
+                const pending = (extension: string): string =>
+                    `${outputBase}${extension}.pending`;
+                const pendingLayout = pending(".layout.json");
+                const pendingWgsl = pending(".sdl.wgsl");
+                const written = products.flatMap((extension) => {
+                    const option = tintProductOptions.get(extension);
+                    return option ? [{ extension, option }] : [];
+                });
+                const compile = (input: string) =>
+                    runCompiler(
+                        tint,
+                        [
+                            input,
+                            "--display-name",
+                            "source.wgsl",
+                            "--entry-point",
+                            stage.entryPoint,
+                            "--stage",
+                            kind,
+                            ...(positionFirst ? ["--position-first"] : []),
+                            ...(constants ? ["--overrides", constants] : []),
+                            ...written.flatMap(({ extension, option }) => [
+                                option,
+                                pending(extension),
+                            ]),
+                            "--layout-json",
+                            pendingLayout,
+                            ...(input === source
+                                ? []
+                                : ["--binding-layout-of", source]),
+                        ],
+                        environment,
+                        source,
+                    );
                 try {
                     if (wgsl === undefined) {
                         wgsl = readFileSync(source, "utf8");
                         uniformAdaptation = prepareSdlUniformAdaptation(wgsl);
                     }
-                    const reflection = runCompiler(
-                        tools.tint,
-                        [
-                            source,
-                            ...stageArgs,
-                            "--format",
-                            "hlsl",
-                            "--output-name",
-                            pendingHlsl,
-                            "--dump-inspector-bindings",
-                            "true",
-                        ],
-                        environment,
-                    );
-                    const reflected = reflectionText(
+                    const reflection = compile(source);
+                    const layoutRecord = parseStageLayoutRecord(
+                        readFileSync(pendingLayout, "utf8"),
                         source,
-                        reflection.stdout,
-                        reflection.stderr,
                     );
                     if (!stage.pinnedBindings)
-                        assertReflectedBindings(wgsl, reflected, source);
-                    let sdlSource = source;
-                    let hlsl = readFileSync(pendingHlsl, "utf8");
+                        assertReflectedBindings(
+                            wgsl,
+                            layoutRecord.bindings,
+                            source,
+                        );
                     const adapted = sdlUniformSource(
                         uniformAdaptation,
-                        hlsl,
+                        layoutRecord.uniformBuffers,
                         source,
                     );
                     if (adapted !== undefined) {
-                        sdlSource = pendingWgsl;
-                        writeFileSync(sdlSource, `${adapted}${EOL}`);
-                        runCompiler(
-                            tools.tint,
-                            [
-                                sdlSource,
-                                ...stageArgs,
-                                "--format",
-                                "hlsl",
-                                "--output-name",
-                                pendingHlsl,
-                            ],
-                            environment,
-                        );
-                        hlsl = readFileSync(pendingHlsl, "utf8");
+                        writeFileSync(pendingWgsl, `${adapted}${EOL}`);
+                        compile(pendingWgsl);
                         assertUniformBufferCap(
-                            hlsl,
+                            parseStageLayoutRecord(
+                                readFileSync(pendingLayout, "utf8"),
+                                source,
+                            ).uniformBuffers,
                             `${source} (after SDL uniform adaptation)`,
                         );
                     }
-                    const normalized =
-                        stage.pinnedBindings || vertex === "compute"
-                            ? remapPinnedVariantRegisters(hlsl, vertex)
-                            : normalizeTintHlslBindings(hlsl);
-                    const slots = shaderStageSlots(normalized);
-                    tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
-                    // A render stage's sidecar opens with the entry point
-                    // its module declared, so a backend creates the stage
-                    // from what the module says rather than restating it,
-                    // and closes with the module's own bind-group layout,
-                    // which WebGPU binds by where SDL_GPU binds by the
-                    // compacted registers.
-                    tree.write(
-                        `${stage.stem}.slots`,
-                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : [`@entry ${stage.entryPoint}`, ...slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`), ...stageLayoutBindings(wgsl)]).join(EOL)}${EOL}`,
-                    );
+                    // A render stage's sidecar opens with its entry point
+                    // and closes with the `@binding` lines of the module
+                    // Dawn compiles, laid out as WebGPU binds it where SDL_GPU
+                    // binds the compacted slots; lines end as the tree's do.
+                    for (const { extension } of written)
+                        tree.write(
+                            `${stage.stem}${extension}`,
+                            extension === ".slots"
+                                ? `${lines(readFileSync(pending(extension), "utf8")).join(EOL)}${EOL}`
+                                : readFileSync(pending(extension)),
+                        );
+                    // The reflection record: Tint's diagnostics for the
+                    // module, then every entry point's bindings.
                     tree.write(
                         `${stage.stem}.tint-reflection.txt`,
-                        `${reflected}${EOL}`,
+                        `${[...lines(reflection.stderr), ...lines(reflection.stdout)].join(EOL)}${EOL}`,
                     );
-                    if (formats.tint.includes(".msl")) {
-                        runCompiler(
-                            tools.tint,
-                            [
-                                sdlSource,
-                                ...stageArgs,
-                                "--format",
-                                "msl",
-                                "--output-name",
-                                pendingMsl,
-                            ],
-                            environment,
-                        );
-                        tree.write(
-                            `${stage.stem}.msl`,
-                            sdlMslSource(
-                                readFileSync(pendingMsl, "utf8"),
-                                normalized,
-                                slots,
-                            ),
-                        );
-                    }
-                    for (const extension of formats.tint)
+                    for (const extension of products)
                         cacheArtifact(
                             `${cacheBase}${extension}`,
                             readFileSync(`${outputBase}${extension}`),
@@ -545,107 +511,65 @@ export function compileOfflineShaders(
                     result.tintCompiled++;
                 } finally {
                     for (const temporary of [
-                        pendingHlsl,
-                        pendingMsl,
+                        ...written.map(({ extension }) => pending(extension)),
+                        pendingLayout,
                         pendingWgsl,
                     ])
                         rmSync(temporary, { force: true });
                 }
             }
         }
-        for (const name of filesIn(directory).filter((name) =>
-            name.endsWith(".hlsl"),
-        )) {
-            const source = join(directory, name);
-            const stem = name.slice(0, -".hlsl".length);
-            const profile = stem.endsWith(".comp")
-                ? "cs_6_0"
-                : stem.endsWith(".vert")
-                  ? "vs_6_0"
-                  : "ps_6_0";
-            const entryPoint = stages.get(stem)?.entryPoint ?? "main";
-            const hlsl = readFileSync(source, "utf8");
-            assertUniformBufferCap(hlsl, source);
-            const spirvSource = formats.binaries.some(
-                (format) => format.kind === "spirv",
-            )
-                ? sdlSpirvSource(
-                      hlsl,
-                      stem.endsWith(".comp")
-                          ? "compute"
-                          : stem.endsWith(".vert"),
-                  )
-                : "";
-            const spirvDigest = sha256(spirvSource);
-            let compiled = false;
-            for (const format of formats.binaries) {
-                if (
-                    format.extension === ".demote.spv" &&
-                    !stem.endsWith(".frag")
-                )
-                    continue;
+        if (needsDxc) {
+            for (const name of filesIn(directory).filter((name) =>
+                name.endsWith(".hlsl"),
+            )) {
+                const source = join(directory, name);
+                const stem = name.slice(0, -".hlsl".length);
+                const profile = {
+                    compute: "cs_6_0",
+                    vertex: "vs_6_0",
+                    fragment: "ps_6_0",
+                }[stageKind(stem)];
+                const entryPoint = stages.get(stem)?.entryPoint ?? "main";
                 if (!tools.dxc)
-                    throw new Error(
-                        "DXC is required for binary shader formats.",
-                    );
+                    throw new Error("DXC is required for DXIL shaders.");
                 const key = sha256(
-                    `${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? spirvDigest : digestUpper(source)}`,
+                    `${compilerHash}|dxil|${profile}|${entryPoint}|${dxil.flags.join(",")}|${digestUpper(source)}`,
                 );
-                const cachePath = join(cacheRoot, `${key}${format.extension}`);
-                let binary = readValidBinary(cachePath, format);
-                if (!binary) {
+                const cachePath = join(cacheRoot, `${key}${dxil.extension}`);
+                let binary = readValidDxil(cachePath);
+                if (binary) {
+                    result.reused++;
+                } else {
                     const temporary = `${cachePath}.${process.pid}-${randomUUID()}.tmp`;
-                    const adaptedSource = `${temporary}.hlsl`;
                     try {
-                        if (format.kind === "spirv")
-                            writeFileSync(adaptedSource, spirvSource);
-                        const args =
-                            format.kind === "dxil"
-                                ? [
-                                      "-T",
-                                      profile,
-                                      "-E",
-                                      entryPoint,
-                                      ...format.flags,
-                                  ]
-                                : [
-                                      ...format.flags,
-                                      "-T",
-                                      profile,
-                                      "-E",
-                                      entryPoint,
-                                  ];
                         runCompiler(
                             tools.dxc,
                             [
-                                ...args,
+                                "-T",
+                                profile,
+                                "-E",
+                                entryPoint,
+                                ...dxil.flags,
                                 "-Fo",
                                 temporary,
-                                format.kind === "spirv"
-                                    ? adaptedSource
-                                    : source,
+                                source,
                             ],
                             environment,
                             source,
                         );
-                        binary = readValidBinary(temporary, format);
+                        binary = readValidDxil(temporary);
                         if (!binary)
                             throw new Error(
-                                `${format.kind} compiler produced an invalid binary for ${source}.`,
+                                `DXC produced an invalid DXIL binary for ${source}.`,
                             );
                         renameSync(temporary, cachePath);
                     } finally {
                         rmSync(temporary, { force: true });
-                        if (format.kind === "spirv")
-                            rmSync(adaptedSource, { force: true });
                     }
-                    compiled = true;
+                    result.compiled++;
                 }
-                tree.write(`${stem}${format.extension}`, binary);
-            }
-            if (needsDxc) {
-                if (compiled) result.compiled++;
-                else result.reused++;
+                tree.write(`${stem}${dxil.extension}`, binary);
             }
         }
         let tintCommit: string | undefined;
@@ -665,7 +589,7 @@ export function compileOfflineShaders(
             target,
             ...(tintCommit === undefined
                 ? {}
-                : { tintCommit, tintSha256: tintHash }),
+                : { tintCommit, bbliteTintSha256: tintHash }),
             ...(needsDxc ? { dxcCompilerSha256: dxcHash } : {}),
         };
         tree.write(
@@ -687,7 +611,7 @@ export function formatShaderCompilation(
 ): string {
     return (
         `Shader directories: ${result.directoriesCompiled} compiled, ${result.directoriesReused} unchanged.\n` +
-        `Tint stages: ${result.tintCompiled} transpiled, ${result.tintReused} replayed from artifacts/shader-cache.\n` +
+        `bblite-tint stages: ${result.tintCompiled} compiled, ${result.tintReused} replayed from artifacts/shader-cache.\n` +
         `DXC stages: ${result.compiled} compiled, ${result.reused} replayed from artifacts/shader-cache.`
     );
 }
@@ -697,7 +621,7 @@ if (isMainModule(import.meta.url)) {
         const flags = parseFlags(
             process.argv.slice(2),
             {
-                value: ["--scene", "--target", "--dxc", "--tint"],
+                value: ["--scene", "--target", "--dxc", "--bblite-tint"],
                 boolean: ["--cold"],
             },
             "shaders",
@@ -705,7 +629,7 @@ if (isMainModule(import.meta.url)) {
         const environment = { ...process.env };
         for (const [flag, variable] of [
             ["--dxc", "DXC_PATH"],
-            ["--tint", "TINT_PATH"],
+            ["--bblite-tint", "BBLITE_TINT_PATH"],
         ] as const) {
             const value = flags.values.get(flag);
             if (value !== undefined) environment[variable] = value;

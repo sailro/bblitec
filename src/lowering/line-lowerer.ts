@@ -591,7 +591,6 @@ void update_line_system(
             positions[index * 3u],
             positions[index * 3u + 1u],
             positions[index * 3u + 2u]};
-        vertex.local_position = vertex.position;
         if (!updated_colors.empty()) {
             vertex.color = Vec4{
                 updated_colors[index * 4u],
@@ -614,8 +613,6 @@ void update_line_system(
         static_cast<float>(aabb[1][2])};
     geometry.bounds_min = bounds_min;
     geometry.bounds_max = bounds_max;
-    geometry.world_bounds_min = bounds_min;
-    geometry.world_bounds_max = bounds_max;
 }
 
 }  // namespace bbl

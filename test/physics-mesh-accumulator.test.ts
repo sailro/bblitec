@@ -235,13 +235,12 @@ int main() {
     const std::array<float,9> values${cppArray(vertices)};
     for(std::uint32_t i=0;i<3;++i) {
         engine.meshes[i].geometry=i;auto& g=engine.geometries[i];
-        for(std::size_t j=0;j<values.size();j+=3) {ModelVertex v;v.position={values[j],values[j+1],values[j+2]};v.local_position=v.position;g.vertices.push_back(v);}
+        for(std::size_t j=0;j<values.size();j+=3) {ModelVertex v;v.position={values[j],values[j+1],values[j+2]};g.vertices.push_back(v);}
         g.indices={0,1,2};
     }
     engine.meshes[0].children={MeshHandle{2}};
-    engine.meshes[1].detached_imported_mesh=true;engine.geometries[1].vertex_space=VertexSpace::world;
+    engine.meshes[1].detached_imported_mesh=true;
     engine.geometries[1].indices={0,2,1};engine.geometries[1].source_indices_reversed=true;
-    for(auto& v:engine.geometries[1].vertices)v.position={100,200,300};
     engine.transform_nodes[0].scaling={2,-3,4};engine.transform_nodes[0].children={MeshHandle{0},TransformNodeHandle{1}};
     engine.transform_nodes[1].children={MeshHandle{1}};
     const auto run=[&](PhysicsNodeRef node,bool children,bool collect) {
@@ -256,7 +255,6 @@ int main() {
     refuse([&]{run(physics_node(TransformNodeHandle{0}),false,true);},"without vertex");
     worlds[0].fill(0);refuse([&]{run(physics_node(TransformNodeHandle{0}),true,true);},"singular root");
     engine.geometries[0].indices.clear();refuse([&]{run(physics_node(MeshHandle{0}),false,true);},"without triangle");
-    engine.geometries[0].vertex_space=VertexSpace::world;refuse([&]{run(physics_node(MeshHandle{0}),false,false);},"source-local geometry");
 }
 `,
         );

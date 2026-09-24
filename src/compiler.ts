@@ -57,6 +57,7 @@ import {
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { integerCounterOf } from "./compiler/integer-loops.js";
 import { PendingActivations } from "./compiler/pending-activations.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
@@ -289,6 +290,8 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
+    reachesOnlyClosedEffects,
+    reachesOpaqueCallee,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
@@ -310,7 +313,10 @@ import type {
     ValueKind,
     VariableBinding,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import {
+    frameCallbackParameterType,
+    isCompileTimeOnlyValue,
+} from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import { EvaluationOrder } from "./compiler/evaluation-order.js";
@@ -800,6 +806,8 @@ class Compiler implements LoweringServices {
         NativeCaptureBinding
     >();
     private readonly nativeBindingTypes = new EmissionMap<string, string>();
+    /** Locals declared `const`: an environment borrows them as constant. */
+    private readonly constNativeBindings = new EmissionSet<string>();
     private readonly allocatedCppNames = new EmissionMap<string, number>();
     private readonly nativeTemporaries =
         new EmissionWeakSet<NativeCaptureBinding>();
@@ -3359,7 +3367,8 @@ class Compiler implements LoweringServices {
             this.sceneManifest.recordRuntimeMeshProfile(index);
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
-            writable(value).cpp = `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
+            writable(value).cpp =
+                `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -4020,13 +4029,6 @@ class Compiler implements LoweringServices {
     private readonly staticCallbackEvaluationIdentities: object[] =
         emissionArray([]);
 
-    public meshTransformDirtyEntry():
-        "mark_mesh_dirty" | "mark_mesh_runtime_transform" {
-        return this.frameCallbackDepth > 0
-            ? "mark_mesh_runtime_transform"
-            : "mark_mesh_dirty";
-    }
-
     /**
      * An inline callback, as the lambda the caller's entry point takes.
      *
@@ -4070,9 +4072,7 @@ class Compiler implements LoweringServices {
                                       parameter,
                                       false,
                                       false,
-                                      signature === "timestamp"
-                                          ? "double"
-                                          : "float",
+                                      frameCallbackParameterType(signature),
                                   ),
                               ],
                           },
@@ -4091,7 +4091,7 @@ class Compiler implements LoweringServices {
                 "void",
                 unwrapped,
                 parameter
-                    ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+                    ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
                     : "",
                 parameter ? [parameter] : [],
             );
@@ -4227,7 +4227,7 @@ class Compiler implements LoweringServices {
                 if (parameter && ts.isIdentifier(parameter.name)) {
                     this.registerNativeBindingType(
                         parameterCppName!,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                     this.bindings.defineVariable(parameter.name, {
                         kind: "number",
@@ -4273,11 +4273,9 @@ class Compiler implements LoweringServices {
         // would be a second answer to it.
         const cppParameter = parameterName
             ? `[[maybe_unused]] ` +
-              `${signature === "timestamp" ? "double" : "float"} ` +
+              `${frameCallbackParameterType(signature)} ` +
               `${parameterCppName}`
-            : signature === "timestamp"
-              ? "double"
-              : "float";
+            : frameCallbackParameterType(signature);
         const lambdaParameter =
             signature === "void" || signature === "interval"
                 ? ""
@@ -4400,7 +4398,7 @@ class Compiler implements LoweringServices {
                         parameter,
                         false,
                         false,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                 const stored = this.bindings.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
@@ -4440,7 +4438,7 @@ class Compiler implements LoweringServices {
                 previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
-            ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
             : "";
         return this.renderSharedClosure(
             compiled,
@@ -6409,6 +6407,9 @@ class Compiler implements LoweringServices {
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
 
+    /** Closure environment structs already registered, by name. */
+    private readonly environmentStructs = new EmissionSet<string>();
+
     /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
      * Captured callback/IIFE bodies get their own identity so a lazily
@@ -6630,6 +6631,16 @@ class Compiler implements LoweringServices {
         return binding;
     }
 
+    /** A capture's native type, constant when its local is declared so. */
+    private nativeBindingCaptureType(name: string): string | undefined {
+        const type = this.nativeBindingTypes.get(name);
+        return type !== undefined &&
+            this.constNativeBindings.has(name) &&
+            !type.startsWith("const ")
+            ? `const ${type}`
+            : type;
+    }
+
     public registerNativeBindingType(name: string, cppType: string): void {
         if (
             cppIdentifierPattern.test(name) &&
@@ -6715,9 +6726,10 @@ class Compiler implements LoweringServices {
 
     public describeNativeValue(value: Value): void {
         this.nativeStoredValues.add(value);
+        const counter = integerCounterOf(value);
         const storage =
             value.sharedStorageCpp ??
-            value.integerCounterCpp ??
+            counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
                 : (value.optionalStorageCpp ?? value.cpp));
@@ -6728,30 +6740,32 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
-        const cppType = value.integerCounterCpp
-            ? "std::int64_t"
-            : value.kind === "engine"
-              ? value.ownedEngineCpp
-                  ? "std::shared_ptr<bbl::Engine>"
-                  : "bbl::Engine"
-              : value.kind === "texture" && value.textureStorage === "solid"
-                ? "bbl::SolidTexture"
-                : value.kind === "texture" && value.textureStorage === "file"
-                  ? "bbl::FileTexture"
-                  : value.kind === "texture" &&
-                      value.textureStorage === "pixels"
-                    ? "bbl::PixelsTexture"
-                    : value.dataType
-                      ? this.dataTypes.cppType(value.dataType)
-                      : isHandleKind(value.kind)
-                        ? handleCppType(value.kind)
-                        : value.kind === "number"
-                          ? "double"
-                          : value.kind === "boolean"
-                            ? "bool"
-                            : value.kind === "string"
-                              ? "std::string"
-                              : undefined;
+        const cppType =
+            counter !== undefined && storage === counter
+                ? "std::int64_t"
+                : value.kind === "engine"
+                  ? value.ownedEngineCpp
+                      ? "std::shared_ptr<bbl::Engine>"
+                      : "bbl::Engine"
+                  : value.kind === "texture" && value.textureStorage === "solid"
+                    ? "bbl::SolidTexture"
+                    : value.kind === "texture" &&
+                        value.textureStorage === "file"
+                      ? "bbl::FileTexture"
+                      : value.kind === "texture" &&
+                          value.textureStorage === "pixels"
+                        ? "bbl::PixelsTexture"
+                        : value.dataType
+                          ? this.dataTypes.cppType(value.dataType)
+                          : isHandleKind(value.kind)
+                            ? handleCppType(value.kind)
+                            : value.kind === "number"
+                              ? "double"
+                              : value.kind === "boolean"
+                                ? "bool"
+                                : value.kind === "string"
+                                  ? "std::string"
+                                  : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -6880,7 +6894,7 @@ class Compiler implements LoweringServices {
             this.allocateTemporaryCppName("environment"),
             this.nextNativeBindingSequence,
             byReference,
-            (binding) => this.nativeBindingTypes.get(binding.name),
+            (binding) => this.nativeBindingCaptureType(binding.name),
         );
         const allocationBoundary = this.temporaryIndex;
         this.managedCaptures.push(capture);
@@ -6912,11 +6926,40 @@ class Compiler implements LoweringServices {
                 (this.allocatedCppNames.get(name) ?? 0) > allocationBoundary,
         );
         const environmentType = capture.environmentType;
+        const struct = capture.environmentStruct;
+        if (!this.environmentStructs.has(struct.name)) {
+            this.environmentStructs.add(struct.name);
+            this.registerNativeTemplate(
+                struct.name,
+                [...struct.lines],
+                struct.declaration,
+            );
+        }
+        // Enclosing names the body reads without its environment: bindings
+        // it did not capture, and other enclosing locals (a platform event
+        // parameter) it names unqualified.
+        const captured = new EmissionSet(capture.nativeCaptures);
+        const text = lines.join("\n");
+        const uncaptured = [...identifiers].filter((name) => {
+            const binding = this.nativeBindings.get(name);
+            if (binding)
+                return (
+                    binding.sequence <= capture.boundary &&
+                    !captured.has(binding)
+                );
+            const allocated = this.allocatedCppNames.get(name);
+            return (
+                allocated !== undefined &&
+                allocated <= allocationBoundary &&
+                new RegExp(`(?:^|[^:\\w])${name}\\b`).test(text)
+            );
+        });
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             ...(environmentType ? { environmentType } : {}),
+            ...(uncaptured.length > 0 ? { uncaptured } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,
@@ -7396,7 +7439,14 @@ class Compiler implements LoweringServices {
         );
         writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
         writable(value).audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(name, false, !shared);
+        const binding = this.registerNativeBinding(
+            name,
+            false,
+            !shared,
+            shared
+                ? "std::shared_ptr<bbl::pal::AudioNodeHandle>"
+                : "bbl::pal::AudioNodeHandle",
+        );
         if (borrows) this.nativeConstBindings.add(binding);
         writable(value).nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
@@ -7632,6 +7682,54 @@ class Compiler implements LoweringServices {
             body,
             this.definiteCollectionMutation(),
         );
+    }
+
+    public reachesOpaqueCallee(body: ts.Node): boolean {
+        return reachesOpaqueCallee(this, body);
+    }
+
+    public reachesOnlyClosedEffects(body: ts.Node): boolean {
+        return reachesOnlyClosedEffects(
+            this,
+            body,
+            this.definiteCollectionMutation(),
+        );
+    }
+
+    /**
+     * A body emitted once for every caller runs from any control flow, any
+     * number of times: its lowering sees runtime control flow and iteration,
+     * and it may not record a generation-owned construction.
+     */
+    public emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+    ): T {
+        this.enterRuntimeControlFlow();
+        this.enterRuntimeIteration();
+        try {
+            const checkpoint = this.checkpointResourceConstruction();
+            try {
+                const emitted = emitBody();
+                if (
+                    !resourceConstructionStatesEqual(
+                        checkpoint.state,
+                        this.sceneManifest.constructionState(),
+                    )
+                ) {
+                    this.fail(
+                        declaration,
+                        "A shared native body cannot record a generation-owned construction for every caller.",
+                    );
+                }
+                return emitted;
+            } finally {
+                this.resourceConstructionCheckpoints.delete(checkpoint);
+            }
+        } finally {
+            this.leaveRuntimeIteration();
+            this.leaveRuntimeControlFlow();
+        }
     }
 
     public canReplaySharedCallEffects(body: ts.Node): boolean {
@@ -9970,6 +10068,8 @@ class Compiler implements LoweringServices {
         const code =
             typeof line === "string" ? line : renderNativeDeclaration(line);
         if (typeof line !== "string") {
+            if (line.type.startsWith("const "))
+                this.constNativeBindings.add(line.name);
             if (!/\bauto\b|\bdecltype\b/.test(line.type))
                 this.registerNativeBindingType(
                     line.name,

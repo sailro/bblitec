@@ -16,6 +16,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/text_gpu.hpp>
 #if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
@@ -72,9 +73,6 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
     bool canvas_only = false, capture_ui = false;
-#if BBLITE_HAS_TEXT_RENDERER
-    std::optional<DawnStandaloneTextOps> text_operations;
-#endif
 #if BBLITE_HAS_SPRITE_RENDERER
     void sync_render_textures() {
         render_textures.resize(engine.sprite_render_textures.size(), nullptr);
@@ -169,8 +167,7 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "Dawn sprites", true, false);
-        canvas_only =
-            !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
+        canvas_only = !bbl::has_sprite_renderers(engine) && !bbl::has_text_renderers(engine);
         if (canvas_only
 #if BBLITE_HAS_UI
             && engine.primary_canvas.value >= engine.ui_elements.size()
@@ -224,11 +221,6 @@ public:
         }
         return state.surface ? FramePreparation::ready : FramePreparation::skip;
     }
-    void discard_frame() {
-#if BBLITE_HAS_TEXT_RENDERER
-        text_operations.reset();
-#endif
-    }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
 #if BBLITE_HAS_UI
@@ -241,10 +233,10 @@ public:
         // Text contexts update right after layout and before the sprite
         // contexts, the one slot both hosts give them; the encoder and
         // target they record into arrive once the frame's texture does.
-        text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        auto& text_ops = text_operations.emplace(*text_renderer, state.surface_format);
-        for (const auto& renderer : engine.registered_text_renderers)
-            update_text_renderer(*renderer, width, height, state.device, text_ops);
+        text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        text_renderer->device->color_format = state.surface_format;
+        update_dawn_text_renderers(engine, *text_renderer, static_cast<double>(width),
+                                   static_cast<double>(height));
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -283,15 +275,9 @@ public:
 #endif
     }
     void encode() {
-#if BBLITE_HAS_TEXT_RENDERER
-        auto& text_ops = *text_operations;
-#endif
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
 #if BBLITE_HAS_TEXT_RENDERER
-        text_ops.encoder = encoder;
-        text_ops.target = surface_view;
-        for (const auto& renderer : engine.registered_text_renderers)
-            record_text_renderer(*renderer, text_ops);
+        record_dawn_text_renderers(engine, *text_renderer, encoder, surface_view);
 #endif
         if (canvas_only) {
             WGPURenderPassColorAttachment target = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -341,7 +327,7 @@ public:
         captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame
 #if BBLITE_HAS_TEXT_RENDERER
                                                        ,
-                                                       &text_renderer->owner->capture
+                                                       &text_renderer->device->owner->capture
 #endif
         );
         DawnSurfaceCapture capture{};

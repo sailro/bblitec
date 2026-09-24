@@ -457,7 +457,7 @@ test("native camera animation uses the pinned scalar setter and limit hook on ea
 #define main generated_main
 #include "program.hpp"
 #undef main
-namespace bbl { Engine create_engine(EngineOptions) { return {}; } void mark_mesh_runtime_transform(Engine&, MeshHandle) {} }
+namespace bbl { Engine create_engine(EngineOptions) { return {}; } void mark_mesh_dirty(Engine&, MeshHandle) {} }
 int main() { return generated_main(); }
 `,
     );

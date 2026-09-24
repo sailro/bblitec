@@ -38,11 +38,23 @@ test("compiles mixed TransformNode children in source insertion order", () => {
         addToScene(scene, first);
     `);
 
+    // `attach` is one shared body per shape; replay the entry's calls into it.
+    const hierarchyCallsIn = (body: string): string[] =>
+        [
+            ...body.matchAll(
+                /bbl::(set_mesh_transform_parent|set_transform_node_parent|push_transform_node_child)\([^;]+;/g,
+            ),
+        ].map((match) => match[1]!);
+    const bodies = new Map(
+        [
+            ...result.cpp.matchAll(
+                /\nvoid (bbl_recursive_fn\d+_group)\([^\n]*\) \{\n([\s\S]*?)\n\}/g,
+            ),
+        ].map((match) => [match[1]!, hierarchyCallsIn(match[2]!)]),
+    );
     const hierarchyCalls = [
-        ...result.cpp.matchAll(
-            /bbl::(set_mesh_transform_parent|set_transform_node_parent|push_transform_node_child)\([^;]+;/g,
-        ),
-    ].map((match) => match[1]);
+        ...result.cpp.matchAll(/bblscene::(bbl_recursive_fn\d+_group)\)\(\);/g),
+    ].flatMap((match) => bodies.get(match[1]!) ?? []);
     assert.deepEqual(hierarchyCalls, [
         "set_mesh_transform_parent",
         "push_transform_node_child",
@@ -156,7 +168,11 @@ test("emits a depth-first ordered TransformNode traversal", () => {
     const addMeshStart = source.indexOf(
         "void add_to_scene(Scene& scene, MeshHandle mesh)",
     );
-    const addMeshEnd = source.indexOf("// A static glTF mesh", addMeshStart);
+    const addMeshEnd = source.indexOf(
+        "void set_mesh_rotation_quaternion(",
+        addMeshStart,
+    );
+    assert.ok(addMeshStart >= 0 && addMeshEnd > addMeshStart);
     const addMesh = source.slice(addMeshStart, addMeshEnd);
     assert.match(addMesh, /scene\.meshes\.push_back\(mesh\);/);
     assert.doesNotMatch(addMesh, /find|none_of|unique/);

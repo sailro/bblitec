@@ -66,11 +66,13 @@ type Unit = ts.FunctionLikeDeclaration | ts.PropertyDeclaration;
 /** The generator `Math.random` advances: each call reads and writes it. */
 const randomState = Symbol("Math.random");
 
-/** Built-in methods that change their receiver. */
-const mutatingMethods: ReadonlySet<string> = new Set([
-    ...writeReceiverMethods,
-    "sort",
-]);
+/**
+ * Whether a built-in method changes its receiver. Read at call time: the
+ * table lives in a module that imports this one.
+ */
+function mutatesReceiver(method: string): boolean {
+    return method === "sort" || writeReceiverMethods.has(method);
+}
 
 function emptyStorage(): Storage {
     return { any: false, heap: false, variables: new Set() };
@@ -391,8 +393,7 @@ export class EvaluationOrder {
             !this.isFresh(callee.expression, unit)
         ) {
             access.reads.heap = true;
-            if (mutatingMethods.has(callee.name.text))
-                access.writes.heap = true;
+            if (mutatesReceiver(callee.name.text)) access.writes.heap = true;
         }
         for (const argument of call.arguments ?? []) {
             const expression = unwrapExpression(argument);

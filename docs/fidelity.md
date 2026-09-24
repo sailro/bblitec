@@ -59,7 +59,10 @@ the installed handler or rethrow. Local catches remain active. This differs from
 PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/builders. Composition
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
-Shared vertex transport uses baked worlds, fixed PAL bindings and a 64-matrix palette.
+Vertex buffers carry each geometry's source lanes; every family's mesh block carries `mesh.worldMatrix`
+(eye-relative under floating origin), with fixed PAL bindings and a 64-matrix palette. A glTF primitive
+without NORMAL stands in for the derivative flat normal with its local face normal, signed by the
+loaded world's handedness; under a non-uniformly scaled node the stand-in leans with the world basis.
 SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
@@ -107,7 +110,8 @@ Metallic-roughness texture-transform animation targets are not resolved by the p
 
 ### Deformation and instancing
 
-World, palette, vertex and instance-parent spaces must agree. GLTF mirroring is producer-specific.
+Vertices, palettes and instance matrices are the pin's; the vertex stage composes them under the mesh
+world. GLTF mirroring is producer-specific.
 Native Euler/quaternion storage differs from the pin's rotation proxy; mixed writes/sharing are bounded.
 
 ### Textures and compressed textures
@@ -171,9 +175,10 @@ different properties.
 Live text uses HarfBuzz and pinned layout over the packaged repertoire, whose outlines are extracted
 and packed at generation. TextData is the pin's record graph (runs, draw groups, style palette, slot
 allocator) updated by the pin's lowered bodies; it retains identity, and shared data owns group caches
-and captured styles. Disposal releases GPU leases while CPU data
-follows source lifetime. Deferred registration publishes only after successful construction. Arbitrary
-async builders refuse. Both backends use Slug WGSL.
+and captured styles. Buffer, texture, bind-group and bundle creation, writes and draws are the pin's
+own calls on a WebGPU-shaped device; SDL_GPU keeps uniform buffers as CPU copies pushed at each draw.
+Disposal destroys GPU resources while CPU data follows source lifetime. Deferred registration publishes
+only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 

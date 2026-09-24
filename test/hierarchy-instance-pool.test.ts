@@ -8,6 +8,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMat4InvertCpp } from "../src/lowering/pinned-function-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
+import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -119,7 +120,7 @@ test(
                             world,
                             i,
                         ) => `engine.assets[0].meshes.push_back(bbl::MeshHandle{${i}});
-                    engine.meshes[${i}].instance_parent_matrix = ${literal(world)};`,
+                    engine.meshes[${i}].parent_world = std::array<float, 16>${literal(world)};`,
                     )
                     .join("\n")}
                 ${edits}
@@ -132,8 +133,7 @@ test(
                         return `{
                         const auto& mesh = engine.meshes[${i}];
                         assert(mesh.thin_instanced && mesh.instance_count == ${placements.length});
-                        const auto world = bbl::upstream::matrix_product(
-                            bbl::upstream::outer_transform_matrix(mesh), mesh.instance_parent_matrix);
+                        const auto world = bbl::upstream::mesh_world_matrix(engine, mesh);
                         ${placements
                             .map((_placement, index) => {
                                 const instance =
@@ -175,6 +175,16 @@ test(
         ]
             .map((signature) => cppFunction(scene, signature))
             .join("\n");
+        const render = new RendererLowerer(context).lowerRenderPlan({}).source;
+        const worlds = [
+            "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
+            "std::array<float, 16> transform_node_local_matrix(",
+            "std::array<float, 16> transform_node_world(",
+            "std::optional<std::array<float, 16>> mesh_root_world(",
+            "std::array<float, 16> mesh_world_matrix(",
+        ]
+            .map((signature) => cppFunction(render, signature))
+            .join("\n");
         const file = join(directory, "check.cpp");
         const executable = join(directory, "check.exe");
         writeFileSync(
@@ -183,6 +193,9 @@ test(
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
+namespace bbl::upstream {
+${worlds}
+}
 namespace bbl {
 using upstream::mat4_multiply_into;
 AssetRecord& asset_record(Engine& engine, std::uint32_t asset) { return engine.assets.at(asset); }

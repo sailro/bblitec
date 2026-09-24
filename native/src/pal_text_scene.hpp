@@ -38,55 +38,74 @@ inline void validate_text_scene(const Scene& scene) {
 #endif
 }
 
+/**
+ * One text renderable's `DrawBinding` in the scene's transparent list: what
+ * `bindTextRenderable` resolves once and its `update`/`draw` reuse.
+ */
 struct TextSceneBinding {
     TextRenderable renderable;
-    TextData data;
-    std::shared_ptr<TextGpuState> gpu;
-    TextPipelineBinding pipelines;
+    std::shared_ptr<TextRenderableGpu> gpu;
+    TextGpuHandle pipeline;
+    TextPipelineDeviceCacheHandle cache;
+    std::string color_format;
+    double sample_count = 1;
+    std::optional<std::string> depth_format;
+    bool depth_write = true;
+    std::string depth_compare;
 };
 
 /** The admitted default scene has only text in its transparent binding list. */
 struct TextScenePass {
     std::vector<TextSceneBinding> bindings;
 
-    template <class Pipeline, class Ops>
-    void bind(const Scene& scene, const void* device, const TextTargetSignature& target,
-              Pipeline&& pipeline, Ops& ops) {
+    void bind(const Scene& scene, const TextSurfaceHandle& surface,
+              const TextTargetSignature& target) {
         validate_text_scene(scene);
         for (const auto& renderable : scene.state->text_renderables) {
             if (!target.color_format)
-                throw std::runtime_error("Text binding requires a color target.");
-            const bool depth_write = !renderable->ignore_depth;
-            const auto samples = target.sample_count.value_or(1u);
-            const auto& info =
-                text_pipeline_info(samples, target.depth_format.has_value(), depth_write,
-                                   depth_write && samples > 1u && renderable->alpha_to_coverage);
-            auto pipelines = pipeline(info);
-            auto gpu = ensure_text_gpu(*renderable, device, target, pipelines, ops);
-            bindings.push_back(
-                {renderable, renderable->data, std::move(gpu), std::move(pipelines)});
+                throw std::runtime_error("TextRenderable: render target has no color format.");
+            TextSceneBinding binding;
+            binding.renderable = renderable;
+            binding.color_format = *target.color_format;
+            binding.sample_count = target.sample_count == 1 ? 1 : 4;
+            binding.depth_format = target.depth_format;
+            binding.depth_compare = target.depth_compare.value_or("greater-equal");
+            binding.depth_write = !renderable->ignore_depth;
+            binding.gpu = text_renderable_detail::ensure_gpu(
+                renderable, surface, target, binding.color_format, binding.sample_count,
+                binding.depth_format, binding.depth_write, binding.depth_compare);
+            binding.pipeline = binding.gpu->pipeline;
+            binding.cache = surface->device->text_pipeline_cache();
+            bindings.push_back(std::move(binding));
         }
     }
 
-    template <class Ops>
-    void update(const TextCameraInput* camera, double width, double height, Ops& ops) {
+    void update(const TextSurfaceHandle& surface, TextCameraInputPointer camera, double width,
+                double height) {
         for (auto& binding : bindings) {
-            update_text_resources(*binding.renderable, *binding.gpu, binding.pipelines.layout, ops);
-            update_text_uniforms(*binding.renderable, *binding.gpu, camera, width, height,
-                                 [&](std::size_t offset, std::span<const std::uint8_t> bytes) {
-                                     ops.write_renderable_buffer(
-                                         *binding.gpu, TextBufferKind::uniform, offset, bytes);
-                                 });
+            // A styling feature enabled after the binding was built refreshes
+            // the variant pipeline once, as the pin's binding update does.
+            if (binding.gpu->variant_pipeline == binding.gpu->pipeline && text_weight_installed)
+                binding.gpu->variant_pipeline =
+                    surface->device
+                        ->text_pipeline(binding.color_format, binding.sample_count,
+                                        binding.depth_format, binding.depth_write,
+                                        binding.renderable, binding.depth_compare)
+                        .variant_pipeline;
+            text_renderable_detail::update_text_renderable(
+                binding.renderable, surface, binding.gpu, binding.cache->bind_group_layout,
+                TextDrawUpdateContext{camera, width, height});
         }
     }
 
-    template <class Ops> double draw(Ops& ops) const {
+    double draw(const TextGpuEncoderHandle& pass) const {
         double count = 0;
         for (const auto& binding : bindings) {
-            // The renderer binds the declared base pipeline before the pin's
-            // text draw callback conditionally switches per atlas group.
-            ops.set_pipeline(binding.gpu->pipeline);
-            count += draw_text_renderable(*binding.gpu, *binding.data, binding.pipelines.quad, ops);
+            // The render pass task binds the binding's declared pipeline before
+            // the pin's text draw switches per atlas group.
+            pass->set_pipeline(binding.pipeline);
+            count += text_renderable_detail::draw_text_renderable(
+                binding.gpu, binding.renderable->data, binding.cache->quad_vertex_buffer, pass);
         }
         return count;
     }

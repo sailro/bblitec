@@ -3009,6 +3009,16 @@ template <typename Range>
     return array_join(values, separator, [](const auto& value) -> const auto& { return value; });
 }
 
+/** `Array.prototype.sort()` with no comparator over strings: stable, ascending UTF-16
+ * code units. An `Array` shares its storage, so the caller's array is the one sorted. */
+template <typename Strings> [[nodiscard]] inline Strings string_array_sort(Strings values) {
+    std::stable_sort(values.begin(), values.end(),
+                     [](const std::string& left, const std::string& right) {
+                         return string_code_units(left) < string_code_units(right);
+                     });
+    return values;
+}
+
 /** `%TypedArray%.prototype.subarray`: a view over the same bytes for a numeric range. */
 template <typename Values>
 [[nodiscard]] inline Values typed_array_subarray(const Values& values, double begin_value,

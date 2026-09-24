@@ -308,7 +308,7 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /const std::array<float, 16> child_world =\s*parenting_world_matrix\(engine, child_record\);[\s\S]{0,500}child_record\.parent = parent;/,
+        /const std::array<float, 16> child_world =\s*upstream::mesh_world_matrix\(engine, child_record\);[\s\S]{0,500}child_record\.parent = parent;/,
     );
     assert.match(
         lowered.source,
@@ -332,7 +332,7 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /if \(!inverse_parent\) \{[\s\S]{0,420}child_record\.outer_scaling = \{1, 1, 1\};\s*child_record\.outer_has_rotation_quaternion = false;\s*child_record\.gpu_world_transform = true;\s*child_record\.position = Vec3d\{\s*child_world\[12\], child_world\[13\], child_world\[14\]\};[\s\S]{0,120}mark_mesh_dirty\(engine, child\);\s*return;/,
+        /if \(!inverse_parent\) \{[\s\S]{0,420}child_record\.outer_scaling = \{1, 1, 1\};\s*child_record\.outer_has_rotation_quaternion = false;\s*child_record\.parent_world\.reset\(\);\s*child_record\.position = Vec3d\{\s*child_world\[12\], child_world\[13\], child_world\[14\]\};[\s\S]{0,120}mark_mesh_dirty\(engine, child\);\s*return;/,
     );
     assert.match(
         lowered.source,
@@ -439,10 +439,7 @@ test("generates property animation evaluation and seeking", () => {
     );
     assert.match(lowered.source, /mesh\.scaling = Vec3/);
     assert.match(lowered.source, /mesh\.has_rotation_quaternion = true/);
-    assert.match(
-        lowered.source,
-        /mark_mesh_runtime_transform\(engine, target\.mesh\);/,
-    );
+    assert.match(lowered.source, /mark_mesh_dirty\(engine, target\.mesh\);/);
 });
 
 test("generates the pinned glTF animation-group seek", () => {
@@ -758,20 +755,18 @@ test("generates GLB framing validation from upstream constants", () => {
     // emission the run-time watcher calls — never a loader-local expansion.
     assert.match(
         adapter.source,
-        /const double determinant =\s*upstream::pinned_mat4_determinant3\(matrix\);/,
+        /const bool mirrored_world =\s*upstream::pinned_mat4_determinant3\(mesh_world\) < 0\.0;/,
     );
     assert.doesNotMatch(adapter.source, /linear_determinant/);
-    // The raw world multiplies come from the shared emitted pair; only the
-    // RH->LH negating wrappers stay loader-local.
-    assert.match(adapter.source, /upstream::transform_position\(/);
-    assert.doesNotMatch(adapter.source, /transform_point_raw/);
-    // Vertex, tangent and face normals take the vertex stage's own
-    // normalize (the declared guarded CPU bake). Animated lights take the
-    // pin's writeWorldLightDirection, lowered whole.
-    assert.match(
+    // The vertices keep the file's lanes: no world reaches them.
+    assert.doesNotMatch(
         adapter.source,
-        /upstream::transform_direction\(\n\s*matrix, upstream::normalize_baked_direction\(value\)\)/,
+        /upstream::transform_position\(|upstream::transform_direction\(/,
     );
+    // A face normal takes the vertex stage's own normalize (the declared
+    // guarded CPU stand-in). Animated lights take the pin's
+    // writeWorldLightDirection, lowered whole.
+    assert.match(adapter.source, /upstream::normalize_baked_direction\(face\)/);
     const animatedLights = lowerer.lowerLoaderAdapter({
         animationPointer: true,
     }).source;
@@ -787,7 +782,6 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /record\.clockwise_front_face/);
     assert.match(adapter.source, /source_clockwise &&\s*!clockwise_front_face/);
     assert.match(adapter.source, /geometry\.flat_normals = true/);
-    assert.match(adapter.source, /vertex\.local_position = local_position/);
     assert.match(
         adapter.source,
         /geometry\.has_tangents = tangents != nullptr/,
@@ -799,12 +793,11 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /gltf-ibl-brdf-lut\.rgba16f/);
     assert.match(adapter.source, /brdf_lut_rgba16f = true/);
     assert.match(adapter.source, /record\.instance_matrices/);
-    assert.match(adapter.source, /record\.instance_parent_matrix/);
+    assert.match(adapter.source, /record\.parent_world = mesh_world;/);
     assert.match(adapter.source, /vertex\.color = Vec4/);
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
     assert.match(adapter.source, /normal_texture_scale/);
-    assert.match(adapter.source, /record\.baked_world_scale/);
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /GltfAnimationPoseChannel/);
     assert.match(adapter.source, /animation_tick/);
@@ -1216,7 +1209,7 @@ test("generates mesh and standard-material factories from upstream defaults", ()
         /create_box_data\(options\.width, options\.height, options\.depth\)/,
     );
     assert.match(mesh.source, /return create_mesh_from_data\(/);
-    assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
+    assert.doesNotMatch(mesh.source, /local_position/);
     assert.match(
         mesh.source,
         /const double subdivisions = options\.subdivisions/,
@@ -1606,28 +1599,11 @@ test("emits the pinned surface sample count for every scene shape", () => {
     assert.match(singleSampleHeader, pinnedProvenance());
 });
 
-test("emits the world-basis pair and pinned determinant once for every scene shape", () => {
+test("emits the pinned TRS composition and determinant once for every scene shape", () => {
     const header = pinnedWorldTransformHeader(new LoweringContext());
-    // The float pair, scalarized from the pinned vertex template's own
-    // outputs: rows read down a column-major basis column, the translation
-    // column only where the homogeneous lane is one. Inline, because the
-    // PAL and both loaders include this from separate translation units.
-    assert.match(
-        header,
-        /inline Vec3 transform_position\(\n {4}const std::array<float, 16>& world,\n {4}Vec3 value\)/,
-    );
-    assert.match(
-        header,
-        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z \+ world\[12\],\n {8}world\[1\] \* value\.x \+ world\[5\] \* value\.y \+ world\[9\] \* value\.z \+ world\[13\],\n {8}world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z \+ world\[14\],\n {4}\};/,
-    );
-    assert.match(
-        header,
-        /inline Vec3 transform_direction\(\n {4}const std::array<float, 16>& world,\n {4}Vec3 value\)/,
-    );
-    assert.match(
-        header,
-        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z,\n {8}world\[1\] \* value\.x \+ world\[5\] \* value\.y \+ world\[9\] \* value\.z,\n {8}world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z,\n {4}\};/,
-    );
+    // No CPU world multiply: every vertex reaches the world through the
+    // vertex stage's mesh block.
+    assert.doesNotMatch(header, /transform_position|transform_direction/);
     // The imported clone root's outer transform: the pinned TRS composition
     // at double width, its f32 narrowing, and the pinned multiply's F64
     // storage arm applying it on the left of a world.
@@ -1896,20 +1872,19 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     );
 });
 
-test("composes the thin-instance parent world from the pinned TRS formulas", () => {
+test("composes the mesh world from the pinned TRS formulas", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const plan = lowerer.lowerRenderPlan({ gpuInstancing: true });
     assert.match(
         plan.header,
-        /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
+        /std::array<float, 16> mesh_world_matrix\(\s*const Engine& engine,\s*const MeshRecord& mesh\);/,
     );
     // composeMat4IntoBuffer's quaternion basis and eulerXYZToQuatTuple's half-angle terms
     // flow from the pinned ASTs into the always-emitted world-transform
     // header's one composition (through the shared PinnedNumericLowerer,
-    // whose parenthesization is explicit), which the helper calls at the
-    // composition's double width before the whole-translated
-    // mat4_multiply_into; the record's own transform never reaches the
-    // helper for non-thin-instanced meshes.
+    // whose parenthesization is explicit), which every mesh's local matrix
+    // takes; a thin instance composes on top of that world in the vertex
+    // stage.
     const worldTransform = pinnedWorldTransformHeader(new LoweringContext());
     assert.match(
         worldTransform,
@@ -1921,7 +1896,7 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
     );
     assert.match(
         plan.source,
-        /if \(!mesh\.thin_instanced\) \{\s*\r?\n\s*return mesh\.instance_parent_matrix;\s*\r?\n\s*\}\s*\r?\n\s*const std::array<double, 16> local = trs_local_matrix\(mesh\);/,
+        /std::array<float, 16> mesh_local_matrix\(const MeshRecord& mesh\) \{\s*return trs_matrix\(mesh\);/,
     );
     assert.doesNotMatch(plan.source, /const double cx = std::cos/);
     // Both analytic slots fold material.directIntensity like the pinned
@@ -1933,13 +1908,6 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
     assert.match(
         plan.source,
         /result\.light_color_2\[3\] \*= material\.direct_intensity;/,
-    );
-    const withoutInstancing = new RendererLowerer(
-        new LoweringContext(),
-    ).lowerRenderPlan({});
-    assert.doesNotMatch(
-        withoutInstancing.header,
-        /build_instance_parent_world/,
     );
 });
 

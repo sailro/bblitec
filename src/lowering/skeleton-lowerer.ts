@@ -185,12 +185,10 @@ void attach_scene_skeleton(
     // reads the joint and weight streams above. These three marks are
     // this port's spelling of that: deformation on, the palette carried
     // by the pin's own per-bone texture rather than the transcribed
-    // 64-matrix block, and the world composed at the draw rather than
-    // baked into the vertices.
+    // 64-matrix block, and the mesh skinned.
     mesh_record.gpu_deformation = true;
     mesh_record.pinned_bone_palette = true;
     mesh_record.skinned = true;
-    mesh_record.scene_skeleton = true;
     mesh_record.bone_matrices = record.bone_matrices;
     ++mesh_record.bone_matrices_version;
     ++mesh_record.transform_version;

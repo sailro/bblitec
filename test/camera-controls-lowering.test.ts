@@ -421,6 +421,7 @@ test("the lowered world-bounds expansion matches the pinned one", async (t) => {
         boundMin?: Float32Array;
         boundMax?: Float32Array;
         worldMatrix: Float32Array;
+        thinInstances?: { matrices: Float32Array; count: number };
     }
     const { emptyWorldAabb, expandWorldAabbForMesh } =
         await importPinnedModule<{
@@ -431,6 +432,9 @@ test("the lowered world-bounds expansion matches the pinned one", async (t) => {
                 mesh: Box,
             ): void;
         }>("mesh/mesh-world-bounds.js");
+    const { enableThinInstanceWorldBounds } = await importPinnedModule<{
+        enableThinInstanceWorldBounds(this: void, mesh: Box): void;
+    }>("mesh/enable-thin-instance-world-bounds.js");
     const f32 = (values: number[]) => new Float32Array(values);
     const meshes: Box[] = [
         {
@@ -450,7 +454,72 @@ test("the lowered world-bounds expansion matches the pinned one", async (t) => {
                 -1, 0, 0, 0, 0, 2.5, 0, 0, 0, 0, 0.333, 0, -7.1, 0.2, 0.3, 1,
             ]),
         },
+        // The GPU-instancing feature's hook: every active instance's box
+        // under the mesh world, a degenerate matrix skipped, rows past the
+        // count ignored.
+        {
+            boundMin: f32([-1, -0.5, -2]),
+            boundMax: f32([1.5, 0.5, 2]),
+            worldMatrix: f32([
+                -2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1.5, 0, 4, -3, 20, 1,
+            ]),
+            thinInstances: {
+                matrices: f32([
+                    0.6,
+                    0,
+                    -0.8,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0.8,
+                    0,
+                    0.6,
+                    0,
+                    30,
+                    2,
+                    -5,
+                    1,
+                    ...new Array<number>(16).fill(0),
+                    2,
+                    0,
+                    0,
+                    0,
+                    0,
+                    2,
+                    0,
+                    0,
+                    0,
+                    0,
+                    2,
+                    0,
+                    -40,
+                    1,
+                    9,
+                    1,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    500,
+                    500,
+                    500,
+                    1,
+                ]),
+                count: 3,
+            },
+        },
     ];
+    enableThinInstanceWorldBounds(meshes[3]!);
     const acc = emptyWorldAabb();
     const expected: number[] = [];
     for (const mesh of meshes) {
@@ -465,26 +534,42 @@ test("the lowered world-bounds expansion matches the pinned one", async (t) => {
             : "std::nullopt";
     const actual = compileAndRun(
         directory,
-        `#include <bblite/runtime.hpp>
+        `#include <bblite/js_data.hpp>
+#include <bblite/runtime.hpp>
 #include <array>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <vector>
+namespace bbl {
 namespace {
 ${lowerWorldAabbHelpers(new LoweringContext(), { emptyAccumulator: true })}
 }
+}
 int main() {
+    using namespace bbl;
     std::cout << std::setprecision(17);
     auto acc = empty_world_aabb();
     ${meshes
         .map(
             (mesh) => `{
+        MeshRecord record;
+        ${
+            mesh.thinInstances
+                ? `record.thin_instance_world_bounds = true;
+        record.instance_count = ${mesh.thinInstances.count};
+        const std::vector<float> lanes{${Array.from(mesh.thinInstances.matrices, (value) => `static_cast<float>(${value})`).join(", ")}};
+        record.instance_matrices.resize(lanes.size() / 16);
+        for (std::size_t lane = 0; lane < lanes.size(); ++lane) record.instance_matrices[lane / 16][lane % 16] = lanes[lane];`
+                : ""
+        }
         WorldAabbMesh mesh;
         mesh.bound_min = ${floats(mesh.boundMin)};
         mesh.bound_max = ${floats(mesh.boundMax)};
         mesh.world_matrix = ${floats(mesh.worldMatrix)};
+        read_thin_instance_world_bounds(mesh, record);
         expand_world_aabb_for_mesh(acc, mesh);
         for (double value : acc) std::cout << value << '\\n';
     }`,

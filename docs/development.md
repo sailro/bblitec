@@ -320,7 +320,10 @@ keys retain directory identity.
 ## Shader compilation
 
 `process --shader d3d12|vulkan|metal|all` selects offline targets; default is the host target.
-`BBLITE_SHADER_TARGET`, `TINT_PATH` and `DXC_PATH` override defaults. Dawn uses WGSL.
+`BBLITE_SHADER_TARGET`, `BBLITE_TINT_PATH` and `DXC_PATH` override defaults. Dawn uses WGSL.
+`tools/build-tint.ps1` builds the pinned `tint` and bblite-tint (`tools/tint-sdl`), the offline
+compiler's writer driver, from its own checkout carrying the `tint` patch series into
+`artifacts/tools/tint`.
 Shader checkpoints include input/output bytes and compiler identity.
 
 | Cache | Location |

@@ -17,11 +17,11 @@ import {
 } from "../src/compile-shaders.js";
 
 const tools = discoverDevelopmentTools();
-const { tint } = tools;
+const { bbliteTint } = tools;
 
 test(
     "Tint cache reflection is independent of source path and fill order",
-    { skip: !tint },
+    { skip: !bbliteTint },
     (t) => {
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shader-reflection-"),
@@ -79,8 +79,8 @@ test(
                 assert.match(
                     output,
                     index === 0
-                        ? /Tint stages: 1 transpiled, 0 replayed/
-                        : /Tint stages: 0 transpiled, 1 replayed/,
+                        ? /bblite-tint stages: 1 compiled, 0 replayed/
+                        : /bblite-tint stages: 0 compiled, 1 replayed/,
                 );
                 const artifacts = extensions.map((extension) =>
                     readFileSync(join(shaders, `${stem}${extension}`)),
@@ -108,7 +108,7 @@ test(
 
 test(
     "per-stage override values specialize every Tint format and cache identity",
-    { skip: !tint },
+    { skip: !bbliteTint },
     (t) => {
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shader-constants-"),
@@ -179,7 +179,10 @@ test(
                     }),
                 );
             declare(enabledFirst);
-            assert.match(compile(), /Tint stages: 2 transpiled, 1 replayed/);
+            assert.match(
+                compile(),
+                /bblite-tint stages: 2 compiled, 1 replayed/,
+            );
             const read = (stem: string): Buffer[] =>
                 artifacts.map((extension) =>
                     readFileSync(join(shaders, `${stem}${extension}`)),
@@ -205,7 +208,10 @@ test(
                 "Dawn keeps the canonical unspecialized module",
             );
             declare(!enabledFirst);
-            assert.match(compile(), /Tint stages: 0 transpiled, 3 replayed/);
+            assert.match(
+                compile(),
+                /bblite-tint stages: 0 compiled, 3 replayed/,
+            );
             assert.deepEqual(
                 read(enabledFirst ? "text.frag" : "other.frag"),
                 ordinary,

@@ -206,7 +206,6 @@ test("the emitted skeleton unit keeps the palette on the mesh record", () => {
         lowered.source,
         /bbl::handle_at\(engine\.meshes, mesh\)\.bone_matrices = skeleton\.bone_matrices;/,
     );
-    assert.match(lowered.source, /mesh_record\.scene_skeleton = true;/);
     assert.match(lowered.source, /mesh_record\.pinned_bone_palette = true;/);
     assert.match(lowered.source, /mesh_record\.gpu_deformation = true;/);
     assert.match(lowered.source, /void update_scene_skeleton_bone_matrices\(/);

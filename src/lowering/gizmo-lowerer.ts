@@ -4165,13 +4165,6 @@ ${rotatePoint}
  * space, so each write is one record store plus a dirty mark -- and the
  * quaternion goes through the setter, which is what selects the quaternion
  * lane over the record's Euler one.
- *
- * The mark is the RUNTIME-TRANSFORM one, because layout runs from
- * onBeforeRender: all 55 cage meshes are rewritten every frame, and the
- * plain mark would rebuild and re-upload every one of their baked vertex
- * streams each time. That is the rule mark_mesh_runtime_transform states
- * for exactly this shape, and the same rule meshTransformDirtyEntry
- * applies to a transform written inside a frame callback.
  */
 void bbox_set_position(
     Engine& engine,
@@ -4180,7 +4173,7 @@ void bbox_set_position(
     double y,
     double z) {
     ${recordAt("engine.meshes", "mesh")}.position = Vec3d{x, y, z};
-    mark_mesh_runtime_transform(engine, mesh);
+    mark_mesh_dirty(engine, mesh);
 }
 
 void bbox_set_scaling(
@@ -4193,7 +4186,7 @@ void bbox_set_scaling(
         static_cast<float>(x),
         static_cast<float>(y),
         static_cast<float>(z)};
-    mark_mesh_runtime_transform(engine, mesh);
+    mark_mesh_dirty(engine, mesh);
 }
 
 void bbox_set_rotation(
@@ -4210,8 +4203,7 @@ void bbox_set_rotation(
             static_cast<float>(x),
             static_cast<float>(y),
             static_cast<float>(z),
-            static_cast<float>(w)},
-        true);
+            static_cast<float>(w)});
 }
 
 // ${this.context.provenance(BOUNDING_BOX_MODULE, "buildEdge")}
@@ -5471,8 +5463,7 @@ MeshHandle gizmo_mesh(
             static_cast<float>(rotation[0]),
             static_cast<float>(rotation[1]),
             static_cast<float>(rotation[2]),
-            static_cast<float>(rotation[3])},
-        false);
+            static_cast<float>(rotation[3])});
     set_mesh_transform_parent(engine, mesh, parent);
     mark_mesh_dirty(engine, mesh);
 }

@@ -30,7 +30,7 @@ EventLoop::Clock::time_point tracked_tick(EventLoop::Clock::time_point timestamp
 namespace bbl::pal {
 class ReceiptFixtureClock {
 public:
-    explicit ReceiptFixtureClock(bool = false) {}
+    explicit ReceiptFixtureClock(bool = false, bool = false) {}
     bool available() const { return true; }
     std::optional<EventLoop::Clock::time_point> take_latest() {
         if (!source_ready)

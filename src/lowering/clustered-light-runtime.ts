@@ -35,6 +35,8 @@ import {
     clusteredLightMembers,
     clusteredLightShape,
     clusteredModule,
+    clusteredOptionBindings,
+    clusteredOptionsStruct,
     clusteredParameterNames,
     clusteredProjectedBounds,
     clusteredScalarHelpers,
@@ -58,7 +60,7 @@ import {
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import { recordAt } from "../compiler/record-access.js";
+import { recordAt, recordFind } from "../compiler/record-access.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
 const cameraModule = "src/camera/camera.ts";
@@ -327,7 +329,7 @@ ${fields.join("\n")}
  * element of the container's own list.
  */
 function activeLightShape(context: LoweringContext): PinnedRecordShape {
-    const light = clusteredLightShape();
+    const light = clusteredLightShape(context);
     return {
         cpp: "ClusteredActiveLight",
         members: activeLightMembers(context).map(
@@ -388,7 +390,7 @@ function sharedScope(context: LoweringContext): {
     methods: NonNullable<PinnedNumericScope["methods"]>;
 } {
     const stride = clusteredSpotStride(context);
-    const light = clusteredLightShape();
+    const light = clusteredLightShape(context);
     const bindings = new Map<string, PinnedBinding>([
         // `container._spotSupport` is installed by the first spot light and
         // is what `has_spots` records; its `_stride` is the pin's own.
@@ -766,14 +768,18 @@ function refreshState(
                     `Expected the refresh's uninitialized capture '${name}' to be the last camera.`,
                 );
             }
+            // Kept by the camera's handle, the identity `===` compares, so
+            // the dirty key rests on what names the camera, never on where
+            // its record happens to live.
             fields.set(name, {
                 name,
                 kind: "camera",
-                cpp: "CameraRecord*",
+                cpp: "std::uint32_t",
                 binding: {
                     cpp,
                     type: "opaque",
-                    absentCpp: `${cpp} == nullptr`,
+                    identity: cpp,
+                    absentCpp: `${cpp} == invalid_handle`,
                 },
             });
         } else if (
@@ -1130,7 +1136,7 @@ function collectWriter(context: LoweringContext): string {
                 {
                     cpp: lights,
                     type: "record-list",
-                    record: clusteredLightShape(),
+                    record: clusteredLightShape(context),
                 },
             ],
             [view, { cpp: view, type: "f32" }],
@@ -1269,6 +1275,7 @@ function lowerBuild(
             {
                 cpp: "sceneCamera",
                 type: "opaque",
+                identity: "scene.camera",
                 absentCpp: "sceneCamera == nullptr",
             },
         ],
@@ -1385,7 +1392,7 @@ function lowerBuild(
                 ];
             }
             return [
-                `${indent}${field.kind === "camera" ? `${target} = nullptr` : `${target}.clear()`};`,
+                `${indent}${field.kind === "camera" ? `${target} = invalid_handle` : `${target}.clear()`};`,
             ];
         }
         if (local && initializer && isGpuObject(context, file, local)) {
@@ -1409,11 +1416,13 @@ function lowerBuild(
             return [`${indent}++container.params_write;`];
         }
         if (local === state.declaration) return [];
+        // The GPU state the build returns is, on this side, the refresh
+        // state the backend's updater runs over.
         if (
             ts.isReturnStatement(node) &&
             names(file, node.expression, state.declaration, context)
         ) {
-            return [];
+            return [`${indent}return closure;`];
         }
         const call = statementCall(context, node);
         const callee =
@@ -1426,10 +1435,21 @@ function lowerBuild(
             callee.name.text === "refresh" &&
             names(file, callee.expression, state.declaration, context)
         ) {
-            // The pin's first refresh, over the build's own camera and
-            // canvas extent.
+            // The pin's first refresh, over the build's own camera (by
+            // its handle) and canvas extent.
+            const [camera, ...extent] = call.arguments;
+            const identity = camera
+                ? bindings.get(context.unwrapExpression(camera).getText(file))
+                      ?.identity
+                : undefined;
+            if (!identity || extent.length !== 2) {
+                return context.contractError(
+                    call,
+                    "Expected the first refresh over a camera and an extent.",
+                );
+            }
             return [
-                `${indent}refresh_clustered_lights(container, ${call.arguments
+                `${indent}refresh_clustered_lights(engine, container, captured, ${identity}, ${extent
                     .map((argument) => lowerer.expression(argument))
                     .join(", ")});`,
             ];
@@ -1662,7 +1682,12 @@ function lowerRefresh(
         ]),
         [
             camera,
-            { cpp: camera, type: "opaque", absentCpp: `${camera} == nullptr` },
+            {
+                cpp: camera,
+                type: "opaque",
+                identity: `${camera}Handle.value`,
+                absentCpp: `${camera} == nullptr`,
+            },
         ],
         [`${camera}.nearPlane`, scalar(`${camera}->near_plane`)],
         [`${camera}.farPlane`, scalar(`${camera}->far_plane`)],
@@ -1693,6 +1718,419 @@ function lowerRefresh(
     return { parameters, body };
 }
 
+/** The pin's scene-surface factories and their options interfaces. */
+const CONTAINER_OPTIONS = "ClusteredLightContainerOptions";
+const POINT_OPTIONS = "ClusteredPointLightOptions";
+const SPOT_OPTIONS = "ClusteredSpotLightOptions";
+const PBR_FLAGS_MODULE = "src/material/pbr/pbr-flags.ts";
+
+/**
+ * The container literal `createClusteredLightContainer` returns, member by
+ * member onto the native record's designated initializer, in the record's
+ * own member order: `kind` is the type tag the native record's type
+ * already is, each light list starts empty, and each number lands in its
+ * field. Every member the literal does not name keeps its default member
+ * initializer.
+ */
+const CONTAINER_MEMBERS: ReadonlyArray<
+    readonly [string, { field: string; list?: true } | { tag: true }]
+> = [
+    ["kind", { tag: true }],
+    ["horizontalTiles", { field: "horizontal_tiles" }],
+    ["verticalTiles", { field: "vertical_tiles" }],
+    ["zSlices", { field: "z_slices" }],
+    ["pointLights", { field: "point_lights", list: true }],
+    ["spotLights", { field: "spot_lights", list: true }],
+    ["_version", { field: "version" }],
+];
+
+/** Whether a statement calls `_registerPbrExt`: composition, at generation. */
+function registersPbrExtension(
+    context: LoweringContext,
+    file: ts.SourceFile,
+    statement: ts.Statement,
+): boolean {
+    const call = statementCall(context, statement);
+    return (
+        call !== undefined &&
+        callsPinned(context, file, call, {
+            module: PBR_FLAGS_MODULE,
+            name: "_registerPbrExt",
+        })
+    );
+}
+
+/**
+ * `createClusteredLightContainer`, lowered from its body: the literal it
+ * returns is the native record's value.
+ */
+function containerFactory(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        clusteredModule,
+        "createClusteredLightContainer",
+    );
+    const [options] = clusteredParameterNames(context, declaration);
+    if (!options || declaration.parameters.length !== 1) {
+        return context.contractError(
+            declaration,
+            "Expected createClusteredLightContainer to take its options.",
+        );
+    }
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map(
+            clusteredOptionBindings(context, CONTAINER_OPTIONS, options),
+        ),
+        calls: pinnedNumericMathCalls(),
+        returnValue: (expression, lowerer) => {
+            const literal = expression
+                ? context.unwrapExpression(expression)
+                : undefined;
+            if (!literal || !ts.isObjectLiteralExpression(literal)) {
+                return context.contractError(
+                    declaration,
+                    "Expected createClusteredLightContainer to return its record literal.",
+                );
+            }
+            const known = new Map(CONTAINER_MEMBERS);
+            for (const property of literal.properties) {
+                const name = property.name
+                    ? context.propertyName(property.name)
+                    : undefined;
+                if (!name || !known.has(name)) {
+                    context.contractError(
+                        property,
+                        "The container carries a member this port does not keep.",
+                    );
+                }
+            }
+            const fields = CONTAINER_MEMBERS.flatMap(([name, member]) => {
+                const value = context.unwrapExpression(
+                    context.propertyInitializer(literal, name),
+                );
+                if ("tag" in member) {
+                    return ts.isStringLiteral(value)
+                        ? []
+                        : context.contractError(
+                              value,
+                              "Expected the container's type tag.",
+                          );
+                }
+                if (member.list) {
+                    return ts.isArrayLiteralExpression(value) &&
+                        value.elements.length === 0
+                        ? [`.${member.field} = {}`]
+                        : context.contractError(
+                              value,
+                              "Expected the container's light list to start empty.",
+                          );
+                }
+                return [`.${member.field} = ${lowerer.expression(value)}`];
+            });
+            return `ClusteredLightContainer{${fields.join(", ")}}`;
+        },
+    });
+    return `// ${context.provenance(clusteredModule, "createClusteredLightContainer")}
+inline ClusteredLightContainer create_clustered_light_container_record(
+    const ${CONTAINER_OPTIONS}& ${options}) {
+${body}
+}`;
+}
+
+/**
+ * `createClusteredPointLight`/`createClusteredSpotLight`, lowered from
+ * their bodies: the light record, the push onto the container's list, the
+ * version bump, and -- for a spot -- the spot support's installation.
+ */
+function lightFactory(
+    context: LoweringContext,
+    symbol: "createClusteredPointLight" | "createClusteredSpotLight",
+    optionsInterface: string,
+    cppName: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(
+        clusteredModule,
+        symbol,
+    );
+    const [container, options] = clusteredParameterNames(context, declaration);
+    if (!container || !options || declaration.parameters.length !== 2) {
+        return context.contractError(
+            declaration,
+            `Expected ${symbol} to take the container and its options.`,
+        );
+    }
+    const light = clusteredLightShape(context);
+    const shared = sharedScope(context);
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [container, { cpp: container, type: "opaque" }],
+            ...[...shared.bindings].flatMap(
+                ([path, binding]): [string, PinnedBinding][] =>
+                    path.startsWith("container.")
+                        ? [
+                              [
+                                  `${container}${path.slice("container".length)}`,
+                                  binding,
+                              ],
+                          ]
+                        : [],
+            ),
+            ...clusteredOptionBindings(context, optionsInterface, options),
+            ["Math.PI", scalar("std::numbers::pi")],
+        ]),
+        recordTypes: new Map([
+            ["ClusteredPointLight", light],
+            ["ClusteredSpotLight", light],
+        ]),
+        calls: pinnedNumericMathCalls(),
+        // The spot support's installation, recognised by the pinned
+        // function the call resolves to, lowered beside this factory.
+        expression: (node, lowerer) =>
+            ts.isCallExpression(node) &&
+            callsPinned(context, file, node, {
+                module: clusteredSpotModule,
+                name: "_enableClusteredSpotSupport",
+            })
+                ? `enable_clustered_spot_support(${node.arguments
+                      .map((argument) => lowerer.expression(argument))
+                      .join(", ")})`
+                : undefined,
+        returnValue: (expression, lowerer) =>
+            expression
+                ? lowerer.expression(expression)
+                : context.contractError(
+                      declaration,
+                      `Expected ${symbol} to return its light.`,
+                  ),
+    });
+    return `// ${context.provenance(clusteredModule, symbol)}
+inline ClusteredLight ${cppName}(
+    ClusteredLightContainer& ${container},
+    const ${optionsInterface}& ${options}) {
+${body}
+}`;
+}
+
+/**
+ * `_enableClusteredSpotSupport`, lowered from its body: the support object
+ * is a stateless module singleton, so installing it is the container's
+ * `has_spots`, and registering its PBR extension is the composition
+ * generation already ran.
+ */
+function spotSupportEnabler(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        clusteredSpotModule,
+        "_enableClusteredSpotSupport",
+    );
+    const [container] = clusteredParameterNames(context, declaration);
+    if (!container || declaration.parameters.length !== 1) {
+        return context.contractError(
+            declaration,
+            "Expected _enableClusteredSpotSupport to take the container.",
+        );
+    }
+    const support = file.statements
+        .map(onlyDeclaration)
+        .find(
+            (local) =>
+                local !== undefined &&
+                ts.isIdentifier(local.name) &&
+                local.name.text === "spotSupport",
+        );
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                `${container}._spotSupport`,
+                { cpp: `${container}.has_spots`, type: "bool", mutable: true },
+            ],
+            ["spotSupport", { cpp: "true", type: "bool" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+        expression: (node) =>
+            ts.isIdentifier(node) &&
+            node.text === "spotSupport" &&
+            (!support || pinnedDeclaration(file, node) !== support)
+                ? context.contractError(
+                      node,
+                      "Expected the installed support to be the module's own singleton.",
+                  )
+                : undefined,
+        statement: (node) =>
+            registersPbrExtension(context, file, node) ? [] : undefined,
+    });
+    return `// ${context.provenance(clusteredSpotModule, "_enableClusteredSpotSupport")}
+inline void enable_clustered_spot_support(ClusteredLightContainer& ${container}) {
+${body}
+}`;
+}
+
+/**
+ * `addClusteredLightContainer`, lowered from its body. What stays the
+ * platform's is named by what it resolves to: the PBR extension's
+ * registration and the material stamping are the composition generation
+ * already ran, the disposable is the backend's release, and installing the
+ * updater is the container keeping the refresh state the backend's
+ * per-frame refresh runs over.
+ */
+function containerAdder(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        clusteredModule,
+        "addClusteredLightContainer",
+    );
+    const [scene, container] = clusteredParameterNames(context, declaration);
+    if (!scene || !container || declaration.parameters.length !== 2) {
+        return context.contractError(
+            declaration,
+            "Expected addClusteredLightContainer to take the scene and the container.",
+        );
+    }
+    let built: ts.VariableDeclaration | undefined;
+    const statement: NonNullable<PinnedNumericScope["statement"]> = (
+        node,
+        lowerer,
+        indent,
+    ) => {
+        if (registersPbrExtension(context, file, node)) return [];
+        const local = onlyDeclaration(node);
+        const initializer = local?.initializer
+            ? context.unwrapExpression(local.initializer)
+            : undefined;
+        if (
+            local &&
+            initializer &&
+            ts.isCallExpression(initializer) &&
+            callsPinned(context, file, initializer, {
+                module: clusteredModule,
+                name: buildSymbol,
+            })
+        ) {
+            built = local;
+            return [
+                `${indent}const std::shared_ptr<ClusteredRefreshState> ${local.name.getText(file)} = ` +
+                    `upstream::build_clustered_light_gpu_state(${initializer.arguments
+                        .map((argument) => lowerer.expression(argument))
+                        .join(", ")});`,
+            ];
+        }
+        const assignment =
+            ts.isExpressionStatement(node) &&
+            ts.isBinaryExpression(context.unwrapExpression(node.expression))
+                ? context.unwrapExpression(node.expression)
+                : undefined;
+        if (
+            assignment &&
+            ts.isBinaryExpression(assignment) &&
+            ts.isPropertyAccessExpression(assignment.left) &&
+            assignment.left.name.text === "_clusteredLightUpdater" &&
+            built &&
+            forwardsTo(context, file, assignment.right, built, "refresh")
+        ) {
+            return [
+                `${indent}${recordAt("engine.clustered_light_containers", container)}.refresh = ` +
+                    `${built.name.getText(file)};`,
+            ];
+        }
+        const call = statementCall(context, node);
+        if (
+            call &&
+            ts.isPropertyAccessExpression(call.expression) &&
+            call.expression.name.text === "push" &&
+            ts.isPropertyAccessExpression(call.expression.expression) &&
+            call.expression.expression.name.text === "_disposables" &&
+            built &&
+            call.arguments.length === 1 &&
+            forwardsTo(context, file, call.arguments[0]!, built, "dispose")
+        ) {
+            return [];
+        }
+        if (ts.isForOfStatement(node) && stampsMaterials(context, node)) {
+            return [];
+        }
+        return undefined;
+    };
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [scene, { cpp: scene, type: "opaque" }],
+            [`${scene}.surface.engine`, { cpp: "engine", type: "opaque" }],
+            [
+                `${scene}._clusteredLightContainer`,
+                {
+                    cpp: `${scene}.clustered_lights`,
+                    type: "opaque",
+                    mutable: true,
+                },
+            ],
+            [container, { cpp: container, type: "opaque" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+        statement,
+    });
+    return `// ${context.provenance(clusteredModule, "addClusteredLightContainer")}
+void add_clustered_light_container(
+    Engine& engine,
+    Scene& ${scene},
+    ClusteredLightContainerHandle ${container}) {
+${body}
+}`;
+}
+
+/** `(...) => state.<method>(...)`: an arrow forwarding its own parameters. */
+function forwardsTo(
+    context: LoweringContext,
+    file: ts.SourceFile,
+    expression: ts.Expression,
+    state: ts.VariableDeclaration,
+    method: string,
+): boolean {
+    const arrow = context.unwrapExpression(expression);
+    if (!ts.isArrowFunction(arrow) || ts.isBlock(arrow.body)) return false;
+    const call = context.unwrapExpression(arrow.body);
+    return (
+        ts.isCallExpression(call) &&
+        ts.isPropertyAccessExpression(call.expression) &&
+        call.expression.name.text === method &&
+        names(file, call.expression.expression, state, context) &&
+        call.arguments.length === arrow.parameters.length &&
+        call.arguments.every(
+            (argument, index) =>
+                ts.isIdentifier(argument) &&
+                argument.text === arrow.parameters[index]!.name.getText(file),
+        )
+    );
+}
+
+/**
+ * The loop stamping `_clusteredLightState` onto the scene's materials: the
+ * composition input generation read when it composed them, checked to
+ * write nothing else.
+ */
+function stampsMaterials(
+    context: LoweringContext,
+    loop: ts.ForOfStatement,
+): boolean {
+    const stamped = new Set(["_clusteredLightState", "_renderFeatures"]);
+    let writesOnlyStamps = true;
+    let writes = 0;
+    const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) writesOnlyStamps = false;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            writes += 1;
+            const target = context.unwrapExpression(node.left);
+            if (
+                !ts.isPropertyAccessExpression(target) ||
+                !stamped.has(target.name.text)
+            ) {
+                writesOnlyStamps = false;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(loop.statement);
+    return writesOnlyStamps && writes > 0;
+}
+
 /** The clustered light field's generated header and translation unit. */
 export function lowerClusteredLights(context: LoweringContext): LoweredSource {
     const { file, declaration } = context.functionDeclaration(
@@ -1709,8 +2147,10 @@ export function lowerClusteredLights(context: LoweringContext): LoweredSource {
     const refresh = lowerRefresh(context, fields);
     const [camera, width, height] = refresh.parameters;
     const refreshSignature = `void refresh_clustered_lights(
+    Engine& engine,
     ClusteredLightContainer& container,
-    CameraRecord* ${camera},
+    ClusteredRefreshState& captured,
+    CameraHandle ${camera}Handle,
     double ${width},
     double ${height})`;
     const header = `#pragma once
@@ -1722,10 +2162,22 @@ export function lowerClusteredLights(context: LoweringContext): LoweredSource {
 #include <cstring>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <vector>
 
 #include "bblite/js_data.hpp"
 #include "bblite/runtime.hpp"
+
+namespace bbl {
+
+// The pin's own factory options, member for member.
+${clusteredOptionsStruct(context, CONTAINER_OPTIONS)}
+
+${clusteredOptionsStruct(context, POINT_OPTIONS)}
+
+${clusteredOptionsStruct(context, SPOT_OPTIONS)}
+
+}  // namespace bbl
 
 namespace bbl::upstream {
 
@@ -1761,14 +2213,16 @@ namespace bbl::upstream {
 
 /** \`buildClusteredLightGpuState\`, once when the container is added: the
  *  record takes the extents, the zeroed payloads and the seeded params the
- *  backend creates its GPU objects from, and the first refresh runs. */
-void size_clustered_light_state(
+ *  backend creates its GPU objects from, the first refresh runs, and the
+ *  refresh state comes back for the scene's updater. */
+std::shared_ptr<ClusteredRefreshState> build_clustered_light_gpu_state(
     Engine& engine,
     Scene& scene,
-    ClusteredLightContainer& container);
+    ClusteredLightContainerHandle containerHandle);
 
 /** The pin's \`refresh\`: its dirty key over the camera, the target and the
- *  lights, then the re-bin and payload writes the key found due. */
+ *  lights, then the re-bin and payload writes the key found due. The
+ *  camera arrives by its handle, the identity the dirty key compares. */
 ${refreshSignature};
 
 /** The container a handle names, for the backend that binds it. Const
@@ -1785,30 +2239,21 @@ ClusteredLightContainer* clustered_container(
 
 namespace bbl {
 
-// The scene surface, at the pin's own four entry points.
+// The scene surface, at the pin's own four entry points. Each resolves the
+// container its handle names and runs the pin's own factory body.
 ClusteredLightContainerHandle create_clustered_light_container(
     Engine& engine,
-    double horizontal_tiles,
-    double vertical_tiles,
-    double z_slices);
+    const ${CONTAINER_OPTIONS}& options);
 
 void create_clustered_point_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
-    const Vec3d& position,
-    const Vec3d& diffuse,
-    double range,
-    double intensity);
+    const ${POINT_OPTIONS}& options);
 
 void create_clustered_spot_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
-    const Vec3d& position,
-    const Vec3d& diffuse,
-    double range,
-    double intensity,
-    const Vec3d& direction,
-    double angle);
+    const ${SPOT_OPTIONS}& options);
 
 void add_clustered_light_container(
     Engine& engine,
@@ -1837,21 +2282,30 @@ ${collectWriter(context)}
 
 ${dataTextureWriter(context)}
 
-void size_clustered_light_state(
+${spotSupportEnabler(context)}
+
+${containerFactory(context)}
+
+${lightFactory(context, "createClusteredPointLight", POINT_OPTIONS, "create_clustered_point_light_record")}
+
+${lightFactory(context, "createClusteredSpotLight", SPOT_OPTIONS, "create_clustered_spot_light_record")}
+
+std::shared_ptr<ClusteredRefreshState> build_clustered_light_gpu_state(
     Engine& engine,
     Scene& scene,
-    ClusteredLightContainer& container) {
+    ClusteredLightContainerHandle containerHandle) {
+    ClusteredLightContainer& container =
+        ${recordAt("engine.clustered_light_containers", "containerHandle")};
     CameraRecord* const sceneCamera =
-        scene.camera.value < engine.cameras.size()
-            ? &${recordAt("engine.cameras", "scene.camera")}
-            : nullptr;
-    container.refresh = std::make_shared<ClusteredRefreshState>();
-    ClusteredRefreshState& captured = *container.refresh;
+        ${recordFind("engine.cameras", "scene.camera")};
+    const auto closure = std::make_shared<ClusteredRefreshState>();
+    ClusteredRefreshState& captured = *closure;
 ${lowerBuild(context, fields)}
 }
 
 ${refreshSignature} {
-    ClusteredRefreshState& captured = *container.refresh;
+    CameraRecord* const ${camera} =
+        ${recordFind("engine.cameras", `${camera}Handle`)};
 ${refresh.body}
 }
 
@@ -1876,75 +2330,32 @@ namespace bbl {
 
 ClusteredLightContainerHandle create_clustered_light_container(
     Engine& engine,
-    double horizontal_tiles,
-    double vertical_tiles,
-    double z_slices) {
+    const ${CONTAINER_OPTIONS}& options) {
     auto& containers = engine.clustered_light_containers;
-    containers.push_back(ClusteredLightContainer{});
-    auto& container = containers.back();
-    container.horizontal_tiles = horizontal_tiles;
-    container.vertical_tiles = vertical_tiles;
-    container.z_slices = z_slices;
+    containers.push_back(upstream::create_clustered_light_container_record(options));
     return ClusteredLightContainerHandle{
         static_cast<std::uint32_t>(containers.size() - 1)};
 }
 
 void create_clustered_point_light(
     Engine& engine,
-    ClusteredLightContainerHandle handle,
-    const Vec3d& position,
-    const Vec3d& diffuse,
-    double range,
-    double intensity) {
-    auto* container = upstream::clustered_container(engine, handle);
-    if (!container) return;
-    container->point_lights.push_back(ClusteredLight{
-        {position.x, position.y, position.z},
-        {diffuse.x, diffuse.y, diffuse.z},
-        range,
-        intensity,
-        {},
-        0.0});
-    container->version++;
+    ClusteredLightContainerHandle container,
+    const ${POINT_OPTIONS}& options) {
+    // The light the pin returns is the scene's to keep; no scene reached
+    // here holds one, so the surface returns nothing.
+    static_cast<void>(upstream::create_clustered_point_light_record(
+        ${recordAt("engine.clustered_light_containers", "container")}, options));
 }
 
 void create_clustered_spot_light(
     Engine& engine,
-    ClusteredLightContainerHandle handle,
-    const Vec3d& position,
-    const Vec3d& diffuse,
-    double range,
-    double intensity,
-    const Vec3d& direction,
-    double angle) {
-    auto* container = upstream::clustered_container(engine, handle);
-    if (!container) return;
-    // _enableClusteredSpotSupport installs the support first.
-    container->has_spots = true;
-    container->spot_lights.push_back(ClusteredLight{
-        {position.x, position.y, position.z},
-        {diffuse.x, diffuse.y, diffuse.z},
-        range,
-        intensity,
-        {direction.x, direction.y, direction.z},
-        angle});
-    container->version++;
+    ClusteredLightContainerHandle container,
+    const ${SPOT_OPTIONS}& options) {
+    static_cast<void>(upstream::create_clustered_spot_light_record(
+        ${recordAt("engine.clustered_light_containers", "container")}, options));
 }
 
-void add_clustered_light_container(
-    Engine& engine,
-    Scene& scene,
-    ClusteredLightContainerHandle handle) {
-    auto* container = upstream::clustered_container(engine, handle);
-    if (!container) {
-        throw std::runtime_error(
-            "addClusteredLightContainer: unknown container.");
-    }
-    // The pin installs the scene's updater only once the build returned,
-    // so a build that throws leaves the scene without one.
-    upstream::size_clustered_light_state(engine, scene, *container);
-    scene.clustered_lights = handle;
-}
+${containerAdder(context)}
 
 }  // namespace bbl
 `;

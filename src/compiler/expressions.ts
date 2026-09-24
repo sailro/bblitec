@@ -4507,7 +4507,7 @@ export class ExpressionLowerer {
                 cpp:
                     "bbl::sprite_renderer_before_update(" +
                     `${engineCpp}, ${renderer.cpp}, ` +
-                    `${this.context.compileFrameCallback(argumentAt(call, 0))})`,
+                    `${this.context.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
         }
