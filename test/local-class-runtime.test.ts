@@ -193,7 +193,7 @@ test("stores a class an array element demands as a shared object", () => {
     // things generation owns -- the renderer and the workspace.
     assert.match(
         result.cpp,
-        /struct PartData \{\s*bool locked;\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed;\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
+        /struct PartData \{\s*bool locked\{\};\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed\{\};\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
     const trace = result.cpp.match(
         /friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/,

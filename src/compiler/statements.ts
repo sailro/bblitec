@@ -49,6 +49,7 @@ import {
 import { emitStringAppend } from "./expressions.js";
 import { commonResourceValue, isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
+import { rejectClassStaticBlocks } from "./classes.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -632,7 +633,10 @@ export class StatementLowerer {
         }
         if (ts.isClassDeclaration(statement)) {
             // Classes lower lazily too: construction expands the
-            // fields and each method inlines at its call site.
+            // fields and each method inlines at its call site. Nothing
+            // is emitted here, so work the declaration itself runs
+            // refuses rather than vanishing.
+            rejectClassStaticBlocks(context, statement);
             return;
         }
         context.fail(
@@ -3824,34 +3828,71 @@ export class StatementLowerer {
 function terminatesFlow(
     statement: ts.Statement,
     lowered: (node: ts.Statement) => boolean = () => false,
+    breakLeaves = true,
 ): boolean {
     if (
         lowered(statement) ||
         ts.isContinueStatement(statement) ||
-        ts.isBreakStatement(statement) ||
         ts.isReturnStatement(statement) ||
         ts.isThrowStatement(statement)
     ) {
         return true;
     }
+    if (ts.isBreakStatement(statement)) return breakLeaves;
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
-        return last ? terminatesFlow(last, lowered) : false;
+        return last ? terminatesFlow(last, lowered, breakLeaves) : false;
     }
     if (ts.isIfStatement(statement)) {
         return (
             !!statement.elseStatement &&
-            terminatesFlow(statement.thenStatement, lowered) &&
-            terminatesFlow(statement.elseStatement, lowered)
+            terminatesFlow(statement.thenStatement, lowered, breakLeaves) &&
+            terminatesFlow(statement.elseStatement, lowered, breakLeaves)
         );
     }
     if (ts.isTryStatement(statement)) {
         return (
             (!!statement.finallyBlock &&
-                terminatesFlow(statement.finallyBlock, lowered)) ||
-            (terminatesFlow(statement.tryBlock, lowered) &&
+                terminatesFlow(statement.finallyBlock, lowered, breakLeaves)) ||
+            (terminatesFlow(statement.tryBlock, lowered, breakLeaves) &&
                 (!statement.catchClause ||
-                    terminatesFlow(statement.catchClause.block, lowered)))
+                    terminatesFlow(
+                        statement.catchClause.block,
+                        lowered,
+                        breakLeaves,
+                    )))
+        );
+    }
+    const endlessLoop =
+        ts.isWhileStatement(statement) || ts.isDoStatement(statement)
+            ? statement.expression.kind === ts.SyntaxKind.TrueKeyword
+                ? statement
+                : undefined
+            : ts.isForStatement(statement) &&
+                (statement.condition === undefined ||
+                    statement.condition.kind === ts.SyntaxKind.TrueKeyword)
+              ? statement
+              : undefined;
+    if (endlessLoop) {
+        // `while (true)` / `for (;;)` is left only by a `break`; without one
+        // the code after it never runs.
+        return !enclosingLoopControl(endlessLoop.statement, {
+            continues: false,
+        });
+    }
+    if (ts.isSwitchStatement(statement)) {
+        // Every path leaves when a `default` exists and each clause ends
+        // in control that leaves: an empty clause falls into the next one,
+        // and a `break` there leaves only the switch itself.
+        const clauses = statement.caseBlock.clauses;
+        return (
+            clauses.some(ts.isDefaultClause) &&
+            clauses.every((clause, index) => {
+                const last = clause.statements.at(-1);
+                return last
+                    ? terminatesFlow(last, lowered, false)
+                    : index < clauses.length - 1;
+            })
         );
     }
     return false;

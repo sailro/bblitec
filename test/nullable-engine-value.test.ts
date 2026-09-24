@@ -83,7 +83,7 @@ test("an uncaptured lazily created gizmo is a plain optional local", () => {
 
     assert.match(
         result.cpp,
-        /std::optional<bbl::CompositeGizmoHandle> v_gizmo;/,
+        /std::optional<bbl::CompositeGizmoHandle> v_gizmo\{\};/,
         "nothing stores the name, so it needs no shared cell",
     );
     assert.doesNotMatch(

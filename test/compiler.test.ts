@@ -4387,7 +4387,7 @@ test("maps TypeScript keyword fields to safe native struct names", () => {
         const value = entries[0]!.delete;
     `);
 
-    assert.match(result.cpp, /double delete_;/);
+    assert.match(result.cpp, /double delete_\{\};/);
     assert.match(result.cpp, /EntryData\{3\.0\}/);
     assert.match(result.cpp, /->delete_/);
 });
@@ -13035,7 +13035,7 @@ test("stores and fills a nullable mesh local", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /std::optional<bbl::MeshHandle> v_mesh;/);
+    assert.match(result.cpp, /std::optional<bbl::MeshHandle> v_mesh\{\};/);
     assert.match(result.cpp, /v_mesh = bbl::create_sphere/);
 });
 
@@ -13460,7 +13460,7 @@ test("assigns a promised resource tuple into definite-assignment locals", () => 
     `);
 
     assert.equal(
-        (result.cpp.match(/std::optional<bbl::AssetHandle> v_\w+;/g) ?? [])
+        (result.cpp.match(/std::optional<bbl::AssetHandle> v_\w+\{\};/g) ?? [])
             .length,
         2,
     );
@@ -15634,7 +15634,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // readback's nullable point, and the distance beside it.
     assert.match(
         result.cpp,
-        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex;\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance;\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
     );
     // A miss is the pin's `_spritePick ?? null`: an id no billboard
     // contributor owns leaves the payload unset.

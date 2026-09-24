@@ -413,18 +413,6 @@ if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
 endif()
 target_compile_definitions(bblite_features INTERFACE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
 
-if(MSVC)
-    # Lowered value-returning lambdas keep a defensive fallthrough throw after
-    # their translated control flow. LTCG can prove that some of those guards
-    # are unreachable and reports C4702 late in the link; suppress that one
-    # diagnostic only for generated application code, while the PAL remains
-    # warning-clean under /W4 /WX.
-    set_source_files_properties(
-        "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-        PROPERTIES COMPILE_OPTIONS "/wd4702"
-    )
-endif()
-
 if(BBLITE_GENERATED_SHADER_FILES)
     # The snapshot is ordered before the executable by a target dependency,
     # and reruns only when a generated shader file is newer than the stamp.
