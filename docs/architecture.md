@@ -54,7 +54,8 @@ and shared bindings retain their ordered entry execution.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
-callbacks and coroutines retain separate invocation state; equivalent bodies share a native specialization. Concrete
+callbacks and coroutines retain separate invocation state. A body is emitted once when every effect it
+reaches has a native representation (`canShareFunctionBody`); otherwise each call specializes it. Concrete
 capture types place those bodies in their owning source unit; unresolved capture types use templates.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
