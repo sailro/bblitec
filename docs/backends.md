@@ -4,17 +4,17 @@ Both backends consume generated plans, state, layouts and uniform writers.
 
 ## Backend comparison
 
-| Boundary | SDL_GPU | Dawn |
-| --- | --- | --- |
-| Shader input | Offline Tint/target binaries | WGSL |
-| Binding authority | Compiled `.slots` sidecars | `.slots` layout lines and generated layouts |
-| Uniform transport | Push/uniform/storage API | Queue writes and retained bind groups |
-| Windows / Linux / macOS | D3D12 / Vulkan / Metal | D3D12 / Vulkan / Metal |
-| Android | Vulkan | Vulkan |
-| iOS Simulator | Unsupported by pinned SDL | Metal |
-| iOS device | Metal, unqualified | Metal, unqualified |
-| Lifetime | SDL objects and fences | WebGPU objects and submission retention |
-| GPU task timestamps | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
+| Boundary                | SDL_GPU                                 | Dawn                                             |
+| ----------------------- | --------------------------------------- | ------------------------------------------------ |
+| Shader input            | Offline Tint/target binaries            | WGSL                                             |
+| Binding authority       | Compiled `.slots` sidecars              | `.slots` layout lines and generated layouts      |
+| Uniform transport       | Push/uniform/storage API                | Queue writes and retained bind groups            |
+| Windows / Linux / macOS | D3D12 / Vulkan / Metal                  | D3D12 / Vulkan / Metal                           |
+| Android                 | Vulkan                                  | Vulkan                                           |
+| iOS Simulator           | Unsupported by pinned SDL               | Metal                                            |
+| iOS device              | Metal, unqualified                      | Metal, unqualified                               |
+| Lifetime                | SDL objects and fences                  | WebGPU objects and submission retention          |
+| GPU task timestamps     | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
 
 Runtime selection prefers SDL_GPU when compiled, otherwise Dawn. Explicit invalid or uncompiled
 backend requests fail.
@@ -33,25 +33,34 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
 
 ## Compiled binding contract
 
-- SDL binds compiled resources after dead declarations are removed. Sidecars specify stage visibility,
-  resource kind, slot order and uniform size. Large uniform blocks may use read-only storage.
-- Each render stage's `.slots` sidecar ends with `@binding <group> <binding> <resource>` lines
-  reflected from every binding its module declares. Dawn lays sprite, billboard, picking, splat
-  and post-process groups out from them, adding only the site's binding model: dynamic offsets
-  and formats that do not filter. Composed material, effect, text, screen-space and compute
-  layouts come from generated pin descriptor tables; single-pipeline runtime modules use Dawn's
-  reflected layout.
-- SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
-  image/sampler descriptors; integer and multisampled loads use separate images.
-- SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
-- SPIR-V compilation legalizes HLSL without DXC folding floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
+- bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL, MSL and SPIR-V writers with SDL's
+  slots as their binding options and writes the `.slots` sidecar from the same assignment; DXC
+  compiles the HLSL to DXIL. Slots cover the resources the lowered entry point reaches.
+  Sidecars specify stage visibility, resource kind, slot order and uniform size. Large uniform
+  blocks may use read-only storage.
+- Each render stage's `.slots` sidecar opens with `@entry <entry point>` and ends with
+  `@binding <group> <binding> <resource>` lines Tint reflects from every binding its module
+  declares (the module Dawn compiles, before any SDL uniform adaptation). Dawn lays sprite,
+  billboard, picking, splat and post-process groups out from them, adding only the site's binding
+  model: dynamic offsets and formats that do not filter. Composed material, effect, text,
+  screen-space and compute layouts come from generated pin descriptor tables; single-pipeline
+  runtime modules use Dawn's reflected layout.
+- SDL integer texture loads occupy storage-texture slots. Vulkan binds a sampled texture and its
+  sampler as one combined image sampler, which Tint's image and sampler both address at the
+  texture's binding; integer and multisampled loads are sampled images after them.
+- A native module's interstage structures place the position first (a maintained Tint patch), so
+  its separately compiled D3D12 stages link when a fragment reads a prefix of the vertex outputs;
+  pinned stages keep Tint's order, whose fragments that omit the position read a prefix of it.
+- SPIR-V is version 1.3 and preserves varying locations; SDL_GPU devices request Vulkan 1.1.
+  Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
+- Tint's SPIR-V keeps floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.
 - Material pipelines use each task's sample count. Shared uploads retain per-binding sampler/UV state;
   image identity includes bytes and upload flags. Last-owner release retires cached images.
 - Android prefers Vulkan 1.3 helper-invocation discard to preserve masked edges under MSAA;
-  older devices retain the Vulkan 1.0 shader path.
+  older devices retain the Vulkan 1.1 shader path.
 - Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 
@@ -78,12 +87,12 @@ Stopped presentation scales the retained image without advancing history.
 
 ## Workers and offscreen surfaces
 
-| Owner | State |
-| --- | --- |
-| Realm | Module bindings, JS identities, tasks, microtasks, timers, promises, callbacks |
-| OS thread | Window, layout, presentation |
-| Window host | Shared physical device and queue |
-| Producer | Engine, scene, encoders, resources, image publication |
+| Owner       | State                                                                          |
+| ----------- | ------------------------------------------------------------------------------ |
+| Realm       | Module bindings, JS identities, tasks, microtasks, timers, promises, callbacks |
+| OS thread   | Window, layout, presentation                                                   |
+| Window host | Shared physical device and queue                                               |
+| Producer    | Engine, scene, encoders, resources, image publication                          |
 
 Typed messages, document snapshots, dimensions and fenced image leases cross threads; JS references
 and engine records do not. Canvas transfer validates before detachment.
