@@ -30,6 +30,10 @@ test("SDL integer texture allocations, shader counts and draw bindings preserve 
         "native/src/pal_sdl_gpu_clustered.hpp",
         "utf8",
     );
+    const clusteredShared = readFileSync(
+        "native/src/pal_clustered_shared.hpp",
+        "utf8",
+    );
     const hlsl = `ByteAddressBuffer morph : register(t0, space1);
 Texture2D<uint4> cells : register(t2, space1);
 Texture2D<float4> color : register(t6, space1);
@@ -102,6 +106,7 @@ ${cppFunction(shared, "inline void bind_stage_textures(")}
 ${cppFunction(shared, "inline OwnedSdlShader load_shader(")}
 ${cppFunction(shared, "inline SDL_GPUTexture* upload_2d_texture(")}
 struct ClusteredLightContainer { std::uint32_t data_texture_width = 8, light_rows = 2, slice_rows = 3, mask_rows = 4; };
+${cppRecord(clusteredShared, "struct ClusteredUploads")}
 ${cppRecord(clustered, "struct ClusteredLightGpuResources")}
 struct ClusteredLightGpu : ClusteredLightGpuResources { explicit ClusteredLightGpu(SDL_GPUDevice*) {} };
 ${cppFunction(clustered, "inline void create_clustered_textures(")}

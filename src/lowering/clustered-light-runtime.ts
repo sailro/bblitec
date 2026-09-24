@@ -223,6 +223,36 @@ function scalar(cpp: string): PinnedBinding {
     return { cpp, type: "scalar" };
 }
 
+/** The call an expression statement makes, when it makes one. */
+function statementCall(
+    context: LoweringContext,
+    statement: ts.Statement,
+): ts.CallExpression | undefined {
+    if (!ts.isExpressionStatement(statement)) return undefined;
+    const call = context.unwrapExpression(statement.expression);
+    return ts.isCallExpression(call) ? call : undefined;
+}
+
+/** `spotSupport._create`, the spot support's per-state factory. */
+function spotCreate(context: LoweringContext): {
+    file: ts.SourceFile;
+    create: ts.FunctionLikeDeclarationBase;
+    statements: readonly ts.Statement[];
+} {
+    const { file, declaration } = context.methodDeclaration(
+        clusteredSpotModule,
+        "spotSupport._create",
+    );
+    const body = declaration.body;
+    if (!body || !ts.isBlock(body)) {
+        return context.contractError(
+            declaration,
+            "Expected spotSupport._create to have a block body.",
+        );
+    }
+    return { file, create: declaration, statements: body.statements };
+}
+
 /**
  * The pin's `_ClusteredActiveLight`, as the native struct the refresh
  * collects into: each light record member a pointer into the container
@@ -912,13 +942,7 @@ function dataTextureWriter(context: LoweringContext): string {
         bindings: new Map(numbers.map((name) => [name, scalar(name)])),
         calls: pinnedNumericMathCalls(),
         statement: (node, lowerer, indent) => {
-            const call =
-                ts.isExpressionStatement(node) &&
-                ts.isCallExpression(context.unwrapExpression(node.expression))
-                    ? (context.unwrapExpression(
-                          node.expression,
-                      ) as ts.CallExpression)
-                    : undefined;
+            const call = statementCall(context, node);
             if (
                 !call ||
                 webGpuQueueMethod(context, file, call) !== "writeTexture"
@@ -1055,11 +1079,8 @@ ${body}
 
 /** `_create`'s own `const snapshot = new F32(...)`. */
 function snapshotDeclaration(context: LoweringContext): ts.VariableDeclaration {
-    const { declaration: create } = context.methodDeclaration(
-        clusteredSpotModule,
-        "spotSupport._create",
-    );
-    const found = (create.body as ts.Block).statements
+    const { create, statements } = spotCreate(context);
+    const found = statements
         .map(onlyDeclaration)
         .find(
             (declaration) =>
@@ -1202,11 +1223,7 @@ function platformCalls(
                 node.arguments.length !== 3 ||
                 !names(file, buffer, paramsBuffer(), context) ||
                 !offset ||
-                !ts.isNumericLiteral(context.unwrapExpression(offset)) ||
-                Number(
-                    (context.unwrapExpression(offset) as ts.NumericLiteral)
-                        .text,
-                ) !== 0 ||
+                context.numericValue(offset, file) !== 0 ||
                 !payload ||
                 !ts.isIdentifier(payload) ||
                 bindings.get(payload.text)?.cpp !== "container.params"
@@ -1349,7 +1366,10 @@ function lowerBuild(
                 ];
             }
             if (field.kind === "f32") {
-                const count = (initializer as ts.NewExpression).arguments?.[0];
+                const count =
+                    initializer && ts.isNewExpression(initializer)
+                        ? initializer.arguments?.[0]
+                        : undefined;
                 if (!count) {
                     return context.contractError(
                         node,
@@ -1391,13 +1411,7 @@ function lowerBuild(
         ) {
             return [];
         }
-        const call =
-            ts.isExpressionStatement(node) &&
-            ts.isCallExpression(context.unwrapExpression(node.expression))
-                ? (context.unwrapExpression(
-                      node.expression,
-                  ) as ts.CallExpression)
-                : undefined;
+        const call = statementCall(context, node);
         const callee =
             call && ts.isPropertyAccessExpression(call.expression)
                 ? call.expression
@@ -1505,28 +1519,28 @@ function spotSupportCreation(
             "Expected spotSupport to be container._spotSupport?._create(count).",
         );
     }
-    const { file, declaration: create } = context.methodDeclaration(
-        clusteredSpotModule,
-        "spotSupport._create",
-    );
+    const { file, create, statements } = spotCreate(context);
     const [count] = clusteredParameterNames(context, create);
-    const statements = (create.body as ts.Block).statements;
     const support = statements.findIndex(
         (statement) => declaredName(statement) === "support",
     );
-    const object = statements[support]
-        ? onlyDeclaration(statements[support])?.initializer
+    const supportDeclaration = statements[support]
+        ? onlyDeclaration(statements[support])
+        : undefined;
+    const object = supportDeclaration?.initializer
+        ? context.unwrapExpression(supportDeclaration.initializer)
         : undefined;
     const returned = statements[support + 1];
     if (
         !count ||
         create.parameters.length !== 1 ||
+        !supportDeclaration ||
         !object ||
-        !ts.isObjectLiteralExpression(context.unwrapExpression(object)) ||
+        !ts.isObjectLiteralExpression(object) ||
         statements.length !== support + 2 ||
         !returned ||
         !ts.isReturnStatement(returned) ||
-        returned.expression?.getText(file) !== "support"
+        !names(file, returned.expression, supportDeclaration, context)
     ) {
         return context.contractError(
             create,
@@ -1540,9 +1554,7 @@ function spotSupportCreation(
         "_write",
         "_markState",
     ];
-    for (const property of (
-        context.unwrapExpression(object) as ts.ObjectLiteralExpression
-    ).properties) {
+    for (const property of object.properties) {
         const name = property.name
             ? context.propertyName(property.name)
             : undefined;
