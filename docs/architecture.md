@@ -56,13 +56,19 @@ every value, structs are emitted from the pinned declarations, and `pinned-recor
 records the pin built at generation. The pin's WebGPU calls lower one to one onto the device interface in
 `text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
-Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
-listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have
-separate units and namespaces. Shared types and declarations live in `sources/application.hpp`
-(one header per realm); template bodies appear only in units that use them. Paths mirror source folders
-from their common directory; worker realms live under `sources/workers/<module>/`. Single-source programs retain one file.
+Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
+listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumBytes` compiles as
+several `.part<N>.cpp` units. `main.cpp` owns entry execution; worker entries have separate units and
+namespaces. `sources/application.hpp` (one per realm) holds the includes; each unit declares only the
+types, functions and tables its code reaches, with the overloads their signatures name, and template
+bodies appear only in units that use them. Paths mirror source folders from their common directory;
+worker realms live under `sources/workers/<module>/`. Single-source programs within the budget retain one file.
 Folded imports emit no unit; specialized inline bodies remain with their caller. Module initialization
-and shared bindings retain their ordered entry execution.
+and shared bindings retain their ordered entry execution. An entry or function body larger than
+`outlinedBodyMinimumBytes` moves its compound and expression statements, and large initializers of typed
+declarations, into functions of its source (`body-outlining.ts`) that take the locals they read by
+reference; declarations, statements that leave the body or a loop, and statements reading a local without
+a native type stay in place.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,

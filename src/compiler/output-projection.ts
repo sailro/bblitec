@@ -4,6 +4,8 @@ import { reachesShadowGenerator } from "../shadow-capabilities.js";
 import { reachedGeneratedSources } from "../generated-sources.js";
 import {
     renderSourceUnits,
+    sceneDeclarations,
+    type UnitDeclaration,
     type ApplicationCpp,
     type NativeDefinition,
     type NativeFunctionDefinition,
@@ -886,16 +888,20 @@ ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""
                     definition: fn.lines.join("\n"),
                 });
         }
-        const shared = [
-            ...staticNativeDeclarations.map(
-                (declaration) => `inline ${declaration}`,
-            ),
-            meshProfileFallback,
-            dataPreamble.shared,
-            "namespace bblscene {",
-            ...nativeFunctionPrototypes,
-            "}\n",
-        ].join("\n");
+        const shared: UnitDeclaration[] = [
+            ...staticNativeDeclarations.map((declaration) => ({
+                scene: false,
+                text: `inline ${declaration}`,
+            })),
+            ...(meshProfileFallback
+                ? [{ scene: false, text: meshProfileFallback }]
+                : []),
+            ...sceneDeclarations(dataPreamble.shared),
+            ...nativeFunctionPrototypes.map((prototype) => ({
+                scene: true,
+                text: prototype,
+            })),
+        ];
         return renderSourceUnits({
             source: projection.source,
             realm: workerNamespace,

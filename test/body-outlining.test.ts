@@ -6,12 +6,15 @@ import {
     outlinedBodyMinimumBytes,
 } from "../src/compiler/body-outlining.js";
 import {
+    cppDeclaredNames,
     cppStatementShape,
     parseCppLocalDeclaration,
+    splitCppDeclarations,
     splitCppStatements,
     transfersControlOut,
 } from "../src/compiler/cpp-statements.js";
 import { cppTokens } from "../src/compiler/cpp-identifiers.js";
+import { renderSourceUnits } from "../src/compiler/source-units.js";
 
 const tokens = (text: string) => [...cppTokens(text)];
 
@@ -76,6 +79,32 @@ test("control leaving a statement is found outside lambdas, classes and its own 
     assert.equal(leaves("switch (x) { case 1: continue; }"), true);
     assert.equal(leaves("do { break; } while (false);"), false);
     assert.equal(leaves("v[0] = 1;"), false);
+});
+
+test("namespace declarations split and name what they declare", () => {
+    const declarations = splitCppDeclarations(String.raw`
+        enum class Kind { A, B };
+        struct PointData;
+        using Point = bbl::js::Ref<PointData>;
+        struct PointData { double x{}; };
+        inline void json_write(bbl::js::JsonWriter& writer, Kind value) { writer.value(1); }
+        const bbl::js::Tuple<3>& MINS();
+        extern const std::array<int, 2> ORDER;
+        inline auto& v_cached() { static auto value = 1; return value; }
+    `);
+    assert.deepEqual(
+        declarations.map(({ tokens }) => cppDeclaredNames(tokens)),
+        [
+            { names: ["Kind"], function: false },
+            { names: ["PointData"], function: false },
+            { names: ["Point"], function: false },
+            { names: ["PointData"], function: false },
+            { names: ["json_write"], function: true },
+            { names: ["MINS"], function: true },
+            { names: ["ORDER"], function: false },
+            { names: ["v_cached"], function: true },
+        ],
+    );
 });
 
 /** The given statements, then `filler` until the body is over the outlining threshold. */
@@ -163,4 +192,58 @@ test("large compound statements outline inside their blocks, not past a break", 
         outlined.segments[0]!.prototype,
         /^void bbl_outlined_frame\(\[\[maybe_unused\]\] bbl::Engine& v_engine, \[\[maybe_unused\]\] double& v_delta\);$/,
     );
+});
+
+test("units hold only the declarations their code reaches, with argument-dependent overloads", () => {
+    const output = renderSourceUnits({
+        source: "entry.ts",
+        realm: undefined,
+        includes: "#include <cstdio>",
+        declarations: [
+            { scene: true, text: "struct UsedData { double x{}; };" },
+            { scene: true, text: "struct OtherData { double y{}; };" },
+            {
+                scene: true,
+                text: "inline void json_write(int& writer, const UsedData& value) { writer += static_cast<int>(value.x); }",
+            },
+            {
+                scene: true,
+                text: "inline void json_write(int& writer, const OtherData& value) { writer += static_cast<int>(value.y); }",
+            },
+            { scene: true, text: "double used(UsedData data);" },
+            { scene: true, text: "double other(OtherData data);" },
+        ],
+        definitions: [
+            {
+                source: "used.ts",
+                definition: "double used(UsedData data) { return data.x; }",
+            },
+            {
+                source: "other.ts",
+                definition: "double other(OtherData data) { return data.y; }",
+            },
+        ],
+        templates: [],
+        entry: "int main() { return bblscene::used({1.0}) == 1.0 ? 0 : 1; }",
+        cpp: "standalone",
+    });
+    const unit = (source: string) =>
+        output.files.get(
+            output.sourceUnits.find((candidate) => candidate.source === source)!
+                .path,
+        )!;
+    assert.equal(
+        output.files.get("sources/application.hpp"),
+        "#pragma once\n#include <cstdio>\n",
+    );
+    assert.match(unit("used.ts"), /struct UsedData/);
+    assert.match(
+        unit("used.ts"),
+        /json_write\(int& writer, const UsedData& value\)/,
+    );
+    assert.doesNotMatch(unit("used.ts"), /OtherData|double other/);
+    assert.match(unit("entry.ts"), /double used\(UsedData data\);/);
+    assert.doesNotMatch(unit("entry.ts"), /OtherData/);
+    assert.match(unit("other.ts"), /struct OtherData/);
+    assert.doesNotMatch(unit("other.ts"), /UsedData/);
 });

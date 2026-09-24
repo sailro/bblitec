@@ -20,7 +20,7 @@ test("an imported module table is defined once, in its declaring module", () => 
         .filter(
             ([file, text]) =>
                 file.endsWith(".cpp") &&
-                /^const [^\n]*\bSCENE96_BAND_OFFSETS\b/m.test(text),
+                /^const [^\n;]*\bSCENE96_BAND_OFFSETS\b[^\n;]*\{/m.test(text),
         )
         .map(([file]) => file);
     assert.deepEqual(definitions, ["sources/_shared/scroll-tile-image.cpp"]);

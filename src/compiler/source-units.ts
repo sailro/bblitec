@@ -6,7 +6,8 @@ import {
     resolve,
     sep,
 } from "node:path";
-import { cppIdentifiers } from "./cpp-identifiers.js";
+import { cppIdentifiers, cppTokens } from "./cpp-identifiers.js";
+import { cppDeclaredNames, splitCppDeclarations } from "./cpp-statements.js";
 
 export type NativeFunctionDefinition = {
     lines: readonly string[];
@@ -95,18 +96,113 @@ function packUnitParts(pieces: readonly string[]): string[][] {
     return parts;
 }
 
+/** A namespace-level declaration, which a unit holds when its code names it. */
+export interface UnitDeclaration {
+    /** Declared in `namespace bblscene`; otherwise at the realm's own level. */
+    readonly scene: boolean;
+    readonly text: string;
+}
+
+/** The declarations of a `namespace bblscene { ... }` block, in order. */
+export function sceneDeclarations(block: string): UnitDeclaration[] {
+    const open = block.indexOf("{");
+    const close = block.lastIndexOf("}");
+    if (open < 0 || close < open) return [];
+    return splitCppDeclarations(block.slice(open + 1, close)).map(
+        (declaration) => ({ scene: true, text: declaration.text }),
+    );
+}
+
+/**
+ * Selects, for each unit, the declarations its code reaches: those declaring
+ * a name the unit or an already selected declaration names, every overload
+ * of a function among them, and every overload of a function name whose
+ * signature names a selected type. A declaration of any other shape is in
+ * every unit. The selection keeps the declarations' order, so each still
+ * follows what it depends on.
+ */
+function unitDeclarations(
+    declarations: readonly UnitDeclaration[],
+): (code: string) => string {
+    const indexed = declarations.map((declaration) => {
+        const tokens = [...cppTokens(declaration.text)];
+        const declared = cppDeclaredNames(tokens);
+        // A declaration's own name reaches no other overload of it.
+        const references = new Set(cppIdentifiers(declaration.text));
+        for (const name of declared?.names ?? []) references.delete(name);
+        return { ...declaration, declared, references };
+    });
+    const byName = new Map<string, number[]>();
+    for (const [index, { declared }] of indexed.entries())
+        for (const name of declared?.names ?? [])
+            byName.set(name, [...(byName.get(name) ?? []), index]);
+    // Overloads found by argument-dependent lookup (a record's `json_write`)
+    // follow the types their signatures name.
+    const overloads = indexed.flatMap(({ declared }, index) =>
+        declared?.function &&
+        declared.names.every((name) => byName.get(name)!.length > 1)
+            ? [index]
+            : [],
+    );
+    return (code) => {
+        const selected = new Set<number>();
+        const types = new Set<string>();
+        const pending: number[] = [];
+        const select = (index: number): void => {
+            if (selected.has(index)) return;
+            selected.add(index);
+            pending.push(index);
+        };
+        const reach = (names: Iterable<string>): void => {
+            for (const name of names)
+                for (const index of byName.get(name) ?? []) select(index);
+        };
+        for (const [index, { declared }] of indexed.entries())
+            if (!declared) select(index);
+        reach(cppIdentifiers(code));
+        for (;;) {
+            while (pending.length > 0) {
+                const declaration = indexed[pending.pop()!]!;
+                if (declaration.declared && !declaration.declared.function)
+                    for (const name of declaration.declared.names)
+                        types.add(name);
+                reach(declaration.references);
+            }
+            for (const index of overloads)
+                if (
+                    !selected.has(index) &&
+                    [...indexed[index]!.references].some((name) =>
+                        types.has(name),
+                    )
+                )
+                    select(index);
+            if (pending.length === 0) break;
+        }
+        let text = "";
+        let inScene = false;
+        for (const [index, declaration] of indexed.entries()) {
+            if (!selected.has(index)) continue;
+            if (declaration.scene !== inScene) {
+                text += inScene ? "}\n" : "namespace bblscene {\n";
+                inScene = declaration.scene;
+            }
+            text += `${declaration.text}\n`;
+        }
+        return inScene ? `${text}}\n` : text;
+    };
+}
+
 export function renderSourceUnits(options: {
     source: string;
     realm: string | undefined;
     includes: string;
-    declarations: string;
+    declarations: readonly UnitDeclaration[];
     definitions: readonly NativeDefinition[];
     templates: readonly { name: string; definition: string }[];
     entry: string;
     cpp: string;
 }): ApplicationCpp {
-    const { source, realm, includes, declarations, definitions, entry, cpp } =
-        options;
+    const { source, realm, includes, definitions, entry, cpp } = options;
     const wrap = (text: string): string =>
         realm ? `namespace ${realm} {\n${text}\n}\n` : text;
     const entryPath = "main.cpp";
@@ -145,9 +241,10 @@ export function renderSourceUnits(options: {
     );
     const header = "sources/application.hpp";
     const files = new Map<string, string>([
-        [header, `#pragma once\n${includes}\n${wrap(declarations)}`],
+        [header, `#pragma once\n${includes}\n`],
     ]);
     const sourceUnits: SourceUnit[] = [];
+    const declarationsFor = unitDeclarations(options.declarations);
     const templates = new Map(
         options.templates.map((definition) => [
             definition.name,
@@ -193,7 +290,7 @@ export function renderSourceUnits(options: {
                 throw new Error(`Generated source path collision: ${path}`);
             files.set(
                 path,
-                `// Generated by bblitec. Do not edit.\n#include "${include}"\n${wrap(body)}`,
+                `// Generated by bblitec. Do not edit.\n#include "${include}"\n${wrap(`${declarationsFor(body)}\n${body}`)}`,
             );
             sourceUnits.push({
                 source: partSource,

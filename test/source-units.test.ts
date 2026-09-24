@@ -57,11 +57,19 @@ test("source units link shared types, tables and calls across equal module basen
         2,
     );
     assert.ok(units.every(({ source }) => !source.endsWith("unused.ts")));
+    // Each unit declares only what its code reaches.
     assert.match(
-        result.cppFiles.get("sources/application.hpp")!,
+        result.cppFiles.get("sources/left/shared.cpp")!,
         /const .*& weights\(\);/,
     );
-    assert.doesNotMatch(result.cppFiles.get("main.cpp")!, /double step\(/);
+    assert.doesNotMatch(
+        result.cppFiles.get("sources/application.hpp")!,
+        /weights|step/,
+    );
+    assert.doesNotMatch(
+        result.cppFiles.get("main.cpp")!,
+        /weights|double step\(/,
+    );
     assert.deepEqual(
         [...compileSource(source, options).cppFiles],
         [...result.cppFiles],
@@ -246,7 +254,10 @@ test("template placement follows transitive code references and ignores literals
         source: "entry.ts",
         realm: undefined,
         includes: "",
-        declarations: "namespace bblscene { double first(); double second(); }",
+        declarations: [
+            { scene: true, text: "double first();" },
+            { scene: true, text: "double second();" },
+        ],
         definitions: [
             {
                 source: "first.ts",
