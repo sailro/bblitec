@@ -81,6 +81,8 @@ struct PickingInfoState {
      */
     PickedNodeKind picked_kind = PickedNodeKind::none;
     std::uint32_t picked_index = invalid_handle;
+    /** The picked mesh handle's generation, so a reused slot is not the hit. */
+    std::uint32_t picked_generation = 0;
     /**
      * The read-back id's offset inside the range its candidate owns --
      * upstream's `pickId - r.base`, the local id it hands the resolving

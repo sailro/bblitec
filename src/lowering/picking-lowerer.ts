@@ -93,7 +93,7 @@ function tupleMembers(name: string, cpp: string): [string, PinnedBinding][] {
  */
 const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == PickedNodeKind::mesh) {
         const PickDetailReadback& detail = *info.detail;
-        const MeshHandle mesh{info.picked_index};
+        const MeshHandle mesh{info.picked_index, info.state->picked_generation};
         populate_detailed_mesh_info(
             info,
             mesh_cpu_indices(engine, mesh),
@@ -661,7 +661,7 @@ std::string picked_node_name(
 
 MeshHandle picked_mesh(const PickingInfo& info) {
     return info.picked_kind == PickedNodeKind::mesh
-        ? MeshHandle{info.picked_index}
+        ? MeshHandle{info.picked_index, info.state->picked_generation}
         : MeshHandle{};
 }
 
@@ -1180,7 +1180,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
     const PickingInfo& info,
     bool use_world_coordinates) {
     const bool resolved = info.picked_kind == PickedNodeKind::mesh;
-    const MeshHandle mesh{info.picked_index};
+    const MeshHandle mesh{info.picked_index, info.state->picked_generation};
     return picked_normal_impl(
         resolved ? mesh_cpu_normals(engine, mesh) : std::vector<float>{},
         resolved ? mesh_cpu_indices(engine, mesh)

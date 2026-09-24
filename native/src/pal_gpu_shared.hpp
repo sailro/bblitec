@@ -1253,6 +1253,8 @@ struct PickRange {
     PickedNodeKind kind = PickedNodeKind::none;
     std::uint32_t index = invalid_handle;
     std::uint32_t count = 1;
+    /** A mesh candidate's handle generation (`MeshHandle::generation`). */
+    std::uint32_t generation = 0;
 };
 
 /**
@@ -1275,6 +1277,7 @@ inline PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges,
         info.hit = true;
         info.picked_kind = range.kind;
         info.picked_index = range.index;
+        info.state->picked_generation = range.generation;
         info.picked_range_offset = pick_id - range.id;
         return info;
     }
@@ -2082,7 +2085,8 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
             candidate.thin ? candidate.instance_count :
 #endif
                            1u;
-        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value, id_count});
+        ranges.push_back(
+            {next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation});
         next_id += id_count;
     }
     return candidates;
@@ -3637,11 +3641,7 @@ inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& eng
     // The mesh half of the key comes per original renderable. Renderer
     // startup assigns its stable generated-table row and gives every clone
     // the same row, even when clone handles precede later imported meshes.
-    std::uint32_t feature_mesh = draw.item.mesh.value;
-    if (draw.item.mesh.value < engine.meshes.size() &&
-        handle_at(engine.meshes, draw.item.mesh).composition_feature_row != invalid_handle) {
-        feature_mesh = handle_at(engine.meshes, draw.item.mesh).composition_feature_row;
-    }
+    const std::uint32_t feature_mesh = composition_feature_mesh(engine, draw.item.mesh);
     key.mesh_features = feature_mesh < upstream::pbr_renderable_mesh_features.size()
                             ? upstream::pbr_renderable_mesh_features[feature_mesh]
                             // Scene code can keep creating meshes after registration, all
@@ -4036,11 +4036,7 @@ inline StandardVariantKey standard_variant_key(const Scene& scene, const Engine&
                        upstream::standard_esm_shadow_output_flag;
     }
 #endif
-    std::uint32_t feature_mesh = draw.item.mesh.value;
-    if (draw.item.mesh.value < engine.meshes.size() &&
-        handle_at(engine.meshes, draw.item.mesh).composition_feature_row != invalid_handle) {
-        feature_mesh = handle_at(engine.meshes, draw.item.mesh).composition_feature_row;
-    }
+    const std::uint32_t feature_mesh = composition_feature_mesh(engine, draw.item.mesh);
     key.mesh_features = feature_mesh < upstream::standard_renderable_mesh_features.size()
                             ? upstream::standard_renderable_mesh_features[feature_mesh]
                             : upstream::standard_runtime_mesh_features;
@@ -5550,9 +5546,12 @@ rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
     if (previous_items.size() != uploaded_meshes.size()) {
         throw std::runtime_error("Render plan and uploaded mesh rows are out of sync.");
     }
+    // The whole mesh handle: a row uploaded for a retired mesh must not
+    // survive into the mesh that reused its slot (and possibly its
+    // geometry slot) before this rebuild.
     const auto same_source = [](const upstream::RenderItem& left,
                                 const upstream::RenderItem& right) {
-        return left.mesh.value == right.mesh.value && left.geometry == right.geometry &&
+        return left.mesh == right.mesh && left.geometry == right.geometry &&
                left.material.value == right.material.value;
     };
     std::vector<GpuMesh> result;

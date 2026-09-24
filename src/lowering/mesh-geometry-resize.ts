@@ -146,8 +146,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             ],
             [
                 "retireMeshGeometryBuffers",
-                (args) =>
-                    `release_geometry_storage(engine.geometries.at(${args[1]}))`,
+                (args) => `release_unowned_geometry(engine,${args[1]})`,
             ],
             [
                 "resizeMeshGeometry",

@@ -1900,6 +1900,13 @@ Scene create_scene_context(Surface& surface) {
             " for " + std::to_string(scene.engine->meshes.size()) +
             " meshes.");
     }
+    if (!mesh_handle_current(*scene.engine, mesh)) {
+        throw std::runtime_error(
+            "Mesh handle " + std::to_string(mesh.value) +
+            " names a mesh that was removed from the scene and whose slot "
+            "another mesh now holds; re-adding a removed mesh is outside the "
+            "reached subset.");
+    }
     if (scene.engine->meshes[mesh.value].retired) {
         throw std::runtime_error(
             "Mesh '" + scene.engine->meshes[mesh.value].name +
@@ -1980,46 +1987,25 @@ void set_mesh_rotation_quaternion(
     }
 }
 
-// The pin's removeFromScene drops the mesh from the scene list and lets the
-// JavaScript collector free its arrays once nothing else holds them. A
-// streaming world retires meshes continuously -- a voxel chunk mesh is a
-// megabyte of vertices, and one sprint retires hundreds -- so the removal
-// frees the CPU geometry here, when no other mesh record shares it. The
-// handle stays valid; only a later add_to_scene of the same mesh refuses.
-void reclaim_unshared_geometry(Engine& engine, MeshHandle mesh) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    const std::uint32_t geometry = record.geometry;
-    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
-        return;
-    }
-    record.retired = true;
-    ModelGeometry& shared = engine.geometries[geometry];
-    if (shared.owners > 1) {
-        --shared.owners;
-        return;
-    }
-    release_geometry_storage(shared);
-}
-
 // src/scene/scene-remove.ts removeFromScene: drop the mesh from the
 // scene list and mark the topology dirty (the pinned helper is
-// idempotent — removing a mesh the scene never held is a no-op). The
+// idempotent — removing a mesh the scene never held is a no-op, and a
+// retired mesh's handle whose slot another mesh took matches nothing). The
 // material-family mask stays monotonic: it gates which pipelines the
-// backend created, and a removal never invalidates one.
+// backend created, and a removal never invalidates one. Leaving its last
+// scene disposes the mesh: the pin's collector then frees its arrays once
+// nothing holds them, which retire_mesh_record stands for -- a streaming
+// world retires meshes continuously, so the geometry goes with the last
+// claim and the record's slot is offered to the next mesh.
 void remove_from_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
-    const auto found = std::find_if(
-        scene.meshes.begin(),
-        scene.meshes.end(),
-        [mesh](const MeshHandle candidate) {
-            return candidate.value == mesh.value;
-        });
+    const auto found = std::find(scene.meshes.begin(), scene.meshes.end(), mesh);
     if (found == scene.meshes.end()) return;
     scene.meshes.erase(found);
     std::erase_if(scene.state->material_outputs, [mesh](const auto& output) { return output->mesh == mesh; });
     const bool last_owner = unregister_mesh_material_scene(scene, mesh);
     ++scene.render_topology_version;
-    if (last_owner) reclaim_unshared_geometry(*scene.engine, mesh);
+    if (last_owner) retire_mesh_record(*scene.engine, mesh);
 }
 
 
@@ -2120,9 +2106,8 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
             record.feature_source_mesh != invalid_handle
                 ? record.feature_source_mesh
                 : source_mesh.value;
-        const MeshHandle cloned_mesh{
-            static_cast<std::uint32_t>(engine.meshes.size())};
-        engine.meshes.push_back(std::move(record));
+        const MeshHandle cloned_mesh =
+            store_mesh_record(engine, std::move(record));
         clone.meshes.push_back(cloned_mesh);
         if (clone_animation) {
             clone_animation(source_mesh, cloned_mesh);
@@ -2146,6 +2131,12 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
 MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid mesh handle.");
+    }
+    if (!mesh_handle_current(engine, mesh)) {
+        throw std::runtime_error(
+            "Mesh handle " + std::to_string(mesh.value) +
+            " cannot be cloned: its mesh was disposed when it left its last "
+            "scene and another mesh now holds its slot.");
     }
     if (engine.meshes[mesh.value].retired) {
         throw std::runtime_error(
@@ -2211,10 +2202,7 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
         record.feature_source_mesh != invalid_handle
             ? record.feature_source_mesh
             : mesh.value;
-    const MeshHandle clone{
-        static_cast<std::uint32_t>(engine.meshes.size())};
-    engine.meshes.push_back(std::move(record));
-    return clone;
+    return store_mesh_record(engine, std::move(record));
 }
 
 `;

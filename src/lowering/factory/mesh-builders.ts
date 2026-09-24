@@ -2464,8 +2464,7 @@ ${computeAabb}
             static_cast<float>(aabb[1][1]),
             static_cast<float>(aabb[1][2])};
     }
-    engine.geometries.push_back(std::move(geometry));
-    return static_cast<std::uint32_t>(engine.geometries.size()-1);
+    return store_geometry_record(engine, std::move(geometry));
 }
 MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
     const std::vector<float>& positions, const std::vector<float>& normals,
@@ -2476,9 +2475,7 @@ MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
     mesh.name = name;
     mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry = upload_mesh_geometry_data(engine,positions,normals,indices,uvs,uvs2,tangents,colors);
-    engine.meshes.push_back(mesh);
-    return MeshHandle{
-        static_cast<std::uint32_t>(engine.meshes.size() - 1)};
+    return store_mesh_record(engine, std::move(mesh));
 }
 
 // src/mesh/mesh-factories.ts updateMeshPositions/writeVertexAttributeRange:
