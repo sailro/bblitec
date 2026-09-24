@@ -86,7 +86,7 @@ and performance.
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
 | CC-16 | med | Lazy singletons (`let c: C \| null = null; c = new C()`) refused. | Rebound locals store their declared type. | fixed |
-| CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | One lookup spelling; a lookup hook for the two folds. | open |
+| CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | `bindings.lookupOptional` is the one lookup (51 callers moved); the two narrowing folds take a `StaticFoldContext`, so no context redeclares `bindings`. | fixed |
 | CC-18 | med | Colour-shape refusals (DEAD-13) are placed per site; the compiler never reads TypeScript assignability diagnostics, which would refuse every off-API object shape at once. | Refuse user sources on assignability diagnostics, measured over the corpus first; at minimum decide colour shape from the contextual type. | open |
 
 ## Lowering layer (LW)
