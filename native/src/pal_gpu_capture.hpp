@@ -88,10 +88,13 @@ public:
         ranges.resize(count);
     }
 
-    /** Runs on noexcept lease teardown; an unknown id is a broken registration. */
-    void destroy(std::uint64_t id) noexcept {
+    void destroy(std::uint64_t id) {
         if (enabled_)
-            run_teardown("GPU capture release", [&] { find(id).destroyed = true; });
+            find(id).destroyed = true;
+    }
+    /** `destroy` from noexcept lease teardown, where an unknown id is a broken registration. */
+    void release(std::uint64_t id) noexcept {
+        run_teardown("GPU capture release", [&] { destroy(id); });
     }
     void begin_frame(std::uint64_t frame) {
         if (enabled_)

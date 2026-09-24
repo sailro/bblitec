@@ -30,7 +30,7 @@ template <class Resource, auto Release> struct SdlTextLease {
         if (handle) {
             Release(owner->device, std::exchange(handle, nullptr));
             if (capture_id)
-                owner->capture.destroy(capture_id);
+                owner->capture.release(capture_id);
         }
     }
     Resource* get() const {
@@ -69,7 +69,7 @@ struct SdlTextUniform {
     ~SdlTextUniform() { retire(); }
     void retire() noexcept {
         if (!destroyed && capture_id)
-            owner->capture.destroy(capture_id);
+            owner->capture.release(capture_id);
         destroyed = true;
     }
     void check() const {
@@ -101,7 +101,7 @@ struct SdlTextGroup {
     ~SdlTextGroup() { retire(); }
     void retire() noexcept {
         if (capture_id) {
-            owner->capture.destroy(capture_id);
+            owner->capture.release(capture_id);
             capture_id = 0;
         }
     }
