@@ -61,6 +61,10 @@ import { browserGlobalNamed } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
+import {
+    dataTypeMayHoldUiElement,
+    typeMayMapToUiElement,
+} from "./ui-element-analysis.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -104,6 +108,20 @@ interface UiStaticElement {
     childShapeKnown: boolean;
 }
 
+/** What `uiElementValue` knows of the element an expression names. */
+interface UiElementMetadata {
+    tag: string | undefined;
+}
+
+/** Methods `uiElementValue` lowers to an element: a canvas context and the lookups. */
+const UI_ELEMENT_CALL_METHODS: ReadonlySet<string> = new Set([
+    "getContext",
+    "querySelector",
+    "closest",
+    "getElementById",
+    "querySelectorAll",
+]);
+
 interface UiPendingClassQuery {
     root: Value;
     className: string;
@@ -124,6 +142,7 @@ interface UiUnknownAttributeMutation {
 
 interface UiProjectionContext extends Pick<
     LoweringServices,
+    | "activeThis"
     | "assets"
     | "assetPayloads"
     | "lookupIdentifierValue"
@@ -271,30 +290,17 @@ export class UiProjection {
         if (root) return root;
         const owner = this.context.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
-            if (
-                this.context.hasPresentationHost() &&
-                value?.browserValue?.kind === "object" &&
-                value.browserValue.primaryCanvas
-            ) {
+            if (value && this.presentsPrimaryCanvas(value)) {
                 return Object.assign(
                     value,
                     this.primaryPresentationCanvas(owner),
                 );
             }
-            const storedMetadata = value
-                ? (this.uiElementMetadataByDataStorage.get(value.cpp) ??
-                  (value.optionalStorageCpp
-                      ? this.uiElementMetadataByDataStorage.get(
-                            value.optionalStorageCpp,
-                        )
-                      : undefined))
+            const tracked = value
+                ? this.trackedUiElementMetadata(value)
                 : undefined;
-            const trackedTag = value
-                ? (value.uiTag ?? storedMetadata?.tag)
-                : undefined;
-            const trackedId = value
-                ? (value.uiStaticId ?? storedMetadata?.staticId)
-                : undefined;
+            const trackedTag = tracked?.tag;
+            const trackedId = tracked?.staticId;
             const withTrackedTag = (
                 element: Value<"ui-element">,
             ): Value<"ui-element"> =>
@@ -433,10 +439,73 @@ export class UiProjection {
         return undefined;
     }
 
+    /** Whether `uiElementValue` answers a UI element here, and its tag. */
     private uiElementMetadata(
         expression: ts.Expression,
-    ): { tag: string | undefined } | undefined {
-        let metadata: { tag: string | undefined } | undefined;
+    ): UiElementMetadata | undefined {
+        const analyzed = this.analyzedUiElementMetadata(expression);
+        return analyzed === "lower"
+            ? this.loweredUiElementMetadata(expression)
+            : analyzed;
+    }
+
+    /**
+     * `uiElementMetadata` read without lowering, arm for arm with
+     * `uiElementValue`: a `this` field from its bound value, any other
+     * member or element read from its checker type, and a call from its
+     * method name. "lower" names what only lowering decides: a document
+     * root (its engine can refuse), a read typed as an element (record
+     * getters and data paths), a bound name, a canvas context, a lookup
+     * call, a presented primary canvas and data that can narrow to an
+     * element.
+     */
+    public analyzedUiElementMetadata(
+        expression: ts.Expression,
+    ): UiElementMetadata | undefined | "lower" {
+        if (this.documentRootTag(expression)) return "lower";
+        const owner = this.context.unwrap(expression);
+        if (
+            ts.isPropertyAccessExpression(owner) &&
+            owner.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            const value =
+                this.context.activeThis()?.recordProperties?.[owner.name.text];
+            if (!value) return undefined;
+            if (this.presentsPrimaryCanvas(value)) return "lower";
+            if (value.kind === "ui-element")
+                return { tag: this.trackedUiElementMetadata(value).tag };
+            return value.kind === "data" &&
+                value.dataType &&
+                dataTypeMayHoldUiElement(value.dataType)
+                ? "lower"
+                : undefined;
+        }
+        if (
+            ts.isPropertyAccessExpression(owner) ||
+            ts.isElementAccessExpression(owner)
+        ) {
+            return typeMayMapToUiElement(
+                this.context.checker.getTypeAtLocation(owner),
+                this.context.checker,
+            )
+                ? "lower"
+                : undefined;
+        }
+        if (ts.isCallExpression(owner)) {
+            const callee = this.context.unwrap(owner.expression);
+            return ts.isPropertyAccessExpression(callee) &&
+                UI_ELEMENT_CALL_METHODS.has(callee.name.text)
+                ? "lower"
+                : undefined;
+        }
+        return ts.isIdentifier(owner) ? "lower" : undefined;
+    }
+
+    /** `uiElementMetadata` by lowering the expression in a declined probe. */
+    public loweredUiElementMetadata(
+        expression: ts.Expression,
+    ): UiElementMetadata | undefined {
+        let metadata: UiElementMetadata | undefined;
         this.context.probeEmission(() => {
             const element = this.uiElementValue(expression);
             if (element?.kind === "ui-element")
@@ -444,6 +513,33 @@ export class UiProjection {
             return undefined;
         });
         return metadata;
+    }
+
+    /** A browser value naming the primary canvas, which a presentation host lowers to its element. */
+    private presentsPrimaryCanvas(value: Value): boolean {
+        return (
+            this.context.hasPresentationHost() &&
+            value.browserValue?.kind === "object" &&
+            !!value.browserValue.primaryCanvas
+        );
+    }
+
+    /** An element value's tag and construction identity, or what its data storage recorded. */
+    private trackedUiElementMetadata(value: Value): {
+        tag: string | undefined;
+        staticId: number | undefined;
+    } {
+        const stored =
+            this.uiElementMetadataByDataStorage.get(value.cpp) ??
+            (value.optionalStorageCpp
+                ? this.uiElementMetadataByDataStorage.get(
+                      value.optionalStorageCpp,
+                  )
+                : undefined);
+        return {
+            tag: value.uiTag ?? stored?.tag,
+            staticId: value.uiStaticId ?? stored?.staticId,
+        };
     }
 
     public uiCreatedElementTag(expression: ts.Expression): string | undefined {

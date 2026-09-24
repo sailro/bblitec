@@ -397,7 +397,7 @@ function borrowedPlatformEventKind(
     return undefined;
 }
 
-function isDomElementType(symbol: ts.Symbol): boolean {
+export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (symbol.name === "Element" ||
