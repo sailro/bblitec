@@ -395,7 +395,12 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 "Pinned kernel local requires an initializer.",
             );
         if (ts.isArrayBindingPattern(declaration.name))
-            return this.destructuring(declaration, stable, indent);
+            return this.destructuring(
+                declaration.name,
+                declaration.initializer,
+                stable,
+                indent,
+            );
         if (!ts.isIdentifier(declaration.name))
             return this.refuse(
                 declaration,
@@ -435,16 +440,16 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     }
 
     private destructuring(
-        declaration: ts.VariableDeclaration,
+        pattern: ts.ArrayBindingPattern,
+        initializer: ts.Expression,
         stable: boolean,
         indent: string,
     ): string[] {
-        const pattern = declaration.name as ts.ArrayBindingPattern;
-        const value = this.value(declaration.initializer!);
+        const value = this.value(initializer);
         const fields = tupleTypes(value.type);
         if (!fields || pattern.elements.length > fields.length)
             return this.refuse(
-                declaration,
+                pattern,
                 "Pinned tuple destructuring requires represented fields.",
             );
         const temporary = `tuple_${this.temporary++}`;
