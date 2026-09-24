@@ -243,6 +243,13 @@ public:
         value(vector.y);
         end_array();
     }
+    void field(const char* name, const Vec2d& vector) {
+        key(name);
+        begin_array();
+        value(vector.x);
+        value(vector.y);
+        end_array();
+    }
     void field(const char* name, const Vec3& vector) {
         key(name);
         begin_array();

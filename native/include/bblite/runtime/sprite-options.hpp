@@ -82,7 +82,7 @@ struct Sprite2DLayerOptions {
     float order;
     Sprite2DDepthMode depth_mode;
     float layer_z;
-    Vec2 pivot;
+    Vec2d pivot;
     std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
     std::vector<std::string> custom_texture_names;
@@ -121,7 +121,7 @@ struct BillboardSystemOptions {
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
 struct BillboardSpriteProps {
-    Vec3 position{};
+    Vec3d position{};
     Vec2 size_world{};
     bool has_size_world = false;
     float frame = 0.0f;

@@ -77,6 +77,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
             "inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
             "inline bool sprite_scene_pipeline_compatible(",
             "inline Vec3d frame_floating_origin_offset(",
+            "inline CameraRecord* scene_camera(",
             "inline BillboardDrawPlan billboard_draw_plan(",
             "inline bool billboard_needs_upload(",
             "inline void stamp_billboard_upload(",

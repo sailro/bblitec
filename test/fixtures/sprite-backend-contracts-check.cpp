@@ -211,8 +211,8 @@ void build_sprite_layer_ubo(const Sprite2DLayerRecord&, float width, float heigh
     output[1] = height;
 }
 void build_billboard_system_ubo(const BillboardSystemRecord&, std::array<float, 4>&) {}
-void billboard_upload_instances(const BillboardSystemRecord& system, const std::array<float, 16>&,
-                                std::vector<float>& output) {
+void billboard_upload_instances(const BillboardSystemRecord& system, bool,
+                                const std::array<float, 16>&, std::vector<float>& output, Vec3d) {
     output = system.instance_data;
 }
 } // namespace bbl::upstream
