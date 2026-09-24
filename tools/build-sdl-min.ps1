@@ -84,19 +84,45 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
         }
     }
 }
-# A forced checkout returns a warm workspace to the stock tag before the
-# series is applied again.
-git -C $source checkout --force --detach $tag
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to check out SDL tag $tag."
-}
 
 # The `trimmed` series of native/patches/manifest.json: the overlay port's
 # own patches (the vcpkg-installed SDL3 the parity numbers were measured
 # against carries them) except vcpkg's FreeBSD packaging fix, plus the
 # static build's dynamic-API switch.
 $patches = Get-MaintainedPatches sdl3 @("trimmed")
-Install-MaintainedPatches $source $patches "SDL"
+$patchRecord = @(Get-PatchRecord sdl3 $sdlVersion $patches)
+
+# A warm workspace already holding the tag with this series staged is built
+# as it stands: a forced checkout and a re-applied series would give every
+# patched file a new mtime and recompile the library and every consumer of
+# its installed headers. The state file records the series and the tree it
+# staged; it is removed before the source is reset and written only once
+# the whole series applied.
+$appliedPath = Join-Path $workspacePath "applied-series.txt"
+function Get-SourceState {
+    # An unstaged edit on top of the staged series is not a state this script wrote.
+    git -C $source diff --quiet
+    if ($LASTEXITCODE -ne 0) { return "" }
+    $tree = git -C $source write-tree
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return (@($patchRecord) + "tree=$tree") -join "`n"
+}
+$tagCommit = git -C $source rev-parse "$tag^{commit}"
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to resolve SDL tag $tag."
+}
+$recorded = if (Test-Path -LiteralPath $appliedPath) { Get-Content -LiteralPath $appliedPath -Raw } else { "" }
+if ((git -C $source rev-parse HEAD) -eq $tagCommit -and $recorded -and $recorded -ceq (Get-SourceState)) {
+    Write-Host "SDL $tag already carries the trimmed series."
+} else {
+    if (Test-Path -LiteralPath $appliedPath) { Remove-Item -LiteralPath $appliedPath }
+    git -C $source checkout --force --detach $tag
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to check out SDL tag $tag."
+    }
+    Install-MaintainedPatches $source $patches "SDL"
+    Set-Content -LiteralPath $appliedPath -Value (Get-SourceState) -NoNewline -Encoding utf8NoBOM
+}
 
 # One table drives the configure and the check after it: every entry is
 # passed as "-D<name>=<value>" and read back from the cache CMake wrote,
@@ -156,10 +182,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal CMake configuration failed."
 }
 
-$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt")
-$cacheTypes = Read-CMakeCacheTypes (Join-Path $build "CMakeCache.txt")
+$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt") -WithTypes
 foreach ($option in $sdlOptions.GetEnumerator()) {
-    $actual = $cache[$option.Key]
+    $entry = $cache[$option.Key]
+    $actual = if ($entry) { $entry.Value } else { $null }
     if ($actual -ne $option.Value) {
         throw (
             "The SDL cache records $($option.Key)=$actual where " +
@@ -167,9 +193,9 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
             "CMake as a value. Refusing to build a mis-trimmed SDL."
         )
     }
-    if ($cacheTypes[$option.Key] -notin @("BOOL", "INTERNAL")) {
+    if ($entry.Type -notin @("BOOL", "INTERNAL")) {
         throw (
-            "The SDL cache records $($option.Key) as $($cacheTypes[$option.Key]), " +
+            "The SDL cache records $($option.Key) as $($entry.Type), " +
             "not an option: SDL $sdlVersion declares no such setting, so it " +
             "trims nothing. Remove it from the option table."
         )
@@ -177,10 +203,10 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
 }
 $unexpanded = @(
     $cache.GetEnumerator() |
-        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Contains('$') }
+        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Value.Contains('$') }
 )
 if ($unexpanded.Count -gt 0) {
-    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ", "
+    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value.Value)" }) -join ", "
     throw "SDL cache entries hold unexpanded script text: $listing"
 }
 
@@ -232,7 +258,7 @@ $record = @(
     "set(BBLITE_SDL_DIALOG $dialogSetting)"
     "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
     "set(BBLITE_SDL_METAL $($sdlOptions.SDL_METAL))"
-) + @(Get-PatchRecord sdl3 $sdlVersion $patches)
+) + $patchRecord
 $record -join "`n" | Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
 
 @{

@@ -17,6 +17,27 @@ export type NativeBackend = (typeof NATIVE_BACKENDS)[number];
 export type BackendSelection = NativeBackend | "both";
 
 /**
+ * The renderer set a build directory compiles, as CMake's `BBLITE_BACKEND`
+ * spells a selection: the same names in upper case.
+ */
+export type CompiledBackend = Uppercase<BackendSelection>;
+
+const COMPILED_BACKENDS = {
+    sdl_gpu: "SDL_GPU",
+    dawn: "DAWN",
+    both: "BOTH",
+} as const satisfies { readonly [S in BackendSelection]: Uppercase<S> };
+
+export function compiledBackend(selection: BackendSelection): CompiledBackend {
+    return COMPILED_BACKENDS[selection];
+}
+
+/** The selection a compiled renderer set measures: every backend it compiles. */
+export function compiledSelection(backend: CompiledBackend): BackendSelection {
+    return parseBackendName(backend, "BBLITE_BACKEND", true);
+}
+
+/**
  * The one backend-name parser. Case-insensitive, `-` and `_` alike, and
  * `gpu` accepted for `sdl_gpu` because that is the token the artifact
  * filenames carry; `both` only where the caller measures or builds both.

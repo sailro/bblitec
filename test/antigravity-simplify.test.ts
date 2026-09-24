@@ -8,23 +8,14 @@ import { compileSource } from "../src/compiler.js";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import {
     composeStandaloneWgsl,
-    shaderMaterialPrograms,
     predeclaredShaderProgram,
     shaderSamplerDeclarations,
-    type ShaderMaterialProgramSource,
 } from "../src/shader-material-programs.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
-
-function predeclaredProgram(name: string): ShaderMaterialProgramSource {
-    const program = shaderMaterialPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    assert.ok(program, `predeclared shader program '${name}'`);
-    return program;
-}
+import { predeclaredProgram } from "./shader-program-fixture.js";
 
 test("storage creation and update accept typed arrays and refuse plain arrays", () => {
     const source = (createData: string, updateData: string) => `

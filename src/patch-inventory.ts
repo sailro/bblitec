@@ -11,11 +11,12 @@
  * `artifactPatchState` compares an installed artifact's record with the
  * series the manifest selects, as the CMake check does.
  */
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findRepositoryRoot } from "./repository-root.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
+import { contentDigest, listFiles } from "./tooling/records.js";
 
 const upstreamStates = [
     "unsubmitted",
@@ -50,15 +51,9 @@ export interface PatchManifest {
     patches: readonly MaintainedPatch[];
 }
 
-/** The checkout this module was built from (dist/src or src, two levels down). */
-export const repositoryRoot = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "..",
-);
-
-export const patchManifestPath = (root: string): string =>
-    join(root, "native", "patches", "manifest.json");
+/** The checkout this module was built from. */
+const moduleRepositoryRoot = (): string =>
+    findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -111,7 +106,7 @@ function isUpstreamState(value: string): value is UpstreamState {
     return upstreamStates.some((state) => state === value);
 }
 
-export function parsePatchManifest(source: string): PatchManifest {
+function parsePatchManifest(source: string): PatchManifest {
     const root = object(JSON.parse(source), "native/patches/manifest.json");
     const libraries = new Map<string, PatchLibrary>();
     for (const [name, definition] of Object.entries(
@@ -184,8 +179,24 @@ export function parsePatchManifest(source: string): PatchManifest {
     return { libraries, patches };
 }
 
-export function readPatchManifest(root = repositoryRoot): PatchManifest {
-    return parsePatchManifest(readFileSync(patchManifestPath(root), "utf8"));
+export function readPatchManifest(
+    root = moduleRepositoryRoot(),
+): PatchManifest {
+    return parsePatchManifest(
+        readFileSync(join(root, "native", "patches", "manifest.json"), "utf8"),
+    );
+}
+
+function libraryDefinition(
+    manifest: PatchManifest,
+    library: string,
+): PatchLibrary {
+    const definition = manifest.libraries.get(library);
+    if (!definition)
+        throw new Error(
+            `native/patches/manifest.json lists no library '${library}'.`,
+        );
+    return definition;
 }
 
 /** The patches of one library a build with these variant tokens applies, in order. */
@@ -194,11 +205,7 @@ export function selectPatches(
     library: string,
     variants: readonly string[],
 ): MaintainedPatch[] {
-    const definition = manifest.libraries.get(library);
-    if (!definition)
-        throw new Error(
-            `native/patches/manifest.json lists no library '${library}'.`,
-        );
+    const definition = libraryDefinition(manifest, library);
     for (const variant of variants) {
         if (!definition.variants.includes(variant))
             throw new Error(
@@ -235,21 +242,14 @@ export function expectedPatchRecord(
     manifest: PatchManifest,
     library: string,
     variants: readonly string[],
-    root = repositoryRoot,
+    root = moduleRepositoryRoot(),
 ): PatchRecord {
-    const definition = manifest.libraries.get(library);
-    if (!definition)
-        throw new Error(
-            `native/patches/manifest.json lists no library '${library}'.`,
-        );
     return {
-        source: pinnedSource(root, definition),
+        source: pinnedSource(root, libraryDefinition(manifest, library)),
         patches: selectPatches(manifest, library, variants)
             .map(
                 (patch) =>
-                    `${basename(patch.file)}=${createHash("sha256")
-                        .update(readFileSync(join(root, patch.file)))
-                        .digest("hex")}`,
+                    `${basename(patch.file)}=${contentDigest(join(root, patch.file))}`,
             )
             .join(";"),
     };
@@ -280,7 +280,7 @@ export function artifactPatchState(
     library: string,
     directory: string,
     variants: readonly string[],
-    root = repositoryRoot,
+    root = moduleRepositoryRoot(),
 ): ArtifactPatchState {
     const record = manifest.libraries.get(library)?.record;
     if (!record)
@@ -312,13 +312,6 @@ const diffStart = /^(diff --git |--- |Index: )/;
 
 const reason = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
-
-function listFiles(directory: string): string[] {
-    if (!existsSync(directory)) return [];
-    return readdirSync(directory, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => join(entry.parentPath, entry.name));
-}
 
 const posix = (path: string): string => path.split(sep).join("/");
 
@@ -354,12 +347,10 @@ export function portfilePatches(portfile: string): string[] {
 }
 
 /** Everything wrong with the inventory; empty when it is consistent. */
-export function checkPatchInventory(root = repositoryRoot): string[] {
+export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
     let manifest: PatchManifest;
     try {
-        manifest = parsePatchManifest(
-            readFileSync(patchManifestPath(root), "utf8"),
-        );
+        manifest = readPatchManifest(root);
     } catch (error) {
         return [`native/patches/manifest.json: ${reason(error)}`];
     }

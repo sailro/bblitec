@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
-import {
-    composeStandaloneWgsl,
-    shaderMaterialPrograms,
-    type ShaderMaterialProgramSource,
-} from "../src/shader-material-programs.js";
+import { composeStandaloneWgsl } from "../src/shader-material-programs.js";
+import { predeclaredProgram } from "./shader-program-fixture.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -24,14 +21,6 @@ import {
 import { findRepositoryRoot, readUpstreamPin } from "../src/upstream-source.js";
 import { resolve } from "node:path";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
-
-function predeclaredProgram(name: string): ShaderMaterialProgramSource {
-    const program = shaderMaterialPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    assert.ok(program, `predeclared shader program '${name}'`);
-    return program;
-}
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
     const program = lowerWgslShaderProgram(predeclaredProgram("alpha-card"));

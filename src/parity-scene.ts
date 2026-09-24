@@ -56,6 +56,10 @@ import {
     type NativeBackend,
 } from "./tooling/backends.js";
 import { readMemoryTape } from "./tooling/check-spec.js";
+import {
+    readCompiledSceneManifest,
+    type CompiledSceneManifest,
+} from "./tooling/generated-readers.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
     nativeRunBound,
@@ -75,44 +79,14 @@ import {
  * the instrumented capture and the geometry diagnostics — so a seeded
  * scene renders the same particle set on all of them.
  */
-interface CompiledSceneManifest {
-    adaptations?: Array<{ id?: string }>;
-    features?: unknown;
-}
-
-function readCompiledSceneManifest(
-    scene: SceneDefinition,
-): CompiledSceneManifest | undefined {
-    const manifestPath = resolve(scene.output, "manifest.json");
-    if (!existsSync(manifestPath)) {
-        return undefined;
-    }
-    try {
-        const manifest: unknown = JSON.parse(
-            readFileSync(manifestPath, "utf8"),
-        );
-        if (typeof manifest !== "object" || manifest === null) {
-            return undefined;
-        }
-        return manifest;
-    } catch {
-        return undefined;
-    }
-}
-
-function manifestUsesSeededRandom(
-    manifest: CompiledSceneManifest | undefined,
-): boolean {
-    return (
-        Array.isArray(manifest?.adaptations) &&
-        manifest.adaptations.some(
-            (adaptation) => adaptation.id === "deterministic-seeded-random",
-        )
-    );
+function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
+    return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
 export function usesSeededRandom(scene: SceneDefinition): boolean {
-    return manifestUsesSeededRandom(readCompiledSceneManifest(scene));
+    return manifestUsesSeededRandom(
+        readCompiledSceneManifest(scene.output, scene.id),
+    );
 }
 
 /** Whether the compiled scene actually carries the retained native UI.
@@ -120,8 +94,9 @@ export function usesSeededRandom(scene: SceneDefinition): boolean {
  *  golden capture composed (`runParity` derives the same predicate from
  *  its already-read manifest at its `retainedUiCapture` binding). */
 export function usesRetainedUi(scene: SceneDefinition): boolean {
-    const features = readCompiledSceneManifest(scene)?.features;
-    return Array.isArray(features) && features.includes("ui:rml");
+    return readCompiledSceneManifest(scene.output, scene.id).features.includes(
+        "ui:rml",
+    );
 }
 
 /**
@@ -185,7 +160,6 @@ export interface ParityArguments {
     singleSample: boolean;
     recaptureReference: boolean;
     noFail: boolean;
-    gpuDebug: boolean;
 }
 
 /** The native switch `--without` drives for each suppressible element. */
@@ -262,7 +236,6 @@ export function parityArgumentsFrom(parsed: ParsedFlags): ParityArguments {
         singleSample: parsed.flags.has("--single-sample"),
         recaptureReference: parsed.flags.has("--recapture-reference"),
         noFail: parsed.flags.has("--no-fail"),
-        gpuDebug: parsed.flags.has("--gpu-debug"),
     };
     const modes = [
         ["--runs", result.runs !== undefined],
@@ -409,10 +382,12 @@ export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
 export interface MemorySample {
     frame: number;
     workingSetMb: number;
-    /** Engine mesh records, against the meshes the scene still draws. */
+    /** Occupied engine mesh records (the table less its free slots),
+     *  against the meshes the scene still draws. */
     meshRecords: number;
     sceneMeshes: number;
-    /** Engine geometry records, against the ones still holding vertices. */
+    /** Occupied engine geometry records, against the ones still holding
+     *  vertices. */
     geometryRecords: number;
     liveGeometries: number;
     geometryMb: number;
@@ -503,15 +478,9 @@ export interface MemorySummary {
     /** Least-squares working-set slope after warm-up, MB per 1,000 frames. */
     slopeMbPer1000Frames: number;
     maxSlopeMb: number;
-    /**
-     * Mesh records past the most the scene has drawn at once so far
-     * (`mesh_records` minus the running maximum of `scene_meshes`).
-     */
+    /** Mesh records the scene does not draw (`mesh_records` minus `scene_meshes`). */
     orphanMeshRecords: MemoryCounterTrend;
-    /**
-     * Geometry records past the most that held vertices at once so far
-     * (`geometry_records` minus the running maximum of `live_geometries`).
-     */
+    /** Geometry records without vertices (`geometry_records` minus `live_geometries`). */
     orphanGeometryRecords: MemoryCounterTrend;
     gcNodes: MemoryCounterTrend;
     /** Why the run failed; empty when it passed. */
@@ -542,20 +511,6 @@ function counterTrend(
     };
 }
 
-/** Each sample's running maximum of `value` over the run up to it. */
-function runningMaximum(
-    samples: readonly MemorySample[],
-    value: (sample: MemorySample) => number,
-): Map<MemorySample, number> {
-    const result = new Map<MemorySample, number>();
-    let peak = 0;
-    for (const sample of samples) {
-        peak = Math.max(peak, value(sample));
-        result.set(sample, peak);
-    }
-    return result;
-}
-
 function slopePer1000Frames(window: readonly MemorySample[]): number {
     const frames = window.map((sample) => sample.frame);
     const values = window.map((sample) => sample.workingSetMb);
@@ -576,11 +531,11 @@ function slopePer1000Frames(window: readonly MemorySample[]): number {
  * when any of these holds:
  *   - the working set trends upward faster than `maxSlopeMb` per 1,000
  *     frames (least squares, so one late spike does not decide);
- *   - engine mesh or geometry records pile up past the most meshes the
- *     scene has drawn (geometries have held vertices) at once: the last
- *     third's floor is above the first third's — records a correct
- *     program retires are reused, so the tables never outgrow that
- *     high-water, however far the scene's own count dips below it;
+ *   - engine mesh records the scene does not draw (geometry records
+ *     without vertices) pile up: the last third's floor is above the
+ *     first third's. The line counts occupied records, so a record a
+ *     correct program retires leaves the count, and a leak that refills
+ *     retired slots still shows;
  *   - GC nodes rise steadily: each third's floor above the previous one's,
  *     by more than `gcNodeRiseShare` of the first floor.
  * Undefined when the run printed too few lines to judge (a loop without
@@ -608,21 +563,13 @@ export function summarizeMemoryProfile(
         return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
     const slope = slopePer1000Frames(window);
-    const sceneMeshPeak = runningMaximum(
-        samples,
-        (sample) => sample.sceneMeshes,
-    );
-    const liveGeometryPeak = runningMaximum(
-        samples,
-        (sample) => sample.liveGeometries,
-    );
     const orphanMeshRecords = counterTrend(
         window,
-        (sample) => sample.meshRecords - sceneMeshPeak.get(sample)!,
+        (sample) => sample.meshRecords - sample.sceneMeshes,
     );
     const orphanGeometryRecords = counterTrend(
         window,
-        (sample) => sample.geometryRecords - liveGeometryPeak.get(sample)!,
+        (sample) => sample.geometryRecords - sample.liveGeometries,
     );
     const gcNodes = counterTrend(window, (sample) => sample.gcNodes);
     const failures: string[] = [];
@@ -894,11 +841,9 @@ async function runSceneParity(
         { ...scene, parity: config },
         pose,
     );
-    const compiledManifest = readCompiledSceneManifest(scene);
+    const compiledManifest = readCompiledSceneManifest(scene.output, scene.id);
     const retainedUiCapture =
-        captureUi &&
-        Array.isArray(compiledManifest?.features) &&
-        compiledManifest.features.includes("ui:rml");
+        captureUi && compiledManifest.features.includes("ui:rml");
     const reference =
         canvasOnly || seekedPose
             ? resolve(

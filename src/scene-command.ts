@@ -62,6 +62,11 @@ import {
     seekBracketPlan,
     type ScenePose,
 } from "./tooling/artifacts.js";
+import {
+    compiledBackend,
+    NATIVE_BACKENDS,
+    type CompiledBackend,
+} from "./tooling/backends.js";
 import { readCheckSpec } from "./tooling/check-spec.js";
 import { runCheck } from "./tooling/check-run.js";
 import { runObserve } from "./tooling/observe-run.js";
@@ -992,7 +997,7 @@ interface SharedBuildSetup {
     environment: NodeJS.ProcessEnv;
     generator: string;
     windows: WindowsBuildTools | undefined;
-    backend: string;
+    backend: CompiledBackend;
     tools: DevelopmentTools;
     vcpkg:
         | {
@@ -1171,7 +1176,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                   }),
         });
     }
-    let backend: ReturnType<typeof selectedCompiledBackend> | undefined;
+    let backend: CompiledBackend | undefined;
     try {
         backend = selectedCompiledBackend();
     } catch (error) {
@@ -2825,8 +2830,10 @@ function runClean(options: CleanOptions): void {
         }
     }
     for (const directory of [...ownedBuilds]) {
-        for (const backend of ["SDL_GPU", "DAWN"] as const) {
-            ownedBuilds.add(compiledBuildDirectory(directory, backend));
+        for (const backend of NATIVE_BACKENDS) {
+            ownedBuilds.add(
+                compiledBuildDirectory(directory, compiledBackend(backend)),
+            );
         }
     }
     const generatedRoot = resolve("generated");

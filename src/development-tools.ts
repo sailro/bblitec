@@ -30,7 +30,6 @@ export interface WindowsBuildTools {
 /** A pinned development artifact's source and patch record against the manifest. */
 export interface DependencyPatchRecord {
     library: "dawn" | "labsound" | "rmlui";
-    directory: string;
     state: ArtifactPatchState;
     /** What doctor and setup report; absent when the record is current. */
     message: string | undefined;
@@ -458,7 +457,6 @@ export function discoverDevelopmentTools(
             );
             return {
                 library,
-                directory,
                 state,
                 message: describePatchState(library, directory, state),
             };

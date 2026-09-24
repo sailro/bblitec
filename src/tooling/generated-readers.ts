@@ -4,7 +4,8 @@
  * <id>`: the feature census (`upstream/feature-activation.json`), the
  * adaptation record (`fidelity.json`), the lowered pinned symbols
  * (`upstream/provenance.json`), and the build identity the tree, the
- * deployed payload and the binary carry.
+ * deployed payload and the binary carry; and the manifest
+ * (`manifest.json`) the measuring tools read.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -19,13 +20,51 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readJsonFile(path: string, what: string, sceneId: string): unknown {
+function readJsonFile(path: string, what: string, sceneId?: string): unknown {
     if (!existsSync(path)) {
+        const owner = sceneId === undefined ? "" : ` for ${sceneId}`;
+        const target = sceneId === undefined ? "" : ` ${sceneId}`;
         throw new Error(
-            `${what} for ${sceneId} does not exist (${path}); run 'scene -- compile ${sceneId}' first.`,
+            `${what}${owner} does not exist (${path}); run 'scene -- compile${target}' first.`,
         );
     }
     return JSON.parse(readFileSync(path, "utf8"));
+}
+
+/**
+ * What the measuring tools read from a generated tree's `manifest.json`:
+ * the runtime features the scene reached and the ids of the adaptations
+ * generation applied.
+ */
+export interface CompiledSceneManifest {
+    features: readonly string[];
+    adaptations: readonly string[];
+}
+
+const isString = (value: unknown): value is string => typeof value === "string";
+
+/** The generated tree's manifest; a tree without one refuses. */
+export function readCompiledSceneManifest(
+    outputDirectory: string,
+    sceneId?: string,
+): CompiledSceneManifest {
+    const path = resolve(outputDirectory, "manifest.json");
+    const value = readJsonFile(path, "The generated manifest", sceneId);
+    if (
+        !isRecord(value) ||
+        !Array.isArray(value.features) ||
+        !value.features.every(isString) ||
+        !Array.isArray(value.adaptations)
+    )
+        throw new Error(
+            `${path} lacks its features and adaptations arrays; run 'scene -- compile' again.`,
+        );
+    const adaptations = value.adaptations.map((entry: unknown) =>
+        isRecord(entry) ? entry.id : undefined,
+    );
+    if (!adaptations.every(isString))
+        throw new Error(`${path} holds an adaptation without a string id.`);
+    return { features: value.features, adaptations };
 }
 
 const text = (value: unknown): string =>

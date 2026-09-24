@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
-import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
-import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
-import { LoweringContext } from "../src/lowering/context.js";
 import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-construction.js";
-import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { babylonRenderableCount } from "../src/pinned-standard-variants.js";
 import { packageBabylonMeshWalks } from "../src/babylon-mesh-walks.js";
 import { GLTF_MESH_WALKS, type JsonObject } from "../src/gltf-document.js";
-import {
-    cppFunction,
-    nativeFixtureVcpkgRoot,
-    optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+import { runBabylonLoaderCheck } from "./babylon-loader-fixture.js";
+import { optionalNativeFixtureTools } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
 test("the complete Babylon loader preserves parent chains, split meshes and root traversal", async (t) => {
@@ -190,29 +180,13 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
     );
     assert.notDeepEqual(walks[0], walks[1]);
     assert.notDeepEqual(walks[1], walks[2]);
-    const context = new LoweringContext();
     const directory = resolve("artifacts/test-babylon-hierarchy");
-    const include = join(directory, "include");
-    mkdirSync(join(include, "bblite/upstream"), { recursive: true });
-    writeFileSync(
-        join(include, "bblite/upstream/pinned_world_transform.hpp"),
-        pinnedWorldTransformHeader(context),
-    );
-    writeFileSync(
-        join(include, "bblite/upstream/light_matrix.hpp"),
-        new LightLowerer(context).lowerMatrix().header,
-    );
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "source.json"), JSON.stringify(packed));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
     writeFileSync(
         join(directory, "containers.json"),
         JSON.stringify({ meshes: [{ id: "container", name: "container" }] }),
-    );
-    const source = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    const fileTexture = cppFunction(
-        new FactoryLowerer(context).lowerFileTextureFactory().source,
-        "FileTexture load_file_texture(",
     );
     const changedName = lowerBabylonMeshConstruction(
         doctoredContext(
@@ -228,39 +202,11 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
             "md.isVisible === true",
         ),
     ).replace("construct_babylon_meshes(", "construct_changed_visibility(");
-    writeFileSync(
-        source,
-        `#include <bblite/pal_image.hpp>
-#include <fstream>
-#include <cassert>
-${new LightLowerer(context).lowerMatrix().source}
-${new LightLowerer(context).lowerPointFactory().source}
-${new BabylonLowerer(context).lowerLoaderAdapter().source}
-namespace bbl {
-${changedName}
-${changedVisibility}
-namespace pal {
-std::vector<std::uint8_t> read_binary_file(const std::string& path) {
-    std::ifstream file(path,std::ios::binary);
-    if(!file) throw std::runtime_error("Unexpected fixture path: "+path);
-    return {std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};
-}
-std::string parent_path(const std::string&) { return ""; }
-std::string join_path(const std::string& a,const std::string& b) { return a+b; }
-DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("Unexpected fixture texture."); }
-}
-// The refusal reads a volatile flag: a factory MSVC proves always throws makes the
-// loader's checked camera writes after it unreachable code (C4702 under /WX).
-CameraHandle create_free_camera(Engine&,Vec3d,Vec3d) {
-    static volatile bool unexpected = true;
-    if (unexpected) throw std::runtime_error("Unexpected fixture camera.");
-    return {};
-}
-${fileTexture}
-}
-int main() {
-    using namespace bbl;
-    nlohmann::json expected;
+    runBabylonLoaderCheck(
+        native,
+        directory,
+        `${changedName}\n${changedVisibility}`,
+        `    nlohmann::json expected;
     std::ifstream("expected.json") >> expected;
     Engine engine;
     const auto loaded=load_babylon(engine,"source.json");
@@ -316,25 +262,6 @@ int main() {
             assert(changed.meshes.size()==expected.size());
             assert(std::all_of(changed.meshes.begin(),changed.meshes.end(),[](const auto& mesh){return mesh.name.find("_sub")!=std::string::npos;}));
         }
-    }
-}`,
+    }`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        "/I",
-        include,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
-        source,
-    ]);
-    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

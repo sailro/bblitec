@@ -4,14 +4,11 @@
  * strict one; across types it coerces, and the condition refuses it.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const looseEqualities = `
@@ -65,24 +62,6 @@ test(
         const { cpp } = compileSource(looseEqualities, {
             fileName: "loose.ts",
         });
-        const output = resolve("artifacts/condition-comparisons");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(source, cpp);
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(tools!, "condition-comparisons", cpp);
     },
 );

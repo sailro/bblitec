@@ -363,11 +363,11 @@ test(
         assert.equal(result.status, 0, result.output);
         assert.match(
             result.output,
-            /dawn install at\s[\s\S]*?records no patch set/,
+            /dawn install at\s[\s\S]*?records\s+no\s+patch\s+set/,
         );
         assert.match(
             result.output,
-            /sdl3 install at\s[\s\S]*?records no patch set/,
+            /sdl3 install at\s[\s\S]*?records\s+no\s+patch\s+set/,
         );
 
         // The records the TypeScript side computes are the ones CMake accepts.
@@ -391,7 +391,7 @@ test(
         );
         result = configure();
         assert.equal(result.status, 0, result.output);
-        assert.doesNotMatch(result.output, /records no patch set/);
+        assert.doesNotMatch(result.output, /records\s+no\s+patch\s+set/);
 
         const current = expectedPatchRecord(manifest, "rmlui", []);
         record(rmlui, "bblite-rmlui-features.cmake", "BBLITE_RMLUI", {
@@ -402,7 +402,7 @@ test(
         assert.notEqual(result.status, 0, result.output);
         assert.match(
             result.output,
-            /rmlui install at\s[\s\S]*?Rebuild it with\s+tools\/build-rmlui\.ps1/,
+            /rmlui install at\s[\s\S]*?Rebuild\s+it\s+with\s+tools\/build-rmlui\.ps1/,
         );
     },
 );

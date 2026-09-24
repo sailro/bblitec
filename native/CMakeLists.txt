@@ -480,8 +480,8 @@ if(BBLITE_GENERATED_SHADER_FILES)
     # pinned variant's register order, Dawn the `.native.wgsl` text it
     # compiles in-process. HLSL, reflection dumps, WGSL sources and tool
     # manifests stay in the generated tree as development artifacts.
-    # `deployedShaderSuffixes` (src/build-stamp.ts) verifies the deployment
-    # by this table.
+    # The cache records the table for the deployment check
+    # (`executableDeployedShaderSuffixes`, src/build-stamp.ts).
     set(BBLITE_DEPLOYED_SHADER_SUFFIXES "")
     if(BBLITE_BACKEND_SDL_GPU)
         if(WIN32)
@@ -496,6 +496,12 @@ if(BBLITE_GENERATED_SHADER_FILES)
     if(BBLITE_BACKEND_DAWN)
         list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".native.wgsl")
     endif()
+    set(
+        BBLITE_DEPLOYED_SHADER_SUFFIXES
+        "${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
+        CACHE INTERNAL
+        "Shader file suffixes the compiled renderers read"
+    )
     # Deployed by a stamped target rather than POST_BUILD on the executable,
     # for the reason the asset target above records: a shader-only change
     # relinks nothing, so a POST_BUILD copy never fires and the measured run

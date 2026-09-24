@@ -6,14 +6,11 @@
  * (`bbl::js::Ref<CData>`) and null is that reference's empty state.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 // The class shares its name with a Babylon Lite type on purpose: the
@@ -121,24 +118,6 @@ test(
     { skip: !tools },
     () => {
         const { cpp } = compileSource(lazyInstance, { fileName: "lazy.ts" });
-        const output = resolve("artifacts/rebound-class-binding");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(source, cpp);
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(tools!, "rebound-class-binding", cpp);
     },
 );

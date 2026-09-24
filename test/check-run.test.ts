@@ -111,11 +111,14 @@ test("a Window-host run is bounded and its timeout names the locked-session caus
     mkdirSync(plainTree, { recursive: true });
     writeFileSync(
         resolve(windowTree, "manifest.json"),
-        JSON.stringify({ features: ["core", "platform:window"] }),
+        JSON.stringify({
+            features: ["core", "platform:window"],
+            adaptations: [],
+        }),
     );
     writeFileSync(
         resolve(plainTree, "manifest.json"),
-        JSON.stringify({ features: ["core"] }),
+        JSON.stringify({ features: ["core"], adaptations: [] }),
     );
     try {
         // Every other scene keeps the caller's bound, or none.
@@ -130,7 +133,7 @@ test("a Window-host run is bounded and its timeout names the locked-session caus
         assert.equal(nativeRunBound(windowTree, 181, 20_000).timeoutMs, 20_000);
         assert.throws(
             () => nativeRunBound(resolve(directory, "missing"), 1, undefined),
-            /no manifest\.json/,
+            /generated manifest does not exist/,
         );
         // A fake renderer that never finishes, killed at the bound.
         const started = Date.now();
