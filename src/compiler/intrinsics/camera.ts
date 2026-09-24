@@ -6,7 +6,7 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { recordAt } from "../record-access.js";
 
@@ -444,7 +444,7 @@ export function compileCameraIntrinsic(
             const camera = context.compileValue(cameraExpression);
             context.expectKind(camera, "camera", cameraExpression);
             if (
-                camera.optionalFoundCpp !== undefined &&
+                presenceFlagCpp(camera) !== undefined &&
                 typeMayBeAbsent(context.checker, cameraExpression)
             ) {
                 context.fail(

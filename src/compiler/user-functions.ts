@@ -2,6 +2,7 @@ import type { BindingScopes } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -2807,7 +2808,7 @@ export class UserFunctionLowerer {
                 ts.isExpression(call) ? call : undefined,
             );
         const projected = { ...result };
-        if (metadata.truthinessCpp === "true")
+        if (statedTruthinessCpp(metadata) === "true")
             Object.assign(projected, {
                 truthinessCpp: "true",
                 optionalFoundCpp: "true",
@@ -3174,7 +3175,7 @@ export class UserFunctionLowerer {
                     returnedValues.every(
                         (value) =>
                             value.kind === "record" ||
-                            value.truthinessCpp === "true",
+                            statedTruthinessCpp(value) === "true",
                     )
                 ) {
                     const properties = returnedValues[0]!.recordProperties;
@@ -3881,7 +3882,7 @@ export class UserFunctionLowerer {
                 arguments_,
                 callNode,
             );
-            const condition = context.dataLowerer.conditionFromValue(value);
+            const condition = context.dataLowerer.truthinessCondition(value);
             if (condition === undefined)
                 context.fail(
                     declaration,
@@ -3905,7 +3906,7 @@ export class UserFunctionLowerer {
               );
         if (ir?.needsValueLambda) {
             const value = this.lower(context, ir, arguments_, callNode);
-            const condition = context.dataLowerer.conditionFromValue(value);
+            const condition = context.dataLowerer.truthinessCondition(value);
             if (condition === undefined)
                 context.fail(
                     declaration,

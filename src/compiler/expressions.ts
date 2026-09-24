@@ -116,7 +116,9 @@ import {
     booleanValue,
     commonResourceValue,
     isStringValue,
+    objectTruthinessCpp,
     presenceCpp,
+    presenceFlagCpp,
     staticStringValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
@@ -1124,7 +1126,7 @@ export class ExpressionLowerer {
             const truthiness = this.context.probeEmission(
                 () => {
                     leftValue = this.compileValue(unwrapped.left);
-                    return this.context.dataLowerer.conditionFromValue(
+                    return this.context.dataLowerer.truthinessCondition(
                         leftValue,
                     );
                 },
@@ -2133,10 +2135,10 @@ export class ExpressionLowerer {
             absent.cpp.length === 0 &&
             present.kind !== "json-null" &&
             present.cpp.length > 0 &&
-            present.optionalFoundCpp !== undefined
+            presenceFlagCpp(present) !== undefined
                 ? {
                       ...present,
-                      optionalFoundCpp: `(${found} && ${present.optionalFoundCpp})`,
+                      optionalFoundCpp: `(${found} && ${presenceFlagCpp(present)})`,
                   }
                 : undefined;
         if (whenTrue.kind !== whenFalse.kind) {
@@ -2175,14 +2177,13 @@ export class ExpressionLowerer {
         } else {
             delete conditional.nativeLvalue;
         }
-        if (
-            whenTrue.optionalFoundCpp !== undefined ||
-            whenFalse.optionalFoundCpp !== undefined
-        ) {
+        const trueFound = presenceFlagCpp(whenTrue);
+        const falseFound = presenceFlagCpp(whenFalse);
+        if (trueFound !== undefined || falseFound !== undefined) {
             conditional.optionalFoundCpp =
                 `(${condition} ? ` +
-                `${whenTrue.optionalFoundCpp ?? "true"} : ` +
-                `${whenFalse.optionalFoundCpp ?? "true"})`;
+                `${trueFound ?? "true"} : ` +
+                `${falseFound ?? "true"})`;
         }
         if (whenTrue.staticNumber !== whenFalse.staticNumber) {
             delete conditional.staticNumber;
@@ -3129,7 +3130,7 @@ export class ExpressionLowerer {
                     this.inRuntimeControlFlow(() => {
                         const result = invoke(element, index);
                         condition =
-                            this.context.dataLowerer.conditionFromValue(
+                            this.context.dataLowerer.truthinessCondition(
                                 result,
                             ) ??
                             this.context.fail(
@@ -3913,8 +3914,7 @@ export class ExpressionLowerer {
             if (
                 droppedIsNullish &&
                 survivorIsResource &&
-                selected.optionalFoundCpp === undefined &&
-                selected.truthinessCpp === undefined
+                objectTruthinessCpp(selected) === undefined
             ) {
                 return { ...selected, optionalFoundCpp: "true" };
             }
@@ -4882,7 +4882,7 @@ export class ExpressionLowerer {
                 callee.name.text === "updateData"
             ) {
                 this.context.expectArgumentCount(call, 1, 1);
-                if (instance.optionalFoundCpp) {
+                if (presenceFlagCpp(instance)) {
                     this.context.fail(
                         call,
                         "updateData requires a present splat cloud.",
@@ -5013,7 +5013,7 @@ export class ExpressionLowerer {
             }
             if (instance && declaration) {
                 const optionalFound =
-                    instance.optionalFoundCpp ??
+                    presenceFlagCpp(instance) ??
                     (instance.dataType?.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(
                         instance.dataType.name,

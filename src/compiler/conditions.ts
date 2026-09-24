@@ -1,7 +1,7 @@
 // Condition lowering: the C++ truth test of a source expression in `if`,
 // loop, logical and option positions. Comparisons take their operator table
 // and folds from `comparisons.ts`; a value's own truthiness is the data
-// lowerer's `conditionFromValue`.
+// lowerer's `truthinessCondition`.
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
@@ -70,7 +70,7 @@ export class ConditionLowerer {
                 return "false";
             }
             return (
-                this.context.dataLowerer.conditionFromValue(value) ??
+                this.context.dataLowerer.truthinessCondition(value) ??
                 this.context.fail(
                     unwrapped,
                     "Awaited result has no represented truthiness.",
@@ -80,7 +80,7 @@ export class ConditionLowerer {
         if (ts.isConditionalExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             return (
-                this.context.dataLowerer.conditionFromValue(value) ??
+                this.context.dataLowerer.truthinessCondition(value) ??
                 this.context.fail(
                     unwrapped,
                     "Conditional result has no represented truthiness.",
@@ -448,7 +448,7 @@ export class ConditionLowerer {
         if (ts.isCallExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             const condition =
-                this.context.dataLowerer.conditionFromValue(value);
+                this.context.dataLowerer.truthinessCondition(value);
             if (condition !== undefined) return condition;
             this.context.fail(
                 unwrapped,
@@ -465,7 +465,7 @@ export class ConditionLowerer {
             const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 const dataCondition =
-                    this.context.dataLowerer.conditionFromValue(value);
+                    this.context.dataLowerer.truthinessCondition(value);
                 if (dataCondition !== undefined) {
                     return dataCondition;
                 }
@@ -486,7 +486,7 @@ export class ConditionLowerer {
             // said so.
             const value = this.context.compileValue(unwrapped);
             const condition =
-                this.context.dataLowerer.conditionFromValue(value);
+                this.context.dataLowerer.truthinessCondition(value);
             if (condition !== undefined) return condition;
             if (value.kind === "callback") {
                 return "true";

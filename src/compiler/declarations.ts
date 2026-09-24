@@ -46,6 +46,8 @@ import {
     isCompileTimeOnlyValue,
     nativeDataMetadata,
     optionalPresentCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
     type Value,
@@ -918,8 +920,9 @@ export class DeclarationLowerer {
                 wrapperCopiesIdentity &&
                 !narrowed.borrowedData &&
                 !narrowed.nativeVectorData;
+            const narrowedFound = presenceFlagCpp(narrowed);
             const optionalFoundCpp =
-                narrowed.optionalFoundCpp === undefined
+                narrowedFound === undefined
                     ? undefined
                     : this.context.allocateTemporaryCppName("element_found");
             const referenceStruct =
@@ -941,7 +944,7 @@ export class DeclarationLowerer {
                     kind: "declaration",
                     type: "const bool",
                     name: optionalFoundCpp,
-                    initializer: narrowed.optionalFoundCpp!,
+                    initializer: narrowedFound!,
                     attributes: "[[maybe_unused]] ",
                 });
             }
@@ -1085,12 +1088,11 @@ export class DeclarationLowerer {
                         : optionalFoundCpp
                           ? { optionalFoundCpp }
                           : {}),
-                    ...(narrowed.truthinessCpp
+                    ...(statedTruthinessCpp(narrowed)
                         ? {
-                              truthinessCpp: narrowed.truthinessCpp.replaceAll(
-                                  narrowed.cpp,
-                                  boundCpp,
-                              ),
+                              truthinessCpp: statedTruthinessCpp(
+                                  narrowed,
+                              )!.replaceAll(narrowed.cpp, boundCpp),
                           }
                         : {}),
                 }),
@@ -1143,10 +1145,11 @@ export class DeclarationLowerer {
                 value.dataType?.kind === "enum" ? "enum" : value.kind,
             );
         const boundCpp = sharedPrimitive ? `(*${cppName})` : cppName;
+        const valueFound = presenceFlagCpp(value);
         const optionalFoundCpp =
-            value.optionalFoundCpp === undefined ||
-            value.optionalFoundCpp === "true" ||
-            value.optionalFoundCpp === "false"
+            valueFound === undefined ||
+            valueFound === "true" ||
+            valueFound === "false"
                 ? undefined
                 : this.context.allocateTemporaryCppName("element_found");
         // Source bindings can be consumed entirely through generation metadata.
@@ -1170,8 +1173,8 @@ export class DeclarationLowerer {
             // whose slot may move later.
             const presence =
                 value.cpp.length > 0
-                    ? value.optionalFoundCpp!.replaceAll(value.cpp, boundCpp)
-                    : value.optionalFoundCpp!;
+                    ? valueFound!.replaceAll(value.cpp, boundCpp)
+                    : valueFound!;
             this.context.emit({
                 kind: "declaration",
                 type: "const bool",
@@ -2406,6 +2409,18 @@ export class DeclarationLowerer {
                 }
             }
         }
+        // A selected object's settled presence: a record is there, a
+        // `null` arm is not, and a flag generation already decided says so.
+        const snapshotFound =
+            initializerSnapshot && presenceFlagCpp(initializerSnapshot);
+        const settledPresence =
+            initializerSnapshot?.kind === "json-null"
+                ? "false"
+                : initializerSnapshot?.kind === "record"
+                  ? "true"
+                  : snapshotFound === "true" || snapshotFound === "false"
+                    ? snapshotFound
+                    : undefined;
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
@@ -2437,20 +2452,9 @@ export class DeclarationLowerer {
                   : {}),
             // Shared storage does not change a selected object's presence.
             ...(ts.isConditionalExpression(initializer) &&
-            initializerSnapshot &&
-            !this.context.identifierIsRebound(name) &&
-            (initializerSnapshot.kind === "record" ||
-                initializerSnapshot.kind === "json-null" ||
-                initializerSnapshot.optionalFoundCpp === "true" ||
-                initializerSnapshot.optionalFoundCpp === "false")
-                ? {
-                      optionalFoundCpp:
-                          initializerSnapshot.kind === "json-null"
-                              ? "false"
-                              : initializerSnapshot.kind === "record"
-                                ? "true"
-                                : initializerSnapshot.optionalFoundCpp,
-                  }
+            settledPresence !== undefined &&
+            !this.context.identifierIsRebound(name)
+                ? { optionalFoundCpp: settledPresence }
                 : {}),
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&

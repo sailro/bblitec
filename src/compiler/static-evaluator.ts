@@ -31,7 +31,7 @@ function objectIdentityCallArgument(
 }
 import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
-import { isStringValue, type Value } from "./types.js";
+import { isStringValue, presenceCpp, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
@@ -143,6 +143,10 @@ export class StaticEvaluator {
         private readonly pinnedWgslTemplate: (
             expression: ts.Expression,
         ) => ts.TemplateLiteral | undefined,
+        /** `DataLowerer.truthinessCondition`: a compiled value's truthiness. */
+        private readonly truthinessCondition: (
+            value: Value,
+        ) => string | undefined,
     ) {}
 
     /** See `libraryGlobal` (symbols.ts). */
@@ -388,25 +392,13 @@ export class StaticEvaluator {
                 // time generation succeeds the guard is settled.
                 return "true";
             }
-            if (value.truthinessCpp) {
-                return value.truthinessCpp;
-            }
-            if (value.optionalFoundCpp) {
-                // A handle a search produced: upstream's `find` returns
-                // `undefined` when nothing matched, so the truthiness a
-                // scene tests is whether it did.
-                return value.optionalFoundCpp;
-            }
-            if (value.kind !== "boolean") {
-                this.fail(
-                    unwrapped,
-                    `Expected boolean, received ${value.kind}.`,
-                );
-            }
-            if (value.staticBoolean !== undefined) {
-                return value.staticBoolean ? "true" : "false";
-            }
-            return value.cpp;
+            // A boolean position reads its operand's JavaScript truthiness
+            // (`!!count`): a handle a search produced is truthy when found,
+            // and a boolean an unchecked element read produced is truthy
+            // when present AND true -- the one truthiness rule's answers.
+            const truthiness = this.truthinessCondition(value);
+            if (truthiness !== undefined) return truthiness;
+            this.fail(unwrapped, `Expected boolean, received ${value.kind}.`);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
@@ -1086,11 +1078,7 @@ export class StaticEvaluator {
             if (value.kind === "json-null") {
                 return expression.right;
             }
-            if (
-                isJsonValue(value) ||
-                value.optionalFoundCpp !== undefined ||
-                (value.kind === "data" && value.dataType?.kind === "optional")
-            ) {
+            if (isJsonValue(value) || presenceCpp(value) !== undefined) {
                 return undefined;
             }
             return expression.left;
@@ -1120,9 +1108,7 @@ export class StaticEvaluator {
                 }
                 if (
                     isJsonValue(property) ||
-                    property.optionalFoundCpp !== undefined ||
-                    (property.kind === "data" &&
-                        property.dataType?.kind === "optional")
+                    presenceCpp(property) !== undefined
                 ) {
                     return undefined;
                 }

@@ -43,7 +43,7 @@ import {
     staticJsonValue,
     type ObjectValidationContext,
 } from "../option-helpers.js";
-import { optionalPresentCpp, type Value } from "../types.js";
+import { optionalPresentCpp, presenceCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     requiredObjectNumber,
@@ -549,12 +549,7 @@ function compileImpulsePoint(
             );
         }
         const condition = context.compileValue(unwrapped.condition);
-        const present =
-            condition.optionalFoundCpp ??
-            (condition.kind === "data" &&
-            condition.dataType?.kind === "optional"
-                ? optionalPresentCpp(condition.cpp)
-                : undefined);
+        const present = presenceCpp(condition);
         if (!present) {
             context.fail(
                 unwrapped.condition,

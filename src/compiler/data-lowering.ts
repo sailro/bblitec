@@ -2,7 +2,10 @@ import {
     booleanValue,
     isStringValue,
     nativeDataMetadata,
+    objectTruthinessCpp,
     optionalPresentCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     staticStringValue,
     valueForKind,
     withNativeMetadata,
@@ -1106,7 +1109,10 @@ export class DataLowerer {
             | ts.CallExpression,
         read: (presentOwner: Value) => Value | undefined,
     ): Value | undefined {
+        // The presence moves into the chain's own test, so the owner read
+        // inside it carries neither the flag nor the optional storage.
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } = owner;
+        const ownerFound = presenceFlagCpp(owner);
         let present: string;
         let presentOwner: Value;
         let snapshotPresentOwner = false;
@@ -1139,7 +1145,7 @@ export class DataLowerer {
                 this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
                 plainOwner,
             );
-        } else if (optionalFoundCpp !== undefined) {
+        } else if (ownerFound !== undefined) {
             if (
                 owner.dataType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(owner.dataType.name)
@@ -1158,14 +1164,14 @@ export class DataLowerer {
                     attributes: "[[maybe_unused]] ",
                 });
                 const bound = this.leafValue(temporary, owner.dataType);
-                present = bound.optionalFoundCpp!;
+                present = presenceFlagCpp(bound)!;
                 presentOwner = {
                     ...plainOwner,
                     cpp: temporary,
                     objectIdentityCpp: bound.objectIdentityCpp!,
                 };
             } else {
-                present = optionalFoundCpp;
+                present = ownerFound;
                 presentOwner = plainOwner;
                 snapshotPresentOwner = ts.isCallExpression(access);
             }
@@ -1246,7 +1252,7 @@ export class DataLowerer {
             // presence predicates.
             return undefined;
         }
-        const selectedPresent = selected.optionalFoundCpp;
+        const selectedPresent = presenceFlagCpp(selected);
         const combinedPresent = selectedPresent
             ? `(${present} && ${selectedPresent})`
             : present;
@@ -1915,7 +1921,7 @@ export class DataLowerer {
                   )
                 : !storage &&
                     computed.dataType?.kind === "struct" &&
-                    computed.optionalFoundCpp ===
+                    presenceFlagCpp(computed) ===
                         this.referencePresence(computed.cpp) &&
                     !cppIdentifierPattern.test(computed.cpp)
                   ? this.context.bindings.pinValueToTemporary(
@@ -1956,7 +1962,8 @@ export class DataLowerer {
         if (left.kind === "record" || left.kind === "tuple") {
             return left;
         }
-        if (left.optionalFoundCpp !== undefined) {
+        const leftFound = presenceFlagCpp(left);
+        if (leftFound !== undefined) {
             // A handle a search produced: upstream's `find` yields
             // `undefined` on a miss, and `??` selects the fallback
             // exactly then. A generation-resolved find carries the
@@ -1964,7 +1971,7 @@ export class DataLowerer {
             // search selects on its found flag. The fallback must be
             // the same handle kind; a fallback that can itself miss
             // composes its flag into the result's.
-            if (left.optionalFoundCpp === "true") {
+            if (leftFound === "true") {
                 return left;
             }
             const fallback = this.context.compileValue(expression.right);
@@ -1985,7 +1992,7 @@ export class DataLowerer {
                     expression.right,
                 );
                 return this.leafValue(
-                    `(${left.optionalFoundCpp} ? ${left.cpp} : ${fallbackCpp})`,
+                    `(${leftFound} ? ${left.cpp} : ${fallbackCpp})`,
                     left.dataType,
                 );
             }
@@ -1999,11 +2006,9 @@ export class DataLowerer {
                     );
                     return {
                         ...left,
-                        cpp:
-                            `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
-                            `${cppType}{})`,
+                        cpp: `(${leftFound} ? ${left.cpp} : ` + `${cppType}{})`,
                         objectIdentityCpp:
-                            `(${left.optionalFoundCpp} ? ` +
+                            `(${leftFound} ? ` +
                             `${left.objectIdentityCpp ?? `${left.cpp}.get()`} : nullptr)`,
                     };
                 }
@@ -2015,15 +2020,15 @@ export class DataLowerer {
                 this.context.reachJsData();
                 const objectIdentity =
                     left.dataType.kind === "struct"
-                        ? `(${left.optionalFoundCpp} ? std::addressof(${left.cpp}) : nullptr)`
+                        ? `(${leftFound} ? std::addressof(${left.cpp}) : nullptr)`
                         : undefined;
                 return {
                     kind: "data",
                     cpp:
-                        `(${left.optionalFoundCpp} ? ${cppType}{${left.cpp}} : ` +
+                        `(${leftFound} ? ${cppType}{${left.cpp}} : ` +
                         `${cppType}{std::nullopt})`,
                     dataType: optionalType,
-                    optionalFoundCpp: left.optionalFoundCpp,
+                    optionalFoundCpp: leftFound,
                     ...(objectIdentity
                         ? { objectIdentityCpp: objectIdentity }
                         : {}),
@@ -2042,7 +2047,7 @@ export class DataLowerer {
             ) {
                 return {
                     ...this.leafValue(
-                        `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
+                        `(${leftFound} ? ${left.cpp} : ` +
                             `${this.compileKnownValueForSink(fallback, left.dataType, expression.right)})`,
                         left.dataType,
                     ),
@@ -2062,7 +2067,7 @@ export class DataLowerer {
                 if (common) {
                     return {
                         ...this.leafValue(
-                            `(${left.optionalFoundCpp} ? ` +
+                            `(${leftFound} ? ` +
                                 `${this.compileKnownValueForSink(left, common, expression.left)} : ` +
                                 `${this.compileKnownValueForSink(fallback, common, expression.right)})`,
                             common,
@@ -2083,14 +2088,13 @@ export class DataLowerer {
             // the question open: the composed flag is what a scene's own
             // not-found guard then reads. Both operands are guarded
             // temporaries, so the select is safe either way.
+            const fallbackFound = presenceFlagCpp(fallback);
             const composedFound =
-                fallback.optionalFoundCpp !== undefined
-                    ? `(${left.optionalFoundCpp} || ${fallback.optionalFoundCpp})`
+                fallbackFound !== undefined
+                    ? `(${leftFound} || ${fallbackFound})`
                     : undefined;
             return valueForKind(left.kind, {
-                cpp:
-                    `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
-                    `${fallback.cpp})`,
+                cpp: `(${leftFound} ? ${left.cpp} : ` + `${fallback.cpp})`,
                 ...(left.dataType !== undefined
                     ? { dataType: left.dataType }
                     : {}),
@@ -3654,7 +3658,7 @@ export class DataLowerer {
         ];
         const leaf = this.leafValue(indexed, element);
         // Reference presence belongs to the returned value, not its old array slot.
-        const present = leaf.optionalFoundCpp ?? found;
+        const present = presenceFlagCpp(leaf) ?? found;
         const truthiness =
             element.kind === "boolean"
                 ? indexed
@@ -4993,7 +4997,7 @@ export class DataLowerer {
                     result = {
                         kind: "boolean",
                         cpp:
-                            this.conditionFromValue(result) ??
+                            this.truthinessCondition(result) ??
                             this.context.fail(
                                 call,
                                 "Array predicate result has no native truthiness.",
@@ -7482,7 +7486,7 @@ export class DataLowerer {
             "logical_left",
             expression.left,
         );
-        const condition = this.conditionFromValue(left);
+        const condition = this.truthinessCondition(left);
         if (condition === undefined)
             this.context.fail(
                 expression.left,
@@ -8932,9 +8936,8 @@ export class DataLowerer {
                     // resolving it again would duplicate a call expression
                     // merely to derive the guard predicate.
                     const guarded = this.guardableElementRead(owner, unwrapped);
-                    if (guarded?.truthinessCpp) {
-                        return guarded.truthinessCpp;
-                    }
+                    const truthiness = guarded && statedTruthinessCpp(guarded);
+                    if (truthiness) return truthiness;
                 }
             }
         }
@@ -8944,20 +8947,22 @@ export class DataLowerer {
         if (!value) {
             return undefined;
         }
-        return this.conditionFromValue(value);
+        return this.truthinessCondition(value);
     }
 
-    /** JavaScript truthiness for a value the caller already compiled. */
-    public conditionFromValue(value: Value): string | undefined {
+    /**
+     * The one JavaScript truthiness of a value the caller already compiled,
+     * as a native condition. Presence alone -- whether a nullable is there,
+     * whatever it holds -- is `presenceCpp`'s.
+     */
+    public truthinessCondition(value: Value): string | undefined {
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return (
-                value.truthinessCpp ??
-                value.optionalFoundCpp ??
-                `static_cast<bool>(${value.cpp})`
+                objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`
             );
         }
         if (
@@ -8965,40 +8970,46 @@ export class DataLowerer {
             (value.dataType?.kind === "product" ||
                 value.dataType?.kind === "iterator")
         ) {
-            return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
             return `bbl::js::union_truthy(${value.cpp})`;
         }
+        // A primitive read through a maybe-absent owner (`found?.name`)
+        // carries the owner's presence flag beside a storage read that is
+        // only valid when present: `undefined` is falsy, and the flag
+        // short-circuits the read.
+        const whenPresent = (truthy: string): string => {
+            const present = presenceFlagCpp(value);
+            return present === undefined ? truthy : `(${present} && ${truthy})`;
+        };
         if (
             value.kind === "boolean" ||
             (value.kind === "data" && value.dataType?.kind === "boolean")
         ) {
-            const boolean =
+            return whenPresent(
                 value.staticBoolean === undefined
                     ? value.cpp
                     : value.staticBoolean
                       ? "true"
-                      : "false";
-            return value.optionalFoundCpp === undefined
-                ? boolean
-                : `(${value.optionalFoundCpp} && ${boolean})`;
+                      : "false",
+            );
         }
         if (value.kind === "number") {
             if (value.staticNumber !== undefined) {
                 return value.staticNumber === 0 ||
                     Number.isNaN(value.staticNumber)
                     ? "false"
-                    : "true";
+                    : whenPresent("true");
             }
             this.context.reachJsData();
-            return `bbl::js::number_truthy(${value.cpp})`;
+            return whenPresent(`bbl::js::number_truthy(${value.cpp})`);
         }
         if (value.kind === "tuple" || value.kind === "record") {
             // Present arrays and objects are truthy even when empty.
             // Specialized records can also carry an optional-presence
             // guard instead of storing a native optional value.
-            return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (
             value.kind === "data" &&
@@ -9019,7 +9030,7 @@ export class DataLowerer {
         ) {
             // JavaScript containers and typed arrays are objects and are
             // therefore truthy even when their native storage is empty.
-            return "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (isJsonValue(value)) {
             // A parsed document is JavaScript-falsy exactly where the
@@ -9029,11 +9040,15 @@ export class DataLowerer {
         }
         if (isStringValue(value)) {
             if (value.staticString !== undefined) {
-                return value.staticString.length === 0 ? "false" : "true";
+                return value.staticString.length === 0
+                    ? "false"
+                    : whenPresent("true");
             }
-            return value.kind === "string"
-                ? `!std::string(${value.cpp}).empty()`
-                : `!${value.cpp}.empty()`;
+            return whenPresent(
+                value.kind === "string"
+                    ? `!std::string(${value.cpp}).empty()`
+                    : `!${value.cpp}.empty()`,
+            );
         }
         if (value.kind === "file") {
             // FileList index zero uses an empty opaque handle for absence.
@@ -9041,24 +9056,22 @@ export class DataLowerer {
             // its contents; cancellation is the empty handle.
             return `static_cast<bool>(${value.cpp})`;
         }
-        if (value.truthinessCpp !== undefined) {
-            return value.truthinessCpp;
-        }
-        if (value.optionalFoundCpp !== undefined) {
-            return value.optionalFoundCpp;
-        }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            if (
-                ["boolean", "string", "number"].includes(
-                    value.dataType.inner.kind,
-                )
-            ) {
-                this.context.reachJsData();
-                return `bbl::js::nullable_truthy(${value.cpp})`;
-            }
+            // The stored engagement and, once engaged, the value's own
+            // truthiness. A presence flag beside the storage (an unchecked
+            // element read's in-range test) is the slot's presence, so it
+            // must hold too.
+            const stated = statedTruthinessCpp(value);
+            if (stated !== undefined) return stated;
             const inner = value.dataType.inner;
+            if (["boolean", "string", "number"].includes(inner.kind)) {
+                this.context.reachJsData();
+                return whenPresent(`bbl::js::nullable_truthy(${value.cpp})`);
+            }
             if (inner.kind === "union") {
-                return `([](const auto& value) { return value.has_value() && bbl::js::union_truthy(*value); }(${value.cpp}))`;
+                return whenPresent(
+                    `([](const auto& value) { return value.has_value() && bbl::js::union_truthy(*value); }(${value.cpp}))`,
+                );
             }
             if (
                 inner.kind === "enum" &&
@@ -9069,10 +9082,16 @@ export class DataLowerer {
                     "",
                     this.context.sourceFile,
                 );
-                return `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`;
+                return whenPresent(
+                    `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`,
+                );
             }
-            return optionalPresentCpp(value.cpp);
+            return whenPresent(optionalPresentCpp(value.cpp));
         }
+        // Every other value that states truthiness or carries a presence
+        // flag is an object: truthy exactly when present.
+        const object = objectTruthinessCpp(value);
+        if (object !== undefined) return object;
         if (
             value.kind === "data" &&
             value.dataType?.kind === "struct" &&
@@ -9225,10 +9244,9 @@ export class DataLowerer {
             if (value?.dataType?.kind === "function") {
                 return `${negated ? "" : "!"}static_cast<bool>(${value.cpp})`;
             }
-            if (value.optionalFoundCpp !== undefined) {
-                return negated
-                    ? value.optionalFoundCpp
-                    : `!(${value.optionalFoundCpp})`;
+            const found = presenceFlagCpp(value);
+            if (found !== undefined) {
+                return negated ? found : `!(${found})`;
             }
             if (value.kind === "json-null") {
                 return negated ? "false" : "true";
@@ -10390,13 +10408,14 @@ export class DataLowerer {
                 dataType.inner,
                 unwrapped,
             );
-            if (optional.optionalFoundCpp === undefined) {
+            const found = presenceFlagCpp(optional);
+            if (found === undefined) {
                 return inner;
             }
             const cppType = this.context.dataTypes.cppType(dataType);
             this.context.reachJsData();
             return (
-                `(${optional.optionalFoundCpp}` +
+                `(${found}` +
                 ` ? ${cppType}{${inner}}` +
                 ` : ${cppType}{std::nullopt})`
             );

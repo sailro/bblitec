@@ -1,4 +1,4 @@
-import { valueForKind, withNativeMetadata } from "./types.js";
+import { presenceFlagCpp, valueForKind, withNativeMetadata } from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
@@ -1806,8 +1806,9 @@ export class HandleCollections {
                 );
                 context.expectKind(selected, "material", selector.body);
                 assetPbrMaterial = selected.assetPbrMaterial === true;
-                if (selected.optionalFoundCpp) {
-                    context.emit(`if (${selected.optionalFoundCpp}) {`);
+                const selectedFound = presenceFlagCpp(selected);
+                if (selectedFound) {
+                    context.emit(`if (${selectedFound}) {`);
                     context.increaseIndent();
                 }
                 context.bindings.bindLocalValue(predicateParameter, selected);
@@ -1821,7 +1822,7 @@ export class HandleCollections {
                 context.emit("break;");
                 context.decreaseIndent();
                 context.emit("}");
-                if (selected.optionalFoundCpp) {
+                if (selectedFound) {
                     context.decreaseIndent();
                     context.emit("}");
                 }

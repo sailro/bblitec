@@ -36,6 +36,7 @@ import { retainTextValue } from "./text-surface.js";
 import {
     isCompileTimeOnlyValue,
     isStringValue,
+    presenceFlagCpp,
     valueForKind,
     type Value,
     type VariableBinding,
@@ -571,7 +572,7 @@ export class BindingScopes {
                 // A successful generation-only binding is a present object,
                 // including when its annotation still admits undefined.
                 optionalFoundCpp:
-                    value.optionalFoundCpp ??
+                    presenceFlagCpp(value) ??
                     (value.kind === "json-null" ? "false" : "true"),
             },
         });
