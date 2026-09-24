@@ -5986,7 +5986,7 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
         gpu_mesh.morph_deltas = nullptr;
         gpu_mesh.morph_weights = nullptr;
         gpu_mesh.owns_morph_buffers = true;
-        const std::vector<float> deltas = pack_morph_deltas(geometry);
+        const std::vector<float> deltas = upstream::pack_morph_deltas(geometry);
         gpu_mesh.morph_deltas = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                                                    deltas.data(), deltas.size() * sizeof(float));
         const std::vector<std::uint8_t> weights_blob = pack_morph_weights(geometry, mesh_record);

@@ -3047,6 +3047,18 @@ template <typename T>
     return -1.0;
 }
 
+/** The same search over the owned list a lowered pinned body keeps. */
+template <typename T>
+[[nodiscard]] inline double array_index_of(const std::vector<T>& values,
+                                           const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
+}
+
 // Constant arrays materialize as `std::array`, so searching one needs
 // no conversion at the call site.
 template <typename T, std::size_t N>
@@ -3756,6 +3768,16 @@ inline void typed_array_set(TypedArray<T>& target, const TypedArray<T>& source, 
     const auto source_bytes = source.buffer();
     std::memmove(target_bytes.data() + target.byte_offset() + start * sizeof(T),
                  source_bytes.data() + source.byte_offset(), source.size() * sizeof(T));
+}
+
+/** The same `set`, over the owned storage a lowered pinned body keeps a typed array in. */
+template <typename T>
+inline void typed_array_set(std::vector<T>& target, const std::vector<T>& source, double offset) {
+    const auto start = array_index(offset);
+    if (start > target.size() || source.size() > target.size() - start) [[unlikely]] {
+        throw std::runtime_error("TypedArray set does not fit the target array.");
+    }
+    std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
 }
 
 /**

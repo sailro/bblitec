@@ -114,6 +114,9 @@
 #include <bblite/upstream/esm_shadow.hpp>
 #endif
 #include <bblite/upstream/pinned_depth_state.hpp>
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 #include <cstdio>
 
 namespace bbl::pal {
@@ -4306,41 +4309,12 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(const Material
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE
-// Storage-buffer morph payloads shared by both render backends (moved
-// verbatim from the two upload paths). Both backends must pack these
-// byte-identically: the deltas are indexed by the shader as
-// (target * vertexCount + vertex) * 6, and the weights blob carries a
-// 16-byte header the shader reads before the float array.
+// Storage-buffer morph payloads shared by both render backends. The deltas
+// are the pin's own packing (`upstream::pack_morph_deltas`); the weights
+// blob carries a 16-byte header the shader reads before the float array.
 // The empty binding still needs the 16-byte header plus one runtime-array
 // element. Both WebGPU and Metal validate that 20-byte minimum.
 inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
-
-inline std::vector<float> pack_morph_deltas(const ModelGeometry& geometry) {
-    // Flat 6-float deltas indexed
-    // (target * vertexCount + vertex) * 6, packed with the
-    // same x negation as the vertex attributes.
-    const std::size_t target_count = geometry.morph_positions.size();
-    const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<float> deltas(target_count * vertex_count * 6, 0.0f);
-    for (std::size_t target = 0; target < target_count; ++target) {
-        const std::vector<Vec3>& positions = geometry.morph_positions[target];
-        for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
-            const std::size_t offset = (target * vertex_count + vertex) * 6;
-            const Vec3 position = vertex < positions.size() ? positions[vertex] : Vec3{};
-            const Vec3 normal = target < geometry.morph_normals.size() &&
-                                        vertex < geometry.morph_normals[target].size()
-                                    ? geometry.morph_normals[target][vertex]
-                                    : Vec3{};
-            deltas[offset] = -position.x;
-            deltas[offset + 1] = position.y;
-            deltas[offset + 2] = position.z;
-            deltas[offset + 3] = -normal.x;
-            deltas[offset + 4] = normal.y;
-            deltas[offset + 5] = normal.z;
-        }
-    }
-    return deltas;
-}
 
 /**
  * The float array behind the weights blob's 16-byte header: one weight
@@ -4739,13 +4713,6 @@ inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& la
             needs_full_upload ? layer.count : std::min(layer.dirty_sprite_end, layer.count)};
 }
 
-/** Stamp the shared range consumed once a copy has uploaded it. */
-inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
-    layer.dirty_sprite_reset_version = layer.version;
-    layer.dirty_sprite_begin = invalid_handle;
-    layer.dirty_sprite_end = 0u;
-}
-
 /**
  * The rows an instance copy transfers, once the optional Y-sort extension
  * has had its say.
@@ -4758,15 +4725,26 @@ inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
  */
 inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
                                                            Sprite2DLayerRecord& layer,
-                                                           std::uint32_t dirty_begin,
-                                                           std::uint32_t dirty_end) {
-    // Asked unconditionally, exactly as the pin asks it: the hook itself
-    // answers for a layer that never enabled the extension, so there is one
-    // fallback rather than one here and another inside it.
-    if (engine.sprite_y_sort_hook.stage) {
-        return engine.sprite_y_sort_hook.stage(layer, dirty_begin, dirty_end);
+                                                           bool uploaded,
+                                                           std::uint64_t uploaded_version) {
+    // The pin's `uploadedVersion`: this buffer's stamp, or -1 where it holds
+    // none of the current rows -- a fresh buffer, or one whose stamp
+    // predates the last consumption of the shared range.
+    const bool stale = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
+    if (engine.sprite_y_sort_hook.upload) {
+        if (auto ordered = engine.sprite_y_sort_hook.upload(
+                layer, stale ? -1.0 : static_cast<double>(uploaded_version))) {
+            return *ordered;
+        }
     }
-    return {layer.instance_data.data(), dirty_begin, dirty_end};
+    const auto [dirty_begin, dirty_end] =
+        resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
+    if (dirty_end <= dirty_begin)
+        return {};
+    const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
+    const std::size_t offset = static_cast<std::size_t>(dirty_begin) * stride_bytes;
+    return {reinterpret_cast<const std::uint8_t*>(layer.instance_data.data()), offset, offset,
+            static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
 /**

@@ -215,7 +215,8 @@ other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliar
 own extent refresh.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
-before startup and observations require one scene. Failure callbacks expose `Error.message`.
+before startup and observations require one scene. Failure callbacks expose `Error.message`. As
+upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing.
 Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery. On Windows, application iteration

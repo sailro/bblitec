@@ -1960,6 +1960,27 @@ struct MeshPrimitiveState {
     std::optional<bool> clockwise_front_face;
 };
 
+/**
+ * One morph target of `ModelGeometry::morph_positions`/`morph_normals`, read
+ * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`) in native
+ * vertex space: the x lane carries the mirror the vertex attributes carry.
+ */
+struct MorphTargetLanes {
+    const std::vector<std::vector<Vec3>>& targets;
+    std::size_t target;
+    [[nodiscard]] float operator[](std::size_t lane) const {
+        const Vec3& delta = targets.at(target).at(lane / 3);
+        switch (lane % 3) {
+        case 0:
+            return -delta.x;
+        case 1:
+            return delta.y;
+        default:
+            return delta.z;
+        }
+    }
+};
+
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;
@@ -4208,7 +4229,11 @@ struct Engine::DeviceRecoveryState {
     GpuTextureIdentity fallback;
     /** The last ordinal `publish_gpu_texture_identity` handed out. */
     std::uint64_t published_textures = 0;
+    /** `_armedDevice`: the generation whose loss the handler recovers, 0 for none. */
+    double armed_device = 0.0;
+    /** `_forceNextLoss`. */
     bool requested = false;
+    /** `_recovering`. */
     bool recovering = false;
     bool resources_ready = false;
     bool disposed = false;
@@ -6170,7 +6195,7 @@ void update_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_
  * also what the state's own live reads are keyed by here.
  */
 Sprite2DLayerHandle enable_sprite_2d_y_sort(Engine& engine, Sprite2DLayerHandle layer,
-                                            double default_bias);
+                                            std::optional<double> default_bias);
 bool sprite_2d_y_sort_enabled(const Engine& engine, Sprite2DLayerHandle layer);
 void set_sprite_2d_y_sort_bias_id(Engine& engine, Sprite2DLayerHandle layer,
                                   std::uint32_t sprite_id, double bias);

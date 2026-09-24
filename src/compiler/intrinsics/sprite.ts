@@ -1169,7 +1169,9 @@ function compileEnableSprite2DYSort(
     context.expectArgumentCount(call, 1, 2);
     const layer = context.compileValue(argumentAt(call, 0));
     context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
-    let defaultBias = "0.0";
+    // The pin resolves `options.defaultBias ?? 0` itself; an omitted one
+    // travels as absent.
+    let defaultBias = "std::nullopt";
     if (call.arguments[1]) {
         validateObjectProperties(
             context,
@@ -1182,7 +1184,7 @@ function compileEnableSprite2DYSort(
             "defaultBias",
         );
         if (bias) {
-            defaultBias = `static_cast<double>(${bias.cpp})`;
+            defaultBias = `std::optional<double>{static_cast<double>(${bias.cpp})}`;
         }
     }
     const engineCpp = context.engineFor(layer, call);

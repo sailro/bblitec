@@ -6,6 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerPhysicsGravity } from "../src/lowering/physics-gravity-lowerer.js";
+import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
 import {
     lowerPhysicsHeightfield,
     physicsHeightfieldModule,
@@ -44,7 +45,10 @@ test("heightfield and gravity contracts reject unrepresented constructor or disp
             "src/physics/havok-floating-origin.ts",
             "setGravity: _setGravity",
             "setGravity: _setVelocityLimits",
-            (context: LoweringContext) => lowerPhysicsGravity(context, false),
+            (context: LoweringContext) =>
+                new PhysicsLowerer(context).lowerPhysics({
+                    floatingOrigin: true,
+                }),
         ],
     ] as const) {
         class Changed extends LoweringContext {
@@ -60,7 +64,10 @@ test("heightfield and gravity contracts reject unrepresented constructor or disp
                 );
             }
         }
-        assert.throws(() => lower(new Changed(store)), /changed|exactly/);
+        assert.throws(
+            () => lower(new Changed(store)),
+            /changed|exactly|setGravity hook/,
+        );
     }
 });
 

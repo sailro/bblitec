@@ -64,7 +64,6 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     const functions = [
         ...[
             "inline SpriteDirtyRange resolve_sprite_dirty_range(",
-            "inline void mark_sprite_dirty_range_consumed(",
             "inline SpriteInstanceUpload resolve_sprite_instance_upload(",
             "inline bool sprite_blend_equal(",
             "inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",

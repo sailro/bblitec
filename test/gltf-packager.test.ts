@@ -798,3 +798,88 @@ test("embeds an external image referenced by a GLB beside that GLB", async () =>
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test("routes KHR_texture_basisu through the executed pinned extension", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-basisu-route-"));
+    const basisu = (source: number): Record<string, unknown> => ({
+        extensions: { KHR_texture_basisu: { source } },
+    });
+    const refuses = async (
+        materials: unknown[],
+        textures: unknown[],
+        pattern: RegExp,
+    ): Promise<void> => {
+        writeFileSync(
+            join(directory, "scene.gltf"),
+            JSON.stringify({
+                asset: { version: "2.0" },
+                extensionsUsed: ["KHR_texture_basisu"],
+                images: [{ uri: "a.ktx2" }, { uri: "b.ktx2" }],
+                textures,
+                materials,
+            }),
+        );
+        await assert.rejects(packageGltf("scene.gltf", directory), pattern);
+    };
+    try {
+        // Separate metallic-roughness and occlusion images take the pin's
+        // composite arm, which decodes to RGBA.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: {
+                        metallicRoughnessTexture: { index: 0 },
+                    },
+                    occlusionTexture: { index: 1 },
+                },
+            ],
+            [basisu(0), basisu(1)],
+            /OffscreenCanvas/,
+        );
+        // Specular slots route through setPbrMetallicReflectance.
+        await refuses(
+            [
+                {
+                    extensions: {
+                        KHR_materials_specular: {
+                            specularTexture: { index: 0 },
+                        },
+                    },
+                },
+            ],
+            [basisu(0)],
+            /setPbrMetallicReflectance/,
+        );
+        // The pin forwards a texCoord for occlusion alone.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: {
+                        baseColorTexture: { index: 0, texCoord: 1 },
+                    },
+                },
+            ],
+            [basisu(0)],
+            /baseColorTexture at texCoord 1/,
+        );
+        // One image at the base colour's sRGB and the normal map's linear.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+                    normalTexture: { index: 0 },
+                },
+            ],
+            [basisu(0)],
+            /image 0 at both colour spaces/,
+        );
+        // A basisu texture no redirected slot reaches keeps no source.
+        await refuses(
+            [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+            [basisu(0), basisu(1)],
+            /texture 1, which no slot/,
+        );
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});

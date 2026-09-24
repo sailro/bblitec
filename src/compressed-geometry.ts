@@ -36,6 +36,9 @@ import {
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
+    installPinnedImportHook,
+    pinnedModuleTextUrl,
+    readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
@@ -129,41 +132,7 @@ async function pinnedArtifact(name: string): Promise<Buffer> {
     return bytes;
 }
 
-interface DracoModule {
-    Decoder: new () => {
-        DecodeBufferToMesh(
-            buffer: unknown,
-            mesh: unknown,
-        ): { ok(): boolean; error_msg(): string };
-        GetTrianglesUInt32Array(
-            mesh: unknown,
-            byteLength: number,
-            pointer: number,
-        ): void;
-        GetAttributeByUniqueId(mesh: unknown, uniqueId: number): unknown;
-        GetAttributeDataArrayForAllPoints(
-            mesh: unknown,
-            attribute: unknown,
-            dataType: number,
-            byteLength: number,
-            pointer: number,
-        ): boolean;
-    };
-    DecoderBuffer: new () => {
-        Init(data: Uint8Array, size: number): void;
-    };
-    Mesh: new () => { num_faces(): number; num_points(): number };
-    destroy(value: unknown): void;
-    HEAPF32: Float32Array;
-    HEAPU32: Uint32Array;
-    HEAP32: Int32Array;
-    DT_FLOAT32: number;
-    DT_INT32: number;
-    _malloc(size: number): number;
-    _free(pointer: number): void;
-}
-
-const dracoModules = new Map<string, Promise<DracoModule>>();
+const dracoModules = new Map<string, Promise<unknown>>();
 
 const meshoptFeatures = new Map<string, Promise<PinnedPreParseFeature>>();
 let defaultMeshoptFeature: Promise<PinnedPreParseFeature> | undefined;
@@ -248,10 +217,8 @@ async function loadMeshoptFeature(
  * else; the WebAssembly is handed over directly rather than fetched, which
  * is what keeps the whole thing offline.
  */
-async function loadDracoModule(
-    configured?: DracoDecoderAssets,
-): Promise<DracoModule> {
-    const key = configured
+function dracoDecoderKey(configured?: DracoDecoderAssets): string {
+    return configured
         ? createHash("sha256")
               .update(String(configured.javascript.length))
               .update(":")
@@ -259,6 +226,12 @@ async function loadDracoModule(
               .update(configured.wasm)
               .digest("hex")
         : "pinned";
+}
+
+async function loadDracoModule(
+    configured?: DracoDecoderAssets,
+): Promise<unknown> {
+    const key = dracoDecoderKey(configured);
     const previous = dracoModules.get(key);
     if (previous) return previous;
     const loading = (async () => {
@@ -286,14 +259,16 @@ async function loadDracoModule(
         runInContext(Buffer.from(glue).toString("utf8"), sandbox, {
             filename: "draco_decoder.js",
         });
-        const factory = sandbox.DracoDecoderModule as
-            ((options: unknown) => Promise<DracoModule>) | undefined;
+        const factory: unknown = sandbox.DracoDecoderModule;
         if (typeof factory !== "function") {
             throw new Error(
                 "draco_decoder.js did not define DracoDecoderModule.",
             );
         }
-        return factory({ wasmBinary: new Uint8Array(wasm) });
+        const instantiated: unknown = Reflect.apply(factory, undefined, [
+            { wasmBinary: new Uint8Array(wasm) },
+        ]);
+        return instantiated;
     })();
     dracoModules.set(key, loading);
     try {
@@ -304,85 +279,79 @@ async function loadDracoModule(
     }
 }
 
-interface DecodedPrimitive {
-    indices: Uint32Array;
-    attributes: Map<string, Float32Array | Int32Array>;
-    vertexCount: number;
+/** What the pinned Draco `preMesh` hands back for one primitive. */
+interface PinnedDecodedPrimitive {
+    _attributes: Map<string, Float32Array | Uint32Array | Int32Array>;
+    _indices: Uint32Array;
+    _vertexCount: number;
+    _indexCount: number;
 }
 
+interface PinnedDracoFeature {
+    id: string;
+    preMesh: (
+        json: JsonRecord,
+        binChunk: DataView,
+    ) => Promise<Map<unknown, PinnedDecodedPrimitive>>;
+}
+
+const dracoFeatures = new Map<string, Promise<PinnedDracoFeature>>();
+
 /**
- * Decodes one Draco primitive exactly as `draco-decode.ts` does.
+ * `gltf-feature-draco.ts`, executed: the pin's own pre-mesh hook, accessor
+ * type table and `draco-decode.ts`.
  *
- * Every attribute the extension lists is decoded, including one the
- * primitive itself does not declare, and a component count is only known
- * for the declared ones -- the rest fall back to three. That is the pinned
- * behaviour, and the browser reference is rendered from its output, so it
- * is reproduced rather than corrected.
+ * `draco-decode.ts` reaches its decoder through `<script>` injection, and
+ * only when `globalThis.DracoDecoderModule` is not already defined. That
+ * global is the page's host, so it is the one thing generation answers: the
+ * decode module's own `globalThis` is an imported host whose
+ * `DracoDecoderModule` hands back the decoder `loadDracoModule` instantiated
+ * offline. Everything the pin does with it runs unchanged.
  */
-async function decodeDracoPrimitive(
-    compressed: Uint8Array,
-    attributeMap: Record<string, number>,
-    componentCounts: Record<string, number>,
-    decoderAssets?: AssetDecoders["draco"],
-): Promise<DecodedPrimitive> {
-    const module = await loadDracoModule(await decoderAssets?.());
-    const decoder = new module.Decoder();
-    const buffer = new module.DecoderBuffer();
-    buffer.Init(compressed, compressed.byteLength);
-    const mesh = new module.Mesh();
-    const status = decoder.DecodeBufferToMesh(buffer, mesh);
-    if (!status.ok()) {
-        const message = status.error_msg();
-        module.destroy(buffer);
-        module.destroy(mesh);
-        module.destroy(decoder);
-        throw new Error(`Draco decode failed: ${message}`);
-    }
-
-    const vertexCount = mesh.num_points();
-    const indexCount = mesh.num_faces() * 3;
-    // The heap views are re-read after every allocation: `_malloc` can grow
-    // the WebAssembly memory and detach the arrays already held.
-    const indexPointer = module._malloc(indexCount * 4);
-    decoder.GetTrianglesUInt32Array(mesh, indexCount * 4, indexPointer);
-    const indices = new Uint32Array(
-        module.HEAPU32.buffer,
-        indexPointer,
-        indexCount,
-    ).slice();
-    module._free(indexPointer);
-
-    const attributes = new Map<string, Float32Array | Int32Array>();
-    for (const [name, uniqueId] of Object.entries(attributeMap)) {
-        const componentCount = componentCounts[name] ?? 3;
-        const total = vertexCount * componentCount;
-        const joints = name === "JOINTS_0" || name === "JOINTS_1";
-        const pointer = module._malloc(total * 4);
-        const attribute = decoder.GetAttributeByUniqueId(mesh, uniqueId);
-        decoder.GetAttributeDataArrayForAllPoints(
-            mesh,
-            attribute,
-            joints ? module.DT_INT32 : module.DT_FLOAT32,
-            total * 4,
-            pointer,
+async function loadDracoFeature(
+    configured?: DracoDecoderAssets,
+): Promise<PinnedDracoFeature> {
+    const key = dracoDecoderKey(configured);
+    const previous = dracoFeatures.get(key);
+    if (previous) return previous;
+    const loading = (async () => {
+        const { hook, release } = installPinnedImportHook(() =>
+            loadDracoModule(configured),
         );
-        attributes.set(
-            name,
-            joints
-                ? new Int32Array(module.HEAP32.buffer, pointer, total).slice()
-                : new Float32Array(
-                      module.HEAPF32.buffer,
-                      pointer,
-                      total,
-                  ).slice(),
-        );
-        module._free(pointer);
-    }
-
-    module.destroy(buffer);
-    module.destroy(mesh);
-    module.destroy(decoder);
-    return { indices, attributes, vertexCount };
+        try {
+            const host = javascriptModuleUrl(
+                `export const host = { DracoDecoderModule: globalThis[${JSON.stringify(hook)}] };`,
+            );
+            const decodeModule = "loader-gltf/draco-decode.js";
+            const decode = pinnedModuleTextUrl(
+                decodeModule,
+                `import { host as globalThis } from ${JSON.stringify(host)};\n` +
+                    readPinnedLibraryModule(decodeModule),
+            );
+            const module = await importPinnedModuleWithExports<{
+                default: PinnedDracoFeature;
+            }>(
+                "loader-gltf/gltf-feature-draco.js",
+                [],
+                new Map([["./draco-decode.js", decode]]),
+            );
+            const feature = module.default;
+            if (feature?.id !== DRACO_EXTENSION || !feature.preMesh) {
+                throw new Error(
+                    "Pinned gltf-feature-draco.js no longer exports a default " +
+                        `${DRACO_EXTENSION} feature with a preMesh hook.`,
+                );
+            }
+            return feature;
+        } finally {
+            release();
+        }
+    })();
+    dracoFeatures.set(key, loading);
+    void loading.catch(() => {
+        if (dracoFeatures.get(key) === loading) dracoFeatures.delete(key);
+    });
+    return loading;
 }
 
 /** The parsed chunk as the `DataView` every pinned document hook takes. */
@@ -476,53 +445,30 @@ async function decodeDracoGlb(
         return accessors.length - 1;
     };
 
-    let decodedPrimitives = 0;
+    // The pinned pre-mesh hook decodes every compressed primitive, keyed by
+    // the primitive object it read the extension off -- this document's own.
+    const feature = await loadDracoFeature(await decoder?.());
+    const decodedPrimitives = await feature.preMesh(json, binaryChunkView(glb));
+    let rewritten = 0;
     for (const mesh of asRecords(json.meshes)) {
         for (const primitive of asRecords(mesh.primitives)) {
             const extensions = asObject(primitive.extensions);
             const draco = asObject(extensions?.[DRACO_EXTENSION]);
             if (!extensions || !draco) continue;
 
-            const view = bufferViews[numberValue(draco.bufferView)];
-            if (!view) {
+            const decoded = decodedPrimitives.get(primitive);
+            if (!decoded) {
                 throw new Error(
-                    `${label}: ${DRACO_EXTENSION} references a missing bufferView.`,
+                    `${label}: the pinned ${DRACO_EXTENSION} feature decoded ` +
+                        "no geometry for a primitive that declares it.",
                 );
             }
-            const start = numberValue(view.byteOffset);
-            const compressed = glb.binary.subarray(
-                start,
-                start + numberValue(view.byteLength),
-            );
-
-            const attributeMap = (asObject(draco.attributes) ?? {}) as Record<
-                string,
-                number
-            >;
             const declared = (asObject(primitive.attributes) ?? {}) as Record<
                 string,
                 number
             >;
-            const componentCounts: Record<string, number> = {};
-            for (const name of Object.keys(attributeMap)) {
-                const accessor = accessors[declared[name] ?? -1];
-                const type = accessor?.type;
-                if (typeof type === "string") {
-                    const size = Object.entries(ACCESSOR_TYPES).find(
-                        ([, value]) => value === type,
-                    )?.[0];
-                    if (size) componentCounts[name] = Number(size);
-                }
-            }
-
-            const decoded = await decodeDracoPrimitive(
-                compressed,
-                attributeMap,
-                componentCounts,
-                decoder,
-            );
-
-            for (const [name, data] of decoded.attributes) {
+            const vertexCount = decoded._vertexCount;
+            for (const [name, data] of decoded._attributes) {
                 if (declared[name] === undefined) {
                     // The Draco stream can carry an attribute the primitive
                     // never declares -- scene 30 ships a TANGENT that way.
@@ -537,36 +483,39 @@ async function decodeDracoGlb(
                     // declaration implies.
                     continue;
                 }
+                const componentCount = data.length / vertexCount;
+                const existing = accessors[declared[name] ?? -1];
                 if (data instanceof Int32Array) {
-                    const componentCount = data.length / decoded.vertexCount;
-                    const existing = accessors[declared[name] ?? -1];
-                    const index = addAccessor(
+                    declared[name] = addAccessor(
                         encodeUnsignedShortJoints(data, label, name),
                         componentCount,
                         COMPONENT_UNSIGNED_SHORT,
-                        decoded.vertexCount,
+                        vertexCount,
                         existing,
                     );
-                    declared[name] = index;
                     continue;
                 }
-                const componentCount = data.length / decoded.vertexCount;
-                const existing = accessors[declared[name] ?? -1];
-                const index = addAccessor(
+                if (!(data instanceof Float32Array)) {
+                    throw new Error(
+                        `${label}: the pinned Draco decode returned '${name}' ` +
+                            "as unsigned integers, which glTF declares for no " +
+                            "vertex attribute.",
+                    );
+                }
+                declared[name] = addAccessor(
                     data,
                     componentCount,
                     COMPONENT_FLOAT,
-                    decoded.vertexCount,
+                    vertexCount,
                     existing,
                 );
-                declared[name] = index;
             }
             primitive.attributes = declared;
             primitive.indices = addAccessor(
-                decoded.indices,
+                decoded._indices,
                 1,
                 COMPONENT_UNSIGNED_INT,
-                decoded.indices.length,
+                decoded._indexCount,
                 accessors[numberValue(primitive.indices, -1)],
             );
 
@@ -574,7 +523,7 @@ async function decodeDracoGlb(
             if (Object.keys(extensions).length === 0) {
                 delete primitive.extensions;
             }
-            decodedPrimitives += 1;
+            rewritten += 1;
         }
     }
 
@@ -584,7 +533,7 @@ async function decodeDracoGlb(
     const built = binary.build();
     glb.binary = built;
     json.buffers = [{ byteLength: built.length }];
-    console.log(`Decoded ${decodedPrimitives} Draco primitive(s) in ${label}.`);
+    console.log(`Decoded ${rewritten} Draco primitive(s) in ${label}.`);
     return true;
 }
 

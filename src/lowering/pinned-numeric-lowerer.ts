@@ -87,6 +87,51 @@ function isListShape(type: string): boolean {
     return LIST_SHAPES.has(type);
 }
 
+/** The typed arrays a body can own, alias and reseat: sized storage, not views. */
+function isOwnedBufferType(type: PinnedBinding["type"]): boolean {
+    return (
+        type === "f32" ||
+        type === "u32" ||
+        type === "u8" ||
+        type === "f64-buffer"
+    );
+}
+
+/** The function-like node whose body declares `node`. */
+function enclosingFunction(node: ts.Node): ts.Node {
+    return (
+        ts.findAncestor(
+            node.parent,
+            (ancestor) =>
+                ts.isFunctionDeclaration(ancestor) ||
+                ts.isFunctionExpression(ancestor) ||
+                ts.isArrowFunction(ancestor) ||
+                ts.isMethodDeclaration(ancestor),
+        ) ?? node.getSourceFile()
+    );
+}
+
+/** Every identifier naming `name` under `root`, as a value reference. */
+function identifierReferences(root: ts.Node, name: string): ts.Identifier[] {
+    const found: ts.Identifier[] = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isIdentifier(node) &&
+            node.text === name &&
+            !(
+                ts.isPropertyAccessExpression(node.parent) &&
+                node.parent.name === node
+            ) &&
+            !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+        ) {
+            found.push(node);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return found;
+}
+
 /** The storage one list-shaped binding declares. */
 function listStorage(type: string): string | undefined {
     return LIST_SHAPES.get(type)?.storage;
@@ -260,6 +305,22 @@ export interface PinnedBinding {
      * visible in the other.
      */
     mutable?: true;
+    /**
+     * A typed array this body allocated itself (`const next = new U32(n)`).
+     * JavaScript stores the REFERENCE, so `state._list = next` makes both
+     * names one array; the store moves the local's storage instead, which is
+     * the same array only while nothing reads the local afterwards -- and a
+     * later read refuses rather than seeing an emptied vector.
+     */
+    owned?: true;
+    /**
+     * A typed array reached through a pointer local rather than by name: a
+     * `let` alias the body reseats (`source = target`), or a `const` alias
+     * of one, which snapshots where it points now. `pointer` is that local;
+     * `cpp` dereferences it. Only a `reseatable` one may be assigned.
+     */
+    pointer?: string;
+    reseatable?: true;
     /**
      * `f32`/`u32`/`u8` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
@@ -504,6 +565,8 @@ export interface PinnedNumericScope {
     forOf?: (
         iterated: string,
         element: string,
+        /** What the iterated expression is bound to, where it is bound. */
+        binding: PinnedBinding | undefined,
     ) =>
         | {
               /** The C++ range expression, e.g. `scene.caster_meshes`. */
@@ -569,6 +632,34 @@ export interface PinnedNumericScope {
  * does not carry converts nothing, which leaves the `new` unrecognised and
  * fails generation rather than silently dropping the rounding.
  */
+/**
+ * The JavaScript built-ins a numeric body calls that have one meaning
+ * whatever the body: `Object.is` is SameValue (NaN equal to itself, the two
+ * zeros apart) and `Number.isFinite` rejects NaN and both infinities. A
+ * caller's own `calls` entry for the same name still wins.
+ */
+const JS_BUILTIN_CALLS: ReadonlyMap<
+    string,
+    { arity: number; spell: (args: readonly string[]) => string }
+> = new Map([
+    [
+        "Object.is",
+        {
+            arity: 2,
+            spell: (args: readonly string[]) =>
+                `bbl::js::same_value(${args[0]}, ${args[1]})`,
+        },
+    ],
+    [
+        "Number.isFinite",
+        {
+            arity: 1,
+            spell: (args: readonly string[]) =>
+                `std::isfinite(static_cast<double>(${args[0]}))`,
+        },
+    ],
+]);
+
 const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
     string,
     { conversion: string; type: PinnedBinding["type"] }
@@ -630,6 +721,15 @@ export class PinnedNumericLowerer {
         for (let suffix = 1; occupied.has(cpp); suffix++)
             cpp = `${base}_${suffix}`;
         return cpp;
+    }
+
+    /**
+     * Bind a name from a caller's statement hook: the local that hook
+     * declared in place of the pin's statement, visible to what follows it
+     * in the same block exactly as the ordinary declaration would be.
+     */
+    public bindLocal(name: string, binding: PinnedBinding): void {
+        this.scope.bindings.set(name, binding);
     }
 
     protected withBindings<T>(action: () => T): T {
@@ -934,7 +1034,11 @@ export class PinnedNumericLowerer {
             );
             const iterated = statement.expression.getText(this.file);
             const resolved =
-                this.scope.forOf?.(iterated, element) ??
+                this.scope.forOf?.(
+                    iterated,
+                    element,
+                    this.scope.bindings.get(iterated),
+                ) ??
                 (ts.isIdentifier(initializer.declarations[0]!.name)
                     ? this.recordListForOf(iterated, element)
                     : undefined);
@@ -1201,6 +1305,21 @@ export class PinnedNumericLowerer {
         return owned && references > 0;
     }
 
+    /** Whether the function declaring `name` assigns it again. */
+    private reassigned(
+        declaration: ts.VariableDeclaration,
+        name: string,
+    ): boolean {
+        return identifierReferences(enclosingFunction(declaration), name).some(
+            (reference) =>
+                reference !== declaration.name &&
+                ts.isBinaryExpression(reference.parent) &&
+                reference.parent.left === reference &&
+                reference.parent.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken,
+        );
+    }
+
     private declarations(
         list: ts.VariableDeclarationList,
         indent: string,
@@ -1448,6 +1567,34 @@ export class PinnedNumericLowerer {
                     isRecordType(alias.type) ||
                     alias.absentCpp !== undefined)
             ) {
+                // A typed array held through a pointer: a `let` the body
+                // reseats (`source = target` in a ping-pong merge), or any
+                // alias of one, which points where that pointer points NOW
+                // -- a name substitution would follow a later reseat.
+                if (
+                    isOwnedBufferType(alias.type) &&
+                    (alias.pointer !== undefined ||
+                        (!isConst && this.reassigned(declaration, name)))
+                ) {
+                    if (alias.materializeAlias)
+                        this.fail(declaration, "reseated getter alias");
+                    const {
+                        owned: _owned,
+                        reseatable: _reseatable,
+                        ...target
+                    } = alias;
+                    lines.push(
+                        `${indent}auto*${isConst ? " const" : ""} ${cpp} = ` +
+                            `${alias.pointer ?? `&(${alias.cpp})`};`,
+                    );
+                    this.scope.bindings.set(name, {
+                        ...target,
+                        cpp: `(*${cpp})`,
+                        pointer: cpp,
+                        ...(isConst ? {} : { reseatable: true as const }),
+                    });
+                    continue;
+                }
                 if (alias.materializeAlias) {
                     if (!isConst)
                         this.fail(declaration, "mutable getter alias binding");
@@ -1456,7 +1603,16 @@ export class PinnedNumericLowerer {
                     lines.push(`${indent}auto&& ${cpp} = ${alias.cpp};`);
                     this.scope.bindings.set(name, { ...value, cpp });
                 } else {
-                    this.scope.bindings.set(name, alias);
+                    // A second name for an owned local is not the owner: a
+                    // store through it must not move the storage away. Any
+                    // other alias IS the binding, which a caller's method
+                    // hook may key on.
+                    if (alias.owned) {
+                        const { owned: _owned, ...shared } = alias;
+                        this.scope.bindings.set(name, shared);
+                    } else {
+                        this.scope.bindings.set(name, alias);
+                    }
                 }
                 // An opaque record's members are bound by their dotted
                 // text, so the alias carries every member path the
@@ -1566,6 +1722,9 @@ export class PinnedNumericLowerer {
                         ? { bytesCpp: allocation.bytesCpp }
                         : {}),
                     ...(allocation.mutable ? { mutable: true as const } : {}),
+                    ...(allocation.value !== undefined
+                        ? { owned: true as const }
+                        : {}),
                 });
                 lines.push(`${indent}${allocation.declare(cpp)}`);
                 continue;
@@ -1686,7 +1845,13 @@ export class PinnedNumericLowerer {
             // comparison, a join of truths) is a boolean, and stays one:
             // `||=` onto it is a logical store, not a value selection.
             const isBoolean = this.booleanValue(initializer);
-            const value = this.expression(source);
+            // A number copied from a counted loop's `std::int64_t` index
+            // converts explicitly, as a store of one does.
+            const value =
+                ts.isIdentifier(initializer) &&
+                this.scope.bindings.get(initializer.text)?.type === "index"
+                    ? `static_cast<double>(${this.expression(source)})`
+                    : this.expression(source);
             this.scope.bindings.set(name, {
                 cpp,
                 type: isBoolean ? "bool" : "scalar",
@@ -1714,6 +1879,12 @@ export class PinnedNumericLowerer {
               bytesCpp?: string;
               mutable?: true;
               declare: (name: string) => string;
+              /**
+               * The zeroed allocation as a VALUE (`state._list = new U32(n)`),
+               * present only for the count forms, which are the ones a body
+               * owns outright.
+               */
+              value?: string;
           }
         | undefined {
         if (
@@ -1813,9 +1984,12 @@ export class PinnedNumericLowerer {
                 ? literal
                 : undefined;
         const count = this.expression(argument);
+        const sized = (element: string, zero: string): string =>
+            `std::vector<${element}>(static_cast<std::size_t>(${count}), ${zero})`;
         if (constructor === "F32") {
             return {
                 type: "f32",
+                value: sized("float", "0.0f"),
                 declare: (name) =>
                     fixed !== undefined
                         ? `std::array<float, ${fixed}> ${name}{};`
@@ -1826,6 +2000,7 @@ export class PinnedNumericLowerer {
         if (constructor === "U32") {
             return {
                 type: "u32",
+                value: sized("std::uint32_t", "0u"),
                 declare: (name) =>
                     fixed !== undefined
                         ? `std::array<std::uint32_t, ${fixed}> ${name}{};`
@@ -1841,6 +2016,7 @@ export class PinnedNumericLowerer {
         if (constructor === "U8") {
             return {
                 type: "u8",
+                value: sized("std::uint8_t", "0u"),
                 declare: (name) =>
                     fixed !== undefined
                         ? `std::array<std::uint8_t, ${fixed}> ${name}{};`
@@ -1855,6 +2031,7 @@ export class PinnedNumericLowerer {
         if (constructor === "F64" || constructor === "Array") {
             return {
                 type: "f64-buffer",
+                value: sized("double", "0.0"),
                 declare: (name) =>
                     `std::vector<double> ${name}(` +
                     `static_cast<std::size_t>(${count}), 0.0);`,
@@ -1878,6 +2055,8 @@ export class PinnedNumericLowerer {
             if (inPlace) return inPlace;
             const truncated = this.lengthStore(expression);
             if (truncated) return truncated;
+            const whole = this.wholeBufferStore(expression);
+            if (whole) return whole;
             const logical = this.logicalAssignment(expression);
             if (logical) return logical;
             const operator = PINNED_ASSIGNMENT_OPERATORS.get(
@@ -1935,6 +2114,69 @@ export class PinnedNumericLowerer {
             return this.expression(expression);
         }
         return this.fail(expression, "expression statement");
+    }
+
+    /**
+     * A store whose value is a whole typed array, which JavaScript makes by
+     * reference: a pointer-held alias reseated (`source = target` in a
+     * ping-pong merge), or an array the body allocated handed to the record
+     * that keeps it (`state._list = next`). The second moves the storage,
+     * which is the same array only while the body never reads the local
+     * again -- including on a later pass of a loop the local was declared
+     * outside of -- so either of those refuses.
+     */
+    private wholeBufferStore(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+            return undefined;
+        }
+        const right = unwrapExpression(expression.right);
+        const value = this.scope.bindings.get(right.getText(this.file));
+        if (!value || !isOwnedBufferType(value.type)) return undefined;
+        const target = this.scope.bindings.get(
+            unwrapExpression(expression.left).getText(this.file),
+        );
+        if (target?.pointer !== undefined) {
+            if (!target.reseatable || target.type !== value.type) {
+                this.fail(expression, "buffer alias reseat");
+            }
+            return `${target.pointer} = ${value.pointer ?? `&(${value.cpp})`}`;
+        }
+        if (!value.owned || !ts.isIdentifier(right)) return undefined;
+        if (target && target.type !== value.type) {
+            this.fail(expression, "typed-array store across element types");
+        }
+        const owner = enclosingFunction(expression);
+        const declared = identifierReferences(owner, right.text).find(
+            (reference) =>
+                ts.isVariableDeclaration(reference.parent) &&
+                reference.parent.name === reference &&
+                reference.pos < expression.pos,
+        );
+        const loopOutside = ts.findAncestor(expression.parent, (ancestor) => {
+            if (ancestor === owner) return "quit";
+            return (
+                (ts.isForStatement(ancestor) ||
+                    ts.isForOfStatement(ancestor) ||
+                    ts.isForInStatement(ancestor) ||
+                    ts.isWhileStatement(ancestor) ||
+                    ts.isDoStatement(ancestor)) &&
+                (!declared ||
+                    declared.pos < ancestor.pos ||
+                    declared.end > ancestor.end)
+            );
+        });
+        if (
+            !declared ||
+            loopOutside ||
+            identifierReferences(owner, right.text).some(
+                (reference) => reference.pos >= expression.end,
+            )
+        ) {
+            this.fail(expression, "store of an owned typed array read again");
+        }
+        return `${this.assignmentTarget(expression.left)} = std::move(${value.cpp})`;
     }
 
     /**
@@ -2572,7 +2814,14 @@ export class PinnedNumericLowerer {
                 ? { cpp: this.elementAccess(node), type: "vec3" }
                 : undefined;
         }
-        return undefined;
+        // A member the caller bound as a record by its dotted text
+        // (`region.origin`), read the way a record local is.
+        const member = ts.isPropertyAccessExpression(node)
+            ? this.scope.bindings.get(node.getText(this.file))
+            : undefined;
+        return member && isRecordType(member.type)
+            ? { cpp: member.cpp, type: member.type }
+            : undefined;
     }
 
     /** Capture element references before writes; assignment results retain the original number. */
@@ -2919,6 +3168,9 @@ export class PinnedNumericLowerer {
         if (ts.isNewExpression(node)) {
             const conversion = this.listConversion(node);
             if (conversion) return conversion;
+            // `state._list = new U32(n)`: a zeroed allocation stored whole.
+            const allocated = this.allocation(node)?.value;
+            if (allocated !== undefined) return allocated;
         }
         if (ts.isElementAccessExpression(node)) {
             const exact = this.scope.bindings.get(node.getText(this.file));
@@ -3584,6 +3836,36 @@ export class PinnedNumericLowerer {
                 );
             }
         }
+        // `target.set(source[, offset])` between two typed arrays of one
+        // element type: the whole run copied in, and the spec's RangeError
+        // where it would not fit. A caller's own `set` method, or its
+        // `arrayCopy` for the two-argument form, spells it over storage the
+        // caller owns (a fixed `std::array`, say) instead.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "set" &&
+            !this.scope.methods?.has("set") &&
+            (node.arguments.length === 1 ||
+                (node.arguments.length === 2 && !this.scope.arrayCopy))
+        ) {
+            const receiver = this.scope.bindings.get(
+                callee.expression.getText(this.file),
+            );
+            const source = this.scope.bindings.get(
+                unwrapExpression(node.arguments[0]!).getText(this.file),
+            );
+            if (
+                receiver &&
+                source &&
+                isOwnedBufferType(receiver.type) &&
+                receiver.type === source.type
+            ) {
+                const offset = node.arguments[1]
+                    ? this.expression(node.arguments[1])
+                    : "0.0";
+                return `bbl::js::typed_array_set(${receiver.cpp}, ${source.cpp}, ${offset})`;
+            }
+        }
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "set" &&
@@ -3680,6 +3962,14 @@ export class PinnedNumericLowerer {
               ? callee.text
               : undefined;
         if (!name) this.fail(node, "call target");
+        const builtin = JS_BUILTIN_CALLS.get(name);
+        if (!this.scope.calls.has(name) && builtin) {
+            if (args.length !== builtin.arity) {
+                this.fail(node, `'${name}' arity`);
+            }
+            this.translationActivity?.request("call", node, this.file);
+            return builtin.spell(args);
+        }
         const spelling = this.scope.calls.get(name);
         if (!spelling) this.fail(node, `call '${name}'`);
         const result = spelling(args);
@@ -3739,6 +4029,28 @@ export class PinnedNumericLowerer {
         ) {
             const left = unwrapExpression(node.left),
                 right = unwrapExpression(node.right);
+            // Two typed arrays compare by identity, never by contents: after
+            // a ping-pong merge `source !== permutation` asks which buffer
+            // holds the result.
+            const leftBuffer = this.scope.bindings.get(left.getText(this.file));
+            const rightBuffer = this.scope.bindings.get(
+                right.getText(this.file),
+            );
+            if (
+                leftBuffer &&
+                rightBuffer &&
+                isOwnedBufferType(leftBuffer.type) &&
+                isOwnedBufferType(rightBuffer.type)
+            ) {
+                const address = (binding: PinnedBinding): string =>
+                    binding.pointer ?? `&(${binding.cpp})`;
+                return `(${address(leftBuffer)} ${
+                    node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+                        ? "=="
+                        : "!="
+                } ${address(rightBuffer)})`;
+            }
             const absent =
                 ts.isIdentifier(right) && right.text === "undefined"
                     ? this.absenceTest(left)
@@ -3764,6 +4076,15 @@ export class PinnedNumericLowerer {
                     ? equal
                     : `!${equal}`;
             }
+        }
+        // `(state._flag = true)` as a value: the store, whose value is what
+        // it stored. A typed-array element would read back narrowed, so only
+        // a binding or a member is a target here.
+        if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (ts.isElementAccessExpression(unwrapExpression(node.left))) {
+                this.fail(node, "element store in value position");
+            }
+            return `(${this.assignmentTarget(node.left)} = ${this.storedValue(node.left, node.right)})`;
         }
         switch (node.operatorToken.kind) {
             case ts.SyntaxKind.QuestionQuestionToken: {
