@@ -232,7 +232,9 @@ function sharedScope(context: LoweringContext): {
                 absentCpp: "!container.has_spots",
                 optional: {
                     present: "container.has_spots",
-                    members: new Map([["_stride", { cpp: `${stride}.0` }]]),
+                    members: new Map([
+                        ["_stride", { cpp: context.doubleLiteral(stride) }],
+                    ]),
                 },
             },
         ],
@@ -253,7 +255,9 @@ function sharedScope(context: LoweringContext): {
         [
             "engine._device.limits.maxTextureDimension2D",
             {
-                cpp: `${WEBGPU_DEFAULT_MAX_TEXTURE_DIMENSION_2D}.0`,
+                cpp: context.doubleLiteral(
+                    WEBGPU_DEFAULT_MAX_TEXTURE_DIMENSION_2D,
+                ),
                 type: "scalar",
             },
         ],

@@ -30,7 +30,10 @@ import { resolveRepositoryModuleFile } from "./bake-cache.js";
 import type { ExecutedModuleSource } from "./executed-module-assets.js";
 import { moduleImportKind } from "./module-imports.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
-import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import {
+    isRelativeSpecifier,
+    moduleSpecifiers,
+} from "./typescript-module-specifiers.js";
 
 /** One module of an executed graph, as the CommonJS it runs as. */
 export interface ClosureModule {
@@ -45,16 +48,6 @@ export interface ClosureModule {
 export interface CommonJsModuleGraph {
     entry: string;
     modules: Record<string, ClosureModule>;
-}
-
-/** A relative sibling: the only specifier an executed module may resolve. */
-function isRelativeSpecifier(text: string): boolean {
-    return (
-        text === "." ||
-        text === ".." ||
-        text.startsWith("./") ||
-        text.startsWith("../")
-    );
 }
 
 /** Every specifier the emitted CommonJS passes to `require`, in order. */

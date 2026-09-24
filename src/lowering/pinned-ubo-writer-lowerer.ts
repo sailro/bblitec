@@ -21,16 +21,20 @@
 import ts from "typescript";
 import {
     hasNode,
-    numericValue,
+    nullishDefault,
     unwrapExpression,
     type LoweringContext,
 } from "./context.js";
 import {
     pinnedDefaultForDiscard,
     pinnedDefaultSites,
-    type PinnedDefaultValue,
     type PinnedMaterialDefault,
 } from "./pinned-material-defaults.js";
+import {
+    pinnedDefaultValue,
+    samePinnedDefault,
+    type PinnedDefaultValue,
+} from "./pinned-option-defaults.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
@@ -116,6 +120,8 @@ interface UboWriterRequest {
 }
 
 interface WriterState {
+    /** Folds a discarded default the way every pinned-default reader does. */
+    context: LoweringContext;
     file: ts.SourceFile;
     request: UboWriterRequest;
     baseLane: number;
@@ -635,7 +641,7 @@ function discardedProperty(
 /** A discarded pinned default, folded to what the pin would evaluate. */
 type FoldedDefault =
     | { kind: "number"; value: number }
-    | { kind: "vector"; value: number[] }
+    | { kind: "vector"; value: readonly number[] }
     /** The fallback reads another mapped record value — the same
      *  always-carried argument that lets the outer read discard it. */
     | { kind: "record" };
@@ -647,28 +653,16 @@ type FoldedDefault =
  * reflectance writer's `_specularWeight ?? _metallicF0Factor ?? 1.0` — a
  * chain over further record-carried properties; a chained fallback folds to
  * its all-absent ground state, which is the constant the chain terminates
- * in. A number folds through `numericValue`, which refuses what it cannot
- * evaluate.
+ * in. The constant is `pinnedDefaultValue`'s, and anything that states
+ * neither a number nor a list of them refuses.
  */
 function foldDiscardedDefault(
     state: WriterState,
     expression: ts.Expression,
 ): FoldedDefault {
     const node = unwrapExpression(expression);
-    if (ts.isArrayLiteralExpression(node)) {
-        return {
-            kind: "vector",
-            value: node.elements.map((element) =>
-                numericValue(element, state.file),
-            ),
-        };
-    }
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-    ) {
-        return foldDiscardedDefault(state, node.right);
-    }
+    const chained = nullishDefault(node);
+    if (chained) return foldDiscardedDefault(state, chained.right);
     // A fallback that is itself a MAPPED property read: `_specularWeight ??
     // _metallicF0Factor` discards a value the record carries either way. An
     // unmapped read stays unfoldable — the always-carried argument does not
@@ -680,7 +674,14 @@ function foldDiscardedDefault(
     ) {
         return { kind: "record" };
     }
-    return { kind: "number", value: numericValue(node, state.file) };
+    const value = pinnedDefaultValue(state.context, node, state.file);
+    if (typeof value === "number") return { kind: "number", value };
+    if (typeof value === "object") return { kind: "vector", value };
+    return state.context.contractError(
+        node,
+        `Expected pinned ${state.request.symbolName} to default to a number ` +
+            `or a list of numbers, found ${node.getText(state.file)}.`,
+    );
 }
 
 /** Whether a folded default is a plain `?? 0`/`?? 1` (per lane). */
@@ -711,17 +712,12 @@ function matchesEntry(
     entry: PinnedMaterialDefault,
     folded: FoldedDefault,
 ): boolean {
-    return pinnedDefaultSites(entry).some((candidate) => {
-        if (folded.kind === "number") return candidate === folded.value;
-        if (folded.kind === "vector") {
-            return (
-                Array.isArray(candidate) &&
-                candidate.length === folded.value.length &&
-                candidate.every((lane, index) => lane === folded.value[index])
-            );
-        }
-        return false;
-    });
+    return (
+        folded.kind !== "record" &&
+        pinnedDefaultSites(entry).some((candidate) =>
+            samePinnedDefault(candidate, folded.value),
+        )
+    );
 }
 
 /**
@@ -1552,6 +1548,7 @@ function lowerNested(
 ): string[] {
     const { declaration } = state.nestedDeclarations[symbolName]!;
     const nestedState: WriterState = {
+        context: state.context,
         file: state.file,
         request: {
             ...state.request,
@@ -1624,6 +1621,7 @@ export function lowerPinnedUboWriter(
         offsetLocals.set(request.offsetParameter, request.baseField);
     }
     const state: WriterState = {
+        context,
         file,
         request,
         baseLane: fieldLane(request, request.baseField),

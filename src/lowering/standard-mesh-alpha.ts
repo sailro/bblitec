@@ -1,12 +1,11 @@
 import ts from "typescript";
-import { LoweringContext } from "./context.js";
+import { sharedPinnedContext, type LoweringContext } from "./context.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import { refuseGeneration } from "../generation-refusal.js";
 
 const MODULE = "src/material/standard/standard-renderable.ts";
@@ -78,7 +77,7 @@ let executedAlpha: Promise<StandardMeshAlphaDecision> | undefined;
 /** Execute the pin's local decision without constructing a renderable or GPU. */
 export function pinnedStandardMeshAlpha(): Promise<StandardMeshAlphaDecision> {
     if (executedAlpha) return executedAlpha;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const { file, initializer, features } = alphaExpressions(context);
     const source = `
 ${[...alphaFlags(context)].map(([name, value]) => `const ${name} = ${value};`).join("\n")}

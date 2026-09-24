@@ -309,6 +309,9 @@ export interface PinnedBinding {
     };
 }
 
+/** One pinned callee's C++ spelling, over its already-lowered arguments. */
+export type PinnedCallSpelling = (args: readonly string[]) => string;
+
 export interface PinnedNumericScope {
     /** Domain-owned records and library values; arithmetic still recurses through this lowerer. */
     expression?: (
@@ -327,7 +330,7 @@ export interface PinnedNumericScope {
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
-    calls: ReadonlyMap<string, (args: readonly string[]) => string>;
+    calls: ReadonlyMap<string, PinnedCallSpelling>;
     /**
      * Methods called ON a bound buffer, spelled from the RESOLVED receiver.
      * Keyed by method name alone: `counts.fill(0)` reaches the same rule

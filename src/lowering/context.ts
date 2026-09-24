@@ -4,7 +4,10 @@ import {
     propertyNameText,
     unwrapExpression as unwrapSyntaxWrappers,
 } from "../compiler/syntax.js";
-import { UpstreamSourceStore } from "../upstream-source.js";
+import {
+    sharedUpstreamStore,
+    UpstreamSourceStore,
+} from "../upstream-source.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
@@ -1518,4 +1521,21 @@ export class LoweringContext {
             .map((child) => this.nodeFingerprint(child))
             .join(",")})`;
     }
+}
+
+let sharedPinned: LoweringContext | undefined;
+
+/**
+ * The one context a process reads pinned facts through outside a scene's
+ * own lowering, over `sharedUpstreamStore()`.
+ *
+ * A reader that folds a pinned default or declaration once per process
+ * (the material, mesh and post-process defaults, the navigation agent
+ * defaults, the option-kind survey) holds no state of its own, and a
+ * `LoweringContext` holds none beyond its store, so they share this rather
+ * than each caching a private one.
+ */
+export function sharedPinnedContext(): LoweringContext {
+    sharedPinned ??= new LoweringContext(sharedUpstreamStore());
+    return sharedPinned;
 }

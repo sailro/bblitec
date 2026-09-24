@@ -1468,7 +1468,6 @@ ${
                     std::to_string(node_index);
             }
             record.name = required(planned, "name").as_string();
-            record.primitive = PrimitiveKind::gltf;
             record.geometry = geometry_slot;
             // src/material/pbr/fragments/refraction-rtt-fragment.ts,
             // makeRefractionMod/thicknessScaleLine: the refraction fragment scales its

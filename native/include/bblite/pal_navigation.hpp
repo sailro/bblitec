@@ -73,11 +73,12 @@ struct NavOffMeshConnection {
 };
 
 /**
- * The wrapper's build-config defaults: `recastConfigDefaults` and the
- * tile-cache arm's `expectedLayersPerTile`, each a JavaScript number as
- * the installed @recast-navigation packages state it. The generated
- * navigation header reads them from the packages at generation and hands
- * them to the build, which narrows each the way `createRcConfig` stores it.
+ * The wrapper's build-config defaults: `recastConfigDefaults`, the
+ * tile-cache arm's `expectedLayersPerTile`, and the `NavMeshQuery` every
+ * arm ends by constructing, each a JavaScript number as the installed
+ * @recast-navigation packages state it. The generated navigation header
+ * reads them from the packages at generation and hands them to the build,
+ * which narrows each the way the wrapper stores it.
  */
 struct NavBuildDefaults {
     double border_size;
@@ -96,6 +97,11 @@ struct NavBuildDefaults {
     double detail_sample_dist;
     double detail_sample_max_error;
     double expected_layers_per_tile;
+    /** `new NavMeshQuery(navMesh)`: the `maxNodes` default it initializes with. */
+    double query_max_nodes;
+    /** `NavMeshQuery.defaultQueryHalfExtents`, x-y-z: the box every
+     *  nearest-polygon search spans around its position. */
+    double query_half_extents[3];
 };
 
 /**

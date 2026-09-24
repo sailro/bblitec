@@ -6,6 +6,7 @@ import {
     absentBinding,
     PinnedNumericLowerer,
     type PinnedBinding,
+    type PinnedCallSpelling,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -16,8 +17,6 @@ const CONTROLS = "src/camera/arc-rotate-controls.ts";
 const OBSERVABLE = "src/math/observable-vec3.ts";
 const axes = ["x", "y", "z"] as const;
 const scalarFields = ["alpha", "beta", "radius"] as const;
-
-type CallSpelling = (args: readonly string[]) => string;
 
 /**
  * The statements of a pinned DOM handler that have no native counterpart,
@@ -73,7 +72,7 @@ export function cameraPointerDeltaBindings(
 /** The native state and hooks one pinned control handler is lowered over. */
 interface ControlAdapter {
     bindings?: ReadonlyMap<string, PinnedBinding>;
-    calls?: ReadonlyMap<string, CallSpelling>;
+    calls?: ReadonlyMap<string, PinnedCallSpelling>;
     statement?: PinnedNumericScope["statement"];
     expression?: PinnedNumericScope["expression"];
 }
@@ -87,7 +86,7 @@ export class CameraMutationLowerer {
         file: ts.SourceFile,
         body: ts.Block,
         bindings: Map<string, PinnedBinding>,
-        calls: ReadonlyMap<string, CallSpelling> = new Map(),
+        calls: ReadonlyMap<string, PinnedCallSpelling> = new Map(),
         adapter: Pick<ControlAdapter, "statement" | "expression"> = {},
     ): string {
         return lowerPinnedBody(file, body.statements, {
@@ -559,12 +558,12 @@ ${bulkBody}
             bindings,
             new Map([
                 ...pinnedNumericMathCalls(),
-                ...scalarFields.map((field): [string, CallSpelling] => [
+                ...scalarFields.map((field): [string, PinnedCallSpelling] => [
                     `write_${field}`,
                     (args) =>
                         `write_camera_scalar(camera, &CameraRecord::${field}, ${args.join(", ")})`,
                 ]),
-                ...axes.map((axis): [string, CallSpelling] => [
+                ...axes.map((axis): [string, PinnedCallSpelling] => [
                     `write_target_${axis}`,
                     (args) =>
                         `write_camera_vector_component(camera, &CameraRecord::target, &Vec3d::${axis}, ${args.join(", ")})`,
@@ -599,7 +598,7 @@ ${bulkBody}
                 ["options?.pointerMappings", absentBinding()],
                 ...cameraPointerDeltaBindings("e", ["lastX", "lastY"]),
             ]),
-            calls: new Map<string, CallSpelling>([
+            calls: new Map<string, PinnedCallSpelling>([
                 [
                     "options?.isExternalDragActive?.()",
                     () => hook("external_drag_active"),

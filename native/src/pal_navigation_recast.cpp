@@ -4,9 +4,10 @@
 // config defaults and unit transforms are @recast-navigation/core's
 // `recastConfigDefaults`/`createRcConfig`, the build sequence is
 // @recast-navigation/generators' `generateSoloNavMesh` step for step,
-// the query construction is `NavMeshQuery`'s (2048 nodes, include-all
-// filter), the debug walk is `getNavMeshPositionsAndIndices` plus the
-// pinned `createDebugNavMeshGeometry` detached-triangle rebuild, and
+// the query construction is `NavMeshQuery`'s (its node pool and search
+// box from the build defaults, include-all filter), the debug walk is
+// `getNavMeshPositionsAndIndices` plus the pinned
+// `createDebugNavMeshGeometry` detached-triangle rebuild, and
 // the raycast is the pinned `raycast` wrapper, and the tile-cache build
 // is `generateTileCache` with its obstacle entry points. The library
 // underneath is the same recastnavigation commit the wrapper's wasm
@@ -167,6 +168,8 @@ struct NavigationMeshState {
     std::unique_ptr<dtNavMeshQuery, void (*)(dtNavMeshQuery*)> query{
         nullptr, [](dtNavMeshQuery* value) { dtFreeNavMeshQuery(value); }};
     dtQueryFilter filter;
+    /** `NavMeshQuery.defaultQueryHalfExtents`, at the width Detour takes. */
+    float query_half_extents[3] = {0.0f, 0.0f, 0.0f};
 #if BBLITE_HAS_NAV_TILE_CACHE
     // The cache borrows these three objects; reverse destruction releases it first.
     std::unique_ptr<TileCacheLinearAllocator> allocator;
@@ -219,9 +222,6 @@ NavCrowdState& crowd_state(const NavCrowdHandle& handle) {
     return *handle.ownership;
 }
 #endif
-
-/** `NavMeshQuery.defaultQueryHalfExtents`. */
-constexpr float default_query_half_extents[3] = {1.0f, 1.0f, 1.0f};
 
 /** `new QueryFilter()`: Detour's own include-everything defaults, which
  *  the wrapper never narrows. Stated once so a future exclude reaches
@@ -316,18 +316,23 @@ RecastInputMesh prepare_input(const NavMeshGeometry& geometry) {
 }
 
 /**
- * `new NavMeshQuery(navMesh)`: 2048 nodes and the include-all filter, which
- * every arm ends with because the wrapper's constructor is what every arm
- * calls. The prefix is the arm's own failure spelling.
+ * `new NavMeshQuery(navMesh)`: its default node pool and search box and the
+ * include-all filter, which every arm ends with because the wrapper's
+ * constructor is what every arm calls. The prefix is the arm's own failure
+ * spelling.
  */
 void install_query(NavigationMeshState& state, dtNavMesh* nav_mesh,
-                   const std::string& failure_prefix) {
+                   const NavBuildDefaults& defaults, const std::string& failure_prefix) {
     RecastOwner<dtNavMeshQuery> query{dtAllocNavMeshQuery(), dtFreeNavMeshQuery};
-    if (!query || dtStatusFailed(query->init(nav_mesh, 2048))) {
+    if (!query ||
+        dtStatusFailed(query->init(nav_mesh, static_cast<int>(defaults.query_max_nodes)))) {
         throw std::runtime_error(failure_prefix + "Failed to initialize navmesh query");
     }
     state.query = std::move(query);
     state.filter = include_all_filter();
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        state.query_half_extents[axis] = static_cast<float>(defaults.query_half_extents[axis]);
+    }
 }
 
 /** The generator's post-`createRcConfig` transforms, which both arms
@@ -520,7 +525,7 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
         dtFree(nav_data);
         throw std::runtime_error("createNavMesh failed: Failed to initialize solo NavMesh");
     }
-    install_query(state, nav_mesh, "createNavMesh failed: ");
+    install_query(state, nav_mesh, defaults, "createNavMesh failed: ");
     plugin.ownership->mesh = std::move(built);
 }
 
@@ -787,7 +792,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
         }
     }
     state.tile_cache = std::move(tile_cache);
-    install_query(state, nav_mesh, "createNavMesh (tile cache) failed: ");
+    install_query(state, nav_mesh, defaults, "createNavMesh (tile cache) failed: ");
     plugin.ownership->mesh = std::move(built);
 }
 
@@ -955,7 +960,7 @@ NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float s
     dtPolyRef nearest_ref = 0;
     float nearest_point[3] = {0.0f, 0.0f, 0.0f};
     const dtStatus nearest_status = state.query->findNearestPoly(
-        start, default_query_half_extents, &state.filter, &nearest_ref, nearest_point);
+        start, state.query_half_extents, &state.filter, &nearest_ref, nearest_point);
     if (dtStatusFailed(nearest_status) || nearest_ref == 0) {
         return NavRaycastHit{};
     }
@@ -983,8 +988,8 @@ NavVec3 navigation_closest_point(NavigationHandle plugin, float x, float y, floa
     }
     const float position[3] = {x, y, z};
     dtPolyRef poly_ref = 0;
-    const dtStatus nearest_status = state.query->findNearestPoly(
-        position, default_query_half_extents, &state.filter, &poly_ref, nullptr);
+    const dtStatus nearest_status = state.query->findNearestPoly(position, state.query_half_extents,
+                                                                 &state.filter, &poly_ref, nullptr);
     if (dtStatusFailed(nearest_status)) {
         return NavVec3{};
     }
@@ -1013,9 +1018,9 @@ std::vector<NavVec3> navigation_compute_path(NavigationHandle plugin, NavVec3 st
 
     dtPolyRef start_ref = 0;
     dtPolyRef end_ref = 0;
-    if (dtStatusFailed(state.query->findNearestPoly(start_position, default_query_half_extents,
+    if (dtStatusFailed(state.query->findNearestPoly(start_position, state.query_half_extents,
                                                     &state.filter, &start_ref, nullptr)) ||
-        dtStatusFailed(state.query->findNearestPoly(end_position, default_query_half_extents,
+        dtStatusFailed(state.query->findNearestPoly(end_position, state.query_half_extents,
                                                     &state.filter, &end_ref, nullptr))) {
         return {};
     }
@@ -1122,7 +1127,7 @@ std::optional<NavVec3> navigation_agent_position(NavCrowdHandle crowd, int index
 // with a stale reference is what makes an agent refuse to move.
 //
 // The query is the CROWD's own (getNavMeshQuery), which is what the
-// wrapper builds its navMeshQuery from, at the same +-1 half-extents
+// wrapper builds its navMeshQuery from, at the same default half-extents
 // and an include-all filter.
 //
 // Absence is REPORTED, not decided: the pin's `?.` is Babylon behaviour
@@ -1138,7 +1143,7 @@ bool navigation_agent_goto(NavCrowdHandle crowd, int index, NavVec3 destination)
     const float position[3] = {destination.x, destination.y, destination.z};
     dtPolyRef nearest_ref = 0;
     float nearest_point[3] = {0.0f, 0.0f, 0.0f};
-    if (dtStatusFailed(query->findNearestPoly(position, default_query_half_extents, &filter,
+    if (dtStatusFailed(query->findNearestPoly(position, state.mesh->query_half_extents, &filter,
                                               &nearest_ref, nearest_point)) ||
         nearest_ref == 0) {
         return true;

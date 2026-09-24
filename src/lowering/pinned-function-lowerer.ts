@@ -416,7 +416,7 @@ export function lowerMat4MultiplyWriterCpp(
  * enclosing declaration is resolved first, so a nested name that moved
  * out of it -- or gained a twin -- fails by both names.
  */
-function nestedFunctionDeclaration(
+export function nestedFunctionDeclaration(
     context: LoweringContext,
     modulePath: string,
     enclosing: string,

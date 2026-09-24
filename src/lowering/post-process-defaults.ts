@@ -16,8 +16,8 @@ import {
     type PostProcessEffect,
     type PostProcessParamSlot,
 } from "../post-process-effects.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
-import { LoweringContext } from "./context.js";
+import { sharedPinnedContext, type LoweringContext } from "./context.js";
+import { pinnedDefaultValue } from "./pinned-option-defaults.js";
 
 /** A default as the pin states it: a number, or a flag's keyword. */
 type PostProcessDefault = number | boolean;
@@ -30,8 +30,6 @@ type EffectSite = Pick<
 
 /** A slot as the table names it, before its default is read. */
 type SlotSite = Pick<PostProcessParamSlot, "path" | "owner" | "runtime">;
-
-let shared: LoweringContext | undefined;
 
 const derived = new Map<string, PostProcessDefault>();
 
@@ -50,16 +48,12 @@ function configDefaults(
     declaration: ts.FunctionDeclaration,
 ): ReadonlyMap<string, ts.Expression> {
     const fallbacks = new Map<string, ts.Expression>();
-    for (const node of context.findNodes(
-        declaration,
-        (candidate): candidate is ts.BinaryExpression =>
-            ts.isBinaryExpression(candidate) &&
-            candidate.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken,
-    )) {
-        const path = context.propertyPath(node.left);
+    for (const node of context.findNodes(declaration, ts.isBinaryExpression)) {
+        const nullish = context.nullishDefault(node);
+        if (!nullish) continue;
+        const path = context.propertyPath(nullish.left);
         if (path?.[0] === "config" && path.length === 2) {
-            fallbacks.set(path[1]!, context.unwrapExpression(node.right));
+            fallbacks.set(path[1]!, context.unwrapExpression(nullish.right));
         }
     }
     const moduleHelpers = new Set(
@@ -152,15 +146,16 @@ export function pinnedPostProcessDefault(
     ].join("#");
     const cached = derived.get(key);
     if (cached !== undefined) return cached;
-    const reader = (shared ??= new LoweringContext(sharedUpstreamStore()));
+    const reader = sharedPinnedContext();
     const { expression, file } = defaultSite(reader, effect, slot);
-    const unwrapped = reader.unwrapExpression(expression);
-    const value =
-        unwrapped.kind === ts.SyntaxKind.TrueKeyword
-            ? true
-            : unwrapped.kind === ts.SyntaxKind.FalseKeyword
-              ? false
-              : reader.numericValue(unwrapped, file);
+    const value = pinnedDefaultValue(reader, expression, file);
+    if (typeof value !== "number" && typeof value !== "boolean") {
+        return reader.contractError(
+            expression,
+            `Expected ${effect.intrinsic} to default '${slot.path}' to a ` +
+                "number or a flag.",
+        );
+    }
     derived.set(key, value);
     return value;
 }

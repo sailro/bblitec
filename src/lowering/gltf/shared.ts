@@ -50,7 +50,6 @@ export function refuseNode(
 interface PinnedBinding {
     name: string;
     initializer: ts.Expression;
-    isConst: boolean;
     statement: ts.VariableStatement;
 }
 
@@ -86,7 +85,6 @@ export function singleBinding(
     return {
         name: declaration.name.text,
         initializer: declaration.initializer,
-        isConst: (statement.declarationList.flags & ts.NodeFlags.Const) !== 0,
         statement,
     };
 }

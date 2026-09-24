@@ -4,6 +4,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { pinnedOptionNumber } from "./pinned-option-defaults.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const STANDARD_RENDERABLE = "src/material/standard/standard-renderable.ts";
@@ -57,7 +58,9 @@ function lowerCondition(
  * `alpha_mode` is the authored mode -- blend where the scene, the glTF
  * BLEND arm or the shadow-only extension asked for it, mask where the glTF
  * MASK arm set `_alphaCutOff` -- so the absent cutoff takes the `??`'s own
- * right side, read from the pin.
+ * right side, read from the pin. The binding names the member read, whose
+ * arm already carries that absent cutoff: a lowered `??` over a bound read
+ * is the binding.
  */
 function pbrAlphaBlendFeatures(context: LoweringContext): string {
     const { file, declaration } = context.functionDeclaration(
@@ -84,28 +87,12 @@ function pbrAlphaBlendFeatures(context: LoweringContext): string {
             "Expected the PBR_HAS_ALPHA_BLEND term in _computePbrMaterialFeatures.",
         );
     }
-    let cutoff: ts.BinaryExpression | undefined;
-    const findCutoff = (node: ts.Node): void => {
-        if (
-            cutoff === undefined &&
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
-            context.unwrapExpression(node.left).getText(file) ===
-                "mat._alphaCutOff"
-        ) {
-            cutoff = node;
-            return;
-        }
-        ts.forEachChild(node, findCutoff);
-    };
-    findCutoff(term.condition);
-    if (!cutoff) {
-        context.contractError(
-            term,
-            "Expected the PBR blend term to read `mat._alphaCutOff ?? <default>`.",
-        );
-    }
-    const absentCutoff = context.numericValue(cutoff.right, file);
+    const absentCutoff = pinnedOptionNumber(
+        context,
+        term.condition,
+        { member: "_alphaCutOff" },
+        file,
+    );
     return lowerCondition(file, term, [
         [
             "mat.alphaBlend === true",
@@ -115,7 +102,7 @@ function pbrAlphaBlendFeatures(context: LoweringContext): string {
             },
         ],
         [
-            cutoff.getText(file),
+            "mat._alphaCutOff",
             {
                 cpp:
                     "(material.alpha_mode == MaterialAlphaMode::mask ? " +

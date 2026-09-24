@@ -11,6 +11,9 @@
  * Three placements reach this, and each caller names the one its factory
  * uses (`PinnedOptionSite`). The value readers then take the right operand
  * as the pin wrote it: a number, a three-component colour or a flag.
+ * `pinnedDefaultValue` is the decoder every reader of a pinned
+ * `?? <default>` that may state any of the three shares (the flag reader
+ * here, the material, UBO-writer and post-process defaults).
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
@@ -31,6 +34,52 @@ export type PinnedOptionSite =
     | { readonly wrapped: string }
     /** `<record>.<member> ?? <default>`: the first such read in the scope. */
     | { readonly member: string };
+
+/** A default as the pin states it: a number, a flag, or a list of numbers. */
+export type PinnedDefaultValue = number | boolean | readonly number[];
+
+/**
+ * The constant a pinned `?? <default>` right side states: `true`/`false` as
+ * the flag, an array literal lane by lane, anything else folded to a number.
+ * A right side that is itself a `??` chain folds to its all-absent ground
+ * state, the constant the chain ends in. Undefined where the right side
+ * reads another value instead of stating one -- the reflectance chain's
+ * `_metallicF0Factor`, or a local -- which each caller answers in its own
+ * terms.
+ */
+export function pinnedDefaultValue(
+    context: LoweringContext,
+    expression: ts.Expression,
+    file: ts.SourceFile,
+): PinnedDefaultValue | undefined {
+    const node = context.unwrapExpression(expression);
+    const chained = context.nullishDefault(node);
+    if (chained) return pinnedDefaultValue(context, chained.right, file);
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (ts.isArrayLiteralExpression(node)) {
+        return node.elements.map((element) =>
+            context.numericValue(element, file),
+        );
+    }
+    // A read of the global `Math` (`Math.PI`) is a constant like any literal;
+    // any other member read, or a name no pinned `const` declares, is a value.
+    const readsValue = ts.isPropertyAccessExpression(node)
+        ? context.propertyPath(node)?.[0] !== "Math"
+        : ts.isIdentifier(node) && !context.pinnedConstant(file, node.text);
+    return readsValue ? undefined : context.numericValue(node, file);
+}
+
+/** Whether two pinned defaults are the same value, lane by lane for a list. */
+export function samePinnedDefault(
+    left: PinnedDefaultValue,
+    right: PinnedDefaultValue,
+): boolean {
+    return Array.isArray(left) && Array.isArray(right)
+        ? left.length === right.length &&
+              left.every((lane, index) => lane === right[index])
+        : left === right;
+}
 
 /** The right operand of an initializer that is itself one `??`. */
 export function nullishFallback(
@@ -134,8 +183,12 @@ export function pinnedOptionFlag(
     site: PinnedOptionSite,
 ): boolean {
     const fallback = pinnedOptionFallback(context, scope, site);
-    if (fallback.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (fallback.kind === ts.SyntaxKind.FalseKeyword) return false;
+    const value = pinnedDefaultValue(
+        context,
+        fallback,
+        fallback.getSourceFile(),
+    );
+    if (typeof value === "boolean") return value;
     return context.contractError(
         fallback,
         "Expected a pinned option to default to a boolean literal.",
