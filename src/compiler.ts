@@ -7549,7 +7549,14 @@ class Compiler implements LoweringServices {
         );
         value.audioMainBusCpp = shared ? `(*${name})` : name;
         value.audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(name, false, !shared);
+        const binding = this.registerNativeBinding(
+            name,
+            false,
+            !shared,
+            shared
+                ? "std::shared_ptr<bbl::pal::AudioNodeHandle>"
+                : "bbl::pal::AudioNodeHandle",
+        );
         if (borrows) this.nativeConstBindings.add(binding);
         value.nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,

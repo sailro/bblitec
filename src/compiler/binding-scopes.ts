@@ -959,6 +959,21 @@ export class BindingScopes {
                 attributes: "[[maybe_unused]] ",
             });
         }
+        // A handle keeps its native type, so closures that capture it
+        // have a concrete environment.
+        if (
+            isHandleKind(value.kind) &&
+            (sharedStorage || nativeType === "auto")
+        ) {
+            const handleType = this.context.dataTypes.cppType({
+                kind: "handle",
+                handle: value.kind,
+            });
+            this.context.registerNativeBindingType(
+                cppName,
+                sharedStorage ? `std::shared_ptr<${handleType}>` : handleType,
+            );
+        }
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
         const constantParameter =
             readOnlyParameter &&

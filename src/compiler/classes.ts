@@ -216,6 +216,7 @@ interface ClassLoweringContext extends Pick<
     | "canShareFunctionBody"
     | "compileSharedMethod"
     | "registerNativeBinding"
+    | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
     | "lookupIdentifierValue"
@@ -612,6 +613,7 @@ export class ClassLowerer {
                 `${cppType} ${cpp} = ` +
                     `bbl::js::make_ref<bblscene::${structName}Data>();`,
             );
+            this.context.registerNativeBindingType(cpp, cppType);
             instance.cpp = cpp;
             instance.dataType = structType;
             for (const field of layout) {
@@ -984,6 +986,10 @@ export class ClassLowerer {
             this.context.emit(
                 `${this.context.dataTypes.cppType(value.dataType)} ` +
                     `${bound} = ${source};`,
+            );
+            this.context.registerNativeBindingType(
+                bound,
+                this.context.dataTypes.cppType(value.dataType),
             );
             instanceCpp = bound;
         }
