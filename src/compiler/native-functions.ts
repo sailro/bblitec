@@ -15,7 +15,7 @@ import {
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal, resolvedSymbol } from "./symbols.js";
 import {
     dataTypesEqual,
     isTypedArrayType,
@@ -936,8 +936,11 @@ export class NativeFunctionLowerer {
         active: Set<SupportedFunction>,
     ): boolean {
         if (allowPureMath) {
-            const math = mathMemberCall(call, (identifier) =>
-                isDefaultLibraryIdentifier(this.context.checker, identifier),
+            const math = mathMemberCall(
+                call,
+                (identifier) =>
+                    libraryGlobal(this.context.checker, identifier) !==
+                    undefined,
             );
             const member =
                 math === undefined ? undefined : MATH_MEMBERS.get(math.name);
@@ -1590,11 +1593,7 @@ export class NativeFunctionLowerer {
         const localClassConstruction = (node: ts.NewExpression): boolean => {
             const callee = this.context.unwrap(node.expression);
             if (!ts.isIdentifier(callee)) return true;
-            const symbol = this.context.checker.getSymbolAtLocation(callee);
-            const target =
-                symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                    ? this.context.checker.getAliasedSymbol(symbol)
-                    : symbol;
+            const target = resolvedSymbol(this.context.checker, callee);
             return (target?.declarations ?? []).some(
                 (candidate) =>
                     ts.isClassDeclaration(candidate) &&
@@ -1804,12 +1803,8 @@ export class NativeFunctionLowerer {
             (node) => {
                 if (ts.isCallExpression(node)) {
                     if (
-                        ts.isIdentifier(node.expression) &&
-                        node.expression.text === "fetch" &&
-                        isDefaultLibraryIdentifier(
-                            this.context.checker,
-                            node.expression,
-                        )
+                        libraryGlobal(this.context.checker, node.expression) ===
+                        "fetch"
                     ) {
                         return true;
                     }
@@ -2109,13 +2104,10 @@ export class NativeFunctionLowerer {
                 declaration.body,
                 (node) => {
                     if (ts.isIdentifier(node)) {
-                        const symbol =
-                            this.context.checker.getSymbolAtLocation(node);
-                        const target =
-                            symbol &&
-                            (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                                ? this.context.checker.getAliasedSymbol(symbol)
-                                : symbol;
+                        const target = resolvedSymbol(
+                            this.context.checker,
+                            node,
+                        );
                         const bindingDeclaration =
                             target?.valueDeclaration ??
                             target?.declarations?.[0];

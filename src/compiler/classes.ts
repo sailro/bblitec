@@ -1,10 +1,15 @@
-import { valueForKind, withNativeMetadata } from "./types.js";
+import {
+    optionalPresentCpp,
+    valueForKind,
+    withNativeMetadata,
+} from "./types.js";
 import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type { DataStructField, DataType } from "./data-types.js";
@@ -308,11 +313,7 @@ export class ClassLowerer {
         if (!ts.isIdentifier(callee)) {
             return undefined;
         }
-        const symbol = this.context.checker.getSymbolAtLocation(callee);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.context.checker.getAliasedSymbol(symbol)
-                : symbol;
+        const target = resolvedSymbol(this.context.checker, callee);
         const declaration = (target?.declarations ?? []).find(
             ts.isClassDeclaration,
         );
@@ -512,7 +513,9 @@ export class ClassLowerer {
                             resourceValue
                                 ? {
                                       ...value,
-                                      truthinessCpp: `${target.optionalStorageCpp}.has_value()`,
+                                      truthinessCpp: optionalPresentCpp(
+                                          target.optionalStorageCpp!,
+                                      ),
                                   }
                                 : value,
                         );

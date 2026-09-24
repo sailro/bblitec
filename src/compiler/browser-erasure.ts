@@ -34,29 +34,21 @@ import { stringLiteral } from "../cpp-literals.js";
  */
 export function isParseFloatCallee(
     callee: ts.Expression,
-    context: {
-        isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    },
+    context: Pick<LoweringServices, "libraryGlobal">,
 ): boolean {
     return isNumberParserCallee(callee, context, "parseFloat");
 }
 
 export function isNumberParserCallee(
     callee: ts.Expression,
-    context: { isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean },
+    context: Pick<LoweringServices, "libraryGlobal">,
     method: "parseFloat" | "parseInt",
 ): boolean {
-    if (ts.isIdentifier(callee)) {
-        return (
-            callee.text === method && context.isDefaultLibraryIdentifier(callee)
-        );
-    }
     return (
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === method &&
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Number" &&
-        context.isDefaultLibraryIdentifier(callee.expression)
+        context.libraryGlobal(callee) === method ||
+        (ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === method &&
+            context.libraryGlobal(callee.expression) === "Number")
     );
 }
 
@@ -112,7 +104,7 @@ export interface BrowserErasureContext extends Pick<
     | "isCanvasElement"
     | "lookupOptional"
     | "resolveThisField"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isBrowserDomValue"
     | "isBrowserOnlyLocalCall"
     | "isNativeUiHelperCall"
@@ -147,11 +139,7 @@ const primaryCanvasIdsByEntry = new WeakMap<
 
 type PrimaryCanvasContext = Pick<
     LoweringServices,
-    | "sourceFile"
-    | "sourceFiles"
-    | "symbols"
-    | "unwrap"
-    | "isDefaultLibraryIdentifier"
+    "sourceFile" | "sourceFiles" | "symbols" | "unwrap" | "libraryGlobal"
 >;
 
 /**
@@ -240,9 +228,7 @@ function elementIdLookup(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "getElementById" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "document" ||
-        !context.isDefaultLibraryIdentifier(callee.expression)
+        context.libraryGlobal(callee.expression) !== "document"
     )
         return undefined;
     const argument = context.unwrap(argumentAt(expression, 0));
@@ -286,36 +272,8 @@ type HelperOutcome =
 
 type BrowserGlobalContext = Pick<
     BrowserErasureContext,
-    "unwrap" | "lookupOptional" | "isDefaultLibraryIdentifier"
+    "unwrap" | "libraryGlobal"
 >;
-
-function isDefaultBrowserGlobal(
-    context: BrowserGlobalContext,
-    identifier: ts.Identifier,
-): boolean {
-    return identifier.text === "globalThis"
-        ? context.lookupOptional(identifier) === undefined
-        : context.isDefaultLibraryIdentifier(identifier);
-}
-
-export function browserGlobalNamed(
-    context: BrowserGlobalContext,
-    expression: ts.Expression,
-): ts.MemberName | undefined {
-    const unwrapped = context.unwrap(expression);
-    if (ts.isIdentifier(unwrapped)) {
-        return isDefaultBrowserGlobal(context, unwrapped)
-            ? unwrapped
-            : undefined;
-    }
-    return ts.isPropertyAccessExpression(unwrapped) &&
-        ts.isIdentifier(unwrapped.expression) &&
-        (unwrapped.expression.text === "window" ||
-            unwrapped.expression.text === "globalThis") &&
-        isDefaultBrowserGlobal(context, unwrapped.expression)
-        ? unwrapped.name
-        : undefined;
-}
 
 export function browserEnvironmentPropertyValue(
     context: BrowserGlobalContext & Pick<LoweringServices, "options">,
@@ -370,7 +328,7 @@ export function browserEnvironmentValue(
     context: BrowserGlobalContext & Pick<LoweringServices, "options">,
     expression: ts.Expression,
 ): Value | undefined {
-    const global = browserGlobalNamed(context, expression)?.text;
+    const global = context.libraryGlobal(expression);
     if (global === "performance")
         return {
             kind: "record",
@@ -407,8 +365,7 @@ export function browserDeploymentValue(
     const unwrapped = context.unwrap(expression);
     if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
     if (
-        browserGlobalNamed(context, unwrapped.expression)?.text ===
-            "location" &&
+        context.libraryGlobal(unwrapped.expression) === "location" &&
         [
             "origin",
             "href",
@@ -495,40 +452,12 @@ export class BrowserErasure {
         Value["browserValue"] | undefined
     >();
 
-    private isDefaultBrowserGlobal(identifier: ts.Identifier): boolean {
-        return isDefaultBrowserGlobal(this.context, identifier);
-    }
-
-    /**
-     * TypeScript models `globalThis` as an intrinsic symbol with no source
-     * declaration, so `Program.isSourceFileDefaultLibrary` cannot identify it
-     * the way it identifies `window` or `document`. An existing compiler
-     * binding still wins, preserving ordinary lexical shadowing.
-     */
-    /**
-     * The browser global this expression names, written any of the ways that
-     * reach the same object: bare (`setTimeout`, `location`), or as a member
-     * of `window` or `globalThis`. A scene that picks one spelling must fold
-     * the same as one that picks another -- an unrecognized `location.search`
-     * would read as an empty query and silently take the scene's
-     * unparameterised branch.
-     *
-     * Returns the identifier naming the global, so a caller compares its
-     * text. `isDefaultBrowserGlobal` is what keeps a lexical shadow from
-     * being mistaken for the global, and `globalThis` an accepted host.
-     */
-    private browserGlobalNamed(
-        expression: ts.Expression,
-    ): ts.MemberName | undefined {
-        return browserGlobalNamed(this.context, expression);
-    }
-
     /** A real DOM RAF call, preserving ordinary lexical shadowing. */
     public isDefaultRequestAnimationFrameCall(
         call: ts.CallExpression,
     ): boolean {
         return (
-            this.browserGlobalNamed(call.expression)?.text ===
+            this.context.libraryGlobal(call.expression) ===
             "requestAnimationFrame"
         );
     }
@@ -540,7 +469,7 @@ export class BrowserErasure {
      */
     private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
-        if (this.browserGlobalNamed(unwrapped)?.text === "localStorage") {
+        if (this.context.libraryGlobal(unwrapped) === "localStorage") {
             return true;
         }
         if (
@@ -574,7 +503,7 @@ export class BrowserErasure {
      * be a different scene.
      */
     public isDeferredCallbackCall(call: ts.CallExpression): boolean {
-        return this.browserGlobalNamed(call.expression)?.text === "setTimeout";
+        return this.context.libraryGlobal(call.expression) === "setTimeout";
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
@@ -642,9 +571,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "hidden" &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(unwrapped.expression) &&
+            this.context.libraryGlobal(unwrapped.expression) === "document" &&
             this.context.platformDocumentHidden() !== undefined
         ) {
             return false;
@@ -677,9 +604,7 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) &&
             (unwrapped.name.text === "innerWidth" ||
                 unwrapped.name.text === "innerHeight") &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "window" &&
-            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+            this.context.libraryGlobal(unwrapped.expression) === "window"
         ) {
             return false;
         }
@@ -716,8 +641,7 @@ export class BrowserErasure {
                     "globalThis",
                     "performance",
                     "window",
-                ].includes(unwrapped.text) &&
-                this.isDefaultBrowserGlobal(unwrapped)
+                ].includes(this.context.libraryGlobal(unwrapped) ?? "")
             ) {
                 return true;
             }
@@ -745,9 +669,8 @@ export class BrowserErasure {
         }
         if (
             ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams" &&
-            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+            this.context.libraryGlobal(unwrapped.expression) ===
+                "URLSearchParams"
         ) {
             return this.evaluateBrowserValue(unwrapped) !== undefined;
         }
@@ -763,8 +686,8 @@ export class BrowserErasure {
                 (operand) =>
                     !(
                         ts.isIdentifier(operand) &&
-                        operand.text === "devicePixelRatio" &&
-                        this.isDefaultBrowserGlobal(operand)
+                        this.context.libraryGlobal(operand) ===
+                            "devicePixelRatio"
                     ),
             );
             // An assignment to browser state stays browser state whatever
@@ -800,11 +723,9 @@ export class BrowserErasure {
             // reads the step its capture is pinned at
             // (`Number(params.get("captureFrame"))`).
             if (
-                (ts.isIdentifier(unwrapped.expression) &&
-                    ["isNaN", "Number"].includes(unwrapped.expression.text) &&
-                    this.context.isDefaultLibraryIdentifier(
-                        unwrapped.expression,
-                    )) ||
+                ["isNaN", "Number"].includes(
+                    this.context.libraryGlobal(unwrapped.expression) ?? "",
+                ) ||
                 // `Number.parseFloat` is the same function object as the
                 // bare global, so which spelling a scene wrote cannot
                 // decide whether the query value it reads stays browser
@@ -815,12 +736,9 @@ export class BrowserErasure {
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
-                ts.isIdentifier(unwrapped.expression.expression) &&
-                unwrapped.expression.expression.text === "Number" &&
-                unwrapped.expression.name.text === "isFinite" &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression.expression,
-                )
+                this.context.libraryGlobal(unwrapped.expression.expression) ===
+                    "Number" &&
+                unwrapped.expression.name.text === "isFinite"
             ) {
                 return browserArgument;
             }
@@ -836,11 +754,8 @@ export class BrowserErasure {
             // reaches a consumer as a browser value in the first place.
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
-                ts.isIdentifier(unwrapped.expression.expression) &&
-                unwrapped.expression.expression.text === "Math" &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression.expression,
-                )
+                this.context.libraryGlobal(unwrapped.expression.expression) ===
+                    "Math"
             ) {
                 return (
                     browserArgument &&
@@ -892,9 +807,7 @@ export class BrowserErasure {
 
         if (
             callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression)
+            this.context.libraryGlobal(callee.expression) === "document"
         ) {
             return true;
         }
@@ -909,11 +822,8 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(callee.expression) &&
             (callee.expression.name.text === "body" ||
                 callee.expression.name.text === "head") &&
-            ts.isIdentifier(callee.expression.expression) &&
-            callee.expression.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(
-                callee.expression.expression,
-            )
+            this.context.libraryGlobal(callee.expression.expression) ===
+                "document"
         );
     }
 
@@ -968,11 +878,8 @@ export class BrowserErasure {
             expression.arguments.length === 0 &&
             ts.isPropertyAccessExpression(expression.expression) &&
             expression.expression.name.text === "now" &&
-            ts.isIdentifier(expression.expression.expression) &&
-            expression.expression.expression.text === "performance" &&
-            this.context.isDefaultLibraryIdentifier(
-                expression.expression.expression,
-            )
+            this.context.libraryGlobal(expression.expression.expression) ===
+                "performance"
         );
     }
 
@@ -993,9 +900,7 @@ export class BrowserErasure {
             (method === "requestPointerLock" &&
                 this.context.isBrowserDomValue(receiver)) ||
             (method === "exitPointerLock" &&
-                ts.isIdentifier(receiver) &&
-                receiver.text === "document" &&
-                this.context.isDefaultLibraryIdentifier(receiver))
+                this.context.libraryGlobal(receiver) === "document")
         );
     }
 
@@ -1069,12 +974,10 @@ export class BrowserErasure {
             return { kind: "boolean", value: deployed };
         if (deployed !== undefined) return { kind: "string", value: deployed };
         if (ts.isTypeOfExpression(unwrapped)) {
-            const global = this.browserGlobalNamed(
-                this.context.unwrap(unwrapped.expression),
-            );
+            const global = this.context.libraryGlobal(unwrapped.expression);
             // Native has no browser recording pipeline; authored capability
             // guards can select their own unavailable-recording path.
-            if (global?.text === "MediaRecorder")
+            if (global === "MediaRecorder")
                 return { kind: "string", value: "undefined" };
             if (
                 global &&
@@ -1085,7 +988,7 @@ export class BrowserErasure {
                     "document",
                     "localStorage",
                     "navigator",
-                ].includes(global.text)
+                ].includes(global)
             ) {
                 return { kind: "string", value: "object" };
             }
@@ -1116,10 +1019,7 @@ export class BrowserErasure {
             // scope, and nothing below can see it.
             const local = this.helperBinding(unwrapped);
             if (local !== undefined) return local;
-            if (
-                unwrapped.text === "devicePixelRatio" &&
-                this.isDefaultBrowserGlobal(unwrapped)
-            ) {
+            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
                 // Native has no CSS/backing-store split. Its single surface
                 // corresponds to the browser reference at DPR 1.
                 return { kind: "number", value: 1 };
@@ -1172,9 +1072,8 @@ export class BrowserErasure {
         }
         if (
             ts.isNewExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams" &&
-            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+            this.context.libraryGlobal(unwrapped.expression) ===
+                "URLSearchParams"
         ) {
             if (this.context.options.runtimeSearchParams) return undefined;
             const argument = unwrapped.arguments?.[0];
@@ -1190,7 +1089,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "search" &&
-            this.browserGlobalNamed(unwrapped.expression)?.text === "location"
+            this.context.libraryGlobal(unwrapped.expression) === "location"
         ) {
             if (this.context.options.runtimeLocationSearch) return undefined;
             return {
@@ -1225,8 +1124,9 @@ export class BrowserErasure {
             ts.isCallExpression(unwrapped.expression) &&
             ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
             unwrapped.expression.expression.name.text === "matchMedia" &&
-            this.browserGlobalNamed(unwrapped.expression.expression.expression)
-                ?.text === "window" &&
+            this.context.libraryGlobal(
+                unwrapped.expression.expression.expression,
+            ) === "window" &&
             unwrapped.expression.arguments.length === 1 &&
             this.evaluateBrowserValue(argumentAt(unwrapped.expression, 0))
                 ?.kind === "string"
@@ -1393,12 +1293,10 @@ export class BrowserErasure {
             }
             if (ts.isPropertyAccessExpression(unwrapped.expression)) {
                 if (
-                    ts.isIdentifier(unwrapped.expression.expression) &&
-                    unwrapped.expression.expression.text === "document" &&
-                    unwrapped.expression.name.text === "getElementById" &&
-                    this.context.isDefaultLibraryIdentifier(
+                    this.context.libraryGlobal(
                         unwrapped.expression.expression,
-                    ) &&
+                    ) === "document" &&
+                    unwrapped.expression.name.text === "getElementById" &&
                     unwrapped.arguments.length === 1
                 ) {
                     const elementId = this.evaluateBrowserValue(
@@ -1484,10 +1382,8 @@ export class BrowserErasure {
                 };
             }
             if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "Number" &&
-                unwrapped.arguments.length === 1 &&
-                this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+                this.context.libraryGlobal(unwrapped.expression) === "Number" &&
+                unwrapped.arguments.length === 1
             ) {
                 const argument = this.evaluateBrowserValue(
                     argumentAt(unwrapped, 0),
@@ -1517,11 +1413,7 @@ export class BrowserErasure {
                     ),
                 };
             }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "isNaN" &&
-                this.context.isDefaultLibraryIdentifier(unwrapped.expression)
-            ) {
+            if (this.context.libraryGlobal(unwrapped.expression) === "isNaN") {
                 const argument = this.evaluateBrowserValue(
                     argumentAt(unwrapped, 0),
                 );
@@ -1534,12 +1426,9 @@ export class BrowserErasure {
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
-                ts.isIdentifier(unwrapped.expression.expression) &&
-                unwrapped.expression.expression.text === "Number" &&
-                unwrapped.expression.name.text === "isFinite" &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression.expression,
-                )
+                this.context.libraryGlobal(unwrapped.expression.expression) ===
+                    "Number" &&
+                unwrapped.expression.name.text === "isFinite"
             ) {
                 const argument = this.evaluateBrowserValue(
                     argumentAt(unwrapped, 0),
@@ -1558,12 +1447,9 @@ export class BrowserErasure {
             // it here is what lets the helper around it answer too.
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
-                ts.isIdentifier(unwrapped.expression.expression) &&
-                unwrapped.expression.expression.text === "Math" &&
-                unwrapped.arguments.length === 1 &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression.expression,
-                )
+                this.context.libraryGlobal(unwrapped.expression.expression) ===
+                    "Math" &&
+                unwrapped.arguments.length === 1
             ) {
                 // The names read off the table `staticNumberValue` folds
                 // through rather than one spelled here, so this rule and
@@ -1870,7 +1756,7 @@ export class BrowserErasure {
     ): { resolveName: string; body: ts.ConciseBody } | undefined {
         const head = promiseExecutor(
             this.context.unwrap(expression),
-            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+            (callee) => this.context.libraryGlobal(callee),
         );
         if (!head) return undefined;
         return {
@@ -2103,11 +1989,8 @@ export class BrowserErasure {
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
         const objectInstrumentation =
             ts.isPropertyAccessExpression(call.expression) &&
-            ts.isIdentifier(call.expression.expression) &&
-            call.expression.expression.text === "Object" &&
-            this.context.isDefaultLibraryIdentifier(
-                call.expression.expression,
-            ) &&
+            this.context.libraryGlobal(call.expression.expression) ===
+                "Object" &&
             // Writing into a browser object instruments the page; writing
             // into the scene's own data is an ordinary store.
             (call.expression.name.text === "assign" ||

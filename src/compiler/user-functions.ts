@@ -1,5 +1,6 @@
 import {
     commonResourceValue,
+    optionalPresentCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -47,7 +48,8 @@ import {
 import {
     CompilerSymbols,
     declarationInDefaultLibrary,
-    isDefaultLibraryIdentifier,
+    libraryGlobal,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     assignmentTargets,
@@ -181,12 +183,10 @@ export function requiresDefaultParameterBinding(
         const argument = call.arguments[index];
         const initializer = unwrapExpression(parameter.initializer);
         if (!argument && ts.isIdentifier(initializer)) {
-            const alias = checker.getSymbolAtLocation(initializer);
-            const symbol =
-                alias && (alias.flags & ts.SymbolFlags.Alias) !== 0
-                    ? checker.getAliasedSymbol(alias)
-                    : alias;
-            const binding = symbol?.valueDeclaration;
+            const binding = resolvedSymbol(
+                checker,
+                initializer,
+            )?.valueDeclaration;
             const type = checker.getTypeAtLocation(initializer);
             if (
                 binding &&
@@ -314,9 +314,7 @@ export function callArgumentIsReadOnly(
         index === 0 &&
         ts.isPropertyAccessExpression(callee) &&
         callee.name.text === "keys" &&
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Object" &&
-        isDefaultLibraryIdentifier(checker, callee.expression)
+        libraryGlobal(checker, callee.expression) === "Object"
     )
         return true;
     const called = checker.getResolvedSignature(call)?.declaration;
@@ -751,18 +749,10 @@ export function resolveFunctionDeclaration(
     // A record property written in shorthand (`{ sync }`) resolves at
     // its own identifier to the literal's property symbol, so the
     // shorthand's value symbol is what names the function it refers to.
-    const symbol =
-        ts.isShorthandPropertyAssignment(identifier.parent) &&
-        identifier.parent.name === identifier
-            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
-            : checker.getSymbolAtLocation(identifier);
-    if (!symbol) {
+    const target = resolvedSymbol(checker, identifier);
+    if (!target) {
         return undefined;
     }
-    const target =
-        (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
     let declaration: SupportedFunction | undefined;
     for (const candidate of target.declarations ?? []) {
         if (ts.isFunctionDeclaration(candidate) && candidate.body) {
@@ -3722,7 +3712,7 @@ export class UserFunctionLowerer {
                                 type.inner,
                             );
                             value = context.dataValue(
-                                `(${name}.has_value() ? *${name} : ${fallback})`,
+                                `(${optionalPresentCpp(name)} ? *${name} : ${fallback})`,
                                 type.inner,
                             );
                         }
@@ -3855,20 +3845,8 @@ export class UserFunctionLowerer {
                 ts.isIdentifier(declaration.parent.name)
               ? declaration.parent.name
               : undefined;
-        const valueSymbol = (
-            candidate: ts.Identifier,
-        ): ts.Symbol | undefined => {
-            const found =
-                ts.isShorthandPropertyAssignment(candidate.parent) &&
-                candidate.parent.name === candidate
-                    ? this.checker.getShorthandAssignmentValueSymbol(
-                          candidate.parent,
-                      )
-                    : this.checker.getSymbolAtLocation(candidate);
-            return found && (found.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(found)
-                : found;
-        };
+        const valueSymbol = (candidate: ts.Identifier): ts.Symbol | undefined =>
+            resolvedSymbol(this.checker, candidate);
         const symbol = identifier ? valueSymbol(identifier) : undefined;
         if (!symbol || !declaration.body) return false;
 
@@ -4560,8 +4538,7 @@ export class UserFunctionLowerer {
                     const call = unwrapExpression(initializer);
                     if (
                         ts.isCallExpression(call) &&
-                        ts.isIdentifier(call.expression) &&
-                        call.expression.text === "fetch"
+                        libraryGlobal(this.checker, call.expression) === "fetch"
                     ) {
                         const symbol = this.checker.getSymbolAtLocation(
                             declaration.name,
@@ -4634,9 +4611,7 @@ export class UserFunctionLowerer {
             expression = expression.expression;
         const isLibraryCall = (node: ts.Node, name: string): boolean =>
             ts.isCallExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            node.expression.text === name &&
-            isDefaultLibraryIdentifier(this.checker, node.expression);
+            libraryGlobal(this.checker, node.expression) === name;
         if (!isLibraryCall(expression, "createImageBitmap")) {
             return undefined;
         }
@@ -5004,7 +4979,7 @@ export class UserFunctionLowerer {
         const cppType = context.dataTypes.cppType(type);
         const present =
             storage.kind === "optional"
-                ? `${input}.has_value()`
+                ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`;
         const selected = storage.kind === "optional" ? `*${input}` : input;
         context.emit(

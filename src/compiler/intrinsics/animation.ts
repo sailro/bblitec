@@ -14,7 +14,7 @@ export interface AnimationIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "compilePropertyAnimationClip"
             | "compilePropertyAnimationGroupOptions"
             | "compilePropertyAnimationTargets"

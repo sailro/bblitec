@@ -21,6 +21,7 @@ export function regularExpressionParts(
     };
 }
 import { someAnalysisNode } from "./analysis-walk.js";
+import type { LibraryGlobal } from "./symbols.js";
 
 /** Calls, accessors and writes can change an earlier selected receiver/value. */
 export function expressionMayRunCode(expression: ts.Expression): boolean {
@@ -231,7 +232,7 @@ export function mutatingCallTarget(
  */
 export function iteratorMethodCall(
     expression: ts.Expression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
 ):
     | {
@@ -254,7 +255,7 @@ export function iteratorMethodCall(
     }
     const receiver = call.expression.expression;
     if (
-        (ts.isIdentifier(receiver) && isLibrary(receiver)) ||
+        (ts.isIdentifier(receiver) && libraryGlobal(receiver) !== undefined) ||
         someAnalysisNode(
             receiver,
             (node) => ts.isCallExpression(node) || ts.isNewExpression(node),

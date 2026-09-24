@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
+import { optionalPresentCpp } from "./types.js";
 
 interface Operand {
     cpp: string;
@@ -102,12 +103,12 @@ export function dataUnionEquality(
                 { cpp: `(*${a.cpp})`, type: a.type.inner },
                 { cpp: `(*${b.cpp})`, type: b.type.inner },
             );
-            return `(${a.cpp}.has_value() == ${b.cpp}.has_value() && (!${a.cpp}.has_value() || ${present}))`;
+            return `(${optionalPresentCpp(a.cpp)} == ${optionalPresentCpp(b.cpp)} && (!${optionalPresentCpp(a.cpp)} || ${present}))`;
         }
         if (a.type.kind === "optional")
-            return `(${a.cpp}.has_value() && ${compare({ cpp: `(*${a.cpp})`, type: a.type.inner }, b)})`;
+            return `(${optionalPresentCpp(a.cpp)} && ${compare({ cpp: `(*${a.cpp})`, type: a.type.inner }, b)})`;
         if (b.type.kind === "optional")
-            return `(${b.cpp}.has_value() && ${compare(a, { cpp: `(*${b.cpp})`, type: b.type.inner })})`;
+            return `(${optionalPresentCpp(b.cpp)} && ${compare(a, { cpp: `(*${b.cpp})`, type: b.type.inner })})`;
         if (a.type.kind === "union") {
             const clauses = a.type.members.map(
                 (type, index) =>

@@ -4,7 +4,6 @@ import type {
 } from "./lowering-services.js";
 import ts from "typescript";
 import { renderClosure, type CapturedClosure } from "./closure-captures.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
@@ -39,7 +38,7 @@ interface AsyncContext extends Pick<
     | "emitDiscardedValue"
     | "unwrap"
     | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isBrowserOnlyLocalCall"
     | "isBrowserOnlyExpression"
     | "fail"
@@ -174,15 +173,14 @@ export class AsyncLowerer {
         }
         if (
             ts.isNewExpression(node) &&
-            browserGlobalNamed(context, node.expression)?.text === "Promise"
+            context.libraryGlobal(node.expression) === "Promise"
         )
             return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
         if (
             ts.isPropertyAccessExpression(callee) &&
-            browserGlobalNamed(context, callee.expression)?.text ===
-                "Promise" &&
+            context.libraryGlobal(callee.expression) === "Promise" &&
             callee.name.text === "resolve"
         ) {
             if (node.arguments.length > 1)
@@ -199,8 +197,7 @@ export class AsyncLowerer {
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
-            browserGlobalNamed(context, callee.expression)?.text ===
-                "Promise" &&
+            context.libraryGlobal(callee.expression) === "Promise" &&
             callee.name.text === "reject"
         ) {
             if (node.arguments.length !== 1)
@@ -232,16 +229,14 @@ export class AsyncLowerer {
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
-            browserGlobalNamed(context, callee.expression)?.text ===
-                "Promise" &&
+            context.libraryGlobal(callee.expression) === "Promise" &&
             ["all", "allSettled"].includes(callee.name.text)
         ) {
             return this.compileAll(node, callee.name.text === "allSettled");
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
-            browserGlobalNamed(context, callee.expression)?.text ===
-                "Promise" &&
+            context.libraryGlobal(callee.expression) === "Promise" &&
             callee.name.text === "race"
         )
             return this.compileRace(node);

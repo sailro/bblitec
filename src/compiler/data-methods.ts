@@ -1,4 +1,9 @@
-import { nativeDataMetadata, withNativeMetadata } from "./types.js";
+import {
+    isStringValue,
+    nativeDataMetadata,
+    optionalPresentCpp,
+    withNativeMetadata,
+} from "./types.js";
 // The data-container method knowledge: the method-name sets every
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
@@ -34,7 +39,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { declarationInDefaultLibrary } from "./symbols.js";
+import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -51,11 +56,7 @@ export function compileIsArrayOverData(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "isArray" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Array" ||
-        !lowerer.context.isDefaultLibraryIdentifier(callee.expression) ||
-        lowerer.context.lookupIdentifierValue(callee.expression) !==
-            undefined ||
+        lowerer.context.libraryGlobal(callee.expression) !== "Array" ||
         call.arguments.length !== 1
     ) {
         return undefined;
@@ -262,8 +263,9 @@ export function isStoringDataCall(
             ts.isPropertyAccessExpression(node.expression) &&
             storingDataMethods.has(node.expression.name.text)) ||
         (ts.isNewExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            (node.expression.text === "Map" || node.expression.text === "Set"))
+            ["Map", "Set"].includes(
+                libraryGlobal(checker, node.expression) ?? "",
+            ))
     );
 }
 
@@ -853,7 +855,7 @@ function compileKnownDataMethod(
             });
             const record = optional ? `(*${receiver})` : receiver;
             const present = optional
-                ? `${receiver}.has_value()`
+                ? optionalPresentCpp(receiver)
                 : referenceReceiver
                   ? receiver
                   : undefined;
@@ -1236,11 +1238,7 @@ function compileArrayJoin(state: ArrayMethodState): Value {
     const separator = call.arguments[0]
         ? lowerer.context.compileValue(argumentAt(call, 0))
         : undefined;
-    if (
-        separator &&
-        separator.kind !== "string" &&
-        !(separator.kind === "data" && separator.dataType?.kind === "string")
-    ) {
+    if (separator && !isStringValue(separator)) {
         lowerer.context.fail(
             argumentAt(call, 0),
             "Array.join separator must be a string.",
@@ -1765,9 +1763,7 @@ function compileArrayMap(
         method === "map" &&
         call.arguments.length === 1 &&
         callback &&
-        ts.isIdentifier(callback) &&
-        callback.text === "Number" &&
-        !lowerer.context.lookupIdentifierValue(callback) &&
+        lowerer.context.libraryGlobal(callback) === "Number" &&
         mappedType.element.kind === "number" &&
         (dataType.element.kind === "string" ||
             dataType.element.kind === "number")
@@ -2359,7 +2355,7 @@ function compileMapDataMethod(
                     lowerer.leafValue(`(*${result})`, dataType.value),
                     known,
                 ),
-                optionalFoundCpp: `${result}.has_value()`,
+                optionalFoundCpp: optionalPresentCpp(result),
                 optionalStorageCpp: `${result}.to_optional()`,
             };
         }
@@ -2912,13 +2908,7 @@ function compileStringDataMethod(
                 dataType: { kind: "string" },
             };
         }
-        if (
-            replacementValue.kind !== "string" &&
-            !(
-                replacementValue.kind === "data" &&
-                replacementValue.dataType?.kind === "string"
-            )
-        ) {
+        if (!isStringValue(replacementValue)) {
             lowerer.context.fail(
                 argumentAt(call, 1),
                 "String.replace expects a string replacement.",
@@ -2953,13 +2943,7 @@ function compileStringDataMethod(
                 dataType: { kind: "boolean" },
             };
         }
-        if (
-            prefixValue.kind !== "string" &&
-            !(
-                prefixValue.kind === "data" &&
-                prefixValue.dataType?.kind === "string"
-            )
-        ) {
+        if (!isStringValue(prefixValue)) {
             lowerer.context.fail(
                 argumentAt(call, 0),
                 "String.startsWith expects a string argument.",

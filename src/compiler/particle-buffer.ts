@@ -30,7 +30,7 @@ interface ParticleBufferContext
             LoweringServices,
             | "reachedNodeParticles"
             | "unwrap"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isRuntimeResourceConstruction"
         > {}
 
@@ -387,8 +387,6 @@ function guardThrows(
     const thrown = context.unwrap(only.expression);
     return (
         ts.isNewExpression(thrown) &&
-        ts.isIdentifier(thrown.expression) &&
-        thrown.expression.text === "Error" &&
-        context.isDefaultLibraryIdentifier(thrown.expression)
+        context.libraryGlobal(thrown.expression) === "Error"
     );
 }

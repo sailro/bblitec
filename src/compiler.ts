@@ -3,6 +3,8 @@ import {
     assetRootMutationStates,
     isStringValue,
     nativeDataMetadata,
+    optionalPresentCpp,
+    presenceCpp,
     valueForKind,
     withNativeMetadata,
 } from "./compiler/types.js";
@@ -132,7 +134,6 @@ import {
 } from "./compiler/static-fetch.js";
 import {
     BrowserErasure,
-    browserGlobalNamed,
     browserDeploymentValue,
     browserEnvironmentPropertyValue,
     browserEnvironmentValue,
@@ -292,6 +293,7 @@ import {
     CompilerSymbols,
     declaredIn,
     declaredInDomLibrary,
+    resolvedSymbol,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import { isNullable, presentMembers } from "./compiler/type-facts.js";
@@ -1130,7 +1132,6 @@ class Compiler implements LoweringServices {
             (expression) => this.compileCondition(expression),
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
-            (identifier) => this.isDefaultLibraryIdentifier(identifier),
             (value, expression, assertedNonNull, expectedType) =>
                 this.dataLowerer.narrowOptional(
                     value,
@@ -2370,7 +2371,7 @@ class Compiler implements LoweringServices {
         ) {
             return index === 1;
         }
-        const global = browserGlobalNamed(this, call.expression)?.text;
+        const global = this.libraryGlobal(call.expression);
         if (
             ts.isPropertyAccessExpression(callee) &&
             ["then", "catch", "finally"].includes(callee.name.text) &&
@@ -2539,10 +2540,7 @@ class Compiler implements LoweringServices {
             if (
                 (ts.isNewExpression(parent) &&
                     parent.arguments?.includes(node) &&
-                    !(
-                        ts.isIdentifier(parent.expression) &&
-                        this.isDefaultLibraryIdentifier(parent.expression)
-                    )) ||
+                    this.libraryGlobal(parent.expression) === undefined) ||
                 (ts.isPropertyDeclaration(parent) &&
                     parent.initializer === node)
             )
@@ -2573,7 +2571,7 @@ class Compiler implements LoweringServices {
                     (ts.isIdentifier(target) ||
                         ts.isPropertyAccessExpression(target) ||
                         ts.isElementAccessExpression(target)) &&
-                    (!(root && this.isDefaultLibraryIdentifier(root)) ||
+                    (!(root && this.libraryGlobal(root) !== undefined) ||
                         (isDeterministicRandomRead(this, parent.left) &&
                             this.sourceUsesNativeParticleProvider()))
                 );
@@ -2961,7 +2959,7 @@ class Compiler implements LoweringServices {
                             : {}),
                         optionalFoundCpp: sharedClosureStorage
                             ? `${cppName}->has_value()`
-                            : `${cppName}.has_value()`,
+                            : optionalPresentCpp(cppName),
                         ...(sharedClosureStorage
                             ? { sharedStorageCpp: cppName }
                             : {}),
@@ -3154,7 +3152,7 @@ class Compiler implements LoweringServices {
                         : {}),
                     optionalFoundCpp: sharedClosureStorage
                         ? `${cppName}->has_value()`
-                        : `${cppName}.has_value()`,
+                        : optionalPresentCpp(cppName),
                     ...(sharedClosureStorage
                         ? { sharedStorageCpp: cppName }
                         : {}),
@@ -3327,7 +3325,7 @@ class Compiler implements LoweringServices {
                 cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
                 optionalFoundCpp: sharedClosureStorage
                     ? `${cppName}->has_value()`
-                    : `${cppName}.has_value()`,
+                    : optionalPresentCpp(cppName),
                 ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
                 optionalStorageCpp: sharedClosureStorage
                     ? `(*${cppName})`
@@ -3636,8 +3634,8 @@ class Compiler implements LoweringServices {
                     ...(optionalHandle
                         ? {
                               optionalStorageCpp: boundCpp,
-                              optionalFoundCpp: `${boundCpp}.has_value()`,
-                              truthinessCpp: `${boundCpp}.has_value()`,
+                              optionalFoundCpp: optionalPresentCpp(boundCpp),
+                              truthinessCpp: optionalPresentCpp(boundCpp),
                           }
                         : optionalFoundCpp
                           ? { optionalFoundCpp }
@@ -5768,7 +5766,7 @@ class Compiler implements LoweringServices {
                     this.bindCopiedDefault(
                         name,
                         field.type.inner,
-                        `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback}`,
+                        `${optionalPresentCpp(storedFieldCpp)} ? *${storedFieldCpp} : ${fallback}`,
                     );
                     continue;
                 }
@@ -6077,16 +6075,14 @@ class Compiler implements LoweringServices {
             sourceValue?.collectionCardinality ??
             sourceValue?.staticElementsOwner?.collectionCardinality;
         const right = this.unwrap(source);
-        const nativeConstructor =
-            ts.isNewExpression(right) &&
-            ts.isIdentifier(right.expression) &&
-            this.isDefaultLibraryIdentifier(right.expression);
+        const nativeConstructor = ts.isNewExpression(right)
+            ? this.libraryGlobal(right.expression)
+            : undefined;
         const fresh =
             kind === "vector"
                 ? ts.isArrayLiteralExpression(right) ||
-                  (nativeConstructor && right.expression.text === "Array")
-                : nativeConstructor &&
-                  right.expression.text === (kind === "map" ? "Map" : "Set");
+                  nativeConstructor === "Array"
+                : nativeConstructor === (kind === "map" ? "Map" : "Set");
         const literalCount = ts.isArrayLiteralExpression(right)
             ? this.knownCollectionCardinality(right)
             : undefined;
@@ -6820,9 +6816,7 @@ class Compiler implements LoweringServices {
         if (canvas) return canvas;
         if (
             expression.name.text === "activeElement" &&
-            ts.isIdentifier(expression.expression) &&
-            expression.expression.text === "document" &&
-            this.isDefaultLibraryIdentifier(expression.expression)
+            this.libraryGlobal(expression.expression) === "document"
         ) {
             const engine = this.requireDefaultEngine(expression);
             this.reachFeature("ui:rml", expression);
@@ -6895,9 +6889,7 @@ class Compiler implements LoweringServices {
         if (documentRoot) return documentRoot;
         if (
             expression.name.text === "hidden" &&
-            ts.isIdentifier(ownerExpression) &&
-            ownerExpression.text === "document" &&
-            this.isDefaultLibraryIdentifier(ownerExpression) &&
+            this.libraryGlobal(ownerExpression) === "document" &&
             this.platformDocumentHiddenCpp !== undefined
         ) {
             return {
@@ -6906,9 +6898,7 @@ class Compiler implements LoweringServices {
             };
         }
         if (
-            ts.isIdentifier(ownerExpression) &&
-            ownerExpression.text === "window" &&
-            this.isDefaultLibraryIdentifier(ownerExpression) &&
+            this.libraryGlobal(ownerExpression) === "window" &&
             (expression.name.text === "innerWidth" ||
                 expression.name.text === "innerHeight")
         ) {
@@ -8282,8 +8272,14 @@ class Compiler implements LoweringServices {
         return this.options.search;
     }
 
+    /** See `libraryGlobal` (symbols.ts). */
+    public libraryGlobal(expression: ts.Expression): string | undefined {
+        return this.symbols.libraryGlobal(expression);
+    }
+
+    /** The identifier form of {@link libraryGlobal}. */
     public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
-        return this.symbols.isDefaultLibraryIdentifier(identifier);
+        return this.libraryGlobal(identifier) !== undefined;
     }
 
     /** The value symbol an expression names once unwrapped, or undefined. */
@@ -8433,7 +8429,7 @@ class Compiler implements LoweringServices {
                             ["document", "window", "globalThis"].includes(
                                 node.text,
                             ) &&
-                            browserGlobalNamed(this, node) !== undefined
+                            this.libraryGlobal(node) !== undefined
                         ) {
                             reachesBrowser = true;
                         }
@@ -8861,9 +8857,7 @@ class Compiler implements LoweringServices {
                 return (
                     ts.isPropertyAccessExpression(value) &&
                     value.name.text === "pointerLockElement" &&
-                    ts.isIdentifier(value.expression) &&
-                    value.expression.text === "document" &&
-                    this.isDefaultLibraryIdentifier(value.expression)
+                    this.libraryGlobal(value.expression) === "document"
                 );
             };
             const isCanvas = (operand: ts.Expression): boolean => {
@@ -8925,13 +8919,14 @@ class Compiler implements LoweringServices {
                 ts.isIdentifier(unwrapped.right) &&
                 !this.lookupOptional(unwrapped.right)
             ) {
-                if (ERROR_CONSTRUCTORS.has(unwrapped.right.text)) {
+                const global = this.libraryGlobal(unwrapped.right) ?? "";
+                if (ERROR_CONSTRUCTORS.has(global)) {
                     const value = this.compileValue(unwrapped.left);
                     if (value.nativeError) {
-                        if (unwrapped.right.text === "Error") return "true";
+                        if (global === "Error") return "true";
                         const name = value.recordProperties?.name;
                         if (name)
-                            return `(${name.cpp} == ${this.cppString(unwrapped.right.text)})`;
+                            return `(${name.cpp} == ${this.cppString(global)})`;
                     }
                 }
                 const classInstance = compileClassInstanceOf(
@@ -8943,8 +8938,8 @@ class Compiler implements LoweringServices {
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 const expected: string | undefined =
-                    BUFFER_VIEW_KINDS.get(unwrapped.right.text) ??
-                    TYPED_ARRAY_KINDS.get(unwrapped.right.text);
+                    BUFFER_VIEW_KINDS.get(global) ??
+                    TYPED_ARRAY_KINDS.get(global);
                 if (expected) {
                     const value = this.compileValue(unwrapped.left);
                     if (value.dataType) {
@@ -9953,10 +9948,7 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const suffix = this.compileValue(path.templateSpans[0]!.expression);
-        if (
-            suffix.kind !== "string" &&
-            !(suffix.kind === "data" && suffix.dataType?.kind === "string")
-        ) {
+        if (!isStringValue(suffix)) {
             return undefined;
         }
         const url = new URL(path.head.text, "https://bblite.invalid/");
@@ -10020,11 +10012,7 @@ class Compiler implements LoweringServices {
             !ts.isIdentifier(declaration.name) ||
             !declaration.initializer ||
             !ts.isNewExpression(declaration.initializer) ||
-            !ts.isIdentifier(declaration.initializer.expression) ||
-            declaration.initializer.expression.text !== "URL" ||
-            !this.isDefaultLibraryIdentifier(
-                declaration.initializer.expression,
-            ) ||
+            this.libraryGlobal(declaration.initializer.expression) !== "URL" ||
             declaration.initializer.arguments?.length !== 2 ||
             identifierText(argumentAt(declaration.initializer, 0)) !==
                 pathParameter ||
@@ -10409,13 +10397,7 @@ class Compiler implements LoweringServices {
                 }
                 for (const imported of statement.importClause.namedBindings
                     .elements) {
-                    const symbol = this.checker.getSymbolAtLocation(
-                        imported.name,
-                    );
-                    const target =
-                        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                            ? this.checker.getAliasedSymbol(symbol)
-                            : symbol;
+                    const target = resolvedSymbol(this.checker, imported.name);
                     const variable = target?.declarations?.find(
                         (candidate): candidate is ts.VariableDeclaration =>
                             ts.isVariableDeclaration(candidate) &&
@@ -10638,14 +10620,10 @@ class Compiler implements LoweringServices {
                             (element) => element.name.text === importedName,
                         );
                     if (!imported) continue;
-                    const symbol = this.checker.getSymbolAtLocation(
+                    return resolvedSymbol(
+                        this.checker,
                         imported.name,
-                    );
-                    const target =
-                        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                            ? this.checker.getAliasedSymbol(symbol)
-                            : symbol;
-                    return target?.declarations?.[0]?.getSourceFile().fileName;
+                    )?.declarations?.[0]?.getSourceFile().fileName;
                 }
                 return undefined;
             },
@@ -11363,7 +11341,7 @@ class Compiler implements LoweringServices {
                     this.defaultEngineCpp
                         ? { engineCpp: this.defaultEngineCpp }
                         : {}),
-                    optionalFoundCpp: `${storage}.has_value()`,
+                    optionalFoundCpp: optionalPresentCpp(storage),
                     optionalStorageCpp: storage,
                     ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
                 }),
@@ -11428,7 +11406,7 @@ class Compiler implements LoweringServices {
             this.defaultEngineCpp
                 ? { engineCpp: this.defaultEngineCpp }
                 : {}),
-            optionalFoundCpp: `${storage}.has_value()`,
+            optionalFoundCpp: optionalPresentCpp(storage),
             optionalStorageCpp: storage,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
         });
@@ -11490,7 +11468,7 @@ class Compiler implements LoweringServices {
             this.defaultEngineCpp
                 ? { engineCpp: this.defaultEngineCpp }
                 : {}),
-            optionalFoundCpp: `${cppName}.has_value()`,
+            optionalFoundCpp: optionalPresentCpp(cppName),
             optionalStorageCpp: cppName,
         });
         this.defineVariable(name, value);
@@ -12855,11 +12833,7 @@ class Compiler implements LoweringServices {
                   "An audio engine assignment requires its source main bus.",
               ))
             : "bbl::pal::AudioNodeHandle{}";
-        const present =
-            value?.optionalFoundCpp ??
-            (value?.dataType?.kind === "optional"
-                ? `${value.cpp}.has_value()`
-                : undefined);
+        const present = value && presenceCpp(value);
         this.emit(
             `${destination} = ${
                 present
@@ -12903,7 +12877,7 @@ class Compiler implements LoweringServices {
             value.dataType.inner.kind === "handle" &&
             value.dataType.inner.handle === target.kind
         ) {
-            this.emit(`if (${value.cpp}.has_value()) {`);
+            this.emit(`if (${optionalPresentCpp(value.cpp)}) {`);
             this.emit(`    ${storage} = *${value.cpp};`);
             this.emit("} else {");
             this.emit(`    ${storage}.reset();`);
@@ -13527,9 +13501,7 @@ class Compiler implements LoweringServices {
             if (
                 ts.isPropertyAccessExpression(callee) &&
                 callee.name.text === "getGamepads" &&
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "navigator" &&
-                this.isDefaultLibraryIdentifier(callee.expression)
+                this.libraryGlobal(callee.expression) === "navigator"
             ) {
                 return false;
             }
@@ -13726,9 +13698,7 @@ class Compiler implements LoweringServices {
         if (
             ts.isPropertyAccessExpression(call.expression) &&
             call.expression.name.text === "assign" &&
-            ts.isIdentifier(call.expression.expression) &&
-            call.expression.expression.text === "Object" &&
-            this.isDefaultLibraryIdentifier(call.expression.expression)
+            this.libraryGlobal(call.expression.expression) === "Object"
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.
@@ -14156,7 +14126,7 @@ class Compiler implements LoweringServices {
         const poll = framePollExecutor(
             this.unwrap(returned.expression),
             this.checker,
-            (identifier) => this.isDefaultLibraryIdentifier(identifier),
+            (callee) => this.libraryGlobal(callee),
         );
         if (!poll) return false;
         if (!this.engineStartMark)
@@ -17066,9 +17036,7 @@ class Compiler implements LoweringServices {
                   ? "double"
                   : value.kind === "boolean"
                     ? "bool"
-                    : value.kind === "string" ||
-                        (value.kind === "data" &&
-                            value.dataType?.kind === "string")
+                    : isStringValue(value)
                       ? "std::string"
                       : parameter && !copiesHandle && !reboundParameter
                         ? "auto&&"

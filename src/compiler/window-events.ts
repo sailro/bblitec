@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -11,8 +10,7 @@ type WindowContext = Pick<
     LoweringServices,
     | "options"
     | "unwrap"
-    | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "reachFeature"
     | "cppString"
     | "fail"
@@ -28,7 +26,7 @@ export function emitWindowLocationAssignment(
     if (
         !ts.isPropertyAccessExpression(left) ||
         left.name.text !== "search" ||
-        browserGlobalNamed(context, left.expression)?.text !== "location"
+        context.libraryGlobal(left.expression) !== "location"
     )
         return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
@@ -56,7 +54,7 @@ export function compileWindowServiceCall(
     if (
         ts.isPropertyAccessExpression(callee) &&
         callee.name.text === "reload" &&
-        browserGlobalNamed(context, callee.expression)?.text === "location"
+        context.libraryGlobal(callee.expression) === "location"
     ) {
         if (!context.options.workers)
             context.fail(
@@ -132,7 +130,7 @@ export function compileWindowIdentity(
         context.options.runtimeLocationSearch &&
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "search" &&
-        browserGlobalNamed(context, expression.expression)?.text === "location"
+        context.libraryGlobal(expression.expression) === "location"
     ) {
         requireWindowHost(context, expression);
         return {
@@ -143,7 +141,7 @@ export function compileWindowIdentity(
     }
     if (!context.options.workers || context.options.workers.namespace)
         return undefined;
-    const global = browserGlobalNamed(context, expression)?.text;
+    const global = context.libraryGlobal(expression);
     if (global === "document") {
         requireWindowHost(context, expression);
         const cpp = "bbl::pal::window_document_identity()";

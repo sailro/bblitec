@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
 export function inferPromiseRejectStorage(
@@ -37,9 +37,7 @@ export function inferPromiseRejectStorage(
                 !creation ||
                 !ts.isNewExpression(creation) ||
                 creation.arguments?.[0] !== executor ||
-                !ts.isIdentifier(creation.expression) ||
-                creation.expression.text !== "Promise" ||
-                !isDefaultLibraryIdentifier(checker, creation.expression)
+                libraryGlobal(checker, creation.expression) !== "Promise"
             ) {
                 compatible = false;
                 return;

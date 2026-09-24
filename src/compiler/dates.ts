@@ -11,9 +11,7 @@ export function compileDateTimeFormat(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "DateTimeFormat" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Intl" ||
-        !lowerer.context.isDefaultLibraryIdentifier(callee.expression)
+        lowerer.context.libraryGlobal(callee.expression) !== "Intl"
     )
         return undefined;
     if (expression.arguments?.length)
@@ -55,11 +53,7 @@ export function compileDateNew(
     expression: ts.NewExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    if (
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "Date" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
-    )
+    if (context.libraryGlobal(expression.expression) !== "Date")
         return undefined;
     const args = expression.arguments ?? [];
     if (args.length > 1)

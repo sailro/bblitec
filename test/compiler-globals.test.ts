@@ -7,8 +7,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 
-const scene = (body: string): string => `
+/** A scene running `body` in `main`, with `declarations` at module scope. */
+const scene = (body: string, declarations = ""): string => `
     import { createEngine, createBox } from "@babylonjs/lite";
+    ${declarations}
     async function main() {
         const engine = await createEngine({});
         const box = createBox(engine, { size: 1 });
@@ -36,4 +38,59 @@ test("a scene binding named Math is the scene's own value", () => {
     assert.match(result.cpp, /return \(v_fn\d+_value \+ 100\.0\);/);
     assert.match(result.cpp, /make_closure\([^\n]+\)\(3\.7\)/);
     assert.doesNotMatch(result.cpp, /position\.x = 3\.0;/);
+});
+
+test("a module function named Number is the scene's own call", () => {
+    const result = compileSource(
+        scene(
+            'box.position.x = Number("3");',
+            "function Number(text: string): number { return text.length + 40; }",
+        ),
+        { fileName: "scene-number.ts" },
+    );
+    assert.match(result.cpp, /position\.x = bblscene::Number\("3"\);/);
+    assert.doesNotMatch(result.cpp, /number_from_string/);
+});
+
+test("a module function and class named String are the scene's own", () => {
+    const conversion = compileSource(
+        scene(
+            "box.name = String(3);",
+            'function String(value: number): string { return "s" + value; }',
+        ),
+        { fileName: "scene-string.ts" },
+    );
+    assert.match(conversion.cpp, /name = bbl::js::concat\("s", "3"\);/);
+    const charCode = compileSource(
+        scene(
+            "box.name = String.fromCharCode(65);",
+            'class String { static fromCharCode(code: number): string { return "c" + code; } }',
+        ),
+        { fileName: "scene-string-class.ts" },
+    );
+    assert.doesNotMatch(charCode.cpp, /string_from_char_code/);
+});
+
+test("a class named Map is the scene's own class", () => {
+    const result = compileSource(
+        scene(
+            'const m = new Map(); box.position.x = m.get("abc");',
+            "class Map { size = 7; get(key: string): number { return key.length + this.size; } }",
+        ),
+        { fileName: "scene-map.ts" },
+    );
+    assert.match(result.cpp, /bblscene::Map_get\(/);
+    assert.doesNotMatch(result.cpp, /bbl::js::Map</);
+});
+
+test("a class named Object keeps its own static methods", () => {
+    const result = compileSource(
+        scene(
+            "const o = { a: 1, b: 2 }; box.position.x = Object.keys(o).length;",
+            "class Object { static keys(value: { a: number; b: number }): number[] { return [value.a, value.b, 9]; } }",
+        ),
+        { fileName: "scene-object.ts" },
+    );
+    assert.match(result.cpp, /bbl::js::Array<double>\{[^}]*9\.0\}/);
+    assert.doesNotMatch(result.cpp, /Array<std::string>\{"a", "b"\}/);
 });

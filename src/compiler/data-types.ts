@@ -40,7 +40,7 @@ import {
     declaredIn,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
-    isDefaultLibraryIdentifier,
+    libraryGlobal,
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -48,6 +48,7 @@ import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
+import { optionalPresentCpp } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -2746,11 +2747,8 @@ export class DataTypeRegistry {
                 ts.isTypeAliasDeclaration(declaration) &&
                 ts.isTypeReferenceNode(declaration.type) &&
                 ts.isIdentifier(declaration.type.typeName) &&
-                declaration.type.typeName.text === "Record" &&
-                isDefaultLibraryIdentifier(
-                    this.checker,
-                    declaration.type.typeName,
-                ),
+                libraryGlobal(this.checker, declaration.type.typeName) ===
+                    "Record",
         );
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;
@@ -3486,7 +3484,7 @@ export class DataTypeRegistry {
                     );
                 if (omittable) {
                     lines.push(
-                        `    if (value.${field.name}.has_value()) {`,
+                        `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
                         `        writer.key(${key});`,
                         `        json_write(writer, *value.${field.name});`,
                         "    }",

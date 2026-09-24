@@ -1,6 +1,6 @@
 import type ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 import { isTypedArrayType, type DataType } from "../data-types.js";
 import { argumentAt } from "../syntax.js";
 import {
@@ -102,7 +102,7 @@ export function compileCreateStorageBuffer(
                 "storage_options_owner",
                 optionsExpression,
             );
-            context.emit(`if (${owner.cpp}.has_value()) {`);
+            context.emit(`if (${optionalPresentCpp(owner.cpp)}) {`);
             writeOptions({
                 kind: "data",
                 cpp: `${owner.cpp}.value()`,

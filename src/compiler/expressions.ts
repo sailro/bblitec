@@ -30,7 +30,11 @@ import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
-import { isAbsentTypeofIdentifier } from "./symbols.js";
+import {
+    aliasTarget,
+    isAbsentTypeofIdentifier,
+    resolvedSymbol,
+} from "./symbols.js";
 import {
     compileNumberPredicate,
     numberConstant,
@@ -109,6 +113,8 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     booleanValue,
     commonResourceValue,
+    isStringValue,
+    presenceCpp,
     staticStringValue,
 } from "./types.js";
 
@@ -218,6 +224,7 @@ export interface ExpressionContext
             | "isBrowserOnlyExpression"
             | "isBrowserOnlyHandler"
             | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isDeferredCallbackCall"
             | "compileFrameCallback"
             | "requireDefaultEngine"
@@ -597,10 +604,7 @@ export class ExpressionLowerer {
                     `Private name '${unwrapped.text}' is a member, not a value.`,
                 );
             }
-            if (
-                unwrapped.text === "devicePixelRatio" &&
-                this.context.isDefaultLibraryIdentifier(unwrapped)
-            ) {
+            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
                 return {
                     kind: "number",
                     cpp: "1.0",
@@ -611,7 +615,8 @@ export class ExpressionLowerer {
             if (unwrapped.text === "undefined") {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
-            if (unwrapped.text === "Infinity" || unwrapped.text === "NaN") {
+            const numeric = this.context.libraryGlobal(unwrapped);
+            if (numeric === "Infinity" || numeric === "NaN") {
                 return {
                     kind: "number",
                     cpp: this.context.compileNumber(unwrapped, "double"),
@@ -689,8 +694,8 @@ export class ExpressionLowerer {
                 );
             if (typeof constant === "number")
                 return numberConstantValue(constant);
-            const numericConstant = numberConstant(unwrapped, (identifier) =>
-                this.context.isDefaultLibraryIdentifier(identifier),
+            const numericConstant = numberConstant(unwrapped, (owner) =>
+                this.context.libraryGlobal(owner),
             );
             if (numericConstant !== undefined)
                 return numberConstantValue(numericConstant);
@@ -768,11 +773,7 @@ export class ExpressionLowerer {
             if (browserFile) {
                 return browserFile;
             }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "RegExp" &&
-                !this.context.lookupOptional(unwrapped.expression)
-            ) {
+            if (this.context.libraryGlobal(unwrapped.expression) === "RegExp") {
                 const arguments_ = unwrapped.arguments ?? [];
                 if (arguments_.length < 1 || arguments_.length > 2) {
                     this.context.fail(
@@ -820,8 +821,8 @@ export class ExpressionLowerer {
                         `${flags.includes("i") ? "true" : "false"})`,
                 };
             }
-            const errorName = errorConstructor(unwrapped, (identifier) =>
-                this.context.isDefaultLibraryIdentifier(identifier),
+            const errorName = errorConstructor(unwrapped, (callee) =>
+                this.context.libraryGlobal(callee),
             );
             if (errorName) {
                 return compileErrorConstruction(
@@ -1267,10 +1268,7 @@ export class ExpressionLowerer {
                 !checkedMayBeUndefined &&
                 operand.kind !== "record"
                     ? undefined
-                    : (operand.optionalFoundCpp ??
-                      (operand.dataType?.kind === "optional"
-                          ? `${operand.cpp}.has_value()`
-                          : undefined));
+                    : presenceCpp(operand);
             if (present !== undefined) {
                 return {
                     kind: "data",
@@ -1531,10 +1529,7 @@ export class ExpressionLowerer {
                     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
                 );
             for (const exported of exports) {
-                const value =
-                    exported.flags & ts.SymbolFlags.Alias
-                        ? this.context.checker.getAliasedSymbol(exported)
-                        : exported;
+                const value = aliasTarget(this.context.checker, exported);
                 if ((value.flags & ts.SymbolFlags.Value) === 0) continue;
                 const declaration =
                     value.valueDeclaration ?? value.declarations?.[0];
@@ -2054,13 +2049,10 @@ export class ExpressionLowerer {
         // shape a pick result's name takes -- is the same question. The
         // literal side widens, since `std::string` is the common type of
         // the emitted conditional either way.
-        const stringValued = (value: Value): boolean =>
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string");
         if (
             whenTrue.kind !== whenFalse.kind &&
-            stringValued(whenTrue) &&
-            stringValued(whenFalse)
+            isStringValue(whenTrue) &&
+            isStringValue(whenFalse)
         ) {
             // Only the literal side moves, and it carries nothing across:
             // spreading the other branch would hand each side the other's
@@ -2227,11 +2219,10 @@ export class ExpressionLowerer {
     private isModuleConstantRecord(expression: ts.Expression): boolean {
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return false;
-        let symbol = this.context.checker.getSymbolAtLocation(owner);
-        if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
-            symbol = this.context.checker.getAliasedSymbol(symbol);
-        }
-        const declaration = symbol?.valueDeclaration;
+        const declaration = resolvedSymbol(
+            this.context.checker,
+            owner,
+        )?.valueDeclaration;
         return (
             declaration !== undefined &&
             ts.isVariableDeclaration(declaration) &&
@@ -2249,8 +2240,7 @@ export class ExpressionLowerer {
         return (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "getGamepads" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "navigator"
+            this.context.libraryGlobal(callee.expression) === "navigator"
         );
     }
 
@@ -2381,8 +2371,7 @@ export class ExpressionLowerer {
         const callee = this.context.unwrap(call.expression);
         if (
             ts.isIdentifier(callee) &&
-            callee.text === "createImageBitmap" &&
-            !this.context.lookupOptional(callee)
+            this.context.libraryGlobal(callee) === "createImageBitmap"
         ) {
             this.context.expectArgumentCount(call, 1, 2);
             return {
@@ -2398,8 +2387,7 @@ export class ExpressionLowerer {
         }
         if (
             ts.isIdentifier(callee) &&
-            callee.text === "requestAnimationFrame" &&
-            !this.context.lookupOptional(callee)
+            this.context.libraryGlobal(callee) === "requestAnimationFrame"
         ) {
             const animationFrame = this.context.compileAnimationFrameCall(call);
             if (animationFrame) return animationFrame;
@@ -2597,10 +2585,7 @@ export class ExpressionLowerer {
         if (isParseFloatCallee(callee, this.context)) {
             this.context.expectArgumentCount(call, 1, 1);
             const value = this.compileValue(argumentAt(call, 0));
-            if (
-                value.kind !== "string" &&
-                !(value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (!isStringValue(value)) {
                 this.context.fail(
                     argumentAt(call, 0),
                     "Reached parseFloat requires a string value.",
@@ -2616,10 +2601,7 @@ export class ExpressionLowerer {
         if (isNumberParserCallee(callee, this.context, "parseInt")) {
             this.context.expectArgumentCount(call, 1, 2);
             const value = this.compileValue(argumentAt(call, 0));
-            if (
-                value.kind !== "string" &&
-                !(value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (!isStringValue(value)) {
                 this.context.fail(
                     argumentAt(call, 0),
                     "Reached parseInt currently requires a string value.",
@@ -2682,7 +2664,7 @@ export class ExpressionLowerer {
             );
         }
 
-        if (callee.text === "String" && !this.context.lookupOptional(callee)) {
+        if (this.context.libraryGlobal(callee) === "String") {
             this.context.expectArgumentCount(call, 1, 1);
             const argument = this.context.unwrap(argumentAt(call, 0));
             if (argument.kind === ts.SyntaxKind.NullKeyword) {
@@ -2737,10 +2719,7 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
-            if (
-                value.kind === "string" ||
-                (value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (isStringValue(value)) {
                 return {
                     kind: "data",
                     cpp: value.cpp,
@@ -2753,14 +2732,11 @@ export class ExpressionLowerer {
             );
         }
 
-        if (callee.text === "Number" && !this.context.lookupOptional(callee)) {
+        if (this.context.libraryGlobal(callee) === "Number") {
             this.context.expectArgumentCount(call, 1, 1);
             return this.compileNumberConversion(argumentAt(call, 0));
         }
-        if (
-            callee.text === "Boolean" &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
+        if (this.context.libraryGlobal(callee) === "Boolean") {
             // `Boolean(x)` is x's truthiness, which the condition lowering
             // already spells for every kind.
             this.context.expectArgumentCount(call, 1, 1);
@@ -2983,10 +2959,7 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             this.context.reachJsData();
             return {
                 kind: "number",
@@ -4506,32 +4479,21 @@ export class ExpressionLowerer {
                     : { kind: "void", cpp };
             }
         }
+        const staticOwner = this.context.libraryGlobal(callee.expression);
         if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object" &&
-            (callee.name.text === "keys" || callee.name.text === "values") &&
-            !this.context.lookupOptional(callee.expression)
+            staticOwner === "Object" &&
+            (callee.name.text === "keys" || callee.name.text === "values")
         ) {
             return this.compileObjectProjection(call, callee.name.text);
         }
-        if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object"
-        ) {
-            const objectStatic = OBJECT_STATIC_HANDLERS.get(callee.name.text);
-            if (
-                objectStatic &&
-                this.context.isDefaultLibraryIdentifier(callee.expression)
-            ) {
-                return objectStatic(this.context, call);
-            }
+        const objectStatic =
+            staticOwner === "Object"
+                ? OBJECT_STATIC_HANDLERS.get(callee.name.text)
+                : undefined;
+        if (objectStatic) {
+            return objectStatic(this.context, call);
         }
-        if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "String" &&
-            callee.name.text === "fromCharCode" &&
-            !this.context.lookupOptional(callee.expression)
-        ) {
+        if (staticOwner === "String" && callee.name.text === "fromCharCode") {
             this.context.reachJsData();
             return {
                 kind: "data",

@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
 import type { DataType } from "./data-types/model.js";
@@ -13,7 +12,7 @@ export interface WorkerLoweringContext extends Pick<
     | "dataLowerer"
     | "dataTypes"
     | "unwrap"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "lookupOptional"
     | "compileValue"
     | "compileFrameCallback"
@@ -214,19 +213,18 @@ export function isNativeWorkerExpression(
 ): boolean {
     if (!context.options.workers) return false;
     let node = context.unwrap(expression);
-    if (browserGlobalNamed(context, node)?.text === "fetch") return true;
+    if (context.libraryGlobal(node) === "fetch") return true;
     if (
         !context.options.workers.namespace &&
-        (browserGlobalNamed(context, node)?.text === "screen" ||
+        (context.libraryGlobal(node) === "screen" ||
             (ts.isPropertyAccessExpression(node) &&
-                browserGlobalNamed(context, node.expression)?.text ===
-                    "screen"))
+                context.libraryGlobal(node.expression) === "screen"))
     )
         return true;
     if (
         !context.options.workers.namespace &&
         ["window", "globalThis", "document"].includes(
-            browserGlobalNamed(context, node)?.text ?? "",
+            context.libraryGlobal(node) ?? "",
         )
     )
         return true;
@@ -243,12 +241,14 @@ export function isNativeWorkerExpression(
         (node.name.text === "reload" ||
             (context.options.runtimeLocationSearch &&
                 node.name.text === "search")) &&
-        browserGlobalNamed(context, node.expression)?.text === "location"
+        context.libraryGlobal(node.expression) === "location"
     )
         return true;
-    const globalMember = browserGlobalNamed(context, node);
-    if (globalMember && globalMember !== node) {
-        return [
+    const globalMember = context.libraryGlobal(node);
+    if (
+        globalMember !== undefined &&
+        ts.isPropertyAccessExpression(node) &&
+        [
             "Worker",
             "OffscreenCanvas",
             "ResizeObserver",
@@ -264,8 +264,9 @@ export function isNativeWorkerExpression(
             "queueMicrotask",
             "postMessage",
             "close",
-        ].includes(globalMember.text);
-    }
+        ].includes(globalMember)
+    )
+        return true;
     const root = rootIdentifier(node, (inner) => context.unwrap(inner));
     if (!root) return false;
     const bound = context.lookupOptional(root);
@@ -273,7 +274,7 @@ export function isNativeWorkerExpression(
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas")
         return true;
     return (
-        browserGlobalNamed(context, root) !== undefined &&
+        context.libraryGlobal(root) !== undefined &&
         [
             "Worker",
             "OffscreenCanvas",
@@ -300,19 +301,15 @@ export function compileWorkerValue(
 ): Value | undefined {
     if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
-    const isGlobal = (value: ts.Expression, name: string): boolean =>
-        ts.isIdentifier(value) &&
-        browserGlobalNamed(context, value)?.text === name;
     const scope = (value: ts.Expression): Value | undefined => {
         const unwrapped = context.unwrap(value);
-        if (isGlobal(unwrapped, "self") || isGlobal(unwrapped, "globalThis")) {
-            return { kind: "worker-scope", cpp: realm };
-        }
-        return ts.isIdentifier(unwrapped)
-            ? context.lookupOptional(unwrapped)
-            : undefined;
+        if (!ts.isIdentifier(unwrapped)) return undefined;
+        const global = context.libraryGlobal(unwrapped);
+        return global === "self" || global === "globalThis"
+            ? { kind: "worker-scope", cpp: realm }
+            : context.lookupOptional(unwrapped);
     };
-    if (ts.isIdentifier(node) && isGlobal(node, "self")) {
+    if (ts.isIdentifier(node) && context.libraryGlobal(node) === "self") {
         if (!context.options.workers.namespace)
             return context.fail(
                 node,
@@ -405,12 +402,12 @@ export function compileWorkerValue(
     const owner = ts.isPropertyAccessExpression(callee)
         ? scope(callee.expression)
         : undefined;
-    const global = browserGlobalNamed(context, callee) !== undefined;
+    const global = context.libraryGlobal(callee) !== undefined;
     if (
         global &&
         context.options.workers.namespace &&
         ts.isPropertyAccessExpression(callee) &&
-        browserGlobalNamed(context, callee.expression)?.text === "window"
+        context.libraryGlobal(callee.expression) === "window"
     ) {
         return context.fail(
             callee,

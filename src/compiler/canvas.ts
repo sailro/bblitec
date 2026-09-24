@@ -1,7 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
+import { declaredInDefaultLibrary } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
@@ -24,12 +24,8 @@ function hasDomInterface(
         .getSymbol();
     return (
         symbol?.name === name &&
-        (symbol.declarations?.some(
-            (declaration) =>
-                ts.isInterfaceDeclaration(declaration) &&
-                context.isDefaultLibraryIdentifier(declaration.name),
-        ) ??
-            false)
+        (symbol.declarations?.some(ts.isInterfaceDeclaration) ?? false) &&
+        declaredInDefaultLibrary(symbol)
     );
 }
 
@@ -87,7 +83,7 @@ export function compileCanvasValue(
         ts.isPropertyAccessExpression(node) &&
         node.name.text === "isSecureContext" &&
         ["globalThis", "window"].includes(
-            browserGlobalNamed(context, node.expression)?.text ?? "",
+            context.libraryGlobal(node.expression) ?? "",
         )
     ) {
         requireWindowHost(context, node);
@@ -99,7 +95,7 @@ export function compileCanvasValue(
             node.name.text,
         ) &&
         ["globalThis", "window"].includes(
-            browserGlobalNamed(context, node.expression)?.text ?? "",
+            context.libraryGlobal(node.expression) ?? "",
         )
     ) {
         requireWindowHost(context, node);
@@ -128,7 +124,7 @@ export function compileCanvasValue(
     }
     if (
         ts.isTypeOfExpression(node) &&
-        browserGlobalNamed(context, node.expression)?.text === "Worker"
+        context.libraryGlobal(node.expression) === "Worker"
     ) {
         return {
             kind: "string",
@@ -138,7 +134,7 @@ export function compileCanvasValue(
     }
     if (
         ts.isNewExpression(node) &&
-        browserGlobalNamed(context, node.expression)?.text === "OffscreenCanvas"
+        context.libraryGlobal(node.expression) === "OffscreenCanvas"
     ) {
         if (node.arguments?.length !== 2)
             return context.fail(
@@ -166,7 +162,7 @@ export function compileCanvasValue(
     if (
         !context.options.workers.namespace &&
         ts.isNewExpression(node) &&
-        browserGlobalNamed(context, node.expression)?.text === "ResizeObserver"
+        context.libraryGlobal(node.expression) === "ResizeObserver"
     ) {
         if (node.arguments?.length !== 1)
             return context.fail(node, "ResizeObserver requires one callback.");
@@ -181,7 +177,7 @@ export function compileCanvasValue(
         const callee = context.unwrap(node.expression);
         if (
             !context.options.workers.namespace &&
-            browserGlobalNamed(context, callee)?.text === "matchMedia"
+            context.libraryGlobal(callee) === "matchMedia"
         ) {
             if (node.arguments.length !== 1)
                 return context.fail(

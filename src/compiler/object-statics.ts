@@ -24,7 +24,7 @@ export type ObjectStaticContext = Pick<
     | "lookupIdentifierValue"
     | "resolveRecordValue"
     | "unwrap"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "fail"
 >;
 
@@ -206,12 +206,7 @@ export function compileObjectPrototypeCall(
     )
         return undefined;
     const owner = context.unwrap(prototype.expression);
-    if (
-        !ts.isIdentifier(owner) ||
-        owner.text !== "Object" ||
-        !context.isDefaultLibraryIdentifier(owner)
-    )
-        return undefined;
+    if (context.libraryGlobal(owner) !== "Object") return undefined;
     return compileObjectHasOwn(context, call);
 }
 

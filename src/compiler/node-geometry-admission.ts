@@ -10,7 +10,7 @@ interface Context extends Pick<
     | "symbols"
     | "unwrap"
     | "knownValueWithoutEvaluation"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "noteNodeGeometryMutation"
 > {}
 
@@ -121,9 +121,7 @@ export function checkNodeGeometryMutation(
     if (callee.name.text === "set" && importedVector(callee.expression))
         context.noteNodeGeometryMutation(node);
     if (
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(callee.expression) &&
+        context.libraryGlobal(callee.expression) === "Object" &&
         [
             "assign",
             "defineProperty",

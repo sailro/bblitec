@@ -1,5 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
@@ -47,7 +48,7 @@ import { transpileForBrowser } from "../typescript-transpile.js";
 
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "reachedNodeParticles"
     | "lookup"
     | "compileForDataSink"
@@ -57,14 +58,12 @@ export interface DeterministicRandomContext extends Pick<
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
-    context: Pick<DeterministicRandomContext, "isDefaultLibraryIdentifier">,
+    context: Pick<DeterministicRandomContext, "libraryGlobal">,
     expression: ts.Expression,
 ): boolean {
     return (
         ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Math" &&
-        context.isDefaultLibraryIdentifier(expression.expression) &&
+        context.libraryGlobal(expression.expression) === "Math" &&
         expression.name.text === "random"
     );
 }
@@ -108,12 +107,7 @@ function seedFactoryDeclaration(
 ): ts.FunctionDeclaration {
     // A factory is normally imported from a shared module, so the identifier
     // resolves to the import alias; the declaration is behind it.
-    const bound = checker.getSymbolAtLocation(callee);
-    const symbol =
-        bound && bound.flags & ts.SymbolFlags.Alias
-            ? checker.getAliasedSymbol(bound)
-            : bound;
-    const declaration = symbol?.valueDeclaration;
+    const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
     if (
         !declaration ||
         !ts.isFunctionDeclaration(declaration) ||
@@ -203,11 +197,7 @@ function capturedDeclarations(
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (
-                node.text === "Math" &&
-                context.isDefaultLibraryIdentifier(node)
-            )
-                return;
+            if (context.libraryGlobal(node) === "Math") return;
             const symbol = checker.getSymbolAtLocation(node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;

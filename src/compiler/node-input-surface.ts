@@ -25,7 +25,7 @@ interface NodeInputContext extends Pick<
     | "reachJsData"
     | "assertNodeInputMutable"
     | "noteNodeInputAdmissionFailure"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
 > {}
 
 export function readNodeInputProperty(
@@ -112,9 +112,7 @@ export function compileNodeInputMutation(
     if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(node.expression.expression) &&
+        context.libraryGlobal(node.expression.expression) === "Object" &&
         [
             "assign",
             "defineProperty",

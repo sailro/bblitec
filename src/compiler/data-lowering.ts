@@ -1,6 +1,8 @@
 import {
     booleanValue,
+    isStringValue,
     nativeDataMetadata,
+    optionalPresentCpp,
     staticStringValue,
     valueForKind,
     withNativeMetadata,
@@ -168,6 +170,7 @@ export interface DataLoweringContext
             | "sourceFile"
             | "noteCameraVectorCopy"
             | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "useNativeValue"
             | "registerNativeBinding"
             | "registerNativeBindingType"
@@ -1128,7 +1131,7 @@ export class DataLowerer {
                       });
                       return { ...owner, cpp: temporary };
                   })();
-            present = `${selected.cpp}.has_value()`;
+            present = optionalPresentCpp(selected.cpp);
             presentOwner = withNativeMetadata(
                 this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
                 plainOwner,
@@ -1694,9 +1697,9 @@ export class DataLowerer {
     ): number | undefined {
         if (
             !ts.isNewExpression(source) ||
-            !ts.isIdentifier(source.expression) ||
-            !TYPED_ARRAY_KINDS.has(source.expression.text) ||
-            this.context.lookupIdentifierValue(source.expression) ||
+            !TYPED_ARRAY_KINDS.has(
+                this.context.libraryGlobal(source.expression) ?? "",
+            ) ||
             source.arguments?.length !== 1
         ) {
             return undefined;
@@ -2167,7 +2170,7 @@ export class DataLowerer {
                 return {
                     kind: "data",
                     cpp:
-                        `(${temp}.has_value() ? ${temp} : ` +
+                        `(${optionalPresentCpp(temp)} ? ${temp} : ` +
                         `${fallbackOptional})`,
                     dataType: resultType,
                 };
@@ -2205,7 +2208,7 @@ export class DataLowerer {
             // instead of a bare "data" every consumer would have to
             // special-case.
             const selected = this.leafValue(
-                `(${temp}.has_value() ? ${present} : ${fallback})`,
+                `(${optionalPresentCpp(temp)} ? ${present} : ${fallback})`,
                 resultType,
             );
             // The conditional materializes either branch as a new C++ value.
@@ -3395,24 +3398,9 @@ export class DataLowerer {
     /** A call through the global `Math` object, pure by declaration. */
     private isGlobalMathCall(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Math"
-        ) {
-            return false;
-        }
-        const symbol = this.context.checker.getSymbolAtLocation(
-            callee.expression,
-        );
-        const declarations = symbol?.declarations ?? [];
         return (
-            declarations.length > 0 &&
-            declarations.every((declaration) =>
-                /(?:^|[\\/])lib\.[^\\/]*\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            )
+            ts.isPropertyAccessExpression(callee) &&
+            this.context.libraryGlobal(callee.expression) === "Math"
         );
     }
 
@@ -4204,10 +4192,8 @@ export class DataLowerer {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Array" ||
-            (callee.name.text !== "from" && callee.name.text !== "of") ||
-            !this.context.isDefaultLibraryIdentifier(callee.expression)
+            this.context.libraryGlobal(callee.expression) !== "Array" ||
+            (callee.name.text !== "from" && callee.name.text !== "of")
         ) {
             return undefined;
         }
@@ -4938,9 +4924,7 @@ export class DataLowerer {
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
                 const booleanConstructor =
-                    ts.isIdentifier(callback) &&
-                    callback.text === "Boolean" &&
-                    this.context.isDefaultLibraryIdentifier(callback);
+                    this.context.libraryGlobal(callback) === "Boolean";
                 const callbackArguments: Value[] = [
                     elementValue,
                     {
@@ -5206,11 +5190,8 @@ export class DataLowerer {
             !ts.isVariableDeclaration(declaration) ||
             !declaration.initializer ||
             !ts.isNewExpression(declaration.initializer) ||
-            !ts.isIdentifier(declaration.initializer.expression) ||
-            declaration.initializer.expression.text !== "Map" ||
-            !this.context.isDefaultLibraryIdentifier(
-                declaration.initializer.expression,
-            )
+            this.context.libraryGlobal(declaration.initializer.expression) !==
+                "Map"
         ) {
             return undefined;
         }
@@ -5331,11 +5312,7 @@ export class DataLowerer {
      * the expression is not a global Array construction.
      */
     private newArrayCount(expression: ts.NewExpression): string | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "Array" ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
+        if (this.context.libraryGlobal(expression.expression) !== "Array") {
             return undefined;
         }
         if (expression.arguments?.length !== 1) {
@@ -5421,9 +5398,7 @@ export class DataLowerer {
         expression: ts.NewExpression,
     ): Value | undefined {
         if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "ArrayBuffer" ||
-            !this.context.isDefaultLibraryIdentifier(expression.expression)
+            this.context.libraryGlobal(expression.expression) !== "ArrayBuffer"
         ) {
             return undefined;
         }
@@ -5447,19 +5422,15 @@ export class DataLowerer {
         expression: ts.NewExpression,
         expectedType?: DataType,
     ): Value | undefined {
+        const constructor = this.context.libraryGlobal(expression.expression);
         if (
-            !ts.isIdentifier(expression.expression) ||
-            !["Map", "Set", "WeakMap", "WeakSet"].includes(
-                expression.expression.text,
-            ) ||
-            !this.context.isDefaultLibraryIdentifier(expression.expression)
+            constructor === undefined ||
+            !["Map", "Set", "WeakMap", "WeakSet"].includes(constructor)
         ) {
             return undefined;
         }
         // A weak collection is its strong twin (see the type mapping).
-        const constructedKind = expression.expression.text.endsWith("Map")
-            ? "map"
-            : "set";
+        const constructedKind = constructor.endsWith("Map") ? "map" : "set";
         const direct = this.dataTypeAt(expression);
         const contextualType =
             this.context.checker.getContextualType(expression);
@@ -5477,13 +5448,13 @@ export class DataLowerer {
         if (!dataType) {
             this.context.fail(
                 expression,
-                `new ${expression.expression.text} requires concrete data type arguments or a contextual container type.`,
+                `new ${constructor} requires concrete data type arguments or a contextual container type.`,
             );
         }
         if (dataType.kind !== constructedKind) {
             this.context.fail(
                 expression,
-                `Constructor ${expression.expression.text} does not match its ${dataType.kind} data type.`,
+                `Constructor ${constructor} does not match its ${dataType.kind} data type.`,
             );
         }
         const arguments_ = expression.arguments ?? [];
@@ -5554,14 +5525,9 @@ export class DataLowerer {
     public compileTypedArrayNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
-            return undefined;
-        }
-        const name = expression.expression.text;
-        const kind = TYPED_ARRAY_KINDS.get(name);
+        const name = this.context.libraryGlobal(expression.expression);
+        const kind =
+            name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) {
             return undefined;
         }
@@ -5889,11 +5855,7 @@ export class DataLowerer {
     private compileDataViewNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "DataView" ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
+        if (this.context.libraryGlobal(expression.expression) !== "DataView") {
             return undefined;
         }
         const arguments_ = expression.arguments ?? [];
@@ -6931,7 +6893,7 @@ export class DataLowerer {
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
                         if (sourceField.type.kind === "optional") {
                             this.context.emit(
-                                `if (${sourceCpp}.has_value()) {`,
+                                `if (${optionalPresentCpp(sourceCpp)}) {`,
                             );
                             this.context.increaseIndent();
                             this.context.emit(
@@ -7335,7 +7297,7 @@ export class DataLowerer {
             )
                 ? "->"
                 : ".";
-            return `${narrowed.cpp}${access}${field.name}.has_value()`;
+            return optionalPresentCpp(`${narrowed.cpp}${access}${field.name}`);
         }
         return this.context.fail(
             ownerNode,
@@ -7627,7 +7589,7 @@ export class DataLowerer {
         // reference, whose null is the binding's absent state.
         const presence =
             targetType?.kind === "optional"
-                ? `(${target.cpp}).has_value()`
+                ? optionalPresentCpp(`(${target.cpp})`)
                 : targetType?.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(targetType.name)
                   ? this.referencePresence(target.cpp)
@@ -8750,9 +8712,9 @@ export class DataLowerer {
             cpp: saved,
             nativeCaptures: [this.context.registerNativeBinding(saved)],
         };
-        if (vector) absent ||= `!${saved}.has_value()`;
+        if (vector) absent ||= `!${optionalPresentCpp(saved)}`;
         else if (hasUndefined && item.dataType?.kind === "optional")
-            absent = `!${saved}.has_value()`;
+            absent = `!${optionalPresentCpp(saved)}`;
         if (vector?.element.kind === "struct" && hasUndefined)
             absent = `(${absent} || !${saved}.value())`;
         const present =
@@ -9065,10 +9027,7 @@ export class DataLowerer {
             // and the empty string.
             return `${value.cpp}.truthy()`;
         }
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             if (value.staticString !== undefined) {
                 return value.staticString.length === 0 ? "false" : "true";
             }
@@ -9112,7 +9071,7 @@ export class DataLowerer {
                 );
                 return `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`;
             }
-            return `${value.cpp}.has_value()`;
+            return optionalPresentCpp(value.cpp);
         }
         if (
             value.kind === "data" &&
@@ -9268,8 +9227,8 @@ export class DataLowerer {
                 this.context.compileValue(nullSide);
             if (value?.kind === "data" && value.dataType?.kind === "optional") {
                 return negated
-                    ? `${value.cpp}.has_value()`
-                    : `!${value.cpp}.has_value()`;
+                    ? optionalPresentCpp(value.cpp)
+                    : `!${optionalPresentCpp(value.cpp)}`;
             }
             if (value?.dataType?.kind === "function") {
                 return `${negated ? "" : "!"}static_cast<bool>(${value.cpp})`;
@@ -9519,8 +9478,8 @@ export class DataLowerer {
                 false,
             );
             const equal =
-                `(${leftCpp}.has_value() == ${rightCpp}.has_value() && ` +
-                `(!${leftCpp}.has_value() || (*${leftCpp}) == (*${rightCpp})))`;
+                `(${optionalPresentCpp(leftCpp)} == ${optionalPresentCpp(rightCpp)} && ` +
+                `(!${optionalPresentCpp(leftCpp)} || (*${leftCpp}) == (*${rightCpp})))`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(leftType)) {
@@ -9536,7 +9495,7 @@ export class DataLowerer {
             );
             const rightCpp = this.compileForSink(right, present.dataType);
             const equal =
-                `(${leftCpp}.has_value() && ` +
+                `(${optionalPresentCpp(leftCpp)} && ` +
                 `${present.cpp} == ${rightCpp})`;
             return negated ? `!${equal}` : equal;
         }
@@ -9553,7 +9512,7 @@ export class DataLowerer {
             );
             const leftCpp = this.compileForSink(left, present.dataType);
             const equal =
-                `(${rightCpp}.has_value() && ` +
+                `(${optionalPresentCpp(rightCpp)} && ` +
                 `${leftCpp} == ${present.cpp})`;
             return negated ? `!${equal}` : equal;
         }
@@ -9720,10 +9679,7 @@ export class DataLowerer {
             rawValue?.kind === "data"
                 ? this.narrowOptional(rawValue, expression)
                 : rawValue;
-        if (
-            value?.kind === "string" ||
-            (value?.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (value && isStringValue(value)) {
             const dataType: DataType = {
                 kind: "vector",
                 element: { kind: "string" },
@@ -9833,7 +9789,7 @@ export class DataLowerer {
         | undefined {
         const iterator = iteratorMethodCall(
             expression,
-            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+            (receiver) => this.context.libraryGlobal(receiver),
             (node) => this.context.unwrap(node),
         );
         if (!iterator) {
@@ -10348,11 +10304,7 @@ export class DataLowerer {
             ts.isElementAccessExpression(unwrapped)
         ) {
             const computed = this.context.compileValue(unwrapped);
-            if (
-                computed.kind === "string" ||
-                (computed.kind === "data" &&
-                    computed.dataType?.kind === "string")
-            ) {
+            if (isStringValue(computed)) {
                 return computed.cpp;
             }
         }

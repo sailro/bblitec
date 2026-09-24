@@ -2,7 +2,8 @@ import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { ExpressionContext } from "./expressions.js";
-import type { Value } from "./types.js";
+import type { LibraryGlobal } from "./symbols.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 
 const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
@@ -17,12 +18,10 @@ const constants: ReadonlyMap<string, number> = new EmissionMap([
 
 export function numberConstant(
     expression: ts.Expression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): number | undefined {
     return ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Number" &&
-        isLibrary(expression.expression)
+        libraryGlobal(expression.expression) === "Number"
         ? constants.get(expression.name.text)
         : undefined;
 }
@@ -50,9 +49,7 @@ export function compileNumberPredicate(
     const callee = context.unwrap(call.expression);
     if (
         !ts.isPropertyAccessExpression(callee) ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Number" ||
-        !context.isDefaultLibraryIdentifier(callee.expression)
+        context.libraryGlobal(callee.expression) !== "Number"
     )
         return undefined;
     const predicate = predicates.get(callee.name.text);
@@ -86,7 +83,7 @@ export function compileNumberPredicate(
             initializer: value.cpp,
         });
         cpp = optionalNumeric
-            ? `(${argument}.has_value() && ${predicate.cpp}(*${argument}))`
+            ? `(${optionalPresentCpp(argument)} && ${predicate.cpp}(*${argument}))`
             : `(${argument}.is_number() && ${predicate.cpp}(${argument}.to_number()))`;
     } else if (numeric) cpp = `${predicate.cpp}(${value.cpp})`;
     else {

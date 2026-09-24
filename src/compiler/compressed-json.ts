@@ -1,4 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -36,12 +37,7 @@ function functionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): ts.FunctionDeclaration | undefined {
-    const symbol = checker.getSymbolAtLocation(identifier);
-    const target =
-        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
-    return target?.declarations?.find(
+    return resolvedSymbol(checker, identifier)?.declarations?.find(
         (candidate): candidate is ts.FunctionDeclaration =>
             ts.isFunctionDeclaration(candidate) && candidate.body !== undefined,
     );

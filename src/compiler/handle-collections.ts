@@ -12,7 +12,7 @@ import {
     resolveFunctionDeclaration,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
-import { CompilerSymbols } from "./symbols.js";
+import { CompilerSymbols, type LibraryGlobal } from "./symbols.js";
 import {
     argumentAt,
     identifierText,
@@ -140,7 +140,7 @@ interface AssetOwnerMapProof {
 function assetOwnerMapBuilder(
     declaration: ts.FunctionDeclaration,
     resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    isGlobal: (name: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): AssetOwnerMapProof | undefined {
     const parameters = (
         fn: ts.FunctionDeclaration,
@@ -196,9 +196,7 @@ function assetOwnerMapBuilder(
         !rootLoop ||
         map.name.text === params[0]!.text ||
         !ts.isNewExpression(map.initializer) ||
-        !ts.isIdentifier(map.initializer.expression) ||
-        map.initializer.expression.text !== "Map" ||
-        !isGlobal(map.initializer.expression) ||
+        libraryGlobal(map.initializer.expression) !== "Map" ||
         (map.initializer.arguments?.length ?? 0) !== 0 ||
         !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
         !ts.isReturnStatement(returned!) ||
@@ -213,7 +211,7 @@ function assetOwnerMapBuilder(
     if (
         !rootGuard ||
         !guardedBy(rootGuard.test, rootLoop.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, isGlobal),
+            isChildrenPresenceGuard(fn, libraryGlobal),
         )
     )
         return undefined;
@@ -260,7 +258,7 @@ function assetOwnerMapBuilder(
             isRenderablePresenceGuard,
         ) ||
         !guardedBy(descend.test, children.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, isGlobal),
+            isChildrenPresenceGuard(fn, libraryGlobal),
         )
     )
         return undefined;
@@ -372,7 +370,7 @@ interface HandleCollectionsContext
             | "fail"
             | "compileValue"
             | "emitStatement"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isInRuntimeControlFlow"
             | "compileCondition"
             | "compileStringLiteral"
@@ -445,8 +443,8 @@ export class HandleCollections {
         };
         const declaration = resolve(identifier);
         if (!declaration || call.arguments.length !== 1) return undefined;
-        const proof = assetOwnerMapBuilder(declaration, resolve, (name) =>
-            this.context.isDefaultLibraryIdentifier(name),
+        const proof = assetOwnerMapBuilder(declaration, resolve, (callee) =>
+            this.context.libraryGlobal(callee),
         );
         if (!proof) return undefined;
         const owner = this.context.compileValue(argumentAt(call, 0));
@@ -953,10 +951,8 @@ export class HandleCollections {
         const walk = resolve(visit.expression);
         if (
             !walk ||
-            !isRecursiveMeshFlattenVisitor(
-                walk,
-                resolve,
-                (identifier) => !this.context.lookupOptional(identifier),
+            !isRecursiveMeshFlattenVisitor(walk, resolve, (callee) =>
+                this.context.libraryGlobal(callee),
             )
         ) {
             return undefined;
@@ -2276,9 +2272,7 @@ export class HandleCollections {
                 const thrown = this.context.unwrap(node.expression);
                 const argument =
                     ts.isNewExpression(thrown) &&
-                    ts.isIdentifier(thrown.expression) &&
-                    thrown.expression.text === "Error" &&
-                    this.context.isDefaultLibraryIdentifier(thrown.expression)
+                    this.context.libraryGlobal(thrown.expression) === "Error"
                         ? thrown.arguments?.[0]
                         : undefined;
                 if (argument) {
@@ -3533,13 +3527,13 @@ function isNotNullProbe(
  * `Array.isArray(<parameter>.children)`, through whatever cast the guard
  * writes to reach the property off an `unknown`.
  *
- * `Array` must be the global: a scene binding that name locally would be
- * calling something else entirely, and `lookupOptional` is what says so.
+ * `Array` must be the library global: a scene binding that name itself
+ * would be calling something else entirely.
  */
 function isChildrenArrayProbe(
     expression: ts.Expression,
     parameter: ts.Identifier,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     const current = unwrapWalkExpression(expression);
     if (!ts.isCallExpression(current) || current.arguments.length !== 1) {
@@ -3549,9 +3543,7 @@ function isChildrenArrayProbe(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "isArray" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Array" ||
-        !isGlobal(callee.expression)
+        libraryGlobal(callee.expression) !== "Array"
     ) {
         return false;
     }
@@ -3641,7 +3633,7 @@ function isRenderablePresenceGuard(
  */
 function isChildrenPresenceGuard(
     declaration: ts.FunctionDeclaration,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     const conjunction = typeGuardConjunction(declaration);
     if (!conjunction) return false;
@@ -3655,7 +3647,7 @@ function isChildrenPresenceGuard(
             children = true;
             continue;
         }
-        if (isChildrenArrayProbe(operand, parameter, isGlobal)) {
+        if (isChildrenArrayProbe(operand, parameter, libraryGlobal)) {
             array = true;
             continue;
         }
@@ -3723,7 +3715,7 @@ function guardedBy(
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,
     resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     if (
         !declaration.name ||
@@ -3765,7 +3757,7 @@ function isRecursiveMeshFlattenVisitor(
     if (
         !descend ||
         !guardedBy(descend.test, node, resolve, (candidate) =>
-            isChildrenPresenceGuard(candidate, isGlobal),
+            isChildrenPresenceGuard(candidate, libraryGlobal),
         )
     ) {
         return false;

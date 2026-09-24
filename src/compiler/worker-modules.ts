@@ -10,23 +10,8 @@ import type {
     WorkerCompilation,
 } from "./types.js";
 import { featureOrder, projectFeatures } from "./output-projection.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 import { commonSourceDirectory, sourceUnitStem } from "./source-units.js";
-
-function globalNamed(
-    frontend: CompilerProgram,
-    expression: ts.Expression,
-    name: string,
-): boolean {
-    const identifier = ts.isPropertyAccessExpression(expression)
-        ? expression.name
-        : expression;
-    return (
-        ts.isIdentifier(identifier) &&
-        identifier.text === name &&
-        isDefaultLibraryIdentifier(frontend.checker, identifier)
-    );
-}
 
 /** Replay a reached async API with an application scheduler and owned engines. */
 export class ApplicationRealmRequired extends Error {}
@@ -35,7 +20,7 @@ export class ApplicationRealmRequired extends Error {}
 export function usesWorkers(frontend: CompilerProgram): boolean {
     const visit = (node: ts.Node): boolean =>
         (ts.isNewExpression(node) &&
-            globalNamed(frontend, node.expression, "Worker")) ||
+            libraryGlobal(frontend.checker, node.expression) === "Worker") ||
         (ts.forEachChild(node, visit) ?? false);
     return frontend.program
         .getSourceFiles()
@@ -64,7 +49,7 @@ export function compileWorkerApplication(
     ): WorkerCompilation => ({
         namespace,
         register(node) {
-            if (!globalNamed(owner, node.expression, "Worker"))
+            if (libraryGlobal(owner.checker, node.expression) !== "Worker")
                 return undefined;
             if (node.arguments?.length !== 2)
                 return fail(
@@ -75,7 +60,7 @@ export function compileWorkerApplication(
             if (
                 !url ||
                 !ts.isNewExpression(url) ||
-                !globalNamed(owner, url.expression, "URL") ||
+                libraryGlobal(owner.checker, url.expression) !== "URL" ||
                 url.arguments?.length !== 2
             ) {
                 return fail(

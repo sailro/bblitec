@@ -4,7 +4,7 @@ import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
-import type { CompilerSymbols } from "./symbols.js";
+import { aliasTarget, type CompilerSymbols } from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -468,11 +468,7 @@ class ModuleInitializerPlanner {
                 moduleSymbol
                     ? this.checker
                           .getExportsOfModule(moduleSymbol)
-                          .map((symbol) =>
-                              (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                                  ? this.checker.getAliasedSymbol(symbol)
-                                  : symbol,
-                          )
+                          .map((symbol) => aliasTarget(this.checker, symbol))
                     : [],
             );
             const isExported = (name: ts.Identifier): boolean => {

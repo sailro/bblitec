@@ -26,7 +26,7 @@ interface AudioReceiverContext
             | "compileValue"
             | "unwrap"
             | "checker"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "emit"
         > {}
 
@@ -135,12 +135,7 @@ export function audioTypeof(
     expression: ts.Expression,
 ): "function" | "undefined" | undefined {
     const property = context.unwrap(expression);
-    if (
-        ts.isIdentifier(property) &&
-        property.text === "AudioContext" &&
-        context.isDefaultLibraryIdentifier(property)
-    )
-        return "function";
+    if (context.libraryGlobal(property) === "AudioContext") return "function";
     if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
     if (receiver?.kind !== "audio-context") return undefined;
@@ -157,14 +152,12 @@ export function audioTypeof(
 
 /** Prototype aliases preserve the same absent optional host capabilities. */
 export function audioPrototypeValue(
-    context: Pick<LoweringServices, "isDefaultLibraryIdentifier">,
+    context: Pick<LoweringServices, "libraryGlobal">,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
     if (
         expression.name.text !== "prototype" ||
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "AudioContext" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
+        context.libraryGlobal(expression.expression) !== "AudioContext"
     )
         return undefined;
     return {
@@ -182,18 +175,11 @@ export function audioPrototypeValue(
 export function compileAudioConstructor(
     context: Pick<
         LoweringServices,
-        | "isDefaultLibraryIdentifier"
-        | "reachFeature"
-        | "audioSessionCpp"
-        | "fail"
+        "libraryGlobal" | "reachFeature" | "audioSessionCpp" | "fail"
     >,
     expression: ts.NewExpression,
 ): Value | undefined {
-    if (
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "AudioContext" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
-    )
+    if (context.libraryGlobal(expression.expression) !== "AudioContext")
         return undefined;
     if (expression.arguments?.length)
         context.fail(
