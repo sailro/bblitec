@@ -2550,7 +2550,7 @@ export class DataTypeRegistry {
     }
 
     /** `fromTsType` in a stored position. */
-    private fromStoredTsType(
+    public fromStoredTsType(
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {

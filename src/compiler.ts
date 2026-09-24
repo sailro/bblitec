@@ -4581,12 +4581,18 @@ class Compiler implements LoweringServices {
             return false;
         }
         const typeSite = declaration.type ?? name;
-        let annotated = this.dataTypes.fromTsType(
-            declaration.type
-                ? this.checker.getTypeFromTypeNode(declaration.type)
-                : this.checker.getTypeAtLocation(name),
-            typeSite,
-        );
+        const declaredType = declaration.type
+            ? this.checker.getTypeFromTypeNode(declaration.type)
+            : this.checker.getTypeAtLocation(name);
+        // A rebound binding is storage: every later assignment writes a value
+        // of the declared type into it, so the declared type is mapped as a
+        // stored position. A local class it names takes its shared-object
+        // representation here exactly as it would as a field or an element;
+        // otherwise `let c: C | null = null` would keep the initializer's
+        // null as the binding's only representation.
+        let annotated = this.identifierIsRebound(name)
+            ? this.dataTypes.fromStoredTsType(declaredType, typeSite)
+            : this.dataTypes.fromTsType(declaredType, typeSite);
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
