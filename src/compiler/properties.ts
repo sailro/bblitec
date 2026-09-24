@@ -1725,7 +1725,7 @@ export function pickedMeshHandleCpp(
 
 /**
  * What property-access lowering reads of the compiler: the surfaces its
- * special readers take, and the members it reads itself.
+ * special readers take, and the further members it reads itself.
  */
 interface PropertyAccessContext
     extends
@@ -1739,24 +1739,8 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
-            | "checker"
             | "classLowerer"
-            | "compileValue"
-            | "cppString"
-            | "dataLowerer"
-            | "dataTypes"
-            | "emit"
-            | "fail"
             | "handleCollections"
-            | "isCanvasElement"
-            | "libraryGlobal"
-            | "options"
-            | "reachFeature"
-            | "reachJsData"
-            | "requireDefaultEngine"
-            | "requireEngine"
-            | "resolveStaticExpression"
-            | "unwrap"
             | "useNativeValue"
         > {
     /** Bound only while lowering a platform visibility callback body. */
