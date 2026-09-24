@@ -166,18 +166,20 @@ test(
         };
         featureFile(scenes[0]!, "physics:world");
         featureFile(scenes[1]!, "physics:world text:layout");
-        assert.deepEqual(profile(), ["physics", "png", "text-layout"]);
+        // Android links vcpkg's SDL: every profile requests it.
+        assert.deepEqual(profile(), ["physics", "png", "sdl", "text-layout"]);
         featureFile(scenes[0]!, "data:locale platform:http");
         assert.deepEqual(profile(), [
             "http",
             "locale",
             "physics",
             "png",
+            "sdl",
             "text-layout",
         ]);
         featureFile(scenes[0]!, "ui:rml audio:engine");
         featureFile(scenes[1]!, "ui:rml platform:window");
-        assert.deepEqual(profile(), ["png", "ui", "ui-svg"]);
+        assert.deepEqual(profile(), ["png", "sdl", "ui", "ui-svg"]);
     },
 );
 

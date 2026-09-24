@@ -1,3 +1,10 @@
+# SDL comes from vcpkg unless a trimmed SDL artifact replaces it: a build
+# naming one (BBLITE_SDL_DIR), and every shipping profile
+# (tools/shipping-profile.cmake), which always builds against one.
+if(NOT BBLITE_SDL_DIR AND NOT BBLITE_SDL_TRIMMED AND NOT "sdl" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "sdl")
+endif()
+
 # Image codecs reached by the scene's materialized assets: generation
 # writes the list into features.cmake, and a tree without one is not a
 # tree this file knows how to build.

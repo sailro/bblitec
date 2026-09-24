@@ -276,17 +276,20 @@ means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_
 
 Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
 `native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
+vcpkg's SDL is the `sdl` feature, requested unless a trimmed SDL artifact (`BBLITE_SDL_DIR`, every shipping
+build) replaces it.
 Each native macro has one owner and is defined in every unit that tests it: CMake derives the
 feature-keyed ones, generation writes its own decisions to `render_capabilities.hpp`. Guards are plain
 `#if X`; an undefined name in a project unit's `#if` is a compile error (`-Wundef`, MSVC `/we4668` with
 SDK and dependency headers external).
 
-Development shares `artifacts/vcpkg-installed/development-full`; `BBLITE_VCPKG_INSTALLED_ROOT` relocates
-it. Each `scene build` reconciles it once, before any configure (configures never run vcpkg), when the
-manifest, overlay ports, features, triplet or vcpkg changed. `tools/setup-worktree.ps1 -Path <path>
--Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg` junctions the install, so share it only
-between checkouts of the same `native/vcpkg.json` and overlay ports. Use `-Remove` to unlink junctions
-before removing a worktree.
+Development shares `artifacts/vcpkg-installed/development-full-<key>`, keyed by `native/vcpkg.json`,
+its configuration and the overlay ports; `BBLITE_VCPKG_INSTALLED_ROOT` relocates the root. Each
+`scene build` reconciles it once, before any configure (configures never run vcpkg), when the features,
+triplet or vcpkg changed; shipping installs are keyed the same way, and the three most recently used
+installs per name are kept. `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates
+outputs/shares caches; `-SharedVcpkg` junctions the install root, so checkouts of different manifests
+share it without reinstalling. Use `-Remove` to unlink junctions before removing a worktree.
 
 ### Concurrency
 

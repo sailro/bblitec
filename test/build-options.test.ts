@@ -79,6 +79,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
             "navigation-tile-cache",
             "physics",
             "png",
+            "sdl",
             "text-layout",
             "ui",
             "ui-svg",
