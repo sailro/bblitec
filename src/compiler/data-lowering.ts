@@ -889,6 +889,9 @@ export class DataLowerer {
             }
             return bound;
         }
+        if (ts.isPropertyAccessExpression(unwrapped) && mode === "write") {
+            this.context.classLowerer.refuseInheritedStaticWrite(unwrapped);
+        }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
@@ -7214,6 +7217,9 @@ export class DataLowerer {
 
     /** `key in object` as a condition. */
     public compileInOperator(expression: ts.BinaryExpression): string {
+        if (ts.isPrivateIdentifier(expression.left)) {
+            return this.context.classLowerer.compileBrandCheck(expression);
+        }
         const key = this.context.compileValue(expression.left);
         const owner = this.context.compileValue(expression.right);
         return this.membershipCpp(

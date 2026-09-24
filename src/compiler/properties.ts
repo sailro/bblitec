@@ -1881,6 +1881,12 @@ export class PropertyAccessLowerer {
         if (staticField?.initializer) {
             return this.context.compileValue(staticField.initializer);
         }
+        const staticStorage =
+            this.context.classLowerer.readStaticField(expression);
+        if (staticStorage) return staticStorage;
+        if (ownerExpression.kind === ts.SyntaxKind.SuperKeyword) {
+            return this.context.classLowerer.compileSuperProperty(expression);
+        }
         if (
             ts.isPropertyAccessExpression(ownerExpression) &&
             ownerExpression.name.text === "style"
@@ -1996,7 +2002,9 @@ export class PropertyAccessLowerer {
         // gives the ordinary record path its fields, getters and setters,
         // so `part.locked` and `part.size` read the same way whether the
         // receiver was just constructed or came out of an array.
-        const owner = this.context.classLowerer.hydrate(rawOwner) ?? rawOwner;
+        const owner =
+            this.context.classLowerer.hydrate(rawOwner, ownerExpression) ??
+            rawOwner;
         const httpProperty = httpResponseProperty(
             this.context.dataLowerer,
             owner,
@@ -2685,7 +2693,9 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const hydrated = this.context.classLowerer.hydrate(owner) ?? owner;
+        const hydrated =
+            this.context.classLowerer.hydrate(owner, expression.expression) ??
+            owner;
         const value = this.readOwnerProperty(hydrated, expression);
         return value &&
             (hydrated.kind === "record" || expression.questionDotToken)

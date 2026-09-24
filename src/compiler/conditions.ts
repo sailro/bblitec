@@ -55,6 +55,16 @@ export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
 
     /**
+     * An `instanceof` operand naming a global or a class: no local binds
+     * it, or the binding is the record a class with static state binds its
+     * name to.
+     */
+    private namesUnboundOrClass(name: ts.Identifier): boolean {
+        const bound = this.context.bindings.lookupOptional(name);
+        return !bound || bound.classStatics !== undefined;
+    }
+
+    /**
      * The C++ condition an expression tests, folded to `true`/`false`
      * where generation settles it.
      */
@@ -240,7 +250,7 @@ export class ConditionLowerer {
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.InstanceOfKeyword &&
                 ts.isIdentifier(unwrapped.right) &&
-                !this.context.bindings.lookupOptional(unwrapped.right)
+                this.namesUnboundOrClass(unwrapped.right)
             ) {
                 const global =
                     this.context.libraryGlobal(unwrapped.right) ?? "";

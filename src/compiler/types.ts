@@ -2046,6 +2046,13 @@ export interface ValueFields {
     /** Constructed class identity, retained when an inlined return wraps Value. */
     classDeclaration?: ts.ClassDeclaration;
     /**
+     * The concrete classes a stored instance read as `classDeclaration` can
+     * be at run time, when there are several; absent when its class is exact.
+     */
+    classCandidates?: readonly ts.ClassDeclaration[];
+    /** The class whose static fields this record holds: the value of a class name. */
+    classStatics?: ts.ClassDeclaration;
+    /**
      * What the class's own type parameters stand for on this instance.
      *
      * A generic class's method body is written against `P`, and the checker

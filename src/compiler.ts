@@ -308,7 +308,8 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
-import { ClassLowerer, rejectClassStaticBlocks } from "./compiler/classes.js";
+import { ClassLowerer } from "./compiler/classes.js";
+import { ClassHierarchy } from "./compiler/class-members.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -898,6 +899,7 @@ class Compiler implements LoweringServices {
         this.dataTypes = new DataTypeRegistry(
             checker,
             (node, message) => this.fail(node, message),
+            new ClassHierarchy(checker, program),
             options.workers !== undefined,
         );
         this.dataLowerer = new DataLowerer(this);
@@ -1369,7 +1371,7 @@ class Compiler implements LoweringServices {
             const moduleScope = this.bindings.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
-                    if (isModuleInitializerStatement(statement)) {
+                    if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);
                     }
                 }
@@ -1482,13 +1484,6 @@ class Compiler implements LoweringServices {
         );
         if (main) {
             this.hasMainEntry = true;
-            // Module scope beside `main` is not the program, but a class
-            // static block there still runs when the module evaluates.
-            for (const statement of this.sourceFile.statements) {
-                if (ts.isClassDeclaration(statement)) {
-                    rejectClassStaticBlocks(this, statement);
-                }
-            }
             return main.body!.statements;
         }
 
@@ -5831,6 +5826,13 @@ class Compiler implements LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
     ): Value {
+        const dispatched = this.classLowerer.dispatchGetter(
+            owner,
+            accessor,
+            (receiver, selected) =>
+                this.compileRecordGetter(receiver, selected),
+        );
+        if (dispatched) return dispatched;
         const statements = accessor.body?.statements ?? [];
         const only = statements.at(-1);
         if (!only || !ts.isReturnStatement(only) || !only.expression) {

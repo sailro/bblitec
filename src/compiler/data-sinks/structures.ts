@@ -274,7 +274,7 @@ function valueStruct(
     }
     // A structural view of a stored class binds its prototype methods to
     // the retained receiver, just as a view of a local class record does.
-    value = lowerer.context.classLowerer.hydrate(value) ?? value;
+    value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
         lowerer.context.dataTypes.cppType(dataType);
         const fields = lowerer.context.dataTypes.structFields(
@@ -286,11 +286,10 @@ function valueStruct(
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
-                        value.classDeclaration?.members.find(
-                            (member): member is ts.MethodDeclaration =>
-                                ts.isMethodDeclaration(member) &&
-                                ts.isIdentifier(member.name) &&
-                                member.name.text === field.sourceName,
+                        lowerer.context.classLowerer.viewMethod(
+                            value,
+                            field.sourceName,
+                            node,
                         );
                     if (method) {
                         return lowerer.context.compileStoredDataFunction(

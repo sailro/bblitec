@@ -37,6 +37,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `properties.ts` | Property rules and property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
+| `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
 | `emission-transaction.ts` | Undo journal of compiler state (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a declined or failed lowering replays it |

@@ -519,6 +519,10 @@ export interface LoweringServices {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined;
     resolveRecordValue(expression: ts.Expression): Value | undefined;
+    compileRecordGetter(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration,
+    ): Value;
     compileRecordSetter(
         owner: Value,
         setter: ts.SetAccessorDeclaration,

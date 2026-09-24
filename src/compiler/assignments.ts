@@ -495,6 +495,7 @@ export interface AssignmentContext
             | "noteTemporalRecordBoundary"
             | "isRuntimeResourceConstruction"
             | "checker"
+            | "classLowerer"
             | "dataTypes"
             | "dataLowerer"
             | "sceneManifest"
@@ -1271,7 +1272,9 @@ export function emitPropertyAssignment(
         return;
     }
     if (operator === "=") {
-        const owner = context.resolveRecordValue(left.expression);
+        const owner =
+            context.resolveRecordValue(left.expression) ??
+            context.classLowerer.storedSetterOwner(left);
         if (owner) {
             if (owner.nativeError)
                 context.fail(

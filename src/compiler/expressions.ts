@@ -581,7 +581,7 @@ export class ExpressionLowerer {
             ) {
                 this.context.fail(
                     unwrapped.parent,
-                    "Private brand checks are outside the supported subset.",
+                    "A private brand check is lowered only as a condition.",
                 );
             }
             const value = this.context.bindings.lookupOptional(unwrapped);
@@ -2260,6 +2260,22 @@ export class ExpressionLowerer {
 
     private compileCall(call: ts.CallExpression): Value {
         const target = this.context.unwrap(call.expression);
+        if (target.kind === ts.SyntaxKind.SuperKeyword) {
+            this.context.fail(
+                call,
+                "super(...) is lowered as a top-level statement of a derived " +
+                    "class constructor.",
+            );
+        }
+        if (
+            ts.isPropertyAccessExpression(target) &&
+            target.expression.kind === ts.SyntaxKind.SuperKeyword
+        ) {
+            return this.context.classLowerer.compileSuperMethodCall(
+                call,
+                target,
+            );
+        }
         const hostFunction = ts.isIdentifier(target)
             ? this.context.bindings.lookupOptional(target)?.hostFunction
             : ts.isPropertyAccessExpression(target)
@@ -4831,10 +4847,12 @@ export class ExpressionLowerer {
                     staticMethod,
                 );
             if (factory) return factory;
-            return this.context.userFunctions.compileCallbackCall(
-                this.context,
-                call,
-                staticMethod,
+            return this.context.classLowerer.withStaticReceiver(callee, () =>
+                this.context.userFunctions.compileCallbackCall(
+                    this.context,
+                    call,
+                    staticMethod,
+                ),
             );
         }
         // A method on a constructed instance inlines with `this`
@@ -4857,7 +4875,7 @@ export class ExpressionLowerer {
                   ? this.context.activeThis()
                   : this.compileValue(receiver);
             const instance = receiverValue
-                ? (this.context.classLowerer.hydrate(receiverValue) ??
+                ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
             const callableProperty = instance

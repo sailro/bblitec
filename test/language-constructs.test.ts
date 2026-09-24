@@ -2111,90 +2111,530 @@ check(
 `,
 );
 
-test("private brand checks refuse explicitly", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-        class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
-        if (!Tagged.has(new Tagged())) throw new Error("brand");
-    `),
-        /Private brand checks are outside the supported subset/,
+check(
+    "class-inheritance-construction-order-and-super",
+    `
+    const log: string[] = [];
+    function note(entry: string): number {
+        log.push(entry);
+        return log.length;
+    }
+    class Base {
+        readonly order = note("base field");
+        protected count = 0;
+        #secret = 7;
+        constructor(public label: string) {
+            note("base body " + label);
+        }
+        get secret(): number {
+            return this.#secret;
+        }
+        set secret(value: number) {
+            this.#secret = value;
+        }
+        get doubled(): number {
+            return this.count * 2;
+        }
+        bump(step: number = 1): number {
+            this.count += step;
+            return this.count;
+        }
+        name(): string {
+            return "base";
+        }
+        who(): string {
+            return this.name() + "/" + this.label;
+        }
+    }
+    class Middle extends Base {
+        readonly middle = note("middle field");
+        constructor(label: string, public extra: number) {
+            const prefix = "m-";
+            note("middle before super");
+            super(prefix + label);
+            note("middle body " + this.extra);
+        }
+        override name(): string {
+            return "middle(" + super.name() + ")";
+        }
+        override bump(step: number = 1): number {
+            return super.bump(step * 10);
+        }
+        get doubled(): number {
+            return super.doubled + 1;
+        }
+    }
+    class Leaf extends Middle {
+        readonly leaf = note("leaf field");
+        override name(): string {
+            return "leaf:" + super.name();
+        }
+    }
+    const leaf = new Leaf("x", 5);
+    if (log.join("|") !== "middle before super|base field|base body m-x|middle field|middle body 5|leaf field")
+        throw new Error("construction order " + log.join("|"));
+    if (leaf.order !== 2 || leaf.middle !== 4 || leaf.leaf !== 6) throw new Error("field initializer values");
+    if (leaf.who() !== "leaf:middle(base)/m-x") throw new Error("virtual chain " + leaf.who());
+    if (leaf.bump() !== 10 || leaf.bump(2) !== 30) throw new Error("super bump");
+    if (leaf.doubled !== 61) throw new Error("super getter " + leaf.doubled);
+    leaf.secret = 11;
+    if (leaf.secret !== 11) throw new Error("inherited accessor pair");
+    if (leaf.extra !== 5 || leaf.label !== "m-x") throw new Error("parameter properties");
+    if (!(leaf instanceof Base) || !(leaf instanceof Middle) || !(leaf instanceof Leaf)) throw new Error("instanceof chain");
+    const base = new Base("b");
+    if (base instanceof Middle) throw new Error("base is not middle");
+    if (base.who() !== "base/b" || base.doubled !== 0) throw new Error("base methods");
+    class Plain extends Base {}
+    const plain = new Plain("p");
+    if (plain.who() !== "base/p" || plain.bump(3) !== 3) throw new Error("implicit constructor");
+`,
+);
+
+check(
+    "class-inheritance-generic-base",
+    `
+    class Box<T> {
+        constructor(readonly value: T) {}
+        get(): T {
+            return this.value;
+        }
+        pair(other: T): T[] {
+            return [this.value, other];
+        }
+    }
+    class NumberBox extends Box<number> {
+        doubled(): number {
+            return this.get() * 2;
+        }
+    }
+    class Labeled<T> extends Box<T> {
+        constructor(value: T, readonly label: string) {
+            super(value);
+        }
+    }
+    const box = new NumberBox(3);
+    if (box.get() + 1 !== 4 || box.doubled() !== 6 || box.pair(5).length !== 2) throw new Error("generic base");
+    const labeled = new Labeled<string>("v", "l");
+    if (labeled.get() + labeled.label !== "vl") throw new Error("generic chain");
+`,
+);
+
+check(
+    "class-hierarchy-virtual-dispatch-through-stored-references",
+    `
+    abstract class Shape {
+        constructor(readonly name: string) {}
+        abstract area(): number;
+        describe(): string {
+            return this.name + ":" + this.area();
+        }
+        get kind(): string {
+            return "shape";
+        }
+    }
+    class Square extends Shape {
+        constructor(readonly side: number) {
+            super("square");
+        }
+        area(): number {
+            return this.side * this.side;
+        }
+        get kind(): string {
+            return "square";
+        }
+    }
+    class Circle extends Shape {
+        radius: number;
+        constructor(radius: number) {
+            super("circle");
+            this.radius = radius;
+        }
+        area(): number {
+            return 3 * this.radius * this.radius;
+        }
+    }
+    class Unit extends Square {
+        constructor() {
+            super(1);
+        }
+        describe(): string {
+            return "unit/" + super.describe();
+        }
+    }
+    const shapes: Shape[] = [new Square(2), new Circle(1), new Unit()];
+    let total = 0;
+    const names: string[] = [];
+    for (const shape of shapes) {
+        total += shape.area();
+        names.push(shape.describe());
+        names.push(shape.kind);
+    }
+    if (total !== 4 + 3 + 1) throw new Error("total " + total);
+    if (names.join(",") !== "square:4,square,circle:3,shape,unit/square:1,square") throw new Error("names " + names.join(","));
+    let squares = 0;
+    for (const shape of shapes) {
+        if (shape instanceof Square) squares++;
+    }
+    if (squares !== 2) throw new Error("instanceof " + squares);
+    const areas = shapes.map((shape) => shape.area());
+    if (areas.join(",") !== "4,3,1") throw new Error("areas " + areas.join(","));
+`,
+);
+
+check(
+    "class-hierarchy-with-callbacks-and-containers",
+    `
+    abstract class Animal {
+        static population = 0;
+        protected energy = 10;
+        readonly listeners: Array<(animal: Animal) => void> = [];
+        constructor(readonly name: string) {
+            Animal.population++;
+        }
+        abstract speak(): string;
+        get tired(): boolean {
+            return this.energy < 5;
+        }
+        set boost(amount: number) {
+            this.energy += amount;
+        }
+        act(times: number): number {
+            for (let index = 0; index < times; index++) this.energy -= this.cost();
+            for (const listener of this.listeners) listener(this);
+            return this.energy;
+        }
+        protected cost(): number {
+            return 1;
+        }
+    }
+    class Dog extends Animal {
+        tricks: string[] = [];
+        speak(): string {
+            return this.name + " barks";
+        }
+        protected override cost(): number {
+            return 2;
+        }
+        set boost(amount: number) {
+            this.energy += amount * 2;
+        }
+    }
+    class Cat extends Animal {
+        lives = 9;
+        speak(): string {
+            return this.name + " meows x" + this.lives;
+        }
+        override get tired(): boolean {
+            return false;
+        }
+    }
+    class Kitten extends Cat {
+        override speak(): string {
+            return "tiny " + super.speak();
+        }
+    }
+    const zoo = new Map<string, Animal>();
+    const seen = new Set<Animal>();
+    const heard: string[] = [];
+    function adopt(animal: Animal): void {
+        zoo.set(animal.name, animal);
+        animal.listeners.push((who) => {
+            seen.add(who);
+            heard.push(who.speak());
+        });
+    }
+    adopt(new Dog("rex"));
+    adopt(new Cat("tom"));
+    adopt(new Kitten("kit"));
+    if (Animal.population !== 3) throw new Error("population " + Animal.population);
+    const energies: number[] = [];
+    zoo.forEach((animal) => {
+        energies.push(animal.act(3));
+    });
+    if (energies.join(",") !== "4,7,7") throw new Error("energies " + energies.join(","));
+    if (heard.join("|") !== "rex barks|tom meows x9|tiny kit meows x9") throw new Error("heard " + heard.join("|"));
+    if (seen.size !== 3) throw new Error("seen");
+    const tired = [...zoo.values()].filter((animal) => animal.tired).map((animal) => animal.name);
+    if (tired.join(",") !== "rex") throw new Error("tired " + tired.join(","));
+    for (const animal of zoo.values()) animal.boost = 3;
+    const after = [...zoo.values()].map((animal) => animal.act(0));
+    if (after.join(",") !== "10,10,10") throw new Error("boost " + after.join(","));
+    const cats = [...zoo.values()].filter((animal) => animal instanceof Cat).length;
+    if (cats !== 2) throw new Error("cats " + cats);
+    const rex = zoo.get("rex");
+    if (rex instanceof Dog) rex.tricks.push("sit");
+    const dog = zoo.get("rex");
+    if (!(dog instanceof Dog) || dog.tricks.length !== 1) throw new Error("narrowed subclass field");
+    const sorted = [...zoo.values()].sort((left, right) => left.speak().length - right.speak().length).map((animal) => animal.name);
+    if (sorted.join(",") !== "rex,tom,kit") throw new Error("sorted " + sorted.join(","));
+`,
+);
+
+check(
+    "class-setter-on-stored-instance",
+    `
+    class Part {
+        energy = 1;
+        set boost(amount: number) {
+            this.energy += amount;
+        }
+    }
+    const parts: Part[] = [new Part(), new Part()];
+    for (const part of parts) part.boost = 2;
+    if (parts[0]!.energy !== 3) throw new Error("setter");
+`,
+);
+
+check(
+    "class-static-fields-and-blocks",
+    `
+    const order: string[] = [];
+    class Counter {
+        static created = 0;
+        static readonly limit = 3;
+        static names: string[] = [];
+        static last = "";
+        static {
+            order.push("block " + Counter.created);
+            this.last = "init";
+        }
+        static tail = Counter.created + 10;
+        readonly id: number;
+        constructor(readonly name: string) {
+            Counter.created += 1;
+            this.id = Counter.created;
+            Counter.names.push(name);
+            Counter.last = name;
+        }
+        static reset(): void {
+            this.created = 0;
+            this.names = [];
+        }
+        static describe(): string {
+            return this.last + "#" + this.created + "/" + Counter.limit;
+        }
+        tag(): string {
+            return this.name + "@" + this.id + "of" + Counter.created;
+        }
+    }
+    order.push("after class");
+    if (order.join(",") !== "block 0,after class") throw new Error("static block order " + order.join(","));
+    if (Counter.tail !== 10 || Counter.last !== "init") throw new Error("static initializers");
+    const a = new Counter("a");
+    const b = new Counter("b");
+    if (Counter.created !== 2 || Counter.names.join(",") !== "a,b") throw new Error("shared statics");
+    if (a.tag() !== "a@1of2" || b.tag() !== "b@2of2") throw new Error("instance reads statics");
+    Counter.created++;
+    Counter.created *= 2;
+    if (Counter.describe() !== "b#6/3") throw new Error("static method this " + Counter.describe());
+    Counter.reset();
+    if (Counter.created !== 0 || Counter.names.length !== 0) throw new Error("static reset");
+    class Registry {
+        static count = 0;
+        static register(): number {
+            return ++this.count;
+        }
+    }
+    class Special extends Registry {
+        static label = "special";
+        static make(): string {
+            const seen = Special.count;
+            const next = Registry.register();
+            return this.label + seen + next;
+        }
+    }
+    Registry.register();
+    if (Special.count !== 1) throw new Error("inherited static read");
+    if (Special.make() !== "special12") throw new Error("inherited static method " + Special.count);
+    if (Registry.count !== 2) throw new Error("shared inherited storage");
+    function makeLocal(start: number): number {
+        class Local {
+            static value = start;
+            static { Local.value *= 2; }
+        }
+        Local.value += 1;
+        return Local.value;
+    }
+    if (makeLocal(3) !== 7 || makeLocal(5) !== 11) throw new Error("local class statics");
+`,
+);
+
+check(
+    "class-static-class-typed-fields",
+    `
+    class Settings {
+        static #instance: Settings | null = null;
+        volume = 5;
+        static get(): Settings {
+            if (Settings.#instance === null) Settings.#instance = new Settings();
+            return Settings.#instance;
+        }
+    }
+    Settings.get().volume = 7;
+    if (Settings.get().volume !== 7) throw new Error("singleton");
+    class Pool {
+        static items: number[] = [];
+        static take(): number {
+            return this.items.length > 0 ? this.items.pop()! : -1;
+        }
+    }
+    Pool.items.push(3, 4);
+    if (Pool.take() !== 4 || Pool.take() !== 3 || Pool.take() !== -1) throw new Error("pool");
+`,
+);
+
+check(
+    "class-private-brand-checks",
+    `
+    class Token {
+        #value: number;
+        static #issued = 0;
+        constructor(value: number) {
+            this.#value = value;
+            Token.#issued++;
+        }
+        static isToken(candidate: object): boolean {
+            return #value in candidate;
+        }
+        static isTokenClass(candidate: object): boolean {
+            return #issued in candidate;
+        }
+        equals(other: Token | Other): boolean {
+            return #value in other && other.#value === this.#value;
+        }
+    }
+    class Derived extends Token {}
+    class Other {
+        value = 1;
+    }
+    const token = new Token(3);
+    const derived = new Derived(3);
+    const other = new Other();
+    if (!Token.isToken(token) || !Token.isToken(derived) || Token.isToken(other)) throw new Error("instance brand");
+    if (!token.equals(derived) || token.equals(other)) throw new Error("brand narrowing");
+    const plain = { value: 1 };
+    if (Token.isToken(plain)) throw new Error("plain object brand");
+    if (!Token.isTokenClass(Token) || Token.isTokenClass(token)) throw new Error("static brand");
+    if (Token.isTokenClass(Derived)) throw new Error("static brand is not inherited");
+`,
+);
+
+check(
+    "class-static-block-at-module-evaluation",
+    `
+    let hits = 0;
+    class Counter {
+        static readonly base = 2;
+        static { hits = 5; }
+        value(): number { return hits; }
+    }
+    class Unused { static { hits += 1; } }
+    function main(): void {
+        if (new Counter().value() !== 6 || Counter.base + hits !== 8) throw new Error("static blocks " + hits);
+    }
+    main();
+`,
+);
+
+test("imported class static fields and blocks run when their module evaluates", async (t) => {
+    const directory = resolve("artifacts/class-static-state-module");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "counter.ts"),
+        `export class Counter {
+            static count = 0;
+            static readonly step = 2;
+            static { Counter.count = 10; }
+            static next(): number { this.count += Counter.step; return this.count; }
+        }
+        let evaluated = 0;
+        class Unused { static { evaluated += 1; } }
+        export function peek(): number { return Counter.count + evaluated * 100; }`,
+    );
+    const result = compileSource(
+        `import { Counter, peek } from "./counter.js";
+        if (Counter.next() !== 12 || peek() !== 112) throw new Error("imported statics " + peek());`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "class-static-state-module",
+        result.cpp,
     );
 });
 
-test("class static blocks refuse explicitly", () => {
-    // Reached at the declaration: the block runs even though nothing
-    // constructs or calls the class.
-    assert.throws(
-        () =>
-            compileSource(`
-        let hits = 0;
-        class Counter { static { hits = 5; } }
-        if (hits !== 5) throw new Error("static block");
-    `),
-        /Class static blocks are outside the supported subset/,
-    );
-    // Reached through construction of a class declared beside `main`.
-    assert.throws(
-        () =>
-            compileSource(`
-        let hits = 0;
-        class Counter {
-            static { hits = 5; }
-            value(): number { return hits; }
-        }
-        async function main(): Promise<void> {
-            if (new Counter().value() !== 5) throw new Error("static block");
-        }
-        main();
-    `),
-        /Class static blocks are outside the supported subset/,
-    );
-    // Reached through a static member.
-    assert.throws(
-        () =>
-            compileSource(`
-        let hits = 0;
-        class Counter {
-            static readonly base = 2;
-            static { hits = 5; }
-        }
-        async function main(): Promise<void> {
-            if (Counter.base + hits !== 7) throw new Error("static block");
-        }
-        main();
-    `),
-        /Class static blocks are outside the supported subset/,
-    );
-    // Declared beside `main` and never referenced: the module still
-    // evaluates the class.
-    assert.throws(
-        () =>
-            compileSource(`
-        class Unused { static { console.log("static block"); } }
-        async function main(): Promise<void> {
-            console.log("main");
-        }
-        main();
-    `),
-        /Class static blocks are outside the supported subset/,
-    );
-    // Declared in an imported module that nothing else makes observable.
-    const directory = resolve("artifacts/class-static-block-module");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-        join(directory, "feature.ts"),
-        `class Unused { static { console.log("static block"); } }
-        export function describe(): string { return "feature"; }`,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                'import { describe } from "./feature.js"; console.log(describe());',
-                { fileName: join(directory, "entry.ts") },
-            ),
-        /Class static blocks are outside the supported subset/,
-    );
+test("class inheritance and static state refuse what one record or struct cannot represent", () => {
+    const refusals: ReadonlyArray<readonly [string, RegExp]> = [
+        [
+            `class A { constructor(readonly x: number) {} }
+            class B extends A { constructor(flag: boolean) { if (flag) { super(1); } else { super(2); } } }
+            const b = new B(true); const unused = b.x;`,
+            /super\(\.\.\.\) is lowered as a top-level statement/,
+        ],
+        [
+            `class A { static count = 0; }
+            class B extends A {}
+            B.count++;`,
+            /Static field 'count' is inherited by class 'B'/,
+        ],
+        [
+            `class A { static count = 0; static bump(): void { this.count += 1; } }
+            class B extends A {}
+            B.bump();`,
+            /Static field 'count' is inherited by class 'B'/,
+        ],
+        [
+            `class Box<T> { constructor(readonly value: T) {} }
+            class NumberBox extends Box<number> {}
+            const boxes: Box<number>[] = [new NumberBox(1)];
+            const unused = boxes.length;`,
+            /is generic; a stored instance of a hierarchy needs one layout/,
+        ],
+        [
+            `abstract class A {}
+            class B extends A { tag = 1; }
+            class C extends A { tag = "x"; }
+            const all: A[] = [new B(), new C()];
+            const unused = all.length;`,
+            /Field 'tag' has a different native type in class 'C'/,
+        ],
+        [
+            `class Failure extends Error { constructor() { super("x"); } }
+            const failure = new Failure(); const unused = failure.message;`,
+            /extends 'Error', which is not a local class with a body/,
+        ],
+        [
+            `class A { #x = 1; readA(): number { return this.#x; } }
+            class B extends A { #x = 2; readB(): number { return this.#x; } }
+            const b = new B(); const unused = b.readA() + b.readB();`,
+            /Private name '#x' is declared by both 'A' and 'B'/,
+        ],
+        [
+            `class TreeNode {
+                children: TreeNode[] = [];
+                constructor(readonly value: number) {}
+                sum(): number { let total = this.value; for (const child of this.children) total += child.sum(); return total; }
+            }
+            const root = new TreeNode(1); root.children.push(new TreeNode(2));
+            const unused = root.sum();`,
+            /calls itself on another stored instance/,
+        ],
+        [
+            `class A { value = 1; }
+            class B extends A { value!: number; }
+            const b = new B(); const unused = b.value;`,
+            /redeclares an inherited field without an initializer/,
+        ],
+        [
+            `class A { value = 1; }
+            class B extends A { read(): number { return super.value; } }
+            const b = new B(); const unused = b.read();`,
+            /'super\.value' reads a base class accessor/,
+        ],
+    ];
+    for (const [source, message] of refusals) {
+        assert.throws(() => compileSource(source), message);
+    }
 });
 
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {

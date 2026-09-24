@@ -1136,7 +1136,10 @@ export class UserFunctionLowerer {
                 (declaration.body !== undefined &&
                     someAnalysisNode(
                         declaration.body,
-                        (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                        // `super.m()` runs on the receiver as `this.m()` does.
+                        (node) =>
+                            node.kind === ts.SyntaxKind.ThisKeyword ||
+                            node.kind === ts.SyntaxKind.SuperKeyword,
                         { types: "skip" },
                     )) ||
                 [...this.directCalls(declaration)].some(visit)

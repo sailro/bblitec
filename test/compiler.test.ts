@@ -3381,22 +3381,19 @@ test("folds static readonly class scalars", () => {
     assert.doesNotMatch(result.cpp, /class_field_GRAVITY/);
 });
 
-test("rejects class inheritance", () => {
+test("rejects inheritance from something other than a local class", () => {
     assert.throws(
         () =>
             compileSource(`
-                class Base {
-                    protected n = 1;
-                }
-                class Derived extends Base {
+                class Derived extends Map<string, number> {
                     bump(): void {
-                        this.n += 1;
+                        this.set("n", 1);
                     }
                 }
                 const derived = new Derived();
                 derived.bump();
             `),
-        /inheritance is outside the supported subset/,
+        /extends 'Map', which is not a local class with a body/,
     );
 });
 
