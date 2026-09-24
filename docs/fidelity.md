@@ -65,7 +65,9 @@ MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
 ### Numeric width
 
-JavaScript numbers remain double until source Float32 stores. Matrix order, layout and rounding are
+JavaScript numbers remain double until source Float32 stores; a `for` counter that starts at an integer,
+steps by an integer and is written and captured nowhere else counts in 64 bits and converts at each read.
+Matrix order, layout and rounding are
 part of the contract. Signed-zero byte differences can remain despite numeric equality. GLTF light
 scalars/colors use float storage, clamping oversized ranges; spot-angle math remains double until its
 uniform store. Imported cameras retain double fields and source Float32 matrices.

@@ -34,6 +34,34 @@ check(
 );
 
 check(
+    "integer-loop-counters",
+    `
+    const values: number[] = [5, 7, 11, 13];
+    let text = "";
+    let total = 0;
+    for (let i = 0; i < values.length; i++) total += values[i]! * i;
+    for (let i = -3; i <= 3; i += 3) text += i + ",";
+    for (let i = 10; i > 0; i -= 4) text += (i / 4) + ";";
+    for (let i = 3; i >= 0; i--) {
+        if (i === 2) continue;
+        text += (i % 2) + (1 / (i - 1)) + "|";
+    }
+    for (let i = 1; i < 4; i++) for (let j = 1; j < 3; j++) total += i / j;
+    let captured = 0;
+    for (let i = 0; i < 3; i++) {
+        const read = () => i;
+        captured += read();
+    }
+    for (let i = 0; i < 5; i++) {
+        if (i === 1) i += 1;
+        total += i;
+    }
+    if (text !== "-3,0,3,2.5;1.5;0.5;1.5|Infinity|-1|") throw new Error("counted text " + text);
+    if (total !== 86 || captured !== 3) throw new Error("counted totals " + total + " " + captured);
+`,
+);
+
+check(
     "string-collection-foreach",
     `
     const names = new Set<string>(["alpha", "beta"]);

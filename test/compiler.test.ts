@@ -2073,14 +2073,15 @@ test("keeps canonical length-bound loop indices raw and checks the rest", () => 
     // The canonical loops (plain and with a pure Math call) keep the
     // raw fast path over their own induction variable.
     const rawReads =
-        result.cpp.match(/v_values\[bbl::js::array_index\(v_\w+\)\]/g) ?? [];
+        result.cpp.match(/v_values\[static_cast<std::size_t>\(v_\w+\)\]/g) ??
+        [];
     assert.equal(rawReads.length, 2);
     // The stride loop's condition no longer proves the read, and the
     // pop() in the third loop's body could shrink the array mid-walk,
     // so both read through the located checked accessor.
     const checkedReads =
         result.cpp.match(
-            /bbl::js::array_index_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\)/g,
+            /bbl::js::array_index_checked\(v_values, static_cast<double>\(v_\w+\), "[^"]+:\d+:\d+"\)/g,
         ) ?? [];
     assert.equal(checkedReads.length, 2);
 });
@@ -2104,12 +2105,12 @@ test("splits array writes between growth-proven and checked arms", () => {
     // are untouched either way.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_write\(v_values, bbl::js::array_index\(v_\w+\)\) = /,
+        /bbl::js::array_index_write\(v_values, static_cast<std::size_t>\(v_\w+\)\) = /,
     );
     // The unproven stride index writes through the checked grower.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_write_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\) = /,
+        /bbl::js::array_index_write_checked\(v_values, static_cast<double>\(v_\w+\), "[^"]+:\d+:\d+"\) = /,
     );
 });
 
@@ -2134,7 +2135,7 @@ test("emits a checked read for a dead-guarded static out-of-bounds index", () =>
 
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\([^,]+, \(v_\w+_s - 1\.0\), "[^"]+:\d+:\d+"\)/,
+        /bbl::js::array_index_checked\([^,]+, \(static_cast<double>\(v_\w+_s\) - 1\.0\), "[^"]+:\d+:\d+"\)/,
     );
 });
 
@@ -6462,7 +6463,9 @@ test("lowers numeric for and while loops", () => {
     );
 
     const writes = [
-        ...result.cpp.matchAll(/(v_fn\d+)_samples \+= v_\w+_index;/g),
+        ...result.cpp.matchAll(
+            /(v_fn\d+)_samples \+= static_cast<double>\(v_\w+_index\);/g,
+        ),
     ];
     assert.equal(writes.length, 1);
     const scope = writes[0]![1];
@@ -6543,7 +6546,7 @@ test("keeps the for incrementor reachable from continue", () => {
 
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_index < bblscene::count\(\); v_block\d+_index\+\+\) \{/,
+        /for \(; static_cast<double>\(v_block\d+_index\) < bblscene::count\(\); \+\+v_block\d+_index\) \{/,
     );
     assert.match(result.cpp, /continue;/);
 });
@@ -6730,10 +6733,12 @@ test("keeps large constant-count data loops at runtime", () => {
 
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_i < 256\.0; v_block\d+_i\+\+\) \{/,
+        /for \(; v_block\d+_i < 256; \+\+v_block\d+_i\) \{/,
     );
     assert.equal(
-        result.cpp.match(/bbl::js::to_uint8\(v_block\d+_i\)/g)?.length,
+        result.cpp.match(
+            /bbl::js::to_uint8\(static_cast<double>\(v_block\d+_i\)\)/g,
+        )?.length,
         1,
     );
 });
@@ -6752,7 +6757,7 @@ test("keeps helper construction loops native with every composition row", () => 
         }
     `);
 
-    assert.match(result.cpp, /for \(; \w+ < 40\.0; \w+\+\+\)/);
+    assert.match(result.cpp, /for \(; \w+ < 40; \+\+\w+\)/);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 40);
     assert.ok(
@@ -6874,7 +6879,10 @@ test("keeps the run-time length where the container is resized", () => {
         rows.push([7, 8]);
     `);
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < bbl::js::array_length/,
+    );
 });
 
 test("withdraws the length fold from a container handed to a call", () => {
@@ -6895,7 +6903,10 @@ test("withdraws the length fold from a container handed to a call", () => {
         }
     `);
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < bbl::js::array_length/,
+    );
     assert.match(
         result.cpp,
         /void grow\(bbl::js::Array<double>& v_fn\d+_list\)/,
@@ -8289,7 +8300,10 @@ test("keeps a resolved browser number in a native counted loop", () => {
         { search: "?count=40" },
     );
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < 40\.0;/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < 40\.0;/,
+    );
     assert.doesNotMatch(result.cpp, /Browser-dependent condition/);
 });
 

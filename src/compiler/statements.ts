@@ -31,6 +31,12 @@ import {
     walkReachedLoopNodes,
 } from "./resource-loops.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
+import {
+    integerCounterRead,
+    integerLoopConditionCpp,
+    integerLoopCounter,
+    integerLoopStepCpp,
+} from "./integer-loops.js";
 import { staticNumberValue } from "./option-helpers.js";
 import {
     argumentAt,
@@ -1639,7 +1645,24 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            if (statement.initializer) {
+            const counter = integerLoopCounter(context, statement);
+            const counterCpp =
+                counter && context.bindings.cppIdentifier(counter.binding.text);
+            if (counter && counterCpp) {
+                context.emit({
+                    kind: "declaration",
+                    type: "std::int64_t",
+                    name: counterCpp,
+                    initializer: String(counter.start),
+                    attributes: "[[maybe_unused]] ",
+                });
+                context.bindings.defineVariable(counter.binding, {
+                    kind: "number",
+                    cpp: integerCounterRead(counterCpp),
+                    nativeBinding: true,
+                    integerCounterCpp: counterCpp,
+                });
+            } else if (statement.initializer) {
                 if (ts.isVariableDeclarationList(statement.initializer)) {
                     for (const declaration of statement.initializer
                         .declarations) {
@@ -1654,18 +1677,30 @@ export class StatementLowerer {
             this.inRuntimeIteration(
                 context,
                 () => {
-                    const condition = statement.condition
-                        ? this.compileRepeatedCondition(
-                              context,
-                              statement.condition,
-                          )
-                        : context.workerCheckpointCpp()
-                          ? `(${context.workerCheckpointCpp()}, true)`
-                          : "";
+                    const nativeCondition =
+                        counter &&
+                        counterCpp &&
+                        integerLoopConditionCpp(counter, counterCpp);
+                    const checkpoint = context.workerCheckpointCpp();
+                    const condition = nativeCondition
+                        ? checkpoint
+                            ? `(${checkpoint}, ${nativeCondition})`
+                            : nativeCondition
+                        : statement.condition
+                          ? this.compileRepeatedCondition(
+                                context,
+                                statement.condition,
+                            )
+                          : checkpoint
+                            ? `(${checkpoint}, true)`
+                            : "";
                     // The incrementor belongs in the for-header so `continue`
                     // reaches it, matching JavaScript loop semantics.
-                    let header = "";
-                    if (statement.incrementor) {
+                    let header =
+                        counter && counterCpp
+                            ? integerLoopStepCpp(counter, counterCpp)
+                            : "";
+                    if (statement.incrementor && !counter) {
                         const lines = this.inRuntimeControlFlow(context, () =>
                             context.captureEmittedLines(() => {
                                 this.emitExpression(

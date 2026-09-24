@@ -88,6 +88,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
+import { integerCounterRead } from "./integer-loops.js";
 
 /** Container length mutations, isolated by checker and source file. */
 const resizedSymbolsByChecker = new EmissionWeakMap<
@@ -2945,7 +2946,11 @@ export class DataLowerer {
             ? this.context.allocateTemporaryCppName("indexed_owner")
             : owner.cpp;
         this.context.reachJsData();
-        const nativeIndex = `bbl::js::array_index(${index})`;
+        // Only proven arms use it: a proven counter is a non-negative integer.
+        const counter = this.integerCounterIndex(access.argumentExpression);
+        const nativeIndex = counter
+            ? `static_cast<std::size_t>(${counter})`
+            : `bbl::js::array_index(${index})`;
         // Index provenance decides the emission arm. An index the
         // compiler proves in bounds — a static index against a
         // statically known length, or the induction variable of a
@@ -3118,6 +3123,19 @@ export class DataLowerer {
             }
         }
         return this.indexBoundByCanonicalLoop(access);
+    }
+
+    /** The native counter an index names when it is a counted loop's own counter. */
+    private integerCounterIndex(expression: ts.Expression): string | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : undefined;
+        const counter = value?.integerCounterCpp;
+        return counter !== undefined &&
+            value!.cpp === integerCounterRead(counter)
+            ? counter
+            : undefined;
     }
 
     /**
