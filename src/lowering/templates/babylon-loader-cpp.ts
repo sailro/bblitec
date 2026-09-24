@@ -318,9 +318,9 @@ ${meshClones ? "    geometry.bind_vertices.resize(vertex_count);" : ""}
 ${meshClones ? "        geometry.bind_vertices[index] = vertex;" : ""}
     }
     geometry.indices = indices;
-    const auto index = static_cast<std::uint32_t>(engine.geometries.size());
-    engine.geometries.push_back(std::move(geometry));
-    return index;
+    // An asset's records keep their slots after retirement.
+    geometry.slot_reserved = true;
+    return store_geometry_record(engine, std::move(geometry));
 }
 
 std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode>& nodes,
@@ -339,12 +339,11 @@ ${
         transform.rotation, transform.scaling};`
         : ""
 }
-    const auto mesh_index = static_cast<std::uint32_t>(engine.meshes.size());
-    engine.meshes.push_back(std::move(mesh));
+    mesh.asset_indexed = true;
     BabylonHierarchyNode node;
     node.id = id;
     node.transform = transform;
-    node.mesh = MeshHandle{mesh_index};
+    node.mesh = store_mesh_record(engine, std::move(mesh));
     const auto index = nodes.size();
     nodes.push_back(std::move(node));
     return index;

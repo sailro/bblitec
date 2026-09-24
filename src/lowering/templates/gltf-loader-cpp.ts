@@ -1456,8 +1456,12 @@ ${
             geometry.world_bounds_max = world_max;
 `
         : ""
-}            engine.geometries.push_back(std::move(geometry));
+}            // The asset's animation bindings name this geometry by index.
+            geometry.slot_reserved = true;
+            const std::uint32_t geometry_slot =
+                store_geometry_record(engine, std::move(geometry));
             MeshRecord record;
+            record.asset_indexed = true;
             record.scene_node_name = string_or(node, "name");
             if (record.scene_node_name.empty()) {
                 record.scene_node_name = "gltf_node_" +
@@ -1465,7 +1469,7 @@ ${
             }
             record.name = required(planned, "name").as_string();
             record.primitive = PrimitiveKind::gltf;
-            record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
+            record.geometry = geometry_slot;
             // src/material/pbr/fragments/refraction-rtt-fragment.ts,
             // makeRefractionMod/thicknessScaleLine: the refraction fragment scales its
             // thickness lanes by \`ts = max(length(mesh.world[0].xyz),
@@ -1519,9 +1523,9 @@ ${
                 !record.instance_matrices.empty();
             record.instance_count = static_cast<std::uint32_t>(
                 record.instance_matrices.size());
-            engine.meshes.push_back(std::move(record));
-            const std::uint32_t mesh_record_index =
-                static_cast<std::uint32_t>(engine.meshes.size() - 1);
+            const MeshHandle mesh_handle =
+                store_mesh_record(engine, std::move(record));
+            const std::uint32_t mesh_record_index = mesh_handle.value;
             if (deformed_geometry) {
                 const std::size_t skin_index =
                     planned_skin
@@ -1604,7 +1608,7 @@ ${
                         mesh_world,
                     });
             }
-            asset.meshes.push_back(MeshHandle{mesh_record_index});${
+            asset.meshes.push_back(mesh_handle);${
                 interactivity
                     ? `
             // Source applyAsset annotates only meshes reached by its node map.
@@ -1615,7 +1619,7 @@ ${
             }${
                 interactivity || animationPointer
                     ? `
-            asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});`
+            asset.node_meshes[node_index].push_back(mesh_handle);`
                     : ""
             }
     }

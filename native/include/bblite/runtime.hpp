@@ -387,6 +387,13 @@ struct UiClientRect {
 
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
+    /**
+     * The slot's `MeshRecord::generation` when this handle was issued. A
+     * retired record's slot is reused by a later mesh under the next
+     * generation, so a handle kept past its mesh's disposal no longer
+     * names the slot's occupant (`mesh_handle_current`).
+     */
+    std::uint32_t generation = 0;
 
     // A handle is an id, so comparing ids is exactly the object
     // identity JavaScript compares meshes by.
@@ -1999,6 +2006,12 @@ struct ModelGeometry {
      * scanning every record the engine ever created.
      */
     std::uint32_t owners = 1;
+    /**
+     * Whether a table outside the mesh records (a loader's animation
+     * bindings) or a retired record that keeps its slot may name this
+     * geometry, so its slot is never reused.
+     */
+    bool slot_reserved = false;
 };
 
 /**
@@ -2011,10 +2024,10 @@ template <typename T> void release_storage(std::vector<T>& storage) {
 }
 
 /**
- * Frees every array a retired geometry holds, keeping the slot (bounds,
- * topology, versions) so the handle stays valid. Measured on the voxel
- * sprint: 188 retired chunk geometries held 46.7 MB under the assignment
- * form this replaces.
+ * Frees every array a retired geometry holds, keeping its bounds, topology
+ * and versions for a retired record that still names it. Measured on the
+ * voxel sprint: 188 retired chunk geometries held 46.7 MB under the
+ * assignment form this replaces.
  */
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
@@ -2153,6 +2166,22 @@ struct MeshRecord {
      * releasing a sharer's geometry twice.
      */
     bool retired = false;
+    /** Bumped each time `store_mesh_record` reuses this slot. */
+    std::uint32_t generation = 0;
+    /**
+     * The slot this record would hold if storage never reused one: its
+     * position among every record `store_mesh_record` stored. Generated
+     * composition tables are in creation order, so a draw with no
+     * assigned feature row reads its row here rather than at its slot.
+     */
+    std::uint32_t creation_ordinal = invalid_handle;
+    /**
+     * Whether a loader's asset tables (animation bindings, node maps, flow
+     * graph) name this record and its geometry by index. Such a record's
+     * slot stays reserved after retirement, since those tables outlive the
+     * mesh's scene membership.
+     */
+    bool asset_indexed = false;
     // Before renderer startup a clone records the runtime handle of its
     // source mesh here. The renderer uses that link while assigning stable
     // creation-order composition rows, then keeps it for clone provenance.
@@ -3950,6 +3979,10 @@ struct Engine {
     std::vector<PropertyAnimationManager> animation_managers;
 #endif
     std::vector<MeshRecord> meshes;
+    /** Retired mesh slots `store_mesh_record` reuses (see there). */
+    std::vector<std::uint32_t> free_mesh_slots;
+    /** Mesh records ever stored: the creation ordinal of the next one. */
+    std::uint32_t mesh_records_created = 0;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
     // culling-enabled thin-instance pool crossing zero active rows. Matrix or
@@ -3982,6 +4015,8 @@ struct Engine {
     // replacement and restarts.
     std::deque<CameraRecord> cameras;
     std::vector<ModelGeometry> geometries;
+    /** Geometry slots no record names any more (see `store_geometry_record`). */
+    std::vector<std::uint32_t> free_geometry_slots;
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
     std::vector<HierarchyInstancePoolRecord> hierarchy_instance_pools;
@@ -4191,6 +4226,131 @@ void complete_device_recovery(Engine& engine);
 void fail_device_recovery(Engine& engine, const std::string& error);
 void dispose_engine(Engine& engine);
 void register_managed_resource_disposer(Engine& engine, std::function<void()> dispose);
+
+/**
+ * Whether `mesh` still names its slot's occupant: in range and issued for
+ * the record's current generation. A handle kept past its mesh's
+ * retirement fails this once `store_mesh_record` has reused the slot.
+ */
+inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
+    return mesh.value < engine.meshes.size() &&
+           engine.meshes[mesh.value].generation == mesh.generation;
+}
+
+/**
+ * The generated composition-table row a draw of `mesh` reads: the row
+ * renderer startup or a mesh profile assigned, else the record's creation
+ * ordinal -- the tables are in creation order, and a reused slot is not.
+ */
+inline std::uint32_t composition_feature_mesh(const Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) {
+        return mesh.value;
+    }
+    const MeshRecord& record = handle_at(engine.meshes, mesh);
+    return record.composition_feature_row != invalid_handle ? record.composition_feature_row
+                                                            : record.creation_ordinal;
+}
+
+/** Stores a new geometry record in a slot no record names any more, or a new one. */
+inline std::uint32_t store_geometry_record(Engine& engine, ModelGeometry geometry) {
+    if (!engine.free_geometry_slots.empty()) {
+        const std::uint32_t slot = engine.free_geometry_slots.back();
+        engine.free_geometry_slots.pop_back();
+        engine.geometries[slot] = std::move(geometry);
+        return slot;
+    }
+    engine.geometries.push_back(std::move(geometry));
+    return static_cast<std::uint32_t>(engine.geometries.size() - 1);
+}
+
+/** Frees the arrays of a geometry its last owner let go, and offers its slot. */
+inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
+    ModelGeometry& record = engine.geometries.at(geometry);
+    release_geometry_storage(record);
+    if (!record.slot_reserved) {
+        engine.free_geometry_slots.push_back(geometry);
+    }
+}
+
+/**
+ * Stores a new mesh record and returns its handle.
+ *
+ * The pin's JavaScript collector frees a disposed mesh once nothing
+ * references it. Here `retire_mesh_record` offers a retired record's slot
+ * and the next record takes it under the next generation, so a program
+ * that keeps building and retiring meshes holds a table no larger than the
+ * most meshes it held at once. The retired record's parent registration
+ * leaves with the reuse. Reuse waits until the renderer has assigned the
+ * composition rows of the meshes created before it started, which it
+ * assigns in slot order.
+ */
+inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
+    record.creation_ordinal = engine.mesh_records_created++;
+    if (engine.composition_feature_rows_initialized && !engine.free_mesh_slots.empty()) {
+        const std::uint32_t slot = engine.free_mesh_slots.back();
+        engine.free_mesh_slots.pop_back();
+        MeshRecord& retired = engine.meshes[slot];
+        const MeshHandle stale{slot, retired.generation};
+        if (retired.transform_parent.value < engine.transform_nodes.size()) {
+            std::erase(engine.transform_nodes[retired.transform_parent.value].parented_meshes,
+                       stale);
+        }
+        if (retired.parent.value < engine.meshes.size()) {
+            std::erase(engine.meshes[retired.parent.value].parented_meshes, stale);
+        }
+        record.generation = retired.generation + 1;
+        retired = std::move(record);
+        engine.mesh_material_scenes.erase(slot);
+        return MeshHandle{slot, retired.generation};
+    }
+    record.generation = 0;
+    engine.meshes.push_back(std::move(record));
+    return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1), 0};
+}
+
+/**
+ * `removeFromScene` taking a mesh out of its last scene: the record is
+ * retired and gives up its claim on its geometry, whose arrays go with the
+ * last claim. The record's slot, and its geometry's once unowned, are
+ * offered for reuse unless some table can still name the record: a
+ * loader's asset tables index it, or another record's hierarchy lists it
+ * (as a parent, or as a traversal `children` entry, which the pin's
+ * removal leaves in place). Such a record keeps its slot and its geometry
+ * link, and that geometry keeps its slot too. Any other retired record
+ * drops its geometry link at once.
+ */
+inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    const std::uint32_t geometry = record.geometry;
+    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
+        return;
+    }
+    record.retired = true;
+    bool reserved =
+        record.asset_indexed || !record.children.empty() || !record.parented_meshes.empty();
+    for (const MeshRecord& other : engine.meshes) {
+        reserved = reserved || std::find(other.children.begin(), other.children.end(), mesh) !=
+                                   other.children.end();
+    }
+    for (const TransformNodeRecord& node : engine.transform_nodes) {
+        for (const TransformNodeChild& child : node.children) {
+            const auto* listed = std::get_if<MeshHandle>(&child);
+            reserved = reserved || (listed && *listed == mesh);
+        }
+    }
+    ModelGeometry& shared = engine.geometries[geometry];
+    if (reserved) {
+        shared.slot_reserved = true;
+    } else {
+        record.geometry = invalid_handle;
+        engine.free_mesh_slots.push_back(mesh.value);
+    }
+    if (shared.owners > 1) {
+        --shared.owners;
+        return;
+    }
+    release_unowned_geometry(engine, geometry);
+}
 
 inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {
     return entry.follows_material ? engine.meshes.at(entry.mesh.value).material : entry.material;

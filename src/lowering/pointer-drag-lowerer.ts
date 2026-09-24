@@ -384,7 +384,7 @@ std::optional<Vec3d> drag_pointer_hit(PointerDragDispatcher& state, const Platfo
 PointerDragHandle drag_pick(PointerDragDispatcher& state, const PickingInfo& info) {
     if (!info.hit || info.picked_kind != PickedNodeKind::mesh) return {};
     for (const auto drag : state.drags) {
-        if (pointer_drag_has_collider(*state.engine, drag, MeshHandle{info.picked_index})) return drag;
+        if (pointer_drag_has_collider(*state.engine, drag, MeshHandle{info.picked_index, info.state->picked_generation})) return drag;
     }
     return {};
 }
