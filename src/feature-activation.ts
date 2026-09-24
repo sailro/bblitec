@@ -56,9 +56,10 @@ export type FeatureActivationMechanism =
  * What reads an activation unit. The vocabulary is closed so consumers
  * stay greppable: `features.cmake` (BBLITE_RUNTIME_FEATURES and the
  * source lists), the two generated capability headers, the three family
- * headers that carry a define of their own (the post-process, Standard
- * variant and render-plan headers), the character-controller header the
- * physics lowerer specializes, the composed pinned variant set
+ * headers that carry the code a capability define gates (the
+ * post-process, Standard variant and render-plan headers), the
+ * character-controller header the physics lowerer specializes, the
+ * composed pinned variant set
  * ("variant table"), the generated loader's lowering flags, the renderer
  * plan/shader lowering options, the vcpkg codec manifest features, the
  * per-scene `fidelity.json` adaptations, the generation-time gates that
@@ -2523,9 +2524,9 @@ function capabilityRows(
                 "task rather than to any one family",
             ["render_capabilities.hpp"],
         ),
-        // The three defines other generated headers carry. Each is written
-        // by the lowerer that owns the header, from the same reach the row
-        // states, so a plain row: there is one derivation.
+        // Three defines gating what other generated headers carry. Each is
+        // written from the same reach the row states, so a plain row: there
+        // is one derivation.
         row(
             "BBLITE_HAS_TAA",
             "capability",
@@ -2538,9 +2539,8 @@ function capabilityRows(
             "src/frame-graph/taa-post-process.ts createTaaPostProcessTask: " +
                 "the lowered post-process header carries the jitter, " +
                 "history and scene-UBO blocks only for a scene composing " +
-                "the TAA composite; written 0 for every other " +
-                "post-process scene, which both PALs read as off",
-            ["frame_graph_post_process.hpp"],
+                "the TAA composite",
+            ["render_capabilities.hpp", "frame_graph_post_process.hpp"],
         ),
         row(
             "BBLITE_STANDARD_SKELETON",
@@ -2556,9 +2556,8 @@ function capabilityRows(
             "src/material/standard/fragments/std-skeleton-fragment.ts " +
                 "stdSkeletonExt, registered by " +
                 "src/material/standard/enable-standard-mesh-features.ts " +
-                "enableStandardSkeleton; defined only when on, because " +
-                "both PALs test it with defined()",
-            ["standard_variants.hpp"],
+                "enableStandardSkeleton",
+            ["render_capabilities.hpp", "standard_variants.hpp"],
         ),
         row(
             "BBLITE_STANDARD_VERTEX_ALPHA",
@@ -2570,9 +2569,8 @@ function capabilityRows(
             "src/material/standard/standard-renderable.ts " +
                 "buildStandardMeshRenderables colour alpha: hasVertexAlpha " +
                 "adds VERTEX_ALPHA | MATERIAL_ALPHA_BLEND to the feature " +
-                "word; defined only when on, because the shared PAL " +
-                "header tests it with defined()",
-            ["renderer_plan.hpp"],
+                "word",
+            ["render_capabilities.hpp", "renderer_plan.hpp"],
         ),
     ];
 }

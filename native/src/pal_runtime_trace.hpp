@@ -116,7 +116,7 @@ inline void trace_dynamic_frame(const Engine& engine, double delta_ms, long fram
         return;
 
     std::cerr << "[bblite trace] dynamic frame=" << frame << " delta-ms=" << delta_ms;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::cerr << " billboard-systems=" << engine.billboard_systems.size();
     for (std::size_t index = 0; index < engine.billboard_systems.size(); ++index) {
         const BillboardSystemRecord& system = engine.billboard_systems[index];
@@ -142,7 +142,7 @@ inline void trace_dynamic_frame(const Engine& engine, double delta_ms, long fram
         std::cerr << " storage[" << index << "]={label=" << buffer.label
                   << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
     }
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
     for (const auto& drag : engine.edit_gizmos) {
         if (!drag.dragging || drag.attached_node.value >= engine.meshes.size())
             continue;

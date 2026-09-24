@@ -6,12 +6,12 @@
 namespace bbl::pal {
 
 inline bool use_dawn_backend() {
-#if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
+#if BBLITE_HAS_SDL_GPU
     constexpr bool has_sdl = true;
 #else
     constexpr bool has_sdl = false;
 #endif
-#if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+#if BBLITE_HAS_DAWN
     constexpr bool has_dawn = true;
 #else
     constexpr bool has_dawn = false;

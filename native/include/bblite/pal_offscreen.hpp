@@ -220,7 +220,7 @@ public:
     }
     explicit OffscreenRun(OffscreenSurface& surface, OffscreenDevice& device)
         : surface_(surface), device_(device) {
-#if !defined(BBLITE_OFFSCREEN_SURFACES) || !BBLITE_OFFSCREEN_SURFACES
+#if !BBLITE_OFFSCREEN_SURFACES
         throw std::runtime_error("This build has no offscreen surface support.");
 #endif
         std::lock_guard lock(surface_.mutex_);
@@ -239,7 +239,7 @@ public:
     }
 
     static OffscreenRun* current() {
-#if defined(BBLITE_OFFSCREEN_SURFACES) && BBLITE_OFFSCREEN_SURFACES
+#if BBLITE_OFFSCREEN_SURFACES
         return current_;
 #else
         return nullptr;

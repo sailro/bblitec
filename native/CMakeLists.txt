@@ -380,7 +380,11 @@ endif()
 # One feature, one macro. Every macro named here is defined in every
 # translation unit -- 1 when the generated tree reached any of the listed
 # features, 0 otherwise -- so a `#if` over it never meets an undefined
-# name, and the activation table below reads as the table it is.
+# name, and the activation table below reads as the table it is. The
+# macros the generator decides live in the generated
+# render_capabilities.hpp, written 0 or 1 in every tree; no macro has both
+# owners. Every test is a plain `#if X`, and the undefined-macro diagnostic
+# (the warning options below) makes a missing definition a compile error.
 function(bblite_feature_define macro)
     set(value 0)
     foreach(feature IN LISTS ARGN)
@@ -656,7 +660,7 @@ if(BBLITE_BACKEND_DAWN)
         target_compile_definitions(bblite_features INTERFACE BBLITE_DAWN_DXC=0)
     endif()
 else()
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=0)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=0 BBLITE_DAWN_DXC=0)
 endif()
 
 if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
@@ -966,9 +970,9 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_link_libraries(bblite_features INTERFACE RecastNavigation::DetourTileCache RecastNavigation::RecastNavigationTileCache
         )
     endif()
-    bblite_feature_define(BBLITE_HAS_NAV_CROWD "navigation:crowd")
-    bblite_feature_define(BBLITE_HAS_NAV_TILE_CACHE "navigation:tile-cache")
 endif()
+bblite_feature_define(BBLITE_HAS_NAV_CROWD "navigation:crowd")
+bblite_feature_define(BBLITE_HAS_NAV_TILE_CACHE "navigation:tile-cache")
 
 # The Web Audio engine is reached only through `bblite/pal_audio.hpp`,
 # whose implementation is one translation unit the feature list selects
@@ -1058,26 +1062,23 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         BBLITE_HAS_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
         BBLITE_HAS_AUDIO_DECODE_FILE=$<BOOL:${BBLITE_AUDIO_DECODE_FILE}>
     )
-    bblite_feature_define(BBLITE_HAS_AUDIO_BUFFER_SOURCE "audio:buffer-source")
-    foreach(codec IN ITEMS WAV WV MPC FLAC MP3 OPUS OGG)
-        string(TOLOWER "${codec}" codec_feature)
-        bblite_feature_define("BBLITE_AUDIO_DECODE_${codec}" "audio:decode-${codec_feature}")
-    endforeach()
-    bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
-    bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
-    bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_AUDIO=1)
 else()
     target_compile_definitions(bblite_features INTERFACE
-        BBLITE_HAS_AUDIO=0
         BBLITE_HAS_AUDIO_CAPTURE=0
         BBLITE_HAS_AUDIO_DECODE_FILE=0
-        BBLITE_HAS_AUDIO_BUFFER_SOURCE=0
-        BBLITE_HAS_AUDIO_OSCILLATOR=0
-        BBLITE_HAS_AUDIO_BIQUAD_FILTER=0
-        BBLITE_HAS_AUDIO_STEREO_PANNER=0
     )
 endif()
+# The engine's node and codec arms. Every audio feature implies audio:engine
+# (`impliedFeatures`), so each is 0 in a scene without the engine.
+bblite_feature_define(BBLITE_HAS_AUDIO "audio:engine")
+bblite_feature_define(BBLITE_HAS_AUDIO_BUFFER_SOURCE "audio:buffer-source")
+foreach(codec IN ITEMS WAV WV MPC FLAC MP3 OPUS OGG)
+    string(TOLOWER "${codec}" codec_feature)
+    bblite_feature_define("BBLITE_AUDIO_DECODE_${codec}" "audio:decode-${codec_feature}")
+endforeach()
+bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
+bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
+bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
 
 bblite_feature_define(BBLITE_HAS_GEOMETRY_OUTPUT "renderer:geometry-output")
 bblite_feature_define(BBLITE_HAS_POST_PROCESS "renderer:post-process")
@@ -1104,10 +1105,20 @@ if(IOS)
     target_link_libraries(bblite_features INTERFACE "${BBLITE_IOS_RUNTIME}")
 endif()
 
+# An undefined name in a `#if` is an error in this project's units: the
+# macro convention above defines every bblite macro wherever it is tested.
+# Dependency headers are external -- imported and SYSTEM include directories,
+# and for MSVC also the INCLUDE directories (the SDK and the standard library,
+# which test undefined names themselves) -- so the check never fires there.
 if(MSVC)
     target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(bblite_features INTERFACE /we4668 /external:env:INCLUDE /external:W0)
+    else()
+        target_compile_options(bblite_features INTERFACE -Wundef -Werror=undef)
+    endif()
 else()
-    target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror -Wundef)
 endif()
 
 if(BBLITE_MINSIZE)

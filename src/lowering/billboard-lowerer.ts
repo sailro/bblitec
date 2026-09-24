@@ -813,6 +813,7 @@ inline double billboard_sort_compare(
 // ${this.context.provenance(pipelineModule, "billboard vertex layout")}
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
 
 #include <algorithm>
 #include <array>

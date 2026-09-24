@@ -4,7 +4,7 @@
 #pragma once
 #include "pal_compressed_formats.hpp"
 #include "pal_record_sync.hpp"
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
 
@@ -15,10 +15,12 @@
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/teardown.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+// The generator's capability defines, ahead of the first test of one.
+#include <bblite/upstream/render_capabilities.hpp>
+#if BBLITE_WORKERS
 #include <bblite/pal_offscreen.hpp>
 #endif
-#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
@@ -26,23 +28,22 @@
 #endif
 // The backend-neutral RmlUi frame types, for the scissor clamp every UI
 // consumer applies to a recorded draw before encoding it.
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
-#include <bblite/upstream/render_capabilities.hpp>
 // An always-emitted pinned read every scene shape carries: the surface
 // sample count (the effect drivers compile with no renderer_plan.hpp, so it
 // cannot ride that header).
 #include <bblite/upstream/pinned_surface.hpp>
 // Material slots and mesh transforms belong to scene renderers.
-#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/material_texture_slots.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #endif
 #include <bblite/upstream/pinned_texture.hpp>
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
 #include <bblite/upstream/frame_graph_screen_space.hpp>
 #include <bblite/upstream/screen_space_shaders.hpp>
 #endif
@@ -55,7 +56,7 @@
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
 // the frame options, capture gate and clock alone.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
 // The billboard family's own generated layout, for the pick contributor's
@@ -101,7 +102,7 @@
 namespace bbl::pal {
 class TextGpuCapture;
 
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
 inline thread_local Engine* draw_count_engine = nullptr;
 struct DrawCountScope {
     Engine* previous;
@@ -114,7 +115,7 @@ struct DrawCountScope {
 
 template <typename Function, typename... Args>
 inline void count_gpu_draw(Function function, Args&&... args) {
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
     if (draw_count_engine)
         ++draw_count_engine->draw_call_count;
 #endif
@@ -181,7 +182,7 @@ inline bool registered_scene_set_changed(const Engine& engine,
 inline bool
 request_renderer_restart_if_scene_set_changed(Engine& engine,
                                               const std::vector<std::shared_ptr<Scene>>& planned) {
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
     if (engine.device_recovery && engine.device_recovery->requested)
         return true;
 #endif
@@ -202,7 +203,7 @@ request_renderer_restart_if_scene_set_changed(Engine& engine,
  * order. The scene's render targets use the pane extent; only presentation
  * applies its offset.
  */
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
     if (canvas.value >= engine.ui_elements.size())
         throw std::runtime_error("Invalid surface canvas.");
@@ -238,7 +239,7 @@ inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
 inline std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scene& scene,
                                                        std::uint32_t target_width,
                                                        std::uint32_t target_height) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.registered_scenes.empty())
         return std::nullopt;
     std::size_t pane_count = 1;
@@ -276,7 +277,7 @@ inline std::optional<PixelViewport> equal_surface_pane(const Engine& engine, con
 
 inline std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scene& scene,
                                                        std::uint32_t width, std::uint32_t height) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
         return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
     }
@@ -288,7 +289,7 @@ inline std::optional<PixelViewport> scene_surface_pane(const Engine& engine, con
 inline std::optional<PixelViewport>
 surface_canvas_pane(const Engine& engine, std::optional<UiElementHandle> surface_canvas,
                     std::uint32_t target_width, std::uint32_t target_height) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (!surface_canvas)
         return std::nullopt;
     if (surface_canvas_laid_out(engine, *surface_canvas)) {
@@ -352,7 +353,7 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
 }
 
 /** Final viewport/scissor after composing a camera viewport into its pane. */
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
                                                           const CameraRecord& camera,
                                                           std::uint32_t target_width,
@@ -488,7 +489,7 @@ inline void apply_light_floating_origin(std::span<upstream::LightEntry> entries,
 }
 #endif
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 inline bool sprite_blend_equal(const SpriteBlendDescriptor& left,
                                const SpriteBlendDescriptor& right) {
     return left.enabled == right.enabled && left.color.src == right.color.src &&
@@ -528,7 +529,7 @@ inline bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /**
  * A pipeline cache key over a variant, its pipeline kind and the per-pass
  * flags that change fixed-function state.
@@ -641,7 +642,7 @@ inline std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_sa
 namespace bbl::pal {
 
 /** Apply a cloned imported root after the mesh's own/deformation world. */
-#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::array<float, 16> outer_draw_world(const std::array<float, 16>& world,
                                               const MeshRecord& record) {
     if (upstream::outer_transform_is_identity(record))
@@ -684,7 +685,7 @@ inline std::array<float, 16> draw_world(const std::array<float, 16>& base, const
 #if BBLITE_FLOATING_ORIGIN
     return upstream::mesh_world_eye_relative(record, base, floating_origin_offset(scene, engine));
 #else
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
     if (record.gpu_world_transform) {
         return outer_draw_world(
             upstream::matrix_product(base, upstream::mesh_world_matrix(engine, record)), record);
@@ -694,7 +695,7 @@ inline std::array<float, 16> draw_world(const std::array<float, 16>& base, const
 #endif
 }
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /** World after scene-authored deformation of an unbaked local stream. */
 inline std::array<float, 16> scene_deformation_draw_world(const MeshRecord& record,
                                                           [[maybe_unused]] const Scene& scene,
@@ -887,7 +888,7 @@ struct GpuVertex {
     float morph_normal_1[3];
     float morph_tangent_0[3];
     float morph_tangent_1[3];
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     // The pin's own skinned vertex stages take joint indices as integers where
     // the transcribed one takes them as floats. Both are carried while the two
     // paths coexist, and this sits last so no existing attribute offset moves;
@@ -896,7 +897,7 @@ struct GpuVertex {
 #endif
 #endif
 };
-#if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON))
+#if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
 static_assert(sizeof(GpuVertex) == 216);
 #elif BBLITE_GPU_DEFORMATION
 static_assert(sizeof(GpuVertex) == 200);
@@ -993,7 +994,7 @@ inline constexpr std::array<VertexInputStream, 3> vertex_streams{
 // enum→API residue.
 
 /** The record field one slot reads, or nullptr when the family has none. */
-#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline const TextureData* material_slot_texture(const MaterialRecord& material,
                                                 upstream::MaterialTextureSource source,
                                                 bool standard_material) {
@@ -1320,7 +1321,7 @@ inline BillboardPickUniforms build_billboard_pick_uniforms(const std::array<floa
 #endif
 
 /** The pin's contributor gate: a hidden or empty system draws nothing. */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 inline bool billboard_pick_draws(const BillboardSystemRecord& system) {
     return system.visible && system.count != 0;
 }
@@ -1594,7 +1595,7 @@ private:
 // plan emits — so both belong to a scene that HAS a mesh renderer. A
 // sprite-only, effect-only or scene-less program includes no render plan
 // (see the guarded include at the top of this file) and calls neither.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::vector<GpuVertex>
 transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const MeshRecord& mesh) {
     // Thin-instanced meshes keep local-space vertices: the pinned vertex
@@ -1762,7 +1763,7 @@ transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const 
                 geometry.morph_tangents.size() > 1 ? geometry.morph_tangents[1][vertex_index].z
                                                    : 0.0f,
             },
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
             {
                 static_cast<std::uint32_t>(vertex.joints[0]),
                 static_cast<std::uint32_t>(vertex.joints[1]),
@@ -1938,7 +1939,7 @@ inline std::size_t find_or_create_program(std::vector<Program>& programs, Matche
  * meaning -- and, like the bake, it belongs to a scene that has a mesh
  * renderer to emit that composition.
  */
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::array<float, 16> shader_draw_world(const Engine& engine, const MeshRecord& mesh) {
     return outer_draw_world(upstream::mesh_world_matrix(engine, mesh), mesh);
 }
@@ -2221,7 +2222,7 @@ inline PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine,
 #endif
 #endif
 
-#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::optional<std::array<float, 16>> shader_world_view(const std::array<float, 16>* view,
                                                               const std::array<float, 16>& world) {
     return view ? std::optional<std::array<float, 16>>{upstream::matrix_product(*view, world)}
@@ -2264,7 +2265,7 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
         {}, // morph normal 1
         {}, // morph tangent 0
         {}, // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
         {}, // integer joint indices
 #endif
 #endif
@@ -2458,7 +2459,7 @@ inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_lo
     if (name == "weights") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
     }
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     // The pin takes joint indices as integers; the transcribed stage takes
     // them as floats, so the vertex carries both while the two coexist.
     if (name == "joints") {
@@ -3929,7 +3930,7 @@ void sync_pinned_vat(Mesh& mesh, const MeshRecord& record, const Engine& engine,
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
 /**
  * The pin's bone-palette texture shape: `skeleton-updater.ts` writes
  * `invMeshWorld * jointWorld * IBM` per bone into one rgba32float row,
@@ -3979,7 +3980,7 @@ inline void sync_pinned_bone_palette(GpuMesh& mesh, const MeshRecord& record, Re
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /**
  * A shader material carrying fewer textures than its stage samples.
  *
@@ -4088,11 +4089,11 @@ inline StandardVariantKey standard_variant_key(const Scene& scene, const Engine&
         !engine.geometries[draw.item.geometry].morph_positions.empty()) {
         key.mesh_features |= upstream::std_msh_has_morph_targets;
     }
-#if defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_STANDARD_SKELETON
     key.features |=
         upstream::standard_skeleton_features(static_cast<std::uint32_t>(key.mesh_features));
 #endif
-#if defined(BBLITE_STANDARD_VERTEX_ALPHA)
+#if BBLITE_STANDARD_VERTEX_ALPHA
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         key.features |= upstream::standard_color_alpha_features(
@@ -4247,7 +4248,7 @@ inline upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRec
     return block;
 }
 
-#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
+#if BBLITE_HAS_STANDARD_UV_TRANSFORM
 /**
  * `stdUvTransformExt`'s own block, by the pin's own per-channel writer.
  *
@@ -4373,7 +4374,7 @@ inline std::uint16_t float_to_half(float value) {
 }
 
 // The RGBD decode both render backends upload through.
-#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, int& width,
                                               int& height) {
     // src/loader-env/rgbd-decode.ts: the pin decodes into a
@@ -4439,7 +4440,7 @@ inline void for_each_dds_skybox_level(const EnvironmentState& environment, const
     }
 }
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 /** A recorded UI draw's scissor, clamped to the frame it was recorded in. */
 struct UiScissorRect {
     int left = 0;
@@ -4594,7 +4595,7 @@ inline FrameOptions read_frame_options() {
     options.animation_seek_seconds = seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
     const std::string frame_delta = environment_variable("BBLITE_FRAME_DELTA_MS");
     options.frame_delta_ms = frame_delta.empty() ? 0.0 : std::strtod(frame_delta.c_str(), nullptr);
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     // A worker renders into a leased canvas. The Window owns presentation,
     // screenshots and process lifetime for all of its canvases together.
     if (OffscreenRun::current()) {
@@ -4621,7 +4622,7 @@ inline void apply_animation_seek(const FrameOptions& options, const Scene& scene
     }
 }
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 /**
  * Refuse the one dispose schedule no backend can honour, before either
  * releases the GPU texture behind the record.
@@ -4984,7 +4985,7 @@ public:
     // engine API declares.
     [[nodiscard]] double advance(double fixed_delta_ms) {
         std::optional<double> frame_timestamp;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         if (const auto* run = OffscreenRun::current())
             frame_timestamp = run->animation_frame_timestamp();
 #endif
@@ -5122,7 +5123,7 @@ inline std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height) {
  * backends ask this rather than each inferring the option back out of the
  * sampler.
  */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 inline std::uint32_t atlas_mip_levels(const SpriteAtlasRecord& atlas) {
     return atlas.mip_maps ? full_mip_chain(atlas.width, atlas.height) : 1u;
 }
@@ -5180,7 +5181,7 @@ inline ScaledExtents scaled_target_extents(const RenderTargetRecord& record,
         return {static_cast<std::uint32_t>(size[0]), static_cast<std::uint32_t>(size[1])};
     }
     if (record.scale_rounding == ScaleRounding::round) {
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
         const upstream::ScreenSpaceScaledSize scaled = upstream::screen_space_scaled_size(
             static_cast<double>(source_width), static_cast<double>(source_height),
             record.width_ratio);
@@ -5237,7 +5238,7 @@ plan_render_targets(const Engine& engine, std::uint32_t width, std::uint32_t hei
     return plans;
 }
 
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
 template <class Clear, class Stage, class PostProcess>
 void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, bool composite,
                                   Clear&& clear, Stage&& stage, PostProcess&& post_process) {
@@ -5283,7 +5284,7 @@ ScreenSpaceFrameInputs screen_space_frame_inputs(const RenderTargets& targets,
 }
 #endif
 
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
 /** One post-process pass's resolved output and source extents. */
 struct PostProcessExtent {
     std::uint32_t output_width = 0;
@@ -5398,7 +5399,7 @@ inline bool alpha_to_coverage_enabled(bool wants_a2c, std::uint32_t samples) {
     return wants_a2c && samples > 1;
 }
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /**
  * The fixed-function facts one `RenderPipelineKind` carries, decoded once
  * for both backends: the material family, whether the draw blends, the
@@ -5754,7 +5755,7 @@ inline ClusterRange advance_cluster_range(std::uint32_t index_count,
     return ClusterRange{triangle_count, id_start};
 }
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /**
  * The alpha state the diagnostic shaders read: the bucket as a mode, the
  * cutoff, and the material alpha. A material-less item renders opaque at
@@ -6095,7 +6096,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 inline void finish_frame(Engine& engine) {
     if (engine.drain_material_jobs)
         engine.drain_material_jobs(engine);
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
     complete_device_recovery(engine);
 #endif
     js::collect_at_frame_boundary();
@@ -6119,7 +6120,7 @@ inline void finish_frame(Engine& engine) {
     run_deferred_callbacks(engine);
     run_timeout_callbacks(engine);
     run_interval_callbacks(engine);
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
     audio_collect_finished();
 #endif
 }

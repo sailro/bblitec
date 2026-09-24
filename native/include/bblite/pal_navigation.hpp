@@ -169,10 +169,6 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
                                      const NavMeshBuildParams& params,
                                      const NavBuildDefaults& defaults);
 
-#ifndef BBLITE_HAS_NAV_TILE_CACHE
-#define BBLITE_HAS_NAV_TILE_CACHE 0
-#endif
-
 #if BBLITE_HAS_NAV_TILE_CACHE
 /**
  * The tile-cache build (`generateTileCache` semantics).

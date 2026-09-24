@@ -440,7 +440,6 @@ void write_post_process_uniforms(
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
 ${[...lifecycleHeaders].join("\n")}
-#define BBLITE_HAS_TAA ${sceneUbo ? 1 : 0}
 ${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
     }
 

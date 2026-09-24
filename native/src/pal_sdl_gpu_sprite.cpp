@@ -11,7 +11,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -34,7 +34,7 @@
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 #include "pal_sprite_ui_sdl.hpp"
 #endif
 
@@ -57,7 +57,7 @@ class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
     UiSdlReadableSurface readable_surface;
@@ -140,7 +140,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer.reset();
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         if (device) {
             release_sprite_ui_sdl_resources(device, ui_resources);
             readable_surface.release(device);
@@ -166,7 +166,7 @@ public:
         canvas_only =
             !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
         if (canvas_only
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
             && engine.primary_canvas.value >= engine.ui_elements.size()
 #endif
         ) {
@@ -188,7 +188,7 @@ public:
 #if BBLITE_HAS_SPRITE_RENDERER
         buffer_uploads = std::make_unique<GpuBufferUploadBatch>(device);
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         ui_runtime =
             create_ui_rml_runtime(engine, window, static_cast<std::uint32_t>(engine.options.width),
                                   static_cast<std::uint32_t>(engine.options.height));
@@ -205,7 +205,7 @@ public:
     SDL_Window* sdl_window() const { return window; }
     std::string driver() const { return SDL_GetGPUDeviceDriver(device); }
     void poll_events() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
@@ -226,7 +226,7 @@ public:
         surface_width = 0;
         surface_height = 0;
         SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame -- the same slot the
         // scene loops and the Dawn host give it, ahead of every sprite
@@ -312,7 +312,7 @@ public:
 #endif
     }
     void encode() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
         auto* present_swapchain = swapchain;
         swapchain =
@@ -366,7 +366,7 @@ public:
         }
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
             render_sprite_ui_sdl_frame(device, command, color, swapchain_format, ui_resources,
@@ -390,7 +390,7 @@ public:
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         if (!ui_in_capture) {
             render_sprite_ui_sdl_frame(device, command, swapchain, swapchain_format, ui_resources,
                                        ui_frame);

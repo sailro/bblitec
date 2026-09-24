@@ -925,7 +925,7 @@ inline void dispose_default_text_data(const TextData& data) {
             "ctx._disposables.push(built.dispose)",
             "Deferred scene disposal ownership",
         );
-        return `#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        return `#if BBLITE_HAS_TEXT
 inline void add_text_renderable(Scene& scene, TextRenderable renderable) {
     if (scene.disposed) throw std::runtime_error("Text attachment after scene disposal requires the pinned async late-cleanup lifecycle.");
     const std::weak_ptr<SceneState> owner = scene.state;

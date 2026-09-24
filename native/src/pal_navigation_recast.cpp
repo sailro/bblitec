@@ -17,10 +17,6 @@
 #include <bblite/pal_navigation.hpp>
 #include "pal_handle_identity.hpp"
 
-#ifndef BBLITE_HAS_NAV_TILE_CACHE
-#define BBLITE_HAS_NAV_TILE_CACHE 0
-#endif
-
 #if BBLITE_HAS_NAV_TILE_CACHE
 #include <ChunkyTriMesh.h>
 #endif

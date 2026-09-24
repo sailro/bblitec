@@ -2231,11 +2231,9 @@ export function pinnedStandardSupportBlock(
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });
-        // Defined only when on: both PALs read it as defined(...), so a
-        // 0 branch would read as on. The inventory row carries the off
-        // state.
+        // BBLITE_STANDARD_SKELETON, which gates the PALs' use of this
+        // block, is render_capabilities.hpp's.
         skeletonBlock = `
-#define BBLITE_STANDARD_SKELETON 1
 // ${context.provenance(skeletonModule, "stdSkeletonExt._meshFeatures")}
 inline std::uint32_t standard_skeleton_features(std::uint32_t mesh_features) {
 ${declaration.body.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}

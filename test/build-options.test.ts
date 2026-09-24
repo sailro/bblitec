@@ -13,6 +13,7 @@ import {
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
+import { listFiles } from "../src/tooling/records.js";
 
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
@@ -443,6 +444,36 @@ test("feature macros come from one CMake function", () => {
         readFileSync("native/dependency-features.cmake", "utf8"),
         /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/,
     );
+});
+
+test("every bblite macro test is a plain #if over an always-defined macro", () => {
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    // An undefined name in a project unit's #if is a compile error.
+    assert.match(cmake, /\/we4668 \/external:env:INCLUDE \/external:W0/);
+    assert.match(cmake, /INTERFACE -Wundef -Werror=undef\)/);
+    assert.match(cmake, /-Wpedantic -Werror -Wundef\)/);
+    // No spelling decides what a missing macro means: `defined(X) && X`
+    // read it as off, `!defined(X) || X` as on, and an #ifndef default
+    // supplied a value CMake or the generator already owns.
+    const sources = [
+        ...listFiles("native/include"),
+        ...listFiles("native/src"),
+        ...listFiles("src").filter((file) => file.endsWith(".ts")),
+    ];
+    const wrong: string[] = [];
+    for (const file of sources) {
+        for (const [index, line] of readFileSync(file, "utf8")
+            .split("\n")
+            .entries()) {
+            if (
+                /#\s*(?:if|elif)\b.*\bdefined\s*\(?\s*BBLITE_/.test(line) ||
+                /#\s*(?:ifdef|ifndef)\s+BBLITE_(?!\w*_HPP\b)/.test(line)
+            ) {
+                wrong.push(`${file}:${index + 1}: ${line.trim()}`);
+            }
+        }
+    }
+    assert.deepEqual(wrong, []);
 });
 
 test("the scene-invariant PAL units compile in their own object library", () => {

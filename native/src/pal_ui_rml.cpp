@@ -1,7 +1,7 @@
 #include <bblite/pal_ui.hpp>
 #include <bblite/ui_selector.hpp>
 #include <bblite/pal_dom_events.hpp>
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 #include <bblite/js_file.hpp>
 #endif
 #include <bblite/js_data.hpp>
@@ -25,7 +25,7 @@
 #include <SDL3/SDL.h>
 #if BBLITE_HAS_IMAGE_DECODER
 #include <SDL3_image/SDL_image.h>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <charconv>
 #endif
 #endif
@@ -189,7 +189,7 @@ void mark_ui_changed(Engine& engine, const UiElementRecord& record) {
         ++engine.ui_style_revision;
 }
 
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 void release_browser_file_subtree(Engine& engine, UiElementHandle element) {
     UiElementRecord& record = ui_element(engine, element);
     record.selected_file = {};
@@ -722,7 +722,7 @@ std::string ui_escape_rml(std::string_view text) {
     return escaped;
 }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 namespace {
 std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle element) {
     auto& record = ui_element(engine, element);
@@ -802,7 +802,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     }
     UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.attributes.find(name);
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     if (name == "type" && record.file_input && !ascii_iequals(value, "file"))
         throw std::runtime_error("Changing the type of a native file input is not represented.");
 #endif
@@ -814,7 +814,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         record.style_properties.clear();
         record.style_property_order.clear();
     }
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     const bool updates_image = record.tag == "img" && name == "src";
     if (updates_image && record.image_request) {
         record.image_request->invalidated = true;
@@ -822,7 +822,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     }
 #endif
     record.attributes.insert_or_assign(std::move(name), std::move(value));
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     if (updates_image)
         static_cast<void>(image_request(engine, element));
 #endif
@@ -836,12 +836,12 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
     const std::string normalized = js::string_lower(std::string(name));
     auto& record = ui_element(engine, element);
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     if (normalized == "type" && record.file_input)
         throw std::runtime_error("Removing the type of a native file input is not represented.");
 #endif
     bool changed = record.attributes.erase(normalized) != 0;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     if (changed && normalized == "src" && record.image_request) {
         record.image_request->invalidated = true;
         record.image_request.reset();
@@ -852,7 +852,7 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
         record.style_properties.clear();
         record.style_property_order.clear();
     }
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     if (normalized == "href" && record.download_url.slot != invalid_handle) {
         record.download_url = {};
         changed = true;
@@ -1114,7 +1114,7 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
         throw std::runtime_error("Replacing the document root children is not supported.");
     UiElementRecord& record = ui_element(engine, parent);
     for (const UiElementHandle child : record.children) {
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
         release_browser_file_subtree(engine, child);
 #endif
         ui_element(engine, child).parent = {};
@@ -1138,7 +1138,7 @@ void ui_remove(Engine& engine, UiElementHandle element) {
     const bool changed = record.parent.value != invalid_handle || record.attached_to_root;
     if (!changed)
         return;
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     release_browser_file_subtree(engine, element);
 #endif
     if (record.parent.value != invalid_handle) {
@@ -1223,7 +1223,7 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
             }
         }
     }
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     // Default actions carry the stable handle because opening a dialog can
     // synchronously release pointer lock and run callbacks that grow this arena.
     const std::string tag = ui_element(engine, element).tag;
@@ -1291,7 +1291,7 @@ void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
     }
 }
 
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 void ui_set_download_url(Engine& engine, UiElementHandle element, ObjectUrlHandle url) {
     UiElementRecord& record = ui_element(engine, element);
     if (record.tag != "a") {
@@ -2998,7 +2998,7 @@ public:
                              })) {
                 frame.textures.push_back(
                     UiRenderTexture{texture.id, texture.width, texture.height, texture.rgba});
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
                 frame.textures.back().external_canvas = texture.external_canvas;
 #endif
             }
@@ -3062,7 +3062,7 @@ public:
 
     Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions,
                                    const Rml::String& source) override {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         constexpr std::string_view prefix = "bbl-canvas://";
         if (source.starts_with(prefix)) {
             const auto suffix = std::string_view(source).substr(prefix.size());
@@ -3323,7 +3323,7 @@ private:
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         std::shared_ptr<const std::vector<std::uint8_t>> rgba;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         std::uint32_t external_canvas = invalid_handle;
 #endif
     };
@@ -3596,7 +3596,7 @@ struct UiRmlRuntime {
                 context->Update();
             }
             update_intrinsic_widths();
-#if defined(BBLITE_HAS_DOM_INPUT) && BBLITE_HAS_DOM_INPUT
+#if BBLITE_HAS_DOM_INPUT
             auto& input = dom_input(engine);
             input.hit_path = [this](double x, double y) {
                 if (this->engine.pointer_locked)

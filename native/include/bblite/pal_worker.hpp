@@ -1,6 +1,6 @@
 #pragma once
 
-#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
+#if !BBLITE_WORKERS
 #error Worker runtime requires BBLITE_WORKERS for isolated JavaScript state.
 #endif
 

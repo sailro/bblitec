@@ -66,10 +66,6 @@ ${workers ? "#include <bblite/pal_async_engine.hpp>" : ""}
 
 #include <utility>
 
-#ifndef BBLITE_ASSET_DIR
-#define BBLITE_ASSET_DIR "assets"
-#endif
-
 namespace bbl {
 
 Engine create_engine(EngineOptions options) {

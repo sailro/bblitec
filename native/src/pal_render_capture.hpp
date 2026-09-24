@@ -30,7 +30,7 @@
 // `shader_stage_block_floats` packing both backends push, so a capture
 // diff can never disagree with an upload about the block's bytes.
 #include "pal_gpu_shared.hpp"
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
 #include "pal_text_capture.hpp"
 #else
 namespace bbl::pal {
@@ -65,7 +65,7 @@ class NodeGpuCapture;
 // than the generated header: including the digest here would put it in
 // the including TUs' preprocessed text and force them to recompile per
 // scene.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #if BBLITE_HAS_SPLATS
 #include <bblite/js_data.hpp>
@@ -77,12 +77,12 @@ class NodeGpuCapture;
 #include <bblite/upstream/billboard_system.hpp>
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER
-#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || BBLITE_HAS_SPRITE_RENDERER
 // The layer UBO builder, shared by the 2D layer and — for the fx block
 // sizes — the billboard family; generated whenever either is reached.
 #include <bblite/upstream/sprite_layer.hpp>
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
 // The variant table an effect wrapper draws through: stems, declared
 // bindings and the uniform block's size.
 #include <bblite/upstream/effect_variants.hpp>
@@ -405,7 +405,7 @@ inline void write_float_block(JsonWriter& json, const char* stage, std::uint32_t
 // records the draw lists read from, compiled only where the scene loops
 // are (camera math and the render plan are generated only for a scene
 // that registers one).
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 
 inline const char* primitive_name(PrimitiveKind kind) {
     switch (kind) {
@@ -1200,7 +1200,7 @@ write_splat_draw_list(JsonWriter& json, const Scene& scene, const Engine& engine
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER (scene-frame writers)
 
-#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || BBLITE_HAS_SPRITE_RENDERER
 // The sprite-family enums as names, and the two records both families
 // share — spelled once so the billboard and layer writers cannot label the
 // same descriptor differently.
@@ -1269,7 +1269,7 @@ inline void write_sprite_atlas_reference(JsonWriter& json, const Engine& engine,
 // Billboards draw only inside a scene's frame (there is no standalone
 // billboard loop), so their writer needs the scene envelope's camera math
 // and rides both gates.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_BILLBOARDS
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_BILLBOARDS
 /**
  * The billboard renderables live beside the render plan rather than in
  * either mesh draw list, exactly as the splat cloud does. Capture them at
@@ -1368,7 +1368,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
 }
 #endif
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 /**
  * The 2D sprite rendering contexts the engine records, layers in the
  * draw order `sprite_layer_draw_order` decides for both backends, each
@@ -1450,7 +1450,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
 }
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
 /**
  * The fullscreen-effect state: every wrapper with the exact uniform floats
  * `setEffectUniforms` wrote (already padded to the declared block size by
@@ -1542,7 +1542,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     }
     json.end_array();
 
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
     json.key("tasks");
     json.begin_array();
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
@@ -1571,7 +1571,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /** Retained temporal bytes are observed directly; capture must never repack their cache. */
 inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Engine& engine) {
     const auto words = [&](const char* name, const auto& values) {
@@ -1692,7 +1692,7 @@ inline void write_gpu_capture_resources(JsonWriter& json, const GpuUploadCapture
 }
 #endif
 
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
 inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& capture) {
     const auto constants = [&](const char* name,
                                const std::vector<TextGpuConstantCapture>& values) {
@@ -1829,7 +1829,7 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(const std::string& path, const char* backend, const Scene& scene,
                                  const Engine& engine, const CameraRecord& camera,
                                  const upstream::RenderPlan& render_plan,
@@ -1869,17 +1869,17 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 #if BBLITE_HAS_BILLBOARDS
     json.field("billboardSystemCount", scene.billboard_systems.size());
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.field("spriteRendererCount", engine.sprite_renderers.size());
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.field("effectWrapperCount", engine.effect_wrappers.size());
 #endif
     json.end_object();
 
     json.key("temporalTasks");
     write_temporal_tasks(json, scene, engine);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     if (text_capture) {
         json.key("textGpu");
         write_text_gpu_capture(json, *text_capture);
@@ -2005,14 +2005,14 @@ inline void write_render_capture(const std::string& path, const char* backend, c
     }
     json.end_array();
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.key("spriteRenderers");
     json.begin_array();
     write_sprite_renderer_list(json, engine, width, height);
     json.end_array();
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.key("effects");
     write_effect_state(json, engine);
 #endif
@@ -2102,7 +2102,7 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
     json.end_object();
     stream << '\n';
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     if (text_capture)
         text_capture->stop();
 #endif
@@ -2115,11 +2115,8 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
 // Compiled exactly where a standalone loop exists to call it — a build
 // with neither standalone renderer would hold an unreachable definition.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
-    BBLITE_HAS_TEXT_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER ||      \
+    BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
 /**
  * Write the frame of a scene with no scene renderer.
  *
@@ -2164,10 +2161,10 @@ inline void write_standalone_render_capture(const std::string& path, const char*
     // read from the engine because a standalone frame has no Scene.
     json.key("scene");
     json.begin_object();
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.field("spriteRendererCount", engine.sprite_renderers.size());
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.field("effectWrapperCount", engine.effect_wrappers.size());
 #endif
     json.end_object();
@@ -2181,14 +2178,14 @@ inline void write_standalone_render_capture(const std::string& path, const char*
     json.begin_array();
     json.end_array();
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.key("spriteRenderers");
     json.begin_array();
     write_sprite_renderer_list(json, engine, width, height);
     json.end_array();
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.key("effects");
     write_effect_state(json, engine);
 #endif
@@ -2202,11 +2199,8 @@ inline void write_standalone_render_capture(const std::string& path, const char*
 // writer it calls — under the same standalone-renderer gate — so a TU
 // including only the shared header carries no undefined inline, and a
 // scene-only build compiles neither half.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
-    BBLITE_HAS_TEXT_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER ||      \
+    BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(const char* backend,
                                                                const Engine& engine,
                                                                std::uint32_t width,
@@ -2227,7 +2221,7 @@ inline void CaptureGate::maybe_write_standalone_render_capture(const char* backe
 
 #else
 namespace bbl::pal {
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(const std::string&, const char*, const Scene&, const Engine&,
                                  const CameraRecord&, const upstream::RenderPlan&,
                                  const std::array<float, 16>&, int, int, long,

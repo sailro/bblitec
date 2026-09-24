@@ -117,10 +117,9 @@ export function lowerStandardMeshAlpha(
         booleanAnd: true,
         booleanOr: true,
     });
-    // Defined only when on: both PALs read it as defined(...), so a 0
-    // branch would read as on. The inventory row carries the off state.
+    // BBLITE_STANDARD_VERTEX_ALPHA, which gates the shared PAL header's use
+    // of this block, is render_capabilities.hpp's.
     return `
-#define BBLITE_STANDARD_VERTEX_ALPHA 1
 inline constexpr bool standard_vertex_colors_enabled = ${vertexColors};
 // ${context.provenance(MODULE, "buildStandardMeshRenderables colour alpha")}
 inline std::uint32_t standard_color_alpha_features(

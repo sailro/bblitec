@@ -1848,7 +1848,7 @@ Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
 ${options.pbrSceneHooks ? "    scene.state->source_material_publication = true;\n" : ""}\
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     scene.surface_canvas = engine.surface_canvas;
 #endif
     scene.clear_color = Color4{
@@ -1864,7 +1864,7 @@ Surface create_surface(Engine& engine, UiElementHandle canvas) {
     Surface surface;
     surface.engine = &engine;
     surface.canvas = canvas;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (canvas.value < engine.ui_elements.size()) {
         engine.ui_elements[canvas.value].client_rect_requested = true;
     }
@@ -2023,7 +2023,7 @@ void remove_from_scene(Scene& scene, LightHandle light) {
             return candidate.value == light.value;
         });
     if (found == scene.lights.end()) return;
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     if (light.value < scene.engine->lights.size()) {
         const LightRecord& record = scene.engine->lights[light.value];
         const ShadowGeneratorHandle generator = record.shadow_generator;
@@ -2428,7 +2428,7 @@ void set_canvas_cursor(Engine& engine, std::string cursor) {
 
 void focus_canvas(Engine& engine) {
     engine.canvas_focused = true;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     // Canvas focus replaces DOM focus, just as button focus replaces canvas
     // focus. Otherwise a stale button still reports activeElement and paints
     // its focus-visible outline after the source has focused the canvas.
@@ -2565,11 +2565,11 @@ void dispose_scene(Scene& scene) {
     scene.meshes.clear();
     scene.lights.clear();
     scene.tasks.clear();
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     scene.pending_shadow_retirements.clear();
 #endif
     scene.animation_groups.clear();
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     scene.billboard_systems.clear();
     scene.depth_hosted_sprite_layers.clear();
 #endif
@@ -2599,7 +2599,7 @@ ${
 void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     for (const ShadowGeneratorHandle generator :
          scene.pending_shadow_retirements) {
         if (generator.value >= scene.engine->shadow_generators.size()) {

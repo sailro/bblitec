@@ -75,7 +75,7 @@ inline SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
     return SDL_GPU_BLENDFACTOR_ONE;
 }
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
     switch (factor) {
     case SpriteBlendFactor::zero:
