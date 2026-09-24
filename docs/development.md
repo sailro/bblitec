@@ -214,7 +214,9 @@ npm run lint -- scene1
 ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
 `npm run lint:ts -- --fix` applies safe fixes. `lint:tools` type-checks the JavaScript tools and check
 plugins (`tsconfig.tools.json`, strict `checkJs`) against the declarations the build emits for
-`dist/src`. Prettier leaves embedded source strings unchanged.
+`dist/src`, and the browser init scripts (`tsconfig.browser.json`) against the DOM and WebGPU
+declarations with the page globals of `checks/plugins/browser-globals.d.ts`. Prettier leaves embedded
+source strings unchanged.
 `patches:check` verifies the patch manifest against the patch files, their headers and every consumer.
 clang-format formats maintained native sources and C++ test fixtures without sorting includes.
 Corpus, example scenes, references, source pins, vendored code and generated output are excluded.

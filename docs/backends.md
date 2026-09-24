@@ -88,7 +88,8 @@ Computation workers need no GPU; worker-free builds omit worker scheduling.
 
 Window engines use the supplied RAF timestamp. Windows hosts with the compositor clock API pace
 repaint from its heartbeat and prefer supported mailbox presentation, with FIFO fallback. Other hosts
-use presentation completion. Input callbacks and native defaults finish before repaint. The host services
+use presentation completion. Input callbacks, native defaults and the events those defaults post (click,
+input, change, toggle) finish before the next input event and before repaint. The host services
 input and layout while awaiting RAF callback submissions, bounded by the next heartbeat, then selects
 the latest canvas frames. Completion receipts contain weak native inbox references, never JS values.
 

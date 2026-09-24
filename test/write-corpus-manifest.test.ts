@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { moduleMoveExplainedByPin } from "../src/write-corpus-manifest.js";
+import {
+    adoptRecapturedRow,
+    moduleMoveExplainedByPin,
+} from "../src/write-corpus-manifest.js";
 
 // `corpus:manifest` rewrites the golden-provenance column a pin bump moves.
 // The whole writer rests on one rule -- a moved digest is adopted only when
@@ -94,5 +97,63 @@ test("both halves of the pin are reverted, not just the commit", () => {
             current,
         ),
         false,
+    );
+});
+
+// `--adopt-reference` records a deliberate recapture: only the golden's
+// digest and capture time move, and only while every other pinned input holds.
+const row = {
+    id: "scene181",
+    sourceSha256: "source",
+    reference: "reference/scene181/babylon-lite-golden.png",
+    referenceSha256: "old-golden",
+    moduleSha256: "module",
+    capturedAt: "2026-09-08T05:21:34.366Z",
+    referenceHostPage: "corpus/babylon-lite/lab/lite/scene181.html",
+    referenceHostPageSha256: "host",
+};
+const inputs = {
+    corpusSha256: "source",
+    moduleSha256: "module",
+    referenceSearch: undefined,
+    referenceHostPage: "corpus/babylon-lite/lab/lite/scene181.html",
+    referenceHostPageSha256: "host",
+    goldenSha256: "new-golden",
+    goldenWrittenAt: "2026-09-24T12:00:00.000Z",
+};
+
+test("a recaptured golden of an unchanged capture is adopted with its capture time", () => {
+    assert.deepEqual(adoptRecapturedRow(row, inputs), {
+        ...row,
+        referenceSha256: "new-golden",
+        capturedAt: "2026-09-24T12:00:00.000Z",
+    });
+});
+
+test("adoption refuses a moved input and an unchanged golden", () => {
+    assert.throws(
+        () => adoptRecapturedRow(row, { ...inputs, moduleSha256: "other" }),
+        /capture module moved/,
+    );
+    assert.throws(
+        () => adoptRecapturedRow(row, { ...inputs, corpusSha256: "other" }),
+        /corpus source moved/,
+    );
+    assert.throws(
+        () => adoptRecapturedRow(row, { ...inputs, referenceSearch: "?x" }),
+        /capture query moved/,
+    );
+    assert.throws(
+        () =>
+            adoptRecapturedRow(row, {
+                ...inputs,
+                referenceHostPageSha256: "other",
+            }),
+        /host page moved/,
+    );
+    assert.throws(
+        () =>
+            adoptRecapturedRow(row, { ...inputs, goldenSha256: "old-golden" }),
+        /no recapture to adopt/,
     );
 });

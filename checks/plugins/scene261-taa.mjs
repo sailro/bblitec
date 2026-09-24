@@ -3,7 +3,8 @@
 // `executions`). The frozen mode compares every phase against the browser
 // observation, word for word (JSON numbers normalize JavaScript -0, so the
 // float32 bit patterns are compared as uint32 words); the live mode checks
-// the accumulation reset and recovery the twin exhibits under input.
+// the accumulation reset and recovery the live fixture
+// (examples/taa-live-camera.ts) exhibits under input.
 //
 // options: { mode: "frozen" | "live" }
 import assert from "node:assert/strict";
