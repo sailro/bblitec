@@ -7,6 +7,7 @@ import {
     GAUSSIAN_SPLATTING_EXTENSION,
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     GLTF_MESH_PLAN,
+    asIndex,
     asObject,
     asRecords,
     primitiveRecords,
@@ -83,14 +84,6 @@ export interface RenderItemSpecialization {
     doubleSided: boolean;
 }
 
-// Deliberately stricter than gltf-document's asNumber: every field read
-// through this is a glTF index, and an index is a non-negative integer.
-function asNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isInteger(value) && value >= 0
-        ? value
-        : undefined;
-}
-
 function renderItemSpecializations(
     document: JsonRecord,
     selectedVariant: number | undefined,
@@ -102,7 +95,7 @@ function renderItemSpecializations(
     const result: RenderItemSpecialization[] = [];
     let nextClusterId = 1;
     nodes.forEach((node, nodeIndex) => {
-        const meshIndex = asNumber(node.mesh);
+        const meshIndex = asIndex(node.mesh);
         if (meshIndex === undefined) return;
         const mesh = meshes[meshIndex];
         if (!mesh) return;
@@ -121,16 +114,16 @@ function renderItemSpecializations(
                     ? alphaModeValue
                     : "OPAQUE";
             const attributes = asObject(primitive.attributes);
-            const indexAccessor = asNumber(primitive.indices);
-            const positionAccessor = asNumber(attributes?.POSITION);
+            const indexAccessor = asIndex(primitive.indices);
+            const positionAccessor = asIndex(attributes?.POSITION);
             const elementAccessor =
                 indexAccessor === undefined ? positionAccessor : indexAccessor;
             const elementCount =
                 elementAccessor === undefined
                     ? 0
-                    : (asNumber(accessors[elementAccessor]?.count) ?? 0);
+                    : (asIndex(accessors[elementAccessor]?.count) ?? 0);
             const triangleCount =
-                (asNumber(primitive.mode) ?? 4) === 4
+                (asIndex(primitive.mode) ?? 4) === 4
                     ? Math.floor(elementCount / 3)
                     : 0;
             const trianglesPerCluster = 128;
@@ -240,12 +233,12 @@ function textureImageIndex(
     document: JsonRecord,
     textureIndex: unknown,
 ): number | undefined {
-    const index = asNumber(textureIndex);
+    const index = asIndex(textureIndex);
     if (index === undefined) return undefined;
     const texture = asRecords(document.textures)[index];
     if (!texture) return index;
     const webp = asObject(asObject(texture.extensions)?.["EXT_texture_webp"]);
-    return asNumber(webp?.source) ?? asNumber(texture.source) ?? index;
+    return asIndex(webp?.source) ?? asIndex(texture.source) ?? index;
 }
 
 /**
@@ -332,7 +325,7 @@ function refuseUnsupportedGltf(
         const metallicRoughness = asObject(
             asObject(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
         );
-        const texCoord = asNumber(occlusion.texCoord) ?? 0;
+        const texCoord = asIndex(occlusion.texCoord) ?? 0;
         if (texCoord > 1) {
             refuseGeneration(
                 assetName,
@@ -353,7 +346,7 @@ function refuseUnsupportedGltf(
         if (
             texCoord === 1 &&
             metallicRoughness !== undefined &&
-            asNumber(occlusion.index) === asNumber(metallicRoughness.index) &&
+            asIndex(occlusion.index) === asIndex(metallicRoughness.index) &&
             asObject(occlusion.extensions)?.["KHR_texture_transform"] ===
                 undefined
         ) {
