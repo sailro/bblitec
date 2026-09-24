@@ -18443,7 +18443,7 @@ class Compiler implements LoweringServices {
                     `        ${recordAt("engine.render_targets", "target")}.surface_canvas = scene.surface_canvas;`,
                     `        ${recordAt("engine.render_targets", "resolve_target")}.surface_canvas = scene.surface_canvas;`,
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
-                        'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
+                        'bbl::RenderTaskOptions{"default-render-task", target, std::nullopt, true, ' +
                         `${handleCppType("camera")}{}, false, true, true, true});`,
                     "        bbl::add_task(scene, render_task);",
                     "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +

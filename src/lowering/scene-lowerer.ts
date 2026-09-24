@@ -2152,8 +2152,7 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = ${recordAt("engine.meshes", "mesh")};
-    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) &&
-        !record.detached_imported_mesh && !engine.geometries.at(record.geometry).owned_packed_geometry) {
+    if (!record.detached_imported_mesh && !engine.geometries.at(record.geometry).owned_packed_geometry) {
         const ModelGeometry& geometry = engine.geometries.at(record.geometry);
         if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
             geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
