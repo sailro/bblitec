@@ -18,6 +18,7 @@ import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
 import { retainTextValue } from "./text-surface.js";
+import { pinOperand } from "./evaluation-order.js";
 import { isStringValue, sameCompiledValue, type Value } from "./types.js";
 
 /** What condition lowering reads of the compiler. */
@@ -37,6 +38,7 @@ interface ConditionContext
             | "emit"
             | "emitDiscardedValue"
             | "enterRuntimeControlFlow"
+            | "evaluationOrder"
             | "expectSameEngine"
             | "handleCollections"
             | "browserErasure"
@@ -47,6 +49,8 @@ interface ConditionContext
             | "reachFeature"
             | "reachJsData"
             | "registerNativeBinding"
+            | "registerNativeBindingType"
+            | "registerNativeConstBinding"
             | "requireDefaultEngine"
             | "unwrap"
         > {}
@@ -357,6 +361,18 @@ export class ConditionLowerer {
                 );
             }
             let leftValue = this.context.compileValue(unwrapped.left);
+            if (
+                this.context.evaluationOrder.operandsToPin([
+                    unwrapped.left,
+                    unwrapped.right,
+                ])[0]
+            )
+                leftValue = pinOperand(
+                    this.context,
+                    leftValue,
+                    unwrapped.left,
+                    "comparison_left",
+                );
             const textKind = (value: Value) =>
                 ["text-data", "text-renderable", "text-vector"].includes(
                     value.kind,

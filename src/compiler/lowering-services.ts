@@ -56,6 +56,7 @@ import type {
     ResourceLoop,
 } from "./resource-loops.js";
 import type { ClassLowerer } from "./classes.js";
+import type { EvaluationOrder } from "./evaluation-order.js";
 import type { SceneManifestRecorder } from "./scene-manifest.js";
 import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
@@ -135,6 +136,7 @@ export interface LoweringServices {
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
     readonly classLowerer: ClassLowerer;
+    readonly evaluationOrder: EvaluationOrder;
     readonly nativeFunctions: NativeFunctionLowerer;
     jsDataReached: boolean;
     fileReaderReached: boolean;

@@ -2568,6 +2568,86 @@ check(
 );
 
 check(
+    "evaluation-order-around-calls-that-write",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function regInline(extra: number[]): number {
+        count += 1;
+        extra.push(count);
+        return count;
+    }
+    const s = "x" + count + reg();
+    if (s !== "x12") throw new Error("concatenation order " + s);
+    const t = count + regInline([]);
+    if (t !== 5) throw new Error("arithmetic order " + t);
+    const values = [count, reg()];
+    if (values[0] !== 3 || values[1] !== 4) throw new Error("array order " + values.join(","));
+    function pair(a: number, b: number): number {
+        return a * 10 + b;
+    }
+    if (pair(count, reg()) !== 45) throw new Error("argument order");
+    if (count === reg()) throw new Error("comparison order");
+    function build(): void {
+        const record = { before: count, after: reg() };
+        if (record.before !== 6 || record.after !== 7) throw new Error("record order " + record.before);
+    }
+    build();
+    class Box {
+        constructor(readonly first: number, readonly second: number) {}
+    }
+    const box = new Box(count, reg());
+    if (box.first !== 7 || box.second !== 8) throw new Error("constructor argument order");
+    const scaled = count * 2 - reg();
+    if (scaled !== 7) throw new Error("nested arithmetic order " + scaled);
+`,
+);
+
+check(
+    "evaluation-order-around-writes-before-reads",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function show(a: number, b: number): string {
+        return a + ":" + b;
+    }
+    const first = show(reg(), count);
+    if (first !== "2:2") throw new Error("writer first " + first);
+    const joined = "x" + reg() + count;
+    if (joined !== "x33") throw new Error("concatenation writer first " + joined);
+    let n = 1;
+    const sum = n + (n = 5);
+    if (sum !== 6) throw new Error("assignment in the same expression " + sum);
+    class Counter {
+        value = 0;
+        bump(): number {
+            this.value += 1;
+            return this.value;
+        }
+    }
+    const counter = new Counter();
+    const before = show(counter.value, counter.bump());
+    if (before !== "0:1") throw new Error("reader before a method " + before);
+    const after = show(counter.bump(), counter.value);
+    if (after !== "2:2") throw new Error("method before a reader " + after);
+    function fill(): number {
+        const fresh: number[] = [];
+        fresh.push(count);
+        return fresh.length;
+    }
+    const values: number[] = [];
+    const both = show(values.length, fill());
+    if (both !== "0:1") throw new Error("a function writing only its own array " + both);
+`,
+);
+
+check(
     "recursion-through-stored-instances",
     `
     class TreeNode {

@@ -41,8 +41,10 @@ import {
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
+    | "allocateTemporaryCppName"
     | "canReplaySharedCallEffects"
     | "checker"
+    | "evaluationOrder"
     | "dataTypes"
     | "dataLowerer"
     | "sourceFiles"
@@ -484,6 +486,9 @@ export class NativeFunctionLowerer {
                 return undefined;
             throw error;
         }
+        const ordered = this.context.evaluationOrder.operandsToPin(
+            call.arguments,
+        );
         const argumentsCpp = signature.parameters.map((parameter, index) => {
             const argument = call.arguments[index];
             if (!argument) {
@@ -506,12 +511,16 @@ export class NativeFunctionLowerer {
                     signature.declaration,
                 );
             }
-            return this.compileArgument(
-                argument,
+            return this.inOrder(
+                this.compileArgument(
+                    argument,
+                    parameter,
+                    call.arguments,
+                    index + 1,
+                    signature.declaration,
+                ),
                 parameter,
-                call.arguments,
-                index + 1,
-                signature.declaration,
+                ordered[index] ?? false,
             );
         });
         const cpp = `bblscene::${signature.cppName}(${argumentsCpp.join(", ")})`;
@@ -608,13 +617,20 @@ export class NativeFunctionLowerer {
             this.rejectedMethods.add(signature.method);
             return undefined;
         }
+        const ordered = this.context.evaluationOrder.operandsToPin(
+            argumentExpressions.map((argument) => argument!),
+        );
         const argumentsCpp = signature.parameters.map((parameter, index) =>
-            this.compileArgument(
-                argumentExpressions[index]!,
+            this.inOrder(
+                this.compileArgument(
+                    argumentExpressions[index]!,
+                    parameter,
+                    argumentExpressions,
+                    index + 1,
+                    signature.method,
+                ),
                 parameter,
-                argumentExpressions,
-                index + 1,
-                signature.method,
+                ordered[index] ?? false,
             ),
         );
         const callCpp = `bblscene::${signature.cppName}(${[
@@ -889,6 +905,31 @@ export class NativeFunctionLowerer {
         // narrowed stored object. Both arms decline such calls before
         // reaching here (argumentPreservesObjectIdentity).
         return this.context.dataLowerer.compileForSink(expression, dataType);
+    }
+
+    /**
+     * A by-value argument read into a temporary of its parameter's type when
+     * a later argument touches its storage, either one writing it (see
+     * `evaluation-order.ts`); a by-reference one passes the object itself.
+     */
+    private inOrder(
+        cpp: string,
+        parameter: NativeFunctionSignature["parameters"][number],
+        pin: boolean,
+    ): string {
+        if (!pin || parameter.byReference || !parameter.type) return cpp;
+        const name = this.context.allocateTemporaryCppName("native_argument");
+        const type = `const ${this.context.dataTypes.cppType(parameter.type)}`;
+        this.context.emit({
+            kind: "declaration",
+            type,
+            name,
+            initializer: cpp,
+            attributes: "[[maybe_unused]] ",
+        });
+        this.context.registerNativeConstBinding(name);
+        this.context.registerNativeBindingType(name, type);
+        return name;
     }
 
     private readonly directKernelEffects = new EmissionMap<

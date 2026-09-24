@@ -27,6 +27,7 @@ import {
 } from "./user-functions.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
+import { pinOperand } from "./evaluation-order.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     FunctionSpecializations,
@@ -93,6 +94,7 @@ function declaredPrivateNames(
 interface ClassLoweringContext extends Pick<
     LoweringServices,
     | "checker"
+    | "evaluationOrder"
     | "options"
     | "compileAsyncCall"
     | "dataTypes"
@@ -105,6 +107,7 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
     | "registerNativeBindingType"
+    | "cppString"
     | "identifierIsRebound"
     | "compileValue"
     | "emitStatement"
@@ -1477,6 +1480,11 @@ export class ClassLowerer {
         argumentList: readonly ts.Expression[],
         callable: "constructor" | "method" | "setter",
     ): Value[] {
+        // An argument a later one touches the storage of, either one
+        // writing it, is evaluated where JavaScript evaluates it (see
+        // `evaluation-order.ts`).
+        const ordered =
+            this.context.evaluationOrder.operandsToPin(argumentList);
         return argumentList.map((argument, index) => {
             const parameter = declaration.parameters[index];
             if (!parameter || !ts.isIdentifier(parameter.name)) {
@@ -1487,10 +1495,13 @@ export class ClassLowerer {
                         : `Class ${callable} received too many arguments.`,
                 );
             }
-            return this.context.compileClassParameterValue(
+            const value = this.context.compileClassParameterValue(
                 parameter.name,
                 argument,
             );
+            return ordered[index] && value.kind !== "callback"
+                ? pinOperand(this.context, value, argument, "class_argument")
+                : value;
         });
     }
 

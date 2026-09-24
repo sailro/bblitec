@@ -310,6 +310,7 @@ import type {
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
+import { EvaluationOrder } from "./compiler/evaluation-order.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -692,6 +693,7 @@ class Compiler implements LoweringServices {
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
+    public readonly evaluationOrder: EvaluationOrder;
     public readonly nativeFunctions: NativeFunctionLowerer;
     public readonly browserErasure: BrowserErasure;
     /** One rebound-name walk per file, shared by every `identifierIsRebound`. */
@@ -904,6 +906,10 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
+        this.evaluationOrder = new EvaluationOrder(
+            checker,
+            this.dataTypes.classHierarchy,
+        );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);
         this.expressions = new ExpressionLowerer(this);
@@ -941,6 +947,12 @@ class Compiler implements LoweringServices {
             (value, arity) => this.bindings.bindDataTuple(value, arity),
             (expression) => this.symbols.pinnedWgslTemplate(expression),
             (value) => this.dataLowerer.truthinessCondition(value),
+            (cpp) =>
+                this.bindings.pinValueToTemporary(
+                    { kind: "number", cpp },
+                    "number_operand",
+                ).cpp,
+            this.evaluationOrder,
         );
     }
 
