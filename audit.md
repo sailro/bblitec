@@ -118,7 +118,8 @@ and performance.
 | CC-30 | low | `[7].pop()` on an array-literal receiver refuses ("Unsupported call target"). | Lower removal on literal receivers. | open |
 | CC-31 | low | The operand-order analysis does not see engine methods that change their receiver (`v.x` read before `v.normalize()` in one expression). | Describe receiver writes of engine methods. | open |
 | CC-32 | low | Assigning an object to a field that a shared class instance keeps outside its struct changed it for every instance. | It refuses. | fixed |
-| CC-33 | low | The shared pinned lowerer answers `typeof` on a value no caller passes with its placeholder type (`"boolean"`), so `typeof x === "undefined"` would be decided false. | Decide `typeof` of an absent value as `"undefined"`. | open |
+| CC-33 | low | The shared pinned lowerer answers `typeof` on a value no caller passes with its placeholder type (`"boolean"`), so `typeof x === "undefined"` would be decided false. | `typeof` of a statically absent binding names its absence (`"undefined"`, `"object"` for a null, either where the binding does not say which): a name the absence can never have decides the test, one it may have refuses. A pinned optional parameter no caller passes is undefined; `computePath3D`'s `firstNormal`, `normalVector`'s `va` and a null node-particle constant getter are null. | fixed |
+| CC-34 | low | The shared pinned lowerer decides `typeof` of a binding that can be missing at run time (an `absentCpp` record or list) as `"object"`, though it may be undefined or null when the code runs. | Include the absent names among its possible `typeof` results. | open |
 
 ## Lowering layer (LW)
 
