@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 /** The text transform object retains its renderable; it is never a copied Vec3. */
-/** The text transform object retains its renderable; it is never a copied Vec3. */
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";

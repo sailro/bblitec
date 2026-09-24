@@ -5,12 +5,6 @@ import type { LoweringServices } from "./lowering-services.js";
  * reads expose its final snapshot, including Float64 ages and inactive slots;
  * writes after that boundary refuse instead of silently moving an earlier read.
  */
-/**
- * Particle simulation and initialization writes execute in the ordered bake.
- * Buffer and column aliases retain the originating system identity. Native
- * reads expose its final snapshot, including Float64 ages and inactive slots;
- * writes after that boundary refuse instead of silently moving an earlier read.
- */
 import ts from "typescript";
 import {
     staticNumberValue,

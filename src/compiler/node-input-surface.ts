@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 /** Public node inputs retain their source slot; graphs alone are deduplicated. */
-/** Public node inputs retain their source slot; graphs alone are deduplicated. */
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind, type DataType } from "./data-types.js";
 import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";

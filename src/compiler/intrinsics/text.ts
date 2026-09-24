@@ -1,7 +1,6 @@
 import { EmissionSet, EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
-/** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
