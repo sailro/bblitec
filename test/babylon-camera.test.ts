@@ -160,3 +160,22 @@ test("unknown camera record members refuse with pinned source provenance", () =>
         /parse-camera.ts.*assignment target/s,
     );
 });
+
+test("a scene loading every .babylon file with loadCamera: false compiles no camera parser", () => {
+    // The pin imports parse-camera only when `loadCamera !== false`, so a
+    // scene that never reaches camera:free emits neither the parser nor the
+    // camera selection, and its loader keeps the parameter it cannot read.
+    const lowerer = new BabylonLowerer(new LoweringContext());
+    const cameraless = lowerer.lowerLoaderAdapter(false, false, false).source;
+    assert.doesNotMatch(
+        cameraless,
+        /parse_babylon_camera|select_babylon_camera/,
+    );
+    assert.match(cameraless, /static_cast<void>\(load_camera\);/);
+    const cameras = lowerer.lowerLoaderAdapter(false, false, true).source;
+    assert.match(cameras, /CameraHandle parse_babylon_camera\(/);
+    assert.match(
+        cameras,
+        /if \(const auto camera = select_babylon_camera\(engine, document, load_camera\)\)/,
+    );
+});

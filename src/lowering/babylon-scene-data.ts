@@ -9,6 +9,7 @@ import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 export function lowerBabylonSceneData(
     context: LoweringContext,
     lightMeshLists: boolean,
+    cameras: boolean,
 ): string {
     const module = "src/loader-babylon/load-babylon.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -428,11 +429,18 @@ export function lowerBabylonSceneData(
             "Expected the light construction branch.",
         );
     const lights = lowerPinnedBody(file, [lightStatement], scope());
-    const camera = lowerPinnedBody(
-        file,
-        [variableStatement("camData"), variableStatement("camera")],
-        scope(),
-    );
+    // The camera selection, only beside the camera parser it calls.
+    const camera = cameras
+        ? `
+std::optional<CameraHandle> select_babylon_camera(Engine& engine, const Json& document, bool load_camera) {
+${lowerPinnedBody(
+    file,
+    [variableStatement("camData"), variableStatement("camera")],
+    scope(),
+)}
+    return camera;
+}`
+        : "";
     return `// ${context.provenance(module, "loadBabylon")}
 std::optional<Color4> babylon_clear_color(const Json& document) {
 ${clearBody}
@@ -443,9 +451,5 @@ ${ambient}
 }
 void load_babylon_lights(Engine& engine, AssetRecord& asset, const Json& document${lightMeshLists ? ",\n    const std::unordered_map<std::string, std::vector<std::size_t>>& meshes_by_id, const std::vector<BabylonHierarchyNode>& nodes" : ""}) {
 ${lights}
-}
-std::optional<CameraHandle> select_babylon_camera(Engine& engine, const Json& document, bool load_camera) {
-${camera}
-    return camera;
-}`;
+}${camera}`;
 }

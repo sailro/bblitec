@@ -1177,6 +1177,7 @@ class GeneratedSourceWriter {
         );
         emitReached("upstream/src/light_point.cpp", () =>
             new LightLowerer(context).lowerPointFactory(),
+                features.includes("camera:free"),
         );
         emitReached("upstream/src/light_spot.cpp", () =>
             new LightLowerer(context).lowerSpotFactory(),
