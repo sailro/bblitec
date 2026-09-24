@@ -72,8 +72,11 @@ variables are not loaded implicitly.
 Defaults and short-circuit operands evaluate once and lazily. Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
-call and `Math.random` draws; a function value the compiler cannot name counts as touching everything,
-and an engine method is taken to write nothing but what the callbacks it is handed write. Loose
+call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
+An engine function or class method is read from the pinned body behind its typing, and one with no
+pinned body (an interface method) counts as touching everything. An object or array literal kept past
+the statement that builds it holds each member's value as it was built, and an object an engine
+function writes through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
 equality between operands of one primitive type is strict equality; across types it refuses. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
@@ -111,7 +114,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | --- | --- | --- |
 | Numbers | Reached Math operations, non-coercing Number predicates/constants, JS coercions and rounding, numeric callbacks | Native double transcendental functions; deterministic random; bounded rest signatures |
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
-| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array |
+| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array, mutating methods on an array literal (`[a, b].pop()`) | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array |
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |

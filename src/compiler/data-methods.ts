@@ -708,6 +708,42 @@ export function compileDataMethodCall(
             ownerExpression,
         );
     }
+    // An array literal receiver is a fresh array only this call sees: a
+    // method that changes it (`[a, b].pop()`) runs on a native copy of its
+    // elements, as it would on the array JavaScript builds.
+    if (
+        ts.isArrayLiteralExpression(ownerExpression) &&
+        dynamicOwner?.kind === "tuple" &&
+        writeReceiverMethods.has(method)
+    ) {
+        const element = lowerer.knownTupleElement(
+            callee.expression,
+            dynamicOwner,
+            true,
+        );
+        if (!element) {
+            lowerer.context.fail(
+                ownerExpression,
+                `Array.${method} on an array literal needs one element type.`,
+            );
+        }
+        const dataType: DataType = { kind: "vector", element };
+        const temporary =
+            lowerer.context.allocateTemporaryCppName("literal_receiver");
+        lowerer.context.reachJsData();
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: temporary,
+            initializer: lowerer.compileKnownValueForSink(
+                dynamicOwner,
+                dataType,
+                ownerExpression,
+            ),
+        });
+        lowerer.registerLocal(temporary, "owned");
+        constructedOwner = { kind: "data", cpp: temporary, dataType };
+    }
     const owner =
         constructedOwner ??
         (dynamicOwner?.kind === "tuple"

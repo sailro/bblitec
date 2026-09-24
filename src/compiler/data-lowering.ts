@@ -1396,54 +1396,12 @@ export class DataLowerer {
         if (known.kind !== "tuple") {
             return undefined;
         }
-        const container = this.dataTypeAt(expression);
-        const sourceType = this.context.checker.getTypeAtLocation(expression);
-        const tupleElement = this.context.checker.isTupleType(sourceType)
-            ? this.context.checker.getIndexTypeOfType(
-                  sourceType,
-                  ts.IndexKind.Number,
-              )
-            : undefined;
-        const declaredElement =
-            container?.kind === "vector" || container?.kind === "span"
-                ? container.element
-                : tupleElement
-                  ? this.context.dataTypes.fromTsType(tupleElement, expression)
-                  : undefined;
-        const inferred = (known.tupleElements ?? []).map(
-            (entry): DataType | undefined => {
-                if (entry.dataType) return entry.dataType;
-                switch (entry.kind) {
-                    case "number":
-                        return { kind: "number" };
-                    case "boolean":
-                        return { kind: "boolean" };
-                    case "string":
-                        return { kind: "string" };
-                    default:
-                        return undefined;
-                }
-            },
+        const element = this.knownTupleElement(
+            expression,
+            known,
+            knownValue !== undefined,
         );
-        const first = inferred[0];
-        const inferredElement =
-            first &&
-            inferred.every(
-                (candidate) =>
-                    candidate !== undefined && dataTypesEqual(candidate, first),
-            )
-                ? first
-                : undefined;
-        const element = declaredElement ?? inferredElement;
         if (!element) {
-            return undefined;
-        }
-        if (
-            knownValue &&
-            !(known.tupleElements ?? []).every((entry) =>
-                this.knownValueFitsSink(entry, element, expression, false),
-            )
-        ) {
             return undefined;
         }
         const unwrapped = this.context.unwrap(expression);
@@ -1500,6 +1458,69 @@ export class DataLowerer {
             cpp: reference,
             dataType: { kind: "span", element },
         };
+    }
+
+    /**
+     * The element type a compile-time tuple takes as a native array: the
+     * one its expression declares, or the one every element shares. With
+     * `checkFit`, undefined when an element does not fit it.
+     */
+    public knownTupleElement(
+        expression: ts.Expression,
+        known: Value,
+        checkFit: boolean,
+    ): DataType | undefined {
+        const container = this.dataTypeAt(expression);
+        const sourceType = this.context.checker.getTypeAtLocation(expression);
+        const tupleElement = this.context.checker.isTupleType(sourceType)
+            ? this.context.checker.getIndexTypeOfType(
+                  sourceType,
+                  ts.IndexKind.Number,
+              )
+            : undefined;
+        const declaredElement =
+            container?.kind === "vector" || container?.kind === "span"
+                ? container.element
+                : tupleElement
+                  ? this.context.dataTypes.fromTsType(tupleElement, expression)
+                  : undefined;
+        const inferred = (known.tupleElements ?? []).map(
+            (entry): DataType | undefined => {
+                if (entry.dataType) return entry.dataType;
+                switch (entry.kind) {
+                    case "number":
+                        return { kind: "number" };
+                    case "boolean":
+                        return { kind: "boolean" };
+                    case "string":
+                        return { kind: "string" };
+                    default:
+                        return undefined;
+                }
+            },
+        );
+        const first = inferred[0];
+        const inferredElement =
+            first &&
+            inferred.every(
+                (candidate) =>
+                    candidate !== undefined && dataTypesEqual(candidate, first),
+            )
+                ? first
+                : undefined;
+        const element = declaredElement ?? inferredElement;
+        if (!element) {
+            return undefined;
+        }
+        if (
+            checkFit &&
+            !(known.tupleElements ?? []).every((entry) =>
+                this.knownValueFitsSink(entry, element, expression, false),
+            )
+        ) {
+            return undefined;
+        }
+        return element;
     }
 
     public knownValueFitsSink(
