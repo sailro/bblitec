@@ -10,52 +10,116 @@ import assert from "node:assert/strict";
 import {
     assertObservationProvenance,
     maxError,
+    observedStep,
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ * @import { ObservedFrame, ObservedStep } from "./support.mjs"
+ */
+
+/**
+ * @typedef {[number, number, number]} Vector3
+ * @typedef {[number, number, number, number]} Quaternion
+ * @typedef {{ position: Vector3, rotation: Quaternion }} ObservedBody
+ * @typedef {{
+ *     step: number,
+ *     camera: { alpha: number, beta: number, radius: number },
+ *     viewport: { width: number, height: number },
+ *     bodies: ObservedBody[],
+ * }} ObservedState the hook's `window.__scene47Observe()` record
+ * @typedef {{
+ *     index: number,
+ *     position: Vector3,
+ *     rotationQuaternion: Quaternion,
+ *     geometryInfo: { vertexCount: number },
+ * }} NativeMesh
+ * @typedef {{
+ *     meshes: NativeMesh[],
+ *     draws: Array<{ mesh: number | null, materialKind: string }>,
+ * }} NativeCapture the fields read from a phase's render capture
+ */
+
+/**
+ * @param {ObservedStep | ObservedFrame} record
+ * @param {string} label
+ * @returns {ObservedState}
+ */
+function observedState(record, label) {
+    assert(record.state, `the observed ${label} recorded no state`);
+    return /** @type {ObservedState} */ (record.state);
+}
+
+/**
+ * @param {NativeCapture} state
+ * @param {number | undefined} index
+ * @param {string} where
+ */
+function nativeMesh(state, index, where) {
+    const mesh = index === undefined ? undefined : state.meshes[index];
+    assert(mesh, `${where}: the capture carries no mesh ${index}`);
+    return mesh;
+}
+
+/** @param {PluginContext} context */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
-    for (const frame of observations.captureFrames) {
+    const captureFrames = observations.captureFrames;
+    assert(captureFrames, "the observations carry no capture frames");
+    for (const frame of captureFrames) {
+        const state = observedState(frame, `frame ${frame.frame}`);
         assert.equal(
-            frame.state.step,
+            state.step,
             frame.frame,
-            `browser frame ${frame.frame}: physics stepped ${frame.state.step} times`,
+            `browser frame ${frame.frame}: physics stepped ${state.step} times`,
         );
     }
-    const baseline = observations.steps.find((step) => step.id === "baseline");
-    const pointer = observations.steps.find(
-        (step) => step.id === "pointer-wheel",
+    const baseline = observedState(
+        observedStep(observations, "baseline"),
+        "step 'baseline'",
     );
-    const resized = observations.steps.find((step) => step.id === "resize");
+    const pointer = observedState(
+        observedStep(observations, "pointer-wheel"),
+        "step 'pointer-wheel'",
+    );
     assert.deepEqual(
-        pointer.state.camera,
-        baseline.state.camera,
+        pointer.camera,
+        baseline.camera,
         "the browser scene has no attached camera controls",
     );
     assert(
-        pointer.state.step > baseline.state.step,
+        pointer.step > baseline.step,
         "browser physics stopped during input",
     );
-    assert.deepEqual(resized.state.viewport, { width: 1000, height: 600 });
+    const resized = observedState(
+        observedStep(observations, "resize"),
+        "step 'resize'",
+    );
+    assert.deepEqual(resized.viewport, { width: 1000, height: 600 });
     assert(
-        resized.state.step > pointer.state.step,
+        resized.step > pointer.step,
         "browser physics stopped during resize",
     );
-    const firstFrame = observations.captureFrames.find(
-        (frame) => frame.frame === 1,
-    );
+    const firstFrame = captureFrames.find((frame) => frame.frame === 1);
+    /** @type {Record<string, { positionError: number | undefined, rotationError: number | undefined }>} */
     const details = {};
     for (const backend of context.backends) {
         const results = context.results[backend];
+        assert(results, `${backend}: no phase results`);
+        /** @type {Map<string, { positions: Vector3[] }>} */
         const captures = new Map();
+        /** @type {number[] | undefined} */
         let bodyMeshes;
+        /** @type {number[] | undefined} */
         let debugMeshes;
         for (const phase of Object.values(results)) {
             const where = `${backend}/${phase.id}`;
-            const state = phase.capture;
-            if (!bodyMeshes) {
-                const expected = firstFrame.state.bodies;
+            const state = /** @type {NativeCapture} */ (phase.capture);
+            if (!bodyMeshes || !debugMeshes) {
+                assert(firstFrame, "the browser observed no frame 1");
+                const expected = observedState(firstFrame, "frame 1").bodies;
                 bodyMeshes = expected.map((body, index) => {
                     const matches = state.meshes.filter(
                         (mesh) =>
@@ -73,7 +137,9 @@ export function check(context) {
                         1,
                         `${where}: body ${index}: expected one native solid mesh`,
                     );
-                    return matches[0].index;
+                    const [match] = matches;
+                    assert(match);
+                    return match.index;
                 });
                 debugMeshes = expected.map((body) => {
                     const matches = state.meshes.filter(
@@ -89,20 +155,36 @@ export function check(context) {
                         1,
                         `${where}: expected one debug mesh per body`,
                     );
-                    return matches[0].index;
+                    const [match] = matches;
+                    assert(match);
+                    return match.index;
                 });
             }
-            const bodies = bodyMeshes.map((index) => state.meshes[index]);
-            const browserFrame = observations.captureFrames.find(
+            const bodies = bodyMeshes.map((index) =>
+                nativeMesh(state, index, where),
+            );
+            const browserFrame = captureFrames.find(
                 (frame) => frame.frame === phase.frame,
             );
             let positionError;
             let rotationError;
             if (browserFrame !== undefined) {
-                const expected = browserFrame.state.bodies;
+                const expected = observedState(
+                    browserFrame,
+                    `frame ${browserFrame.frame}`,
+                ).bodies;
+                /** @param {number} index */
+                const expectedBody = (index) => {
+                    const body = expected[index];
+                    assert(
+                        body,
+                        `${where}: browser frame ${browserFrame.frame} carries no body ${index}`,
+                    );
+                    return body;
+                };
                 positionError = Math.max(
                     ...bodies.map((body, index) =>
-                        maxError(body.position, expected[index].position),
+                        maxError(body.position, expectedBody(index).position),
                     ),
                 );
                 rotationError = Math.max(
@@ -110,11 +192,13 @@ export function check(context) {
                         Math.min(
                             maxError(
                                 body.rotationQuaternion,
-                                expected[index].rotation,
+                                expectedBody(index).rotation,
                             ),
                             maxError(
                                 body.rotationQuaternion,
-                                expected[index].rotation.map((value) => -value),
+                                expectedBody(index).rotation.map(
+                                    (value) => -value,
+                                ),
                             ),
                         ),
                     ),
@@ -130,13 +214,13 @@ export function check(context) {
                     );
                 }
             }
-            bodies.forEach((body, index) => {
+            for (const [index, body] of bodies.entries()) {
                 assert(
                     body.position.every(Number.isFinite) &&
                         body.rotationQuaternion.every(Number.isFinite),
                     `${where}: body ${index} is not finite`,
                 );
-                const debug = state.meshes[debugMeshes[index]];
+                const debug = nativeMesh(state, debugMeshes[index], where);
                 assert.deepEqual(
                     debug.position,
                     body.position,
@@ -147,7 +231,7 @@ export function check(context) {
                     body.rotationQuaternion,
                     `${where}: viewer rotation detached from its live body`,
                 );
-            });
+            }
             if (phase.frame === 240) {
                 assert(
                     bodies
@@ -167,15 +251,21 @@ export function check(context) {
                 `${where}: max position error ${positionError ?? "n/a"}`,
             );
         }
-        const stationary = captures.get("frame-120");
+        /** @param {string} id */
+        const positions = (id) => {
+            const capture = captures.get(id);
+            assert(capture, `${backend}: no phase '${id}'`);
+            return capture.positions;
+        };
+        const stationary = positions("frame-120");
         assert.deepEqual(
-            captures.get("pointer-wheel").positions,
-            stationary.positions,
+            positions("pointer-wheel"),
+            stationary,
             `${backend}: unhandled input changed the simulation`,
         );
         assert.deepEqual(
-            captures.get("resize").positions,
-            stationary.positions,
+            positions("resize"),
+            stationary,
             `${backend}: resize changed the simulation`,
         );
     }

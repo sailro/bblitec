@@ -10,28 +10,57 @@
 import assert from "node:assert/strict";
 import { loadPng } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ id: number, sequence: number, width: number, height: number }} CanvasSample
+ * @typedef {{ frame: number, time: number, canvases: CanvasSample[] }} FrameSample
+ */
+
+/**
+ * @param {string} log
+ * @returns {FrameSample[]}
+ */
 const samples = (log) =>
     [
         ...log.matchAll(
             /window frame=(\d+) now-ms=([\d.]+)((?: canvas=\d+:\d+@\d+x\d+)+)/g,
         ),
-    ].map((match) => ({
-        frame: Number(match[1]),
-        time: Number(match[2]),
-        canvases: [...match[3].matchAll(/canvas=(\d+):(\d+)@(\d+)x(\d+)/g)]
-            .map((canvas) => ({
-                id: Number(canvas[1]),
-                sequence: Number(canvas[2]),
-                width: Number(canvas[3]),
-                height: Number(canvas[4]),
-            }))
-            .sort((left, right) => left.id - right.id),
-    }));
+    ].map(([, frame, time, canvases]) => {
+        assert(canvases !== undefined);
+        return {
+            frame: Number(frame),
+            time: Number(time),
+            canvases: [...canvases.matchAll(/canvas=(\d+):(\d+)@(\d+)x(\d+)/g)]
+                .map((canvas) => ({
+                    id: Number(canvas[1]),
+                    sequence: Number(canvas[2]),
+                    width: Number(canvas[3]),
+                    height: Number(canvas[4]),
+                }))
+                .sort((left, right) => left.id - right.id),
+        };
+    });
 
+/**
+ * The main and worker canvas sequences of one frame sample.
+ * @param {FrameSample | undefined} sample
+ * @param {string} where
+ */
+function sequences(sample, where) {
+    const [main, worker] = sample?.canvases ?? [];
+    assert(main && worker, `${where}: missing two-canvas sample`);
+    return { main: main.sequence, worker: worker.sequence };
+}
+
+/** @param {PluginContext} context */
 export function check(context) {
+    /** @type {Record<string, { mainFramesWhileBlocked: number, workerFramesWhileBlocked: number, buttonCenter: number, viewport: number[] }>} */
     const details = {};
     for (const backend of context.backends) {
-        for (const phase of Object.values(context.results[backend])) {
+        for (const phase of Object.values(context.results[backend] ?? {})) {
             const where = `${backend}/${phase.id}`;
             const frames = samples(phase.log);
             assert(
@@ -42,12 +71,10 @@ export function check(context) {
             const blocked = frames.filter(
                 (frame) => frame.frame >= 80 && frame.frame <= 180,
             );
-            const mainDelta =
-                blocked.at(-1).canvases[0].sequence -
-                blocked[0].canvases[0].sequence;
-            const workerDelta =
-                blocked.at(-1).canvases[1].sequence -
-                blocked[0].canvases[1].sequence;
+            const blockedEnd = sequences(blocked.at(-1), where);
+            const blockedStart = sequences(blocked[0], where);
+            const mainDelta = blockedEnd.main - blockedStart.main;
+            const workerDelta = blockedEnd.worker - blockedStart.worker;
             assert(
                 mainDelta <= 8 && workerDelta >= 50,
                 `${where}: the block did not isolate the main realm: ${mainDelta}/${workerDelta}`,
@@ -57,9 +84,9 @@ export function check(context) {
             let right = -1;
             for (let x = 0; x < png.width; ++x) {
                 const pixel = (35 * png.width + x) * 4;
-                const r = png.data[pixel],
-                    g = png.data[pixel + 1],
-                    b = png.data[pixel + 2];
+                const r = png.data.readUInt8(pixel),
+                    g = png.data.readUInt8(pixel + 1),
+                    b = png.data.readUInt8(pixel + 2);
                 if (r > 90 && r > g * 1.4 && r > b * 1.4) {
                     left = Math.min(left, x);
                     right = x + 1;
@@ -82,8 +109,8 @@ export function check(context) {
                 );
                 const late = frames.filter((frame) => frame.frame >= 800);
                 assert(
-                    late.at(-1).canvases[0].sequence -
-                        late[0].canvases[0].sequence >
+                    sequences(late.at(-1), where).main -
+                        sequences(late[0], where).main >
                         80,
                     `${where}: the main realm did not resume`,
                 );

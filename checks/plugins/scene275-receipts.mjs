@@ -17,6 +17,107 @@ import {
     sha256,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ * @import { ObservedStep } from "./support.mjs"
+ */
+
+/**
+ * @typedef {{ width: number, height: number }} Extent
+ * @typedef {{ offset: number, bytes: number }} ByteRange
+ * @typedef {{
+ *     id: number,
+ *     role: string,
+ *     allocationBytes: number,
+ *     width: number,
+ *     rows: number,
+ *     destroyed: boolean,
+ *     uploadedBytes: number[],
+ *     writtenRanges: ByteRange[],
+ *     writes: ByteRange[],
+ * }} NativeResource
+ * @typedef {{ id: number, value: number }} NativeConstant
+ * @typedef {{ binding: number, role: string, resource: number, view: number }} NativeBinding
+ * @typedef {{
+ *     pipeline: number,
+ *     group: number,
+ *     quad: number,
+ *     instances: number,
+ *     colorFormat: string,
+ *     depthFormat: string,
+ *     depthCompare: string,
+ *     depthWrite: boolean,
+ *     topology: string,
+ *     cullMode: string,
+ *     frontFace: string,
+ *     samples: number,
+ *     sampleMask: number,
+ *     blendEnabled: boolean,
+ *     alphaToCoverage: boolean,
+ *     colorSrcFactor: string,
+ *     colorDstFactor: string,
+ *     colorOperation: string,
+ *     alphaSrcFactor: string,
+ *     alphaDstFactor: string,
+ *     alphaOperation: string,
+ *     vertexConstants: NativeConstant[],
+ *     fragmentConstants: NativeConstant[],
+ *     bindings: NativeBinding[],
+ *     vertices: number,
+ *     instanceCount: number,
+ *     firstVertex: number,
+ *     firstInstance: number,
+ *     pushedUniformBytes: number[],
+ * }} NativeDraw
+ * @typedef {{
+ *     frame: number,
+ *     textGpu?: { frame: number, resources: NativeResource[], draws: NativeDraw[] },
+ * }} NativeCapture the fields read from a phase's render capture
+ * @typedef {{ id: number, kind: "buffer", label: string, size: number }} ObservedBuffer
+ * @typedef {{ id: number, kind: "texture", label: string, size: Extent }} ObservedTexture
+ * @typedef {{ id: number, kind: "view", label: string, texture: number }} ObservedView
+ * @typedef {{ id: number, kind: "sampler", label: string }} ObservedSampler
+ * @typedef {{
+ *     id: number,
+ *     offset?: number,
+ *     layout?: { offset: number },
+ *     bytes: number[] | null,
+ * }} ObservedWrite a buffer write carries `offset`, a texture write its data layout; `bytes` is null past 1 MiB
+ * @typedef {{ srcFactor?: string, dstFactor?: string, operation?: string }} BlendComponent
+ * @typedef {{
+ *     id: number,
+ *     vertex: { constants: Record<string, number> },
+ *     fragment: {
+ *         constants: Record<string, number>,
+ *         targets: Array<{ blend?: { color: BlendComponent, alpha: BlendComponent } } | null>,
+ *     } | null,
+ *     depthStencil: { format: string, depthCompare?: string, depthWriteEnabled?: boolean } | null,
+ *     primitive: { topology?: string, cullMode?: string, frontFace?: string },
+ *     multisample: { count?: number, mask?: number, alphaToCoverageEnabled?: boolean },
+ * }} ObservedPipeline
+ * @typedef {{
+ *     resources: Array<ObservedBuffer | ObservedTexture | ObservedView | ObservedSampler>,
+ *     writes: ObservedWrite[],
+ *     pipelines: ObservedPipeline[],
+ *     groups: Array<{ id: number, entries: Array<{ binding: number, resource: number }> }>,
+ *     draws: Array<{
+ *         pipeline: number | null,
+ *         groups: Array<number | null>,
+ *         vertices: Array<{ buffer: number } | null>,
+ *         args: number[],
+ *     }>,
+ * }} Receipts the init script's `window.__gpuReceipts` record
+ * @typedef {{
+ *     role: string,
+ *     id: number,
+ *     allocationBytes: number,
+ *     uploadedBytes: number,
+ *     sha256: string,
+ *     writes: ByteRange[],
+ * }} ResourceSummary
+ * @typedef {{ resources: ResourceSummary[], draws: NativeDraw[] }} ReceiptSummary
+ */
+
 const ROLES = new Map([
     ["text-quad-corners", "quad"],
     ["text-renderable-ubo", "uniform"],
@@ -26,11 +127,19 @@ const ROLES = new Map([
     ["text-slug-curves", "curves"],
     ["text-slug-bands", "bands"],
 ]);
+/** @param {Record<string, number> | undefined} value */
 const constants = (value) =>
     Object.entries(value ?? {})
         .map(([id, number]) => ({ id: Number(id), value: number }))
         .sort((a, b) => a.id - b.id);
 
+/**
+ * @param {NativeCapture} capture
+ * @param {Receipts} observed
+ * @param {string} backend
+ * @param {string} where
+ * @returns {ReceiptSummary}
+ */
 function verifyReceipts(capture, observed, backend, where) {
     const gpu = capture.textGpu;
     assert(gpu, `${where}: missing actual text GPU operation receipts`);
@@ -50,12 +159,15 @@ function verifyReceipts(capture, observed, backend, where) {
     const expectedResources = new Map(
         observed.resources.map((resource) => [resource.id, resource]),
     );
+    /** @type {Map<number, number>} */
     const identity = new Map();
+    /** @type {ResourceSummary[]} */
     const summaries = [];
     for (const [label, role] of ROLES) {
         const expected = observed.resources.filter(
             (resource) => resource.label === label,
         );
+        /** @type {NativeResource[]} */
         const actual = gpu.resources.filter(
             (resource) =>
                 resource.role === role ||
@@ -68,11 +180,16 @@ function verifyReceipts(capture, observed, backend, where) {
         );
         expected.forEach((resource, index) => {
             const native = actual[index];
+            assert(native);
             identity.set(resource.id, native.id);
             assert.equal(
                 native.destroyed,
                 false,
                 `${where}: ${role} destroyed while still in use`,
+            );
+            assert(
+                resource.kind === "buffer" || resource.kind === "texture",
+                `${where}: ${label} is a ${resource.kind}, not an allocation`,
             );
             const texture = resource.kind === "texture";
             const size = texture
@@ -119,10 +236,13 @@ function verifyReceipts(capture, observed, backend, where) {
                     offset: write.offset,
                     bytes: write.bytes,
                 })),
-                writes.map((write) => ({
-                    offset: write.offset ?? write.layout?.offset ?? 0,
-                    bytes: write.bytes.length,
-                })),
+                writes.map((write) => {
+                    assert(write.bytes);
+                    return {
+                        offset: write.offset ?? write.layout?.offset ?? 0,
+                        bytes: write.bytes.length,
+                    };
+                }),
                 `${where}: ${role}[${index}] write count/order/ranges`,
             );
             summaries.push({
@@ -137,11 +257,15 @@ function verifyReceipts(capture, observed, backend, where) {
     }
     const draws = observed.draws.slice(-2);
     assert.equal(gpu.draws.length, draws.length, `${where}: draw count`);
-    const groupIdentity = new Map(),
-        pipelineIdentity = new Map(),
-        viewIdentity = new Map();
+    /** @type {Map<number, number>} */
+    const groupIdentity = new Map();
+    /** @type {Map<number, number>} */
+    const pipelineIdentity = new Map();
+    /** @type {Map<number, number>} */
+    const viewIdentity = new Map();
     draws.forEach((draw, index) => {
         const native = gpu.draws[index];
+        assert(native);
         const pipeline = observed.pipelines.find(
             (row) => row.id === draw.pipeline,
         );
@@ -150,7 +274,7 @@ function verifyReceipts(capture, observed, backend, where) {
             pipeline && group,
             `${where}: browser draw lacks its pipeline or group`,
         );
-        for (const [map, sourceId, nativeId, role] of [
+        for (const [map, sourceId, nativeId, role] of /** @type {const} */ ([
             [
                 groupIdentity,
                 group.id,
@@ -158,7 +282,7 @@ function verifyReceipts(capture, observed, backend, where) {
                 backend === "dawn" ? "bind-group" : "binding-set",
             ],
             [pipelineIdentity, pipeline.id, native.pipeline, "pipeline"],
-        ]) {
+        ])) {
             if (map.has(sourceId))
                 assert.equal(
                     nativeId,
@@ -178,19 +302,26 @@ function verifyReceipts(capture, observed, backend, where) {
                 `${where}: draw refers to the wrong resource kind`,
             );
             assert.equal(
-                resources.get(nativeId).destroyed,
+                resources.get(nativeId)?.destroyed,
                 false,
                 `${where}: draw refers to a retired resource`,
             );
         }
+        const quad = draw.vertices[0];
+        assert(quad, `${where}: the browser draw binds no quad buffer`);
         assert.equal(
             native.quad,
-            identity.get(draw.vertices[0].buffer),
+            identity.get(quad.buffer),
             `${where}: quad binding`,
+        );
+        const instances = draw.vertices[1];
+        assert(
+            instances,
+            `${where}: the browser draw binds no instance buffer`,
         );
         assert.equal(
             native.instances,
-            identity.get(draw.vertices[1].buffer),
+            identity.get(instances.buffer),
             `${where}: instances binding`,
         );
         assert.deepEqual(
@@ -210,8 +341,13 @@ function verifyReceipts(capture, observed, backend, where) {
         );
         for (const binding of group.entries) {
             const expected = expectedResources.get(binding.resource);
+            assert(
+                expected,
+                `${where}: binding ${binding.binding} names no browser resource`,
+            );
             const underlying =
                 expected.kind === "view" ? expected.texture : expected.id;
+            /** @type {NativeBinding | undefined} */
             const actual = native.bindings.find(
                 (row) => row.binding === binding.binding,
             );
@@ -221,14 +357,19 @@ function verifyReceipts(capture, observed, backend, where) {
                 identity.get(underlying),
                 `${where}: binding ${binding.binding} owner changed`,
             );
+            const owner = expectedResources.get(underlying);
+            assert(
+                owner,
+                `${where}: binding ${binding.binding} views no browser resource`,
+            );
             assert.equal(
                 actual.role,
-                ROLES.get(expectedResources.get(underlying).label),
+                ROLES.get(owner.label),
                 `${where}: binding ${binding.binding} role`,
             );
             if (backend === "dawn" && expected.kind === "view") {
                 assert.equal(resources.get(actual.view)?.role, "texture-view");
-                assert.equal(resources.get(actual.view).destroyed, false);
+                assert.equal(resources.get(actual.view)?.destroyed, false);
                 if (viewIdentity.has(expected.id))
                     assert.equal(actual.view, viewIdentity.get(expected.id));
                 else {
@@ -240,12 +381,21 @@ function verifyReceipts(capture, observed, backend, where) {
                 }
             }
         }
-        const color = pipeline.fragment.targets[0];
+        const fragment = pipeline.fragment;
+        assert(
+            fragment,
+            `${where}: the browser pipeline has no fragment stage`,
+        );
+        const color = fragment.targets[0];
         // Both PALs use their actual unorm target channel order; the
         // screenshot bytes are normalized by the established capture path.
         assert(
             ["rgba8unorm", "bgra8unorm"].includes(native.colorFormat),
             `${where}: color format`,
+        );
+        assert(
+            pipeline.depthStencil,
+            `${where}: the browser pipeline has no depth-stencil state`,
         );
         if (backend === "sdl_gpu") {
             // The SDL default pass uses a depth-only attachment. The source
@@ -267,7 +417,11 @@ function verifyReceipts(capture, observed, backend, where) {
             native.depthWrite,
             pipeline.depthStencil.depthWriteEnabled,
         );
-        for (const name of ["topology", "cullMode", "frontFace"])
+        for (const name of /** @type {const} */ ([
+            "topology",
+            "cullMode",
+            "frontFace",
+        ]))
             assert.equal(
                 native[name],
                 pipeline.primitive[name],
@@ -282,16 +436,17 @@ function verifyReceipts(capture, observed, backend, where) {
             native.alphaToCoverage,
             pipeline.multisample.alphaToCoverageEnabled ?? false,
         );
+        assert(color, `${where}: the browser pipeline has no colour target`);
         assert.equal(native.blendEnabled, !!color.blend);
         if (color.blend) {
-            for (const part of ["color", "alpha"]) {
-                for (const [suffix, property] of [
+            for (const part of /** @type {const} */ (["color", "alpha"])) {
+                for (const [suffix, property] of /** @type {const} */ ([
                     ["SrcFactor", "srcFactor"],
                     ["DstFactor", "dstFactor"],
                     ["Operation", "operation"],
-                ])
+                ]))
                     assert.equal(
-                        native[part + suffix],
+                        native[/** @type {const} */ (`${part}${suffix}`)],
                         color.blend[part][property],
                         `${where}: ${part}${suffix}`,
                     );
@@ -304,17 +459,18 @@ function verifyReceipts(capture, observed, backend, where) {
         );
         assert.deepEqual(
             native.fragmentConstants,
-            constants(pipeline.fragment.constants),
+            constants(fragment.constants),
             `${where}: fragment constants`,
         );
-        const uniform = resources.get(
-            native.bindings.find((binding) => binding.role === "uniform")
-                .resource,
+        const uniformBinding = native.bindings.find(
+            (binding) => binding.role === "uniform",
         );
+        assert(uniformBinding, `${where}: the draw binds no uniform`);
+        const uniform = resources.get(uniformBinding.resource);
         if (backend === "sdl_gpu")
             assert.deepEqual(
                 native.pushedUniformBytes,
-                uniform.uploadedBytes,
+                uniform?.uploadedBytes,
                 `${where}: SDL draw did not push the actual data-owned group uniform bytes`,
             );
         else
@@ -327,6 +483,16 @@ function verifyReceipts(capture, observed, backend, where) {
     return { resources: summaries, draws: gpu.draws };
 }
 
+/**
+ * @param {ObservedStep} step
+ * @returns {Receipts}
+ */
+function observedReceipts(step) {
+    assert(step.state, `the observed step '${step.id}' recorded no receipts`);
+    return /** @type {Receipts} */ (step.state);
+}
+
+/** @param {PluginContext} context */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
@@ -335,13 +501,13 @@ export function check(context) {
     const input = observedStep(observations, "input");
     const resize = observedStep(observations, "resize");
     assert.equal(
-        idle.state.writes.length,
-        first.state.writes.length,
+        observedReceipts(idle).writes.length,
+        observedReceipts(first).writes.length,
         "the browser kept writing while idle",
     );
     assert.deepEqual(
-        input.state.writes,
-        first.state.writes,
+        observedReceipts(input).writes,
+        observedReceipts(first).writes,
         "browser input added GPU writes",
     );
     assert.equal(
@@ -358,15 +524,27 @@ export function check(context) {
         { width: 960, height: 600 },
         "the resized browser observation",
     );
+    /** @type {Record<string, Array<{ phase: string, observedResources: number }>>} */
     const details = {};
     for (const backend of context.backends) {
+        const results = context.results[backend];
+        assert(results, `${backend}: no phase results`);
+        /** @type {Array<{ id: string } & ReceiptSummary>} */
         const captures = [];
-        for (const phase of Object.values(context.results[backend])) {
+        for (const phase of Object.values(results)) {
             const where = `${backend}/${phase.id}`;
-            const expected = phase.id === "resize" ? resize.state : first.state;
+            const expected =
+                phase.id === "resize"
+                    ? observedReceipts(resize)
+                    : observedReceipts(first);
             captures.push({
                 id: phase.id,
-                ...verifyReceipts(phase.capture, expected, backend, where),
+                ...verifyReceipts(
+                    /** @type {NativeCapture} */ (phase.capture),
+                    expected,
+                    backend,
+                    where,
+                ),
             });
         }
         const canonical = captures.find(
@@ -375,6 +553,7 @@ export function check(context) {
         for (const current of captures.filter(
             (capture) => capture.id === "idle" || capture.id === "input",
         )) {
+            assert(canonical, `${backend}: no phase 'canonical'`);
             assert.deepEqual(
                 current.resources,
                 canonical.resources,

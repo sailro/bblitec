@@ -13,10 +13,62 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ alpha: number, beta: number, radius: number }} OrbitCamera
+ * @typedef {{
+ *     taskIndex: number,
+ *     clean: number[],
+ *     drawn: number[],
+ *     cleanWords: number[],
+ *     drawnWords: number[],
+ *     cache: { cameraKey: number, aspect: number },
+ * }} SourceTask a scene task's retained uniforms
+ * @typedef {{
+ *     executions: number,
+ *     factor: number,
+ *     lastCameraVersion: number,
+ *     haltonIndex: number,
+ *     haltonWords: number[],
+ *     jitterScratch: number[],
+ *     jitterScratchWords: number[],
+ *     blendFactor?: number,
+ *     sourceTasks: number[],
+ * }} TaaTask the TAA task's retained state; `blendFactor` is its first pass's first parameter, when it has one
+ * @typedef {{
+ *     temporalTasks: Array<{ clean?: unknown, executions?: unknown }>,
+ *     camera: OrbitCamera,
+ * }} NativeCapture the fields read from a phase's render capture
+ * @typedef {{
+ *     executions: number,
+ *     haltonIndex: number,
+ *     factor: number,
+ *     lastCameraVersion: number,
+ *     cleanLength: number,
+ *     cleanWords: number[],
+ *     drawnWords: number[],
+ *     haltonWords: number[],
+ *     jitterScratchWords: number[],
+ *     camera: OrbitCamera,
+ * }} ObservedState the hook's `window.__observe()` record
+ */
+
+const CAMERA_KEYS = /** @type {const} */ (["alpha", "beta", "radius"]);
+
+/**
+ * @param {NativeCapture} capture
+ * @param {string} where
+ */
 function taaState(capture, where) {
-    const source = capture.temporalTasks.find((task) => task.clean);
-    const taa = capture.temporalTasks.find(
-        (task) => task.executions !== undefined,
+    const tasks = capture.temporalTasks;
+    const source = /** @type {SourceTask | undefined} */ (
+        tasks.find((task) => task.clean)
+    );
+    const taa = /** @type {TaaTask | undefined} */ (
+        tasks.find((task) => task.executions !== undefined)
     );
     assert(source && taa, `${where}: missing retained source/TAA capture`);
     assert.deepEqual(
@@ -44,22 +96,29 @@ function taaState(capture, where) {
     return { source, taa };
 }
 
+/** @param {PluginContext} context */
 export function check(context) {
+    /** @type {Record<string, Record<string, number | undefined>>} */
     const details = {};
     if (context.options.mode === "frozen") {
         const observations = requireObservations(context);
         assertObservationProvenance(context, observations);
-        const expected = observedStep(observations, "first").state;
+        const first = observedStep(observations, "first");
         assert.deepEqual(
             observedStep(observations, "idle").state,
-            expected,
+            first.state,
             "the browser's frozen state changed while idle",
         );
+        assert(first.state, "the observed step 'first' recorded no state");
+        const expected = /** @type {ObservedState} */ (first.state);
         assert.equal(expected.cleanLength, 92);
         for (const backend of context.backends) {
-            for (const phase of Object.values(context.results[backend])) {
+            const results = context.results[backend];
+            assert(results, `${backend}: no phase results`);
+            for (const phase of Object.values(results)) {
                 const where = `${backend}/${phase.id}`;
-                const { source, taa } = taaState(phase.capture, where);
+                const capture = /** @type {NativeCapture} */ (phase.capture);
+                const { source, taa } = taaState(capture, where);
                 assert.equal(
                     taa.executions,
                     expected.executions,
@@ -100,9 +159,9 @@ export function check(context) {
                     expected.jitterScratchWords,
                     `${where}: jitterScratchWords differ from the exact pin`,
                 );
-                for (const key of ["alpha", "beta", "radius"]) {
+                for (const key of CAMERA_KEYS) {
                     assert.equal(
-                        phase.capture.camera[key],
+                        capture.camera[key],
                         expected.camera[key],
                         `${where}: camera ${key}`,
                     );
@@ -118,13 +177,20 @@ export function check(context) {
     }
     for (const backend of context.backends) {
         const results = context.results[backend];
-        const settled = taaState(results.settled.capture, `${backend}/settled`);
-        const moving = taaState(results.moving.capture, `${backend}/moving`);
-        const recovered = taaState(
-            results.recovered.capture,
-            `${backend}/recovered`,
-        );
-        const resized = taaState(results.resize.capture, `${backend}/resize`);
+        assert(results, `${backend}: no phase results`);
+        /** @param {string} id */
+        const phaseState = (id) => {
+            const phase = results[id];
+            assert(phase, `${backend}: no phase '${id}'`);
+            return taaState(
+                /** @type {NativeCapture} */ (phase.capture),
+                `${backend}/${id}`,
+            );
+        };
+        const settled = phaseState("settled");
+        const moving = phaseState("moving");
+        const recovered = phaseState("recovered");
+        const resized = phaseState("resize");
         assert.equal(
             settled.taa.blendFactor,
             0.05,
