@@ -1,9 +1,10 @@
 // The Recast/Detour implementation of the navigation seam.
 //
 // Every decision here is the pinned wrapper's, not this port's: the
-// config defaults and unit transforms are @recast-navigation/core's
-// `recastConfigDefaults`/`createRcConfig`, the build sequence is
-// @recast-navigation/generators' `generateSoloNavMesh` step for step,
+// config defaults and field copy are @recast-navigation/core's
+// `recastConfigDefaults`/`createRcConfig`, what each generator then does
+// to that config is generated from the package and handed in, the build
+// sequence is @recast-navigation/generators' `generateSoloNavMesh` step for step,
 // the query construction is `NavMeshQuery`'s (its node pool and search
 // box from the build defaults, include-all filter), the debug walk is
 // `getNavMeshPositionsAndIndices` plus the pinned
@@ -47,6 +48,7 @@ extern "C" {
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace bbl::pal {
@@ -263,10 +265,13 @@ int pick_int(const std::optional<double>& given, double fallback) {
  * emscripten truncates -- the double-to-int casts in `pick_int` are that
  * same truncation, for a given value and a default alike (`walkableRadius`
  * 0.5 lands as 0). Both build arms share this because both take the same
- * spread; what differs is only what each does with `tileSize` afterwards.
+ * spread; a solo build's `tileSize` is absent or 0, since any other value
+ * selects another arm.
  */
-rcConfig resolved_rc_config(const NavMeshBuildParams& params, const NavBuildDefaults& defaults) {
-    rcConfig config{};
+NavRcConfig create_rc_config(const NavMeshBuildParams& params, const NavBuildDefaults& defaults) {
+    NavRcConfig config{};
+    config.borderSize = static_cast<int>(defaults.border_size);
+    config.tileSize = pick_int(params.tile_size, defaults.tile_size);
     config.cs = pick_float(params.cs, defaults.cs);
     config.ch = pick_float(params.ch, defaults.ch);
     config.walkableSlopeAngle =
@@ -283,9 +288,51 @@ rcConfig resolved_rc_config(const NavMeshBuildParams& params, const NavBuildDefa
     config.detailSampleDist = pick_float(params.detail_sample_dist, defaults.detail_sample_dist);
     config.detailSampleMaxError =
         pick_float(params.detail_sample_max_error, defaults.detail_sample_max_error);
-    config.borderSize = static_cast<int>(defaults.border_size);
-    config.tileSize = static_cast<int>(defaults.tile_size);
     return config;
+}
+
+/**
+ * The generated step's config as Recast's own `rcConfig`, which the wrapper's
+ * object IS: every field is asserted to be the same type on both sides, and
+ * every field but the bounds to be mirrored, so the copy moves values and
+ * converts none.
+ */
+rcConfig recast_config(const NavRcConfig& from) {
+    static_assert(sizeof(rcConfig) ==
+                      sizeof(NavRcConfig) + sizeof(rcConfig::bmin) + sizeof(rcConfig::bmax),
+                  "rcConfig holds a field NavRcConfig does not mirror");
+    rcConfig config{};
+    const auto copy = [](auto& target, const auto& source) {
+        static_assert(std::is_same_v<std::remove_cvref_t<decltype(target)>,
+                                     std::remove_cvref_t<decltype(source)>>,
+                      "NavRcConfig no longer mirrors rcConfig");
+        target = source;
+    };
+    copy(config.width, from.width);
+    copy(config.height, from.height);
+    copy(config.tileSize, from.tileSize);
+    copy(config.borderSize, from.borderSize);
+    copy(config.cs, from.cs);
+    copy(config.ch, from.ch);
+    copy(config.walkableSlopeAngle, from.walkableSlopeAngle);
+    copy(config.walkableHeight, from.walkableHeight);
+    copy(config.walkableClimb, from.walkableClimb);
+    copy(config.walkableRadius, from.walkableRadius);
+    copy(config.maxEdgeLen, from.maxEdgeLen);
+    copy(config.maxSimplificationError, from.maxSimplificationError);
+    copy(config.minRegionArea, from.minRegionArea);
+    copy(config.mergeRegionArea, from.mergeRegionArea);
+    copy(config.maxVertsPerPoly, from.maxVertsPerPoly);
+    copy(config.detailSampleDist, from.detailSampleDist);
+    copy(config.detailSampleMaxError, from.detailSampleMaxError);
+    return config;
+}
+
+/** `calcGridSize(bbMin, bbMax, config.cs)`, which both arms measure before their step. */
+NavGridSize grid_size(const float* bounds_min, const float* bounds_max, float cs) {
+    NavGridSize grid;
+    rcCalcGridSize(bounds_min, bounds_max, cs, &grid.width, &grid.height);
+    return grid;
 }
 
 /**
@@ -335,16 +382,6 @@ void install_query(NavigationMeshState& state, dtNavMesh* nav_mesh,
     }
 }
 
-/** The generator's post-`createRcConfig` transforms, which both arms
- *  apply once the grid size is known. */
-void apply_generator_config_transforms(rcConfig& config) {
-    config.minRegionArea = config.minRegionArea * config.minRegionArea;
-    config.mergeRegionArea = config.mergeRegionArea * config.mergeRegionArea;
-    config.detailSampleDist =
-        config.detailSampleDist < 0.9f ? 0.0f : config.cs * config.detailSampleDist;
-    config.detailSampleMaxError = config.ch * config.detailSampleMaxError;
-}
-
 } // namespace
 
 NavigationHandle navigation_create_plugin() {
@@ -354,7 +391,8 @@ NavigationHandle navigation_create_plugin() {
 
 void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
                                      const NavMeshBuildParams& params,
-                                     const NavBuildDefaults& defaults) {
+                                     const NavBuildDefaults& defaults,
+                                     NavSoloConfigStep configure) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -365,11 +403,9 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
     const int triangle_count = input.triangle_count;
     const std::vector<int>& triangles = input.triangles;
 
-    rcConfig config = resolved_rc_config(params, defaults);
-    apply_generator_config_transforms(config);
-    rcVcopy(config.bmin, input.bounds_min);
-    rcVcopy(config.bmax, input.bounds_max);
-    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
+    NavRcConfig configured = create_rc_config(params, defaults);
+    configure(configured, grid_size(input.bounds_min, input.bounds_max, configured.cs));
+    const rcConfig config = recast_config(configured);
 
     rcContext context(false);
     const auto fail = [](const std::string& message) -> void {
@@ -377,8 +413,9 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
     };
 
     RecastOwner<rcHeightfield> heightfield{rcAllocHeightfield(), rcFreeHeightField};
-    if (!heightfield || !rcCreateHeightfield(&context, *heightfield, config.width, config.height,
-                                             config.bmin, config.bmax, config.cs, config.ch)) {
+    if (!heightfield ||
+        !rcCreateHeightfield(&context, *heightfield, config.width, config.height, input.bounds_min,
+                             input.bounds_max, config.cs, config.ch)) {
         fail("Could not create heightfield");
     }
 
@@ -657,7 +694,8 @@ std::vector<TileCacheLayer> rasterize_tile_layers(rcContext* context, const rcCo
  */
 void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
                                            const NavMeshBuildParams& params,
-                                           const NavBuildDefaults& defaults) {
+                                           const NavBuildDefaults& defaults,
+                                           NavTileCacheConfigStep configure) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -668,39 +706,29 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
     const float* bounds_min = input.bounds_min;
     const float* bounds_max = input.bounds_max;
 
-    // `{...tileCacheGeneratorConfigDefaults, ...cfg}`: the solo defaults
-    // plus this arm's three, of which only `tileSize` is an rcConfig field
-    // -- the other two are destructured out of the spread before
-    // `createRcConfig` ever sees it.
-    rcConfig config = resolved_rc_config(params, defaults);
-    // This arm is SELECTED by `maxObstacles`, and the generation that
-    // selects it refuses the arm without a `tileSize`, so both are present
-    // by the time this runs -- the pin's own 32 and 128 would be answers to
-    // a question already asked. `expectedLayersPerTile` is the one a
-    // reached scene may leave out, so it is the one that carries a default.
-    if (!params.max_obstacles || !params.tile_size) {
+    // This arm is SELECTED by `maxObstacles`, the generation that selects
+    // it refuses the arm without a `tileSize`, and the pinned module
+    // resolves `expectedLayersPerTile` itself -- so all three are present
+    // by the time this runs, and `tileCacheGeneratorConfigDefaults` would
+    // answer questions already asked. `expectedLayersPerTile` and
+    // `maxObstacles` are destructured out of the spread before
+    // `createRcConfig` sees it; `tileSize` is an rcConfig field.
+    if (!params.max_obstacles || !params.tile_size || !params.expected_layers_per_tile) {
         throw std::runtime_error("createNavMesh (tile cache) failed: a tile-cache build takes "
-                                 "both maxObstacles and tileSize.");
+                                 "maxObstacles, tileSize and expectedLayersPerTile.");
     }
-    config.tileSize = static_cast<int>(*params.tile_size);
     const int max_obstacles = static_cast<int>(*params.max_obstacles);
-    const int expected_layers_per_tile =
-        pick_int(params.expected_layers_per_tile, defaults.expected_layers_per_tile);
+    const int expected_layers_per_tile = static_cast<int>(*params.expected_layers_per_tile);
 
-    rcVcopy(config.bmin, bounds_min);
-    rcVcopy(config.bmax, bounds_max);
-    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
-    apply_generator_config_transforms(config);
-
-    // The tile grid is measured against the FULL grid size, and only then
-    // is width/height overwritten with one padded tile's extent -- so
-    // every tile rasterizes at the same size whatever the world's is.
-    const int tile_size = config.tileSize;
-    const int tile_width = (config.width + tile_size - 1) / tile_size;
-    const int tile_height = (config.height + tile_size - 1) / tile_size;
-    config.borderSize = config.walkableRadius + 3;
-    config.width = config.tileSize + config.borderSize * 2;
-    config.height = config.tileSize + config.borderSize * 2;
+    // The generated step measures the tile grid against the FULL grid size
+    // and only then overwrites width/height with one padded tile's extent,
+    // so every tile rasterizes at the same size whatever the world's is.
+    NavRcConfig configured = create_rc_config(params, defaults);
+    const NavTileGrid tiles =
+        configure(configured, grid_size(bounds_min, bounds_max, configured.cs));
+    const rcConfig config = recast_config(configured);
+    const int tile_width = static_cast<int>(tiles.width);
+    const int tile_height = static_cast<int>(tiles.height);
 
     const auto fail = [](const std::string& message) -> void {
         throw std::runtime_error("createNavMesh (tile cache) failed: " + message);
@@ -804,28 +832,28 @@ void drain_obstacle_requests(NavigationMeshState& state) {
     }
 }
 
-NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
-                                              NavVec3 half_extents, float angle) {
+std::optional<NavObstacleHandle> navigation_add_box_obstacle(NavigationHandle plugin,
+                                                             NavVec3 position, NavVec3 half_extents,
+                                                             float angle) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     const float half[3] = {half_extents.x, half_extents.y, half_extents.z};
     dtObstacleRef reference = 0;
     if (dtStatusFailed(state.tile_cache->addBoxObstacle(centre, half, angle, &reference))) {
-        throw std::runtime_error("addBoxObstacle failed: the tile cache holds no room for "
-                                 "another obstacle.");
+        return std::nullopt;
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
-NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
-                                                   float radius, float height) {
+std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(NavigationHandle plugin,
+                                                                  NavVec3 position, float radius,
+                                                                  float height) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     dtObstacleRef reference = 0;
     if (dtStatusFailed(state.tile_cache->addObstacle(centre, radius, height, &reference))) {
-        throw std::runtime_error("addCylinderObstacle failed: the tile cache holds no room for "
-                                 "another obstacle.");
+        return std::nullopt;
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
@@ -841,11 +869,7 @@ void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obsta
 }
 
 void navigation_update_obstacles(NavigationHandle plugin) {
-    NavigationMeshState& state = tile_cache_state(plugin);
-    bool up_to_date = false;
-    while (!up_to_date) {
-        state.tile_cache->update(0.0f, state.nav_mesh.get(), &up_to_date);
-    }
+    drain_obstacle_requests(tile_cache_state(plugin));
 }
 
 #endif

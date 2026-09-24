@@ -8,7 +8,10 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
-import { navigationBuildDefaultsDeclaration } from "../src/lowering/navigation-lowerer.js";
+import {
+    navigationBuildDefaultsDeclaration,
+    navigationConfigStepDeclaration,
+} from "../src/lowering/navigation-lowerer.js";
 import { pinnedHeader } from "../src/lowering/pinned-header.js";
 
 const tools = optionalNativeFixtureTools();
@@ -16,12 +19,22 @@ function runNavigationFixture(name: string): string {
     const output = resolve("artifacts", name);
     mkdirSync(output, { recursive: true });
     const executable = join(output, `${name}.exe`);
-    // The build defaults the generated navigation header hands the PAL.
+    // The build defaults and the two build-config steps the generated
+    // navigation header hands the PAL.
     writeFileSync(
         join(output, "navigation_build_defaults.hpp"),
         pinnedHeader(
-            ["<bblite/pal_navigation.hpp>"],
-            navigationBuildDefaultsDeclaration(),
+            [
+                "<bblite/js_data.hpp>",
+                "<bblite/pal_navigation.hpp>",
+                "",
+                "<cmath>",
+            ],
+            [
+                navigationBuildDefaultsDeclaration(),
+                navigationConfigStepDeclaration("solo"),
+                navigationConfigStepDeclaration("tileCache"),
+            ].join("\n"),
         ),
     );
     runNativeFixtureCompiler(tools!, [
@@ -91,3 +104,24 @@ test(
         );
     },
 );
+
+test("navigation build-config steps are lowered from the generators package", () => {
+    // Each rcConfig store narrows at the field's own width, as the wrapper's
+    // setter does, and each comparison is JavaScript's: against the double
+    // 0.9, which a float-width port would have spelled 0.9f.
+    const solo = navigationConfigStepDeclaration("solo");
+    assert.match(
+        solo,
+        /rcConfig\.minRegionArea = bbl::js::numeric_store_value<decltype\(rcConfig\.minRegionArea\)>/,
+    );
+    assert.match(
+        solo,
+        /static_cast<double>\(rcConfig\.detailSampleDist\) < 0\.9\)/,
+    );
+    // The tile grid is the one pair of locals the rest of generateTileCache
+    // reads out of its step.
+    assert.match(
+        navigationConfigStepDeclaration("tileCache"),
+        /return bbl::pal::NavTileGrid\{tileWidth, tileHeight\};\n\}$/,
+    );
+});

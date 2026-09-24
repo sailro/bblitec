@@ -7,14 +7,6 @@ import type { LoweringServices } from "../lowering-services.js";
 // PAL's, linked from the exact recastnavigation commit the pinned
 // wrapper's wasm compiles — so unlike physics, nothing is substituted
 // and the answers are expected to match the browser reference.
-// The navigation family: `createNavigationPluginAsync`, `createNavMesh`,
-// `createDebugNavMeshGeometry`, `raycast`.
-//
-// The pinned module's own logic is generated (upstream/navigation.cpp,
-// src/lowering/navigation-lowerer.ts); the toolset behind it is the
-// PAL's, linked from the exact recastnavigation commit the pinned
-// wrapper's wasm compiles — so unlike physics, nothing is substituted
-// and the answers are expected to match the browser reference.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { handleCppType } from "../data-types.js";
@@ -27,7 +19,11 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import { pinnedAgentParamDefaults } from "../../lowering/navigation-lowerer.js";
+import {
+    pinnedAgentParamDefaults,
+    pinnedExpectedLayersPerTileDefault,
+} from "../../lowering/navigation-lowerer.js";
+import { doubleLiteral } from "../../cpp-literals.js";
 
 export interface NavigationIntrinsicContext
     extends
@@ -199,7 +195,8 @@ export function compileNavigationIntrinsic(
             // the feature is what carries it to the emitted dispatch, to
             // the PAL half that gets compiled, and to the third-party
             // library that gets linked.
-            if (buildGate(context, options, "maxObstacles") !== 0) {
+            const tileCache = buildGate(context, options, "maxObstacles") !== 0;
+            if (tileCache) {
                 context.reachFeature("navigation:tile-cache", call);
             }
             const parameters = context.allocateTemporaryCppName("nav_params");
@@ -209,6 +206,12 @@ export function compileNavigationIntrinsic(
                 if (value) {
                     context.emit(
                         `${parameters}.${field} = ${context.compileNumber(value, "double")};`,
+                    );
+                } else if (tileCache && name === "expectedLayersPerTile") {
+                    // The pin's own `?? N`, resolved before the wrapper's
+                    // spread ever sees the key.
+                    context.emit(
+                        `${parameters}.${field} = ${doubleLiteral(pinnedExpectedLayersPerTileDefault())};`,
                     );
                 }
             }

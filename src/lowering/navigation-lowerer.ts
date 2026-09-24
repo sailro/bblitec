@@ -19,13 +19,14 @@
  *   pin's merged stream on the nav asset), so the emitted merge passes
  *   the baked positions through, asserted against the pin's own
  *   multiply rows.
- * - `_createNavMeshFromMerged`'s dispatch: the tile-cache and tiled
- *   arms refuse by name (their record plumbing does not exist yet); the
- *   solo arm hands the merged geometry and the present-key config to
- *   the PAL, whose build replays `generateSoloNavMesh` — and the
- *   wrapper's config defaults the build fills absent keys from are read
- *   from the installed packages and emitted into the header it takes
- *   them from, under the package versions they came from.
+ * - `_createNavMeshFromMerged`'s dispatch: the tiled arm refuses by
+ *   name; the solo and tile-cache arms hand the merged geometry and the
+ *   present-key config to the PAL, whose build replays the generator —
+ *   and the wrapper's config defaults the build fills absent keys from
+ *   are read from the installed packages and emitted into the header it
+ *   takes them from, under the package versions they came from, beside
+ *   the generator's own build-config step, lowered from the package and
+ *   handed to the build.
  * - `createDebugNavMeshGeometry` and `raycast` pass through to the PAL
  *   arms that carry their pinned arithmetic; the shapes here assert the
  *   pin still spells them the way those arms do.
@@ -51,8 +52,13 @@ import {
     variableInitializer,
 } from "./context.js";
 import { pinnedHeader } from "./pinned-header.js";
+import {
+    type PinnedBinding,
+    PinnedNumericLowerer,
+} from "./pinned-numeric-lowerer.js";
+import { pinnedMathCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedOptionFallback } from "./pinned-option-defaults.js";
-import { doubleLiteral } from "../cpp-literals.js";
+import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -126,21 +132,6 @@ function vectorLanes(
 }
 
 /**
- * `tileCacheGeneratorConfigDefaults`' own three, which live in the
- * generators package rather than core.
- *
- * It spreads `recastConfigDefaults` and then adds `tileSize`,
- * `expectedLayersPerTile` and `maxObstacles`; a spread carries no property
- * assignment, so what this reads is exactly the arm's own.
- */
-function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
-    return wrapperNumericDefaults(
-        "tileCacheGeneratorConfigDefaults",
-        "@recast-navigation/generators/dist/index.mjs",
-    );
-}
-
-/**
  * `bbl::pal::NavBuildDefaults` (bblite/pal_navigation.hpp) field by field
  * in declaration order, by the `recastConfigDefaults` key each carries.
  * A key the package grows or drops refuses: the build would miss it, or
@@ -186,10 +177,12 @@ function wrapperPackageVersion(name: string): string {
  * (`bbl::pal::NavBuildDefaults`), read from the installed packages and
  * stamped with the versions they came from.
  *
- * Only one of `tileCacheGeneratorConfigDefaults`' own three reaches the
- * build: `tileSize` and `maxObstacles` are what generation proves before
- * the tile-cache arm is chosen at all, so a default for either would
- * answer a question already asked.
+ * None of `tileCacheGeneratorConfigDefaults`' own three reaches the build:
+ * `tileSize` and `maxObstacles` are what generation proves before the
+ * tile-cache arm is chosen at all, and the pinned module resolves
+ * `expectedLayersPerTile` before the wrapper's spread
+ * (`pinnedExpectedLayersPerTileDefault`), so a default for any of them
+ * would answer a question already asked.
  */
 export function navigationBuildDefaultsDeclaration(): string {
     const config = pinnedRecastConfigDefaults();
@@ -204,34 +197,400 @@ export function navigationBuildDefaultsDeclaration(): string {
                 `[${RECAST_CONFIG_FIELDS.map(([key]) => key).join(", ")}].`,
         );
     }
-    const expectedLayers = pinnedTileCacheDefaults().get(
-        "expectedLayersPerTile",
-    );
-    if (expectedLayers === undefined) {
-        throw new Error(
-            "@recast-navigation/generators' tileCacheGeneratorConfigDefaults " +
-                "no longer defaults expectedLayersPerTile.",
-        );
-    }
     const query = pinnedNavMeshQueryDefaults();
     const fields = [
         ...RECAST_CONFIG_FIELDS.map(
             ([key, field]) =>
                 `    .${field} = ${doubleLiteral(config.get(key)!)},`,
         ),
-        `    .expected_layers_per_tile = ${doubleLiteral(expectedLayers)},`,
         `    .query_max_nodes = ${doubleLiteral(query.maxNodes)},`,
         `    .query_half_extents = {${query.halfExtents.map(doubleLiteral).join(", ")}},`,
     ];
     return `/**
  * \`recastConfigDefaults\` and \`NavMeshQuery\`'s \`maxNodes\` and
- * \`defaultQueryHalfExtents\` from @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")}, and
- * \`tileCacheGeneratorConfigDefaults.expectedLayersPerTile\` from
- * @recast-navigation/generators@${wrapperPackageVersion("@recast-navigation/generators")}, read from the installed packages.
+ * \`defaultQueryHalfExtents\` from @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")}, read from the installed package.
  */
 inline constexpr bbl::pal::NavBuildDefaults navigation_build_defaults{
 ${fields.join("\n")}
 };`;
+}
+
+const WRAPPER_GENERATORS = "@recast-navigation/generators/dist/index.mjs";
+
+/**
+ * The `rcConfig` fields the wrapper's own `cloneRcConfig` copies, which is
+ * the package's statement of what one holds: `bbl::pal::NavRcConfig`
+ * mirrors exactly these (the bounds aside, which it sets per tile through
+ * `set_bmin`/`set_bmax` and no build-config step touches).
+ */
+function wrapperRcConfigFields(): ReadonlySet<string> {
+    const file = wrapperModule(WRAPPER_CORE);
+    const clone = unwrapExpression(variableInitializer(file, "cloneRcConfig"));
+    const context = sharedPinnedContext();
+    if (!ts.isArrowFunction(clone) || clone.parameters.length !== 1) {
+        return context.contractError(
+            clone,
+            "Expected cloneRcConfig to stay a one-parameter arrow function.",
+        );
+    }
+    const source = clone.parameters[0]!.name.getText(file);
+    const fields = new Set<string>();
+    for (const node of context.findNodes(
+        clone,
+        (candidate): candidate is ts.BinaryExpression =>
+            ts.isBinaryExpression(candidate) &&
+            candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+    )) {
+        const target = context.propertyPath(node.left);
+        const value = context.propertyPath(node.right);
+        if (
+            target?.length !== 2 ||
+            value?.length !== 2 ||
+            value[0] !== source ||
+            value[1] !== target[1]
+        ) {
+            return context.contractError(
+                node,
+                "Expected cloneRcConfig to copy each field by its own name.",
+            );
+        }
+        fields.add(target[1]!);
+    }
+    return fields;
+}
+
+/**
+ * The two build arms a reached `createNavMesh` takes, by the generator each
+ * calls, the argument its `createRcConfig` receives and the spread that
+ * argument comes from -- which is what the PAL's `create_rc_config` ports
+ * -- and, for the tile-cache arm, the tile grid the rest of the generator
+ * reads out of its build-config step.
+ */
+const CONFIG_STEPS = {
+    solo: {
+        generator: "generateSoloNavMeshData",
+        cppName: "solo_nav_mesh_config",
+        spread: "{ ...soloNavMeshGeneratorConfigDefaults, ...navMeshGeneratorConfig }",
+        tileGrid: undefined,
+    },
+    tileCache: {
+        generator: "generateTileCache",
+        cppName: "tile_cache_nav_mesh_config",
+        spread: "{ ...tileCacheGeneratorConfigDefaults, ...navMeshGeneratorConfig }",
+        tileGrid: { width: "tileWidth", height: "tileHeight" },
+    },
+} as const;
+
+type NavigationBuildArm = keyof typeof CONFIG_STEPS;
+
+/** Whether a node assigns, increments or decrements `<owner>.<member>`. */
+function memberWrite(
+    context: LoweringContext,
+    node: ts.Node,
+    owner: string,
+): ts.Expression | undefined {
+    const target =
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+            ? node.left
+            : (ts.isPrefixUnaryExpression(node) ||
+                    ts.isPostfixUnaryExpression(node)) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                    node.operator === ts.SyntaxKind.MinusMinusToken)
+              ? node.operand
+              : undefined;
+    const path = target ? context.propertyPath(target) : undefined;
+    return path?.length === 2 && path[0] === owner ? target : undefined;
+}
+
+/**
+ * One generator's build-config step, lowered from the installed
+ * @recast-navigation/generators package as the function the PAL's build
+ * arm calls (`bbl::pal::NavSoloConfigStep` / `NavTileCacheConfigStep`).
+ *
+ * The step is every statement between the generator's `createRcConfig`
+ * and the first library call after it: the config arithmetic Recast is
+ * then handed (`minRegionArea` squared, `detailSampleDist` in cells, the
+ * tile arm's padded tile extent and the tile grid). `calcGridSize` is a
+ * library call too, and the one the step reads, so the PAL measures it and
+ * passes it in -- which is only the pin's order while no statement before
+ * it writes `cs`, checked here. Each `rcConfig` store narrows through the
+ * field's own type, the way the wrapper's setter does, and each read
+ * widens to the JavaScript number it is.
+ */
+export function navigationConfigStepDeclaration(
+    arm: NavigationBuildArm,
+): string {
+    const step = CONFIG_STEPS[arm];
+    const context = sharedPinnedContext();
+    const file = wrapperModule(WRAPPER_GENERATORS);
+    const generator = unwrapExpression(
+        variableInitializer(file, step.generator),
+    );
+    if (!ts.isArrowFunction(generator) || !ts.isBlock(generator.body)) {
+        return context.contractError(
+            generator,
+            `Expected ${step.generator} to stay an arrow function with a body.`,
+        );
+    }
+    const statements = generator.body.statements;
+
+    // `const <config> = createRcConfig(<argument>)`, once.
+    const created = statements.flatMap((statement, index) => {
+        if (
+            !ts.isVariableStatement(statement) ||
+            statement.declarationList.declarations.length !== 1
+        ) {
+            return [];
+        }
+        const declaration = statement.declarationList.declarations[0]!;
+        const call = declaration.initializer
+            ? unwrapExpression(declaration.initializer)
+            : undefined;
+        return call &&
+            ts.isCallExpression(call) &&
+            ts.isIdentifier(call.expression) &&
+            call.expression.text === "createRcConfig" &&
+            ts.isIdentifier(declaration.name)
+            ? [{ index, config: declaration.name.text, call }]
+            : [];
+    });
+    const [creation] = created;
+    if (created.length !== 1 || !creation) {
+        return context.contractError(
+            generator,
+            `Expected ${step.generator} to call createRcConfig once.`,
+        );
+    }
+    const argument = creation.call.arguments[0];
+    const source =
+        creation.call.arguments.length === 1 &&
+        argument &&
+        ts.isIdentifier(argument)
+            ? context.findNodes(
+                  generator.body,
+                  (node): node is ts.VariableDeclaration =>
+                      ts.isVariableDeclaration(node) &&
+                      (ts.isIdentifier(node.name)
+                          ? node.name.text === argument.text
+                          : node.name.elements.some(
+                                (element) =>
+                                    ts.isBindingElement(element) &&
+                                    element.dotDotDotToken !== undefined &&
+                                    element.name.getText(file) ===
+                                        argument.text,
+                            )),
+              )
+            : [];
+    const spread = source[0]?.initializer;
+    if (source.length !== 1 || !spread) {
+        return context.contractError(
+            creation.call,
+            `Expected ${step.generator}'s createRcConfig argument to be one ` +
+                "local built from the wrapper's config spread.",
+        );
+    }
+    context.assertExpressionShape(
+        spread,
+        step.spread,
+        `${step.generator}'s config spread`,
+    );
+
+    // The step: up to the first call that is neither the grid measure nor
+    // a Math member, which is where Recast is handed the config.
+    const body: ts.Statement[] = [];
+    for (const statement of statements.slice(creation.index + 1)) {
+        if (
+            context.hasNode(
+                statement,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    !pinnedMathCall(node) &&
+                    !(
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === "calcGridSize"
+                    ),
+            )
+        ) {
+            break;
+        }
+        body.push(statement);
+    }
+    const config = creation.config;
+    const measures = body.flatMap((statement, index) => {
+        if (
+            !ts.isVariableStatement(statement) ||
+            statement.declarationList.declarations.length !== 1
+        ) {
+            return [];
+        }
+        const declaration = statement.declarationList.declarations[0]!;
+        return declaration.initializer &&
+            ts.isIdentifier(declaration.name) &&
+            context.expressionMatchesShape(
+                declaration.initializer,
+                `calcGridSize(bbMin, bbMax, ${config}.cs)`,
+            )
+            ? [{ index, statement, grid: declaration.name.text }]
+            : [];
+    });
+    const [measure] = measures;
+    if (measures.length !== 1 || !measure) {
+        return context.contractError(
+            generator,
+            `Expected ${step.generator}'s build-config step to measure ` +
+                `calcGridSize(bbMin, bbMax, ${config}.cs) once.`,
+        );
+    }
+    const fields = wrapperRcConfigFields();
+    for (const [index, statement] of body.entries()) {
+        for (const write of context.findNodes(
+            statement,
+            (node): node is ts.Node =>
+                memberWrite(context, node, config) !== undefined,
+        )) {
+            const path = context.propertyPath(
+                memberWrite(context, write, config)!,
+            )!;
+            const field = path[1]!;
+            if (
+                !ts.isBinaryExpression(write) ||
+                write.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                !ts.isExpressionStatement(statement) ||
+                unwrapExpression(statement.expression) !== write
+            ) {
+                context.contractError(
+                    write,
+                    "Expected every rcConfig write in the build-config step " +
+                        "to be a plain assignment statement.",
+                );
+            }
+            if (!fields.has(field)) {
+                context.contractError(
+                    write,
+                    `rcConfig carries no '${field}' field (cloneRcConfig copies ` +
+                        `[${[...fields].join(", ")}]).`,
+                );
+            }
+            if (field === "cs" && index < measure.index) {
+                context.contractError(
+                    write,
+                    `${step.generator} writes cs before calcGridSize reads ` +
+                        "it; the PAL measures the grid from createRcConfig's cs.",
+                );
+            }
+        }
+    }
+
+    const configCpp = cppIdentifier(config);
+    const gridCpp = cppIdentifier(measure.grid);
+    const bindings = new Map<string, PinnedBinding>([
+        ...[...fields].map((field): [string, PinnedBinding] => [
+            `${config}.${field}`,
+            {
+                cpp: `static_cast<double>(${configCpp}.${field})`,
+                type: "scalar",
+            },
+        ]),
+        ...(["width", "height"] as const).map(
+            (lane): [string, PinnedBinding] => [
+                `${measure.grid}.${lane}`,
+                {
+                    cpp: `static_cast<double>(${gridCpp}.${lane})`,
+                    type: "scalar",
+                },
+            ],
+        ),
+    ]);
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings,
+        calls: pinnedNumericMathCalls(),
+        statement: (statement, active, indent) => {
+            if (statement === measure.statement) return [];
+            if (!ts.isExpressionStatement(statement)) return undefined;
+            const write = unwrapExpression(statement.expression);
+            const target = memberWrite(context, write, config);
+            if (!target || !ts.isBinaryExpression(write)) return undefined;
+            const member = `${configCpp}.${context.propertyPath(target)![1]!}`;
+            return [
+                `${indent}${member} = bbl::js::numeric_store_value<` +
+                    `decltype(${member})>(${active.expression(write.right)});`,
+            ];
+        },
+    });
+    const lines = lowerer.statements(body, "    ");
+    let returned = "void";
+    if (step.tileGrid) {
+        const [width, height] = [step.tileGrid.width, step.tileGrid.height].map(
+            (local) => {
+                const binding = bindings.get(local);
+                if (!binding) {
+                    return context.contractError(
+                        generator,
+                        `Expected ${step.generator}'s build-config step to ` +
+                            `declare '${local}'.`,
+                    );
+                }
+                return binding.cpp;
+            },
+        );
+        returned = "bbl::pal::NavTileGrid";
+        lines.push(`    return bbl::pal::NavTileGrid{${width}, ${height}};`);
+    }
+    return `/**
+ * \`${step.generator}\`'s build-config step from
+ * @recast-navigation/generators@${wrapperPackageVersion("@recast-navigation/generators")}, lowered from the installed package.
+ */
+inline ${returned} ${step.cppName}(
+    bbl::pal::NavRcConfig& ${configCpp},
+    const bbl::pal::NavGridSize& ${gridCpp}) {
+${lines.join("\n")}
+}`;
+}
+
+let expectedLayersDefault: number | undefined;
+
+/**
+ * The `?? <n>` the pinned `_createNavMeshFromMerged` resolves
+ * `expectedLayersPerTile` with before a tile-cache build, which is what the
+ * wrapper's `{...tileCacheGeneratorConfigDefaults, ...cfg}` spread then
+ * finds: the pin always sets the key, so the wrapper's own default never
+ * reaches a build. `intrinsics/navigation.ts` emits this number where a
+ * scene leaves the field out.
+ */
+export function pinnedExpectedLayersPerTileDefault(): number {
+    if (expectedLayersDefault !== undefined) return expectedLayersDefault;
+    const context: LoweringContext = sharedPinnedContext();
+    const { file, declaration } = context.functionDeclaration(
+        NAVIGATION_MODULE,
+        "_createNavMeshFromMerged",
+    );
+    const assignments = context.findNodes(
+        declaration,
+        (node): node is ts.BinaryExpression =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            context.propertyPath(node.left)?.join(".") ===
+                "cfg.expectedLayersPerTile",
+    );
+    const nullish =
+        assignments.length === 1
+            ? context.nullishDefault(assignments[0]!.right)
+            : undefined;
+    if (
+        !nullish ||
+        context.propertyPath(nullish.left)?.join(".") !==
+            "params.expectedLayersPerTile"
+    ) {
+        return context.contractError(
+            declaration,
+            "Expected _createNavMeshFromMerged to set cfg.expectedLayersPerTile " +
+                "once, from params.expectedLayersPerTile ?? <default>.",
+        );
+    }
+    expectedLayersDefault = context.numericValue(nullish.right, file);
+    return expectedLayersDefault;
 }
 
 /**
@@ -731,14 +1090,17 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
 `
             : "";
 
+        const arm: NavigationBuildArm = tileCache ? "tileCache" : "solo";
         return {
             modulePath,
             symbolName,
             header: pinnedHeader(
                 [
+                    "<bblite/js_data.hpp>",
                     "<bblite/pal_navigation.hpp>",
                     "<bblite/runtime.hpp>",
                     "",
+                    "<cmath>",
                     "<vector>",
                 ],
                 `
@@ -750,6 +1112,7 @@ void create_nav_mesh(
     const bbl::pal::NavMeshBuildParams& params);
 ${obstacleDeclarations}
 ${navigationBuildDefaultsDeclaration()}
+${navigationConfigStepDeclaration(arm)}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -907,7 +1270,8 @@ void create_nav_mesh(
     bbl::pal::navigation_create_${
         tileCache ? "tile_cache_nav_mesh" : "solo_nav_mesh"
     }(
-        plugin, merged, params, navigation_build_defaults);
+        plugin, merged, params, navigation_build_defaults,
+        ${CONFIG_STEPS[arm].cppName});
 }
 
 /** A double the port carries, at the float width the seam takes. */
