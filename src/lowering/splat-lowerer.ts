@@ -190,20 +190,7 @@ export class SplatLowerer {
      * rather than repeated: a changed stride changes every offset below it.
      */
     private rowLength(): number {
-        return this.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
-    }
-
-    /** A module-local numeric constant, read from its own declaration. */
-    private pinnedNumber(modulePath: string, name: string): number {
-        const file = this.context.sourceFile(modulePath);
-        const initializer = this.context.variableInitializer(file, name);
-        if (!ts.isNumericLiteral(initializer)) {
-            return this.context.contractError(
-                initializer,
-                `Expected ${name} to be a numeric literal.`,
-            );
-        }
-        return Number(initializer.text);
+        return this.context.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
     }
 
     /**
@@ -702,7 +689,7 @@ ${body}
      * next bump.
      */
     private sortEpsilon(): string {
-        return String(this.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
+        return String(this.context.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
     }
 
     /**
@@ -812,11 +799,23 @@ ${body}
             );
         }
         // Exactly the statements that touch the block, in the pin's order.
-        const writes = update.body.statements.filter(
-            (statement) =>
-                ts.isExpressionStatement(statement) &&
-                statement.expression.getText(file).startsWith("cpu"),
-        );
+        // `cpu[k] = ...` and `cpu.set(...)`: a statement whose target is
+        // the mirror itself.
+        const writes = update.body.statements.filter((statement) => {
+            if (!ts.isExpressionStatement(statement)) return false;
+            const expression = statement.expression;
+            const target = ts.isBinaryExpression(expression)
+                ? expression.left
+                : ts.isCallExpression(expression)
+                  ? expression.expression
+                  : expression;
+            const owner =
+                ts.isElementAccessExpression(target) ||
+                ts.isPropertyAccessExpression(target)
+                    ? target.expression
+                    : target;
+            return ts.isIdentifier(owner) && owner.text === "cpu";
+        });
         // The SH hook writes the same seven plus the four eye-position
         // lanes its wider block carries; either count is the whole set of
         // statements that touch the mirror, so a pin that adds one refuses
@@ -1405,12 +1404,20 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         // its per-texture window and the scatter that fills it.
         const packing: ts.Statement[] = [];
         for (const statement of loop.statement.statements) {
-            if (
+            const initializer =
                 ts.isVariableStatement(statement) &&
-                (statement.declarationList.declarations[0]?.initializer
-                    ?.getText(file)
-                    .includes("device.createTexture") ??
-                    false)
+                statement.declarationList.declarations[0]?.initializer;
+            if (
+                initializer &&
+                this.context.hasNode(
+                    initializer,
+                    (node) =>
+                        ts.isCallExpression(node) &&
+                        this.context
+                            .propertyPath(node.expression)
+                            ?.slice(-2)
+                            .join(".") === "device.createTexture",
+                )
             ) {
                 break;
             }
@@ -1839,7 +1846,10 @@ ${writes.join("\n")}
     public lowerBake(): LoweredSource {
         const symbolName = "bakeTransformIntoVertices";
         const { file, declaration } = this.declaration(BAKE_MODULE, symbolName);
-        const bakeRowLength = this.pinnedNumber(BAKE_MODULE, "ROW_LENGTH");
+        const bakeRowLength = this.context.pinnedNumber(
+            BAKE_MODULE,
+            "ROW_LENGTH",
+        );
         if (bakeRowLength !== this.rowLength()) {
             this.context.contractError(
                 declaration,

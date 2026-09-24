@@ -3,6 +3,7 @@ import ts from "typescript";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
+import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 
 export interface WorkerLoweringContext extends Pick<
@@ -29,6 +30,160 @@ export interface WorkerLoweringContext extends Pick<
 
 const realm = "bbl::pal::WorkerRealm::current()";
 const loop = "bbl::pal::EventLoop::current()";
+
+/**
+ * The first position in a message shape without a native structured-clone
+ * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
+ * crosses by transfer; every other handle, like a browser's platform objects,
+ * has no serialization.
+ */
+function uncloneablePosition(
+    context: WorkerLoweringContext,
+    type: DataType,
+    path: string,
+    node: ts.Node,
+    seen: Set<string>,
+): string | undefined {
+    const refuse = (name: string): string => `'${path}' is ${name}`;
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "string":
+        case "enum":
+        case "date":
+        case "tuple":
+        case "arraybuffer":
+        case "dataview":
+        case "u8array":
+        case "i8array":
+        case "u16array":
+        case "i16array":
+        case "u32array":
+        case "i32array":
+        case "f32array":
+        case "f64array":
+            return undefined;
+        case "optional":
+            return uncloneablePosition(context, type.inner, path, node, seen);
+        case "vector":
+            return uncloneablePosition(
+                context,
+                type.element,
+                `${path}[]`,
+                node,
+                seen,
+            );
+        case "set":
+            return uncloneablePosition(
+                context,
+                type.element,
+                `${path}.values()`,
+                node,
+                seen,
+            );
+        case "map":
+            return type.dictionary
+                ? uncloneablePosition(
+                      context,
+                      type.value,
+                      `${path}[key]`,
+                      node,
+                      seen,
+                  )
+                : (uncloneablePosition(
+                      context,
+                      type.key,
+                      `${path}.keys()`,
+                      node,
+                      seen,
+                  ) ??
+                      uncloneablePosition(
+                          context,
+                          type.value,
+                          `${path}.values()`,
+                          node,
+                          seen,
+                      ));
+        case "struct":
+            if (seen.has(type.name)) return undefined;
+            seen.add(type.name);
+            for (const field of context.dataTypes.structFields(
+                type.name,
+                node,
+            )) {
+                const found = uncloneablePosition(
+                    context,
+                    field.type,
+                    `${path}.${field.sourceName}`,
+                    node,
+                    seen,
+                );
+                if (found) return found;
+            }
+            return undefined;
+        case "handle":
+            return type.handle === "offscreen-canvas"
+                ? undefined
+                : refuse(`a native ${type.handle} handle`);
+        case "error":
+            return refuse("an Error");
+        case "event-target":
+            return refuse("an EventTarget");
+        case "http-response":
+            return refuse("a Response");
+        case "search-params":
+            return refuse("a URLSearchParams");
+        case "promise":
+            return refuse("a Promise");
+        case "storage":
+            return refuse("a Storage");
+        case "date-time-format":
+            return refuse("an Intl.DateTimeFormat");
+        case "bufferview":
+            return refuse("an ArrayBufferView without its element class");
+        case "numberindex":
+            return refuse("a numeric index view");
+        case "borrowed-platform-event":
+            return refuse("a platform event");
+        case "function":
+            return refuse("a function");
+        case "json":
+            return refuse("a dynamic JSON value");
+        case "union":
+            return refuse("a mixed union");
+        case "iterator":
+            return refuse("an iterator");
+        case "span":
+            return refuse("a borrowed array view");
+        case "product":
+            return refuse("a heterogeneous fixed tuple");
+        case "enummap":
+            return refuse("an enum-keyed record");
+        case "table":
+            return refuse("a constant table");
+    }
+}
+
+/** Both message ends refuse a shape the native clone cannot carry. */
+function requireCloneable(
+    context: WorkerLoweringContext,
+    type: DataType,
+    root: string,
+    node: ts.Node,
+): void {
+    const position = uncloneablePosition(
+        context,
+        type,
+        root,
+        node,
+        new Set<string>(),
+    );
+    if (position)
+        context.fail(
+            node,
+            `Worker message value ${position}, which has no native structured-clone codec.`,
+        );
+}
 
 export function isNativeWorkerExpression(
     context: WorkerLoweringContext,
@@ -194,6 +349,7 @@ export function compileWorkerValue(
                     expression,
                     "MessageEvent.data requires a supported data type at its read boundary.",
                 );
+            requireCloneable(context, type, "event.data", expression);
             const cppType = context.dataTypes.cppType(type);
             return {
                 kind:
@@ -256,6 +412,7 @@ export function compileWorkerValue(
                 argument,
                 "Worker messages require a supported structured-clone data shape.",
             );
+        requireCloneable(context, type, "message", argument);
         const data = context.dataLowerer.compileForSink(argument, type);
         const snapshot = context.allocateTemporaryCppName("message_value");
         context.emit({

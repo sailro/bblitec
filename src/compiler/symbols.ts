@@ -1,8 +1,117 @@
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { findRepositoryRoot } from "../repository-root.js";
 import { stringLiteralText, unwrapExpression } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
+
+/** The declaration files every compiler program reads a package's API from. */
+export interface CompilerPackageTypings {
+    /**
+     * The pinned package's rolled-up `index.d.ts`: every Babylon specifier
+     * (`babylonPackages`, either spelling, any subpath) resolves to it.
+     */
+    readonly babylon: string;
+    /** The pin's WebGPU peer typings, a root of every program. */
+    readonly webGpu: string;
+}
+
+let packageTypings: CompilerPackageTypings | undefined;
+
+/**
+ * The typings files `program.ts` builds every program from, as absolute
+ * paths under this checkout's `node_modules`. One answer for the program's
+ * module resolution and for {@link declarationOrigin}: the file a
+ * declaration lives in is then which package declared it, wherever the
+ * scene's own sources are.
+ */
+export function compilerPackageTypings(): CompilerPackageTypings {
+    if (!packageTypings) {
+        const root = findRepositoryRoot(
+            dirname(fileURLToPath(import.meta.url)),
+        );
+        const modules = resolve(root, "node_modules");
+        packageTypings = {
+            babylon: resolve(modules, "@babylonjs", "lite", "index.d.ts"),
+            webGpu: resolve(modules, "@webgpu", "types", "dist", "index.d.ts"),
+        };
+    }
+    return packageTypings;
+}
+
+/**
+ * Who declared a name: TypeScript's own library (`default-lib`), the part of
+ * it that declares the browser document (`dom`), the pin's WebGPU peer
+ * typings (`webgpu`), the pinned Babylon Lite typings (`babylon`), or the
+ * program itself (`program`, including any other declaration file it
+ * reads). A symbol named like an engine or browser type is that type only
+ * when its declaration comes from there.
+ */
+export type DeclarationOrigin =
+    "default-lib" | "dom" | "webgpu" | "babylon" | "program";
+
+/**
+ * TypeScript's library files that declare the browser document, including
+ * the two that add its iteration protocols to the same interfaces.
+ */
+const DOM_LIBRARY_FILES: ReadonlySet<string> = new Set([
+    "lib.dom.d.ts",
+    "lib.dom.iterable.d.ts",
+    "lib.dom.asynciterable.d.ts",
+]);
+
+const sourceFileOrigins = new WeakMap<ts.SourceFile, DeclarationOrigin>();
+
+function sourceFileOrigin(file: ts.SourceFile): DeclarationOrigin {
+    // Every `lib.*.d.ts` the compiler ships carries the `no-default-lib`
+    // directive, which is the marker `Program.isSourceFileDefaultLibrary`
+    // itself reads for a declaration file; asking the file directly lets a
+    // reader that holds only a checker give the same answer as the compiler.
+    if (file.isDeclarationFile && file.hasNoDefaultLib)
+        return DOM_LIBRARY_FILES.has(basename(file.fileName))
+            ? "dom"
+            : "default-lib";
+    if (!file.isDeclarationFile) return "program";
+    const path = resolve(file.fileName);
+    const typings = compilerPackageTypings();
+    return path === typings.babylon
+        ? "babylon"
+        : path === typings.webGpu
+          ? "webgpu"
+          : "program";
+}
+
+/** See {@link DeclarationOrigin}. */
+export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
+    const file = declaration.getSourceFile();
+    let origin = sourceFileOrigins.get(file);
+    if (origin === undefined) {
+        origin = sourceFileOrigin(file);
+        sourceFileOrigins.set(file, origin);
+    }
+    return origin;
+}
+
+/**
+ * Whether any declaration of a symbol has one of `origins`. Any, because a
+ * program may reopen a library interface (`interface Window { ... }`) and
+ * the merged symbol is still the library's.
+ */
+export function declaredIn(
+    symbol: ts.Symbol | undefined,
+    ...origins: readonly DeclarationOrigin[]
+): boolean {
+    return (symbol?.declarations ?? []).some((declaration) =>
+        origins.includes(declarationOrigin(declaration)),
+    );
+}
+
+/** Whether a symbol is declared by the browser document's library files. */
+export function declaredInDomLibrary(symbol: ts.Symbol | undefined): boolean {
+    return declaredIn(symbol, "dom");
+}
 
 /**
  * Whether an import specifier names the pinned package. A scene reaches a
@@ -37,23 +146,19 @@ export function isBabylonModule(specifier: string): boolean {
 export const physicsEngineModulePackage = "@babylonjs/havok";
 
 /**
- * Whether a symbol is declared in one of TypeScript's own library files.
- *
- * Every `lib.*.d.ts` the compiler ships carries the `no-default-lib`
- * directive, which is the marker `Program.isSourceFileDefaultLibrary`
- * itself reads for a declaration file; asking the file directly lets a
- * reader that holds only a checker give the same answer as the compiler.
+ * Whether a symbol is declared in one of TypeScript's own library files,
+ * the browser document's included.
  */
 export function declaredInDefaultLibrary(
     symbol: ts.Symbol | undefined,
 ): boolean {
-    return (symbol?.declarations ?? []).some(declarationInDefaultLibrary);
+    return declaredIn(symbol, "default-lib", "dom");
 }
 
 /** Whether one declaration lives in a library file — see {@link declaredInDefaultLibrary}. */
 export function declarationInDefaultLibrary(declaration: ts.Node): boolean {
-    const file = declaration.getSourceFile();
-    return file.isDeclarationFile && file.hasNoDefaultLib;
+    const origin = declarationOrigin(declaration);
+    return origin === "default-lib" || origin === "dom";
 }
 
 /** An erased ambient declaration does not provide a native runtime binding.
@@ -94,6 +199,28 @@ export function isAbsentTypeofIdentifier(
 }
 
 /**
+ * The symbol a name resolves to: an import alias to the binding it imports,
+ * a shorthand property (`{ canvas }`) to the value it names rather than the
+ * property it declares, and a property access to its member. The one
+ * resolver for a checker-only reader; `CompilerSymbols.valueSymbol` builds
+ * on it.
+ */
+export function resolvedSymbol(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): ts.Symbol | undefined {
+    const name = ts.isPropertyAccessExpression(node) ? node.name : node;
+    const symbol =
+        ts.isShorthandPropertyAssignment(name.parent) &&
+        name.parent.name === name
+            ? checker.getShorthandAssignmentValueSymbol(name.parent)
+            : checker.getSymbolAtLocation(name);
+    return symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+        ? checker.getAliasedSymbol(symbol)
+        : symbol;
+}
+
+/**
  * Whether an identifier names a default-library global (`Math`, `fetch`,
  * `URL`, `Error`) rather than a binding of the program's own. The one
  * answer to "is this the library's `X`": a scene's own `Math`, however it
@@ -103,16 +230,7 @@ export function isDefaultLibraryIdentifier(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): boolean {
-    const symbol =
-        ts.isShorthandPropertyAssignment(identifier.parent) &&
-        identifier.parent.name === identifier
-            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
-            : checker.getSymbolAtLocation(identifier);
-    const resolved =
-        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
-    return declaredInDefaultLibrary(resolved);
+    return declaredInDefaultLibrary(resolvedSymbol(checker, identifier));
 }
 
 export class CompilerSymbols {
@@ -130,21 +248,15 @@ export class CompilerSymbols {
         enumName: string,
         value: number,
     ): string | undefined {
-        const symbol = this.checker.getSymbolAtLocation(expression);
-        const declaration = symbol?.valueDeclaration;
+        const declaration = resolvedSymbol(
+            this.checker,
+            expression,
+        )?.valueDeclaration;
         const type = declaration
             ? this.checker.getTypeAtLocation(declaration)
             : this.checker.getTypeAtLocation(expression);
         const owner = type.aliasSymbol;
-        if (
-            owner?.name !== enumName ||
-            !owner.declarations?.some((entry) =>
-                entry
-                    .getSourceFile()
-                    .fileName.replaceAll("\\", "/")
-                    .includes("/@babylonjs/lite/"),
-            )
-        )
+        if (owner?.name !== enumName || !declaredIn(owner, "babylon"))
             return undefined;
         const bag = this.checker.getTypeOfSymbolAtLocation(owner, expression);
         return bag.getProperties().find((property) => {
@@ -161,11 +273,12 @@ export class CompilerSymbols {
         expression: ts.PropertyAccessExpression,
     ): number | string | undefined {
         const owner = expression.expression;
+        const ownerDeclaration = ts.isIdentifier(owner)
+            ? this.valueSymbol(owner)?.declarations?.[0]
+            : undefined;
         if (
-            !ts.isIdentifier(owner) ||
-            !this.declarationSourcePath(owner)
-                ?.replaceAll("\\", "/")
-                .includes("/@babylonjs/lite/")
+            !ownerDeclaration ||
+            declarationOrigin(ownerDeclaration) !== "babylon"
         ) {
             return undefined;
         }
@@ -185,20 +298,10 @@ export class CompilerSymbols {
     }
 
     public valueSymbol(identifier: ts.MemberName): ts.Symbol | undefined {
-        const symbol =
-            ts.isShorthandPropertyAssignment(identifier.parent) &&
-            identifier.parent.name === identifier
-                ? this.checker.getShorthandAssignmentValueSymbol(
-                      identifier.parent,
-                  )
-                : this.checker.getSymbolAtLocation(identifier);
-        if (!symbol) {
+        const resolved = resolvedSymbol(this.checker, identifier);
+        if (!resolved) {
             return undefined;
         }
-        const resolved =
-            (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(symbol)
-                : symbol;
         // A constructor parameter-property has one declaration but the
         // checker may expose its declaration-name symbol at the parameter
         // and its property-flavoured symbol at a use in the constructor

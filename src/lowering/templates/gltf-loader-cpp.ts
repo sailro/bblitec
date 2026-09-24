@@ -15,6 +15,7 @@ import {
     gltfAnimationMatrixTransportCpp,
     gltfAnimationPoseTransportCpp,
     gltfAnimationLoadingCpp,
+    gltfAnimatedLightCpp,
 } from "../gltf/animation-runtime.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
@@ -136,6 +137,9 @@ export function gltfLoaderCpp(
         boneControl = false,
         compressedImages = false,
     } = options;
+    // An animated punctual light follows its source node through the
+    // pinned light-world direction writer.
+    const animatedLight = animationPointer ? gltfAnimatedLightCpp() : undefined;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
     // name is asset-declared text, and every other interpolated literal in
@@ -437,23 +441,7 @@ std::vector<float> gltf_skin_float32_view(const GltfAccessorView& view, double l
 
 ${lowered.inverseBindMatrices}
 
-${
-    animationPointer
-        ? `// Animated light refresh keeps zero forward vectors unchanged. Initial light
-// matrices come from the source constructors; vertex normals use
-// upstream::normalize_baked_direction.
-Vec3 normalize(Vec3 value) {
-    const double length = js::or_number(
-        js::hypot_js({value.x, value.y, value.z}), 1.0);
-    return Vec3{
-        static_cast<float>(value.x / length),
-        static_cast<float>(value.y / length),
-        static_cast<float>(value.z / length),
-    };
-}
-`
-        : ""
-}
+${animatedLight ? `${animatedLight.helper}\n` : ""}
 ${lowered.animationEvaluator}
 ${lowered.animationBoneOverrides}
 ${lowered.animationPose}
@@ -1679,7 +1667,7 @@ ${
 }
     if (animated) {
 ${gltfAnimationLoadingCpp(options, lowered.animationRootFlip)}
-${gltfAnimationPoseTransportCpp(options, lowered.gltfCameraPoseRefresh)}
+${gltfAnimationPoseTransportCpp(options, lowered.gltfCameraPoseRefresh, animatedLight)}
 ${lowered.boneControlLoading}
     }${
         boneControl

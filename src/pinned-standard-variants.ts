@@ -77,9 +77,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./lowering/pinned-numeric-lowerer.js";
-import { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import { pinnedStandardMeshAlpha } from "./lowering/standard-mesh-alpha.js";
-export { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import {
     geometryAttachmentTypes,
     importPinnedModule,
@@ -314,17 +312,6 @@ async function standardExtensions(
     return [...extensions, module.stdSkeletonExt].sort((a, b) =>
         a._id.localeCompare(b._id),
     );
-}
-
-/** The std extension ids the pin has registered, in its own sorted order. */
-export async function registeredStandardExtensionIds(): Promise<
-    readonly string[]
-> {
-    await registerStandardExtensions();
-    const flags = await importPinnedModule<{
-        _getStdExtsSorted: () => readonly StdExtDescriptor[];
-    }>("material/standard/standard-flags.js");
-    return flags._getStdExtsSorted().map((ext) => ext._id);
 }
 
 /**
@@ -988,7 +975,7 @@ function lowerStandardFeatureDerivation(
     // module being lowered before failing.
     let flagModule = "src/material/standard/standard-flags.ts";
     const flagValue = (name: string): number =>
-        pinnedNumericConstant(context, flagModule, name);
+        context.pinnedNumber(flagModule, name);
     /** Whether a branch body is the pin's `return 0` early out. */
     const returnsZero = (branch: ts.Statement): boolean => {
         const only = ts.isBlock(branch)
@@ -2197,13 +2184,9 @@ export function pinnedStandardSupportBlock(
 ): CppModule {
     const cpp = new CppDefinitions();
     const flag = (name: string): number =>
-        pinnedNumericConstant(
-            context,
-            "src/material/standard/standard-flags.ts",
-            name,
-        );
+        context.pinnedNumber("src/material/standard/standard-flags.ts", name);
     const mesh = (name: string): number =>
-        pinnedNumericConstant(context, "src/material/mesh-features.ts", name);
+        context.pinnedNumber("src/material/mesh-features.ts", name);
     const skeletonModule =
         "src/material/standard/fragments/std-skeleton-fragment.ts";
     let skeletonBlock = "";

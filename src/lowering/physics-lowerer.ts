@@ -49,6 +49,10 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    pinnedOptionDefaults,
+    pinnedOptionFallback,
+} from "./pinned-option-defaults.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
 import { lowerPhysicsMesh } from "./physics-mesh-lowerer.js";
@@ -203,16 +207,16 @@ export class PhysicsLowerer {
             havokModule,
             "createHavokWorld",
         );
-        const initializer = this.context.variableInitializer(declaration, "g");
-        const split = this.context.nullishDefault(initializer);
-        if (!split || !ts.isObjectLiteralExpression(split.right)) {
+        const fallback = pinnedOptionFallback(this.context, declaration, {
+            local: "g",
+        });
+        if (!ts.isObjectLiteralExpression(fallback)) {
             this.context.contractError(
-                initializer,
+                fallback,
                 "Expected createHavokWorld to default its gravity " +
                     "through `gravity ?? { x, y, z }`.",
             );
         }
-        const fallback = split.right;
         const file = this.context.sourceFile(havokModule);
         return ["x", "y", "z"].map((axis) =>
             this.context.numericValue(
@@ -231,30 +235,12 @@ export class PhysicsLowerer {
         friction: number;
         restitution: number;
     } {
-        const { declaration } = this.context.functionDeclaration(
+        return pinnedOptionDefaults(
+            this.context,
             havokModule,
             "createPhysicsAggregate",
+            ["friction", "restitution"],
         );
-        const file = this.context.sourceFile(havokModule);
-        const read = (name: string): number => {
-            const initializer = this.context.variableInitializer(
-                declaration,
-                name,
-            );
-            const split = this.context.nullishDefault(initializer);
-            if (!split) {
-                this.context.contractError(
-                    initializer,
-                    `Expected createPhysicsAggregate to default ` +
-                        `${name} through \`options.${name} ?? <value>\`.`,
-                );
-            }
-            return this.context.numericValue(split.right, file);
-        };
-        return {
-            friction: read("friction"),
-            restitution: read("restitution"),
-        };
     }
 
     /**

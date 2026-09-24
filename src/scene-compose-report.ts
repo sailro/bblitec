@@ -1,5 +1,5 @@
 /**
- * `scene -- compose <id>`: every material a scene loads, composed through
+ * `scene -- diff <id> --compose`: every material a scene loads, composed through
  * Babylon Lite's own pipeline and compared against the fragments the
  * instrumented browser capture recorded.
  *
@@ -29,6 +29,7 @@ import { join, resolve as resolvePath } from "node:path";
 import {
     captureShadersDirectory,
     defaultCaptureDirectory,
+    resolvePose,
 } from "./tooling/artifacts.js";
 import { writeReport } from "./tooling/reports.js";
 import {
@@ -137,8 +138,8 @@ interface ComposeOptions {
      *  of `artifacts/capture/<id>`. */
     captureDirectory?: string;
     /** Pose override for the staleness check and any auto-capture —
-     *  what `scene -- diagnose --seek` rides in on, so compose does not
-     *  fight `diff` over which pose the shared capture holds. */
+     *  what `diff --compose --seek` and `diagnose --seek` ride in on, so
+     *  compose does not fight `diff` over which pose the capture holds. */
     seekSeconds?: number;
 }
 
@@ -160,10 +161,9 @@ export async function runComposeReport(
         const captureDirectory = resolvePath(
             options.captureDirectory ?? defaultCaptureDirectory(scene.id),
         );
-        const wantSeek =
-            options.seekSeconds ?? scene.parity?.referenceTimeSeconds ?? null;
         let staleness = browserCaptureStaleness(scene, captureDirectory, {
-            requireSeek: wantSeek,
+            requireSeek:
+                resolvePose(scene, options.seekSeconds).seekSeconds ?? null,
         });
         // A scene with no glTF materials has nothing to compare a capture
         // against — capturing one for it would spend a browser launch on

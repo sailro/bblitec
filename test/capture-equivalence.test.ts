@@ -1,5 +1,5 @@
 // The behavior guard behind giving the capture and draw paths one
-// shader-matrix record (TODO: compiler/runtime consolidation).
+// shader-matrix record.
 //
 // The render capture is only evidence while it derives a shader draw's
 // matrices exactly as the draw itself does — same world fold, same

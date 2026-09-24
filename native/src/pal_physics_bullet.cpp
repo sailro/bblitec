@@ -1279,7 +1279,7 @@ btTransform translated_frame(btVector3 center) {
  */
 struct Segment {
     btVector3 center;
-    btScalar half_height;
+    btScalar half_height = 0;
 };
 
 Segment segment_from(std::array<double, 3> point_a, std::array<double, 3> point_b) {
@@ -2667,10 +2667,6 @@ void physics_shape_add_child(PhysicsShapeHandle container, PhysicsShapeHandle ch
 #endif
 }
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
-PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle handle) {
-    return shape_at(handle).debug_descriptor;
-}
-
 PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle handle) {
     const auto& body = body_at(handle);
     if (!body.shape)
@@ -2946,10 +2942,10 @@ double physics_shape_default_mass(PhysicsShapeHandle shape) {
         const double radius = static_cast<const btSphereShape&>(geometry).getRadius();
         volume = 4.0 / 3.0 * SIMD_PI * radius * radius * radius;
     } else if (geometry.getShapeType() == BOX_SHAPE_PROXYTYPE) {
-        volume = entry.authored_box_volume.value();
-        if (volume <= 0)
+        if (!entry.authored_box_volume || *entry.authored_box_volume <= 0)
             throw std::runtime_error(
                 "Default physics mass requires a positive authored box volume.");
+        volume = *entry.authored_box_volume;
     } else if (geometry.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
         const auto& cylinder = static_cast<const btCylinderShape&>(geometry);
         const double radius = cylinder.getRadius();

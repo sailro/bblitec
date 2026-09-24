@@ -6,12 +6,8 @@ import {
     parseRgbe,
     preScalePolynomial,
 } from "../src/hdr-packager.js";
-import {
-    getHdrGgxPrefilterProvenance,
-    prefilterCubemapGgx,
-} from "../src/hdr-prefilter-gpu.js";
+import { prefilterCubemapGgx } from "../src/hdr-prefilter-gpu.js";
 import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
-import { readUpstreamPin } from "../src/upstream-source.js";
 
 function smallHdr(): Uint8Array {
     const header = new TextEncoder().encode(
@@ -147,12 +143,4 @@ test("preserves mip zero and deterministically applies pinned GGX semantics", as
         digest.digest("hex"),
         "1c33fe95c972aea59fb51fd9bfacae79ed084b9523cbc3270b4f468fd22c4755",
     );
-    const pin = readUpstreamPin();
-    assert.deepEqual(getHdrGgxPrefilterProvenance(), {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-hdr/hdr-ibl-pipeline.ts",
-        shader: "shaders/hdr-prefilter-cube.compute.wgsl",
-        sampleCount: 1024,
-    });
 });

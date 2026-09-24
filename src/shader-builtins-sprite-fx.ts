@@ -1,7 +1,5 @@
-import type {
-    PinnedShaderText,
-    ShaderTextBinding,
-} from "./lowering/pinned-shader-text.js";
+import type { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
+import type { ShaderTextBinding } from "./lowering/pinned-shader-text.js";
 import { indent } from "./shader-builtins-utility.js";
 
 /** The pinned module both families' custom-shader mechanics come from. */
@@ -19,7 +17,7 @@ const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
  * emitter.
  */
 export function extraTextureBindingsWgsl(
-    shaderText: PinnedShaderText,
+    shaderText: PinnedShaderBuilders,
     names: readonly string[],
 ): string {
     if (names.length === 0) {

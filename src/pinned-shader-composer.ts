@@ -20,6 +20,7 @@
 import ts from "typescript";
 
 import { javascriptModuleUrl } from "./data-url.js";
+import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
@@ -128,6 +129,60 @@ export function pinnedImplementationPath(relativePath: string): string {
         : relativePath;
 }
 
+/**
+ * Packaged module text, parsed once per distinct text: the literal readers
+ * below are asked for several constants of the same module, and the pin
+ * cannot change while generation runs.
+ */
+const packagedModuleFiles = new Map<string, ts.SourceFile>();
+
+function packagedModuleFile(source: string): ts.SourceFile {
+    const cached = packagedModuleFiles.get(source);
+    if (cached) return cached;
+    const file = ts.createSourceFile(
+        "packaged-module.js",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS,
+    );
+    packagedModuleFiles.set(source, file);
+    return file;
+}
+
+/**
+ * The first variable a packaged module declares whose initializer the
+ * predicate accepts, by name or -- `name` undefined -- under any name,
+ * optionally only inside `[start, end)`.
+ */
+function packagedDeclaration<T extends ts.Expression>(
+    source: string,
+    accepts: (initializer: ts.Expression) => initializer is T,
+    name?: string,
+    range: { start: number; end: number } = { start: 0, end: source.length },
+): { name: string; initializer: T } | undefined {
+    const file = packagedModuleFile(source);
+    let found: { name: string; initializer: T } | undefined;
+    const visit = (node: ts.Node): void => {
+        if (found || node.end <= range.start || node.pos >= range.end) return;
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            (name === undefined || node.name.text === name) &&
+            node.initializer &&
+            accepts(node.initializer) &&
+            node.getStart(file) >= range.start &&
+            node.end <= range.end
+        ) {
+            found = { name: node.name.text, initializer: node.initializer };
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return found;
+}
+
 /** Raw WGSL imports retain their source path in Vite's region markers. */
 export function extractPackagedRawShader(
     source: string,
@@ -137,16 +192,18 @@ export function extractPackagedRawShader(
     const start = source.indexOf(marker);
     if (start < 0)
         throw new Error(`Pinned raw shader '${sourcePath}' was not found.`);
-    const region = source.slice(
-        start + marker.length,
-        source.indexOf("//#endregion", start),
+    const end = source.indexOf("//#endregion", start);
+    const declaration = packagedDeclaration(
+        source,
+        ts.isStringLiteral,
+        undefined,
+        { start: start + marker.length, end: end < 0 ? source.length : end },
     );
-    const declaration = /\b(?:const|let|var) (\w+) = "/.exec(region);
     if (!declaration)
         throw new Error(
             `Pinned raw shader '${sourcePath}' has no string declaration.`,
         );
-    return extractPackagedStringLiteral(region, declaration[1]!);
+    return declaration.initializer.text;
 }
 
 const rawShaderCache = new Map<string, string>();
@@ -258,64 +315,50 @@ export function readPinnedRawShader(
 }
 
 /**
- * Extracts one `const <name> = "...";` literal out of packaged module text.
- * The bundler emits these as single-line double-quoted JavaScript strings, so
- * the value is recovered by scanning to the closing quote and parsing it as
- * JSON rather than by a regex that would have to model every escape.
+ * The value of the first `<name> = "..."` string declaration in packaged
+ * module text, read off the module's AST so every escape the bundler emits
+ * decodes the way the engine decodes it.
  */
 export function extractPackagedStringLiteral(
     source: string,
     name: string,
 ): string {
-    const match = new RegExp(`\\b(?:const|let|var) ${name} = "`).exec(source);
-    const marker = match?.[0] ?? "";
-    const start = match?.index ?? -1;
-    if (start < 0) {
+    const declaration = packagedDeclaration(source, ts.isStringLiteral, name);
+    if (!declaration) {
         throw new Error(`Pinned packaged literal '${name}' was not found.`);
     }
-    let index = start + marker.length;
-    let escaped = "";
-    while (index < source.length && source[index] !== '"') {
-        if (source[index] === "\\") {
-            escaped += source[index]! + (source[index + 1] ?? "");
-            index += 2;
-            continue;
-        }
-        escaped += source[index];
-        index += 1;
-    }
-    if (index >= source.length) {
-        throw new Error(`Pinned packaged literal '${name}' is unterminated.`);
-    }
-    return JSON.parse(`"${escaped}"`) as string;
+    return declaration.initializer.text;
 }
 
 /**
- * Extracts one `const <name> = \`...\`;` template literal out of packaged
- * module text. Only substitution-free templates qualify — a `${` inside means
- * the pin turned the constant into a builder, which is a contract change the
- * caller must see rather than a string to guess at.
+ * The text of the first `<name> = \`...\`` template declaration in packaged
+ * module text. Only a substitution- and escape-free template qualifies — a
+ * `${` inside means the pin turned the constant into a builder, which is a
+ * contract change the caller must see rather than a string to guess at.
  */
 export function extractPackagedTemplateLiteral(
     source: string,
     name: string,
 ): string {
-    const match = new RegExp(`\\b(?:const|let|var) ${name} = \``).exec(source);
-    const marker = match?.[0] ?? "";
-    const start = match?.index ?? -1;
-    if (start < 0) {
+    const declaration = packagedDeclaration(
+        source,
+        (initializer): initializer is ts.TemplateLiteral =>
+            ts.isNoSubstitutionTemplateLiteral(initializer) ||
+            ts.isTemplateExpression(initializer),
+        name,
+    );
+    if (!declaration) {
         throw new Error(
             `Pinned packaged template literal '${name}' was not found.`,
         );
     }
-    const end = source.indexOf("`", start + marker.length);
-    if (end < 0) {
-        throw new Error(
-            `Pinned packaged template literal '${name}' is unterminated.`,
-        );
-    }
-    const value = source.slice(start + marker.length, end);
-    if (value.includes("${") || value.includes("\\")) {
+    const literal = declaration.initializer;
+    // Between the backticks, byte for byte as the package ships it.
+    const value = source.slice(
+        literal.getStart(literal.getSourceFile()) + 1,
+        literal.end - 1,
+    );
+    if (!ts.isNoSubstitutionTemplateLiteral(literal) || value.includes("\\")) {
         throw new Error(
             `Pinned packaged template literal '${name}' is no longer a plain string.`,
         );
@@ -626,22 +669,42 @@ export async function importPinnedModuleObserving<T>(
 
 /**
  * Module text with every relative specifier made importable, anchored
- * against the module's own directory unless a shim redirects it. The one
- * specifier rewrite in the tree: every pinned import that has to leave the
- * file system (a `data:` URL, an augmented module) goes through this.
+ * against the module's own directory unless a shim redirects it. Every
+ * pinned import that has to leave the file system (a `data:` URL, an
+ * augmented module) goes through this or, for the unasynced import, through
+ * the same `rewriteModuleSpecifiers` with its dynamic imports hoisted.
  */
 function anchorSpecifiersInText(
     text: string,
     modulePath: string,
     shims: ReadonlyMap<string, string> = new Map(),
 ): string {
-    return text.replace(
-        /(from\s*|import\(\s*|import\s*)(["'])(\.\.?\/[^"']+)\2/g,
-        (_match, keyword: string, quote: string, specifier: string) =>
-            `${keyword}${quote}${
-                shims.get(specifier) ??
-                pathToFileURL(resolve(dirname(modulePath), specifier)).href
-            }${quote}`,
+    return rewriteModuleSpecifiers(text, modulePath, (specifier) =>
+        isRelativeSpecifier(specifier.text)
+            ? {
+                  specifier: anchoredSpecifier(
+                      modulePath,
+                      specifier.text,
+                      shims,
+                  ),
+              }
+            : undefined,
+    );
+}
+
+function isRelativeSpecifier(specifier: string): boolean {
+    return specifier.startsWith("./") || specifier.startsWith("../");
+}
+
+/** A specifier as an importable URL: its shim, or the file it names. */
+function anchoredSpecifier(
+    modulePath: string,
+    specifier: string,
+    shims: ReadonlyMap<string, string>,
+): string {
+    return (
+        shims.get(specifier) ??
+        pathToFileURL(resolve(dirname(modulePath), specifier)).href
     );
 }
 
@@ -733,29 +796,37 @@ export async function importPinnedModuleUnasynced(
         pinnedLibraryRoot(),
         pinnedImplementationPath(relativePath),
     );
-    const anchor = (specifier: string): string =>
-        redirects.get(specifier) ??
-        pathToFileURL(resolve(dirname(modulePath), specifier)).href;
     const hoisted: string[] = [];
     let dynamicIndex = 0;
-    // The dynamic imports are hoisted BEFORE the specifiers are anchored,
-    // so the hoisted statements resolve through the same shim map and the
-    // anchoring pass sees no `import(` left to rewrite.
-    const anchored = anchorSpecifiersInText(
-        readPinnedLibraryModule(relativePath).replace(
-            /\bimport\((["'])([^"']+)\1\)/g,
-            (_match, _quote: string, specifier: string) => {
+    // A dynamic import becomes the namespace a hoisted static import binds;
+    // every specifier, hoisted or static, resolves through the same shim map.
+    const anchored = rewriteModuleSpecifiers(
+        readPinnedLibraryModule(relativePath),
+        modulePath,
+        (specifier) => {
+            if (ts.isCallExpression(specifier.parent)) {
                 const name = `__pinnedDynamicImport${dynamicIndex++}`;
                 hoisted.push(
                     `import * as ${name} from ${JSON.stringify(
-                        anchor(specifier),
+                        anchoredSpecifier(
+                            modulePath,
+                            specifier.text,
+                            redirects,
+                        ),
                     )};`,
                 );
-                return name;
-            },
-        ),
-        modulePath,
-        redirects,
+                return { expression: name };
+            }
+            return isRelativeSpecifier(specifier.text)
+                ? {
+                      specifier: anchoredSpecifier(
+                          modulePath,
+                          specifier.text,
+                          redirects,
+                      ),
+                  }
+                : undefined;
+        },
     );
     const text = stripKeywordsOutsideLiterals(anchored, ["async", "await"]);
     const augmented = [

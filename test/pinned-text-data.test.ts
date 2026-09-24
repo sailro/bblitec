@@ -6,7 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { readNativeHostUi } from "../src/native-host-ui.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { sameCompiledValue } from "../src/compiler/types.js";
 import type { CompileManifest } from "../src/compiler/types.js";
 import { parseDataUrl } from "../src/data-url.js";
@@ -22,11 +22,13 @@ import {
     type TextBlob,
 } from "../src/pinned-text-data.js";
 
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
+
 const output = resolve("artifacts/test-pinned-text-data");
 mkdirSync(output, { recursive: true });
 const fileName = resolve(output, "source.ts");
 const fontBytes = readAssetBytesSync(
-    resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+    `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
     fileName,
 );
 const fontPath = resolve(output, "Roboto-Regular.ttf");
@@ -312,6 +314,7 @@ test("dynamic fonts, layout options and internal writes retain explicit source r
         assert.throws(() => compile(body), refusal);
     const source = "corpus/babylon-lite/lab/lite/src/lite/scene275.ts";
     const exact = compileSource(readFileSync(source, "utf8"), {
+        ...labDeployment,
         fileName: source,
     });
     assert.ok(exact.manifest.features.includes("text:renderable"));
@@ -335,6 +338,7 @@ test("runtime text values and updates retain live fonts and unchanged textarea c
     );
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene181.ts";
     const result = compileSource(readFileSync(fileName, "utf8"), {
+        ...labDeployment,
         fileName,
         nativeHostUi: readNativeHostUi("ui/scene181-host.json"),
     });

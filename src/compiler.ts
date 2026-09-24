@@ -80,6 +80,10 @@ import {
 } from "./compiler/worker-modules.js";
 import { compileDomInstanceOf } from "./compiler/dom-targets.js";
 import {
+    conditionComparison,
+    foldSettledComparison,
+} from "./compiler/comparisons.js";
+import {
     compileWorkerValue,
     isNativeWorkerExpression,
 } from "./compiler/workers.js";
@@ -132,7 +136,11 @@ import {
     browserEnvironmentValue,
     isPrimitiveBrowserValue,
 } from "./compiler/browser-erasure.js";
-import { deploymentUrl, deploymentEnvironment } from "./compiler/deployment.js";
+import {
+    deploymentEnvironment,
+    deploymentPublicUrl,
+    deploymentUrl,
+} from "./compiler/deployment.js";
 import { httpResponseProperty } from "./compiler/http.js";
 import { numberConstantValue } from "./compiler/number-intrinsics.js";
 import {
@@ -217,6 +225,7 @@ import {
     type ShaderTextBinding,
     type ShaderTextContext,
 } from "./lowering/pinned-shader-text.js";
+import { liftWgslModuleConstant } from "./shader-ir.js";
 import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
@@ -237,7 +246,7 @@ import {
     DataTypeRegistry,
     TYPED_ARRAY_KINDS,
     doubleLiteral as dataDoubleLiteral,
-    declaredInDomLibrary,
+    domAudioHandleKind,
     handleCppType,
     isHandleKind,
     isOpaqueReference,
@@ -246,6 +255,8 @@ import {
     opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
+    pinnedHandleKind,
+    platformHandleKind,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -275,7 +286,13 @@ import { engineSampleCountCpp } from "./compiler/engine-samples.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { nativeReturnTsType } from "./compiler/native-return-type.js";
 import { readProperty } from "./compiler/properties.js";
-import { CompilerSymbols } from "./compiler/symbols.js";
+import {
+    CompilerSymbols,
+    declaredIn,
+    declaredInDomLibrary,
+    type DeclarationOrigin,
+} from "./compiler/symbols.js";
+import { isNullable, presentMembers } from "./compiler/type-facts.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import {
@@ -375,7 +392,7 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
-import { ClassLowerer } from "./compiler/classes.js";
+import { ClassLowerer, staticClassMember } from "./compiler/classes.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import {
     assertDeterministicRandomUnreached,
@@ -389,11 +406,10 @@ import {
     physicsEventInfoType,
     physicsEventInfoValue,
 } from "./compiler/intrinsics/physics.js";
-import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     featureOrder,
-    featureSources,
-    renderFeaturesCmake,
+    impliedFeatures,
+    projectFeatures,
     renderMainCpp,
 } from "./compiler/output-projection.js";
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
@@ -411,7 +427,6 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-export { renderFeaturesCmake };
 
 /**
  * A canvas size read, and which of the engine's two dimensions answers it.
@@ -470,82 +485,51 @@ const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["isTrusted", "trusted"],
 ]);
 
+const NULLABLE_UI_ELEMENT = {
+    origin: "dom",
+    kind: "ui-element",
+    cppType: handleCppType("ui-element"),
+} as const;
+
 /**
- * A nullable name's resource kind, keyed by the type's name alone.
- *
- * These rows are deliberately ungated, unlike `opaqueEngineValue`'s table:
- * half of them are DOM types (`AudioContext`, `Element` and the three
- * HTML element interfaces) that the pinned package does not declare, so
- * `declaredInBabylonLite` would drop them. `nullableResourceKind` consults
- * this where its name chain used to start -- after the workers-only
- * `EngineContext` row and before the `createRenderTexture2D`-guarded
- * `Texture2D` one, which no name here collides with.
+ * The resources a nullable name holds as optional native storage beyond the
+ * pinned handles and Web Audio identities the data model's own classifiers
+ * name (`nullableResourceKind`), keyed by type name and gated on the origin
+ * that declares that type: a program's own `class AssetContainer` or
+ * `interface Element` is its own data, not the engine's or the browser's.
  *
  * A Map, like the two tables above: the key is a type's symbol name, and an
  * object literal would answer `Object.prototype` for one spelled `toString`.
  */
 const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     string,
-    { kind: ValueKind; cppType: string }
+    { origin: DeclarationOrigin; kind: ValueKind; cppType: string }
 >([
     [
         "AudioEngine",
-        { kind: "audio-engine", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "AudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "BaseAudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "OfflineAudioContext",
-        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
-    ],
-    [
-        "AudioParam",
-        { kind: "audio-param", cppType: "bbl::pal::AudioParamHandle" },
-    ],
-    [
-        "AudioBuffer",
-        { kind: "audio-buffer", cppType: handleCppType("audio-buffer") },
+        {
+            origin: "babylon",
+            kind: "audio-engine",
+            cppType: "bbl::pal::AudioContextHandle",
+        },
     ],
     [
         "SpriteRenderer",
-        { kind: "sprite-renderer", cppType: "bbl::SpriteRendererHandle" },
-    ],
-    [
-        "Sprite2DLayer",
-        { kind: "sprite-layer", cppType: handleCppType("sprite-layer") },
-    ],
-    ["Element", { kind: "ui-element", cppType: handleCppType("ui-element") }],
-    [
-        "HTMLElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "HTMLDivElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "HTMLCanvasElement",
-        { kind: "ui-element", cppType: handleCppType("ui-element") },
-    ],
-    [
-        "ObstacleHandle",
         {
-            kind: "navigation-obstacle",
-            cppType: handleCppType("navigation-obstacle"),
+            origin: "babylon",
+            kind: "sprite-renderer",
+            cppType: "bbl::SpriteRendererHandle",
         },
     ],
-    ["Mesh", { kind: "mesh", cppType: handleCppType("mesh") }],
-    ["AssetContainer", { kind: "asset", cppType: "bbl::AssetHandle" }],
     [
-        "StorageBuffer",
-        { kind: "storage-buffer", cppType: handleCppType("storage-buffer") },
+        "AssetContainer",
+        { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
     ],
+    // The element interfaces a scene declares empty and fills from a lookup.
+    ["Element", NULLABLE_UI_ELEMENT],
+    ["HTMLElement", NULLABLE_UI_ELEMENT],
+    ["HTMLDivElement", NULLABLE_UI_ELEMENT],
+    ["HTMLCanvasElement", NULLABLE_UI_ELEMENT],
 ]);
 
 /**
@@ -560,7 +544,7 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
  * assignment inside the "did the asset carry a skinned mesh and clips" arm,
  * the shape both VAT scenes are written in. `VatClip`: `let swim: VatClip |
  * null = null` then the guarded row read, the per-instance scene's shape for
- * holding one clip's row block.
+ * holding one clip's row block. Both are pinned types.
  */
 const NULLABLE_VAT_RESOURCE_TYPES = new EmissionMap<
     string,
@@ -681,6 +665,9 @@ function compileSourceApplication(
             environment,
             ...(options.publicDir
                 ? { publicDir: resolve(options.publicDir) }
+                : {}),
+            ...(options.publicUrl
+                ? { publicUrl: deploymentPublicUrl(options.publicUrl) }
                 : {}),
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
@@ -1324,27 +1311,16 @@ class Compiler implements LoweringServices {
                 featureSites[feature] = site;
             }
         }
-        // Two features can name the same PAL translation unit (the sprite
-        // and PBR renderers share one), and CMake must list it once.
-        const runtimeSources = [
-            ...new EmissionSet(
-                features.flatMap((feature) => featureSources[feature]),
-            ),
-        ];
-        // The manifest and CMake projection of the same table the upstream
-        // lowerer emits from, so a feature's sources are declared once.
-        const generatedSources = reachedGeneratedSources(features);
         const application = this.renderCpp(features);
         this.staticExpansionBudget.assertWithinBudget();
+        const { runtimeSources, generatedSources, cmake } = projectFeatures(
+            features,
+            application.sourceUnits.map(({ path }) => path),
+        );
         return {
             cpp: application.cpp,
             cppFiles: application.files,
-            cmake: renderFeaturesCmake(
-                features,
-                runtimeSources,
-                generatedSources,
-                application.sourceUnits.map(({ path }) => path),
-            ),
+            cmake,
             assetPayloads: this.assetPayloads,
             ...(this.reachedNodeParticles.sets.length > 0
                 ? { nodeParticles: this.reachedNodeParticles }
@@ -2021,29 +1997,38 @@ class Compiler implements LoweringServices {
         allowDirect = false,
     ): { kind: ValueKind; cppType: string } | undefined {
         const type = this.checker.getTypeAtLocation(node);
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types.filter(
-                      (member) =>
-                          (member.flags &
-                              (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                          0,
-                  )
-                : allowDirect
-                  ? [type]
-                  : [];
-        if (members.length !== 1) return undefined;
-        if (
-            this.options.workers &&
-            isPinnedType(members[0]!, ["EngineContext"])
-        ) {
+        const present = presentMembers(type);
+        if (present.length !== 1 || (!allowDirect && !isNullable(type)))
+            return undefined;
+        const member = present[0]!;
+        if (this.options.workers && isPinnedType(member, ["EngineContext"])) {
             return { kind: "engine", cppType: "std::shared_ptr<bbl::Engine>" };
         }
-        const name = members[0]!.symbol?.name;
+        const pinned = pinnedHandleKind(member);
+        switch (pinned) {
+            case "mesh":
+            case "sprite-layer":
+            case "navigation-obstacle":
+            case "storage-buffer":
+                return { kind: pinned, cppType: handleCppType(pinned) };
+        }
+        const audio = domAudioHandleKind(member);
+        switch (audio) {
+            case "audio-context":
+            case "audio-param":
+            case "audio-buffer":
+                return { kind: audio, cppType: handleCppType(audio) };
+        }
+        const name = member.symbol?.name;
         const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
-        if (named) return named;
+        if (named && declaredIn(member.symbol, named.origin)) {
+            return { kind: named.kind, cppType: named.cppType };
+        }
+        // `createRenderTexture2D` returns the pin's ordinary `Texture2D`, so
+        // the type cannot tell its offscreen target from a loaded texture;
+        // the assignment that fills the name does.
         if (
-            name === "Texture2D" &&
+            isPinnedType(member, ["Texture2D"]) &&
             this.identifierIsAssignedFromIntrinsic(
                 node,
                 "createRenderTexture2D",
@@ -2054,7 +2039,7 @@ class Compiler implements LoweringServices {
                 cppType: "bbl::SpriteRenderTextureHandle",
             };
         }
-        const mappedHandle = this.dataTypes.fromTsType(members[0]!, node);
+        const mappedHandle = this.dataTypes.fromTsType(member, node);
         if (
             mappedHandle?.kind === "handle" &&
             (mappedHandle.handle === "pointer-drag" ||
@@ -2066,23 +2051,22 @@ class Compiler implements LoweringServices {
                 cppType: this.dataTypes.cppType(mappedHandle),
             };
         }
-        if (this.typeIsOrExtendsNamed(members[0]!, "Material")) {
+        if (
+            this.typeIsOrExtendsNamed(member, "Material", (symbol) =>
+                declaredIn(symbol, "babylon"),
+            )
+        ) {
             return {
                 kind: "material",
                 cppType: handleCppType("material"),
             };
         }
         const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
-        if (vat) return vat;
+        if (vat && declaredIn(member.symbol, "babylon")) return vat;
         // Resolved through the DOM library's own `AudioNode`: a scene's
         // `SceneNode`, or the pin's `TransformNode`, is not a Web Audio node.
         if (
-            this.typeIsOrExtendsNamed(
-                members[0]!,
-                "AudioNode",
-                new EmissionSet(),
-                declaredInDomLibrary,
-            )
+            this.typeIsOrExtendsNamed(member, "AudioNode", declaredInDomLibrary)
         ) {
             return {
                 kind: "audio-node",
@@ -2098,7 +2082,7 @@ class Compiler implements LoweringServices {
         // the assignment through `emitOptionalResourceAssignment` and the
         // shared closure cell a stored callback needs are the same ones
         // every resource row above already uses.
-        const opaque = opaqueEngineValue(members[0]!);
+        const opaque = opaqueEngineValue(member);
         if (opaque) {
             return opaque;
         }
@@ -2107,14 +2091,14 @@ class Compiler implements LoweringServices {
 
     /**
      * Whether a type is, or derives from, the class or interface named
-     * `name`; `declaredBy` narrows which declaration of that name counts
-     * (the DOM library's `AudioNode`, not a scene's own class of that name).
+     * `name` that `declaredBy` owns (the DOM library's `AudioNode`, not a
+     * scene's own class of that name).
      */
     private typeIsOrExtendsNamed(
         type: ts.Type,
         name: string,
+        declaredBy: (symbol: ts.Symbol) => boolean,
         visited = new EmissionSet<ts.Type>(),
-        declaredBy: (symbol: ts.Symbol) => boolean = () => true,
     ): boolean {
         if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
         if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
@@ -2133,7 +2117,7 @@ class Compiler implements LoweringServices {
             this.checker
                 .getBaseTypes(type as ts.InterfaceType)
                 ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, visited, declaredBy),
+                    this.typeIsOrExtendsNamed(base, name, declaredBy, visited),
                 ) ?? false
         );
     }
@@ -4608,12 +4592,18 @@ class Compiler implements LoweringServices {
             return false;
         }
         const typeSite = declaration.type ?? name;
-        let annotated = this.dataTypes.fromTsType(
-            declaration.type
-                ? this.checker.getTypeFromTypeNode(declaration.type)
-                : this.checker.getTypeAtLocation(name),
-            typeSite,
-        );
+        const declaredType = declaration.type
+            ? this.checker.getTypeFromTypeNode(declaration.type)
+            : this.checker.getTypeAtLocation(name);
+        // A rebound binding is storage: every later assignment writes a value
+        // of the declared type into it, so the declared type is mapped as a
+        // stored position. A local class it names takes its shared-object
+        // representation here exactly as it would as a field or an element;
+        // otherwise `let c: C | null = null` would keep the initializer's
+        // null as the binding's only representation.
+        let annotated = this.identifierIsRebound(name)
+            ? this.dataTypes.fromStoredTsType(declaredType, typeSite)
+            : this.dataTypes.fromTsType(declaredType, typeSite);
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
@@ -8468,15 +8458,9 @@ class Compiler implements LoweringServices {
             this.checker.getAwaitedType(resultType) ?? resultType;
         let writeOnlyObjectResult = false;
         if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
-            const resultDeclarations = [
-                ...(observableResult.symbol?.declarations ?? []),
-                ...(observableResult.aliasSymbol?.declarations ?? []),
-            ];
-            const directlyDom = resultDeclarations.some((result) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    result.getSourceFile().fileName,
-                ),
-            );
+            const directlyDom =
+                declaredInDomLibrary(observableResult.symbol) ||
+                declaredInDomLibrary(observableResult.aliasSymbol);
             if (!directlyDom) {
                 writeOnlyObjectResult =
                     observableResult.getProperties().length > 0 &&
@@ -8606,25 +8590,14 @@ class Compiler implements LoweringServices {
     ): boolean {
         const callee = this.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
-        const owner = this.unwrap(callee.expression);
-        if (!ts.isIdentifier(owner)) return false;
-        const symbol = this.symbols.valueSymbol(owner);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(symbol)
-                : symbol;
-        const declaration = target?.declarations?.find(ts.isClassDeclaration);
-        if (!declaration) return false;
-        const method = declaration.members.find(
-            (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                ts.isMemberName(member.name) &&
-                member.name.text === callee.name.text &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) !==
-                    0,
+        const found = staticClassMember(
+            this.checker,
+            this.unwrap(callee.expression),
+            callee.name,
         );
-        if (!method?.body) return false;
+        const method = found?.table.staticMethods.get(found.name);
+        if (!found || !method?.body) return false;
+        const { declaration } = found.table;
 
         const result = this.checker.getAwaitedType(
             this.checker.getTypeAtLocation(call),
@@ -8718,13 +8691,7 @@ class Compiler implements LoweringServices {
             (type.flags & ts.TypeFlags.Union) !== 0
                 ? (type as ts.UnionType).types
                 : [type];
-        return members.some((member) =>
-            (member.symbol?.declarations ?? []).some((declaration) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            ),
-        );
+        return members.some((member) => declaredInDomLibrary(member.symbol));
     }
 
     private isBrowserUtilitySource(source: ts.SourceFile): boolean {
@@ -9135,15 +9102,14 @@ class Compiler implements LoweringServices {
                         `received ${value.kind}.`,
                 );
             }
-            const operator = new EmissionMap<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
-                [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
-                [ts.SyntaxKind.LessThanToken, "<"],
-                [ts.SyntaxKind.LessThanEqualsToken, "<="],
-                [ts.SyntaxKind.GreaterThanToken, ">"],
-                [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-            ]).get(unwrapped.operatorToken.kind);
-            if (!operator) {
+            const comparison = conditionComparison(this.checker, unwrapped);
+            if (comparison === "coercing")
+                this.fail(
+                    unwrapped.operatorToken,
+                    "Loose equality between operands of different types " +
+                        "coerces them; convert explicitly and compare strictly.",
+                );
+            if (!comparison) {
                 if (this.evaluator.isNumberExpression(unwrapped)) {
                     this.reachJsData();
                     return `bbl::js::number_truthy(${this.compileNumber(unwrapped, "double")})`;
@@ -9163,8 +9129,12 @@ class Compiler implements LoweringServices {
             let rightValue = this.compileValue(unwrapped.right);
             if (textKind(rightValue))
                 rightValue = retainTextValue(this, rightValue);
+            const operator = comparison.cpp;
+            const equality =
+                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
             if (leftValue.kind === "texture" && rightValue.kind === "texture") {
-                if (operator !== "==" && operator !== "!=")
+                if (!equality)
                     this.fail(
                         unwrapped,
                         "Texture2D values support identity comparisons.",
@@ -9178,7 +9148,7 @@ class Compiler implements LoweringServices {
                 return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
             }
             if (textKind(leftValue) || textKind(rightValue)) {
-                if (operator !== "==" && operator !== "!=")
+                if (!equality)
                     this.fail(
                         unwrapped,
                         "Text entities support strict identity comparisons.",
@@ -9197,109 +9167,37 @@ class Compiler implements LoweringServices {
                     (kind) => kind === "text-font",
                 )
             ) {
-                const token = unwrapped.operatorToken.kind;
-                if (
-                    token !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-                    token !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-                ) {
+                if (!equality) {
                     this.fail(
                         unwrapped,
                         "Static font/text data only supports strict identity comparison.",
                     );
                 }
                 const equal = sameCompiledValue(leftValue, rightValue);
-                return (
-                    token === ts.SyntaxKind.EqualsEqualsEqualsToken
-                        ? equal
-                        : !equal
-                )
-                    ? "true"
-                    : "false";
+                return (operator === "==" ? equal : !equal) ? "true" : "false";
             }
-            const staticLeft =
-                leftValue.kind === "number" && !leftValue.parameterBinding
-                    ? leftValue.staticNumber
-                    : undefined;
-            const staticRight =
-                rightValue.kind === "number" && !rightValue.parameterBinding
-                    ? rightValue.staticNumber
-                    : undefined;
-            if (
-                leftValue.staticString !== undefined &&
-                rightValue.staticString !== undefined
-            ) {
-                const equal =
-                    leftValue.staticString === rightValue.staticString;
-                const folded =
-                    unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken
-                        ? equal
-                        : unwrapped.operatorToken.kind ===
-                            ts.SyntaxKind.ExclamationEqualsEqualsToken
-                          ? !equal
-                          : undefined;
-                if (folded !== undefined) {
-                    return folded ? "true" : "false";
-                }
+            const folded = foldSettledComparison(
+                comparison.kind,
+                leftValue,
+                rightValue,
+            );
+            if (folded !== undefined) {
+                return folded ? "true" : "false";
             }
             if (
+                equality &&
                 isStringValue(leftValue) &&
-                isStringValue(rightValue) &&
-                (unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+                isStringValue(rightValue)
             ) {
-                return (
-                    `std::string(${leftValue.cpp}) ` +
-                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
-                    `std::string(${rightValue.cpp})`
-                );
+                return `std::string(${leftValue.cpp}) ${operator} std::string(${rightValue.cpp})`;
             }
             if (
+                equality &&
                 leftValue.kind === "object-url" &&
-                rightValue.kind === "object-url" &&
-                (unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+                rightValue.kind === "object-url"
             ) {
                 this.expectSameEngine(leftValue, rightValue, unwrapped);
-                return (
-                    `${leftValue.cpp} ` +
-                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
-                    `${rightValue.cpp}`
-                );
-            }
-            if (
-                staticLeft !== undefined &&
-                staticRight !== undefined &&
-                Number.isFinite(staticLeft) &&
-                Number.isFinite(staticRight)
-            ) {
-                const folded = new EmissionMap<ts.SyntaxKind, boolean>([
-                    [
-                        ts.SyntaxKind.EqualsEqualsEqualsToken,
-                        staticLeft === staticRight,
-                    ],
-                    [
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken,
-                        staticLeft !== staticRight,
-                    ],
-                    [ts.SyntaxKind.LessThanToken, staticLeft < staticRight],
-                    [
-                        ts.SyntaxKind.LessThanEqualsToken,
-                        staticLeft <= staticRight,
-                    ],
-                    [ts.SyntaxKind.GreaterThanToken, staticLeft > staticRight],
-                    [
-                        ts.SyntaxKind.GreaterThanEqualsToken,
-                        staticLeft >= staticRight,
-                    ],
-                ]).get(unwrapped.operatorToken.kind);
-                if (folded !== undefined) {
-                    return folded ? "true" : "false";
-                }
+                return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
             }
             // The statement emitter supplies the condition's outer
             // parentheses. Comparisons bind more tightly than the logical
@@ -10712,30 +10610,23 @@ class Compiler implements LoweringServices {
             };
         }
 
+        // The builder's one runtime number is a module-scope `f32` constant;
+        // it becomes a uniform read, located by the stage's own syntax tree.
         const marker = "__BBL_DYNAMIC_SHADER_FLOAT__";
-        const templated = template.head.text + marker + span.literal.text;
-        const declarationPattern = new RegExp(
-            `(^|\\n)([ \\t]*)const\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*f32\\s*=\\s*${marker}\\s*;[ \\t]*(?=\\n|$)`,
+        const uniformName = "bblDynamicDepthBias";
+        const lifted = liftWgslModuleConstant(
+            template.head.text + marker + span.literal.text,
+            marker,
+            () => `shaderUniforms.${uniformName}`,
         );
-        const match = declarationPattern.exec(templated);
-        if (!match) {
+        if (!lifted) {
             return {
                 source: this.compileStaticString(expression),
                 dynamicUniforms: [],
             };
         }
-        const constant = match[3]!;
-        const uniformName = "bblDynamicDepthBias";
-        const withoutDeclaration = templated.replace(
-            declarationPattern,
-            match[1]!,
-        );
-        const source = withoutDeclaration.replace(
-            new RegExp(`\\b${constant}\\b`, "g"),
-            `shaderUniforms.${uniformName}`,
-        );
         return {
-            source,
+            source: lifted.source,
             dynamicUniforms: [
                 {
                     name: uniformName,
@@ -13838,21 +13729,17 @@ class Compiler implements LoweringServices {
             (type.flags & ts.TypeFlags.Union) !== 0
                 ? (type as ts.UnionType).types
                 : [type];
+        // Gamepads are platform handles the native input model reads.
         if (
-            members.some(
-                (member) =>
-                    member.symbol?.name === "Gamepad" ||
-                    member.symbol?.name === "GamepadButton",
-            )
+            members.some((member) => {
+                const handle = platformHandleKind(member);
+                return handle === "gamepad" || handle === "gamepad-button";
+            })
         ) {
             return false;
         }
         const directlyDom = members.some((member) =>
-            (member.symbol?.declarations ?? []).some((declaration) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            ),
+            declaredInDomLibrary(member.symbol),
         );
         if (directlyDom) return true;
         const unwrapped = this.unwrap(expression);
@@ -14007,9 +13894,9 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Whether every member of an expression's type is one of the two canvas
-     * types. A member whose symbol has no name is not a canvas, so it fails
-     * the test rather than being compared under an empty name.
+     * Whether every member of an expression's type is one of the DOM
+     * library's two canvas types. A program's own type that shares a canvas
+     * name is not a canvas, and neither is a member without a symbol.
      */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
@@ -14017,8 +13904,12 @@ class Compiler implements LoweringServices {
         return (
             members.length > 0 &&
             members.every((member) => {
-                const name = member.getSymbol()?.getName();
-                return name !== undefined && CANVAS_TYPE_NAMES.has(name);
+                const symbol = member.getSymbol();
+                return (
+                    symbol !== undefined &&
+                    CANVAS_TYPE_NAMES.has(symbol.getName()) &&
+                    declaredInDomLibrary(symbol)
+                );
             })
         );
     }
@@ -14660,9 +14551,9 @@ class Compiler implements LoweringServices {
                 // it has returned, so a name bound inside that frame is
                 // dead storage by then. The emitted lambda captures by
                 // reference, so this would compile clean and read freed
-                // memory; it refuses instead. Escaping captures are
-                // unsolved generally (see TODO), and this is the one
-                // place the reached slice can walk into them.
+                // memory; it refuses instead. Escaping captures of frame
+                // locals are not supported in general, and this is the
+                // one place the reached slice can walk into them.
                 this.refuseDeadDeferredCapture(
                     identifier,
                     index,
@@ -18603,55 +18494,8 @@ class Compiler implements LoweringServices {
                 "Scene-code matrix intrinsics currently require Float32 Mat4 storage; high-precision matrix allocation is not supported.",
             );
         }
-        // Every raw Web Audio node/asset feature is implemented by the same
-        // engine PAL and can only be reached through one of its contexts.
-        // Record that dependency even when the creating call lives in a
-        // deferred platform callback that is lowered after another audio
-        // callback first reaches a node family.
-        if (feature.startsWith("audio:") && feature !== "audio:engine") {
-            this.reachFeature("audio:engine", site);
-        }
-        if (feature === "compute:task-execution") {
-            for (const dependency of [
-                "compute:task",
-                "compute:dispatch",
-                "compute:shader",
-                "compute:bindings",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "environment:procedural-sky") {
-            for (const dependency of [
-                "environment:sky-atmosphere",
-                "environment:ibl",
-                "compute:texture-mipmaps",
-                "platform:packaged-fetch",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:texture-mipmaps") {
-            for (const dependency of [
-                "compute:storage-texture",
-                "compute:task",
-                "compute:frame-graph",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:frame-graph")
-            this.reachFeature("compute:task-execution", site);
-        if (feature === "compute:storage-readback")
-            this.reachFeature("compute:storage-buffer", site);
-        if (feature === "compute:bindings") {
-            for (const dependency of [
-                "compute:binding-decl",
-                "compute:shader",
-                "compute:storage-texture",
-                "compute:uniform-buffer",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:one-shot")
-            this.reachFeature("compute:task", site);
+        for (const implied of impliedFeatures(feature))
+            this.reachFeature(implied, site);
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
             this.featureSites.set(feature, this.featureSite(site));

@@ -44,6 +44,13 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
         ].join("\n"),
     );
     writeFileSync(
+        join(directory, "frame-session.hpp"),
+        cppFunction(
+            readFileSync("native/src/pal_frame_session.hpp", "utf8"),
+            "[[nodiscard]] bool screenshot_due() const",
+        ),
+    );
+    writeFileSync(
         join(directory, "buffer-batch.hpp"),
         cppRecord(
             readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),

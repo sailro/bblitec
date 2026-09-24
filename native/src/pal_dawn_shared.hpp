@@ -4,6 +4,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_dawn_completion.hpp"
+#include "pal_dawn_formats.hpp"
 #if BBLITE_GPU_TASK_TIMING
 #include "pal_dawn_gpu_timestamp.hpp"
 #endif
@@ -53,6 +54,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -73,50 +75,9 @@
 
 namespace bbl::pal {
 
-/**
- * The pin's depth compare in this API's enum.
- *
- * `upstream::pinned_depth_compare` carries the value the pin declares; only
- * the mapping onto WebGPU's enum belongs to this backend, the same split
- * the blend factors already use.
- */
-inline WGPUCompareFunction dawn_depth_compare(DepthCompare compare) {
-    switch (compare) {
-    case DepthCompare::never:
-        return WGPUCompareFunction_Never;
-    case DepthCompare::less:
-        return WGPUCompareFunction_Less;
-    case DepthCompare::equal:
-        return WGPUCompareFunction_Equal;
-    case DepthCompare::less_equal:
-        return WGPUCompareFunction_LessEqual;
-    case DepthCompare::greater:
-        return WGPUCompareFunction_Greater;
-    case DepthCompare::not_equal:
-        return WGPUCompareFunction_NotEqual;
-    case DepthCompare::greater_equal:
-        return WGPUCompareFunction_GreaterEqual;
-    case DepthCompare::always:
-        return WGPUCompareFunction_Always;
-    }
-    return WGPUCompareFunction_GreaterEqual;
-}
-
-inline WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
-    switch (factor) {
-    case BlendFactor::one:
-        return WGPUBlendFactor_One;
-    case BlendFactor::src_alpha:
-        return WGPUBlendFactor_SrcAlpha;
-    case BlendFactor::one_minus_src_alpha:
-        return WGPUBlendFactor_OneMinusSrcAlpha;
-    }
-    return WGPUBlendFactor_One;
-}
-
 // A shared blend tuple in this API's state; the operation is always add
-// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Beside the
-// depth-compare translator so the family headers can call it too.
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Shared so the
+// family headers can call it too.
 inline WGPUBlendState blend_state_from(const BlendFactors& factors) {
     WGPUBlendState blend{};
     blend.color.operation = WGPUBlendOperation_Add;
@@ -129,6 +90,19 @@ inline WGPUBlendState blend_state_from(const BlendFactors& factors) {
 }
 
 inline WGPUStringView string_view(const char* text) { return WGPUStringView{text, WGPU_STRLEN}; }
+
+/**
+ * `Count` vertex attributes, each starting from WGPU_VERTEX_ATTRIBUTE_INIT
+ * rather than `{}`: WGPUVertexFormat has no zero enumerator, so only the
+ * header's own initializer spells the unset format. Callers assign every
+ * attribute before a layout reads it.
+ */
+template <std::size_t Count> std::array<WGPUVertexAttribute, Count> vertex_attribute_array() {
+    return []<std::size_t... Index>(std::index_sequence<Index...>) {
+        return std::array<WGPUVertexAttribute, Count>{
+            {(static_cast<void>(Index), WGPU_VERTEX_ATTRIBUTE_INIT)...}};
+    }(std::make_index_sequence<Count>{});
+}
 
 [[noreturn]] inline void dawn_error(const std::string& message) {
     throw GpuTransportError("Dawn backend: " + message);
@@ -778,11 +752,13 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TextureCompressionASTC,
         WGPUFeatureName_TimestampQuery,
     };
-    std::array<WGPUFeatureName, optional_features.size() + 1> device_features{};
-    std::size_t device_feature_count = 0;
+    // Only requested features are listed: WGPUFeatureName has no zero
+    // enumerator to pad a fixed array with.
+    std::vector<WGPUFeatureName> device_features;
+    device_features.reserve(optional_features.size() + 1);
     for (const WGPUFeatureName feature : optional_features) {
         if (wgpuAdapterHasFeature(state.adapter, feature)) {
-            device_features[device_feature_count++] = feature;
+            device_features.push_back(feature);
         }
     }
 #if BBLITE_OFFSCREEN_SURFACES
@@ -792,10 +768,10 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         if (!wgpuAdapterHasFeature(state.adapter, WGPUFeatureName_ImplicitDeviceSynchronization)) {
             dawn_error("adapter lacks implicit device synchronization for offscreen producers.");
         }
-        device_features[device_feature_count++] = WGPUFeatureName_ImplicitDeviceSynchronization;
+        device_features.push_back(WGPUFeatureName_ImplicitDeviceSynchronization);
     }
 #endif
-    device_descriptor.requiredFeatureCount = device_feature_count;
+    device_descriptor.requiredFeatureCount = device_features.size();
     device_descriptor.requiredFeatures = device_features.data();
     WGPULimits required_limits = WGPU_LIMITS_INIT;
     bool needs_limits = false;
@@ -1043,22 +1019,12 @@ inline void generate_mipmaps(WGPUDevice device, WGPUQueue queue, DawnMipGenerato
  * descriptor here instead of hardcoding one.
  */
 inline WGPUSampler create_texture_sampler(WGPUDevice device, const TextureSamplerState& sampler) {
-    const auto filter = [](TextureFilter value) {
-        return value == TextureFilter::nearest ? WGPUFilterMode_Nearest : WGPUFilterMode_Linear;
-    };
-    const auto address = [](TextureAddressMode value) {
-        return value == TextureAddressMode::clamp    ? WGPUAddressMode_ClampToEdge
-               : value == TextureAddressMode::mirror ? WGPUAddressMode_MirrorRepeat
-                                                     : WGPUAddressMode_Repeat;
-    };
     WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-    descriptor.minFilter = filter(sampler.min_filter);
-    descriptor.magFilter = filter(sampler.mag_filter);
-    descriptor.mipmapFilter = sampler.mipmap_mode == TextureMipmapMode::nearest
-                                  ? WGPUMipmapFilterMode_Nearest
-                                  : WGPUMipmapFilterMode_Linear;
-    descriptor.addressModeU = address(sampler.address_u);
-    descriptor.addressModeV = address(sampler.address_v);
+    descriptor.minFilter = dawn_filter_mode(sampler.min_filter);
+    descriptor.magFilter = dawn_filter_mode(sampler.mag_filter);
+    descriptor.mipmapFilter = dawn_mipmap_filter_mode(sampler.mipmap_mode);
+    descriptor.addressModeU = dawn_address_mode(sampler.address_u);
+    descriptor.addressModeV = dawn_address_mode(sampler.address_v);
     // Mirror the pinned descriptor exactly: W stays at the WebGPU
     // clamp default, and only the noMip path overrides the LOD clamp
     // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32

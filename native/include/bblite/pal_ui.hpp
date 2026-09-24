@@ -115,7 +115,7 @@ void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
                  std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
-UiElementHandle ui_primary_canvas(Engine&);
+UiElementHandle ui_primary_canvas(Engine&, std::string_view id);
 void ui_canvas_set_width(Engine&, UiElementHandle, double);
 void ui_canvas_set_height(Engine&, UiElementHandle, double);
 double ui_canvas_width(Engine&, UiElementHandle);
@@ -298,11 +298,6 @@ inline void append_canvas_focus_outline(UiRenderFrame& frame) {
     frame.draws.push_back(
         UiRenderDraw{first_index, static_cast<std::uint32_t>(frame.indices.size()) - first_index, 0,
                      0, 0, frame.width, frame.height, false});
-}
-
-inline bool ui_frame_uses_texture(const UiRenderFrame& frame, std::uint64_t id) {
-    return std::any_of(frame.textures.begin(), frame.textures.end(),
-                       [id](const UiRenderTexture& texture) { return texture.id == id; });
 }
 
 /** Opaque RmlUi projection of an engine's retained UI tree. */

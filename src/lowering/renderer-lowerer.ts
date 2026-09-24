@@ -75,6 +75,7 @@ import {
     type MeshProfileTable,
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
+import { lowerRenderBucket } from "./render-bucket.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 
 /**
@@ -132,8 +133,7 @@ function liftedImageSkyboxWgsl() {
 
 const renderTaskModule = "src/frame-graph/render-task-base.ts";
 
-// Markers the formula table asserts AND a fidelity record names, spelled
-// once so the record cannot drift from the assertion.
+// Markers a fidelity record names, spelled once.
 const IBL_SPECULAR_OCCLUSION = packagedWgsl`let seo = clamp`;
 const BRDF_LUT_COORDINATES = packagedWgsl`vec2<f32>(NdotV, roughness)`;
 const ENVIRONMENT_CUBEMAP_ROTATION = packagedWgsl`let R = rotateY(R_raw`;
@@ -143,7 +143,6 @@ const CLEARCOAT_IBL_CONSERVATION = packagedWgsl`let ccConservation_ibl = 1.0 - c
 // so it keeps its source spacing in the package: a plain literal.
 const SHEEN_ALBEDO_SCALING = "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
-const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
 const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const iblSkyboxModule = "src/material/pbr/fragments/ibl-skybox-wgsl.ts";
@@ -156,9 +155,6 @@ const clearcoatFragmentModule =
 const sheenFragmentModule = "src/material/pbr/fragments/sheen-fragment.ts";
 const iridescenceFragmentModule =
     "src/material/pbr/fragments/iridescence-fragment.ts";
-const clearcoatLoaderModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
-const sheenLoaderModule = "src/loader-gltf/gltf-ext-sheen.ts";
-const iridescenceLoaderModule = "src/loader-gltf/gltf-ext-iridescence.ts";
 const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
@@ -1640,9 +1636,19 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+// The Standard bucket reads the lowered feature word; the PBR header goes
+// first because the Standard one hoists the shared mirrors only without it.
+#if BBLITE_PBR_VARIANTS > 0
+#include <bblite/upstream/pbr_variants.hpp>
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+#include <bblite/upstream/standard_variants.hpp>
+#endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <iterator>
 
@@ -1687,26 +1693,7 @@ RenderItem bind_render_item(
             : material.standard_material
             ? RenderMaterialKind::standard
             : RenderMaterialKind::pbr;
-    item.bucket =
-        material.alpha_mode == MaterialAlphaMode::blend
-            ? RenderBucket::alpha_blend
-            : material.alpha_mode == MaterialAlphaMode::mask
-                ? RenderBucket::alpha_mask
-                : RenderBucket::opaque;${
-                    options.standardVertexAlpha
-                        ? `
-    if (material.standard_material && item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& mesh = engine.meshes[item.mesh.value];
-        const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
-        if (standard_color_alpha_features(
-                material.no_color || material.esm_shadow,
-                mesh.has_vertex_alpha, has_vertex_color,
-                has_instance_colors(mesh)) != 0u) {
-            item.bucket = RenderBucket::alpha_blend;
-        }
-    }`
-                        : ""
-                }
+${lowerRenderBucket(this.context, options)}
     item.cull_mode = material.double_sided
         ? RenderCullMode::none
         : RenderCullMode::back;
@@ -2951,10 +2938,6 @@ ${pinnedFogInfosPacking()}    };
             gpuDeformation?: boolean;
             morphStorage?: boolean;
             gpuInstancing?: boolean;
-            clearcoat?: boolean;
-            sheen?: boolean;
-            iridescence?: boolean;
-            dispersion?: boolean;
         } = {
             ground: true,
             skybox: true,
@@ -2968,13 +2951,9 @@ ${pinnedFogInfosPacking()}    };
             gpuDeformation: false,
             morphStorage: false,
             gpuInstancing: false,
-            clearcoat: false,
-            sheen: false,
-            iridescence: false,
-            dispersion: false,
         },
     ): LoweredShader[] {
-        this.assertPinnedShaderFormulas(options);
+        this.assertPinnedRestatedContracts(options);
         const result: Array<{ output: string; data: string }> = [];
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
@@ -3255,283 +3234,105 @@ ${pinnedFogInfosPacking()}    };
     }
 
     /**
-     * Every pinned WGSL formula the emitted shaders transcribe or lift,
-     * asserted before any file is rendered so a retuned pin fails
-     * generation with the formula's own name.
+     * The pinned facts this port restates rather than reads, asserted before
+     * any file is rendered so a pin that changes one refuses generation by
+     * name. The shader formulas need no rows: every stage that carries one is
+     * composed from the pin's own text.
+     *
+     * - Both PALs draw a fixed skybox/opaque/transparent/ground stage
+     *   sequence that mirrors the background renderables' order stamps.
+     * - The DDS packager reads the skybox cube as the rgba16float texels
+     *   `loadDdsCube` uploads.
+     * - Both PALs copy scene colour before the first transmissive draw, the
+     *   grab `executePassWithTransmission` performs.
+     * - The custom-shader composer re-addresses the pin's prelude bindings
+     *   and splices the scene-uniform block the pin imports.
      */
-    private assertPinnedShaderFormulas(options: {
-        gpuDeformation?: boolean;
-        morphStorage?: boolean;
-        gpuInstancing?: boolean;
-        clearcoat?: boolean;
-        sheen?: boolean;
-        iridescence?: boolean;
-        dispersion?: boolean;
+    private assertPinnedRestatedContracts(options: {
         shaderPrograms: CompiledShaderProgram[];
     }): void {
-        const pbr = this.context.store.getSource(pbrTemplateModule);
-        const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
-        const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
-        const ibl = this.context.store.getSource(iblFragmentModule);
-        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
-        const refraction = this.context.store.getSource(refractionModule);
-        const dielectric = this.context.store.getSource(dielectricLoaderModule);
-        const transmissionFrameGraph = this.context.store.getSource(
-            transmissionFrameGraphModule,
-        );
-        const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
-        const backgroundGround = this.context.store.getSource(
-            backgroundGroundModule,
-        );
-        const backgroundDds = this.context.store.getSource(backgroundDdsModule);
-        const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
-        const pbrGeometryModule =
-            "src/material/pbr/pbr-geometry-output-shader.ts";
-        const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
-        const clearcoatFragment = this.context.store.getSource(
-            clearcoatFragmentModule,
-        );
-        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
-        const iridescenceFragment = this.context.store.getSource(
-            iridescenceFragmentModule,
-        );
-        const dispersionWgsl =
-            this.context.store.getSource(dispersionWgslModule);
-        const clearcoatLoader = this.context.store.getSource(
-            clearcoatLoaderModule,
-        );
-        const sheenLoader = this.context.store.getSource(sheenLoaderModule);
-        const iridescenceLoader = this.context.store.getSource(
-            iridescenceLoaderModule,
-        );
-        const shaderPipeline =
-            this.context.store.getSource(shaderPipelineModule);
-        const sceneUniformsSource = this.context.store.getSource(
-            sceneUniformsSourceModule,
-        );
-        const requiredUpstreamFormulas: Array<
-            readonly [string, string, string]
-        > = [
-            [pbr, packagedWgsl`roughness*roughness+0.0005`, "GGX roughness"],
-            [pbr, packagedWgsl`0.5/(gl+gv)`, "Smith geometry"],
-            [
-                pbr,
-                packagedWgsl`luminanceOverAlpha+=dot`,
-                "transparent alpha luminance",
-            ],
-            [pbr, packagedWgsl`finalAlpha=saturate`, "transparent alpha fold"],
-            [
-                pbrExt,
-                packagedWgsl`baseColor *= input.vColor.rgb`,
-                "vertex color base color",
-            ],
-            [
-                pbrExt,
-                packagedWgsl`alpha *= input.vColor.a`,
-                "vertex color alpha",
-            ],
-            [pbrHelper, "1.590579", "image-processing calibration"],
-            [
-                ibl,
-                packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`,
-                "IBL mip selection",
-            ],
-            [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
-            [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
-            [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
-            [ibl, IBL_SPECULAR_OCCLUSION, "IBL specular occlusion"],
-            [ibl, BRDF_LUT_COORDINATES, "BRDF LUT coordinates"],
-            [ibl, ENVIRONMENT_CUBEMAP_ROTATION, "environment cubemap rotation"],
-            [iblSkybox, PBR_SKYBOX_VIEW_RAY, "PBR skybox view ray"],
-            [
-                iblSkybox,
-                packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`,
-                "PBR skybox LOD alphaG",
-            ],
-            [
-                refraction,
-                packagedWgsl`let rd=refract(-V,N,material.refractionParams.y)`,
-                "scene-color refraction ray",
-            ],
-            [
-                refraction,
-                packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
-                "Beer-Lambert attenuation",
-            ],
-            [
-                refraction,
-                "colorSpecularEnvReflectance.rgb",
-                "transmission Fresnel complement",
-            ],
-            [
-                dielectric,
-                "((ior - 1) / (ior + 1)) ** 2 / 0.04",
-                "glTF IOR Fresnel",
-            ],
-            [
-                transmissionFrameGraph,
-                "updateTransmissionTexture(state, engine)",
-                "scene-color copy ordering",
-            ],
-            [
-                sceneUniforms,
-                "lodGenerationScale ?? 0.8",
-                "environment LOD scale",
-            ],
-            // The ground/skybox fragment *formulas* are no longer asserted
-            // here: they are lifted from the modules' own literals, and the
-            // lift throws naming the missing literal itself.
-            [backgroundGround, "ground renders last", "background ordering"],
-            [
-                backgroundDds,
-                'GPUTextureFormat = "rgba16float"',
-                "DDS cubemap format",
-            ],
-            [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
-            [backgroundDds, "order: 0", "DDS skybox ordering"],
-            [backgroundHdr, "order: 0", "HDR skybox ordering"],
-            [
-                backgroundHdr,
-                "buildHdrSkyboxRenderable",
-                "HDR skybox renderable",
-            ],
-            [
-                pbrGeometry,
-                packagedWgsl`directDiffuse + finalIrradiance`,
-                "geometry irradiance",
-            ],
-            [
-                pbrGeometry,
-                packagedWgsl`colorF0, 1.0 - roughness`,
-                "geometry reflectivity",
-            ],
-            [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
-        ];
-        if (options.morphStorage) {
-            const morphTargetsModule = "src/morph/create-morph-targets.ts";
-            const morphTargets =
-                this.context.store.getSource(morphTargetsModule);
-            requiredUpstreamFormulas.push([
-                morphTargets,
-                "MORPH_WEIGHTS_HEADER_BYTES = 16",
-                "morph weights header ABI",
-            ]);
-        }
-        // The GridMaterial WGSL needs no marker rows: both stages are built
-        // by evaluating the pinned template functions, which throws on any
-        // shape the evaluator cannot fold.
-        if (options.clearcoat) {
-            requiredUpstreamFormulas.push(
-                [
-                    clearcoatFragment,
-                    packagedWgsl`return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);`,
-                    "clearcoat Kelemen visibility",
-                ],
-                [
-                    clearcoatFragment,
-                    packagedWgsl`return f0 + (1.0 - f0) * (t2 * t2 * t);`,
-                    "clearcoat Schlick Fresnel",
-                ],
-                [
-                    clearcoatFragment,
-                    packagedWgsl`ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;`,
-                    "clearcoat direct conservation",
-                ],
-                [
-                    clearcoatFragment,
-                    CLEARCOAT_IBL_CONSERVATION,
-                    "clearcoat IBL conservation",
-                ],
-                [
-                    clearcoatLoader,
-                    "useF0Remap: false",
-                    "glTF clearcoat F0 remap opt-out",
-                ],
+        for (const [modulePath, builder, order] of [
+            [backgroundDdsModule, "buildDdsSkyboxRenderable", 0],
+            [backgroundHdrModule, "buildHdrSkyboxRenderable", 0],
+            [backgroundGroundModule, "buildGroundRenderable", 200],
+        ] as const) {
+            const { file, declaration } = this.context.functionDeclaration(
+                modulePath,
+                builder,
             );
-        }
-        if (options.sheen) {
-            requiredUpstreamFormulas.push(
-                [
-                    sheenFragment,
-                    packagedWgsl`return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);`,
-                    "sheen Charlie distribution",
-                ],
-                [
-                    sheenFragment,
-                    packagedWgsl`return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));`,
-                    "sheen Ashikhmin visibility",
-                ],
-                [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
-                [
-                    sheenLoader,
-                    "albedoScaling: true",
-                    "glTF sheen albedo scaling",
-                ],
+            const stamps = this.context.findNodes(
+                declaration,
+                (node): node is ts.PropertyAssignment =>
+                    ts.isPropertyAssignment(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "order",
             );
-        }
-        if (options.iridescence) {
-            requiredUpstreamFormulas.push(
-                [
-                    iridescenceFragment,
-                    packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
-                    "iridescence optical path difference",
-                ],
-                [
-                    iridescenceFragment,
-                    packagedWgsl`colorF0=mix(colorF0,iriF0,iriIntensity);`,
-                    "iridescence base reflectance blend",
-                ],
-                [
-                    iridescenceLoader,
-                    "iridescenceThicknessMaximum ?? 400",
-                    "glTF iridescence thickness range",
-                ],
-            );
-        }
-        if (options.dispersion) {
-            requiredUpstreamFormulas.push(
-                [
-                    dispersionWgsl,
-                    packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
-                    "dispersion chromatic spread",
-                ],
-                [
-                    dielectric,
-                    "20.0 / dispersion",
-                    "glTF dispersion Abbe mapping",
-                ],
-            );
-        }
-        for (const [source, formula, label] of requiredUpstreamFormulas) {
-            if (!source.includes(formula)) {
-                throw new Error(
-                    `Pinned Babylon Lite source is missing ${label}: ${formula}.`,
+            if (
+                stamps.length !== 1 ||
+                this.context.numericValue(stamps[0]!.initializer, file) !==
+                    order
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${builder} to stamp order ${order}, which the native background stage sequence mirrors.`,
                 );
             }
-            if (options.shaderPrograms.length > 0) {
-                for (const marker of [
-                    "function buildShaderPrelude",
-                    packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
-                    packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
-                    // The template's own placeholders, kept as above.
-                    packagedWgsl`@location(\${i}) \${attr}: \${vbSupport?._wgslType(material, attr) ?? _attributeInfo(attr)._type}`,
-                ]) {
-                    if (!shaderPipeline.includes(marker)) {
-                        throw new Error(
-                            `Pinned custom shader composition changed: ${marker}.`,
-                        );
-                    }
-                }
-                if (
-                    !sceneUniformsSource.includes(
-                        'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
-                    )
-                ) {
-                    throw new Error(
-                        "Pinned scene uniform WGSL import changed.",
-                    );
-                }
+        }
+        const ddsCube = this.context.functionDeclaration(
+            backgroundDdsModule,
+            "loadDdsCube",
+        );
+        const ddsFormat = this.context.variableInitializer(
+            ddsCube.declaration,
+            "fmt",
+        );
+        if (
+            this.context.stringValue(ddsFormat, ddsCube.file) !== "rgba16float"
+        ) {
+            this.context.contractError(
+                ddsFormat,
+                "Expected loadDdsCube to upload rgba16float texels, which the DDS packager reads.",
+            );
+        }
+        const transmissionPass = this.context.functionDeclaration(
+            transmissionFrameGraphModule,
+            "executePassWithTransmission",
+        );
+        if (
+            !this.context.hasCall(
+                transmissionPass.declaration,
+                "updateTransmissionTexture",
+            )
+        ) {
+            this.context.contractError(
+                transmissionPass.declaration,
+                "Expected executePassWithTransmission to grab scene colour before a transmissive draw.",
+            );
+        }
+        if (options.shaderPrograms.length === 0) return;
+        const shaderPipeline =
+            this.context.store.getSource(shaderPipelineModule);
+        for (const marker of [
+            "function buildShaderPrelude",
+            packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
+            packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
+            // The template's own placeholders, kept as above.
+            packagedWgsl`@location(\${i}) \${attr}: \${vbSupport?._wgslType(material, attr) ?? _attributeInfo(attr)._type}`,
+        ]) {
+            if (!shaderPipeline.includes(marker)) {
+                throw new Error(
+                    `Pinned custom shader composition changed: ${marker}.`,
+                );
             }
+        }
+        if (
+            !this.context.store
+                .getSource(sceneUniformsSourceModule)
+                .includes(
+                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
+                )
+        ) {
+            throw new Error("Pinned scene uniform WGSL import changed.");
         }
     }
 
@@ -3561,69 +3362,6 @@ ${pinnedFogInfosPacking()}    };
     }
 
     public fidelityManifest(): RendererFidelityManifest {
-        const rgbd = this.context.store.getSource(rgbdDecodeModule);
-        const surface = this.context.store.getSource(surfaceModule);
-        const clearcoatFragment = this.context.store.getSource(
-            clearcoatFragmentModule,
-        );
-        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
-        const iridescenceFragment = this.context.store.getSource(
-            iridescenceFragmentModule,
-        );
-        const dispersionWgsl =
-            this.context.store.getSource(dispersionWgslModule);
-        const clearcoatLoader = this.context.store.getSource(
-            clearcoatLoaderModule,
-        );
-        if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
-            throw new Error(
-                "Pinned Babylon Lite RGBD vertical flip semantics changed.",
-            );
-        }
-        if (!surface.includes("Defaults to `4`.")) {
-            throw new Error("Pinned Babylon Lite MSAA default changed.");
-        }
-        // The markers the formula table above does not assert for every
-        // plan: the extension arms it pushes only when a scene reaches
-        // them, asserted here unconditionally so a pin drift is read at
-        // the first generation rather than the first reaching scene.
-        for (const [source, marker, label] of [
-            [
-                clearcoatFragment,
-                CLEARCOAT_IBL_CONSERVATION,
-                "clearcoat energy conservation",
-            ],
-            [
-                clearcoatFragment,
-                packagedWgsl`colorF0 = mix(colorF0, remappedF0, ccInt_r);`,
-                "clearcoat base F0 remap",
-            ],
-            [
-                clearcoatFragment,
-                packagedWgsl`return saturate((num / den) * (num / den));`,
-                "clearcoat F0 remap interface term",
-            ],
-            [
-                clearcoatLoader,
-                "useF0Remap: false",
-                "glTF clearcoat F0 remap opt-out",
-            ],
-            [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
-            [
-                iridescenceFragment,
-                packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
-                "iridescence optical path difference",
-            ],
-            [
-                dispersionWgsl,
-                packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
-                "dispersion chromatic spread",
-            ],
-        ] as const) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned Babylon Lite ${label} changed.`);
-            }
-        }
         return {
             sourceLanguage: "WGSL",
             emittedSources: ["HLSL", "MSL"],

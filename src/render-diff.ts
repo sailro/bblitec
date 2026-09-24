@@ -38,7 +38,7 @@ import {
  * appears nowhere on the browser side is the finding worth reading.
  *
  * The same pairing covers the capture's pinned material and mesh blocks
- * (rung 4b's two listings, diffed instead of read), and the shader half
+ * (the two block listings, diffed instead of read), and the shader half
  * gets its own comparison: the browser's composed modules hashed against
  * the generated arms, matched and one-sided sets named, and the closest
  * near miss opened at its first divergent line.
@@ -495,9 +495,7 @@ function vec4Chunks(
  *
  * The capture builds these through the draw path's own writers
  * (`write_pbr_variant_material`, `pinned_mesh_block`) for every selector
- * row, CPU-side — variants the draw gate refuses included — and until now
- * rung 4b was a human diffing that listing against `scene -- uniforms` by
- * eye. Field names carry the block's identity plus a vec4 chunk range
+ * row, CPU-side — variants the draw gate refuses included. Field names carry the block's identity plus a vec4 chunk range
  * rather than per-field names: `correspond` matches by value, so
  * `variant<n>:<key> values[i..j]` is sufficient and honest, and the
  * variant's own field layout stays where it lives, in the generated
@@ -747,9 +745,9 @@ export interface TextureUpload {
 }
 
 /**
- * The documented mirror similarity map: negate column-major indexes 1,
- * 2, 3, 4, 8 and 12 — the `diag(-1, 1, 1)` conjugation that relates
- * every native matrix to the browser's (docs/debugging.md). Applying it
+ * The mirror similarity map: negate column-major indexes 1, 2, 3, 4, 8
+ * and 12 — the `diag(-1, 1, 1)` conjugation that relates every native
+ * matrix to the browser's. Applying it
  * is what turns the "a sign-flipped lane is not a finding" counsel into
  * a mechanical match.
  */
@@ -1122,7 +1120,7 @@ function nativeDrawShapes(capture: NativeCapture): Set<string> {
 /**
  * Per-line trailing whitespace stripped, trailing blank lines dropped.
  *
- * `scene -- compose` is the byte gate and collapses all whitespace before
+ * `scene -- diff --compose` is the byte gate and collapses all whitespace before
  * comparing; this normalization is deliberately tighter, because a
  * matched arm here is meant to be the same shader, not merely the same
  * tokens — measured against the corpus, the generated variants that have
@@ -1138,7 +1136,7 @@ export function normalizeShaderText(text: string): string {
 }
 
 /**
- * Where two texts stop agreeing: `scene -- compose`'s
+ * Where two texts stop agreeing: `scene -- diff --compose`'s
  * longest-common-prefix idiom, shared by the compose report and the
  * shader-arm near miss so the two cannot count lines differently.
  * `line` is the number of agreeing lines (0-based index of the first
@@ -1178,7 +1176,7 @@ function looksLikePbrFragment(text: string): boolean {
  * report matched groups, both one-sided sets, and the closest one-sided
  * pair's first divergent line — the manual hash/diff recipe as a report.
  *
- * The near miss borrows `scene -- compose`'s longest-common-prefix idiom:
+ * The near miss borrows `scene -- diff --compose`'s longest-common-prefix idiom:
  * the line where the closest pair stops agreeing names the arm. PBR
  * fragments are preferred as the browser half of that pair, because a
  * mismatched blit helper diverges at line one and names nothing.
@@ -1346,8 +1344,7 @@ export function buildRenderDiff(
         for (const field of nativeFields(block, layouts)) admit(field);
     }
     // The pinned material and mesh blocks ride the same pairing as every
-    // other native field — rung 4b's two listings, diffed here instead of
-    // by hand.
+    // other native field.
     const pinned = pinnedBlockFields(capture);
     const pinnedBlockList = [...pinned.material, ...pinned.mesh];
     for (const entry of pinnedBlockList) {
@@ -1521,7 +1518,7 @@ export function buildRenderDiff(
                 (arms.nearMiss
                     ? ` — nearest ${arms.nearMiss.native} diverges at line ${arms.nearMiss.line} (shader arms below)`
                     : "") +
-                `. A missing arm renders as a plausible bias, never as an error; 'scene -- compose ${sceneId}' names the feature that composes it.`,
+                `. A missing arm renders as a plausible bias, never as an error; 'scene -- diff ${sceneId} --compose' names the feature that composes it.`,
         );
     }
     if (divergent.length > 0) {
@@ -1737,7 +1734,7 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         if (report.pinned.meshBlocks.length > 0) {
             lines.push(
                 "  Mesh worlds ride the native mirror convention (negate " +
-                    "column-major 1, 2, 3, 4, 8 and 12 — docs/debugging.md): " +
+                    "column-major 1, 2, 3, 4, 8 and 12): " +
                     "a sign-flipped lane against the browser's is that " +
                     "documented difference, not a finding." +
                     (report.texturePalettes

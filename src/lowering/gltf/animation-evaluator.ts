@@ -4,35 +4,42 @@ import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
-/** Complete source sampling over native Float32 storage, including arbitrary morph arity. */
-export function lowerGltfAnimationEvaluator(context: LoweringContext): string {
+/**
+ * Complete source sampling over native Float32 storage, including arbitrary
+ * morph arity. `prefix` names the emitted templates: the glTF loader and the
+ * property-animation unit each carry the one translation in their own unit.
+ */
+export function lowerGltfAnimationEvaluator(
+    context: LoweringContext,
+    prefix: "gltf" | "property" = "gltf",
+): string {
     const module = "src/animation/evaluate.ts";
     const types = context.sourceFile("src/animation/types.ts");
     const functions = [
         [
             "findKeyframe",
-            "gltf_find_animation_key",
+            `${prefix}_find_animation_key`,
             "double",
             "const Input& input, double t",
             "class Input",
         ],
         [
             "normalizeQuat4",
-            "gltf_normalize_animation_quaternion",
+            `${prefix}_normalize_animation_quaternion`,
             "void",
             "Output& buf, double o",
             "class Output",
         ],
         [
             "quatSlerp",
-            "gltf_slerp_animation_quaternion",
+            `${prefix}_slerp_animation_quaternion`,
             "void",
             "Output& out, double ax, double ay, double az, double aw, double bx, double by, double bz, double bw, double t",
             "class Output",
         ],
         [
             "evaluateSampler",
-            "gltf_evaluate_animation_sampler",
+            `${prefix}_evaluate_animation_sampler`,
             "void",
             "const Sampler& sampler, double t, double stride, bool isQuat, Output& dst, double dstOffset",
             "class Sampler, class Output",

@@ -9,12 +9,7 @@ import type {
     CompileResult,
     WorkerCompilation,
 } from "./types.js";
-import {
-    featureOrder,
-    featureSources,
-    renderFeaturesCmake,
-} from "./output-projection.js";
-import { reachedGeneratedSources } from "../generated-sources.js";
+import { featureOrder, projectFeatures } from "./output-projection.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 import { commonSourceDirectory, sourceUnitStem } from "./source-units.js";
 
@@ -197,12 +192,6 @@ export function compileWorkerApplication(
             }
             assets.set(asset.source, asset);
         }
-    const runtimeSources = [
-        ...new EmissionSet(
-            features.flatMap((feature) => featureSources[feature]),
-        ),
-    ];
-    const generatedSources = reachedGeneratedSources(features);
     const featureSites: CompileManifest["featureSites"] = {};
     for (const result of results)
         Object.assign(featureSites, result.manifest.featureSites);
@@ -230,15 +219,14 @@ export function compileWorkerApplication(
             })),
         );
     }
+    const { runtimeSources, generatedSources, cmake } = projectFeatures(
+        features,
+        sourceUnits.map(({ path }) => path),
+    );
     return {
         cpp: results.map((result) => result.cpp).join("\n"),
         cppFiles,
-        cmake: renderFeaturesCmake(
-            features,
-            runtimeSources,
-            generatedSources,
-            sourceUnits.map(({ path }) => path),
-        ),
+        cmake,
         assetPayloads: new EmissionMap(
             results.flatMap((result) => [...result.assetPayloads]),
         ),

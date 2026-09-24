@@ -85,9 +85,7 @@
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-#include "RmlUi_SDL_GPU/ShadersCompiledSPV.h"
-#include "pal_ui_backdrop_sdl.hpp"
-#include "pal_ui_filter_sdl.hpp"
+#include "pal_sprite_ui_sdl.hpp"
 #endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
 #include "pal_sdl_gpu_clustered.hpp"
@@ -102,9 +100,6 @@ namespace bbl::pal {
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
-
-// gpu_blend_factor / blend_state_from moved to pal_sdl_gpu_shared.hpp so
-// the family headers can translate the shared blend tuples too.
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
  *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
@@ -868,29 +863,6 @@ struct GpuGeometryTask {
     bool depth_borrowed = false;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-/** SDL_GPU-owned realization of the backend-neutral RmlUi frame. */
-struct UiSdlGpuResources {
-    UiBackdropSdlResources backdrop;
-    UiSdlReadableSurface readable_surface;
-    UiFilterSdlResources filters;
-    SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* composite_pipeline = nullptr;
-    SDL_GPUSampler* sampler = nullptr;
-    SDL_GPUSampler* nearest_sampler = nullptr;
-    SDL_GPUTexture* layer = nullptr;
-    SDL_GPUTexture* multisample_layer = nullptr;
-    SDL_GPUBuffer* vertices = nullptr;
-    SDL_GPUBuffer* indices = nullptr;
-    std::unordered_map<std::uint64_t, SDL_GPUTexture*> textures;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t vertex_capacity = 0;
-    std::uint32_t index_capacity = 0;
-};
-#endif
-
 #if BBLITE_PINNED_MATERIALS
 /** A texture and its sampler, resolved from the pin's own name for a binding. */
 struct PinnedResource {
@@ -955,7 +927,8 @@ struct GpuState : SdlGpuDevice {
     ClusteredLightGpu clustered;
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    UiSdlGpuResources ui;
+    SpriteUiSdlResources ui;
+    UiSdlReadableSurface ui_readable_surface;
 #endif
     SDL_GPUGraphicsPipeline* grid_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* grid_double_sided_pipeline = nullptr;
@@ -1392,472 +1365,7 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
 // Geometry-task helpers shared by the PBR and Standard variant
 // pipelines; the definitions sit with the transmission helpers below.
 SDL_GPUSampleCount task_sample_count(const GpuState& state, std::uint32_t requested);
-SDL_GPUTextureFormat texture_format(TextureFormatClass format);
 SDL_GPUTextureFormat geometry_texture_format(const GeometryTextureDescription& description);
-
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-enum class UiSdlShader {
-    color_fragment,
-    texture_fragment,
-    vertex,
-};
-
-OwnedSdlShader create_ui_sdl_shader(SDL_GPUDevice* device, UiSdlShader shader_kind) {
-    const unsigned char* spirv = nullptr;
-    std::size_t spirv_size = 0;
-    const unsigned char* dxil = nullptr;
-    std::size_t dxil_size = 0;
-    const unsigned char* msl = nullptr;
-    std::size_t msl_size = 0;
-    SDL_GPUShaderStage stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    Uint32 samplers = 0;
-    Uint32 uniforms = 0;
-    switch (shader_kind) {
-    case UiSdlShader::color_fragment:
-        spirv = shader_frag_color_spirv;
-        spirv_size = sizeof(shader_frag_color_spirv);
-        dxil = shader_frag_color_dxil;
-        dxil_size = sizeof(shader_frag_color_dxil);
-        msl = shader_frag_color_msl;
-        msl_size = sizeof(shader_frag_color_msl);
-        break;
-    case UiSdlShader::texture_fragment:
-        spirv = shader_frag_texture_spirv;
-        spirv_size = sizeof(shader_frag_texture_spirv);
-        dxil = shader_frag_texture_dxil;
-        dxil_size = sizeof(shader_frag_texture_dxil);
-        msl = shader_frag_texture_msl;
-        msl_size = sizeof(shader_frag_texture_msl);
-        samplers = 1;
-        break;
-    case UiSdlShader::vertex:
-        spirv = shader_vert_spirv;
-        spirv_size = sizeof(shader_vert_spirv);
-        dxil = shader_vert_dxil;
-        dxil_size = sizeof(shader_vert_dxil);
-        msl = shader_vert_msl;
-        msl_size = sizeof(shader_vert_msl);
-        stage = SDL_GPU_SHADERSTAGE_VERTEX;
-        uniforms = 2;
-        break;
-    }
-
-    SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
-    const void* data = nullptr;
-    std::size_t data_size = 0;
-    const char* entrypoint = nullptr;
-    const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
-    if (supported & SDL_GPU_SHADERFORMAT_SPIRV) {
-        format = SDL_GPU_SHADERFORMAT_SPIRV;
-        data = spirv;
-        data_size = spirv_size;
-        entrypoint = "main";
-    } else if (supported & SDL_GPU_SHADERFORMAT_DXIL) {
-        format = SDL_GPU_SHADERFORMAT_DXIL;
-        data = dxil;
-        data_size = dxil_size;
-        entrypoint = "main";
-    } else if (supported & SDL_GPU_SHADERFORMAT_MSL) {
-        format = SDL_GPU_SHADERFORMAT_MSL;
-        data = msl;
-        data_size = msl_size;
-        entrypoint = "main0";
-    } else {
-        gpu_error("No supported SDL_GPU UI shader format");
-    }
-    SDL_GPUShaderCreateInfo info{};
-    info.code = static_cast<const Uint8*>(data);
-    info.code_size = data_size;
-    info.entrypoint = entrypoint;
-    info.format = format;
-    info.stage = stage;
-    info.num_samplers = samplers;
-    info.num_uniform_buffers = uniforms;
-    SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
-    if (!shader)
-        gpu_error("SDL_CreateGPUShader UI");
-    return {shader, {device}};
-}
-
-SDL_GPUGraphicsPipeline* create_ui_sdl_pipeline(SDL_GPUDevice* device, SDL_GPUShader* vertex_shader,
-                                                SDL_GPUShader* fragment_shader,
-                                                SDL_GPUTextureFormat target_format,
-                                                SDL_GPUSampleCount samples, bool additive = false) {
-    SDL_GPUColorTargetDescription target{};
-    target.format = target_format;
-    target.blend_state.enable_blend = true;
-    target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-    target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-    target.blend_state.dst_color_blendfactor =
-        additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    target.blend_state.dst_alpha_blendfactor =
-        additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-
-    const std::array<SDL_GPUVertexAttribute, 3> attributes{
-        SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-                               static_cast<Uint32>(offsetof(UiRenderVertex, x))},
-        SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,
-                               static_cast<Uint32>(offsetof(UiRenderVertex, red))},
-        SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-                               static_cast<Uint32>(offsetof(UiRenderVertex, u))},
-    };
-    const SDL_GPUVertexBufferDescription vertex_buffer{0, sizeof(UiRenderVertex),
-                                                       SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
-    SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
-    info.vertex_input_state = SDL_GPUVertexInputState{&vertex_buffer, 1, attributes.data(),
-                                                      static_cast<Uint32>(attributes.size())};
-    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    info.multisample_state.sample_count = samples;
-    info.target_info.color_target_descriptions = &target;
-    info.target_info.num_color_targets = 1;
-    SDL_GPUGraphicsPipeline* pipeline = create_sdl_graphics_pipeline(device, &info);
-    if (!pipeline)
-        gpu_error("SDL_CreateGPUGraphicsPipeline UI");
-    return pipeline;
-}
-
-void create_ui_sdl_resources(GpuState& state, SDL_GPUTextureFormat target_format) {
-    UiSdlGpuResources& ui = state.ui;
-    if (ui.color_pipeline)
-        return;
-    auto vertex = create_ui_sdl_shader(state.device, UiSdlShader::vertex);
-    auto color = create_ui_sdl_shader(state.device, UiSdlShader::color_fragment);
-    auto texture = create_ui_sdl_shader(state.device, UiSdlShader::texture_fragment);
-    ui.color_pipeline =
-        create_ui_sdl_pipeline(state.device, vertex.get(), color.get(),
-                               SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, state.sample_count);
-    ui.texture_pipeline =
-        create_ui_sdl_pipeline(state.device, vertex.get(), texture.get(),
-                               SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, state.sample_count);
-    ui.composite_pipeline = create_ui_sdl_pipeline(state.device, vertex.get(), texture.get(),
-                                                   target_format, SDL_GPU_SAMPLECOUNT_1);
-    vertex.reset();
-    color.reset();
-    texture.reset();
-
-    SDL_GPUSamplerCreateInfo sampler{};
-    sampler.min_filter = SDL_GPU_FILTER_LINEAR;
-    sampler.mag_filter = SDL_GPU_FILTER_LINEAR;
-    sampler.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-    sampler.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    sampler.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    ui.sampler = SDL_CreateGPUSampler(state.device, &sampler);
-    if (!ui.sampler)
-        gpu_error("SDL_CreateGPUSampler UI");
-    sampler.min_filter = SDL_GPU_FILTER_NEAREST;
-    sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
-    ui.nearest_sampler = SDL_CreateGPUSampler(state.device, &sampler);
-    if (!ui.nearest_sampler) {
-        gpu_error("SDL_CreateGPUSampler UI nearest");
-    }
-}
-
-void ensure_ui_sdl_backdrop_pipeline(GpuState& state) {
-    UiSdlGpuResources& ui = state.ui;
-    if (ui.backdrop.pipeline)
-        return;
-    auto vertex = create_ui_sdl_shader(state.device, UiSdlShader::vertex);
-    auto texture = create_ui_sdl_shader(state.device, UiSdlShader::texture_fragment);
-    ui.backdrop.pipeline = create_ui_sdl_pipeline(state.device, vertex.get(), texture.get(),
-                                                  SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
-                                                  SDL_GPU_SAMPLECOUNT_1, true);
-}
-
-void ensure_ui_sdl_layers(GpuState& state, std::uint32_t width, std::uint32_t height) {
-    UiSdlGpuResources& ui = state.ui;
-    if (ui.width == width && ui.height == height && ui.layer)
-        return;
-    if (ui.layer)
-        SDL_ReleaseGPUTexture(state.device, ui.layer);
-    if (ui.multisample_layer) {
-        SDL_ReleaseGPUTexture(state.device, ui.multisample_layer);
-    }
-    const auto make_texture = [&](SDL_GPUSampleCount samples) {
-        SDL_GPUTextureCreateInfo info{};
-        info.type = SDL_GPU_TEXTURETYPE_2D;
-        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                     (samples == SDL_GPU_SAMPLECOUNT_1 ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
-        info.width = width;
-        info.height = height;
-        info.layer_count_or_depth = 1;
-        info.num_levels = 1;
-        info.sample_count = samples;
-        SDL_GPUTexture* result = SDL_CreateGPUTexture(state.device, &info);
-        if (!result)
-            gpu_error("SDL_CreateGPUTexture UI layer");
-        return result;
-    };
-    ui.layer = make_texture(SDL_GPU_SAMPLECOUNT_1);
-    ui.multisample_layer =
-        state.sample_count == SDL_GPU_SAMPLECOUNT_1 ? nullptr : make_texture(state.sample_count);
-    ui.width = width;
-    ui.height = height;
-}
-
-void ensure_ui_sdl_buffer(SDL_GPUDevice* device, SDL_GPUBuffer*& buffer, std::uint32_t& capacity,
-                          std::uint32_t required, SDL_GPUBufferUsageFlags usage) {
-    if (capacity >= required && buffer)
-        return;
-    if (buffer)
-        SDL_ReleaseGPUBuffer(device, buffer);
-    capacity = std::max<std::uint32_t>(4096, capacity);
-    while (capacity < required)
-        capacity *= 2;
-    const SDL_GPUBufferCreateInfo info{usage, capacity, {}};
-    buffer = SDL_CreateGPUBuffer(device, &info);
-    if (!buffer)
-        gpu_error("SDL_CreateGPUBuffer UI");
-}
-
-OwnedSdlTransfer upload_ui_sdl_buffer(SDL_GPUDevice* device, SDL_GPUCopyPass* copy,
-                                      SDL_GPUBuffer* destination, const void* data,
-                                      std::uint32_t size) {
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = size;
-    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer.get())
-        gpu_error("SDL_CreateGPUTransferBuffer UI");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer UI");
-    std::memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(device, transfer.get());
-    const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
-    const SDL_GPUBufferRegion target{destination, 0, size};
-    SDL_UploadToGPUBuffer(copy, &source, &target, true);
-    return transfer;
-}
-
-void release_ui_sdl_resources(GpuState& state) {
-    UiSdlGpuResources& ui = state.ui;
-    ui.backdrop.release(state.device);
-    ui.readable_surface.release(state.device);
-    ui.filters.release(state.device);
-    for (const auto& [id, texture] : ui.textures) {
-        static_cast<void>(id);
-        SDL_ReleaseGPUTexture(state.device, texture);
-    }
-    ui.textures.clear();
-    if (ui.vertices)
-        SDL_ReleaseGPUBuffer(state.device, ui.vertices);
-    if (ui.indices)
-        SDL_ReleaseGPUBuffer(state.device, ui.indices);
-    if (ui.layer)
-        SDL_ReleaseGPUTexture(state.device, ui.layer);
-    if (ui.multisample_layer) {
-        SDL_ReleaseGPUTexture(state.device, ui.multisample_layer);
-    }
-    if (ui.sampler)
-        SDL_ReleaseGPUSampler(state.device, ui.sampler);
-    if (ui.nearest_sampler) {
-        SDL_ReleaseGPUSampler(state.device, ui.nearest_sampler);
-    }
-    if (ui.color_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(state.device, ui.color_pipeline);
-    }
-    if (ui.texture_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(state.device, ui.texture_pipeline);
-    }
-    if (ui.composite_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(state.device, ui.composite_pipeline);
-    }
-    ui = {};
-}
-
-void render_ui_sdl_frame(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
-                         SDL_GPUTextureFormat target_format, const UiRenderFrame& frame) {
-    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0)
-        return;
-    create_ui_sdl_resources(state, target_format);
-    if (!frame.backdrops.empty())
-        ensure_ui_sdl_backdrop_pipeline(state);
-    ensure_ui_sdl_layers(state, frame.width, frame.height);
-    UiSdlGpuResources& ui = state.ui;
-
-    // The recorder appended the full-frame composite quad after the RmlUi
-    // draws (`frame.composite_first_index` names it), so the aggregate
-    // geometry uploads verbatim -- no per-frame copy on this side.
-    const std::uint32_t vertex_bytes =
-        static_cast<std::uint32_t>(frame.vertices.size() * sizeof(UiRenderVertex));
-    const std::uint32_t index_bytes =
-        static_cast<std::uint32_t>(frame.indices.size() * sizeof(std::uint32_t));
-    ensure_ui_sdl_buffer(state.device, ui.vertices, ui.vertex_capacity, vertex_bytes,
-                         SDL_GPU_BUFFERUSAGE_VERTEX);
-    ensure_ui_sdl_buffer(state.device, ui.indices, ui.index_capacity, index_bytes,
-                         SDL_GPU_BUFFERUSAGE_INDEX);
-
-    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
-        if (ui_frame_uses_texture(frame, texture->first)) {
-            ++texture;
-            continue;
-        }
-        SDL_ReleaseGPUTexture(state.device, texture->second);
-        texture = ui.textures.erase(texture);
-    }
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass UI");
-    std::vector<OwnedSdlTransfer> transfers;
-    transfers.push_back(
-        upload_ui_sdl_buffer(state.device, copy, ui.vertices, frame.vertices.data(), vertex_bytes));
-    transfers.push_back(
-        upload_ui_sdl_buffer(state.device, copy, ui.indices, frame.indices.data(), index_bytes));
-    for (const UiRenderTexture& source_texture : frame.textures) {
-        if (ui.textures.contains(source_texture.id) || !source_texture.rgba) {
-            continue;
-        }
-        SDL_GPUTextureCreateInfo texture_info{};
-        texture_info.type = SDL_GPU_TEXTURETYPE_2D;
-        texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        texture_info.width = source_texture.width;
-        texture_info.height = source_texture.height;
-        texture_info.layer_count_or_depth = 1;
-        texture_info.num_levels = 1;
-        texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(state.device, &texture_info),
-                                      {state.device}};
-        auto* texture = texture_owner.get();
-        if (!texture)
-            gpu_error("SDL_CreateGPUTexture UI source");
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(source_texture.rgba->size());
-        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(state.device, &transfer_info),
-                                        {state.device}};
-        auto* transfer = transfer_owner.get();
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer UI texture");
-        void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer UI texture");
-        std::memcpy(mapped, source_texture.rgba->data(), source_texture.rgba->size());
-        SDL_UnmapGPUTransferBuffer(state.device, transfer);
-        const SDL_GPUTextureTransferInfo source{transfer, 0, source_texture.width,
-                                                source_texture.height};
-        const SDL_GPUTextureRegion destination{
-            texture, 0, 0, 0, 0, 0, source_texture.width, source_texture.height, 1};
-        SDL_UploadToGPUTexture(copy, &source, &destination, false);
-        transfers.push_back(std::move(transfer_owner));
-        ui.textures.emplace(source_texture.id, texture);
-        static_cast<void>(texture_owner.release());
-    }
-    copy.end();
-    transfers.clear();
-
-    ui.filters.begin_frame();
-    for_each_ui_segment(
-        frame,
-        [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
-            auto* draw_target =
-                ui.filters.target(state.device, command, target, target_format, frame, layer);
-            SDL_GPUColorTargetInfo layer_target{};
-            layer_target.texture = ui.multisample_layer ? ui.multisample_layer : ui.layer;
-            layer_target.load_op = SDL_GPU_LOADOP_CLEAR;
-            layer_target.clear_color = SDL_FColor{0, 0, 0, 0};
-            if (ui.multisample_layer) {
-                layer_target.store_op = SDL_GPU_STOREOP_RESOLVE;
-                layer_target.resolve_texture = ui.layer;
-            } else {
-                layer_target.store_op = SDL_GPU_STOREOP_STORE;
-            }
-            SdlRenderPass layer_pass{SDL_BeginGPURenderPass(command, &layer_target, 1, nullptr)};
-            if (!layer_pass)
-                gpu_error("SDL_BeginGPURenderPass UI layer");
-            const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
-            const SDL_GPUBufferBinding index_binding{ui.indices, 0};
-            SDL_BindGPUVertexBuffers(layer_pass, 0, &vertex_binding, 1);
-            SDL_BindGPUIndexBuffer(layer_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            const std::array<float, 16> projection{2.0f / frame.width,
-                                                   0,
-                                                   0,
-                                                   0,
-                                                   0,
-                                                   -2.0f / frame.height,
-                                                   0,
-                                                   0,
-                                                   0,
-                                                   0,
-                                                   0.0001f,
-                                                   0,
-                                                   -1,
-                                                   1,
-                                                   0,
-                                                   1};
-            const std::array<float, 2> translation{0, 0};
-            SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-            SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
-            for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-                const UiRenderDraw& draw = frame.draws[draw_index];
-                const std::optional<UiScissorRect> scissor =
-                    clamped_ui_scissor(draw, frame.width, frame.height);
-                if (!scissor)
-                    continue;
-                const SDL_Rect clip{scissor->left, scissor->top, scissor->width, scissor->height};
-                SDL_SetGPUScissor(layer_pass, &clip);
-                if (draw.texture_id) {
-                    const auto texture = ui.textures.find(draw.texture_id);
-                    if (texture == ui.textures.end())
-                        continue;
-                    SDL_BindGPUGraphicsPipeline(layer_pass, ui.texture_pipeline);
-                    const SDL_GPUTextureSamplerBinding texture_binding{
-                        texture->second, draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
-                    SDL_BindGPUFragmentSamplers(layer_pass, 0, &texture_binding, 1);
-                } else {
-                    SDL_BindGPUGraphicsPipeline(layer_pass, ui.color_pipeline);
-                }
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, layer_pass, draw.index_count, 1,
-                               draw.first_index, 0, 0);
-            }
-            layer_pass.end();
-
-            SDL_GPUColorTargetInfo composite_target{};
-            composite_target.texture = draw_target;
-            composite_target.load_op = SDL_GPU_LOADOP_LOAD;
-            composite_target.store_op = SDL_GPU_STOREOP_STORE;
-            SdlRenderPass composite_pass{
-                SDL_BeginGPURenderPass(command, &composite_target, 1, nullptr)};
-            if (!composite_pass)
-                gpu_error("SDL_BeginGPURenderPass UI composite");
-            SDL_BindGPUGraphicsPipeline(composite_pass, ui.composite_pipeline);
-            SDL_BindGPUVertexBuffers(composite_pass, 0, &vertex_binding, 1);
-            SDL_BindGPUIndexBuffer(composite_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            const SDL_Rect full_clip{0, 0, static_cast<int>(frame.width),
-                                     static_cast<int>(frame.height)};
-            SDL_SetGPUScissor(composite_pass, &full_clip);
-            const SDL_GPUTextureSamplerBinding layer_binding{ui.layer, ui.sampler};
-            SDL_BindGPUFragmentSamplers(composite_pass, 0, &layer_binding, 1);
-            SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-            SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
-            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, composite_pass, 6, 1,
-                           frame.composite_first_index, 0, 0);
-            composite_pass.end();
-        },
-        [&](const UiRenderOperation& operation) {
-            if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
-                ui.filters.reset_layer(operation.index);
-            } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
-                render_ui_backdrop_sdl(state.device, command, target, target_format, ui.vertices,
-                                       ui.indices, ui.sampler, ui.composite_pipeline, ui.backdrop,
-                                       frame, operation.index);
-            } else {
-                render_ui_composite_sdl(state.device, command, target, target_format, ui.vertices,
-                                        ui.indices, ui.sampler, ui.composite_pipeline, ui.filters,
-                                        frame, operation.index);
-            }
-        });
-    ui.filters.finish_frame(state.device, frame.composites.size());
-}
-#endif
 
 #if BBLITE_PINNED_MATERIALS
 /**
@@ -4468,8 +3976,11 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                 source_bytes = face_data->bytes.data();
                 row_size = static_cast<std::size_t>(image_width) * 8;
             } else {
+                // No environment: the pin composes no IBL arm without
+                // PBR_HAS_ENV (pbr-compose.ts `_hasIbl`), so no variant
+                // samples this texel; it exists only to fill the slot.
                 decoded_half_pixels = face_data ? decode_rgbd(*face_data, image_width, image_height)
-                                                : fallback_face_halves();
+                                                : std::vector<std::uint16_t>(4, 0);
                 source_bytes = reinterpret_cast<const std::uint8_t*>(decoded_half_pixels.data());
                 byte_size = decoded_half_pixels.size() * sizeof(std::uint16_t);
                 row_size = static_cast<std::size_t>(image_width) * 4 * sizeof(std::uint16_t);
@@ -4709,24 +4220,6 @@ void create_transmission_color(GpuState& state) {
 
 SDL_GPUSampleCount task_sample_count(const GpuState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : SDL_GPU_SAMPLECOUNT_1;
-}
-
-SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    case TextureFormatClass::r8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8_UNORM;
-    case TextureFormatClass::r16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    case TextureFormatClass::rg16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
-    case TextureFormatClass::r32_float:
-        return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-    case TextureFormatClass::rgba16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-    }
-    return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
 }
 
 SDL_GPUTextureFormat geometry_texture_format(const GeometryTextureDescription& description) {
@@ -5279,7 +4772,8 @@ void release(GpuState& state) {
     state.text.reset();
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    release_ui_sdl_resources(state);
+    release_sprite_ui_sdl_resources(state.device, state.ui);
+    state.ui_readable_surface.release(state.device);
 #endif
     release_frame_graph_textures(state);
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
@@ -6777,40 +6271,17 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     const Scene& scene = *active_registered_scenes[*layer];
     const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
     auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
+    // The pin's preamble -- camera, pointer mapping, scene block -- is
+    // shared with the Dawn pick (pal_gpu_shared.hpp).
+    const std::optional<PickRequest> request = prepare_gpu_pick(engine, picker, scene, x, y);
+    if (!request)
+        return PickingInfo{};
 #if BBLITE_HAS_DETAILED_PICKING
-    // `picker._detailedPicking`, which `enableDetailedPicking`
-    // armed: it selects the pin's second pipeline module and the
-    // third attachment, so it is read per pick rather than per
-    // picker resource.
-    const bool detailed = detailed_pick_armed(engine, picker);
+    const bool detailed = request->detailed;
 #else
     constexpr bool detailed = false;
 #endif
-    const CameraRecord* camera_record = scene.camera.value < engine.cameras.size()
-                                            ? &handle_at(engine.cameras, scene.camera)
-                                            : nullptr;
-    if (!camera_record)
-        return PickingInfo{};
-    // The viewport is the whole surface: no reached scene picks
-    // through a camera viewport, and one that did would need the
-    // pin's `resolveCameraViewport` offset here -- so one that
-    // carries a viewport refuses by name rather than picking
-    // against a frustum the pass never drew.
-    const double width = static_cast<double>(engine.options.width);
-    const double height = static_cast<double>(engine.options.height);
-    x *= width / engine.canvas_client_width;
-    y *= height / engine.canvas_client_height;
-    if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
-        return PickingInfo{};
-    }
-    if (camera_record->viewport.has_value()) {
-        gpu_error("A GPU pick through a camera viewport needs the "
-                  "pin's resolveCameraViewport pointer mapping, which "
-                  "is not ported: no reached scene both picks and "
-                  "splits.");
-    }
-    const std::array<float, 16> view_projection = upstream::build_view_projection(
-        *camera_record, upstream::effective_aspect_ratio(*camera_record, width, height));
+    [[maybe_unused]] const upstream::PickPointer& pointer = request->pointer;
 
     ensure_pick_targets(state.device, state.pick_targets);
     ensure_pick_pipelines(state);
@@ -6823,8 +6294,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     }
 #endif
 
-    const PickSceneUniforms scene_uniforms =
-        build_pick_scene_uniforms(view_projection, x, y, width, height);
+    const PickSceneUniforms& scene_uniforms = request->scene_uniforms;
 
 #if BBLITE_HAS_BILLBOARDS
     // Before the pick command buffer exists, because the instance
@@ -6878,31 +6348,22 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
 
     SDL_GPUColorTargetInfo color_targets[pick_color_targets]{};
     color_targets[0].texture = state.pick_targets.color;
-    color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
-    color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
-    color_targets[0].clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
     color_targets[1].texture = state.pick_targets.depth_color;
-    color_targets[1].load_op = SDL_GPU_LOADOP_CLEAR;
-    color_targets[1].store_op = SDL_GPU_STOREOP_STORE;
-    // The pin clears the depth attachment to 1 and the depth
-    // buffer to 0: the colour lane holds the winning fragment's
-    // clip depth, and 1 is "nothing here" under reverse-Z.
-    color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
-    Uint32 color_target_count = 2;
 #if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        color_targets[2].texture = state.pick_targets.detail;
-        color_targets[2].load_op = SDL_GPU_LOADOP_CLEAR;
-        color_targets[2].store_op = SDL_GPU_STOREOP_STORE;
-        // The pin's own 0xffffffff, which `readDetailTarget`
-        // reads back as "no primitive". Only a MISS reads it --
-        // a resolved id means the winning fragment wrote this
-        // attachment in the same draw.
-        color_targets[2].clear_color = {static_cast<float>(pick_detail_clear_red), 0.0f, 0.0f,
-                                        0.0f};
-        color_target_count = 3;
-    }
+    color_targets[2].texture = state.pick_targets.detail;
 #endif
+    // The detail attachment only when the pick is detailed; the clears are
+    // the pin's (`pick_color_clears`). SDL states a clear as float, so
+    // the detail lane's 0xffffffff rounds here, where it is visible.
+    const Uint32 color_target_count = detailed ? 3u : 2u;
+    for (Uint32 index = 0; index < color_target_count; ++index) {
+        const auto& clear = pick_color_clears[index];
+        color_targets[index].load_op = SDL_GPU_LOADOP_CLEAR;
+        color_targets[index].store_op = SDL_GPU_STOREOP_STORE;
+        color_targets[index].clear_color = {
+            static_cast<float>(clear[0]), static_cast<float>(clear[1]),
+            static_cast<float>(clear[2]), static_cast<float>(clear[3])};
+    }
 
     SDL_GPUDepthStencilTargetInfo depth_target{};
     depth_target.texture = state.pick_targets.depth;
@@ -6910,7 +6371,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    depth_target.clear_depth = 0.0f;
+    depth_target.clear_depth = static_cast<float>(pick_depth_clear);
     depth_target.cycle = true;
 
     SdlRenderPass pass{
@@ -7062,8 +6523,8 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     for (const SplatPass& splat : state.splat_passes) {
         if (!pick_sources)
             break;
-        record_cloud_pick_draw(command, pass, state, engine, splat, *camera_record, next_id, x, y,
-                               width, height);
+        record_cloud_pick_draw(command, pass, state, engine, splat, *request->camera, next_id,
+                               pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
         ranges.push_back({next_id, PickedNodeKind::splat_mesh, splat.mesh.value});
         ++next_id;
     }
@@ -7074,7 +6535,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     if (pick_sources) {
         billboard_pick.record(
             command, pass, engine, scene,
-            upstream::build_view_matrix(upstream::camera_world_matrix(*camera_record)),
+            upstream::build_view_matrix(upstream::camera_world_matrix(*request->camera)),
             scene_uniforms, ranges, next_id);
     }
 #endif
@@ -7118,23 +6579,9 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
         SDL_MapGPUTransferBuffer(state.device, state.pick_targets.staging, false));
     if (!mapped)
         gpu_error("SDL_MapGPUTransferBuffer pick");
-    const std::uint32_t pick_id = decode_pick_id(mapped);
-    float pick_depth = 1.0f;
-    std::memcpy(&pick_depth, mapped + pick_depth_offset, sizeof(pick_depth));
-#if BBLITE_HAS_DETAILED_PICKING
-    const PickDetailReadback pick_detail =
-        detailed ? decode_pick_detail(mapped + pick_detail_offset) : PickDetailReadback{};
-#endif
+    const PickReadback readback = decode_pick_readback(mapped, detailed);
     SDL_UnmapGPUTransferBuffer(state.device, state.pick_targets.staging);
-
-    PickingInfo info = resolve_pick_result(ranges, pick_id);
-    populate_picked_point(info, view_projection, x, y, width, height, pick_depth);
-#if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        finish_detailed_pick(engine, info, pick_detail, view_projection, x, y, width, height);
-    }
-#endif
-    return info;
+    return resolve_gpu_pick(engine, *request, ranges, readback);
 }
 #endif
 
@@ -7247,6 +6694,13 @@ class SdlSceneRun {
     };
     std::optional<Frame> frame_;
 
+    /** The frame `prepare` opened; every later stage records into it. */
+    Frame& current_frame() {
+        if (!frame_)
+            throw std::logic_error("SDL_GPU scene stage ran outside an acquired frame.");
+        return *frame_;
+    }
+
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -7283,10 +6737,10 @@ class SdlSceneRun {
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& state = data_.resources.state;
         [[maybe_unused]] auto& camera = *data_.camera;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
@@ -8418,9 +7872,9 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
 #endif
-        [[maybe_unused]] auto& start = frame_->start;
+        [[maybe_unused]] auto& start = current_frame().start;
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
 #endif
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
@@ -8475,7 +7929,7 @@ public:
                 offscreen_target.acquire(static_cast<Uint32>(engine.options.width),
                                          static_cast<Uint32>(engine.options.height), *offscreen);
             if (!offscreen_texture) {
-                frame_->yield_when_skipped = true;
+                current_frame().yield_when_skipped = true;
                 return FramePreparation::skip;
             }
         }
@@ -8491,13 +7945,13 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
 #endif
-        [[maybe_unused]] auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
 #endif
         command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(state.device)};
         if (!command)
@@ -8539,11 +7993,11 @@ public:
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
-        [[maybe_unused]] auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& updated = frame_->updated;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& updated = current_frame().updated;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& command = current_frame().command;
         delta_ms = advance_frame(engine, scene, frame_clock, frame_options.frame_delta_ms);
         // A before-render callback can replace the scene (for example,
         // leaving Attract mode with Escape). Its old plan and material
@@ -8613,24 +8067,26 @@ public:
         [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
 #endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
-        [[maybe_unused]] const auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
-        [[maybe_unused]] auto& surface_extent = frame_->surface_extent;
-        [[maybe_unused]] auto& aspect = frame_->aspect;
-        [[maybe_unused]] auto& matrix = frame_->matrix;
-        [[maybe_unused]] auto& skybox_matrix = frame_->skybox_matrix;
-        [[maybe_unused]] auto& frame_view = frame_->frame_view;
-        [[maybe_unused]] auto& frame_projection = frame_->frame_projection;
-        [[maybe_unused]] auto& frame_camera_position = frame_->frame_camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
-        [[maybe_unused]] auto& capture_ready = frame_->capture_ready;
-        [[maybe_unused]] auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] auto& capture_ids = frame_->capture_ids;
-        [[maybe_unused]] auto& capture_clusters = frame_->capture_clusters;
+        [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
+        [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
+        [[maybe_unused]] auto& aspect = current_frame().aspect;
+        [[maybe_unused]] auto& matrix = current_frame().matrix;
+        [[maybe_unused]] auto& skybox_matrix = current_frame().skybox_matrix;
+        [[maybe_unused]] auto& frame_view = current_frame().frame_view;
+        [[maybe_unused]] auto& frame_projection = current_frame().frame_projection;
+        [[maybe_unused]] auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
+        [[maybe_unused]] auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] auto& capture_ids = current_frame().capture_ids;
+        [[maybe_unused]] auto& capture_clusters = current_frame().capture_clusters;
         profile_transformed_meshes = 0;
         profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
@@ -8912,7 +8368,7 @@ public:
         sync_shader_storage_buffers(state, engine, frame_buffer_uploads);
         frame_buffer_uploads.submit();
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera);
+        update_surface_cameras(engine, camera, delta_ms);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, camera);
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
@@ -9100,19 +8556,19 @@ public:
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& skybox_matrix = frame_->skybox_matrix;
-        [[maybe_unused]] const auto& frame_view = frame_->frame_view;
-        [[maybe_unused]] const auto& frame_projection = frame_->frame_projection;
-        [[maybe_unused]] const auto& frame_camera_position = frame_->frame_camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
-        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
-        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
-        [[maybe_unused]] auto& visible_color = frame_->visible_color;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& skybox_matrix = current_frame().skybox_matrix;
+        [[maybe_unused]] const auto& frame_view = current_frame().frame_view;
+        [[maybe_unused]] const auto& frame_projection = current_frame().frame_projection;
+        [[maybe_unused]] const auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
+        [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
+        [[maybe_unused]] auto& visible_color = current_frame().visible_color;
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         SdlGpuCommand surface_command{nullptr};
         if (compute_frame_prefix_deferred(engine)) {
@@ -9122,13 +8578,13 @@ public:
                 gpu_error("SDL_AcquireGPUCommandBuffer shadow prefix");
         }
 #endif
-        frame_->graph = !scene.tasks.empty();
+        current_frame().graph = !scene.tasks.empty();
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        frame_->ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
-        frame_->present_swapchain = swapchain;
-        swapchain = state.ui.readable_surface.target(
+        current_frame().ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
+        current_frame().present_swapchain = swapchain;
+        swapchain = state.ui_readable_surface.target(
             state.device, swapchain, swapchain_format, width, height,
-            ui_frame_reads_target(*frame_->ui_frame) &&
+            ui_frame_reads_target(*current_frame().ui_frame) &&
                 !(capture_frame && data_.frame_options.capture_ui));
 #endif
         if (!engine.render_targets.empty()) {
@@ -9137,7 +8593,7 @@ public:
 #endif
                 create_frame_graph_textures(state, engine, swapchain_format, width, height);
         }
-        if (frame_->graph) {
+        if (current_frame().graph) {
             capture_texture = nullptr;
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
             // Queue occurrences, preserving task aliases and cross-scene order.
@@ -11671,8 +11127,9 @@ public:
 
     void present_readable_surface() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        UiSdlReadableSurface::present(frame_->command, frame_->swapchain, frame_->present_swapchain,
-                                      frame_->width, frame_->height);
+        UiSdlReadableSurface::present(current_frame().command, current_frame().swapchain,
+                                      current_frame().present_swapchain, current_frame().width,
+                                      current_frame().height);
 #endif
     }
 
@@ -11696,17 +11153,17 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
 #endif
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] const auto& capture_ids = frame_->capture_ids;
-        [[maybe_unused]] const auto& capture_clusters = frame_->capture_clusters;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
-        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
-        [[maybe_unused]] auto& visible_color = frame_->visible_color;
-        if (frame_->graph) {
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] const auto& capture_ids = current_frame().capture_ids;
+        [[maybe_unused]] const auto& capture_clusters = current_frame().capture_clusters;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
+        [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
+        [[maybe_unused]] auto& visible_color = current_frame().visible_color;
+        if (current_frame().graph) {
             if (capture_texture == state.color && capture_texture) {
                 SDL_GPUBlitInfo present{};
                 present.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
@@ -11720,7 +11177,9 @@ public:
             if (!ui_target) {
                 throw std::runtime_error("Frame graph did not present a native UI target.");
             }
-            render_ui_sdl_frame(state, command, ui_target, swapchain_format, *frame_->ui_frame);
+            render_sprite_ui_sdl_frame(state.device, command, ui_target, swapchain_format, state.ui,
+                                       *current_frame().ui_frame, nullptr, nullptr,
+                                       state.sample_count);
             if (ui_target != swapchain) {
                 // The graph presented before the overlay was recorded.
                 // Present the same composite that the explicit UI
@@ -11756,8 +11215,9 @@ public:
             if (capture_frame && capture_ui) {
                 // Render the UI into the readback texture, then present that
                 // exact result below.
-                render_ui_sdl_frame(state, command, visible_color, swapchain_format,
-                                    *frame_->ui_frame);
+                render_sprite_ui_sdl_frame(state.device, command, visible_color, swapchain_format,
+                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
+                                           state.sample_count);
             }
 #endif
             if (capture_frame || transmission_enabled) {
@@ -11774,7 +11234,9 @@ public:
                 // A canvas-only attribution capture omits the UI from
                 // `visible_color` but still draws it over the presented
                 // swapchain.
-                render_ui_sdl_frame(state, command, swapchain, swapchain_format, *frame_->ui_frame);
+                render_sprite_ui_sdl_frame(state.device, command, swapchain, swapchain_format,
+                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
+                                           state.sample_count);
             }
 #endif
             present_readable_surface();
@@ -11841,12 +11303,14 @@ public:
         [[maybe_unused]] auto& samples = data_.samples_ms;
         [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
         [[maybe_unused]] const auto warmup = data_.frame_options.benchmark_warmup();
-        [[maybe_unused]] const auto& start = frame_->start;
-        [[maybe_unused]] const auto& updated = frame_->updated;
-        [[maybe_unused]] const auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] const auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        [[maybe_unused]] const auto& start = current_frame().start;
+        [[maybe_unused]] const auto& updated = current_frame().updated;
+        [[maybe_unused]] const auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] const auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
         finish_frame(engine);
         ++frame;
         const double end = monotonic_milliseconds();

@@ -14,6 +14,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/teardown.hpp>
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 #include <bblite/pal_offscreen.hpp>
 #endif
@@ -410,7 +411,8 @@ inline const char* background_skybox_fragment(const EnvironmentState& environmen
  * whole target for a camera with no viewport, so a scene that has no camera
  * at all goes through the same pinned bodies over this rather than having
  * the whole-target answer restated at each call -- the restatement being the
- * copy that drifts when the pin's own arm moves.
+ * copy that drifts when the pin's own arm moves. Only its absent viewport is
+ * read; it carries no pose.
  *
  * File scope, so no call pays a function-local static's initialization
  * guard, and OUTSIDE the floating-origin block below: the shadow refresh
@@ -421,31 +423,25 @@ inline const CameraRecord no_camera_record{};
 
 #if BBLITE_FLOATING_ORIGIN
 /**
- * The scene's active camera, whose world translation IS the floating-origin
- * offset.
+ * The active camera's world translation, which every consumer subtracts.
  *
  * The pin derives the offset from `scene.camera.worldMatrix` at the moment
- * of use rather than mirroring it into scene state, so this port reads it
- * the same way -- one accessor, so the mesh world, the view transpose and
- * the lights block cannot disagree about which camera the frame is
- * relative to. A scene with no camera yields the record default, whose
- * world is the identity, which is the pin's own zero offset.
- */
-inline const CameraRecord& floating_origin_camera(const Scene& scene, const Engine& engine) {
-    static const CameraRecord none{};
-    return scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                      : none;
-}
-
-/**
- * That camera's world translation, which every consumer subtracts.
+ * of use rather than mirroring it into scene state
+ * (large-world/floating-origin.ts `getFloatingOriginOffset`), so this port
+ * reads it the same way -- one accessor, so the mesh world, the view
+ * transpose and the lights block cannot disagree about which camera the
+ * frame is relative to. With no camera the pin returns the zero vector, so
+ * that arm is explicit here rather than the eye of a record no factory
+ * built.
  *
  * In the camera's own width, not the float world matrix's: under the pin's
  * high-precision matrix the camera's storage is F64, so the offset is the
  * unrounded eye and every `large - large = small` runs at full width.
  */
 inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
-    return upstream::arc_rotate_eye_position(floating_origin_camera(scene, engine));
+    if (scene.camera.value >= engine.cameras.size())
+        return Vec3d{};
+    return upstream::arc_rotate_eye_position(handle_at(engine.cameras, scene.camera));
 }
 
 /**
@@ -1217,10 +1213,11 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bo
 // the same single emission.
 
 #if BBLITE_HAS_PICKING
-// GPU picking's backend-independent half: the two shears the pin computes
-// per pick, and the id encoding both attachments agree on. The pin puts
-// these in `picking/gpu-picker.ts` and `picking/gs-picking-pipeline.ts`;
-// each is lowered from its own body, and both backends read the same one.
+// GPU picking's backend-independent half. The arithmetic -- the pointer
+// mapping, the two shears, the id encoding and decoding -- is lowered from
+// `picking/gpu-picker.ts`, `picking/gs-picking-pipeline.ts` and the
+// splat picking fragment into `upstream/picking_math.hpp`; the records and
+// the orchestration both backends share are here.
 
 /** The pin's `SceneUniforms`: the sheared VP, then the sampled pixel. */
 struct PickSceneUniforms {
@@ -1237,29 +1234,6 @@ struct PickMeshUniforms {
     std::uint32_t excluded_thin_instance_count = 0;
     std::uint32_t _pad = 0;
 };
-
-/**
- * The pin's whole scene block for one pick: `computePickVP` lowered from
- * its own body, then the two lanes its caller writes after it.
- *
- * The shear maps the sampled point to the one pixel the target has -- each
- * column's x and y scaled by the viewport extent and offset by the sample's
- * NDC, so the sample lands at the origin of a 1x1 clip volume. Upstream
- * fills `_pickVP[0..15]` here and `[16]`/`[17]` at the call site, then
- * uploads all twenty floats as one buffer; `PickSceneUniforms` is that
- * buffer, so the split does not survive into this port.
- */
-inline PickSceneUniforms build_pick_scene_uniforms(const std::array<float, 16>& vp, double sample_x,
-                                                   double sample_y, double width, double height) {
-    PickSceneUniforms out;
-    upstream::compute_pick_view_projection(out.view_projection, vp, sample_x, sample_y, width,
-                                           height);
-    // The pin writes the sampled pixel's CENTRE; a discard predicate reads
-    // it, and the default one does not -- but the block uploads whole.
-    out.fragment_coord = {static_cast<float>(std::floor(sample_x) + 0.5),
-                          static_cast<float>(std::floor(sample_y) + 0.5)};
-    return out;
-}
 
 #if BBLITE_HAS_SPLATS
 using upstream::compute_cloud_pick_matrix;
@@ -1330,18 +1304,17 @@ struct BillboardPickUniforms {
 };
 static_assert(sizeof(BillboardPickUniforms) == 48, "the pin's billboard pick UBO is 48 bytes");
 
-/** `packBillboardPickUbo`, lowered from its own body. */
+#if BBLITE_HAS_BILLBOARDS
+/** One system's block, packed by the pin's `packBillboardPickUbo`. */
 inline BillboardPickUniforms build_billboard_pick_uniforms(const std::array<float, 16>& view,
                                                            std::uint32_t base_id, float cutoff,
                                                            Vec3 axis) {
     BillboardPickUniforms out;
-    out.cam_right = {view[0], view[4], view[8]};
-    out.base_id = base_id;
-    out.cam_up = {view[1], view[5], view[9]};
-    out.cutoff = cutoff;
-    out.axis = {axis.x, axis.y, axis.z};
+    upstream::pack_billboard_pick_ubo(view, static_cast<double>(base_id),
+                                      static_cast<double>(cutoff), axis, out);
     return out;
 }
+#endif
 
 /** The pin's contributor gate: a hidden or empty system draws nothing. */
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
@@ -1476,14 +1449,14 @@ inline void validate_pick_contributors([[maybe_unused]] const Engine& engine,
 #endif
 }
 
-/** `encodeIdToColor`: the id's three bytes as unit floats. */
+#if BBLITE_HAS_SPLATS
+/** `encodeIdToColor`, stored through the cloud's F32 picking block. */
 inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
-    return {
-        static_cast<float>((id >> 16) & 0xFFu) / 255.0f,
-        static_cast<float>((id >> 8) & 0xFFu) / 255.0f,
-        static_cast<float>(id & 0xFFu) / 255.0f,
-    };
+    const std::array<double, 3> color = upstream::encode_id_to_color(static_cast<double>(id));
+    return {static_cast<float>(color[0]), static_cast<float>(color[1]),
+            static_cast<float>(color[2])};
 }
+#endif
 
 /**
  * One pick's readback layout, stated once for both backends.
@@ -1552,10 +1525,45 @@ inline bool detailed_pick_armed(const Engine& engine, GpuPickerHandle picker) {
 }
 #endif
 
-/** The colour attachment's three bytes back into the id they encode. */
-inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
-    return (static_cast<std::uint32_t>(texel[0]) << 16) |
-           (static_cast<std::uint32_t>(texel[1]) << 8) | static_cast<std::uint32_t>(texel[2]);
+/**
+ * The pin's clears for the pick pass's colour attachments, in attachment
+ * order: 0 is "nothing here" for the id, 1 is "nothing here" for the depth
+ * colour under reverse-Z, and the detail lane's no-primitive word. The depth
+ * buffer clears to 0. Each backend states these in its own colour type.
+ */
+inline constexpr std::array<std::array<double, 4>, pick_color_targets> pick_color_clears{{
+    {0.0, 0.0, 0.0, 0.0},
+    {1.0, 0.0, 0.0, 0.0},
+#if BBLITE_HAS_DETAILED_PICKING
+    {pick_detail_clear_red, 0.0, 0.0, 0.0},
+#endif
+}};
+inline constexpr double pick_depth_clear = 0.0;
+
+/** One pick's staging rows, decoded: the id, the depth colour, the detail. */
+struct PickReadback {
+    std::uint32_t pick_id = 0;
+    float depth = 1.0f;
+#if BBLITE_HAS_DETAILED_PICKING
+    PickDetailReadback detail{};
+#endif
+};
+
+/**
+ * The pin's readback of the mapped staging buffer: `pickId` through its own
+ * lowered decode, `depth` as the row's first float, and the detail texel
+ * only when the pick was detailed. Both backends map the same layout.
+ */
+inline PickReadback decode_pick_readback(const std::uint8_t* staging,
+                                         [[maybe_unused]] bool detailed) {
+    PickReadback readback;
+    readback.pick_id = upstream::decode_pick_id(staging);
+    std::memcpy(&readback.depth, staging + pick_depth_offset, sizeof(readback.depth));
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed)
+        readback.detail = decode_pick_detail(staging + pick_detail_offset);
+#endif
+    return readback;
 }
 
 /**
@@ -1860,13 +1868,17 @@ find_shared_shader_material_textures(const std::vector<std::unique_ptr<SharedTex
     return found == cache.end() ? nullptr : found->get();
 }
 
-/** Drops one mesh's reference to a backend-owned shared cache entry. */
+/**
+ * Drops one mesh's reference to a backend-owned shared cache entry. It runs
+ * on the noexcept mesh-release paths, so an underflow -- a broken ownership
+ * count -- ends the process naming itself instead of throwing.
+ */
 template <typename Shared>
-inline void release_shared_user(Shared*& shared, const char* underflow_message) {
+inline void release_shared_user(Shared*& shared, const char* underflow_message) noexcept {
     if (!shared)
         return;
     if (shared->users == 0) {
-        throw std::runtime_error(underflow_message);
+        terminate_after("release_shared_user", underflow_message);
     }
     --shared->users;
     shared = nullptr;
@@ -2132,6 +2144,76 @@ inline void finish_detailed_pick(const Engine& engine, PickingInfo& info,
     info.detail = detail;
 }
 #endif
+
+/**
+ * The backend-neutral preamble of one GPU pick over the scene the picker
+ * renders (`picker_scene_index`): whether the pick is detailed, the camera,
+ * and the pin's own pointer mapping and scene block (`map_pick_pointer`,
+ * lowered from `pickAsyncImpl`). Each backend keeps its pipelines, uploads,
+ * draws and the staging copy; what they share is decided here once.
+ */
+struct PickRequest {
+    const CameraRecord* camera = nullptr;
+    bool detailed = false;
+    upstream::PickPointer pointer{};
+    PickSceneUniforms scene_uniforms{};
+};
+
+/** Empty where the pin answers the empty info: no camera, or a miss. */
+inline std::optional<PickRequest> prepare_gpu_pick(const Engine& engine,
+                                                   [[maybe_unused]] GpuPickerHandle picker,
+                                                   const Scene& scene, double x, double y) {
+    PickRequest request;
+#if BBLITE_HAS_DETAILED_PICKING
+    // `picker._detailedPicking`, which `enableDetailedPicking` armed: it
+    // selects the pin's second pipeline module and the third attachment,
+    // so it is read per pick rather than per picker resource.
+    request.detailed = detailed_pick_armed(engine, picker);
+#endif
+    if (scene.camera.value >= engine.cameras.size())
+        return std::nullopt;
+    const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
+    request.camera = &camera;
+    if (camera.viewport.has_value()) {
+        // The mapping below is the pin's, viewport included, but no reached
+        // scene both picks and splits, so the pass is unmeasured through one.
+        throw std::runtime_error("A GPU pick through a camera viewport is unmeasured: no "
+                                 "reached scene both picks and splits.");
+    }
+    if (!upstream::map_pick_pointer(
+            [&](double width, double height) {
+                return upstream::resolve_camera_viewport(camera, width, height);
+            },
+            [&](double aspect) { return upstream::build_view_projection(camera, aspect); },
+            request.scene_uniforms, request.pointer, x, y,
+            static_cast<double>(engine.options.width), static_cast<double>(engine.options.height),
+            engine.canvas_client_width, engine.canvas_client_height)) {
+        return std::nullopt;
+    }
+    return request;
+}
+
+/**
+ * The tail of `pickAsyncImpl` once the staging rows are read: the id
+ * against what was drawn, the picked point reconstructed from the depth at
+ * the pick's own sample, and a detailed pick's ray and solve inputs.
+ */
+inline PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine,
+                                    const PickRequest& request,
+                                    const std::vector<PickRange>& ranges,
+                                    const PickReadback& readback) {
+    PickingInfo info = resolve_pick_result(ranges, readback.pick_id);
+    const upstream::PickPointer& pointer = request.pointer;
+    populate_picked_point(info, pointer.view_projection, pointer.sample_x, pointer.sample_y,
+                          pointer.w, pointer.h, readback.depth);
+#if BBLITE_HAS_DETAILED_PICKING
+    if (request.detailed) {
+        finish_detailed_pick(engine, info, readback.detail, pointer.view_projection,
+                             pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
+    }
+#endif
+    return info;
+}
 #endif
 #endif
 
@@ -2808,6 +2890,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
                 geometry.bounds_max.y,
                 geometry.bounds_max.z,
             };
+#if BBLITE_SHADOW_MORPH_BOUNDS
             // enableMorphTargetShadows' provider, read LIVE: the weights
             // are what the scene animates, and the fit has to follow them
             // or it bounds a scrambled mesh by its unmorphed box.
@@ -2830,6 +2913,7 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
                     uncapped ? storage_weights.size() : record.morph_weights.size(),
                     caster.bounds_min, caster.bounds_max);
             }
+#endif
         }
         // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
         // boundMax properties, not the geometry record. Sandblox maintains
@@ -4259,13 +4343,6 @@ inline std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometr
 }
 #endif
 
-// The no-environment fallback face — the ported pinned contract both
-// backends must agree on: a compiled-PBR scene with no environment binds a
-// 1x1 cube of this colour, never zeros. (Dawn used to keep its
-// zero-initialized startup cube here while SDL_GPU uploaded this face — a
-// silent backend delta on any environment-less PBR scene.)
-inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
-
 inline std::uint16_t float_to_half(float value) {
     std::uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -4297,16 +4374,6 @@ inline std::uint16_t float_to_half(float value) {
     }
     return static_cast<std::uint16_t>(sign | static_cast<std::uint16_t>(half_exponent << 10) |
                                       static_cast<std::uint16_t>(rounded >> 13));
-}
-
-/** The fallback face in the decode's own storage type. */
-inline std::vector<std::uint16_t> fallback_face_halves() {
-    std::vector<std::uint16_t> face;
-    face.reserve(4);
-    for (const float channel : environment_fallback_face) {
-        face.push_back(float_to_half(channel));
-    }
-    return face;
 }
 
 // The RGBD decode both render backends upload through.
@@ -4387,9 +4454,9 @@ struct UiScissorRect {
 
 /**
  * One recorded UI draw's scissor rectangle, clamped to the frame extent, or
- * nothing for a draw the clamp empties (or that carries no indices). Moved
- * verbatim from the two scene renderers' layer loops so the four RmlUi
- * consumers cannot drift on how a recorded rectangle meets the surface.
+ * nothing for a draw the clamp empties (or that carries no indices). Shared
+ * so the two backend compositors cannot drift on how a recorded rectangle
+ * meets the surface.
  */
 inline std::optional<UiScissorRect> clamped_ui_scissor(const UiRenderDraw& draw,
                                                        std::uint32_t frame_width,
@@ -4559,20 +4626,6 @@ inline void apply_animation_seek(const FrameOptions& options, const Scene& scene
 }
 
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-inline std::vector<std::size_t> sprite_layer_draw_order(const Engine& engine,
-                                                        const SpriteRendererRecord& renderer) {
-    std::vector<std::size_t> draw_order(renderer.layers.size());
-    for (std::size_t index = 0; index < draw_order.size(); ++index) {
-        draw_order[index] = index;
-    }
-    std::stable_sort(draw_order.begin(), draw_order.end(),
-                     [&](std::size_t left, std::size_t right) {
-                         return engine.sprite_layers[renderer.layers[left].value].order <
-                                engine.sprite_layers[renderer.layers[right].value].order;
-                     });
-    return draw_order;
-}
-
 /**
  * Refuse the one dispose schedule no backend can honour, before either
  * releases the GPU texture behind the record.
@@ -5359,10 +5412,10 @@ inline bool alpha_to_coverage_enabled(bool wants_a2c, std::uint32_t samples) {
  * rather than inheriting one.
  */
 struct RenderPipelineKindTraits {
-    upstream::RenderMaterialKind family;
-    bool transparent;
-    upstream::RenderCullMode cull;
-    bool clockwise_front_face;
+    upstream::RenderMaterialKind family{};
+    bool transparent{};
+    upstream::RenderCullMode cull{};
+    bool clockwise_front_face{};
     // The primitive the pipeline is built at. Only the glTF PBR kinds carry
     // anything but triangles, and each of those already fixes its cull mode
     // to none, exactly as `buildPrimitiveState` does -- so every other arm

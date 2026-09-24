@@ -1,6 +1,7 @@
 import { EmissionMap } from "./emission-transaction.js";
 import type { Feature } from "./types.js";
 import { reachesShadowGenerator } from "../shadow-capabilities.js";
+import { reachedGeneratedSources } from "../generated-sources.js";
 import {
     renderSourceUnits,
     type ApplicationCpp,
@@ -202,6 +203,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf-directional": [],
     "shadow:csm": [],
     "shadow:task": [],
+    "shadow:morph-bounds": [],
     "sprite:2d": [],
     "sprite:2d-depth-host": [],
     "sprite:2d-y-sort": [],
@@ -323,6 +325,92 @@ export const featureSources: Record<Feature, string[]> = {
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
+
+/** A manifest feature name as the `Feature` it must be, refusing any other. */
+export function asFeatures(names: readonly string[]): Feature[] {
+    return names.map((name) => {
+        const feature = featureOrder.find((candidate) => candidate === name);
+        if (feature === undefined)
+            throw new Error(`Unknown runtime feature '${name}'.`);
+        return feature;
+    });
+}
+
+/**
+ * The features a reached feature brings with it, listed once for both
+ * places a feature enters the set: the compiler's reach and the asset join.
+ * Each implied feature is reached before the one that implies it, with the
+ * same site, and its own implications follow in turn.
+ */
+const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    "compute:task-execution": [
+        "compute:task",
+        "compute:dispatch",
+        "compute:shader",
+        "compute:bindings",
+    ],
+    "environment:procedural-sky": [
+        "environment:sky-atmosphere",
+        "environment:ibl",
+        "compute:texture-mipmaps",
+        "platform:packaged-fetch",
+    ],
+    "compute:texture-mipmaps": [
+        "compute:storage-texture",
+        "compute:task",
+        "compute:frame-graph",
+    ],
+    "compute:frame-graph": ["compute:task-execution"],
+    "compute:storage-readback": ["compute:storage-buffer"],
+    "compute:bindings": [
+        "compute:binding-decl",
+        "compute:shader",
+        "compute:storage-texture",
+        "compute:uniform-buffer",
+    ],
+    "compute:one-shot": ["compute:task"],
+};
+
+export function impliedFeatures(feature: Feature): readonly Feature[] {
+    return [
+        // Every raw Web Audio node and asset feature is implemented by the
+        // one engine PAL and is reachable only through one of its contexts,
+        // even when the creating call lives in a deferred platform callback
+        // lowered after another audio callback first reached a node family.
+        ...(feature.startsWith("audio:") && feature !== "audio:engine"
+            ? (["audio:engine"] as const)
+            : []),
+        ...(featureImplications[feature] ?? []),
+    ];
+}
+
+/**
+ * Everything a feature list selects in the native build, from the feature
+ * tables: the PAL translation units (two features can name the same unit,
+ * and CMake must list it once), the generated sources, and the
+ * `features.cmake` that lists both beside the application units. Whoever
+ * finishes a feature list -- the compiler, the asset join -- projects it
+ * through here, so a feature is declared the same way wherever it entered.
+ */
+export function projectFeatures(
+    features: readonly Feature[],
+    applicationSources: readonly string[],
+): { runtimeSources: string[]; generatedSources: string[]; cmake: string } {
+    const runtimeSources = [
+        ...new Set(features.flatMap((feature) => featureSources[feature])),
+    ];
+    const generatedSources = reachedGeneratedSources(features);
+    return {
+        runtimeSources,
+        generatedSources,
+        cmake: renderFeaturesCmake(
+            features,
+            runtimeSources,
+            generatedSources,
+            applicationSources,
+        ),
+    };
+}
 
 /**
  * The features.cmake render, a pure function of the three lists so a caller

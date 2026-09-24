@@ -35,6 +35,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
+import { vec3Record } from "./mesh.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
 import {
     pinnedEnumMemberName,
@@ -521,18 +522,6 @@ export function physicsEventInfoValue(
                 cpp: `${cpp}.collided_against_index`,
             },
             distance: { kind: "number", cpp: `${cpp}.distance` },
-        },
-    };
-}
-
-function vec3Record(cpp: string): Value {
-    return {
-        kind: "record",
-        cpp: "",
-        recordProperties: {
-            x: { kind: "number", cpp: `${cpp}.x` },
-            y: { kind: "number", cpp: `${cpp}.y` },
-            z: { kind: "number", cpp: `${cpp}.z` },
         },
     };
 }

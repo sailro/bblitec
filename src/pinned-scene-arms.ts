@@ -7,7 +7,7 @@
  * this module owns the scene half, assembled the way `buildPbrRenderables`
  * assembles it, from the pin's own modules.
  *
- * One module rather than one per consumer: `scene -- compose` sweeps these
+ * One module rather than one per consumer: `scene -- diff --compose` sweeps these
  * against the browser's captured fragments, and generation composes the variant
  * table from them. If the two built their inputs separately, a byte-identical
  * sweep would stop proving anything about what was emitted.

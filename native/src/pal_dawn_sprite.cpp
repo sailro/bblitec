@@ -44,7 +44,7 @@ namespace bbl::pal {
     (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER)
 
 namespace {
-class DawnSpriteRun : public FrameSession {
+class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
     DawnDevice state;
 #if BBLITE_HAS_TEXT_RENDERER
     std::unique_ptr<DawnTextRenderer> text_renderer;
@@ -63,10 +63,10 @@ class DawnSpriteRun : public FrameSession {
     DawnTexture surface;
     DawnTextureView surface_view;
     DawnCommandEncoder encoder;
-    WGPUSurfaceTexture surface_texture{};
+    WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
-    bool canvas_only = false, capture_ui = false, mem_profile = false;
+    bool canvas_only = false, capture_ui = false;
 #if BBLITE_HAS_TEXT_RENDERER
     std::optional<DawnStandaloneTextOps> text_operations;
 #endif
@@ -127,15 +127,11 @@ class DawnSpriteRun : public FrameSession {
         }
     }
 #endif
-    void discard_frame() {
-#if BBLITE_HAS_TEXT_RENDERER
-        text_operations.reset();
-#endif
-    }
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit DawnSpriteRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "Dawn";
+    explicit DawnSpriteRun(Engine& target) : RendererRun(target) {}
     ~DawnSpriteRun() {
         discard_frame();
         encoder.reset();
@@ -203,26 +199,30 @@ public:
         if (width == 0 || height == 0) {
             dawn_error("sprite surface has a zero extent.");
         }
-        mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
         capture_ui = frame_options.capture_ui || canvas_only;
     }
-    FramePreparation prepare() {
+    SDL_Window* sdl_window() const { return state.window; }
+    std::string driver() const { return "D3D12"; }
+    void poll_events() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
 #else
-        poll_platform_events(engine, running, frame_options.test_pass);
+        RendererRun::poll_events();
 #endif
-        sync_engine_canvas_size(state.window, engine);
+    }
+    FramePreparation prepare_surface() {
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
         }
-        if (!state.surface)
-            return FramePreparation::skip;
-        input_replay.dispatch(frame, state.window, engine);
-        return FramePreparation::ready;
+        return state.surface ? FramePreparation::ready : FramePreparation::skip;
+    }
+    void discard_frame() {
+#if BBLITE_HAS_TEXT_RENDERER
+        text_operations.reset();
+#endif
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
@@ -332,9 +332,7 @@ public:
 #endif
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame
 #if BBLITE_HAS_TEXT_RENDERER
                                                        ,
@@ -377,25 +375,10 @@ public:
             dawn_error(state.uncaptured_error);
         }
     }
-    void complete() {
-        FrameSession::complete([&] {
-            if (mem_profile && frame % memory_profile_frames == 0)
-                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
-        });
-        discard_frame();
-    }
-    void report() { FrameSession::report("Dawn", "D3D12"); }
 };
 } // namespace
 
-bool run_sprite_dawn_engine(Engine& engine) {
-    DawnSpriteRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.report();
-    return true;
-}
+void run_sprite_dawn_engine(Engine& engine) { DawnSpriteRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

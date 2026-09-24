@@ -72,23 +72,18 @@ export function lowerGltfAnimationMask(context: LoweringContext): string {
         ["cMode", { cpp: "cache.mode", type: "scalar" }],
         ["cDisabled", { cpp: "cache.disabled", type: "bool" }],
     ]);
-    const maskFile = context.sourceFile(module);
-    const mode = context
-        .findNodes(maskFile, ts.isEnumDeclaration)
-        .find((node) => node.name.text === "AnimationGroupMaskMode");
-    const include = mode?.members.find(
-        (member) => context.propertyName(member.name) === "Include",
-    )?.initializer;
-    const exclude = mode?.members.find(
-        (member) => context.propertyName(member.name) === "Exclude",
-    )?.initializer;
-    if (!include || !exclude)
-        context.contractError(
-            maskFile,
-            "Expected source Include and Exclude mask enum values.",
-        );
+    const include = context.enumMember(
+        module,
+        "AnimationGroupMaskMode",
+        "Include",
+    );
+    const exclude = context.enumMember(
+        module,
+        "AnimationGroupMaskMode",
+        "Exclude",
+    );
     bindings.set("AnimationGroupMaskMode.Include", {
-        cpp: context.doubleLiteral(context.numericValue(include, maskFile)),
+        cpp: context.doubleLiteral(include),
         type: "scalar",
     });
     const sharedExpression = (
@@ -333,7 +328,7 @@ template<class Mask> struct GltfAnimationControllerMaskCache {
 };
 // ${context.provenance(module, "createAnimationGroupMask")}
 template<class Mask> std::shared_ptr<Mask> gltf_make_animation_mask(const std::vector<std::string>& names,bool include) {
-    const double mode=include?${context.doubleLiteral(context.numericValue(include, maskFile))}:${context.doubleLiteral(context.numericValue(exclude, maskFile))};
+    const double mode=include?${context.doubleLiteral(include)}:${context.doubleLiteral(exclude)};
 ${factoryBody}
 }
 // ${context.provenance(module, "animationGroupMaskRetainsTarget")}

@@ -999,6 +999,38 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
     return spec;
 }
 
+/** Where a demo's default memory tape lives, relative to the repository. */
+function memoryTapePath(sceneId: string): string {
+    return `${CHECKS_DIRECTORY}/memory/${sceneId}.json`;
+}
+
+/**
+ * The default gameplay tape `scene -- memory` plays for a demo, when
+ * `checks/memory/<id>.json` declares one: `{ notes, lead?, cycle }` in the
+ * phase tape grammar, the cycle repeated after the lead until the tape
+ * covers `frames` frames (one entry per frame). An idle demo retires
+ * nothing, so a leak of retired records only shows under play.
+ */
+export function readMemoryTape(
+    sceneId: string,
+    frames: number,
+): { path: string; tape: string[] } | undefined {
+    const path = memoryTapePath(sceneId);
+    if (!existsSync(resolve(path))) return undefined;
+    const value: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
+    if (!isRecord(value)) fail(path, "must be an object");
+    refuseUnknown(value, ["notes", "lead", "cycle"], path);
+    requiredString(value, "notes", path);
+    const lead = expandTape(optionalStringArray(value, "lead", path) ?? []);
+    const cycle = expandTape(optionalStringArray(value, "cycle", path) ?? []);
+    if (cycle.length === 0) {
+        fail(path, "'cycle' must name at least one tape entry");
+    }
+    const tape = [...lead];
+    while (tape.length < frames) tape.push(...cycle);
+    return { path, tape: tape.slice(0, frames) };
+}
+
 /** Read `checks/<id>.json`, or throw naming what is missing. */
 export function readCheckSpec(checkId: string): CheckSpec {
     const path = checkSpecPath(checkId);

@@ -131,16 +131,23 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         /take_crosshair_color[\s\S]{0,120}--bbl-crosshair/,
     );
     assert.match(projection, /append_crosshair[\s\S]{0,900}SetInnerRML/);
-    assert.match(sdl, /render_ui_sdl_frame/);
-    assert.match(dawn, /render_ui_dawn_frame/);
-    assert.match(sdl, /multisample_layer/);
-    assert.match(dawn, /multisample_layer/);
+    // One compositor per backend: the scene renderer passes its sample
+    // count and gets the multisampled layer; sprite and Window hosts blend
+    // directly.
+    assert.match(
+        sdl,
+        /render_sprite_ui_sdl_frame\([\s\S]{0,200}state\.sample_count\)/,
+    );
+    assert.match(
+        dawn,
+        /render_sprite_ui_dawn_frame\([\s\S]{0,200}state\.sample_count\)/,
+    );
+    assert.match(spriteSdlUi, /layer\.multisample/);
+    assert.match(spriteDawnUi, /multisample_view/);
     assert.match(spriteSdl, /render_sprite_ui_sdl_frame/);
     assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);
-    for (const renderer of [sdl, dawn])
-        assert.match(renderer, /ui_frame_uses_texture/);
     assert.match(
         textureCache,
         /std::weak_ptr<const std::vector<std::uint8_t>> source/,
@@ -155,7 +162,12 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         );
         assert.doesNotMatch(renderer, /ui_frame_uses_texture/);
     }
-    for (const renderer of [sdl, dawn, spriteSdlUi, spriteDawnUi])
+    for (const renderer of [sdl, dawn])
+        assert.doesNotMatch(
+            renderer,
+            /ui_frame_uses_texture|draw\.nearest_sampling/,
+        );
+    for (const renderer of [spriteSdlUi, spriteDawnUi])
         assert.match(renderer, /draw\.nearest_sampling/);
 });
 
@@ -219,6 +231,7 @@ test("canonicalizes the build-time backend flag", () => {
     assert.equal(canonicalCompiledBackend("sdl_gpu", "build"), "SDL_GPU");
     assert.equal(canonicalCompiledBackend("DAWN", "process"), "DAWN");
     assert.equal(canonicalCompiledBackend("both", "process"), "BOTH");
+    assert.equal(canonicalCompiledBackend("gpu", "build"), "SDL_GPU");
     assert.throws(
         () => canonicalCompiledBackend("vulkan", "build"),
         /--backend must be sdl_gpu\|dawn\|both/,
@@ -251,10 +264,9 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
     assert.match(block, /\/STACK:8388608/);
-    assert.match(
-        cmake,
-        /"\$\{BBLITE_ENTRY_SOURCE\}" \$\{BBLITE_APPLICATION_UNITS\}\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
-    );
+    // Generated units are warning-clean under MSVC too: the lowering emits
+    // no unreachable fallthrough for LTCG to report as C4702.
+    assert.doesNotMatch(cmake, /\/wd4702/);
     assert.match(block, /INTERFACE -Os -ffunction-sections/);
 });
 

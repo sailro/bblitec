@@ -28,7 +28,7 @@ import {
     standardPluginBindingTable,
 } from "./pinned-material-plugins.js";
 import { findRepositoryRoot } from "./upstream-source.js";
-import type { AssetSpecializationFeatures } from "./asset-specializer.js";
+import type { AssetFeatureJoin } from "./asset-feature-join.js";
 import { glbDocument } from "./gltf-document.js";
 import { nodeGeometryAssetRefusal } from "./node-geometry-assets.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
@@ -38,9 +38,7 @@ import {
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
-    gltfHasImageBasedLight,
     gltfMaterialCount,
-    gltfNodeLights,
     gltfLightmapMaterials,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
@@ -77,14 +75,14 @@ import {
     pinnedShadowFilter,
     type ShadowLightSlot,
 } from "./pinned-shadow-slots.js";
-import { babylonLights } from "./babylon-asset-features.js";
 import { refuseGeneration } from "./generation-refusal.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
 export interface ComposePipelineContext {
     result: CompileResult;
     outputPath: string;
-    specializationFeatures: AssetSpecializationFeatures;
+    /** What the assets joined, and the activation plan decided with it. */
+    assetJoin: AssetFeatureJoin;
     tree: GeneratedTree;
 }
 
@@ -160,7 +158,6 @@ export interface ComposedScenePipeline {
     lightKinds: PinnedSingleLightType[];
     /** The upstream loader/runtime tone-mapping states this scene can reach. */
     toneMappingStates: boolean[];
-    linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
     /**
@@ -306,7 +303,7 @@ export function scenePbrMeshFeatureSets(
 export async function composeScenePipeline({
     result,
     outputPath,
-    specializationFeatures,
+    assetJoin,
     tree,
 }: ComposePipelineContext): Promise<ComposedScenePipeline> {
     // `enableMaterialPlugins(scene)` is the pin's own opt-in and the only
@@ -368,9 +365,7 @@ export async function composeScenePipeline({
     // assignment makes both states reachable regardless of asset presence.
     const loaderEnablesToneMapping =
         result.manifest.features.includes("environment:env") ||
-        uniqueGltfAssets.some((asset) =>
-            gltfHasImageBasedLight(resolve(outputPath, "assets", asset.output)),
-        );
+        assetJoin.imageBasedLight;
     const loaderLeavesToneMappingOff =
         !hasEnvironment ||
         result.manifest.features.includes("environment:hdr") ||
@@ -390,11 +385,8 @@ export async function composeScenePipeline({
     // constructing a minimal manifest directly.
     if (toneMappingStates.length === 0) toneMappingStates.push(false);
     const assetLightsReached =
-        uniqueGltfAssets.some(
-            (asset) =>
-                gltfNodeLights(resolve(outputPath, "assets", asset.output))
-                    .count > 0,
-        ) || babylonLights(outputPath, result.manifest.assets).length > 0;
+        assetJoin.assetLightNodes !== undefined ||
+        assetJoin.babylonLights.length > 0;
     const staticLightKinds =
         !result.manifest.dynamicSceneLights && !assetLightsReached
             ? result.manifest.sceneLightKinds
@@ -424,15 +416,7 @@ export async function composeScenePipeline({
     // and the retargeted linear pass runs with w = -1. Transmission-capable
     // rendering alone does not imply that state: PBR skybox mode needs the
     // same renderer but never calls markPbrMaterialsLinear.
-    const linearImageProcessing =
-        result.manifest.features.includes(
-            "material:pbr-linear-image-processing",
-        ) ||
-        // Asset-carried KHR_materials_transmission enables the runtime's
-        // transmission exactly like the feature does (scene_core stamps
-        // `transmission_enabled` from the same disjunction), and the pin
-        // marks every material linear either way.
-        specializationFeatures.assetTransmission;
+    const linearImageProcessing = assetJoin.plan.linearImageProcessing.value;
     // The scene's clustered light field, if it added one. It travels beside
     // `linearImageProcessing` because it is the same kind of fact: a scene
     // property every material composed for this scene has to see.
@@ -1215,7 +1199,6 @@ export async function composeScenePipeline({
     return {
         lightKinds,
         toneMappingStates,
-        linearImageProcessing,
         gltfAssets,
         materialIndexBase: totalAssetMaterials,
         casterViewCount,

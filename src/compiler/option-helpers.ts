@@ -8,14 +8,6 @@ import type { LoweringServices } from "./lowering-services.js";
 // msaaSamples), and an optional flag folds to a static boolean. They
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
-// Shared option-lowering helpers.
-//
-// The option compilers agree on three small contracts: an options
-// object may only carry the properties the reached lowering reads, a
-// count lowers to a positive integer literal (or the engine's own
-// msaaSamples), and an optional flag folds to a static boolean. They
-// are declared once here so every per-domain option module states the
-// same rule instead of carrying its own copy.
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
@@ -27,6 +19,10 @@ import {
     mathMemberCall,
     mathUnaryFold,
 } from "./math-intrinsics.js";
+import {
+    foldNumericBinary,
+    foldNumericUnary,
+} from "../lowering/pinned-operators.js";
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
@@ -274,16 +270,6 @@ export function staticJsonValue(
 }
 
 /**
- * A number the source computes from constants, evaluated here.
- *
- * `compileStaticNumber` folds a literal and a named constant; this folds the
- * arithmetic between them, which is how the corpus writes a camera angle
- * (`-Math.PI / 2`). The evaluation is JavaScript's own on doubles, so a
- * value that travels back out as a literal is the value the source had.
- * Returns undefined for anything that is not constant, so a caller can
- * refuse by name rather than substituting.
- */
-/**
  * The member name a `SomeEnum.MEMBER` argument names, by resolved import
  * symbol rather than by the identifier's spelling.
  *
@@ -314,6 +300,16 @@ export function pinnedEnumMemberName(
     return expression.name.text;
 }
 
+/**
+ * A number the source computes from constants, evaluated here.
+ *
+ * `compileStaticNumber` folds a literal and a named constant; this folds the
+ * arithmetic between them, which is how the corpus writes a camera angle
+ * (`-Math.PI / 2`). The evaluation is JavaScript's own on doubles, so a
+ * value that travels back out as a literal is the value the source had.
+ * Returns undefined for anything that is not constant, so a caller can
+ * refuse by name rather than substituting.
+ */
 export function staticNumberValue(
     context: PositiveIntegerContext,
     expression: ts.Expression,
@@ -328,29 +324,15 @@ export function staticNumberValue(
     }
     if (ts.isPrefixUnaryExpression(node)) {
         const operand = staticNumberValue(context, node.operand);
-        if (operand === undefined) return undefined;
-        if (node.operator === ts.SyntaxKind.MinusToken) return -operand;
-        if (node.operator === ts.SyntaxKind.PlusToken) return operand;
-        return undefined;
+        return operand === undefined
+            ? undefined
+            : foldNumericUnary(node.operator, operand);
     }
     if (ts.isBinaryExpression(node)) {
         const left = staticNumberValue(context, node.left);
         const right = staticNumberValue(context, node.right);
         if (left === undefined || right === undefined) return undefined;
-        switch (node.operatorToken.kind) {
-            case ts.SyntaxKind.PlusToken:
-                return left + right;
-            case ts.SyntaxKind.MinusToken:
-                return left - right;
-            case ts.SyntaxKind.AsteriskToken:
-                return left * right;
-            case ts.SyntaxKind.SlashToken:
-                return left / right;
-            case ts.SyntaxKind.PercentToken:
-                return left % right;
-            default:
-                return undefined;
-        }
+        return foldNumericBinary(node.operatorToken.kind, left, right);
     }
     // A canvas size is a compile-time constant to every caller of THIS
     // helper, and only to them: `staticNumberValue` never emits, so a

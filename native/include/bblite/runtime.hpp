@@ -147,11 +147,13 @@ struct Color3d {
     Color3d(Color3 value) : r(value.r), g(value.g), b(value.b) {}
 };
 
+// A plain value, zero until written: every producer states all four lanes,
+// and the pin's own `clearColor` default is the generated scene factory's.
 struct Color4 {
-    float r = 0.05f;
-    float g = 0.06f;
-    float b = 0.09f;
-    float a = 1.0f;
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 0.0f;
 };
 
 struct EngineOptions {
@@ -1504,55 +1506,58 @@ struct SolidTexture {
     std::uint64_t identity = 0;
 };
 
+// No initialisers: generation writes every field (`createPbrMaterial` as a
+// full designated literal, `createGridMaterial` as a full positional one),
+// including the default of each option the scene omits, so a default
+// written here would be a second copy of a pinned constant nothing checks.
+// A field the emitter forgets is then a compile warning, not a silent value.
 struct PbrMaterialOptions {
-    SolidTexture base_color{};
-    Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
-    bool has_base_color_texture = false;
-    std::shared_ptr<std::vector<double>> source_base_color_factor{};
-    SolidTexture orm{};
-    float metallic_factor = 1.0f;
-    float roughness_factor = 1.0f;
-    float direct_intensity = 1.0f;
-    float environment_intensity = 1.0f;
-    float alpha = 1.0f;
-    bool alpha_blend = false;
-    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
-    float reflectance = 0.04f;
-    bool unlit = false;
-    bool double_sided = false;
-    bool specular_aa = false;
-    bool skybox_mode = false;
-    float transmission_factor = 0.0f;
-    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
-    float index_of_refraction = 1.5f;
-    float thickness = 0.0f;
-    bool use_thickness_as_depth = false;
-    bool has_volume = false;
-    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
-    float attenuation_distance = 1.0f;
-    float occlusion_strength = 1.0f;
-    float metallic_f0_factor = 1.0f;
-    // The pin's `usePhysicalLightFalloff`, whose default is true: a point or
-    // spot light attenuates by inverse square, and the spot cone by the
-    // physical exponential. False takes the Standard-style linear range and
-    // spot exponent instead. Both arms are composed into every punctual
-    // fragment; this is the lane that selects one (`_writeMaterialData`).
-    bool use_physical_light_falloff = true;
+    SolidTexture base_color;
+    Color4 base_color_factor;
+    bool has_base_color_texture;
+    std::shared_ptr<std::vector<double>> source_base_color_factor;
+    SolidTexture orm;
+    float metallic_factor;
+    float roughness_factor;
+    float direct_intensity;
+    float environment_intensity;
+    float alpha;
+    bool alpha_blend;
+    float reflectance;
+    bool unlit;
+    bool double_sided;
+    bool specular_aa;
+    bool skybox_mode;
+    float transmission_factor;
+    float index_of_refraction;
+    float thickness;
+    bool use_thickness_as_depth;
+    bool has_volume;
+    Color3 attenuation_color;
+    float attenuation_distance;
+    float occlusion_strength;
+    float metallic_f0_factor;
+    // The pin's `usePhysicalLightFalloff`: a point or spot light attenuates
+    // by inverse square, and the spot cone by the physical exponential.
+    // False takes the Standard-style linear range and spot exponent instead.
+    // Both arms are composed into every punctual fragment; this is the lane
+    // that selects one (`_writeMaterialData`).
+    bool use_physical_light_falloff;
 };
 
 struct GridMaterialOptions {
-    Color3 main_color{0.0f, 0.0f, 0.0f};
-    Color3 line_color{0.0f, 0.5f, 0.5f};
-    float grid_ratio = 1.0f;
-    Vec3 grid_offset{};
-    float major_unit_frequency = 10.0f;
-    float minor_unit_visibility = 0.33f;
-    float opacity = 1.0f;
-    float visibility = 1.0f;
-    bool antialias = true;
-    bool pre_multiply_alpha = false;
-    bool use_max_line = false;
-    bool back_face_culling = true;
+    Color3 main_color;
+    Color3 line_color;
+    float grid_ratio{};
+    Vec3 grid_offset;
+    float major_unit_frequency{};
+    float minor_unit_visibility{};
+    float opacity{};
+    float visibility{};
+    bool antialias{};
+    bool pre_multiply_alpha{};
+    bool use_max_line{};
+    bool back_face_culling{};
 };
 
 enum class TextureFilter {
@@ -2546,7 +2551,9 @@ struct MaterialRecord {
     float emissive_strength = 1.0f;
     Color3 specular_color{1.0f, 1.0f, 1.0f};
     Color3 ambient_color{};
-    float specular_power = 64.0f;
+    // Written by each Standard factory (createStandardMaterial, both .babylon
+    // arms) from the pin's own literal; no other family reads it.
+    float specular_power = 0.0f;
     float diffuse_level = 1.0f;
     float opacity_level = 1.0f;
     float ambient_level = 1.0f;
@@ -2760,12 +2767,18 @@ struct MaterialRecord {
     MaterialHandle shadow_caster_material{};
     Color3 grid_main_color{0.0f, 0.0f, 0.0f};
     Color3 grid_line_color{0.0f, 0.5f, 0.5f};
-    Vec4 grid_control{1.0f, 10.0f, 0.33f, 1.0f};
+    // Written by `create_grid_material` from its full options literal.
+    Vec4 grid_control{};
     Vec3 grid_offset{};
     float grid_visibility = 1.0f;
     bool grid_antialias = true;
     bool grid_pre_multiply_alpha = false;
     bool grid_use_max_line = false;
+    // The mode the factory or loader authored: blend for a PBR `alphaBlend`
+    // (the glTF BLEND arm, the shadow-only extension), a shader or node
+    // graph's own blending and a translucent grid; mask for a glTF MASK
+    // cutoff. The live alpha is not folded in: the renderer buckets PBR and
+    // Standard draws from the pin's own `isTransparent` over it.
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
@@ -2862,24 +2875,6 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
     return material_family_pbr;
 }
 
-// The pin reads `mat.alpha < 1` live when it builds renderables, and the
-// PBR transmission extension forces blending regardless of alpha, so the
-// mode is a derivation of the two factors it is stored beside. One home
-// for that rule: the factor-driven families (Standard, PBR) derive here at
-// creation and at every alpha write; a shader, node, or grid material owns
-// its mode through its variant flag or opacity control instead, and an
-// alpha write leaves it with its factory. A glTF-authored mask mode is
-// alpha-testing, not factor-driven, and likewise stays.
-inline void derive_material_alpha_mode(MaterialRecord& material) {
-    if (material.shader_material || material.node_material || material.grid_material ||
-        material.alpha_mode == MaterialAlphaMode::mask) {
-        return;
-    }
-    material.alpha_mode = material.alpha < 1.0f || material.transmission_factor > 0.0f
-                              ? MaterialAlphaMode::blend
-                              : MaterialAlphaMode::opaque;
-}
-
 struct LightRecord {
     LightKind kind = LightKind::directional;
     Vec3 position{};
@@ -2974,25 +2969,32 @@ struct CameraRecord {
     bool limits_installed = false;
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};
-    double alpha = -pi_double / 2.0;
-    double beta = 1.1;
-    double radius = 6.0;
+    // The pose, projection and control scalars below start at zero: the
+    // generated factories write every one their camera kind reads, from the
+    // factory's arguments and the pin's own literal (`createArcRotateCamera`
+    // alpha/beta/radius/target plus its projection and control defaults,
+    // `createFreeCamera` its projection, speed, sensitivity and inertia,
+    // `createGeospatialCamera` its projection). A record no factory built
+    // is not a camera: the pin's no-camera arms are explicit at their use.
+    double alpha = 0.0;
+    double beta = 0.0;
+    double radius = 0.0;
     Vec3d target{};
     Vec3d up_vector{0.0, 1.0, 0.0};
-    double fov = 0.8;
-    double near_plane = 0.1;
-    double far_plane = 1000.0;
-    double inertia = 0.9;
-    double panning_inertia = 0.9;
-    double angular_sensibility = 1000.0;
-    double speed = 2.0;
+    double fov = 0.0;
+    double near_plane = 0.0;
+    double far_plane = 0.0;
+    double inertia = 0.0;
+    double panning_inertia = 0.0;
+    double angular_sensibility = 0.0;
+    double speed = 0.0;
     double free_yaw = 0.0;
     double free_pitch = 0.0;
     double inertial_yaw_offset = 0.0;
     double inertial_pitch_offset = 0.0;
     Vec3d inertial_direction{};
-    double panning_sensibility = 50.0;
-    double wheel_precision = 3.0;
+    double panning_sensibility = 0.0;
+    double wheel_precision = 0.0;
     double inertial_alpha_offset = 0.0;
     double inertial_beta_offset = 0.0;
     double inertial_radius_offset = 0.0;
@@ -4054,8 +4056,12 @@ struct Engine {
      */
 #if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
+#if !defined(BBLITE_HAS_CAMERA_GIZMOS) || BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
+#endif
+#if !defined(BBLITE_HAS_LIGHT_GIZMOS) || BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
+#endif
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
@@ -4482,69 +4488,6 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
     return texture;
 }
 
-/**
- * Finds the topmost visible sprite containing a point in layer-local pixels.
- * Layers and sprites both draw in array order, so picking walks each in the
- * opposite direction. The inverse rotation is pivot-aware through the same
- * normalized coordinates the sprite vertex path uses.
- *
- * `pickSprite2D` asks the optional Y-sort hook for the layer's current draw
- * order first (`pick-sprite-2d.ts`), so a Y-sorted layer is walked in reverse
- * DRAW order and answers with the logical slot that order named. The hook is
- * empty on every layer that never enabled the extension, which is the pin's
- * own `?.drawOrder(layer)` and needs no second detector.
- */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-[[nodiscard]] inline std::optional<Sprite2DPickResult>
-pick_sprite_2d(const Engine& engine, const std::vector<Sprite2DLayerHandle>& layers, double x_px,
-               double y_px) {
-    for (auto layer_it = layers.rbegin(); layer_it != layers.rend(); ++layer_it) {
-        if (layer_it->value >= engine.sprite_layers.size()) {
-            continue;
-        }
-        const auto& layer = engine.sprite_layers[layer_it->value];
-        if (!layer.visible) {
-            continue;
-        }
-        // The hook sorts the CPU permutation if a same-frame mutation left
-        // it stale; nothing here packs or touches the GPU.
-        const std::uint32_t* draw_order = engine.sprite_y_sort_hook.draw_order
-                                              ? engine.sprite_y_sort_hook.draw_order(layer)
-                                              : nullptr;
-        const auto stride = static_cast<std::size_t>(layer.instance_floats_per_sprite);
-        for (std::uint32_t sprite = layer.count; sprite > 0; --sprite) {
-            const auto index = draw_order ? draw_order[sprite - 1u] : sprite - 1u;
-            const auto base = static_cast<std::size_t>(index) * stride;
-            if (base + 8u >= layer.instance_data.size()) {
-                continue;
-            }
-            const double width = layer.instance_data[base + 2u];
-            const double height = layer.instance_data[base + 3u];
-            // `pickSprite2D`'s own `sizeX <= 0 || sizeY <= 0`: a sprite
-            // hidden by a non-positive size is skipped, not just an empty
-            // one.
-            if (width <= 0.0 || height <= 0.0) {
-                continue;
-            }
-            const double dx = x_px - layer.instance_data[base];
-            const double dy = y_px - layer.instance_data[base + 1u];
-            const double rotation = layer.instance_data[base + 8u];
-            const double cosine = std::cos(rotation);
-            const double sine = std::sin(rotation);
-            const double local_x = cosine * dx + sine * dy;
-            const double local_y = -sine * dx + cosine * dy;
-            const double u = local_x / width + layer.pivot.x;
-            const double v = local_y / height + layer.pivot.y;
-            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-                return Sprite2DPickResult{*layer_it, index, u, v};
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-#endif
-
 inline MaterialHandle remember_scene_material(Engine& engine, std::size_t slot,
                                               MaterialHandle material) {
     if (engine.scene_material_slots.size() <= slot) {
@@ -4948,13 +4891,14 @@ struct FrameGraphContext {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(updates); }
 };
 
-// No member defaults: generation fills every field from the pin's own
-// factory defaults, so a second copy here could only drift. (The same
-// holds for SphereOptions and TorusOptions below.)
+// No factory defaults: generation fills every field from the pin's own
+// factory defaults, so a second copy here could only drift; the scalars
+// only value-initialize. (The same holds for SphereOptions and TorusOptions
+// below.)
 struct GroundOptions {
-    double width;
-    double height;
-    std::uint32_t subdivisions;
+    double width{};
+    double height{};
+    std::uint32_t subdivisions{};
     Vec2 uv_scale;
 };
 
@@ -5695,11 +5639,14 @@ void add_task_at_start(FrameGraphContext& context, TaskHandle task);
  * perspective volume before any float store).
  */
 struct PcfSpotShadowOptions {
-    std::uint32_t map_size = 512;
-    double bias = 0.0;
-    double darkness = 0.0;
-    double near_plane = 1.0;
-    double far_plane = 10000.0;
+    // No initialisers, for the reason `PcfDirectionalShadowOptions` gives:
+    // generation writes every field from the factory's own `??` chain
+    // (the `bbl::upstream::pcf_spot_*` constants) or what the scene passed.
+    std::uint32_t map_size;
+    double bias;
+    double darkness;
+    double near_plane;
+    double far_plane;
 };
 
 /**
@@ -5710,27 +5657,29 @@ struct PcfSpotShadowOptions {
  * disagreed with the deployed shader would be a silent fork.
  */
 struct EsmDirectionalShadowOptions {
-    std::uint32_t map_size = 1024;
-    double depth_scale = 50.0;
-    double bias = 0.00005;
-    std::uint32_t blur_kernel = 1;
-    std::uint32_t blur_scale = 2;
-    double darkness = 0.0;
-    double frustum_edge_falloff = 0.0;
-    double ortho_min_z = 1.0;
-    double ortho_max_z = 10000.0;
+    // No initialisers: every field is written from the factory's own `??`
+    // (`bbl::upstream::esm_default_*`) or what the scene passed.
+    std::uint32_t map_size;
+    double depth_scale;
+    double bias;
+    std::uint32_t blur_kernel;
+    std::uint32_t blur_scale;
+    double darkness;
+    double frustum_edge_falloff;
+    double ortho_min_z;
+    double ortho_max_z;
     /**
      * `cfg.forceRefreshEveryFrame ?? false`: disables the pinned
      * render-gate so the map re-renders every frame (break-meshes, whose
      * physics-driven pieces the map must track).
      */
-    bool force_refresh_every_frame = false;
+    bool force_refresh_every_frame;
     /**
      * Which row of the generated resource table is this generator's.
      * Generation composed one row per ESM factory call, in reach order, so
      * the ordinal is a compile-time value like the three above it.
      */
-    std::uint32_t esm_index = 0;
+    std::uint32_t esm_index;
 };
 
 /**
@@ -5771,19 +5720,19 @@ struct PcfDirectionalShadowOptions {
  */
 #if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
-    // No initialisers, for the reason above: every field is written from
-    // the factory's own `??`.
-    std::uint32_t map_size;
-    std::uint32_t csm_num_cascades;
-    double csm_lambda;
-    double csm_cascade_blend_percentage;
+    // No factory defaults, for the reason above: every field is written
+    // from the factory's own `??`; the scalars only value-initialize.
+    std::uint32_t map_size{};
+    std::uint32_t csm_num_cascades{};
+    double csm_lambda{};
+    double csm_cascade_blend_percentage{};
     /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
     std::optional<double> csm_shadow_max_z;
-    double bias;
-    double darkness;
-    double frustum_edge_falloff;
+    double bias{};
+    double darkness{};
+    double frustum_edge_falloff{};
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
-    bool force_refresh_every_frame;
+    bool force_refresh_every_frame{};
 };
 #endif
 
@@ -5799,7 +5748,9 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 #endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
+#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
+#endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);

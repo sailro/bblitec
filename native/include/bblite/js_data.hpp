@@ -105,7 +105,10 @@ public:
     Finally& operator=(const Finally&) = delete;
     Finally(Finally&&) = delete;
     Finally& operator=(Finally&&) = delete;
-    ~Finally() noexcept(noexcept(action_())) { run(); }
+    // A finally body reached by an early exit may throw, as JavaScript's
+    // does. Exceptional paths run the guard explicitly (or skip it while
+    // unwinding), so this destructor never throws during unwinding.
+    ~Finally() noexcept(false) { run(); }
     void run() noexcept(noexcept(action_())) {
         if (!pending_)
             return;
@@ -324,8 +327,8 @@ public:
 private:
     struct BufferView {
         ArrayBuffer buffer;
-        std::size_t offset;
-        std::size_t length;
+        std::size_t offset = 0;
+        std::size_t length = 0;
     };
     [[nodiscard]] std::vector<T>& owned() const {
         if (view_) {
@@ -587,6 +590,11 @@ private:
 
     Block* block_ = nullptr;
 };
+
+namespace gc {
+/** Every reference block is registered, so a reference is always an edge. */
+template <typename T> struct Traceable<Ref<T>> : std::true_type {};
+} // namespace gc
 
 template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... args) {
     auto block = std::make_unique<typename Ref<T>::Block>(std::forward<Args>(args)...);
@@ -885,12 +893,12 @@ public:
     using iterator = typename Storage::iterator;
     using const_iterator = typename Storage::const_iterator;
 
-    Array() : values_(make_gc_shared<Storage>()) {}
-    Array(std::initializer_list<T> values) : values_(make_gc_shared<Storage>(values)) {}
-    explicit Array(std::size_t count) : values_(make_gc_shared<Storage>(count)) {}
-    Array(std::size_t count, const T& value) : values_(make_gc_shared<Storage>(count, value)) {}
+    Array() : values_(make_storage()) {}
+    Array(std::initializer_list<T> values) : values_(make_storage(values)) {}
+    explicit Array(std::size_t count) : values_(make_storage(count)) {}
+    Array(std::size_t count, const T& value) : values_(make_storage(count, value)) {}
     template <typename Iterator>
-    Array(Iterator first, Iterator last) : values_(make_gc_shared<Storage>(first, last)) {}
+    Array(Iterator first, Iterator last) : values_(make_storage(first, last)) {}
     /** Rewrap a native producer's retained JavaScript array without copying it. */
     explicit Array(std::shared_ptr<Storage> values) : values_(std::move(values)) {
         if (!values_)
@@ -954,6 +962,9 @@ public:
     void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
 
 private:
+    template <typename... Args> static std::shared_ptr<Storage> make_storage(Args&&... args) {
+        return make_gc_shared_if<gc_traceable<T>, Storage>(std::forward<Args>(args)...);
+    }
     // A JavaScript array literal that then grows a few elements -- the
     // per-face corner and light lists a voxel mesher builds -- would
     // otherwise pay std::vector's 1, 2, 3, 4 growth ladder: one heap
@@ -970,6 +981,9 @@ private:
 
     std::shared_ptr<Storage> values_;
 };
+namespace gc {
+template <typename T> struct Traceable<Array<T>> : Traceable<T> {};
+} // namespace gc
 
 template <typename T, typename Iterable>
 [[nodiscard]] inline Array<T> array_from_iterable(const Iterable& values) {
@@ -1044,12 +1058,12 @@ public:
     [[nodiscard]] T& value() {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] const T& value() const {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] T& operator*() { return value(); }
     [[nodiscard]] const T& operator*() const { return value(); }
@@ -1086,9 +1100,19 @@ public:
     }
 
 private:
+    /** JavaScript refuses a property read through null or undefined. */
+    template <typename Self> static auto& require_owned(Self& self) {
+        if (!self.owned_)
+            throw std::runtime_error("Cannot access a nullish value.");
+        return *self.owned_;
+    }
+
     T* reference_ = nullptr;
     std::optional<T> owned_;
 };
+namespace gc {
+template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
+} // namespace gc
 
 template <typename T> struct IsNullable : std::false_type {};
 template <typename T> struct IsNullable<Nullable<T>> : std::true_type {};
@@ -1278,10 +1302,9 @@ private:
         bool global;
         double last_index = 0;
         State(const std::string& source, bool global_, bool ignore_case)
-            : expression(wide(source),
-                         std::regex_constants::ECMAScript |
-                             (ignore_case ? std::regex_constants::icase
-                                          : std::regex_constants::syntax_option_type{})),
+            : expression(wide(source), ignore_case ? std::regex_constants::ECMAScript |
+                                                         std::regex_constants::icase
+                                                   : std::regex_constants::ECMAScript),
               global(global_) {}
     };
     std::shared_ptr<State> state_;
@@ -1654,7 +1677,8 @@ protected:
         storage_->index.emplace(std::move(key), std::prev(storage_->entries.end()));
     }
 
-    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
+    std::shared_ptr<Storage> storage_ =
+        make_gc_shared_if<gc_traceable<EntryT> || gc_traceable<KeyT>, Storage>();
 };
 
 template <typename K, typename V> class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> {
@@ -1718,6 +1742,10 @@ public:
         return *this;
     }
 };
+namespace gc {
+template <typename K, typename V>
+struct Traceable<Map<K, V>> : std::disjunction<Traceable<K>, Traceable<V>> {};
+} // namespace gc
 
 using WeakIdentity = std::weak_ptr<const void>;
 
@@ -1750,7 +1778,7 @@ template <typename V> class WeakMap {
             }
         }
     };
-    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
+    std::shared_ptr<Storage> storage_ = make_gc_shared_if<gc_traceable<V>, Storage>();
 
 public:
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
@@ -1781,6 +1809,9 @@ public:
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 };
+namespace gc {
+template <typename V> struct Traceable<WeakMap<V>> : Traceable<V> {};
+} // namespace gc
 
 /** Immediate snapshot of JavaScript Map.prototype.values iteration order. */
 template <typename K, typename V> [[nodiscard]] inline Array<V> map_values(const Map<K, V>& map) {
@@ -1922,6 +1953,9 @@ public:
         return *this;
     }
 };
+namespace gc {
+template <typename T> struct Traceable<Set<T>> : Traceable<T> {};
+} // namespace gc
 
 /** A stored JavaScript iterator: aliases share one advancing cursor. */
 template <typename T> class Iterator {
@@ -2048,8 +2082,9 @@ private:
 template <typename... T> class Product {
 public:
     using Storage = std::tuple<T...>;
-    Product() : values_(make_gc_shared<Storage>()) {}
-    Product(T... values) : values_(make_gc_shared<Storage>(std::move(values)...)) {}
+    Product() : values_(make_gc_shared_if<gc_traceable<Storage>, Storage>()) {}
+    Product(T... values)
+        : values_(make_gc_shared_if<gc_traceable<Storage>, Storage>(std::move(values)...)) {}
     template <std::size_t I> [[nodiscard]] auto& get() const { return std::get<I>(*values_); }
     [[nodiscard]] constexpr std::size_t size() const { return sizeof...(T); }
     [[nodiscard]] const void* identity() const { return values_.get(); }
@@ -2059,6 +2094,9 @@ public:
 private:
     std::shared_ptr<Storage> values_;
 };
+namespace gc {
+template <typename... T> struct Traceable<Product<T...>> : Traceable<std::tuple<T...>> {};
+} // namespace gc
 
 template <std::size_t N> [[nodiscard]] inline Tuple<N> clone_tuple(const Tuple<N>& tuple) {
     return tuple.clone();

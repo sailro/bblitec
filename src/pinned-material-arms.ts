@@ -64,14 +64,20 @@ import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
-import { packagedGltfLights } from "./gltf-light-plan.js";
+import { packagedGltfLights, type GltfLight } from "./gltf-light-plan.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,
     type GltfTransmissionPlan,
 } from "./gltf-transmission-plan.js";
 import { pinnedPbrTransmissionSelection } from "./pinned-pbr-transmission.js";
-import type { LoweringContext } from "./lowering/context.js";
+import ts from "typescript";
+import {
+    numericValue,
+    unwrapExpression,
+    variableInitializer,
+    type LoweringContext,
+} from "./lowering/context.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -83,20 +89,36 @@ import type { LoweringContext } from "./lowering/context.js";
  * generation here rather than emitting a texture slot no variant declares.
  */
 function pinnedOcclusionUv2Bit(): number {
-    const source = sharedUpstreamStore().getSource(
-        "src/material/pbr/pbr-template-ext.ts",
+    const module = "src/material/pbr/pbr-template-ext.ts";
+    const file = sharedUpstreamStore().getSourceFile(module);
+    const negated = (
+        expression: ts.Expression | undefined,
+    ): ts.Expression | undefined =>
+        expression &&
+        ts.isPrefixUnaryExpression(expression) &&
+        expression.operator === ts.SyntaxKind.ExclamationToken
+            ? unwrapExpression(expression.operand)
+            : undefined;
+    // `!!(uv2Mask & <bit>)`: the masked read under two negations.
+    const decoded = negated(
+        negated(
+            unwrapExpression(variableInitializer(file, "_hasOcclusionUv2")),
+        ),
     );
-    const match = /_hasOcclusionUv2\s*=\s*!!\(uv2Mask\s*&\s*(\d+)\)/.exec(
-        source,
-    );
-    if (!match) {
+    if (
+        !decoded ||
+        !ts.isBinaryExpression(decoded) ||
+        decoded.operatorToken.kind !== ts.SyntaxKind.AmpersandToken ||
+        !ts.isIdentifier(decoded.left) ||
+        decoded.left.text !== "uv2Mask"
+    ) {
         refuseGeneration(
-            "src/material/pbr/pbr-template-ext.ts",
+            module,
             "Pinned pbr-template-ext.ts no longer decodes _hasOcclusionUv2 " +
-                "from a uv2Mask bit literal.",
+                "as !!(uv2Mask & <bit>).",
         );
     }
-    return Number(match[1]);
+    return numericValue(decoded.right, file);
 }
 
 /**
@@ -291,12 +313,11 @@ export interface MaterialSubject {
 /** Source-registered lights that join the scene's composed lighting arms. */
 export interface GltfNodeLights {
     count: number;
-    kinds: readonly string[];
+    kinds: readonly GltfLight["kind"][];
 }
 
-export function gltfNodeLights(path: string): GltfNodeLights {
-    const document = glbDocument(path);
-    if (!document) return { count: 0, kinds: [] };
+/** The lights a packaged document's executed light plan registers. */
+export function gltfNodeLights(document: JsonObject): GltfNodeLights {
     const plan = packagedGltfLights(document);
     const kinds = new Set(
         plan.sceneLights.map((index) => plan.lights[index]!.kind),
@@ -313,10 +334,8 @@ export function gltfNodeLights(path: string): GltfNodeLights {
  * composes every fragment with `PBR_HAS_ENV` and the tone-mapping arms the
  * environment turns on.
  */
-export function gltfHasImageBasedLight(path: string): boolean {
-    const record = glbDocument(path);
-    if (!record) return false;
-    const used = record["extensionsUsed"];
+export function gltfHasImageBasedLight(document: JsonObject): boolean {
+    const used = document["extensionsUsed"];
     return Array.isArray(used) && used.includes("EXT_lights_image_based");
 }
 

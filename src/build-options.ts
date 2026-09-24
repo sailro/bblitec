@@ -1,5 +1,7 @@
 /** Build-shape decisions shared by the scene command and its tests. */
 
+import { parseBackendName, type BackendSelection } from "./tooling/backends.js";
+
 export const DEVELOPMENT_VCPKG_INSTALL = "development-full";
 
 /** Platforms with both native renderers use the differential development build. */
@@ -27,10 +29,13 @@ export function developmentTriplet(
 export function selectedCompiledBackend(): ReturnType<
     typeof canonicalCompiledBackend
 > {
-    return canonicalCompiledBackend(
-        process.env.BBLITE_BACKEND ??
-            defaultDevelopmentBackend(process.platform),
-        "BBLITE_BACKEND",
+    return compiledBackendName(
+        parseBackendName(
+            process.env.BBLITE_BACKEND ??
+                defaultDevelopmentBackend(process.platform),
+            "BBLITE_BACKEND",
+            true,
+        ),
     );
 }
 
@@ -126,15 +131,17 @@ export function canonicalCompiledBackend(
     value: string,
     command: string,
 ): "SDL_GPU" | "DAWN" | "BOTH" {
-    const canonical = value.toUpperCase().replaceAll("-", "_");
-    if (
-        canonical === "SDL_GPU" ||
-        canonical === "DAWN" ||
-        canonical === "BOTH"
-    ) {
-        return canonical;
-    }
-    throw new Error(
-        `--backend must be sdl_gpu|dawn|both (got '${value}') for ${command}.`,
+    return compiledBackendName(
+        parseBackendName(value, `${command}: --backend`, true),
     );
+}
+
+function compiledBackendName(
+    backend: BackendSelection,
+): "SDL_GPU" | "DAWN" | "BOTH" {
+    return backend === "both"
+        ? "BOTH"
+        : backend === "dawn"
+          ? "DAWN"
+          : "SDL_GPU";
 }

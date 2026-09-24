@@ -6,12 +6,12 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     cppFunction,
-    cppSection,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
 import { packageKtx1 } from "../src/compressed-texture-package.js";
@@ -19,44 +19,41 @@ import { packageKtx1 } from "../src/compressed-texture-package.js";
 const nativeTools = optionalNativeFixtureTools(false);
 
 test(
-    "GPU picking maps CSS coordinates before bounds checks on both backends",
+    "GPU picking maps CSS coordinates before bounds checks",
     { skip: !nativeTools },
     () => {
-        const functions = ["sdl", "dawn"].map((backend) => {
-            const file = backend === "sdl" ? "pal_sdl_gpu.cpp" : "pal_dawn.cpp";
-            const source = readFileSync(`native/src/${file}`, "utf8");
-            const picker = cppFunction(
-                source,
-                `PickingInfo pick_${backend}_scene(`,
-            );
-            const mapping = cppSection(
-                picker,
-                "const double width =",
-                backend === "sdl"
-                    ? "    if (camera_record->viewport"
-                    : "    if (camera.viewport",
-            );
-            return `PickingInfo ${backend}(const Engine& engine, double x, double y) { ${mapping} return {true, x, y}; }`;
-        });
+        // Both backends take the pointer mapping from the one lowered
+        // `pickAsyncImpl` preamble (`prepare_gpu_pick` calls it).
+        const header = new PickingLowerer(new LoweringContext())
+            .mathHeader(false)
+            .replace("#pragma once\n", "");
         runCpp(
             "pick-client-coordinates",
             `
         #include <cassert>
         #include <cmath>
         #include <initializer_list>
-        struct Engine { struct { int width = 2404, height = 1080; } options; double canvas_client_width, canvas_client_height; };
-        struct PickingInfo { bool hit = false; double x = 0, y = 0; };
-        ${functions.join("\n")}
+        ${header}
+        struct Viewport { int x = 0, y = 0, width = 0, height = 0; };
+        struct Block { std::array<float, 16> view_projection{}; std::array<float, 2> fragment_coord{}; };
         int main() {
             for (const double density : {1.0, 1.25, 2.0, 2.4375, 3.0}) {
-                Engine engine{{}, 2404 / density, 1080 / density};
-                for (auto pick : {sdl, dawn}) {
-                    const auto result = pick(engine, 1700.25 / density, 700.5 / density);
-                    assert(result.hit && std::abs(result.x - 1700.25) < 1e-9 && std::abs(result.y - 700.5) < 1e-9);
-                    assert(!pick(engine, engine.canvas_client_width, 0).hit);
-                    assert(!pick(engine, 0, engine.canvas_client_height).hit);
-                    assert(!pick(engine, -1, 0).hit);
-                }
+                const double client_width = 2404 / density, client_height = 1080 / density;
+                bbl::upstream::PickPointer pointer;
+                const auto pick = [&](double x, double y) {
+                    Block block;
+                    return bbl::upstream::map_pick_pointer(
+                        [](double width, double height) {
+                            return Viewport{0, 0, static_cast<int>(width), static_cast<int>(height)};
+                        },
+                        [](double) { return std::array<float, 16>{}; },
+                        block, pointer, x, y, 2404.0, 1080.0, client_width, client_height);
+                };
+                assert(pick(1700.25 / density, 700.5 / density));
+                assert(std::abs(pointer.sample_x - 1700.25) < 1e-9 && std::abs(pointer.sample_y - 700.5) < 1e-9);
+                assert(!pick(client_width, 0));
+                assert(!pick(0, client_height));
+                assert(!pick(-1, 0));
             }
         }
     `,

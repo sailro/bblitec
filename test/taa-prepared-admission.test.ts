@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 const prefix = `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
     createTaaPostProcessTask, createBlackAndWhitePostProcessTask, registerScene, createPbrMaterial,
@@ -135,9 +138,9 @@ test("TAA leaves material and contributor admission to the prepared pass", () =>
         `await loadSplat(scene,"/cloud.splat");`,
         `await loadEnvironment(scene,"/studio.env",{skipGround:true});`,
     ]) {
-        assert.doesNotThrow(() => compileSource(prefix + body));
+        assert.doesNotThrow(() => compileSource(prefix + body, labDeployment));
         for (const source of [prefix + body + taa, prefix + taa + body]) {
-            assert.doesNotThrow(() => compileSource(source));
+            assert.doesNotThrow(() => compileSource(source, labDeployment));
         }
     }
 });

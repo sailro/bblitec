@@ -32,14 +32,15 @@ import { renderClosure } from "./closure-captures.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
     MATH_MEMBERS,
-    mathExtremeCpp,
     mathMemberAccess,
     mathUnaryFold,
 } from "./math-intrinsics.js";
+import { mathExtremeCpp } from "../lowering/pinned-operators.js";
 import {
     dataTypesEqual,
     doubleLiteral,
@@ -4939,14 +4940,7 @@ export class DataLowerer {
                 const booleanConstructor =
                     ts.isIdentifier(callback) &&
                     callback.text === "Boolean" &&
-                    (
-                        this.context.checker.getSymbolAtLocation(callback)
-                            ?.declarations ?? []
-                    ).some((declaration) =>
-                        /(?:^|[\\/])lib\.es5\.d\.ts$/i.test(
-                            declaration.getSourceFile().fileName,
-                        ),
-                    );
+                    this.context.isDefaultLibraryIdentifier(callback);
                 const callbackArguments: Value[] = [
                     elementValue,
                     {
@@ -5830,7 +5824,8 @@ export class DataLowerer {
      * identity is untouched either way — every evaluation still
      * constructs its own typed array, exactly as two `new Float32Array`
      * expressions construct two arrays; only the immutable source is shared.
-     * Float32 source tables apply the same narrowing as the destination store.
+     * The table stores each element already converted into the array's own
+     * element type (`typedArrayTable`), so the use site copies it unchanged.
      *
      * `constant` is the caller's structural fact that every element is a
      * generation-known number; an element referencing locals must keep
@@ -5849,17 +5844,46 @@ export class DataLowerer {
         ) {
             return `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`;
         }
+        // An element that is not a plain literal keeps the double table
+        // the runtime store converts.
+        const table = typedArrayTable(prefix, elements) ?? {
+            elementCppType: prefix === "f32" ? "float" : "double",
+            elements:
+                prefix === "f32"
+                    ? elements.map((element) =>
+                          typedArrayStoreExpression("f32array", element),
+                      )
+                    : [...elements],
+        };
         const name = this.context.dataTypes.registerSharedConstantArray(
             `${prefix}_values`,
-            prefix === "f32" ? "float" : "double",
-            prefix === "f32"
-                ? elements.map((element) =>
-                      typedArrayStoreExpression("f32array", element),
-                  )
-                : [...elements],
+            table.elementCppType,
+            table.elements,
             source,
         );
         return `bbl::js::${prefix}_array_from(bblscene::${name})`;
+    }
+
+    /**
+     * A namespace-scope table of string pairs, emitted once per distinct
+     * content and named here. Its entries are immutable literals, so any
+     * realm reads it without owning a JS object on another thread.
+     */
+    public stringPairTable(
+        preferredName: string,
+        pairs: readonly (readonly [string, string])[],
+        source: ts.Node,
+    ): string {
+        const entryType = "std::pair<std::string_view, std::string_view>";
+        return `bblscene::${this.context.dataTypes.registerSharedConstantArray(
+            preferredName,
+            entryType,
+            pairs.map(
+                ([first, second]) =>
+                    `${entryType}{${this.context.cppString(first)}, ${this.context.cppString(second)}}`,
+            ),
+            source,
+        )}`;
     }
 
     private compileDataViewNew(
@@ -7599,17 +7623,23 @@ export class DataLowerer {
         const nullish =
             expression.operatorToken.kind ===
             ts.SyntaxKind.QuestionQuestionEqualsToken;
-        if (nullish && (scalarKind || targetType?.kind !== "optional")) {
+        // An optional is present when engaged; a shared object is its
+        // reference, whose null is the binding's absent state.
+        const presence =
+            targetType?.kind === "optional"
+                ? `(${target.cpp}).has_value()`
+                : targetType?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(targetType.name)
+                  ? this.referencePresence(target.cpp)
+                  : undefined;
+        if (nullish && (scalarKind || presence === undefined)) {
             // A non-nullable target never takes the right side.
             return;
         }
         if (nullish) {
             this.context.reachJsData();
         }
-        const guard = this.logicalAssignmentGuard(
-            expression,
-            `!(${target.cpp}).has_value()`,
-        );
+        const guard = this.logicalAssignmentGuard(expression, `!${presence}`);
         this.emitGuardedStore(guard, () => {
             const value =
                 scalarKind === "number"

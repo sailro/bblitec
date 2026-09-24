@@ -28,6 +28,39 @@ test("emits the pinned caster version sum over transform and thin-instance versi
     );
 });
 
+test("emits the morph-target caster bounds only for a scene that registers them", () => {
+    // enableMorphTargetShadows is its own pinned module: without it the
+    // header carries no provider and the version sum has no weight term.
+    assert.doesNotMatch(
+        header,
+        /expand_morph_caster_bounds|ensure_morph_target_ranges|morph_weights_version|morph_shadow_bounds/,
+    );
+    assert.doesNotMatch(
+        shadowFactorySource(new LoweringContext(), ["shadow:pcf"]).source,
+        /enable_morph_target_shadows/,
+    );
+    const morph = pinnedShadowHeader(new LoweringContext(), [
+        "shadow:morph-bounds",
+    ]);
+    assert.match(morph, /inline void expand_morph_caster_bounds\(/);
+    assert.match(morph, /inline void ensure_morph_target_ranges\(/);
+    assert.match(
+        morph,
+        /if \(morph_shadow_bounds\) sum \+= mesh\.morph_weights_version;/,
+    );
+    assert.match(
+        morph,
+        /shadow_caster_version_sum\(\s*engine, generator\.caster_meshes, generator\.morph_shadow_bounds\)/,
+    );
+    assert.match(
+        shadowFactorySource(new LoweringContext(), [
+            "shadow:pcf",
+            "shadow:morph-bounds",
+        ]).source,
+        /void enable_morph_target_shadows\(/,
+    );
+});
+
 test("emits the render gate on the pin's own version rule", () => {
     // The disable flag short-circuits at the top — the pin evaluates it
     // first in its own && chain, so this is its order, not a new one —
@@ -228,7 +261,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     // layout -- and every task supplies its own light-space uniform block.
     assert.match(
         dawn,
-        /WGPUPipelineLayout shader_pipeline_layout_for\([\s\S]{0,3200}WGPUBufferBindingType_ReadOnlyStorage/,
+        /WGPUBindGroupLayout shader_group_layout\([\s\S]{0,600}case 0:[\s\S]{0,300}storage_layout_entry\(binding\+\+, WGPUShaderStage_Vertex\)/,
     );
     assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
     assert.match(

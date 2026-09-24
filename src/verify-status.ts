@@ -27,7 +27,11 @@ import type {
 import { isWobblingCell } from "./scene-neutrality.js";
 import { scenes } from "./scene-registry.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
-import { parityCanvasReportPath } from "./tooling/artifacts.js";
+import {
+    artifactDirectory,
+    parityCanvasReportPath,
+    parityReportPath,
+} from "./tooling/artifacts.js";
 import { readReport } from "./tooling/reports.js";
 
 export interface PublishedRow {
@@ -203,13 +207,10 @@ function measured(
     parityRoot: string,
     sceneId: string,
 ): { values: number[]; source: string } | undefined {
-    const differentialPath = resolve(
-        parityRoot,
-        sceneId,
-        "report-differential.json",
-    );
-    const gpuPath = resolve(parityRoot, sceneId, "report-gpu.json");
-    const dawnPath = resolve(parityRoot, sceneId, "report-dawn.json");
+    const directory = resolve(parityRoot, sceneId);
+    const differentialPath = parityReportPath(directory, "differential");
+    const gpuPath = parityReportPath(directory, "gpu");
+    const dawnPath = parityReportPath(directory, "dawn");
     // A differential report is preferred only while it is at least as fresh
     // as the single-backend reports: a fresh single-backend rerun must not
     // be shadowed by a stale differential from an earlier sweep.
@@ -220,31 +221,29 @@ function measured(
         existsSync(dawnPath) &&
         Math.max(mtime(gpuPath), mtime(dawnPath)) > mtime(differentialPath);
     if (existsSync(differentialPath) && !singlesFresh) {
-        const report = JSON.parse(
-            readFileSync(differentialPath, "utf8"),
-        ) as DifferentialReportSummary;
+        // An unreadable differential reads as unmeasured, never as a
+        // silent step down to older single-backend reports.
+        const differential =
+            readReport<DifferentialReportSummary>(differentialPath);
+        if (differential === undefined) return undefined;
         return {
             source: differentialPath,
             values: [
-                report.goldenVersusSdlGpu.fullMad,
-                report.goldenVersusSdlGpu.foregroundMad,
-                report.goldenVersusDawn.fullMad,
-                report.goldenVersusDawn.foregroundMad,
+                differential.goldenVersusSdlGpu.fullMad,
+                differential.goldenVersusSdlGpu.foregroundMad,
+                differential.goldenVersusDawn.fullMad,
+                differential.goldenVersusDawn.foregroundMad,
             ],
         };
     }
     // Without a differential report the two columns come from the two
     // single-backend runs, and a missing Dawn report is a gap rather than
     // a pass: the column is published, so it has to be measured.
-    if (!existsSync(gpuPath) || !existsSync(dawnPath)) {
+    const gpu = readReport<ParityReportSummary>(gpuPath);
+    const dawn = readReport<ParityReportSummary>(dawnPath);
+    if (gpu === undefined || dawn === undefined) {
         return undefined;
     }
-    const gpu = JSON.parse(
-        readFileSync(gpuPath, "utf8"),
-    ) as ParityReportSummary;
-    const dawn = JSON.parse(
-        readFileSync(dawnPath, "utf8"),
-    ) as ParityReportSummary;
     return {
         source: `${gpuPath} + ${dawnPath}`,
         values: [gpu.full.mad, gpu.region.mad, dawn.full.mad, dawn.region.mad],
@@ -273,7 +272,7 @@ export function canvasProblems(
         const report = readReport<CanvasReport>(reportPath);
         if (report === undefined) {
             problems.push(
-                `${statusPath}:${row.line} ${row.sceneId} canvas-only: no canvas report at ${reportPath}; run 'scene -- parity ${row.sceneId} --differential' before verifying.`,
+                `${statusPath}:${row.line} ${row.sceneId} canvas-only: no canvas report at ${reportPath}; run 'scene -- parity ${row.sceneId}' before verifying.`,
             );
             continue;
         }
@@ -323,8 +322,8 @@ export interface StatusVerdict {
 
 export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
     const statusPath = options.statusPath ?? "docs/status.md";
-    const parityRoot = options.parityRoot ?? "artifacts/parity";
-    const canvasRoot = options.canvasRoot ?? "artifacts/parity-canvas";
+    const parityRoot = options.parityRoot ?? artifactDirectory("parity");
+    const canvasRoot = options.canvasRoot ?? artifactDirectory("parity-canvas");
     const problems: string[] = [];
     const exempt: string[] = [];
     const rows = parsePublishedRows(readFileSync(statusPath, "utf8"));
@@ -347,7 +346,7 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
         const result = measured(parityRoot, row.sceneId);
         if (!result) {
             problems.push(
-                `${statusPath}:${row.line} ${row.sceneId}: no parity report; run 'npm run scenes:parity' before verifying.`,
+                `${statusPath}:${row.line} ${row.sceneId}: no parity report; run 'npm run scene -- parity all' before verifying.`,
             );
             continue;
         }

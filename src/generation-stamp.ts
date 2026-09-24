@@ -24,7 +24,7 @@
 // an edited one must miss.
 //
 // The record lives under `artifacts/`, not inside the generated tree:
-// `scene -- neutrality-generated` digests every generated file, and a
+// `scene -- neutrality --generated` digests every generated file, and a
 // record that moves with the compiler's own stamp would make two
 // byte-identical generations look different. It carries the input list
 // itself, so a staleness check never parses a manifest.
@@ -60,7 +60,8 @@ import {
     metadataFingerprint,
     toolIdentity,
     writeJsonRecord,
-} from "./validation-resume.js";
+} from "./tooling/records.js";
+import { artifactDirectory } from "./tooling/artifacts.js";
 
 export interface GenerationStamp {
     version: 2;
@@ -70,6 +71,8 @@ export interface GenerationStamp {
     input: string;
     /** Digest of the size and mtime of everything it wrote. */
     output: string;
+    /** Wall time the generation took, a scheduling hint for the next one. */
+    durationMs?: number;
 }
 
 export interface GenerationScene {
@@ -84,10 +87,22 @@ export function generationStampPath(
 ): string {
     return resolve(
         repositoryRoot,
-        "artifacts",
-        "generation-stamps",
-        `${sceneId}.json`,
+        artifactDirectory("generation-stamps", `${sceneId}.json`),
     );
+}
+
+/**
+ * How long the scene's last recorded generation took, stale or not: the
+ * generation stage starts the longest ones first (`orderByHistoricalCost`)
+ * so the largest applications stop finishing last. `undefined` without a
+ * record, which schedules the scene first.
+ */
+export function historicalGenerationCostMs(
+    sceneId: string,
+    repositoryRoot = process.cwd(),
+): number | undefined {
+    return readGenerationStamp(generationStampPath(sceneId, repositoryRoot))
+        ?.durationMs;
 }
 
 /**
@@ -190,7 +205,9 @@ function readGenerationStamp(path: string): GenerationStamp | undefined {
             Array.isArray(value.inputs) &&
             value.inputs.every((entry) => typeof entry === "string") &&
             typeof value.input === "string" &&
-            typeof value.output === "string"
+            typeof value.output === "string" &&
+            (value.durationMs === undefined ||
+                (Number.isFinite(value.durationMs) && value.durationMs >= 0))
         ) {
             return value as GenerationStamp;
         }
@@ -293,14 +310,16 @@ function manifestInputs(outputDirectory: string): string[] | undefined {
  * written while it ran -- a file edited mid-generation may or may not be
  * in the tree, so no record is written and the next run regenerates.
  * `startedAt` is the millisecond clock reading taken before the compiler
- * was launched.
+ * was launched; `durationMs` is the work the generation cost when that is
+ * not simply the time since then (a specialization that ran after a wait).
  */
 export function recordGeneration(
     scene: GenerationScene,
     compilerArguments: readonly string[],
     startedAt: number,
-    repositoryRoot = process.cwd(),
+    options: { durationMs?: number; repositoryRoot?: string } = {},
 ): boolean {
+    const repositoryRoot = options.repositoryRoot ?? process.cwd();
     const output = resolve(scene.output);
     const inputs = manifestInputs(output);
     if (inputs === undefined) return false;
@@ -320,6 +339,7 @@ export function recordGeneration(
         inputs,
         input,
         output: generationOutputFingerprint(output),
+        durationMs: options.durationMs ?? Date.now() - startedAt,
     } satisfies GenerationStamp);
     return true;
 }

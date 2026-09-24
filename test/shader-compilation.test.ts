@@ -965,7 +965,9 @@ test(
                 tools,
                 target: "metal",
             });
-        assert.throws(compile, /tint.*failed/i);
+        // The stage's binding reflection reads the module before Tint does,
+        // so an invalid module refuses there first.
+        assert.throws(compile, /Unsupported WGSL declaration 'invalid'/);
         writeFileSync(join(second, "simple.frag.native.wgsl"), fragment);
         const result = compile();
         assert.equal(result.directoriesReused, 1);

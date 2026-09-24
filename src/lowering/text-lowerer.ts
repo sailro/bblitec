@@ -447,15 +447,10 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
             ["ObservableVec3", "scaling", ["x", "y", "z"]],
             ["ObservableQuat", "rotation_quaternion", ["x", "y", "z", "w"]],
         ] as const) {
-            const file = c.sourceFile(
+            const { file, declaration: owner } = c.classDeclaration(
                 `src/math/${className === "ObservableQuat" ? "observable-quat" : "observable-vec3"}.ts`,
+                className,
             );
-            const owner = c.findNodes(
-                file,
-                (node): node is ts.ClassDeclaration =>
-                    ts.isClassDeclaration(node) &&
-                    node.name?.text === className,
-            )[0]!;
             const bindings = new Map<string, PinnedBinding>([
                 ["v", scalar("value")],
                 ["this._version", scalar("r.quaternion_version")],

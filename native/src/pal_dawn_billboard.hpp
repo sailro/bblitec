@@ -192,7 +192,7 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
         pass.group_layouts[3] = wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
     }
 
-    std::array<WGPUVertexAttribute, upstream::billboard_instance_attributes.size()> attributes{};
+    auto attributes = vertex_attribute_array<upstream::billboard_instance_attributes.size()>();
     for (std::size_t index = 0; index < upstream::billboard_instance_attributes.size(); ++index) {
         const upstream::BillboardInstanceAttribute& row =
             upstream::billboard_instance_attributes[index];

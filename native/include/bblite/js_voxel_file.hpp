@@ -20,12 +20,17 @@
 
 namespace bbl::js {
 
-inline const pal::FileDialogOptions voxel_file_dialog_options{
-    .title = "",
-    .suggested_name = "world.voxelsave.json",
-    .filter_name = "Voxel world save (*.json)",
-    .filter_pattern = "*.json",
-};
+// A function-local static: a namespace-scope std::string initializer can
+// throw before main.
+inline const pal::FileDialogOptions& voxel_file_dialog_options() {
+    static const pal::FileDialogOptions options{
+        .title = "",
+        .suggested_name = "world.voxelsave.json",
+        .filter_name = "Voxel world save (*.json)",
+        .filter_pattern = "*.json",
+    };
+    return options;
+}
 
 /**
  * `saveToFile(data)`: the pin's compact `JSON.stringify` of the save record,
@@ -36,7 +41,7 @@ template <typename SaveData>
     if (!data || !data->player) {
         return false;
     }
-    pal::FileDialogOptions options = voxel_file_dialog_options;
+    pal::FileDialogOptions options = voxel_file_dialog_options();
     options.title = "Save Voxel World";
     const auto number = [](double value) { return NumberPart(value); };
     std::string text =
@@ -97,7 +102,7 @@ private:
 
 /** `loadFromFile()`: an empty handle where the pin resolves `null`. */
 template <typename SaveData> [[nodiscard]] inline SaveData load_voxel_world(Engine& engine) {
-    pal::FileDialogOptions options = voxel_file_dialog_options;
+    pal::FileDialogOptions options = voxel_file_dialog_options();
     options.title = "Load Voxel World";
     const auto file = pal::choose_open_file(engine, options);
     if (!file)

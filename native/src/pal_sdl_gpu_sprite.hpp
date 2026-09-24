@@ -125,24 +125,6 @@ using SceneSpritePass =
     OwnedGpuRecord<SceneSpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>,
                    release_scene_sprite_pass_resources>;
 
-inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
-    switch (factor) {
-    case SpriteBlendFactor::zero:
-        return SDL_GPU_BLENDFACTOR_ZERO;
-    case SpriteBlendFactor::one:
-        return SDL_GPU_BLENDFACTOR_ONE;
-    case SpriteBlendFactor::src_alpha:
-        return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    case SpriteBlendFactor::one_minus_src_alpha:
-        return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    case SpriteBlendFactor::dst:
-        return SDL_GPU_BLENDFACTOR_DST_COLOR;
-    case SpriteBlendFactor::dst_alpha:
-        return SDL_GPU_BLENDFACTOR_DST_ALPHA;
-    }
-    return SDL_GPU_BLENDFACTOR_ONE;
-}
-
 /**
  * One layer's pipeline.
  *
@@ -388,14 +370,6 @@ inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* devic
 }
 
 inline void release_sprite_layer_gpu(SDL_GPUDevice*, SpriteLayerGpu& layer) { layer.reset(); }
-
-/** Release only the per-layer GPU objects, keeping the shared index buffer. */
-inline void release_sprite_pass_layers(SDL_GPUDevice* device, SpritePass& pass) {
-    for (SpriteLayerGpu& layer : pass.layers) {
-        release_sprite_layer_gpu(device, layer);
-    }
-    pass.layers.clear();
-}
 
 /**
  * Bring the pass's per-layer records in step with the renderer's list.

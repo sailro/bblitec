@@ -6,11 +6,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { specializeGltf } from "../src/asset-specializer.js";
-import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { packageGltf } from "../src/gltf-packager.js";
-import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
+import {
+    GLTF_SOURCE_ALBEDO_IDENTITIES,
+    parseGlbJson,
+} from "../src/gltf-document.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
-import { buildGlb, readGlbFixture } from "./glb-fixture.js";
+import {
+    buildGlb,
+    readGlbFixture,
+    resolveGeometryExtensions,
+} from "./glb-fixture.js";
 
 test("packages external glTF buffers and images into a GLB", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-package-"));
@@ -533,7 +539,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 Buffer.from(combinedResolvedBytes),
             );
             const specialization = specializeGltf(
-                combinedResolvedPath,
+                parseGlbJson(combinedResolvedPath),
                 "combined-resolved.glb",
             );
             assert.deepEqual(specialization.extensionsUsed, []);
@@ -552,8 +558,8 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 readUpstreamPin().sourceVersion,
                 "meshopt_decoder.js",
             );
-            const compressedGeometryModule = new URL(
-                "../src/compressed-geometry.js",
+            const geometryResolverModule = new URL(
+                "./glb-fixture.js",
                 import.meta.url,
             ).href;
             const retryScript = `
@@ -561,7 +567,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 import { readFileSync } from "node:fs";
 
                 const { resolveGeometryExtensions } = await import(
-                    process.env.BBLITE_TEST_COMPRESSED_GEOMETRY_MODULE
+                    process.env.BBLITE_TEST_GEOMETRY_RESOLVER_MODULE
                 );
                 const fixture = readFileSync(
                     process.env.BBLITE_TEST_MESHOPT_FIXTURE
@@ -600,8 +606,8 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                     encoding: "utf8",
                     env: {
                         ...process.env,
-                        BBLITE_TEST_COMPRESSED_GEOMETRY_MODULE:
-                            compressedGeometryModule,
+                        BBLITE_TEST_GEOMETRY_RESOLVER_MODULE:
+                            geometryResolverModule,
                         BBLITE_TEST_MESHOPT_FIXTURE: retryFixture,
                         BBLITE_TEST_MESHOPT_ARTIFACT: decoderArtifact,
                     },

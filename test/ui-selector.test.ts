@@ -7,11 +7,10 @@ import {
     parseUiSelectorSequence,
     splitUiSelectorList,
     uiSelectorSequenceCss,
-    uiSelectorSequenceSpecificity,
 } from "../src/ui-selector.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
-test("compound selector parsing preserves relations, quoted values and specificity", () => {
+test("compound selector parsing preserves relations and quoted values", () => {
     const selector = `section.panel.selected > button[data-mode='a,b'] + .entry:focus`;
     const sequence = parseUiSelectorSequence(selector)!;
     assert.deepEqual(
@@ -22,7 +21,6 @@ test("compound selector parsing preserves relations, quoted values and specifici
         uiSelectorSequenceCss(sequence),
         'section.panel.selected > button[data-mode="a,b"] + .entry:focus',
     );
-    assert.equal(uiSelectorSequenceSpecificity(sequence), 5 * 0x100 + 2);
     assert.deepEqual(
         splitUiSelectorList(`${selector}, .entry:not(.a,.b),[title="a,b"]`),
         [selector, ".entry:not(.a,.b)", '[title="a,b"]'],
@@ -53,7 +51,7 @@ test("compound selector parsing preserves relations, quoted values and specifici
         );
 });
 
-test("structural and negated selector terms normalize formulas and retain specificity", () => {
+test("structural and negated selector terms normalize formulas", () => {
     const parse = (source: string) => parseUiSelectorSequence(source)!;
     assert.equal(
         uiSelectorSequenceCss(parse(".item:first-child")),
@@ -66,24 +64,6 @@ test("structural and negated selector terms normalize formulas and retain specif
     assert.equal(
         uiSelectorSequenceCss(parse(".item:nth-last-of-type(odd)")),
         ".item:nth-last-of-type(2n+1)",
-    );
-    assert.equal(
-        uiSelectorSequenceSpecificity(parse(".item:not(.muted, #blocked)")),
-        0x10100,
-    );
-    assert.equal(
-        uiSelectorSequenceSpecificity(parse(".item:is(.muted, #blocked)")),
-        0x10100,
-    );
-    assert.equal(
-        uiSelectorSequenceSpecificity(parse(".item:where(.muted, #blocked)")),
-        0x100,
-    );
-    assert.equal(
-        uiSelectorSequenceSpecificity(
-            parse(".item:has(> .child, + #neighbor)"),
-        ),
-        0x10100,
     );
     for (const source of [
         ".item:not(:not(.muted))",

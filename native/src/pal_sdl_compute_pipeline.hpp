@@ -252,9 +252,11 @@ inline void encode_sdl_compute(SDL_GPUCommandBuffer* command, const ComputeDispa
                 writable_textures.at(slot.index) = {native.texture, 0, 0, false, 0, 0, 0};
         }
     }
-    auto* pass = SDL_BeginGPUComputePass(
+    // The indirect-buffer lookup below can refuse; the guard still ends the
+    // pass before the command buffer is cancelled.
+    SdlComputePass pass{SDL_BeginGPUComputePass(
         command, writable_textures.data(), static_cast<Uint32>(writable_textures.size()),
-        writable_buffers.data(), static_cast<Uint32>(writable_buffers.size()));
+        writable_buffers.data(), static_cast<Uint32>(writable_buffers.size()))};
     if (!pass)
         gpu_error("SDL_BeginGPUComputePass");
     SDL_BindGPUComputePipeline(pass, pipeline.handle);
@@ -273,7 +275,7 @@ inline void encode_sdl_compute(SDL_GPUCommandBuffer* command, const ComputeDispa
     else
         SDL_DispatchGPUCompute(pass, source.workgroups[0], source.workgroups[1],
                                source.workgroups[2]);
-    SDL_EndGPUComputePass(pass);
+    pass.end();
 }
 inline void dispatch_sdl_compute(SDL_GPUDevice* device, const ComputeDispatch& source) {
     SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};

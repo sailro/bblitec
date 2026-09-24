@@ -3,6 +3,11 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 export interface DeploymentOptions {
     /** Local directory served at the deployment URL. */
     publicDir?: string;
+    /**
+     * Absolute HTTP(S) URL that serves the public directory's contents:
+     * a root-relative asset no public directory holds loads from beneath it.
+     */
+    publicUrl?: string;
     /** Absolute HTTP(S) URL of the application's base directory. */
     siteUrl?: string;
     /** Explicit client-visible build strings; absent custom keys are undefined. */
@@ -46,6 +51,41 @@ export function deploymentUrl(options: DeploymentOptions): URL {
     }
     if (!url.pathname.endsWith("/")) url.pathname += "/";
     return url;
+}
+
+/** The public URL as a directory URL; anything but a plain HTTP(S) URL refuses. */
+export function deploymentPublicUrl(publicUrl: string): string {
+    const url = URL.canParse(publicUrl) ? new URL(publicUrl) : undefined;
+    if (
+        !url ||
+        !["http:", "https:"].includes(url.protocol) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+    ) {
+        throw new Error(
+            "The public URL must be an absolute HTTP(S) URL without credentials, a query, or a fragment.",
+        );
+    }
+    if (!url.pathname.endsWith("/")) url.pathname += "/";
+    return url.href;
+}
+
+/**
+ * A root-relative URL beneath the application's base, served from the public
+ * URL: the path below the base is appended as written, so the served URL
+ * names the same file the public directory would.
+ */
+export function deploymentPublicAsset(
+    source: string,
+    options: DeploymentOptions,
+): string | undefined {
+    if (!options.publicUrl || !source.startsWith("/")) return undefined;
+    const base = deploymentUrl(options).pathname;
+    return source.startsWith(base)
+        ? deploymentPublicUrl(options.publicUrl) + source.slice(base.length)
+        : undefined;
 }
 
 /** Map URLs beneath the application's base to its public files. */

@@ -28,18 +28,46 @@ test("every native driver routes DOM input, replay, UI consumption and window ev
         "sdl_gpu_frame_graph",
         "dawn_frame_graph",
     ];
+    // The standalone hosts share RendererRun's prepare phase and supply
+    // only their window, event and surface hooks.
+    const session = readFileSync("native/src/pal_frame_session.hpp", "utf8");
+    writeFileSync(
+        join(output, "renderer-run.hpp"),
+        ["void poll_events()", "FramePreparation prepare_surface()"]
+            .map((signature) => cppFunction(session, signature))
+            .join("\n"),
+    );
+    const hooks = [
+        "SDL_Window* sdl_window() const",
+        "void poll_events()",
+        "FramePreparation prepare_surface()",
+    ];
     writeFileSync(
         join(output, "drivers.hpp"),
         drivers
-            .map(
-                (name, index) =>
-                    `struct Driver${index} : ${index < 2 ? "SceneInputDriver" : "InputDriver"} { using ${index < 2 ? "SceneInputDriver" : "InputDriver"}::${index < 2 ? "SceneInputDriver" : "InputDriver"};\n` +
-                    cppFunction(
-                        readFileSync(`native/src/pal_${name}.cpp`, "utf8"),
-                        "FramePreparation prepare(",
-                    ) +
-                    "\n};",
-            )
+            .map((name, index) => {
+                const source = readFileSync(
+                    `native/src/pal_${name}.cpp`,
+                    "utf8",
+                );
+                if (index < 2)
+                    return (
+                        `struct Driver${index} : SceneInputDriver { using SceneInputDriver::SceneInputDriver;\n` +
+                        cppFunction(source, "FramePreparation prepare(") +
+                        "\n};"
+                    );
+                return (
+                    `struct Driver${index} : InputDriver { using InputDriver::InputDriver; using RendererRun = InputDriver;\n` +
+                    `Driver${index}& derived() { return *this; }\n` +
+                    hooks
+                        .filter((hook) => source.includes(hook))
+                        .map((hook) => cppFunction(source, hook))
+                        .join("\n") +
+                    "\n" +
+                    cppFunction(session, "FramePreparation prepare(") +
+                    "\n};"
+                );
+            })
             .join("\n"),
     );
     writeFileSync(

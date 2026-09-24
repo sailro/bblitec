@@ -27,7 +27,7 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.js";
+import { pinnedAgentParamDefaults } from "../../lowering/navigation-lowerer.js";
 
 export interface NavigationIntrinsicContext
     extends
@@ -451,7 +451,7 @@ export function compileNavigationIntrinsic(
             validateObjectProperties(
                 context,
                 options,
-                AGENT_PARAM_NAMES,
+                agentParamNames(),
                 "Reached crowd agents name the pinned dtCrowdAgentParams fields.",
             );
             // `reachRadius` is the one `AgentParameters` field the pinned
@@ -482,10 +482,9 @@ export function compileNavigationIntrinsic(
                 );
             }
             // The pin's own `?? N` defaults, resolved here so the
-            // wrapper's spread never decides them. The numbers come from
-            // the table the lowerer gates against the pinned expression,
-            // so neither side can move alone.
-            for (const [name, field, fallback] of PINNED_AGENT_PARAM_DEFAULTS) {
+            // wrapper's spread never decides them, read off the pinned
+            // `addAgent` itself.
+            for (const [name, field, fallback] of pinnedAgentParamDefaults()) {
                 const value = context.objectProperty(options, name);
                 const resolved = value
                     ? context.compileNumber(value, "double")
@@ -522,10 +521,9 @@ export function compileNavigationIntrinsic(
 
 /**
  * The `AgentParameters` fields the pinned `addAgent` forwards and the
- * caller must supply. The three it defaults with `?? N` live in
- * `PINNED_AGENT_PARAM_DEFAULTS`, beside the assertion that gates them
- * against the pin; `reachRadius` is declared upstream and forwarded
- * nowhere, so it is refused at the call site instead.
+ * caller must supply. The three it defaults with `?? N` are read off it
+ * (`pinnedAgentParamDefaults`); `reachRadius` is declared upstream and
+ * forwarded nowhere, so it is refused at the call site instead.
  */
 const AGENT_FLOAT_PARAMS: readonly (readonly [string, string])[] = [
     ["radius", "radius"],
@@ -537,11 +535,13 @@ const AGENT_FLOAT_PARAMS: readonly (readonly [string, string])[] = [
     ["separationWeight", "separation_weight"],
 ];
 
-const AGENT_PARAM_NAMES = [
-    ...AGENT_FLOAT_PARAMS.map(([name]) => name),
-    ...PINNED_AGENT_PARAM_DEFAULTS.map(([name]) => name),
-    "reachRadius",
-];
+function agentParamNames(): string[] {
+    return [
+        ...AGENT_FLOAT_PARAMS.map(([name]) => name),
+        ...pinnedAgentParamDefaults().map(([name]) => name),
+        "reachRadius",
+    ];
+}
 
 /**
  * The three lanes of a native vector, as a record the scene reads at run

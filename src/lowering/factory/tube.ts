@@ -1,39 +1,32 @@
 /**
- * `createTube`, lowered from its pinned chain: `createTubeData`
- * (src/mesh/create-tube.ts) sweeping a circle along `computePath3D`'s
- * Frenet frames (src/mesh/path3d.ts), triangulated by
- * `createRibbonData` (src/mesh/create-ribbon.ts) with
- * `computeNormals` (src/mesh/compute-normals.ts), finished through the
- * existing native `create_mesh_from_data` under the pin's own "tube"
- * name.
+ * `createTube` and `createExtrudeShape`, lowered from their pinned chain:
+ * `createTubeData` (src/mesh/create-tube.ts) and `createExtrudeShapeData`
+ * (src/mesh/create-extrude.ts) sweep a cross-section along
+ * `computePath3D`'s Frenet frames (src/mesh/path3d.ts) and hand the rows to
+ * `createRibbonData`, which the factory unit lowers once for every builder
+ * that finishes through it, under the pinned factory's own mesh name.
  *
- * The emission is the reached subset. The vector arithmetic the sweep
- * and the frames call -- the three `Vec3` helpers, the object
- * normalization and the Rodrigues rotation -- is translated whole from
- * its pinned declarations (`lowerVectorHelpers`); every other
- * load-bearing formula is shape-asserted against the pinned AST (the
- * Frenet tangent/normal/binormal steps, the ribbon's distance tables and
- * triangulation pushes, the seam averaging, the normals accumulation),
- * and the constants flow (the path epsilon, the radius/tessellation
- * defaults, the full-turn step). The cap, arc, radius-function and single-path arms are
- * outside the reached subset: the intrinsic refuses their options by
- * name, and the anchors here pin the pinned defaults that make the
- * dropped arms unreachable (cap NONE starts the circle index at 0,
- * arc 1 keeps the full-turn step).
+ * Every body here is translated from its declaration: the vector helpers,
+ * the path frames and both sweeps. The one specialized part is each sweep's
+ * option head: the compiler intrinsic names the path, radius, tessellation,
+ * scale and rotation and refuses the cap, arc and radius-function options,
+ * so the cap is the pin's `CAP_NONE`, the arc its own `?? 1` fallback and
+ * the radius function absent -- which is what leaves the cap and
+ * radius-function arms untranslated.
  *
- * Widths follow the pin exactly: every intermediate is a JS double,
- * and the only float rounding is `createMeshFromData`'s own typed-array
- * stores — the ribbon converts to Float32Array at the very end, which
- * is the `create_mesh_from_data` boundary here.
+ * Widths follow the pin exactly: every intermediate is a JS double, and the
+ * only float rounding is `createMeshFromData`'s own typed-array stores.
  */
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
+import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import {
     lowerObjectComponents,
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "../pinned-function-lowerer.js";
 import {
+    absentBinding,
     type PinnedBinding,
     type PinnedNumericLowerer,
     recordLiteralCpp,
@@ -51,6 +44,18 @@ function vec3Parameter(pinned: string): PinnedFunctionParameter {
     };
 }
 
+/** A pinned `Vec3[]` parameter, read as the runtime's double record list. */
+function vec3ListParameter(pinned: string): PinnedFunctionParameter {
+    return {
+        pinned,
+        kind: "record",
+        cpp: pinned,
+        cppType: "std::vector<Vec3d>",
+        annotation: "Vec3[]",
+        binding: { cpp: pinned, type: "vec3-list" },
+    };
+}
+
 /** The three members a body reads off each named `Vec3` parameter. */
 function vec3Members(...names: readonly string[]): Map<string, PinnedBinding> {
     return new Map(
@@ -63,47 +68,105 @@ function vec3Members(...names: readonly string[]): Map<string, PinnedBinding> {
     );
 }
 
+const PATH_MODULE = "src/mesh/path3d.ts";
+const TUBE_MODULE = "src/mesh/create-tube.ts";
+const EXTRUDE_MODULE = "src/mesh/create-extrude.ts";
+
 export class TubeLowerer {
     public constructor(private readonly context: LoweringContext) {}
+
+    /**
+     * The pinned vector arithmetic the frames and the sweeps call, by pinned
+     * name: each a C++ spelling of a helper lowered below, and each
+     * returning the `Vec3` record every one of them hands back.
+     */
+    private readonly vectorCalls = new Map<
+        string,
+        (args: readonly string[]) => string
+    >([
+        ...pinnedNumericMathCalls(),
+        ...(
+            [
+                ["lengthVec3", "tube_length"],
+                ["subtractVec3", "tube_sub"],
+                ["crossVec3", "tube_cross"],
+                ["normalizeVec3", "tube_normalize"],
+                ["rodrigues", "tube_rodrigues"],
+                ["withinEpsilon", "tube_within_epsilon"],
+                ["getFirstNonNullVector", "tube_first_non_null"],
+                ["getLastNonNullVector", "tube_last_non_null"],
+            ] as const
+        ).map(
+            ([pinned, cpp]): [string, (args: readonly string[]) => string] => [
+                pinned,
+                (args) => `${cpp}(${args.join(", ")})`,
+            ],
+        ),
+        ["vec3", (args) => recordLiteralCpp("vec3", args)],
+    ]);
+
+    private readonly vectorShapes = new Map<string, PinnedBinding["type"]>(
+        [
+            "subtractVec3",
+            "crossVec3",
+            "normalizeVec3",
+            "rodrigues",
+            "getFirstNonNullVector",
+            "getLastNonNullVector",
+            "normalVector",
+            "vec3",
+        ].map((name) => [name, "vec3"]),
+    );
+
+    private readonly vec3Literal = (
+        type: PinnedBinding["type"],
+        components: readonly string[],
+    ): string =>
+        type === "vec3"
+            ? recordLiteralCpp("vec3", components)
+            : this.context.contractError(
+                  this.context.sourceFile(PATH_MODULE),
+                  `A sweep builds only Vec3 records, not ${type}.`,
+              );
+
+    private returnsVec3(modulePath: string, symbolName: string) {
+        return {
+            type: "Vec3d",
+            value: (
+                lowerer: PinnedNumericLowerer,
+                expression: ts.Expression | undefined,
+            ): string => {
+                const returned = expression
+                    ? this.context.unwrapExpression(expression)
+                    : this.context.contractError(
+                          this.context.functionDeclaration(
+                              modulePath,
+                              symbolName,
+                          ).declaration,
+                          `Expected pinned ${symbolName} to return a value.`,
+                      );
+                return ts.isObjectLiteralExpression(returned)
+                    ? recordLiteralCpp(
+                          "vec3",
+                          lowerObjectComponents(
+                              this.context,
+                              lowerer,
+                              returned,
+                              ["x", "y", "z"],
+                          ),
+                      )
+                    : lowerer.expression(returned);
+            },
+        };
+    }
 
     /**
      * The five pinned vector helpers the sweep and the Frenet chain call,
      * each translated whole from its own declaration: the three `Vec3`
      * arithmetic modules, the object normalization (whose degenerate arm
      * answers zero below `1e-10`), and the tube's own Rodrigues rotation.
-     * They keep the `tube_` spellings the hand-written frames call them by.
      */
-    private lowerVectorHelpers(tubeModule: string): string {
-        const calls = new Map([
-            ...pinnedNumericMathCalls(),
-            [
-                "lengthVec3",
-                (args: readonly string[]) => `tube_length(${args.join(", ")})`,
-            ],
-        ]);
-        const returnsVec3 = (modulePath: string, symbolName: string) => ({
-            type: "Vec3d",
-            value: (
-                lowerer: PinnedNumericLowerer,
-                expression: ts.Expression | undefined,
-            ): string =>
-                recordLiteralCpp(
-                    "vec3",
-                    lowerObjectComponents(
-                        this.context,
-                        lowerer,
-                        expression ??
-                            this.context.contractError(
-                                this.context.functionDeclaration(
-                                    modulePath,
-                                    symbolName,
-                                ).declaration,
-                                `Expected pinned ${symbolName} to return a value.`,
-                            ),
-                        ["x", "y", "z"],
-                    ),
-                ),
-        });
+    private lowerVectorHelpers(): string {
         const lengthModule = "src/math/length-vec3.ts";
         const subModule = "src/math/subtract-vec3.ts";
         const crossModule = "src/math/cross-vec3.ts";
@@ -117,7 +180,7 @@ export class TubeLowerer {
                 {
                     cppName: "tube_length",
                     returns: "double",
-                    calls,
+                    calls: this.vectorCalls,
                     memberBindings: vec3Members("v"),
                 },
             ),
@@ -128,8 +191,8 @@ export class TubeLowerer {
                 [vec3Parameter("a"), vec3Parameter("b")],
                 {
                     cppName: "tube_sub",
-                    returns: returnsVec3(subModule, "subtractVec3"),
-                    calls,
+                    returns: this.returnsVec3(subModule, "subtractVec3"),
+                    calls: this.vectorCalls,
                     memberBindings: vec3Members("a", "b"),
                 },
             ),
@@ -140,8 +203,8 @@ export class TubeLowerer {
                 [vec3Parameter("a"), vec3Parameter("b")],
                 {
                     cppName: "tube_cross",
-                    returns: returnsVec3(crossModule, "crossVec3"),
-                    calls,
+                    returns: this.returnsVec3(crossModule, "crossVec3"),
+                    calls: this.vectorCalls,
                     memberBindings: vec3Members("a", "b"),
                 },
             ),
@@ -152,14 +215,14 @@ export class TubeLowerer {
                 [vec3Parameter("v")],
                 {
                     cppName: "tube_normalize",
-                    returns: returnsVec3(normalizeModule, "normalizeVec3"),
-                    calls,
+                    returns: this.returnsVec3(normalizeModule, "normalizeVec3"),
+                    calls: this.vectorCalls,
                     memberBindings: vec3Members("v"),
                 },
             ),
             lowerPinnedFunction(
                 this.context,
-                tubeModule,
+                TUBE_MODULE,
                 "rodrigues",
                 [
                     vec3Parameter("v"),
@@ -168,8 +231,8 @@ export class TubeLowerer {
                 ],
                 {
                     cppName: "tube_rodrigues",
-                    returns: returnsVec3(tubeModule, "rodrigues"),
-                    calls,
+                    returns: this.returnsVec3(TUBE_MODULE, "rodrigues"),
+                    calls: this.vectorCalls,
                     memberBindings: vec3Members("v", "k"),
                 },
             ),
@@ -177,431 +240,175 @@ export class TubeLowerer {
     }
 
     /**
-     * `createExtrudeShape`, which is the tube's own machinery under a
-     * different cross-section.
-     *
-     * The pin sweeps a 2D shape along `computePath3D`'s frames and rotates
-     * each copy about the tangent with the same `rodrigues` the tube uses,
-     * then hands the rows to `createRibbonData`. So this emits only what is
-     * the EXTRUDE's -- the plane-and-place formulas and the cap indexing --
-     * and reuses the frames, the rotation and the ribbon that already exist.
-     *
-     * Every formula is shape-asserted against the pinned AST, which is this
-     * unit's own discipline: the numbers are the pin's, and a pin that moves
-     * one fails generation here rather than rendering differently.
+     * `computePath3D` and the helpers it calls, lowered from path3d.ts. The
+     * reached sweeps pass no first normal, so `normalVector` is its
+     * `va === null` arm and the frames' `firstNormal` is statically absent.
+     * The one platform boundary is `new Array(l)`: each frame list is a
+     * native vector of `l` records (or numbers) the body then fills.
      */
-    private lowerExtrudeShape(): string {
-        const extrudeModule = "src/mesh/create-extrude.ts";
-        const { declaration: extrude } = this.context.functionDeclaration(
-            extrudeModule,
-            "createExtrudeShapeData",
+    private lowerPathFrames(): string {
+        const epsilon = lowerPinnedFunction(
+            this.context,
+            PATH_MODULE,
+            "withinEpsilon",
+            [
+                { pinned: "a", kind: "number", cpp: "a" },
+                { pinned: "b", kind: "number", cpp: "b" },
+                { pinned: "eps", kind: "number", cpp: "eps" },
+            ],
+            {
+                cppName: "tube_within_epsilon",
+                returns: {
+                    type: "bool",
+                    value: (lowerer, expression) =>
+                        expression
+                            ? lowerer.expression(expression)
+                            : this.context.contractError(
+                                  this.context.sourceFile(PATH_MODULE),
+                                  "Expected withinEpsilon to return a test.",
+                              ),
+                },
+                calls: this.vectorCalls,
+            },
         );
-        // The cross-section, planed onto the frame's own basis.
-        for (const axis of ["x", "y", "z"] as const) {
-            this.context.expectShapeCount(
-                extrude,
-                `t.${axis} * sp.z + n.${axis} * sp.x + b.${axis} * sp.y`,
-                `Extrude planed ${axis}`,
+        const nonNull = (
+            symbol: "getFirstNonNullVector" | "getLastNonNullVector",
+            cppName: string,
+        ): string =>
+            lowerPinnedFunction(
+                this.context,
+                PATH_MODULE,
+                symbol,
+                [
+                    vec3ListParameter("curve"),
+                    { pinned: "index", kind: "number", cpp: "index" },
+                ],
+                {
+                    cppName,
+                    returns: this.returnsVec3(PATH_MODULE, symbol),
+                    calls: this.vectorCalls,
+                    callShapes: this.vectorShapes,
+                    booleanAnd: true,
+                },
             );
-            this.context.expectShapeCount(
-                extrude,
-                `rotated.${axis} * scale + curve[i]!.${axis}`,
-                `Extrude placed ${axis}`,
-            );
-        }
-        // Cap NONE starts the row index at 0, which is what keeps the two
-        // barycentre arms below unreachable for the reached option set.
-        this.context.expectShapeCount(
-            extrude,
-            "cap === CAP_NONE || cap === CAP_END ? 0 : 2",
-            "Extrude cap start index",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(extrude, "scale"),
-            "options.scale ?? 1",
-            "Extrude scale default",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(extrude, "rotation"),
-            "options.rotation ?? 0",
-            "Extrude rotation default",
-        );
-        // The ribbon the sweep hands off to: open array, open path.
-        const ribbonCall = this.context.callExpression(
-            extrude,
-            "createRibbonData",
-        );
-        this.context.assertExpressionShape(
-            ribbonCall.arguments[0]!,
-            "{ pathArray: shapePaths, closeArray: false, closePath: false }",
-            "Extrude ribbon options",
-        );
-        return `
-/**
- * \`createExtrudeShapeData\`: the shape planed onto each frame, rotated
- * about the tangent, scaled and placed on the path point. The rows then go
- * to the ribbon, which is where the triangulation and the normals are.
- */
-MeshHandle create_extrude_shape(
-    Engine& engine,
-    const std::vector<Vec3d>& shape,
-    const std::vector<Vec3d>& curve,
-    double scale,
-    double rotation) {
-    if (curve.size() < 2) {
-        throw std::runtime_error(
-            "createExtrudeShape requires at least two path points.");
-    }
-    const TubePath3D frames = tube_compute_path(curve);
-    std::vector<std::vector<Vec3d>> shape_paths;
-    shape_paths.reserve(curve.size());
-    double angle = 0.0;
-    for (std::size_t i = 0; i < curve.size(); ++i) {
-        const Vec3d& t = frames.tangents[i];
-        const Vec3d& n = frames.normals[i];
-        const Vec3d& b = frames.binormals[i];
-        std::vector<Vec3d> shape_path;
-        shape_path.reserve(shape.size());
-        for (const Vec3d& sp : shape) {
-            const Vec3d planed{
-                t.x * sp.z + n.x * sp.x + b.x * sp.y,
-                t.y * sp.z + n.y * sp.x + b.y * sp.y,
-                t.z * sp.z + n.z * sp.x + b.z * sp.y,
-            };
-            const Vec3d rotated = tube_rodrigues(planed, t, angle);
-            shape_path.push_back(Vec3d{
-                rotated.x * scale + curve[i].x,
-                rotated.y * scale + curve[i].y,
-                rotated.z * scale + curve[i].z,
-            });
-        }
-        shape_paths.push_back(std::move(shape_path));
-        angle += rotation;
-    }
-    return create_ribbon_mesh(
-        engine,
-        RibbonOptions{std::move(shape_paths), false, false},
-        "${this.context.pinnedFactoryMeshName("createExtrudeShape")}");
-}
-`;
-    }
-
-    public lowerTube(extrudeShapes = false): LoweredSource {
-        const tubeModule = "src/mesh/create-tube.ts";
-        const pathModule = "src/mesh/path3d.ts";
-        const ribbonModule = "src/mesh/create-ribbon.ts";
-        const normalsModule = "src/mesh/compute-normals.ts";
-
-        const { declaration: tubeData } = this.context.functionDeclaration(
-            tubeModule,
-            "createTubeData",
-        );
-        // The reached defaults and the arms the intrinsic keeps out.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(tubeData, "radius"),
-            "options.radius ?? 1",
-            "Tube radius default",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(tubeData, "tessellation"),
-            "(options.tessellation ?? 64) | 0",
-            "Tube tessellation default",
-        );
-        // cap NONE keeps the circle index at 0; arc 1 keeps the full
-        // step. Both anchored so the refused arms stay provably
-        // unreachable for the reached option set.
-        this.context.expectShapeCount(
-            tubeData,
-            "cap === CAP_NONE || cap === CAP_END ? 0 : 2",
-            "Tube cap start index",
-        );
-        this.context.expectShapeCount(
-            tubeData,
-            "(pi2 / tessellation) * arc",
-            "Tube sweep step",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(tubeData, "pi2"),
-            "Math.PI * 2",
-            "Tube full turn",
-        );
-        // The swept circle: Rodrigues about the tangent (lowered whole by
-        // `lowerVectorHelpers`), scaled and translated onto the path point.
-        this.context.expectShapeCount(
-            tubeData,
-            "rotated.x * rad + path[i].x",
-            "Tube circle x",
-        );
-        this.context.expectShapeCount(
-            tubeData,
-            "rotated.y * rad + path[i].y",
-            "Tube circle y",
-        );
-        this.context.expectShapeCount(
-            tubeData,
-            "rotated.z * rad + path[i].z",
-            "Tube circle z",
-        );
-        // The ribbon call the sweep hands off to: closed path, open
-        // array.
-        const ribbonCall = this.context.callExpression(
-            tubeData,
-            "createRibbonData",
-        );
-        const ribbonOptions = this.context.unwrapExpression(
-            ribbonCall.arguments[0]!,
-        );
-        if (!ts.isObjectLiteralExpression(ribbonOptions)) {
-            this.context.contractError(
-                ribbonCall,
-                "Expected literal ribbon options.",
-            );
-        }
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(ribbonOptions, "closePath"),
-            "true",
-            "Tube ribbon closePath",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(ribbonOptions, "closeArray"),
-            "false",
-            "Tube ribbon closeArray",
-        );
-
-        // computePath3D: the Frenet chain.
-        const { file: pathFile, declaration: path3d } =
-            this.context.functionDeclaration(pathModule, "computePath3D");
-        const epsilon = this.context.numericValue(
-            this.context.variableInitializer(
-                this.context.sourceFile(pathModule),
-                "EPSILON",
-            ),
-            pathFile,
-        );
-        this.context.expectShapeCount(
-            path3d,
-            "distances[i - 1] + lengthVec3(subtractVec3(curve[i], curve[i - 1]))",
-            "Path distance accumulation",
-        );
-        this.context.expectShapeCount(
-            path3d,
-            "{ x: prev.x + cur.x, y: prev.y + cur.y, z: prev.z + cur.z }",
-            "Path tangent sum",
-        );
-        this.context.expectShapeCount(
-            path3d,
-            "normalizeVec3(crossVec3(tangents[0], normals[0]))",
-            "Path first binormal",
-        );
-        this.context.expectShapeCount(
-            path3d,
-            "normalizeVec3(crossVec3(curTang, n))",
-            "Path binormal step",
-        );
-        this.context.expectShapeCount(
-            path3d,
-            "crossVec3(prevBinor, curTang)",
-            "Path normal step",
-        );
-        const { declaration: normalVector } = this.context.functionDeclaration(
-            pathModule,
+        const normalVector = lowerPinnedFunction(
+            this.context,
+            PATH_MODULE,
             "normalVector",
+            [
+                vec3Parameter("vt"),
+                {
+                    pinned: "va",
+                    kind: "record",
+                    cpp: "va",
+                    annotation: "Vec3 | null",
+                    specialized: true,
+                    binding: absentBinding(),
+                },
+            ],
+            {
+                cppName: "tube_normal_vector",
+                returns: this.returnsVec3(PATH_MODULE, "normalVector"),
+                calls: this.vectorCalls,
+                callShapes: this.vectorShapes,
+                memberBindings: vec3Members("vt"),
+                armOf: { condition: "va === null", arm: "then" },
+            },
         );
-        this.context.expectShapeCount(
-            normalVector,
-            "crossVec3(vt, point)",
-            "Path pick-normal cross",
+        const { file, declaration } = this.context.functionDeclaration(
+            PATH_MODULE,
+            "computePath3D",
         );
-        this.context.expectShapeCount(
-            normalVector,
-            "crossVec3(c, vt)",
-            "Path given-normal cross",
-        );
+        const bindings = new Map<string, PinnedBinding>([
+            ["curve", { cpp: "curve", type: "vec3-list" }],
+            ["firstNormal", absentBinding()],
+        ]);
+        const frameLists = new Map<string, PinnedBinding["type"]>([
+            ["tangents", "vec3-list"],
+            ["normals", "vec3-list"],
+            ["binormals", "vec3-list"],
+            ["distances", "f64-list"],
+        ]);
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings,
+            calls: new Map([
+                ...this.vectorCalls,
+                [
+                    "normalVector",
+                    (args: readonly string[]) =>
+                        args.length === 2 && args[1] === absentBinding().cpp
+                            ? `tube_normal_vector(${args[0]})`
+                            : this.context.contractError(
+                                  declaration,
+                                  "Expected computePath3D to pass its absent first normal.",
+                              ),
+                ],
+            ]),
+            callShapes: this.vectorShapes,
+            recordLiteral: this.vec3Literal,
+            vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
+            booleanAnd: true,
+            returnValue: (expression) => {
+                const returned = expression
+                    ? this.context.unwrapExpression(expression)
+                    : undefined;
+                if (
+                    !returned ||
+                    !ts.isObjectLiteralExpression(returned) ||
+                    returned.properties.some(
+                        (property, index) =>
+                            !ts.isShorthandPropertyAssignment(property) ||
+                            property.name.text !==
+                                [...frameLists.keys()][index],
+                    ) ||
+                    returned.properties.length !== frameLists.size
+                ) {
+                    return this.context.contractError(
+                        returned ?? declaration,
+                        "Expected computePath3D to return its four frame lists.",
+                    );
+                }
+                return `TubePath3D{${[...frameLists.keys()]
+                    .map((name) => bindings.get(name)!.cpp)
+                    .join(", ")}}`;
+            },
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const [local] = statement.declarationList.declarations;
+                const initializer = local?.initializer
+                    ? this.context.unwrapExpression(local.initializer)
+                    : undefined;
+                if (
+                    !local ||
+                    !initializer ||
+                    !ts.isNewExpression(initializer) ||
+                    !ts.isIdentifier(initializer.expression) ||
+                    initializer.expression.text !== "Array"
+                ) {
+                    return undefined;
+                }
+                const name = local.name.getText(file);
+                const shape = frameLists.get(name);
+                if (!shape || initializer.arguments?.length !== 1) {
+                    return this.context.contractError(
+                        local,
+                        "Expected one of computePath3D's sized frame lists.",
+                    );
+                }
+                bindings.set(name, { cpp: name, type: shape });
+                return [
+                    `${indent}std::vector<${shape === "vec3-list" ? "Vec3d" : "double"}> ${name}(` +
+                        `static_cast<std::size_t>(${lowerer.expression(initializer.arguments[0]!)}));`,
+                ];
+            },
+        });
+        return `${epsilon}
 
-        // createRibbonData: distance tables, triangulation, seam
-        // averaging. The single-path split arm is unreachable (the tube
-        // always hands one circle per path point, at least two).
-        const { declaration: ribbon } = this.context.functionDeclaration(
-            ribbonModule,
-            "createRibbonData",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "len(sub(path[j], path[j - 1]))",
-            "Ribbon u distance",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "len(sub(path[j], path[0]))",
-            "Ribbon closing u distance",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "len(sub(v2, v1))",
-            "Ribbon v distance",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "indices.push(pi, pi + shft, pi + 1)",
-            "Ribbon first triangle",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "indices.push(pi + shft + 1, pi + 1, pi + shft)",
-            "Ribbon second triangle",
-        );
-        // One per seam block (closePath and closeArray), per lane.
-        this.context.expectShapeCount(
-            ribbon,
-            "(normals[indexFirst] + normals[indexLast]) * 0.5",
-            "Ribbon seam average lane 0",
-            2,
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "(normals[indexFirst + 1] + normals[indexLast + 1]) * 0.5",
-            "Ribbon seam average lane 1",
-            2,
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "(normals[indexFirst + 2] + normals[indexLast + 2]) * 0.5",
-            "Ribbon seam average lane 2",
-            2,
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "us[p][i] / uTotalDistance[p]",
-            "Ribbon u normalization",
-        );
-        this.context.expectShapeCount(
-            ribbon,
-            "vs[i][p] / vTotalDistance[i]",
-            "Ribbon v normalization",
-        );
+${nonNull("getFirstNonNullVector", "tube_first_non_null")}
 
-        // The factory finish: createMeshFromData(engine, "tube",
-        // positions, normals, indices, uvs) — the name flows, the
-        // argument order is the anchor the emitted call mirrors.
-        const { declaration: tubeFactory } = this.context.functionDeclaration(
-            "src/mesh/mesh-factories.ts",
-            "createTube",
-        );
-        const finish = this.context.callExpression(
-            tubeFactory,
-            "createMeshFromData",
-        );
-        const finishName = this.context.unwrapExpression(finish.arguments[1]!);
-        if (finish.arguments.length !== 6 || !ts.isStringLiteral(finishName)) {
-            this.context.contractError(
-                finish,
-                "Expected createTube to finish through createMeshFromData with its literal name second.",
-            );
-        }
-        for (const [index, member] of [
-            [2, "positions"],
-            [3, "normals"],
-            [4, "indices"],
-            [5, "uvs"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                finish.arguments[index]!,
-                `data.${member}`,
-                `Tube finish argument ${member}`,
-            );
-        }
-        const tubeName = finishName.text;
+${nonNull("getLastNonNullVector", "tube_last_non_null")}
 
-        // computeNormals: the face accumulation and normalization.
-        const { declaration: computeNormals } =
-            this.context.functionDeclaration(normalsModule, "computeNormals");
-        this.context.expectShapeCount(
-            computeNormals,
-            "p1p2y * p3p2z - p1p2z * p3p2y",
-            "Face normal x",
-        );
-        this.context.expectShapeCount(
-            computeNormals,
-            "p1p2z * p3p2x - p1p2x * p3p2z",
-            "Face normal y",
-        );
-        this.context.expectShapeCount(
-            computeNormals,
-            "p1p2x * p3p2y - p1p2y * p3p2x",
-            "Face normal z",
-        );
-
-        const epsilonLiteral = this.context.doubleLiteral(epsilon);
-        const vectorHelpers = this.lowerVectorHelpers(tubeModule);
-        return {
-            modulePath: tubeModule,
-            symbolName: "createTubeData",
-            header: "",
-            source: `// ${this.context.provenance(
-                tubeModule,
-                "createTube, createTubeData, rodrigues",
-                "src/mesh/path3d.ts computePath3D, src/mesh/create-ribbon.ts createRibbonData, src/mesh/compute-normals.ts computeNormals",
-            )}
-#include <bblite/runtime.hpp>
-
-#include <cmath>
-#include <cstdint>
-#include <stdexcept>
-#include <vector>
-
-namespace bbl {
-namespace {
-
-${vectorHelpers}
-
-bool tube_within_epsilon(double a, double b, double eps) {
-    return std::abs(a - b) <= eps;
-}
-
-// path3d.ts getFirstNonNullVector / getLastNonNullVector.
-Vec3d tube_first_non_null(
-    const std::vector<Vec3d>& curve,
-    std::size_t index) {
-    std::size_t i = 1;
-    Vec3d v = tube_sub(curve[index + i], curve[index]);
-    while (tube_length(v) == 0.0 && index + i + 1 < curve.size()) {
-        ++i;
-        v = tube_sub(curve[index + i], curve[index]);
-    }
-    return v;
-}
-
-Vec3d tube_last_non_null(
-    const std::vector<Vec3d>& curve,
-    std::size_t index) {
-    std::size_t i = 1;
-    Vec3d v = tube_sub(curve[index], curve[index - i]);
-    while (tube_length(v) == 0.0 && index > i + 1) {
-        ++i;
-        v = tube_sub(curve[index], curve[index - i]);
-    }
-    return v;
-}
-
-// path3d.ts normalVector: the first-frame normal pick.
-Vec3d tube_normal_vector(const Vec3d& vt) {
-    double tgl = tube_length(vt);
-    if (tgl == 0.0) {
-        tgl = 1.0;
-    }
-    constexpr double epsilon = ${epsilonLiteral};
-    Vec3d point{};
-    if (!tube_within_epsilon(std::abs(vt.y) / tgl, 1.0, epsilon)) {
-        point = Vec3d{0.0, -1.0, 0.0};
-    } else if (!tube_within_epsilon(std::abs(vt.x) / tgl, 1.0, epsilon)) {
-        point = Vec3d{1.0, 0.0, 0.0};
-    } else if (!tube_within_epsilon(std::abs(vt.z) / tgl, 1.0, epsilon)) {
-        point = Vec3d{0.0, 0.0, 1.0};
-    } else {
-        point = Vec3d{0.0, 0.0, 0.0};
-    }
-    return tube_normalize(tube_cross(vt, point));
-}
+${normalVector}
 
 struct TubePath3D {
     std::vector<Vec3d> tangents;
@@ -610,102 +417,420 @@ struct TubePath3D {
     std::vector<double> distances;
 };
 
-// path3d.ts computePath3D, the always-normalized non-raw chain with a
-// null firstNormal.
+// ${this.context.provenance(PATH_MODULE, "computePath3D")}
 TubePath3D tube_compute_path(const std::vector<Vec3d>& curve) {
-    const std::size_t l = curve.size();
-    TubePath3D path;
-    path.tangents.resize(l);
-    path.normals.resize(l);
-    path.binormals.resize(l);
-    path.distances.resize(l);
-    path.tangents[0] = tube_normalize(tube_first_non_null(curve, 0));
-    path.tangents[l - 1] =
-        tube_normalize(tube_sub(curve[l - 1], curve[l - 2]));
-    path.normals[0] =
-        tube_normalize(tube_normal_vector(path.tangents[0]));
-    path.binormals[0] = tube_normalize(
-        tube_cross(path.tangents[0], path.normals[0]));
-    path.distances[0] = 0.0;
-    for (std::size_t i = 1; i < l; ++i) {
-        const Vec3d prev = tube_last_non_null(curve, i);
-        if (i < l - 1) {
-            const Vec3d cur = tube_first_non_null(curve, i);
-            path.tangents[i] = tube_normalize(Vec3d{
-                prev.x + cur.x,
-                prev.y + cur.y,
-                prev.z + cur.z,
-            });
-        }
-        path.distances[i] = path.distances[i - 1] +
-            tube_length(tube_sub(curve[i], curve[i - 1]));
-        const Vec3d& tangent = path.tangents[i];
-        Vec3d n = tube_cross(path.binormals[i - 1], tangent);
-        if (tube_length(n) == 0.0) {
-            n = path.normals[i - 1];
-        } else {
-            n = tube_normalize(n);
-        }
-        path.normals[i] = n;
-        path.binormals[i] = tube_normalize(tube_cross(tangent, n));
+${body}
+}`;
     }
-    return path;
-}
 
+    /**
+     * One sweep builder as a native function returning the `RibbonOptions`
+     * its `createRibbonData` call is handed.
+     *
+     * The option head binds what the intrinsic resolved: the named options
+     * the native call passes, and the cap it refuses as the pin's
+     * `CAP_NONE`. The re-clamp of that cap is the one statement dropped,
+     * and each helper closure the cap arms would call binds as a name that
+     * is never read, because those arms fold away. Two platform boundaries
+     * remain: the frames arrive as the native `TubePath3D`, and a `Vec3`
+     * literal appended to a row lands as that row's native record.
+     */
+    private lowerSweep(
+        module: typeof TUBE_MODULE | typeof EXTRUDE_MODULE,
+        symbol: "createTubeData" | "createExtrudeShapeData",
+        signature: string,
+        options: ReadonlyMap<string, PinnedBinding>,
+        locals: ReadonlyMap<string, PinnedBinding>,
+        rodrigues: "tube_rodrigues" | "extrude_rodrigues",
+    ): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            module,
+            symbol,
+        );
+        const capClamp = declaration.body!.statements.filter(
+            (statement) =>
+                ts.isExpressionStatement(statement) &&
+                ts.isBinaryExpression(statement.expression) &&
+                statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                statement.expression.left.getText(file) === "cap",
+        );
+        if (capClamp.length !== 1) {
+            this.context.contractError(
+                declaration,
+                `Expected ${symbol} to re-clamp its cap once.`,
+            );
+        }
+        this.context.assertExpressionShape(
+            (capClamp[0] as ts.ExpressionStatement).expression,
+            "cap = cap < 0 || cap > 3 ? CAP_NONE : cap",
+            `${symbol} cap clamp`,
+        );
+        const bindings = new Map<string, PinnedBinding>([
+            ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+            ...options,
+            ...locals,
+        ]);
+        const body = lowerPinnedBody(
+            file,
+            declaration.body!.statements.filter(
+                (statement) => statement !== capClamp[0],
+            ),
+            {
+                bindings,
+                calls: new Map([
+                    ...this.vectorCalls,
+                    [
+                        "rodrigues",
+                        (args: readonly string[]) =>
+                            `${rodrigues}(${args.join(", ")})`,
+                    ],
+                ]),
+                callShapes: this.vectorShapes,
+                recordLiteral: this.vec3Literal,
+                vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
+                booleanAnd: true,
+                booleanOr: true,
+                returnValue: (expression, lowerer) => {
+                    const call = expression
+                        ? this.context.unwrapExpression(expression)
+                        : undefined;
+                    const ribbon =
+                        call &&
+                        ts.isCallExpression(call) &&
+                        call.expression.getText(file) === "createRibbonData" &&
+                        call.arguments.length === 1
+                            ? this.context.unwrapExpression(call.arguments[0]!)
+                            : undefined;
+                    if (!ribbon || !ts.isObjectLiteralExpression(ribbon)) {
+                        return this.context.contractError(
+                            call ?? declaration,
+                            `Expected ${symbol} to finish through createRibbonData.`,
+                        );
+                    }
+                    const member = (name: string): string =>
+                        lowerer.expression(
+                            this.context.propertyInitializer(ribbon, name),
+                        );
+                    return `RibbonOptions{std::move(${member("pathArray")}), ${member("closeArray")}, ${member("closePath")}}`;
+                },
+                statement: (statement, lowerer, indent) => {
+                    if (ts.isVariableStatement(statement)) {
+                        const [local] = statement.declarationList.declarations;
+                        const initializer = local?.initializer
+                            ? this.context.unwrapExpression(local.initializer)
+                            : undefined;
+                        if (!local || !initializer) return undefined;
+                        // `const rows: Vec3[][] = []`: the rows the sweep
+                        // grows and hands to the ribbon.
+                        if (
+                            ts.isArrayLiteralExpression(initializer) &&
+                            initializer.elements.length === 0 &&
+                            local.type?.getText(file) === "Vec3[][]"
+                        ) {
+                            const name = local.name.getText(file);
+                            bindings.set(name, {
+                                cpp: name,
+                                type: "vec3-list-2d",
+                            });
+                            return [
+                                `${indent}std::vector<std::vector<Vec3d>> ${name};`,
+                            ];
+                        }
+                        // `const path3D = computePath3D(curve)`: the frames
+                        // as the native record the lowered chain returns.
+                        if (
+                            ts.isCallExpression(initializer) &&
+                            initializer.expression.getText(file) ===
+                                "computePath3D"
+                        ) {
+                            const name = local.name.getText(file);
+                            if (initializer.arguments.length !== 1) {
+                                return this.context.contractError(
+                                    initializer,
+                                    "Expected the sweep to compute its frames from the path alone.",
+                                );
+                            }
+                            bindings.set(name, { cpp: name, type: "opaque" });
+                            return [
+                                `${indent}const TubePath3D ${name} = tube_compute_path(${lowerer.expression(initializer.arguments[0]!)});`,
+                            ];
+                        }
+                        // `const { tangents, ... } = path3D`: each list read
+                        // in place off that record.
+                        if (ts.isObjectBindingPattern(local.name)) {
+                            const frames = bindings.get(
+                                initializer.getText(file),
+                            );
+                            if (frames?.type !== "opaque") {
+                                return this.context.contractError(
+                                    local,
+                                    "Expected the sweep to destructure its frames.",
+                                );
+                            }
+                            for (const element of local.name.elements) {
+                                const name = element.name.getText(file);
+                                if (
+                                    element.propertyName ||
+                                    element.initializer ||
+                                    ![
+                                        "tangents",
+                                        "normals",
+                                        "binormals",
+                                        "distances",
+                                    ].includes(name)
+                                ) {
+                                    return this.context.contractError(
+                                        element,
+                                        "Expected a frame list by its own name.",
+                                    );
+                                }
+                                bindings.set(name, {
+                                    cpp: `${frames.cpp}.${name}`,
+                                    type:
+                                        name === "distances"
+                                            ? "f64-list"
+                                            : "vec3-list",
+                                });
+                            }
+                            return [];
+                        }
+                        return undefined;
+                    }
+                    // `row.push({ x, y, z })`: a Vec3 literal appended to
+                    // a row, as that row's native record.
+                    if (
+                        ts.isExpressionStatement(statement) &&
+                        ts.isCallExpression(statement.expression) &&
+                        ts.isPropertyAccessExpression(
+                            statement.expression.expression,
+                        ) &&
+                        statement.expression.expression.name.text === "push"
+                    ) {
+                        const call = statement.expression;
+                        const receiver =
+                            call.expression as ts.PropertyAccessExpression;
+                        const list = bindings.get(
+                            receiver.expression.getText(file),
+                        );
+                        const [point] = call.arguments;
+                        const literal = point
+                            ? this.context.unwrapExpression(point)
+                            : undefined;
+                        if (
+                            list?.type !== "vec3-list" ||
+                            call.arguments.length !== 1 ||
+                            !literal ||
+                            !ts.isObjectLiteralExpression(literal)
+                        ) {
+                            return undefined;
+                        }
+                        return [
+                            `${indent}${list.cpp}.push_back(${recordLiteralCpp(
+                                "vec3",
+                                lowerObjectComponents(
+                                    this.context,
+                                    lowerer,
+                                    literal,
+                                    ["x", "y", "z"],
+                                ),
+                            )});`,
+                        ];
+                    }
+                    return undefined;
+                },
+            },
+        );
+        return `// ${this.context.provenance(module, symbol)}
+${signature} {
+${body}
+}`;
+    }
+
+    /**
+     * The pinned cap modes (declared by create-tube.ts and re-exported by
+     * create-extrude.ts), and the refused cap option as the `CAP_NONE` it
+     * resolves to.
+     */
+    private capBindings(): [string, PinnedBinding][] {
+        const file = this.context.sourceFile(TUBE_MODULE);
+        const constant = (name: string): PinnedBinding => {
+            const value = this.context.numericValue(
+                this.context.variableInitializer(file, name),
+                file,
+            );
+            return {
+                cpp: this.context.doubleLiteral(value),
+                type: "scalar",
+                staticNumber: value,
+            };
+        };
+        return [
+            ...(["CAP_NONE", "CAP_START", "CAP_END", "CAP_ALL"] as const).map(
+                (name): [string, PinnedBinding] => [name, constant(name)],
+            ),
+            ["cap", constant("CAP_NONE")],
+        ];
+    }
+
+    private lowerTubeData(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            TUBE_MODULE,
+            "createTubeData",
+        );
+        // The arc is the pin's own fallback when no option is given.
+        const arc = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "arc"),
+        );
+        const arcFallback =
+            ts.isConditionalExpression(arc) &&
+            ts.isBinaryExpression(this.context.unwrapExpression(arc.whenFalse))
+                ? (this.context.unwrapExpression(
+                      arc.whenFalse,
+                  ) as ts.BinaryExpression)
+                : undefined;
+        if (
+            !arcFallback ||
+            arcFallback.operatorToken.kind !==
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            return this.context.contractError(
+                arc,
+                "Expected createTubeData's arc to fall back through `??`.",
+            );
+        }
+        const arcValue = this.context.numericValue(arcFallback.right, file);
+        return this.lowerSweep(
+            TUBE_MODULE,
+            "createTubeData",
+            "RibbonOptions pinned_create_tube_data(\n    const std::vector<Vec3d>& path_points,\n    double radius_option,\n    double tessellation_option)",
+            new Map<string, PinnedBinding>([
+                ["options.path", { cpp: "path_points", type: "vec3-list" }],
+                ["options.radius", { cpp: "radius_option", type: "scalar" }],
+                [
+                    "options.tessellation",
+                    { cpp: "tessellation_option", type: "scalar" },
+                ],
+            ]),
+            new Map<string, PinnedBinding>([
+                ["radiusFunction", absentBinding()],
+                ...this.capBindings(),
+                [
+                    "arc",
+                    {
+                        cpp: this.context.doubleLiteral(arcValue),
+                        type: "scalar",
+                        staticNumber: arcValue,
+                    },
+                ],
+                ["capPath", { cpp: "capPath", type: "opaque" }],
+            ]),
+            "tube_rodrigues",
+        );
+    }
+
+    /** create-extrude.ts declares its own `rodrigues`, which its sweep calls. */
+    private lowerExtrudeRodrigues(): string {
+        return lowerPinnedFunction(
+            this.context,
+            EXTRUDE_MODULE,
+            "rodrigues",
+            [
+                vec3Parameter("v"),
+                vec3Parameter("k"),
+                { pinned: "angle", kind: "number", cpp: "angle" },
+            ],
+            {
+                cppName: "extrude_rodrigues",
+                returns: this.returnsVec3(EXTRUDE_MODULE, "rodrigues"),
+                calls: this.vectorCalls,
+                memberBindings: vec3Members("v", "k"),
+            },
+        );
+    }
+
+    private lowerExtrudeData(): string {
+        return this.lowerSweep(
+            EXTRUDE_MODULE,
+            "createExtrudeShapeData",
+            "RibbonOptions pinned_create_extrude_shape_data(\n    const std::vector<Vec3d>& shape_points,\n    const std::vector<Vec3d>& curve_points,\n    double scale_option,\n    double rotation_option)",
+            new Map<string, PinnedBinding>([
+                ["options.shape", { cpp: "shape_points", type: "vec3-list" }],
+                ["options.path", { cpp: "curve_points", type: "vec3-list" }],
+                ["options.scale", { cpp: "scale_option", type: "scalar" }],
+                [
+                    "options.rotation",
+                    { cpp: "rotation_option", type: "scalar" },
+                ],
+            ]),
+            new Map<string, PinnedBinding>([
+                ...this.capBindings(),
+                ["barycenterCap", { cpp: "barycenterCap", type: "opaque" }],
+            ]),
+            "extrude_rodrigues",
+        );
+    }
+
+    public lowerTube(extrudeShapes = false): LoweredSource {
+        const tubeName = this.context.pinnedFactoryMeshName("createTube");
+        const extrudeName =
+            this.context.pinnedFactoryMeshName("createExtrudeShape");
+        return {
+            modulePath: TUBE_MODULE,
+            symbolName: "createTubeData",
+            header: "",
+            source: `// ${this.context.provenance(
+                TUBE_MODULE,
+                "createTube, createTubeData, rodrigues",
+                `src/mesh/path3d.ts computePath3D${extrudeShapes ? ", src/mesh/create-extrude.ts createExtrudeShapeData" : ""}`,
+            )}
+#include <bblite/js_data.hpp>
+#include <bblite/runtime.hpp>
+
+#include <cmath>
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+namespace bbl {
+namespace {
+
+${this.lowerVectorHelpers()}
+
+${this.lowerPathFrames()}
+
+${this.lowerTubeData()}
+${extrudeShapes ? `\n${this.lowerExtrudeRodrigues()}\n\n${this.lowerExtrudeData()}\n` : ""}
 } // namespace
 
-// The reached tube: cap NONE, arc 1, uniform radius — the pinned
-// defaults that keep the refused option arms unreachable. The circle
-// sweep, the closed-path ribbon triangulation, the UV distance
-// normalization, the seam-normal averaging and the face-normal
-// accumulation are the pinned chain's own arithmetic in JS-double
-// width; the only float rounding is create_mesh_from_data's stores,
-// which is where the pin's Float32Array conversion sits.
 MeshHandle create_tube(
     Engine& engine,
     const std::vector<Vec3d>& path_points,
     double radius,
     double tessellation_option) {
-    if (path_points.size() < 2) {
-        throw std::runtime_error(
-            "createTube requires at least two path points.");
-    }
-    const std::size_t tessellation = static_cast<std::size_t>(
-        static_cast<std::int32_t>(tessellation_option));
-    const std::vector<Vec3d>& curve = path_points;
-    const TubePath3D frames = tube_compute_path(curve);
-
-    // createTubeData: one circle per path point (cap NONE, arc 1).
-    const double pi2 = 3.141592653589793 * 2.0;
-    const double step = pi2 / static_cast<double>(tessellation);
-    std::vector<std::vector<Vec3d>> circle_paths(curve.size());
-    for (std::size_t i = 0; i < curve.size(); ++i) {
-        std::vector<Vec3d>& circle = circle_paths[i];
-        circle.reserve(tessellation);
-        for (std::size_t t = 0; t < tessellation; ++t) {
-            const Vec3d rotated = tube_rodrigues(
-                frames.normals[i],
-                frames.tangents[i],
-                step * static_cast<double>(t));
-            circle.push_back(Vec3d{
-                rotated.x * radius + curve[i].x,
-                rotated.y * radius + curve[i].y,
-                rotated.z * radius + curve[i].z,
-            });
-        }
-    }
-
-    // \`createTubeData\` ends by handing its circles to
-    // \`createRibbonData\` with the path CLOSED and the array open,
-    // and that ribbon is lowered from the pin beside the other
-    // builders that share it -- so the tube finishes through it
-    // rather than through a second reading of one pinned function.
     return create_ribbon_mesh(
         engine,
-        RibbonOptions{std::move(circle_paths), false, true},
+        pinned_create_tube_data(path_points, radius, tessellation_option),
         "${tubeName}");
 }
-${!extrudeShapes ? "" : this.lowerExtrudeShape()}
+${
+    !extrudeShapes
+        ? ""
+        : `
+MeshHandle create_extrude_shape(
+    Engine& engine,
+    const std::vector<Vec3d>& shape,
+    const std::vector<Vec3d>& curve,
+    double scale,
+    double rotation) {
+    return create_ribbon_mesh(
+        engine,
+        pinned_create_extrude_shape_data(shape, curve, scale, rotation),
+        "${extrudeName}");
+}
+`
+}
 } // namespace bbl
 `,
         };

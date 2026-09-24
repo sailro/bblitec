@@ -4,6 +4,7 @@
 #include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
+#include "pal_sdl_gpu_formats.hpp"
 
 // SDL_GPU mechanics shared by the renderers that draw through it.
 //
@@ -373,50 +374,9 @@ inline void bind_stage_storage(SDL_GPURenderPass* pass, const PinnedStageSlots& 
     SDL_BindGPUVertexStorageBuffers(pass, 0, scratch.data(), static_cast<Uint32>(scratch.size()));
 }
 
-/**
- * The pin's depth compare in this API's enum.
- *
- * `upstream::pinned_depth_compare` carries the value the pin declares; only
- * the mapping onto SDL_GPU's enum belongs to this backend, the same split
- * `sprite_blend_factor` already uses for the pin's blend factors.
- */
-inline SDL_GPUCompareOp gpu_depth_compare(DepthCompare compare) {
-    switch (compare) {
-    case DepthCompare::never:
-        return SDL_GPU_COMPAREOP_NEVER;
-    case DepthCompare::less:
-        return SDL_GPU_COMPAREOP_LESS;
-    case DepthCompare::equal:
-        return SDL_GPU_COMPAREOP_EQUAL;
-    case DepthCompare::less_equal:
-        return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
-    case DepthCompare::greater:
-        return SDL_GPU_COMPAREOP_GREATER;
-    case DepthCompare::not_equal:
-        return SDL_GPU_COMPAREOP_NOT_EQUAL;
-    case DepthCompare::greater_equal:
-        return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-    case DepthCompare::always:
-        return SDL_GPU_COMPAREOP_ALWAYS;
-    }
-    return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-}
-
-inline SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
-    switch (factor) {
-    case BlendFactor::one:
-        return SDL_GPU_BLENDFACTOR_ONE;
-    case BlendFactor::src_alpha:
-        return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    case BlendFactor::one_minus_src_alpha:
-        return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    }
-    return SDL_GPU_BLENDFACTOR_ONE;
-}
-
 // A shared blend tuple in this API's state; the operation is always add
-// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Beside the
-// depth-compare translator so the family headers can call it too.
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Shared so the
+// family headers can call it too.
 inline SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors) {
     SDL_GPUColorTargetBlendState blend{};
     blend.enable_blend = true;
@@ -427,38 +387,6 @@ inline SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors
     blend.src_alpha_blendfactor = gpu_blend_factor(factors.src_alpha);
     blend.dst_alpha_blendfactor = gpu_blend_factor(factors.dst_alpha);
     return blend;
-}
-
-/** A numeric sample count in this API's enum; counts outside the API's
- *  set are refused rather than rounded. */
-inline SDL_GPUSampleCount gpu_sample_count_from(std::uint32_t samples) {
-    switch (samples) {
-    case 1u:
-        return SDL_GPU_SAMPLECOUNT_1;
-    case 2u:
-        return SDL_GPU_SAMPLECOUNT_2;
-    case 4u:
-        return SDL_GPU_SAMPLECOUNT_4;
-    case 8u:
-        return SDL_GPU_SAMPLECOUNT_8;
-    }
-    throw std::runtime_error("No SDL_GPU sample count for " + std::to_string(samples) + ".");
-}
-
-/** The enum back as a number, for the shared rules that reason about
- *  counts (`alpha_to_coverage_enabled`). */
-inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
-    switch (samples) {
-    case SDL_GPU_SAMPLECOUNT_1:
-        return 1u;
-    case SDL_GPU_SAMPLECOUNT_2:
-        return 2u;
-    case SDL_GPU_SAMPLECOUNT_4:
-        return 4u;
-    case SDL_GPU_SAMPLECOUNT_8:
-        return 8u;
-    }
-    return 1u;
 }
 
 /** One block a stage's resolver named: its bytes, or none. */
@@ -627,8 +555,9 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
     }
     OwnedSdlShader owned{shader, {device}};
     if (compact_inputs) {
-        const std::lock_guard lock(sdl_shader_inputs_mutex);
-        sdl_shader_inputs.emplace(shader, std::move(inputs));
+        auto& registry = sdl_shader_inputs();
+        const std::lock_guard lock(registry.mutex);
+        registry.layouts.emplace(shader, std::move(inputs));
     }
     return owned;
 }
@@ -947,22 +876,12 @@ private:
 
 inline SDL_GPUSampler* create_texture_sampler(SDL_GPUDevice* device,
                                               const TextureSamplerState& sampler) {
-    const auto filter = [](TextureFilter value) {
-        return value == TextureFilter::nearest ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-    };
-    const auto address = [](TextureAddressMode value) {
-        return value == TextureAddressMode::clamp    ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE
-               : value == TextureAddressMode::mirror ? SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT
-                                                     : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    };
     SDL_GPUSamplerCreateInfo info{};
-    info.min_filter = filter(sampler.min_filter);
-    info.mag_filter = filter(sampler.mag_filter);
-    info.mipmap_mode = sampler.mipmap_mode == TextureMipmapMode::nearest
-                           ? SDL_GPU_SAMPLERMIPMAPMODE_NEAREST
-                           : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-    info.address_mode_u = address(sampler.address_u);
-    info.address_mode_v = address(sampler.address_v);
+    info.min_filter = gpu_filter(sampler.min_filter);
+    info.mag_filter = gpu_filter(sampler.mag_filter);
+    info.mipmap_mode = gpu_mipmap_mode(sampler.mipmap_mode);
+    info.address_mode_u = gpu_address_mode(sampler.address_u);
+    info.address_mode_v = gpu_address_mode(sampler.address_v);
     // Mirror the pinned descriptor exactly, as the Dawn twin does: the
     // pin never sets addressModeW, so W stays at the WebGPU clamp
     // default, and only the noMip path overrides the LOD clamp

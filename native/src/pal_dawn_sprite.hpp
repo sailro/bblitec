@@ -136,24 +136,6 @@ using DawnSceneSpritePass =
     OwnedGpuRecord<DawnSceneSpritePassResources, std::remove_pointer_t<WGPUDevice>,
                    release_dawn_scene_sprite_pass_resources>;
 
-inline WGPUBlendFactor dawn_sprite_blend_factor(SpriteBlendFactor factor) {
-    switch (factor) {
-    case SpriteBlendFactor::zero:
-        return WGPUBlendFactor_Zero;
-    case SpriteBlendFactor::one:
-        return WGPUBlendFactor_One;
-    case SpriteBlendFactor::src_alpha:
-        return WGPUBlendFactor_SrcAlpha;
-    case SpriteBlendFactor::one_minus_src_alpha:
-        return WGPUBlendFactor_OneMinusSrcAlpha;
-    case SpriteBlendFactor::dst:
-        return WGPUBlendFactor_Dst;
-    case SpriteBlendFactor::dst_alpha:
-        return WGPUBlendFactor_DstAlpha;
-    }
-    return WGPUBlendFactor_One;
-}
-
 inline WGPUBuffer dawn_sprite_uniform_buffer(WGPUDevice device, std::uint64_t size = 64) {
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
@@ -269,7 +251,7 @@ create_dawn_sprite_layer_layouts(WGPUDevice device, std::uint32_t custom_shader,
     vertex_entry.binding = 0;
     vertex_entry.visibility = WGPUShaderStage_Vertex;
     vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    vertex_entry.buffer.minBindingSize = 64;
+    vertex_entry.buffer.minBindingSize = sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
     WGPUBindGroupLayoutDescriptor vertex_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     vertex_layout.entryCount = 1;
     vertex_layout.entries = &vertex_entry;
@@ -293,7 +275,8 @@ create_dawn_sprite_layer_layouts(WGPUDevice device, std::uint32_t custom_shader,
     fragment_entries[0].binding = 0;
     fragment_entries[0].visibility = WGPUShaderStage_Fragment;
     fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    fragment_entries[0].buffer.minBindingSize = 64;
+    fragment_entries[0].buffer.minBindingSize =
+        sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
     fragment_entries[1].binding = 1;
     fragment_entries[1].visibility = WGPUShaderStage_Fragment;
     fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
@@ -333,7 +316,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
     // offsets, stepped per instance. Only the float count is translated
     // to this API's vertex formats.
-    std::array<WGPUVertexAttribute, upstream::sprite_instance_attributes.size() + 2u> attributes{};
+    auto attributes = vertex_attribute_array<upstream::sprite_instance_attributes.size() + 2u>();
     const std::size_t attribute_count = upstream::sprite_instance_attributes.size() +
                                         (plan.has_depth ? 1u : 0u) + (plan.scroll ? 1u : 0u);
     for (std::size_t index = 0; index < attribute_count; ++index) {
@@ -543,14 +526,6 @@ inline void release_dawn_sprite_layer_resources([[maybe_unused]] WGPUDevice devi
 }
 
 inline void release_dawn_sprite_layer(DawnSpriteLayer& layer) { layer.reset(); }
-
-/** Release only the per-layer GPU objects, keeping the shared index buffer. */
-inline void release_dawn_sprite_pass_layers(DawnSpritePass& pass) {
-    for (DawnSpriteLayer& layer : pass.layers) {
-        release_dawn_sprite_layer(layer);
-    }
-    pass.layers.clear();
-}
 
 /**
  * Bring the pass's per-layer records in step with the renderer's list. Why

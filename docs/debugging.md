@@ -1,28 +1,33 @@
 # Diagnosing a scene
 
-Preserve corpus inputs, goldens and thresholds. Match source/module hashes, query, pose, UI and
+Compare at the [reference pose](fidelity.md#the-reference-pose) with matching
 [build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
 
 ## The ladder
 
-Commands follow `npm run scene --`. `diagnose <id>` combines parity, captures and composition.
+Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `diff --compose` in one pass.
 
 | Command | Purpose |
 | --- | --- |
-| parity <id> --differential | Both backends/reference |
-| parity <id> --attribute [--differential] | Instrumented draw/triangle attribution |
-| diff <id> [--backend dawn] | Draws, uniforms, palettes, shaders |
-| capture <id> | Browser uploads/draws |
-| uniforms <id> --size N [--module text] | Candidate uniform layouts |
-| geometry <id> / compose <id\|all> | Attachments / asset variants |
-| stability <id> --backend dawn --runs N | Repeatability |
-| memory <id\|all> --replay-file <tape> | Sustained memory |
+| parity <id> [--backend sdl_gpu\|dawn] | Golden against both backends (or one) and the backend differential |
+| parity <id> --attribute | Instrumented draw/triangle attribution |
 | parity <id> --without ground\|background | Diagnostic isolation |
+| parity <id> --seek <t> | Another pose against its own browser capture, in `seek-<t>/` |
+| parity <id> --runs N [--single-sample] | Repeatability against run 1 and the golden |
+| parity <id> --geometry | Impostor copy-task attachments |
+| diff <id> [--backend dawn] | Draws, uniforms, palettes, shaders |
+| diff <id> --uniforms --size N [--module text] | Candidate uniform layouts |
+| diff <id\|all> --compose | Asset material variants |
+| capture <id> [--native] [--skip-draw N] [--seek-bracket] | Browser/native captures; one frame of motion either side |
+| probe <id> --shader <name> --term <text> --with <text> | One deployed Dawn WGSL term's contribution |
+| memory <id\|all> [--replay-file <tape>] | Sustained memory |
 | measure <png> [--background r,g,b] | Image bounds/color |
 
-Diff refreshes stale captures; --recapture forces refresh. Changed seek poses need explicit reference
-recapture. --no-fail, suppressed features and single-sample comparisons against MSAA goldens are diagnostic.
-Shared residuals point to common inputs/behavior; backend-specific residuals to translation or transport.
+Browser evidence is reused only at its pose, pin and scene module; stale evidence is recaptured and
+--recapture forces it. Only a plain parity run at the registry pose gates or recaptures a golden
+(--recapture-reference). --no-fail, suppressed features, seeked poses and single-sample comparisons
+against MSAA goldens are diagnostic. Shared residuals point to common inputs/behavior; backend-specific
+residuals to translation or transport.
 
 ## Same-device rendering comparisons
 
@@ -44,8 +49,8 @@ iOS 16.2 WebKit has no WebGPU. Same-Mac Chrome comparisons are cross-platform di
 iOS-browser parity. Viewport, DPR and display dimensions must match; authored supersampling uses
 the browser compositor, never offline PNG resizing.
 
-`BBLITE_TEST_PASS` disables physical input but does not hide SDL windows. Run Windows regression
-captures on an inactive desktop when they must not appear on the user's desktop.
+`BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
+they must not appear on the user's desktop.
 
 ## Captured state and its limits
 
@@ -54,7 +59,7 @@ captures on an inactive desktop when they must not appear on the user's desktop.
 | Ordinary native captures | Reconstructed CPU blocks, not intercepted GPU uploads |
 | Browser capture | Shaders, buffers, textures, bundles and draws |
 | SDL .slots | Compiled bindings after dead declarations disappear |
-| compose | Asset materials; excludes scene-created materials/later writes |
+| diff --compose | Asset materials; excludes scene-created materials/later writes |
 | textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
 | nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |
 | retainedDataFile | CPU splat bytes, not texture uploads |
@@ -62,57 +67,46 @@ captures on an inactive desktop when they must not appear on the user's desktop.
 
 Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
 those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
-Probe-variants temporarily changes/restores deployed Dawn WGSL; SDL changes need offline compilation.
+`probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
 Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) for checked indices.
 
 ## Before calling a scene done
 
-Run [validation](development.md#validation), then declared interaction checks on both backends:
+[Integration](development.md#integrating-a-curated-parity-scene) includes the declared interaction checks:
 
 ```powershell
-npm run scene -- observe <check-id>
+npm run scene -- check <check-id> --observe
 npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--keep]
 ```
 
-Checks live in checks/<id>.json; plugins hold scene-specific arithmetic. Phases define frames/input/env;
-expectations compare captures, state, images and logs. A twin builds the unchanged no-query source.
-`observe.captureReady` selects the canvas dataset flag awaited for `captureFrames`.
-Results are in artifacts/check/<id>/. Use numeric checks where small missing objects could pass image gates.
-
-| Area | Check IDs |
-| --- | --- |
-| Picking / splats | scene114 / scene121 |
-| TAA | scene261, scene261-live |
-| Text / live text | scene275 / scene180, scene181 |
-| Node geometry / GPU transport | scene149 / scene149-transport |
-| Local cubemaps | scene186 |
-| Shared canvases | scene227, scene228, antigravity-racer |
-| Workers / repaint rates | offscreen, offscreen-cadence |
-| Physics timing | break-meshes-60, break-meshes-240, break-meshes-live |
-| Heightfields / constraints | scene47 / scene46 |
-| Viewer / queries | scene41 / scene49 |
-| Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
-| Recovery | scene164 |
-| Interactivity | calculator, scene304, doom |
-| Desktop controls | quake, sandblox |
-| Ocean simulation / controls / resolution | ocean / ocean-ui / ocean-resolution |
+Checks live in `checks/<id>.json` (scope in `notes`); plugins hold scene-specific arithmetic. Phases
+define frames/input/env; expectations compare captures, state, images and logs. A twin builds the
+unchanged no-query source. `observe.captureReady` selects the canvas dataset flag awaited for
+`captureFrames`. Results are in artifacts/check/<id>/. Use numeric checks where small missing objects
+could pass image gates.
 
 Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
 `<entry>*<n>` repeats entries. Recovery tapes include Dataset, GlobalCall and DeviceLoss.
 
-Memory defaults: 6,000 frames, 32 MB growth after warm-up; all selects applications. Missing samples
-fail. Working-set stability does not prove object/GPU reclamation. GC node/allocation counts are additional data.
+`memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
+above `--max-slope-mb` (MB per 1,000 frames, default 2), engine mesh or geometry records that pile up
+while the scene's own count holds, and GC nodes that rise steadily; missing samples fail. `all` selects
+the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
+`--replay`/`--replay-file` supply another and `--replay -` idles.
 
 ## Artifacts
 
 | Directory | Contents |
 | --- | --- |
-| artifacts/parity/<id>/ | Backend reports/images/diffs, geometry, stability |
+| artifacts/parity/<id>/ | Backend reports/images/diffs; `seek-<t>/`, `geometry/`, `stability/` |
 | artifacts/parity-attribution/<id>/ | Instrumented attribution |
-| artifacts/parity-canvas/ | UI-free attribution |
-| artifacts/capture/<id>/ | Captures, bytes, shaders, diff/composition |
-| artifacts/memory/ | Verdicts, samples, traces |
+| artifacts/parity-canvas/<id>/ | Canvas-only lane and UI-free attribution |
+| artifacts/capture/<id>/ | Captures, bytes, shaders, diff/composition, probe |
+| artifacts/check/<id>/ | Check phases, browser observations, report |
+| artifacts/memory/ | Verdicts, samples, logs |
+| artifacts/status/ | `status --run` frames |
+| artifacts/survey/<directory>-<stem>/ | Survey census and API readiness |
 
 Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 
@@ -120,11 +114,11 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 
 | Variable | Purpose |
 | --- | --- |
-| `BBLITE_GPU_BACKEND` | Runtime backend in dual builds |
+| `BBLITE_GPU_BACKEND` | Runtime backend in dual builds: exactly `sdl_gpu` or `dawn` |
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
 | `BBLITE_DEFORMATION_DUMP` | Supported SDL bone/morph dump |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
-| `BBLITE_SCREENSHOT_FRAMES` | Window-only comma-separated ascending presentation frames before the final screenshot; writes `<stem>.frame-<n>.png` and build-stamp sidecars in the same run; excludes engine-frame capture |
+| `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated presentation frames before the final screenshot, written as `<stem>.frame-<n>.png` with build stamps; excludes engine-frame capture |
 | `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |
@@ -135,7 +129,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
-| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; the executable override reaches every measuring command (`parity`, `geometry`, `memory`, `stability`, `check`, `diff`, `capture --native`, `probe-variants`) |
+| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; `BBLITE_NATIVE_EXE` reaches every measuring command (`parity`, `memory`, `check`, `diff`, `capture --native`, `probe`, `status`) |
 | `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
 | `BBLITE_TEST_PASS` | Nonfocusable test pass: camera controls disabled (set by the harness) |
 | `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
@@ -143,8 +137,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run; `BBLITE_BENCHMARK_FRAMES=0` disables VSync without a frame limit for direct renderers; Window hosts remain display-paced |
 | `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
-Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL
-assertion prompts. Build configuration belongs in [development](development.md).
+Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL assertion prompts.
 
 Android debug intents accept `nativeResolution=true` to bypass the source pixel-ratio cap for
 profiling. Automated captures also bypass it to retain the requested golden dimensions.

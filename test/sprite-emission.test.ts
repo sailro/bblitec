@@ -56,6 +56,7 @@ function options(pure: boolean): UpstreamEmitOptions {
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,

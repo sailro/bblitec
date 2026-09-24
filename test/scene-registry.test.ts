@@ -4,10 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
 import { registrySceneCompileOptions } from "../src/native-host-ui.js";
-import {
-    paritySceneTarget,
-    validateReferenceCapture,
-} from "../src/parity-scene.js";
+import { validateReferenceCapture } from "../src/parity-scene.js";
 
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
@@ -70,6 +67,9 @@ test("registers unique generated scene targets", () => {
             "regression-physics-aggregate-options",
             "regression-physics-floating-origin",
             "regression-material-falloff",
+            "regression-opacity-alpha-write",
+            "regression-blend-alpha-write",
+            "regression-no-camera-floating-origin",
             "regression-compiler-state",
             "scene168",
             "scene176",
@@ -473,9 +473,8 @@ test("registers unique generated scene targets", () => {
 test("spells the measured pose once: the native seek derives from referenceTimeSeconds", () => {
     // 23 entries used to hand-pair referenceTimeSeconds with
     // nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS; drift would have
-    // split rung 1 (the env var, read by the parity run) from rung 3
-    // (referenceTimeSeconds, read by capture --native and diff)
-    // silently. The registry now derives the env var, and this asserts
+    // split the env var the parity run reads from the
+    // referenceTimeSeconds capture --native and diff read, silently. The registry now derives the env var, and this asserts
     // the pairing holds for every entry in both directions.
     let derived = 0;
     for (const scene of scenes) {
@@ -539,7 +538,6 @@ test("derives defaults for an unregistered scene source", () => {
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
             BBLITE_SCREENSHOT_FRAME: "181",
         });
-        assert.equal(paritySceneTarget(scene), source);
     } finally {
         rmSync(source, { force: true });
     }
@@ -550,7 +548,6 @@ test("resolves a registered scene by source path", () => {
         "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
     );
     assert.equal(scene.id, "scene10");
-    assert.equal(paritySceneTarget(scene), "scene10");
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {
@@ -600,28 +597,18 @@ test("keeps package scene commands registry-driven", () => {
         ),
         [],
     );
-    assert.equal(
-        packageJson.scripts["scenes:compile"],
-        "npm run scene -- compile all",
-    );
-    assert.equal(
-        packageJson.scripts["scenes:build"],
-        "npm run scene -- build all",
-    );
-    assert.equal(
-        packageJson.scripts["scenes:process"],
-        "npm run scene -- process all",
+    // Scene work goes through `npm run scene -- <command>`; the npm
+    // aliases are the setup/sweep entry points only, not a second
+    // spelling of each scene command.
+    assert.deepEqual(
+        scriptNames.filter((name) =>
+            /^(?:scenes|shaders|upstream):/.test(name),
+        ),
+        [],
     );
     assert.equal(packageJson.scripts.doctor, "npm run scene -- doctor");
     assert.equal(packageJson.scripts["dev:setup"], "npm run scene -- setup");
     assert.equal(packageJson.scripts.sweep, "npm run scene -- validate all");
-    // Both published columns are measured every run: the table carries an
-    // SDL_GPU and a Dawn number per scene, and a single-backend sweep
-    // leaves the second one unverified between manual differential runs.
-    assert.equal(
-        packageJson.scripts["scenes:parity"],
-        "npm run scene -- parity all --differential",
-    );
     assert.equal(
         packageJson.scripts["status:verify"],
         "npm run build && node dist/src/verify-status.js",

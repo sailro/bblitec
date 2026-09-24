@@ -3,39 +3,9 @@ import test from "node:test";
 
 import {
     isUiStyleSelectorKind,
-    nativeHostUiStyleRules,
     uiStyleSelector,
     uiStyleSelectorCppKind,
 } from "../src/ui-style-rule.js";
-
-test("legacy host class styles normalize ahead of generic style rules", () => {
-    assert.deepEqual(
-        nativeHostUiStyleRules({
-            classStyles: [{ className: "legacy", style: "display:none" }],
-            styleRules: [
-                {
-                    kind: "class-descendant-tag",
-                    primary: "panel",
-                    tag: "b",
-                    style: "color:cyan",
-                },
-            ],
-        }),
-        [
-            {
-                kind: "class",
-                primary: "legacy",
-                style: "display:none",
-            },
-            {
-                kind: "class-descendant-tag",
-                primary: "panel",
-                tag: "b",
-                style: "color:cyan",
-            },
-        ],
-    );
-});
 
 test("selector descriptors share validation, CSS, and C++ spellings", () => {
     assert.equal(isUiStyleSelectorKind("id-descendant-class"), true);

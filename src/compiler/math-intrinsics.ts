@@ -23,6 +23,7 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import {
+    mathExtremeCpp,
     pinnedHypotCall,
     pinnedMathSpelling,
     pinnedRoundCall,
@@ -152,11 +153,6 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         },
     ],
 ]);
-
-/** Native min/max calls share the same range and list overloads. */
-export function mathExtremeCpp(method: string, source: string): string {
-    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
-}
 
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(

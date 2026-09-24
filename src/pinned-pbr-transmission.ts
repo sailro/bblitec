@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
+import {
+    LoweringContext,
+    unexportedDeclarationText,
+} from "./lowering/context.js";
 import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import {
     transpileCommonJs,
@@ -93,7 +96,7 @@ export function pinnedPbrTransmissionSelection(
         "registerPbrTransmission",
     ).declaration;
     const source = transpileCommonJs(
-        declaration.getText().replace(/^export\s+/, "") +
+        unexportedDeclarationText(declaration) +
             "\nreturn registerPbrTransmission;",
         module,
     );

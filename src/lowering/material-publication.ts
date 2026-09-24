@@ -220,7 +220,13 @@ export function lowerMaterialPublication(context: LoweringContext): string {
         (node) =>
             ts.isForStatement(node) &&
             context.expressionMatchesShape(node.condition!, "i >= 0") &&
-            node.getText().includes("scene._renderables"),
+            context.hasNode(
+                node,
+                (candidate) =>
+                    ts.isPropertyAccessExpression(candidate) &&
+                    context.propertyPath(candidate)?.join(".") ===
+                        "scene._renderables",
+            ),
     );
     const runtimeAppend = runtime.declaration.body!.statements.find(
         (node) =>

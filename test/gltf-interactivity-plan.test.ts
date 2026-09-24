@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { readGlb } from "../src/glb-container.js";
 import { GLTF_MESH_PLAN } from "../src/gltf-document.js";
-import { gltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packagedFlowGraphPrograms } from "../src/pinned-flow-graph.js";
 import { FlowGraphLowerer } from "../src/lowering/flow-graph-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
+import { gltfMeshPlan } from "./gltf-mesh-fixture.js";
 
 const module = "src/loader-gltf/gltf-feature-interactivity.ts";
 function fixture() {

@@ -1066,6 +1066,7 @@ export async function bakeNodeParticles(
         const server = createSuiteSceneServer(driver);
         const result = await runPageGlobal(server, "__bakeNodeParticles", {
             serverName: "node-particle bake server",
+            shared: true,
             browserRequirement:
                 "Baking a node-particle simulation requires Chrome or Edge.",
             browserArgs: screenshotCaptureBrowserArgs,

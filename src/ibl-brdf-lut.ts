@@ -6,73 +6,27 @@
 // below mirrors that function's parameters exactly (size, format, layout,
 // entry point, bind group, workgroup counts).
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import { readPinnedRawShader } from "./pinned-shader-composer.js";
 
 // generateBrdfLut's `const size = 256` and the shader's own 256u bounds.
 const lutSize = 256;
 // rgba16float: four 2-byte half floats per texel.
 const lutBytes = lutSize * lutSize * 8;
 
-export function getIblBrdfLutProvenance() {
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
-    const pin = readUpstreamPin(repositoryRoot);
-    return {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-gltf/ibl-env-assembly.ts",
-        shader: "shaders/hdr-brdf-lut.compute.wgsl",
-        sampleCount: 1024,
-    } as const;
-}
-
-// The chunk file name carries a content hash, so it is resolved through
-// the import in ibl-env-assembly.js — the same module whose
-// generateBrdfLut dispatch this harness mirrors — rather than hard-coded.
+// The raw WGSL import ships in a hashed chunk, reached through the imports
+// of ibl-env-assembly.js — the same module whose generateBrdfLut dispatch
+// this harness mirrors — rather than by a hard-coded chunk name.
 export function loadPinnedBrdfLutShader(): string {
-    const packageRoot = resolve(
-        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-        "node_modules",
-        "@babylonjs",
-        "lite",
+    const shader = readPinnedRawShader(
+        "loader-gltf/ibl-env-assembly.js",
+        "shaders/hdr-brdf-lut.compute.wgsl",
     );
-    const assemblyPath = resolve(
-        packageRoot,
-        "lib",
-        "loader-gltf",
-        "ibl-env-assembly.js",
-    );
-    const assemblySource = readFileSync(assemblyPath, "utf8");
-    const chunkMatch = assemblySource.match(
-        /from ["'](\.\.\/_chunks\/hdr-brdf-lut\.compute-[^"']+\.js)["']/,
-    );
-    if (!chunkMatch?.[1]) {
-        throw new Error(
-            "Pinned Babylon Lite BRDF LUT chunk import was not found.",
-        );
-    }
-    const chunkSource = readFileSync(
-        resolve(dirname(assemblyPath), chunkMatch[1]),
-        "utf8",
-    );
-    const shaderMatch = chunkSource.match(
-        /var hdr_brdf_lut_compute_default = ("(?:[^"\\]|\\.)*");/,
-    );
-    if (!shaderMatch?.[1]) {
-        throw new Error("Pinned Babylon Lite BRDF LUT shader was not found.");
-    }
-    const shader: unknown = JSON.parse(shaderMatch[1]);
     if (
-        typeof shader !== "string" ||
         !shader.includes("texture_storage_2d<rgba16float,write>") ||
         !shader.includes("@workgroup_size(8,8)") ||
         !shader.includes("=1024u") ||
@@ -136,6 +90,7 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
         server,
         {
             serverName: "BRDF LUT server",
+            shared: true,
             browserRequirement:
                 "Exact IBL BRDF LUT generation requires Chrome or Edge.",
             browserArgs: webgpuComputeBrowserArgs,

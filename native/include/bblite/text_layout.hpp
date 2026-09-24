@@ -10,6 +10,9 @@ struct TextLayoutFont {
     double units_per_em = 0;
     double space_glyph = 0;
 };
+// `layoutText`'s options. Live text data and `layout_text`'s default argument
+// construct them without source options, so the members carry the pin's
+// defaults.
 struct TextLayoutOptions {
     double max_width = std::numeric_limits<double>::infinity();
     double line_height = 1.2;

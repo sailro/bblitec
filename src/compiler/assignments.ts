@@ -2731,18 +2731,6 @@ function emitTargetPropertyAssignment(
             // render field must not be replaced later by the factory's array.
             context.emit(`${record}.source_diffuse_color.reset();`);
         }
-        if (
-            recordField.kind === "material" &&
-            recordField.property === "alpha"
-        ) {
-            // The pin reads `mat.alpha < 1` live when it builds
-            // renderables, so a post-creation write moves the
-            // material between the opaque and blended families.
-            // One shared home for the rule (the factory calls the
-            // same helper), so the transmission arm and the family
-            // gates cannot drift from the creation-time derivation.
-            context.emit(`bbl::derive_material_alpha_mode(${record});`);
-        }
         return true;
     }
 

@@ -446,7 +446,9 @@ function compileLoadBabylon(
     asset.babylonTextureModes = [
         ...new Set([...(asset.babylonTextureModes ?? []), ...textureModes]),
     ];
-    context.reachFeature("camera:free", call);
+    // The pin imports its camera parser only when `loadCamera !== false`
+    // (load-babylon.ts), so a literal `false` reaches no camera factory.
+    if (loadCamera !== "false") context.reachFeature("camera:free", call);
     context.reachFeature("loader:babylon", call);
     context.reachFeature("material:standard", call);
     context.reachFeature("renderer:scene", call);

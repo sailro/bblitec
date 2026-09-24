@@ -13,6 +13,9 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 test("resource members execute once and flattened typed-array lanes preserve source width", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -135,7 +138,11 @@ test("selected conditional material records retain static local-cubemap setup", 
         ["?compare=0", 2],
         ["?blend=0", 2],
     ] as const) {
-        const result = compileSource(source, { fileName, search });
+        const result = compileSource(source, {
+            ...labDeployment,
+            fileName,
+            search,
+        });
         assert.equal(
             result.manifest.scenePbrMaterials.filter(
                 (material) => material.localCubemapCandidates !== undefined,
@@ -148,7 +155,7 @@ test("selected conditional material records retain static local-cubemap setup", 
         "if (Math.random() > 0 && hardLeftMaterials && hardRightMaterials && hardLeftRoom && hardRightRoom)",
     );
     assert.throws(
-        () => compileSource(runtimeSelection, { fileName }),
+        () => compileSource(runtimeSelection, { ...labDeployment, fileName }),
         /Local cubemap configuration currently requires static calls/,
     );
 });

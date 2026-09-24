@@ -39,18 +39,27 @@ struct SpriteAtlasFramePixelsView {
     Vec2 pivot{0.5f, 0.5f};
 };
 
+/**
+ * `createSpriteAtlasFromFrames`'s options. Generation always emits the full
+ * positional literal, so the members carry no initializers of their own.
+ */
 struct SpriteAtlasPackOptions {
-    std::uint32_t padding_px = 1;
-    std::uint32_t max_width_px = 1024;
-    TextureFilter sampling = TextureFilter::nearest;
-    bool premultiplied_alpha = false;
-    bool has_capacity = false;
-    std::uint32_t capacity_width = 0;
-    std::uint32_t capacity_height = 0;
+    std::uint32_t padding_px;
+    std::uint32_t max_width_px;
+    TextureFilter sampling;
+    bool premultiplied_alpha;
+    bool has_capacity;
+    std::uint32_t capacity_width;
+    std::uint32_t capacity_height;
 };
 
+/**
+ * `createSprite2DLayer`'s options. The intrinsic writes every member; the
+ * node-particle Sprite2D bridge writes the capacity and keeps the layer
+ * factory's own defaults below for the options its system leaves unnamed.
+ */
 struct Sprite2DLayerOptions {
-    float capacity = 16.0f;
+    float capacity = 0.0f;
     SpriteBlendDescriptor blend_mode{};
     float opacity = 1.0f;
     bool visible = true;

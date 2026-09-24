@@ -16,13 +16,14 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Lifetime | SDL objects and fences | WebGPU objects and submission retention |
 | GPU task timestamps | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
 
-Backend agreement does not establish browser parity. Measurements live in [status](status.md).
 Runtime selection prefers SDL_GPU when compiled, otherwise Dawn. Explicit invalid or uncompiled
 backend requests fail.
 
 ## Shared frame conductor
 
-`pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers.
+`pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers. `pal_gpu_dispatch.hpp`
+holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
+shares the standalone hosts' input, clock, capture and benchmark phases.
 `pal_gpu_shared.hpp` owns clocks, capture gates, callbacks and upload records.
 Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
 `pal_window.hpp` owns the OS window independently of renderer rebuilds.
@@ -79,7 +80,7 @@ Stopped presentation scales the retained image without advancing history.
 | Producer | Engine, scene, encoders, resources, image publication |
 
 Typed messages, document snapshots, dimensions and fenced image leases cross threads; JS references
-and engine records do not. Canvas transfer validates before detachment. Rendering products must match.
+and engine records do not. Canvas transfer validates before detachment.
 
 `close` completes the active callback and microtasks. `terminate` wakes waits and uses compiled
 cancellation points; arbitrary native calls are not preemptible. RAF notifications coalesce per realm.
@@ -95,14 +96,13 @@ the latest canvas frames. Completion receipts contain weak native inbox referenc
 consumer fences prevent overwriting sampled images. Normal presentation uses GPU textures; captures
 use readback. SDL submits on the acquiring thread; Dawn synchronizes the shared device.
 
-The first document snapshot follows initialization microtasks. Image decoding works before engine
-construction and keeps readiness on the application realm. Source callbacks remain on that realm.
-Shared-device recovery in worker/window applications is unsupported.
+The first document snapshot follows initialization microtasks. Image decode readiness and source
+callbacks remain on the application realm.
 
 ## Retained UI
 
-Same-engine canvases use independent targets and retained CSS rectangles. Host canvases without a
-projected rectangle share equal horizontal panes. RmlUi supplies geometry, textures, scissors,
+Canvases keep their retained CSS rectangles; host canvases without a projected rectangle share equal
+horizontal panes. RmlUi supplies geometry, textures, scissors,
 transforms and effects; the backends own uploads, layers and premultiplied composition. See [UI](ui.md).
 
 ## Render-target boundaries

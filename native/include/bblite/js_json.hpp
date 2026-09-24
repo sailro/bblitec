@@ -221,6 +221,8 @@ inline void json_write(JsonWriter& writer, const JsonValue& value);
 
 /** A record key: a string is itself, a numeric key is its own spelling. */
 [[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
+/** A temporary key would leave the returned reference dangling. */
+const std::string& json_object_key(std::string&&) = delete;
 
 [[nodiscard]] inline std::string json_object_key(double key) { return number_to_string(key); }
 

@@ -70,8 +70,22 @@ function assertForwardCurveScale(
     context: LoweringContext,
     scale: number,
 ): void {
-    const source = context.store.getSource(imageProcessingModule);
-    const matches = [...source.matchAll(/exp2\(\s*-\s*([0-9.]+)\s*\*/g)];
+    // The WGSL the stage module states, literal by literal off its AST; the
+    // curve is read out of that WGSL text, which the IR parser does not yet
+    // take as a whole module.
+    const wgsl = context
+        .findNodes(
+            context.sourceFile(imageProcessingModule),
+            (node): node is ts.StringLiteralLike | ts.TemplateLiteralToken =>
+                ts.isStringLiteralLike(node) ||
+                ts.isTemplateHead(node) ||
+                ts.isTemplateMiddle(node) ||
+                ts.isTemplateTail(node),
+        )
+        .map((literal) => literal.text);
+    const matches = wgsl.flatMap((text) => [
+        ...text.matchAll(/exp2\(\s*-\s*([0-9.]+)\s*\*/g),
+    ]);
     if (matches.length === 0) {
         throw new Error(
             "Pinned image processing no longer states the exponential " +

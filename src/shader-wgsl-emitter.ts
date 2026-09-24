@@ -1,6 +1,7 @@
 import { shaderSamplerName } from "./shader-material-programs.js";
-import { shaderSystemUniformType } from "./shader-ir.js";
+import { mapShaderModule, shaderSystemUniformType } from "./shader-ir.js";
 import type {
+    ShaderConstant,
     ShaderEntryPoint,
     ShaderExpression,
     ShaderFunction,
@@ -16,6 +17,14 @@ function emitExpression(expression: ShaderExpression): string {
     switch (expression.kind) {
         case "binary":
             return `(${emitExpression(expression.left)} ${expression.operator} ${emitExpression(expression.right)})`;
+        case "unary": {
+            // A nested unary operand is parenthesized so `-(-x)` never
+            // prints as the `--` token.
+            const operand = emitExpression(expression.operand);
+            return expression.operand.kind === "unary"
+                ? `${expression.operator}(${operand})`
+                : `${expression.operator}${operand}`;
+        }
         case "call":
             return `${expression.name}(${expression.arguments
                 .map(emitExpression)
@@ -24,8 +33,11 @@ function emitExpression(expression: ShaderExpression): string {
             return `${expression.type}(${expression.arguments
                 .map(emitExpression)
                 .join(", ")})`;
-        case "index":
-            return `${emitExpression(expression.expression)}[${emitExpression(expression.index)}]`;
+        case "index": {
+            // Indexing binds tighter than a unary operator: `(*p)[0]`.
+            const base = emitExpression(expression.expression);
+            return `${expression.expression.kind === "unary" ? `(${base})` : base}[${emitExpression(expression.index)}]`;
+        }
         case "member":
             return `(${emitExpression(expression.expression)}).${expression.member}`;
         case "number":
@@ -33,6 +45,39 @@ function emitExpression(expression: ShaderExpression): string {
         case "path":
             return expression.parts.join(".");
     }
+}
+
+function emitBlock(
+    head: string,
+    statements: ShaderStatement[],
+    indent: string,
+): string[] {
+    return [
+        `${indent}${head ? `${head} ` : ""}{`,
+        ...emitStatements(statements, `${indent}    `),
+        `${indent}}`,
+    ];
+}
+
+function emitIf(
+    statement: Extract<ShaderStatement, { kind: "if" }>,
+    indent: string,
+    head = "if",
+): string[] {
+    const lines = emitBlock(
+        `${head} (${emitExpression(statement.condition)})`,
+        statement.statements,
+        indent,
+    );
+    const alternative = statement.alternative;
+    if (!alternative) return lines;
+    lines.pop();
+    const [nested] = alternative;
+    if (alternative.length === 1 && nested?.kind === "if") {
+        const chained = emitIf(nested, indent, "} else if");
+        return [...lines, ...chained];
+    }
+    return [...lines, ...emitBlock("} else", alternative, indent)];
 }
 
 function emitStatements(
@@ -43,52 +88,121 @@ function emitStatements(
     for (const statement of statements) {
         switch (statement.kind) {
             case "assign":
-                lines.push(`${indent}${emitAssignment(statement)};`);
+            case "increment":
+            case "let":
+            case "const":
+            case "var":
+            case "expression":
+                lines.push(`${indent}${emitSimpleStatement(statement)};`);
                 break;
             case "discard":
-                lines.push(`${indent}discard;`);
+            case "break":
+            case "continue":
+                lines.push(`${indent}${statement.kind};`);
                 break;
             case "if":
-                lines.push(
-                    `${indent}if (${emitExpression(statement.condition)}) {`,
-                    ...emitStatements(statement.statements, `${indent}    `),
-                    `${indent}}`,
-                );
+                lines.push(...emitIf(statement, indent));
                 break;
             case "for":
                 lines.push(
-                    `${indent}for (${emitVariable(statement.initializer)}; ${emitExpression(statement.condition)}; ${emitAssignment(statement.update)}) {`,
-                    ...emitStatements(statement.statements, `${indent}    `),
+                    ...emitBlock(
+                        `for (${statement.initializer ? emitSimpleStatement(statement.initializer) : ""}; ${statement.condition ? emitExpression(statement.condition) : ""}; ${statement.update ? emitSimpleStatement(statement.update) : ""})`,
+                        statement.statements,
+                        indent,
+                    ),
+                );
+                break;
+            case "while":
+                lines.push(
+                    ...emitBlock(
+                        `while (${emitExpression(statement.condition)})`,
+                        statement.statements,
+                        indent,
+                    ),
+                );
+                break;
+            case "loop": {
+                const body = [...statement.statements];
+                const loop = emitBlock("loop", body, indent);
+                if (statement.continuing || statement.breakIf) {
+                    const inner = `${indent}    `;
+                    loop.splice(
+                        loop.length - 1,
+                        0,
+                        `${inner}continuing {`,
+                        ...emitStatements(
+                            statement.continuing ?? [],
+                            `${inner}    `,
+                        ),
+                        ...(statement.breakIf
+                            ? [
+                                  `${inner}    break if ${emitExpression(statement.breakIf)};`,
+                              ]
+                            : []),
+                        `${inner}}`,
+                    );
+                }
+                lines.push(...loop);
+                break;
+            }
+            case "switch":
+                lines.push(
+                    `${indent}switch (${emitExpression(statement.selector)}) {`,
+                    ...statement.clauses.flatMap((clause) =>
+                        emitBlock(
+                            clause.selectors.length === 1 &&
+                                clause.selectors[0] === "default"
+                                ? "default:"
+                                : `case ${clause.selectors
+                                      .map((selector) =>
+                                          selector === "default"
+                                              ? selector
+                                              : emitExpression(selector),
+                                      )
+                                      .join(", ")}:`,
+                            clause.statements,
+                            `${indent}    `,
+                        ),
+                    ),
                     `${indent}}`,
                 );
                 break;
-            case "let":
-            case "var":
-                lines.push(`${indent}${emitVariable(statement)};`);
+            case "block":
+                lines.push(...emitBlock("", statement.statements, indent));
                 break;
             case "return":
                 lines.push(
                     `${indent}return${statement.value ? ` ${emitExpression(statement.value)}` : ""};`,
                 );
                 break;
-            case "expression":
-                lines.push(`${indent}${emitExpression(statement.value)};`);
+            case "assert":
+                lines.push(
+                    `${indent}const_assert ${emitExpression(statement.value)};`,
+                );
                 break;
         }
     }
     return lines;
 }
 
-function emitVariable(
-    statement: Extract<ShaderStatement, { kind: "var" | "let" }>,
-): string {
-    return `${statement.kind} ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""}`;
-}
-
-function emitAssignment(
-    statement: Extract<ShaderStatement, { kind: "assign" }>,
-): string {
-    return `${emitExpression(statement.target)} = ${emitExpression(statement.value)}`;
+/** A statement a `for` header can carry, without its `;`. */
+function emitSimpleStatement(statement: ShaderStatement): string {
+    switch (statement.kind) {
+        case "let":
+        case "const":
+        case "var":
+            return `${statement.kind} ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""}`;
+        case "assign":
+            return `${emitExpression(statement.target)} ${statement.operator ?? "="} ${emitExpression(statement.value)}`;
+        case "increment":
+            return `${emitExpression(statement.target)}${statement.operator}`;
+        case "expression":
+            return emitExpression(statement.value);
+        default:
+            throw new Error(
+                `WGSL ${statement.kind} statement cannot stand in a for header.`,
+            );
+    }
 }
 
 export function emitWgslStatements(
@@ -100,10 +214,24 @@ export function emitWgslStatements(
 
 export function emitWgslFunction(fn: ShaderFunction): string {
     return [
-        `fn ${fn.name}(${fn.parameters.map((parameter) => `${parameter.name}: ${parameter.type}`).join(", ")}) -> ${fn.returnType} {`,
+        `fn ${fn.name}(${fn.parameters.map((parameter) => `${parameter.name}: ${parameter.type}`).join(", ")})${fn.returnType ? ` -> ${fn.returnType}` : ""} {`,
         ...emitStatements(fn.statements, "    "),
         "}",
     ].join("\n");
+}
+
+function emitConstant(constant: ShaderConstant): string {
+    return `const ${constant.name}${constant.type ? `: ${constant.type}` : ""} = ${emitExpression(constant.value)};`;
+}
+
+/** A module's constants and helper functions, each block followed by a blank line. */
+function emitHelpers(module: ShaderModule): string[] {
+    return [
+        ...(module.constants?.length
+            ? [...module.constants.map(emitConstant), ""]
+            : []),
+        ...(module.functions ?? []).flatMap((fn) => [emitWgslFunction(fn), ""]),
+    ];
 }
 
 function emitStruct(structure: ShaderStruct): string {
@@ -135,8 +263,6 @@ function emitEntryPoint(entry: ShaderEntryPoint): string {
 
 /** Emit a complete typed module without inventing or specializing bindings. */
 export function emitWgslModule(module: ShaderModule, helpers = ""): string {
-    if (module.rawSource !== undefined)
-        throw new Error("Typed WGSL emission requires parsed declarations.");
     return [
         ...module.structs.map(emitStruct),
         ...(module.bindings ?? []).map(
@@ -144,6 +270,7 @@ export function emitWgslModule(module: ShaderModule, helpers = ""): string {
                 `@group(${binding.group}) @binding(${binding.binding}) var${binding.addressSpace ? `<${binding.addressSpace}>` : ""} ${binding.name}: ${binding.type};`,
         ),
         helpers,
+        ...emitHelpers(module),
         emitEntryPoint(module.entryPoint),
         "",
     ].join("\n");
@@ -183,21 +310,31 @@ ${block.members.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
 @group(${group}) @binding(0) var<uniform> shaderUniforms: ShaderUniforms;`;
 }
 
+/**
+ * The native PAL deliberately packs one stage block. Preserve the pin's
+ * declaration order in that block and address both of the pin's logical
+ * roots -- `shaderSystem.x` and `shaderUniforms.y` -- through the one native
+ * binding.
+ */
 function specializeMixedUniformRoot(
-    source: string,
+    module: ShaderModule,
     block: ShaderUniformBlockReflection | undefined,
-): string {
+): ShaderModule {
     if (
         !block ||
         block.systemMatrices.length === 0 ||
         block.members.length === 0
     ) {
-        return source;
+        return module;
     }
-    // The native PAL deliberately packs one stage block. Preserve the pin's
-    // declaration order in that block and address both of the pin's logical
-    // roots through the one native binding.
-    return source.replaceAll("shaderSystem.", "shaderUniforms.");
+    return mapShaderModule(module, (expression) =>
+        expression.kind === "path" && expression.parts[0] === "shaderSystem"
+            ? {
+                  kind: "path",
+                  parts: ["shaderUniforms", ...expression.parts.slice(1)],
+              }
+            : expression,
+    );
 }
 
 /**
@@ -270,9 +407,12 @@ export function emitNativeWgslProgram(
      */
     defineText = "",
 ): string {
-    const module = stage === "vertex" ? program.vertex : program.fragment;
     const block = program.reflection.uniformBlocks.find(
         (candidate) => candidate.stage === stage,
+    );
+    const module = specializeMixedUniformRoot(
+        stage === "vertex" ? program.vertex : program.fragment,
+        block,
     );
     const vertexInput =
         stage === "vertex"
@@ -285,23 +425,6 @@ export function emitNativeWgslProgram(
                   "};",
               ].join("\n")
             : undefined;
-    if (module.rawSource !== undefined) {
-        return specializeMixedUniformRoot(
-            [
-                "// Native-specialized WGSL generated from the bblitec shader surface.",
-                emitUniformBlock(block),
-                emitStorageBindings(program, stage),
-                emitSamplerBindings(program, stage),
-                defineText.length > 0 ? defineText.trimEnd() : undefined,
-                vertexInput,
-                module.rawSource.trim(),
-                "",
-            ]
-                .filter((value): value is string => value !== undefined)
-                .join("\n"),
-            block,
-        );
-    }
     // Native shader inputs carry attributes on their reflected structs;
     // this entry interface preserves only a direct return location.
     const entry: ShaderEntryPoint = {
@@ -316,21 +439,19 @@ export function emitNativeWgslProgram(
                 ? module.entryPoint.returnAttribute
                 : undefined,
     };
-    return specializeMixedUniformRoot(
-        [
-            "// Native-specialized WGSL generated from the bblitec typed shader IR.",
-            emitUniformBlock(block),
-            emitStorageBindings(program, stage),
-            emitSamplerBindings(program, stage),
-            defineText.length > 0 ? defineText.trimEnd() : undefined,
-            vertexInput,
-            ...module.structs.map((structure) => `${emitStruct(structure)};`),
-            "",
-            emitEntryPoint(entry),
-            "",
-        ]
-            .filter((value): value is string => value !== undefined)
-            .join("\n"),
-        block,
-    );
+    return [
+        "// Native-specialized WGSL generated from the bblitec typed shader IR.",
+        emitUniformBlock(block),
+        emitStorageBindings(program, stage),
+        emitSamplerBindings(program, stage),
+        defineText.length > 0 ? defineText.trimEnd() : undefined,
+        vertexInput,
+        ...module.structs.map((structure) => `${emitStruct(structure)};`),
+        "",
+        ...emitHelpers(module),
+        emitEntryPoint(entry),
+        "",
+    ]
+        .filter((value): value is string => value !== undefined)
+        .join("\n");
 }

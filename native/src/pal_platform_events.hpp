@@ -558,6 +558,18 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
         return "Tab";
     case SDL_SCANCODE_BACKSPACE:
         return "Backspace";
+    case SDL_SCANCODE_PAGEUP:
+        return "PageUp";
+    case SDL_SCANCODE_PAGEDOWN:
+        return "PageDown";
+    case SDL_SCANCODE_HOME:
+        return "Home";
+    case SDL_SCANCODE_END:
+        return "End";
+    case SDL_SCANCODE_INSERT:
+        return "Insert";
+    case SDL_SCANCODE_DELETE:
+        return "Delete";
     case SDL_SCANCODE_F1:
         return "F1";
     case SDL_SCANCODE_F2:
@@ -721,10 +733,11 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     return false;
 }
 
-// TODO(window-move): adopt SDL's main-callback loop for interactive builds.
 // Conventional SDL_PollEvent loops stall application iteration during the
-// Win32 move/resize modal loop. Do not work around that with re-entrant event
-// watchers, compositor flushes, or temporary window-style changes.
+// Win32 move/resize modal loop; the fix is SDL's main-callback loop for
+// interactive builds (TODO.md, Worker and platform). Do not work around that
+// with re-entrant event watchers, compositor flushes, or temporary
+// window-style changes.
 
 /** Translate SDL's button masks to PointerEvent.buttons. */
 inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed) {

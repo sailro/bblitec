@@ -212,7 +212,8 @@ test("node geometry rejects imported transform writers through helpers and alias
         for (const first of [false, true]) {
             assert.throws(
                 () => compileSource(source(body, true, first)),
-                /static imported mesh transforms/,
+                // Object.assign onto a handle refuses before node geometry sees it.
+                /static imported mesh transforms|Object\.assign cannot write into a mesh value/,
                 body,
             );
         }

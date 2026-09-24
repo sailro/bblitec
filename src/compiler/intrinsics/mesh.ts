@@ -215,7 +215,8 @@ function binaryVec3Components(
     ];
 }
 
-function vec3Record(cpp: string): Value {
+/** An `{x, y, z}` record over a native vector's members. */
+export function vec3Record(cpp: string): Value {
     return {
         kind: "record",
         cpp: "",

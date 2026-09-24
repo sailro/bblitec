@@ -17,7 +17,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { nullability, typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import {
@@ -211,10 +211,7 @@ export function requiresDefaultParameterBinding(
                     node.kind === ts.SyntaxKind.ThisKeyword,
                 { skip: ts.isTypeNode },
             );
-        const type = checker.getTypeAtLocation(argument);
-        return (type.isUnion() ? type.types : [type]).some(
-            (member) => (member.flags & ts.TypeFlags.Undefined) !== 0,
-        );
+        return nullability(checker.getTypeAtLocation(argument)).undefined;
     });
     calls.set(call, required);
     return required;
@@ -4976,21 +4973,15 @@ export class UserFunctionLowerer {
         const sourceType = source
             ? this.checker.getTypeAtLocation(source)
             : parameter.type;
-        const alternatives = sourceType.isUnion()
-            ? sourceType.types
-            : [sourceType];
-        const mayBeUndefined = alternatives.some(
-            (type) => (type.flags & ts.TypeFlags.Undefined) !== 0,
-        );
+        const absent = nullability(sourceType);
+        const mayBeUndefined = absent.undefined;
         const referenceAbsence =
             (mayBeUndefined || argument.preserveUncheckedLookup) &&
             (storage.kind === "function" ||
                 (storage.kind === "struct" &&
                     context.dataTypes.isReferenceStruct(storage.name)));
         if (storage.kind !== "optional" && !referenceAbsence) return argument;
-        if (
-            alternatives.some((type) => (type.flags & ts.TypeFlags.Null) !== 0)
-        ) {
+        if (absent.null) {
             if (!mayBeUndefined) return argument;
             return context.fail(
                 source ?? parameter.declaration,

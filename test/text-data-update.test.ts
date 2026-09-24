@@ -13,7 +13,7 @@ import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { materializePinnedText } from "../src/pinned-text-data.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import {
     nativeFixtureVcpkgRoot,
@@ -184,7 +184,7 @@ test("live default text allocator matches pinned bytes, capacity, slot reuse and
     const directory = resolve("artifacts/test-text-update");
     mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const bytes = readAssetBytesSync(
-        resolveBundledAsset("/fonts/Inter.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Inter.ttf`,
         resolve(directory, "source.ts"),
     );
     writeFileSync(resolve(directory, "font.ttf"), bytes);

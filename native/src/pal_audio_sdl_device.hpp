@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <vector>
 
@@ -220,9 +221,11 @@ private:
         ~StreamOwner() {
             if (value)
                 SDL_DestroyAudioStream(value);
+            // stdio, not iostream: a destructor must not reach a stream
+            // that can be configured to throw.
             if (trace && value)
-                std::cerr << "[bblite trace] audio playback frames=" << frames << " peak=" << peak
-                          << '\n';
+                std::fprintf(stderr, "[bblite trace] audio playback frames=%llu peak=%g\n",
+                             static_cast<unsigned long long>(frames), static_cast<double>(peak));
             if (initialized)
                 SDL_QuitSubSystem(SDL_INIT_AUDIO);
         }

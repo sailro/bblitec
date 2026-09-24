@@ -1,6 +1,6 @@
 // The behavior guards behind the mechanical consolidation of the
 // mutation walkers, the data-method dispatcher, and the Map/Set
-// container shell (TODO: compiler/runtime consolidation).
+// container shell.
 //
 // Two layers must agree for JavaScript's delete-during-iteration
 // semantics to survive lowering: the compiler keeps the erase on the

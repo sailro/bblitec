@@ -15,8 +15,12 @@ import {
     buildStampHeaderPath,
     comparePayload,
     computeBuildStamp,
+    deployedPayloads,
+    deployedShaderSuffixes,
+    executableBuildBackend,
     generatorWouldReconfigure,
     incompatibleCacheEntries,
+    payloadOrphans,
     readCacheConfiguration,
     sameCachePath,
 } from "../src/build-stamp.js";
@@ -207,30 +211,95 @@ test("compares a deployed payload against its generated source", (t) => {
     const deployed = resolve(root, "build/shaders");
     mkdirSync(source, { recursive: true });
     mkdirSync(deployed, { recursive: true });
+    const payload = { source, deployed, deploys: () => true };
     writeFileSync(resolve(source, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-1");
-    assert.deepEqual(comparePayload(source, deployed), []);
+    assert.deepEqual(comparePayload(payload), []);
 
     // The build's own marker files are not payload.
     writeFileSync(resolve(deployed, ".snapshot-stamp"), "");
-    assert.deepEqual(comparePayload(source, deployed), []);
+    assert.deepEqual(comparePayload(payload), []);
 
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-2");
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "pbr.frag.dxil", reason: "changed" },
     ]);
 
     rmSync(resolve(deployed, "pbr.frag.dxil"));
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "pbr.frag.dxil", reason: "missing" },
     ]);
 
     writeFileSync(resolve(source, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "orphan.dxil"), "DXBC-0");
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "orphan.dxil", reason: "unexpected" },
     ]);
+    assert.deepEqual(payloadOrphans(payload), ["orphan.dxil"]);
+});
+
+test("deploys only the compiled renderers' shader files", (t) => {
+    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "win32"), [
+        ".dxil",
+        ".slots",
+    ]);
+    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "darwin"), [
+        ".msl",
+        ".slots",
+    ]);
+    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "linux"), [
+        ".spv",
+        ".slots",
+    ]);
+    assert.deepEqual(deployedShaderSuffixes("DAWN", "win32"), [".native.wgsl"]);
+    assert.deepEqual(deployedShaderSuffixes("BOTH", "win32"), [
+        ".dxil",
+        ".slots",
+        ".native.wgsl",
+    ]);
+
+    const root = mkdtempSync(join(tmpdir(), "bblitec-payload-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const generated = resolve(root, "generated");
+    const build = resolve(root, "build");
+    const source = resolve(generated, "upstream/shaders");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(resolve(build, "shaders"), { recursive: true });
+    assert.throws(
+        () => deployedPayloads(build, generated),
+        /No CMake cache with BBLITE_BACKEND/,
+    );
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_BACKEND:STRING=DAWN\n",
+    );
+    for (const name of [
+        "pbr.frag.native.wgsl",
+        "pbr.frag.dxil",
+        "pbr.frag.slots",
+        "pbr.frag.hlsl",
+        "composition.json",
+    ]) {
+        writeFileSync(resolve(source, name), name);
+    }
+    writeFileSync(
+        resolve(build, "shaders/pbr.frag.native.wgsl"),
+        "pbr.frag.native.wgsl",
+    );
+    const shaders = deployedPayloads(build, generated).find(
+        (payload) => payload.label === "shaders",
+    );
+    assert.ok(shaders);
+    assert.deepEqual(comparePayload(shaders), []);
+    // An SDL_GPU binary left beside a Dawn-only executable is an orphan.
+    writeFileSync(resolve(build, "shaders/pbr.frag.dxil"), "pbr.frag.dxil");
+    assert.deepEqual(payloadOrphans(shaders), ["pbr.frag.dxil"]);
+
+    // A multi-configuration generator keeps the cache one level up.
+    const release = resolve(build, "Release");
+    mkdirSync(release);
+    assert.equal(executableBuildBackend(release), "DAWN");
 });
 
 test("reads the cache values that shape a build directory", (t) => {

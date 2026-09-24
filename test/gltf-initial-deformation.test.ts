@@ -3,7 +3,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { emitAssetSpecializations } from "../src/asset-specializer.js";
+import {
+    emitAssetSpecializations,
+    gltfAssetDocuments,
+} from "../src/asset-specializer.js";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import type { JsonObject } from "../src/gltf-document.js";
 import {
@@ -262,13 +265,18 @@ test("static skin and morph assets activate native deformation and world bounds"
                 document,
                 binary,
             );
-            const features = emitAssetSpecializations(directory, [
+            const assets = [
                 {
                     source: "https://example.invalid/asset.glb",
                     output: "asset.glb",
-                    kind: "gltf",
+                    kind: "gltf" as const,
                 },
-            ]);
+            ];
+            const features = emitAssetSpecializations(
+                directory,
+                assets,
+                gltfAssetDocuments(directory, assets),
+            );
             assert.equal(features.gpuDeformation, skinned || morphed);
             assert.equal(features.animatedWorldBounds, skinned || morphed);
             assert.equal(features.morphStorage, morphed);

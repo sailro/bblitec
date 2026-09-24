@@ -22,6 +22,9 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 type Value = Record<string, unknown>;
 function sourceWriter(
@@ -333,12 +336,14 @@ test("admitted glTF ORM and occlusion replacements cannot reattach their origina
         void main();`;
     for (const slot of ["ormTexture", "occlusionTexture"]) {
         assert.throws(
-            () => compileSource(source(slot, "old")),
+            () => compileSource(source(slot, "old"), labDeployment),
             /requires a solid texture|uses createSolidTexture2D/,
         );
         assert.match(
-            compileSource(source(slot, "createSolidTexture2D(engine, 1, 1, 1)"))
-                .cpp,
+            compileSource(
+                source(slot, "createSolidTexture2D(engine, 1, 1, 1)"),
+                labDeployment,
+            ).cpp,
             /set_material_orm_file|set_pbr_occlusion_solid_texture/,
         );
     }

@@ -401,7 +401,6 @@ bblite_feature_define(BBLITE_COMPUTE_SHADERS "compute:shader")
 bblite_feature_define(BBLITE_COMPUTE_FRAME_GRAPH "compute:frame-graph")
 bblite_feature_define(BBLITE_STORAGE_READBACK "compute:storage-readback")
 bblite_feature_define(BBLITE_COMPUTE_BINDINGS "compute:bindings")
-bblite_feature_define(BBLITE_COMPUTE_ONE_SHOT "compute:one-shot")
 bblite_feature_define(BBLITE_WORKERS "platform:workers")
 if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
     set(BBLITE_OFFSCREEN_SURFACES ON)
@@ -413,18 +412,6 @@ if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 target_compile_definitions(bblite_features INTERFACE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
-
-if(MSVC)
-    # Lowered value-returning lambdas keep a defensive fallthrough throw after
-    # their translated control flow. LTCG can prove that some of those guards
-    # are unreachable and reports C4702 late in the link; suppress that one
-    # diagnostic only for generated application code, while the PAL remains
-    # warning-clean under /W4 /WX.
-    set_source_files_properties(
-        "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-        PROPERTIES COMPILE_OPTIONS "/wd4702"
-    )
-endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
     # The snapshot is ordered before the executable by a target dependency,
@@ -483,6 +470,27 @@ if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
 endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
+    # The runtime reads only its compiled renderers' shader formats: SDL_GPU
+    # the platform's offline binary plus the `.slots` sidecars naming each
+    # pinned variant's register order, Dawn the `.native.wgsl` text it
+    # compiles in-process. HLSL, reflection dumps, WGSL sources and tool
+    # manifests stay in the generated tree as development artifacts.
+    # `deployedShaderSuffixes` (src/build-stamp.ts) verifies the deployment
+    # by this table.
+    set(BBLITE_DEPLOYED_SHADER_SUFFIXES "")
+    if(BBLITE_BACKEND_SDL_GPU)
+        if(WIN32)
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".dxil")
+        elseif(APPLE)
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".msl")
+        else()
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".spv")
+        endif()
+        list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".slots")
+    endif()
+    if(BBLITE_BACKEND_DAWN)
+        list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".native.wgsl")
+    endif()
     # Deployed by a stamped target rather than POST_BUILD on the executable,
     # for the reason the asset target above records: a shader-only change
     # relinks nothing, so a POST_BUILD copy never fires and the measured run
@@ -492,16 +500,17 @@ if(BBLITE_GENERATED_SHADER_FILES)
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
         COMMAND
-            "${CMAKE_COMMAND}" -E remove_directory
-            "$<TARGET_FILE_DIR:bblite_native>/shaders"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_directory
-            "${BBLITE_BUILD_SHADER_DIR}"
-            "$<TARGET_FILE_DIR:bblite_native>/shaders"
+            "${CMAKE_COMMAND}"
+            "-DBBLITE_SOURCE=${BBLITE_BUILD_SHADER_DIR}"
+            "-DBBLITE_DESTINATION=$<TARGET_FILE_DIR:bblite_native>/shaders"
+            "-DBBLITE_SUFFIXES=${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
+            -P "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
         COMMAND
             "${CMAKE_COMMAND}" -E touch
             "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
-        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+        DEPENDS
+            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+            "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
         VERBATIM
     )
     add_custom_target(
@@ -696,9 +705,9 @@ if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 
-# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
-# because a loaded asset reaches scene transmission on its own and the
-# reached-feature list only records what the scene's code asked for.
+# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp:
+# the scene transmission reach and the composed refraction/thickness
+# bindings decide it.
 bblite_feature_define(BBLITE_HAS_PBR_RENDERER "renderer:scene")
 
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
@@ -830,6 +839,8 @@ bblite_feature_define(BBLITE_HAS_SPRITES "sprite:2d" "sprite:billboard" "sprite:
 bblite_feature_define(BBLITE_HAS_SPRITE_ANIMATION "sprite:animation")
 bblite_feature_define(BBLITE_HAS_ANIMATION "animation:property" "animation:managed-groups")
 bblite_feature_define(BBLITE_HAS_GIZMOS "gizmo:utility-layer")
+bblite_feature_define(BBLITE_HAS_CAMERA_GIZMOS "gizmo:camera")
+bblite_feature_define(BBLITE_HAS_LIGHT_GIZMOS "gizmo:light")
 bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:esm" "shadow:pcf" "shadow:pcf-directional" "shadow:csm" "shadow:task")
 bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
 bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")
@@ -874,6 +885,9 @@ bblite_feature_define(BBLITE_HAS_DETAILED_PICKING "picking:detailed")
 # A scene that never adds one carries none of it.
 bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
 bblite_feature_define(BBLITE_SHADOWS_CSM "shadow:csm")
+# enableMorphTargetShadows' caster-bounds provider: the generator flag and the
+# fit's morph expansion, compiled only for a scene that registers it.
+bblite_feature_define(BBLITE_SHADOW_MORPH_BOUNDS "shadow:morph-bounds")
 
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
@@ -1055,43 +1069,6 @@ if(MSVC)
     target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
 else()
     target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
-endif()
-
-# Optimization of generated application units, independently of PAL/upstream units.
-set(
-    BBLITE_MAIN_OPT
-    "configuration"
-    CACHE STRING
-    "Optimization of generated application sources: configuration or O1"
-)
-set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
-if(BBLITE_MAIN_OPT STREQUAL "O1")
-    if(NOT BBLITE_MINSIZE)
-        if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            set(BBLITE_MAIN_OPT_FLAGS /clang:-O1)
-        elseif(MSVC)
-            set(BBLITE_MAIN_OPT_FLAGS /O1)
-        else()
-            set(BBLITE_MAIN_OPT_FLAGS -O1)
-        endif()
-        set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-            APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
-        )
-        # A unit compiled at another level cannot consume the tree's PCH
-        # (clang refuses a precompiled file whose OptimizationLevel differs);
-        # the generated unit includes what it needs itself, as the shipping
-        # build without a PCH proves every time.
-        set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-            PROPERTY SKIP_PRECOMPILE_HEADERS ON
-        )
-    endif()
-elseif(NOT BBLITE_MAIN_OPT STREQUAL "configuration")
-    message(
-        FATAL_ERROR
-        "BBLITE_MAIN_OPT must be configuration or O1 (got '${BBLITE_MAIN_OPT}')."
-    )
 endif()
 
 if(BBLITE_MINSIZE)

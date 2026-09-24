@@ -46,7 +46,6 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -238,23 +237,6 @@ dtQueryFilter include_all_filter() {
     return filter;
 }
 
-/** recastConfigDefaults, verbatim. */
-struct ResolvedBuildConfig {
-    float cs = 0.2f;
-    float ch = 0.2f;
-    float walkable_slope_angle = 60.0f;
-    int walkable_height = 2;
-    int walkable_climb = 2;
-    int walkable_radius = 0; // default 0.5 floors to 0 via rcConfig int
-    int max_edge_len = 12;
-    float max_simplification_error = 1.3f;
-    int min_region_area = 8;
-    int merge_region_area = 20;
-    int max_verts_per_poly = 6;
-    float detail_sample_dist = 6.0f;
-    float detail_sample_max_error = 1.0f;
-};
-
 /** `getBoundingBox`: the bounds of the INDEXED positions, which is not
  *  the vertex array's own where a vertex went unreferenced. */
 void indexed_bounds(const NavMeshGeometry& geometry, float (&bounds_min)[3],
@@ -270,12 +252,12 @@ void indexed_bounds(const NavMeshGeometry& geometry, float (&bounds_min)[3],
     }
 }
 
-float pick_float(const std::optional<double>& given, float fallback) {
-    return given ? static_cast<float>(*given) : fallback;
+float pick_float(const std::optional<double>& given, double fallback) {
+    return static_cast<float>(given.value_or(fallback));
 }
 
-int pick_int(const std::optional<double>& given, int fallback) {
-    return given ? static_cast<int>(*given) : fallback;
+int pick_int(const std::optional<double>& given, double fallback) {
+    return static_cast<int>(given.value_or(fallback));
 }
 
 /**
@@ -283,13 +265,12 @@ int pick_int(const std::optional<double>& given, int fallback) {
  *
  * The wrapper stores JS numbers into rcConfig's int fields, where
  * emscripten truncates -- the double-to-int casts in `pick_int` are that
- * same truncation. Both build arms share this because both take the same
+ * same truncation, for a given value and a default alike (`walkableRadius`
+ * 0.5 lands as 0). Both build arms share this because both take the same
  * spread; what differs is only what each does with `tileSize` afterwards.
  */
-rcConfig resolved_rc_config(const NavMeshBuildParams& params) {
-    const ResolvedBuildConfig defaults;
-    rcConfig config;
-    std::memset(&config, 0, sizeof(config));
+rcConfig resolved_rc_config(const NavMeshBuildParams& params, const NavBuildDefaults& defaults) {
+    rcConfig config{};
     config.cs = pick_float(params.cs, defaults.cs);
     config.ch = pick_float(params.ch, defaults.ch);
     config.walkableSlopeAngle =
@@ -306,8 +287,8 @@ rcConfig resolved_rc_config(const NavMeshBuildParams& params) {
     config.detailSampleDist = pick_float(params.detail_sample_dist, defaults.detail_sample_dist);
     config.detailSampleMaxError =
         pick_float(params.detail_sample_max_error, defaults.detail_sample_max_error);
-    config.borderSize = 0;
-    config.tileSize = 0;
+    config.borderSize = static_cast<int>(defaults.border_size);
+    config.tileSize = static_cast<int>(defaults.tile_size);
     return config;
 }
 
@@ -371,7 +352,8 @@ NavigationHandle navigation_create_plugin() {
 }
 
 void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                     const NavMeshBuildParams& params) {
+                                     const NavMeshBuildParams& params,
+                                     const NavBuildDefaults& defaults) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -382,7 +364,7 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
     const int triangle_count = input.triangle_count;
     const std::vector<int>& triangles = input.triangles;
 
-    rcConfig config = resolved_rc_config(params);
+    rcConfig config = resolved_rc_config(params, defaults);
     apply_generator_config_transforms(config);
     rcVcopy(config.bmin, input.bounds_min);
     rcVcopy(config.bmax, input.bounds_max);
@@ -461,8 +443,7 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
         }
     }
 
-    dtNavMeshCreateParams create_params;
-    std::memset(&create_params, 0, sizeof(create_params));
+    dtNavMeshCreateParams create_params{};
     create_params.verts = poly_mesh->verts;
     create_params.vertCount = poly_mesh->nverts;
     create_params.polys = poly_mesh->polys;
@@ -634,8 +615,7 @@ std::vector<TileCacheLayer> rasterize_tile_layers(rcContext* context, const rcCo
     std::vector<TileCacheLayer> tiles;
     for (int index = 0; index < layers->nlayers; ++index) {
         const rcHeightfieldLayer& layer = layers->layers[index];
-        dtTileCacheLayerHeader header;
-        std::memset(&header, 0, sizeof(header));
+        dtTileCacheLayerHeader header{};
         header.magic = DT_TILECACHE_MAGIC;
         header.version = DT_TILECACHE_VERSION;
         header.tx = tile_x;
@@ -675,7 +655,8 @@ std::vector<TileCacheLayer> rasterize_tile_layers(rcContext* context, const rcCo
  * holds.
  */
 void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                           const NavMeshBuildParams& params) {
+                                           const NavMeshBuildParams& params,
+                                           const NavBuildDefaults& defaults) {
     (void)plugin_state(plugin);
     auto built = std::make_shared<NavigationMeshState>();
     NavigationMeshState& state = *built;
@@ -690,7 +671,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
     // plus this arm's three, of which only `tileSize` is an rcConfig field
     // -- the other two are destructured out of the spread before
     // `createRcConfig` ever sees it.
-    rcConfig config = resolved_rc_config(params);
+    rcConfig config = resolved_rc_config(params, defaults);
     // This arm is SELECTED by `maxObstacles`, and the generation that
     // selects it refuses the arm without a `tileSize`, so both are present
     // by the time this runs -- the pin's own 32 and 128 would be answers to
@@ -702,7 +683,8 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
     }
     config.tileSize = static_cast<int>(*params.tile_size);
     const int max_obstacles = static_cast<int>(*params.max_obstacles);
-    const int expected_layers_per_tile = pick_int(params.expected_layers_per_tile, 4);
+    const int expected_layers_per_tile =
+        pick_int(params.expected_layers_per_tile, defaults.expected_layers_per_tile);
 
     rcVcopy(config.bmin, bounds_min);
     rcVcopy(config.bmax, bounds_max);
@@ -723,8 +705,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
         throw std::runtime_error("createNavMesh (tile cache) failed: " + message);
     };
 
-    dtTileCacheParams cache_params;
-    std::memset(&cache_params, 0, sizeof(cache_params));
+    dtTileCacheParams cache_params{};
     dtVcopy(cache_params.orig, bounds_min);
     cache_params.cs = config.cs;
     cache_params.ch = config.ch;
@@ -760,8 +741,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
                                    14);
     const int poly_bits = 22 - tile_bits;
 
-    dtNavMeshParams nav_params;
-    std::memset(&nav_params, 0, sizeof(nav_params));
+    dtNavMeshParams nav_params{};
     dtVcopy(nav_params.orig, bounds_min);
     nav_params.tileWidth = static_cast<float>(config.tileSize) * config.cs;
     nav_params.tileHeight = nav_params.tileWidth;
@@ -986,8 +966,7 @@ NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float s
 
     // Zeroed wholesale: a null path buffer with maxPath 0 asks Detour
     // for the t and normal only, the way the wrapper's raycast does.
-    dtRaycastHit ray_hit;
-    std::memset(&ray_hit, 0, sizeof(ray_hit));
+    dtRaycastHit ray_hit{};
     state.query->raycast(nearest_ref, start, end, &state.filter, 0, &ray_hit, 0);
     const float t = ray_hit.t;
     if (!(t > 0.0f && t < 1.0f)) {

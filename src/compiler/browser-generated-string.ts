@@ -206,6 +206,7 @@ function runCanvasHelperInChromium(
             server,
             {
                 serverName: "Canvas2D helper server",
+                shared: true,
                 browserRequirement: "Canvas2D texture generation requires Chromium.",
                 browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
             },

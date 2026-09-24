@@ -21,7 +21,7 @@ test(
         const output = resolve("artifacts/billboard-upload");
         mkdirSync(output, { recursive: true });
         const context = new LoweringContext();
-        const core = new BillboardLowerer(context, "").lowerCore();
+        const core = new BillboardLowerer(context).lowerCore();
         const sprite = new SpriteLowerer(context).lowerCore();
         const shared = readFileSync(
             "native/src/pal_gpu_shared.hpp",

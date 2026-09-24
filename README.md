@@ -11,18 +11,9 @@ Source/package pin: [upstream/babylon-lite.json](upstream/babylon-lite.json).
 
 ## Quick start
 
-```powershell
-npm ci
-npm run dev:setup
-npm run doctor
-npm run scene -- process scene1
-npm run scene -- parity scene1 --differential
-```
-
-See [development](docs/development.md#setup) for Windows, Linux and macOS prerequisites
-and the Windows CMake path. A built scene requires a GPU.
-Build and package Android APKs with the [Android workflow](docs/development.md#android).
-iOS app bundles use the [iOS workflow](docs/development.md#ios).
+[Development setup](docs/development.md#setup) lists prerequisites and first commands.
+Android APKs and iOS app bundles use the [Android](docs/development.md#android) and
+[iOS](docs/development.md#ios) workflows.
 
 ## Documentation
 
@@ -32,14 +23,14 @@ Canonical facts and current state. One owner per fact; no session logs.
 | --- | --- |
 | [Repository instructions](.github/copilot-instructions.md) | Working rules |
 | [Architecture](docs/architecture.md) | Pipeline, code ownership and memory |
-| [Features](docs/features.md) | Supported source surface and admission limits |
+| [Features](docs/features.md) | Supported source surface; capability gaps (Limits) |
 | [Development](docs/development.md) | Setup, commands, builds and validation |
 | [Debugging](docs/debugging.md) | Diagnosis, capture tools and observation limits |
 | [Fidelity](docs/fidelity.md) | Source/native adaptations and semantic boundaries |
 | [Backends](docs/backends.md) | GPU resource/binding/encoding implementation |
-| [UI](docs/ui.md) | DOM/CSS/Canvas2D support and browser compatibility |
+| [UI](docs/ui.md) | DOM/CSS/Canvas2D support, limits and browser compatibility |
 | [Status](docs/status.md) | Published measurements and scene previews |
-| [TODO](TODO.md) | Unfinished work |
+| [TODO](TODO.md) | Internal work, qualification, performance and refusal defects |
 | [Audit](audit.md) | Open audit findings |
 
 ## Acknowledgements

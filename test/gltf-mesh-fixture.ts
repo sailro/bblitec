@@ -1,5 +1,21 @@
 import { asRecords, asIndex, type JsonObject } from "../src/gltf-document.js";
-import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
+import {
+    packageGltfMeshPlan,
+    recordMeshPlan,
+    type GltfLoadFeatures,
+    type GltfMeshPlan,
+} from "../src/gltf-mesh-plan.js";
+import type { LoweringContext } from "../src/lowering/context.js";
+
+/** The schedule `packageGltfMeshPlan` records, before it is packaged. */
+export async function gltfMeshPlan(
+    document: JsonObject,
+    bin: DataView,
+    context?: LoweringContext,
+    options: GltfLoadFeatures = {},
+): Promise<GltfMeshPlan> {
+    return (await recordMeshPlan(document, bin, context, options)).plan;
+}
 
 /** Real triangle bytes for fixtures focused on loader resource scheduling. */
 export function meshPlanFixture(document: JsonObject): {

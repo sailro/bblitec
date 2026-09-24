@@ -1,6 +1,7 @@
 #pragma once
 
 #include <any>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -46,8 +47,43 @@ struct CloneBuffer {
 struct CloneTransfer {
     std::size_t index;
 };
-using CloneNode = std::variant<CloneUndefined, CloneNull, bool, double, std::string, CloneArray,
-                               CloneObject, CloneBuffer, CloneTransfer>;
+struct CloneMap {
+    std::vector<std::pair<CloneId, CloneId>> entries;
+};
+struct CloneSet {
+    std::vector<CloneId> elements;
+};
+struct CloneDate {
+    double time;
+};
+/** The class a buffer view is received as; a DataView has no element type. */
+enum class CloneViewKind : std::uint8_t {
+    int8,
+    uint8,
+    int16,
+    uint16,
+    int32,
+    uint32,
+    float32,
+    float64,
+    data_view
+};
+/** A typed array or DataView; every view of one buffer names the same buffer node. */
+struct CloneView {
+    CloneViewKind kind;
+    CloneId buffer;
+    std::size_t byte_offset;
+    std::size_t byte_length;
+};
+using CloneNode =
+    std::variant<CloneUndefined, CloneNull, bool, double, std::string, CloneArray, CloneObject,
+                 CloneBuffer, CloneTransfer, CloneMap, CloneSet, CloneDate, CloneView>;
+
+/**
+ * JavaScript objects of different classes never share an identity, although an
+ * owned typed array's element storage is also its ArrayBuffer's storage.
+ */
+enum class CloneIdentitySpace : std::uint8_t { object, buffer, view };
 
 /** Edges are indices: cycles neither share JS ownership nor form native leaks. */
 struct SerializedMessage {
@@ -60,11 +96,12 @@ class CloneWriter {
 public:
     explicit CloneWriter(std::span<Transferable* const> transfers = {})
         : transfer_list_(transfers.begin(), transfers.end()) {
+        auto& objects = identities(CloneIdentitySpace::object);
         for (std::size_t index = 0; index < transfer_list_.size(); ++index) {
             auto* value = transfer_list_[index];
-            if (!value || identities_.contains(value))
+            if (!value || objects.contains(value))
                 throw DataCloneError("Invalid or duplicate transferable.");
-            identities_.emplace(value, add(CloneTransfer{index}));
+            objects.emplace(value, add(CloneTransfer{index}));
         }
     }
 
@@ -78,19 +115,22 @@ public:
     void replace(CloneId id, CloneNode node) { nodes_.at(id) = std::move(node); }
 
     /** Reserve before traversing fields, preserving repeated and cyclic edges. */
-    std::pair<CloneId, bool> remember(const void* identity) {
+    std::pair<CloneId, bool> remember(const void* identity,
+                                      CloneIdentitySpace space = CloneIdentitySpace::object) {
         if (!identity)
             throw DataCloneError("Cannot clone an empty object identity.");
-        if (const auto found = identities_.find(identity); found != identities_.end())
+        auto& known = identities(space);
+        if (const auto found = known.find(identity); found != known.end())
             return {found->second, false};
         const auto id = add(CloneUndefined{});
-        identities_.emplace(identity, id);
+        known.emplace(identity, id);
         return {id, true};
     }
 
     CloneId transferable(Transferable& value) const {
-        const auto found = identities_.find(&value);
-        if (found == identities_.end())
+        const auto& objects = identities(CloneIdentitySpace::object);
+        const auto found = objects.find(&value);
+        if (found == objects.end())
             throw DataCloneError("Transferable is missing from the transfer list.");
         return found->second;
     }
@@ -113,8 +153,16 @@ public:
     }
 
 private:
+    using Identities = std::unordered_map<const void*, CloneId>;
+    Identities& identities(CloneIdentitySpace space) {
+        return identities_[static_cast<std::size_t>(space)];
+    }
+    const Identities& identities(CloneIdentitySpace space) const {
+        return identities_[static_cast<std::size_t>(space)];
+    }
+
     std::vector<CloneNode> nodes_;
-    std::unordered_map<const void*, CloneId> identities_;
+    std::array<Identities, static_cast<std::size_t>(CloneIdentitySpace::view) + 1> identities_;
     std::vector<Transferable*> transfer_list_;
 };
 

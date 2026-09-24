@@ -26,7 +26,6 @@ struct PhysicsDebugGeometry {
 /** Immutable catalog selection compares every constructor input. */
 PhysicsDebugGeometry
 materialized_physics_debug_geometry(const PhysicsDebugShapeDescriptor& descriptor);
-PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle shape);
 PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle body);
 
 class PhysicsDebugExtractionScope {

@@ -35,7 +35,8 @@ export function compileCollectionForEach(
     });
     // Copy each entry before the callback: deletion or replacement of its
     // collection slot must not alter already evaluated callback arguments.
-    lowerer.context.emit(`for (const auto ${entry} : ${source}) {`);
+    // A non-const copy states that intent to clang's range-loop-construct.
+    lowerer.context.emit(`for (auto ${entry} : ${source}) {`);
     lowerer.context.increaseIndent();
     lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
     lowerer.context.enterRuntimeIteration();

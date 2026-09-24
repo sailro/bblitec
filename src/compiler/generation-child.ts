@@ -9,11 +9,17 @@
 // prefers stderr over an errno. They are one function now, so a fix to the
 // error text or the buffer size lands on all of them at once.
 //
-// The child inherits the parent's environment; each caller adds whatever it
-// needs to address its own work. Callers that hand over a large payload use
-// `input` rather than the environment, since a command line and an
-// environment block both have limits a serialized scene document can reach.
+// The child inherits the parent's environment and its generation, so a bake
+// it runs shares the generation's browser (`browser-harness.ts`); each
+// caller adds whatever it needs to address its own work. Callers that hand
+// over a large payload use `input` rather than the environment, since a
+// command line and an environment block both have limits a serialized scene
+// document can reach.
 import { spawnSync } from "node:child_process";
+import {
+    generationEnvironmentVariable,
+    generationIdentity,
+} from "../generation-browser.js";
 
 interface GenerationChildOptions {
     /** ESM source run with `--input-type=module`; must write its own stdout. */
@@ -35,7 +41,11 @@ export function runGenerationChild(options: GenerationChildOptions): string {
         ["--input-type=module", "-e", options.script],
         {
             cwd: process.cwd(),
-            ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+            env: {
+                ...process.env,
+                ...options.env,
+                [generationEnvironmentVariable]: generationIdentity(),
+            },
             ...(options.input === undefined ? {} : { input: options.input }),
             encoding: "utf8",
             maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,

@@ -85,6 +85,7 @@ struct InputDriver {
     }
     void recreate_msaa_target() { assert(false); }
     InputDriver& fixture() { return *this; }
+#include "renderer-run.hpp"
 };
 struct SceneInputDriver {
     InputDriver data_;

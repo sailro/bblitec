@@ -39,6 +39,11 @@ import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerShadowEnabled } from "./shadow-enabled.js";
+import {
+    nullishFallback,
+    pinnedOptionDefaults,
+    pinnedOptionNumber,
+} from "./pinned-option-defaults.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -52,45 +57,6 @@ const shadowTaskModule = "src/frame-graph/shadow-task.ts";
 
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
 const mathCalls = pinnedNumericMathCalls();
-
-/**
- * The `?? <literal>` default a pinned option read resolves to.
- *
- * Two spellings reach this: most factories bind a `const x = cfg.x ?? d`
- * local, while the CSM one packs a few straight into its config literal as
- * `_x: cfg.x ?? d`. Both are the same expression under a different parent,
- * so the reader takes the INITIALIZER and each caller says where it found
- * it.
- */
-function nullishDefaultValue(
-    context: LoweringContext,
-    initializer: ts.Expression,
-    label: string,
-    file: ts.SourceFile,
-): number {
-    const nullish = context.nullishDefault(initializer);
-    if (!nullish) {
-        return context.contractError(
-            initializer,
-            `Expected pinned '${label}' to resolve through '??'.`,
-        );
-    }
-    return context.numericValue(nullish.right, file);
-}
-
-function optionDefault(
-    context: LoweringContext,
-    declaration: ts.FunctionDeclaration,
-    local: string,
-    file: ts.SourceFile,
-): number {
-    return nullishDefaultValue(
-        context,
-        context.variableInitializer(declaration, local),
-        local,
-        file,
-    );
-}
 
 /**
  * The pin's own floating-origin offset, as the three scalars both matrix
@@ -551,28 +517,6 @@ function assertShadowUboLayout(context: LoweringContext): void {
     context.callExpression(declaration, "packMat4IntoF32");
 }
 
-/**
- * Every named local's `??` fallback in one pinned factory.
- *
- * The three generator factories resolve their options the same way -- one
- * `const x = cfg.x ?? <default>` per option -- so the read is stated once
- * and each family names only its own list.
- */
-function pinnedOptionDefaults<Name extends string>(
-    context: LoweringContext,
-    module: string,
-    factory: string,
-    names: readonly Name[],
-): Record<Name, number> {
-    const { file, declaration } = context.functionDeclaration(module, factory);
-    return Object.fromEntries(
-        names.map((name) => [
-            name,
-            optionDefault(context, declaration, name, file),
-        ]),
-    ) as Record<Name, number>;
-}
-
 /** The pinned ESM-directional defaults, each read from its own `??`. */
 export interface PinnedEsmDefaults {
     mapSize: number;
@@ -666,12 +610,16 @@ function csmDefaults(context: LoweringContext) {
     // A lane the factory packs straight into `csmCfg` rather than into a
     // local first: the same `cfg.x ?? default`, read off the property.
     const cfgDefault = (name: string): number =>
-        nullishDefaultValue(
-            context,
-            context.propertyInitializer(csmCfg, name),
-            name,
+        context.numericValue(
+            nullishFallback(
+                context,
+                context.propertyInitializer(csmCfg, name),
+                name,
+            ),
             file,
         );
+    const optionDefault = (local: string): number =>
+        pinnedOptionNumber(context, declaration, { local }, file);
     const stabilize = context.nullishDefault(
         context.propertyInitializer(csmCfg, "_stabilizeCascades"),
     )?.right;
@@ -703,7 +651,7 @@ function csmDefaults(context: LoweringContext) {
         "Omitted CSM world-space bias",
     );
     return {
-        mapSize: optionDefault(context, declaration, "mapSize", file),
+        mapSize: optionDefault("mapSize"),
         numCascades: fallback,
         // `Math.min(cfg.numCascades ?? 4, 4)`: the clamp is what fixes the
         // receiver block's `array<mat4x4, 4>` and the record's cascade
@@ -711,14 +659,9 @@ function csmDefaults(context: LoweringContext) {
         maxCascades: max,
         lambda: cfgDefault("_lambda"),
         cascadeBlendPercentage: cfgDefault("_cascadeBlendPercentage"),
-        bias: optionDefault(context, declaration, "bias", file),
-        darkness: optionDefault(context, declaration, "darkness", file),
-        frustumEdgeFalloff: optionDefault(
-            context,
-            declaration,
-            "frustumEdgeFalloff",
-            file,
-        ),
+        bias: optionDefault("bias"),
+        darkness: optionDefault("darkness"),
+        frustumEdgeFalloff: optionDefault("frustumEdgeFalloff"),
         stabilizeCascades: stabilize.kind === ts.SyntaxKind.TrueKeyword,
     };
 }
@@ -973,11 +916,13 @@ function pcfSpotDefaults(context: LoweringContext): PinnedPcfSpotDefaults {
     if (!ts.isConditionalExpression(fallback)) {
         return context.contractError(fallback, "Expected a conditional.");
     }
+    const optionDefault = (local: string): number =>
+        pinnedOptionNumber(context, declaration, { local }, file);
     return {
-        mapSize: optionDefault(context, declaration, "mapSize", file),
-        bias: optionDefault(context, declaration, "bias", file),
-        darkness: optionDefault(context, declaration, "darkness", file),
-        near: optionDefault(context, declaration, "near", file),
+        mapSize: optionDefault("mapSize"),
+        bias: optionDefault("bias"),
+        darkness: optionDefault("darkness"),
+        near: optionDefault("near"),
         far: context.numericValue(fallback.whenTrue, file),
     };
 }
@@ -1508,13 +1453,20 @@ export function pinnedShadowHeader(
     const pcfDirectional = pcfDirectionalDefaults(context);
     const invertMat4 = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
+    // `enableMorphTargetShadows` is its own pinned module upstream, and its
+    // provider -- the caster-bounds expansion, the per-target delta ranges
+    // it caches, and the weight version the render gate sums -- is emitted
+    // only for a scene that calls it.
+    const morphBounds = features.includes("shadow:morph-bounds");
     // `computeAabb`'s local arm, the per-target delta range the morph
     // bounds provider caches.
-    const computeAabb = lowerComputeAabb(context, {
-        arm: "local",
-        cppName: "compute_aabb",
-        inline: true,
-    });
+    const computeAabb = morphBounds
+        ? lowerComputeAabb(context, {
+              arm: "local",
+              cppName: "compute_aabb",
+              inline: true,
+          })
+        : "";
     const floats = (values: readonly number[]): string =>
         values.map((value) => floatLiteral(value)).join(", ");
     return `#pragma once
@@ -1715,7 +1667,9 @@ inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_min{
 inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_max{
     ${floats(casterFallback.max)}};
 
-
+${
+    morphBounds
+        ? `
 /**
  * enableMorphTargetShadows' bounds provider, as the caster fit reads it.
  *
@@ -1812,7 +1766,9 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
     }
 }
 
-${lowerBuildLightViewMatrix(context)}
+`
+        : ""
+}${lowerBuildLightViewMatrix(context)}
 
 ${lowerMultiply4x4(context)}
 
@@ -1894,14 +1850,22 @@ ${lowerShadowEnabled(context)}
  */
 inline std::uint64_t shadow_caster_version_sum(
     const Engine& engine,
-    const std::vector<MeshHandle>& caster_meshes,
-    bool morph_shadow_bounds) {
+    const std::vector<MeshHandle>& caster_meshes${
+        morphBounds
+            ? `,
+    bool morph_shadow_bounds`
+            : ""
+    }) {
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& mesh = engine.meshes[handle.value];
-        sum += mesh.transform_version + mesh.instance_version;
-        if (morph_shadow_bounds) sum += mesh.morph_weights_version;
+        sum += mesh.transform_version + mesh.instance_version;${
+            morphBounds
+                ? `
+        if (morph_shadow_bounds) sum += mesh.morph_weights_version;`
+                : ""
+        }
     }
     return sum;
 }
@@ -1994,7 +1958,7 @@ inline bool shadow_refresh_due(
     if (generator.force_refresh_every_frame) return true;
     const auto light_matrix = light_world_matrix(light);
     const std::uint64_t caster_version = shadow_caster_version_sum(
-        engine, generator.caster_meshes, generator.morph_shadow_bounds);
+        engine, generator.caster_meshes${morphBounds ? ", generator.morph_shadow_bounds" : ""});
 #if BBLITE_SHADOWS_CSM
     const bool camera_unchanged = csm_camera == nullptr
         ? eye.x == gate.last_fo_offset.x &&
@@ -2222,6 +2186,9 @@ export function shadowFactorySource(
     // The cascaded generator: a layered map, one caster pass per
     // cascade, and the 320-byte cascade block its receivers bind.
     const csmShadows = features.includes("shadow:csm");
+    // `enableMorphTargetShadows`, the one entry point of its own pinned
+    // module: emitted only for a scene that calls it.
+    const morphBounds = features.includes("shadow:morph-bounds");
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
@@ -2557,7 +2524,9 @@ void refresh_shadow_task_meshes(
 }
 
 } // namespace
-
+${
+    morphBounds
+        ? `
 // src/shadow/enable-morph-target-shadows.ts enableMorphTargetShadows:
 // register the morph bounds provider on this generator. Upstream that
 // installs a provider object into a WeakMap and wraps each caster in a
@@ -2572,7 +2541,9 @@ void enable_morph_target_shadows(
     }
     engine.shadow_generators[generator.value].morph_shadow_bounds = true;
 }
-
+`
+        : ""
+}
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

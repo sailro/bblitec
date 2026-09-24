@@ -30,7 +30,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 
 | Module | Responsibility |
 | --- | --- |
-| `program.ts`, `symbols.ts` | TypeScript program and intrinsic resolution |
+| `program.ts`, `symbols.ts`, `type-facts.ts` | TypeScript program, declaration origin and symbol resolution, nullable-union members |
 | Expressions, statements, assignments, `intrinsics/` | Source lowering |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
@@ -54,7 +54,8 @@ and shared bindings retain their ordered entry execution.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
-callbacks and coroutines retain separate invocation state; equivalent bodies share a native specialization. Concrete
+callbacks and coroutines retain separate invocation state. A body is emitted once when every effect it
+reaches has a native representation (`canShareFunctionBody`); otherwise each call specializes it. Concrete
 capture types place those bodies in their owning source unit; unresolved capture types use templates.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
@@ -64,6 +65,8 @@ Escaping callbacks capture copyable handles by value, including handles borrowed
 ## Scene orchestration
 
 `scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
+Executables start with authored live defaults; parity and checks apply the registered query to the same
+executable.
 Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
 belong to scene identity. Property and glTF animation retain separate playback contracts.
 
@@ -73,11 +76,15 @@ belong to scene identity. Property and glTF animation retain separate playback c
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
-- Traced records, containers and callbacks participate in cycle collection at frame boundaries and teardown. Only complete payloads enter the registry; they detach before destruction.
+- Records, callbacks and containers whose elements can own a traced edge participate in cycle collection at
+  frame boundaries and teardown; other container storage is released by reference counting alone. Only
+  complete payloads enter the registry; they detach before destruction.
 - Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
+- Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
+  terminate.
 
 ## Renderer
 

@@ -22,7 +22,7 @@ export const maxError = (a, b) =>
 export function requireObservations(context) {
     if (context.observations === undefined) {
         throw new Error(
-            `no browser observations for ${context.checkId}; run 'scene -- observe ${context.checkId}' first`,
+            `no browser observations for ${context.checkId}; run 'scene -- check ${context.checkId} --observe' first`,
         );
     }
     return context.observations;

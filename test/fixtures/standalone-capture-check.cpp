@@ -271,6 +271,7 @@ struct Context {
     std::vector<Pass> passes;
     bool canvas_only = true, capture_ui = false;
     void discard_frame() {}
+#include "frame-session.hpp"
     Context() {
         engine.effect_renderers.emplace_back();
         engine.registered_effect_renderers.push_back(EffectRendererHandle{0});

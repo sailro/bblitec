@@ -427,7 +427,9 @@ test("the reached array texture and the plain kinds still reflect", () => {
         "@fragment fn main() {}",
         "@group(1) @binding(0) var albedo : texture_2d<f32>;\n" +
             "@group(1) @binding(1) var env : texture_cube<f32>;\n" +
-            "let c = textureSample(albedo, s, uv) + textureSample(env, s, d);",
+            "@fragment fn main() {\n" +
+            "    let c = textureSample(albedo, s, uv) + textureSample(env, s, d);\n" +
+            "}",
     );
     assert.deepEqual(
         plain.map(({ name, kind }) => [name, kind]),

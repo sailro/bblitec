@@ -447,9 +447,8 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             referenceTimeSeconds: 1,
             // The sky is byte-identical; what is left is the ground, whose
-            // root position differs from the pin's by one ULP on two axes
-            // (the sizing entry in TODO.md), and the foreground's sub-pixel
-            // silhouette epsilon.
+            // root position differs from the pin's by one ULP on two axes,
+            // and the foreground's sub-pixel silhouette epsilon.
             maxFullMad: 0.002,
             maxForegroundMad: 0.011,
             backgroundColor: [51, 51, 76],
@@ -936,6 +935,65 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-opacity-alpha-write",
+        name: "Regression - Opacity Alpha Write",
+        source: "examples/regression-opacity-alpha-write.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Opacity Alpha Write",
+        buildDirectory: "native/build-regression-opacity-alpha-write-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-opacity-alpha-write/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-opacity-alpha-write",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-blend-alpha-write",
+        name: "Regression - Blend Alpha Write",
+        source: "examples/regression-blend-alpha-write.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Blend Alpha Write",
+        buildDirectory: "native/build-regression-blend-alpha-write-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-blend-alpha-write/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-blend-alpha-write",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-no-camera-floating-origin",
+        name: "Regression - No Camera Floating Origin",
+        source: "examples/regression-no-camera-floating-origin.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - No Camera Floating Origin",
+        buildDirectory:
+            "native/build-regression-no-camera-floating-origin-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-no-camera-floating-origin/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-no-camera-floating-origin",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-compiler-state",
         name: "Regression - Compiler State",
         source: "examples/regression-compiler-state.ts",
@@ -1373,10 +1431,8 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 120 - Gaussian Splatting",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene120.ts",
         title: "Babylon Lite Native - Gaussian Splatting",
-        // Dawn measures 0.001/0.003. SDL_GPU measures 0.024/0.071, and its
-        // whole excess is the backend differential (SDL-vs-Dawn 0.024,
-        // max 3) -- see TODO for what has been eliminated. The threshold
-        // carries the SDL number because one pair covers both backends.
+        // Both backends measure the published values; the recorded
+        // threshold is kept as evidence.
         parity: {
             maxFullMad: 0.03,
             maxForegroundMad: 0.08,
@@ -4512,9 +4568,8 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Tetris",
         parity: {
-            // Measured 1.208 / 1.038 on both backends; the residual is text
-            // rasterization, docs/ui.md's measured floor, so the gate sits
-            // just above the measurement.
+            // The residual is UI text rasterization, so the gate sits above
+            // the published measurement.
             maxFullMad: 1.3,
             maxForegroundMad: 1.1,
             // Canvas-only lane: 0.093 / 0.101 on both backends
@@ -4984,7 +5039,7 @@ function derivedReferenceFrameEnvironment(
  * read it), and the native parity run reads
  * `nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS` — 23 entries used to
  * hand-pair the two with nothing enforcing the pairing, and drift would
- * have split rung 1 from rung 3 silently. The env var is derived here;
+ * have split the native run's pose from the browser capture's silently. The env var is derived here;
  * an entry that still spells it must agree numerically (a different
  * spelling of the same number, `"1.0"` for 1, is kept as written) and a
  * disagreement refuses loudly rather than letting either copy win.

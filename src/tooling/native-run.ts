@@ -115,8 +115,9 @@ export function verifyDeployedPayload(
         executableDirectory,
         generatedDirectory,
     ).filter((payload) => !overridden[payload.label]);
-    for (const { label, source, deployed } of payloads) {
-        const mismatches = comparePayload(source, deployed);
+    for (const payload of payloads) {
+        const { label, source } = payload;
+        const mismatches = comparePayload(payload);
         if (mismatches.length > 0) {
             const detail = mismatches
                 .slice(0, 5)

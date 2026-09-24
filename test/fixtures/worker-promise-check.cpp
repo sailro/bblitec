@@ -114,7 +114,7 @@ void ordering_and_recovery() {
                 throw std::runtime_error("reaction failure");
             })
             .catch_error([&](std::exception_ptr error) {
-                require(js::promise_error_string(error) == "Error: reaction failure",
+                require(js::promise_error_message(error) == "reaction failure",
                         "Rejection lost its error");
                 order.push_back(5);
                 loop.close();
@@ -157,7 +157,7 @@ void aggregate_promises() {
         js::promise_all_tuple(std::tuple{rejected, later})
             .observe([](const auto&) { require(false, "Rejected aggregate fulfilled"); },
                      [done](std::exception_ptr error) {
-                         require(js::promise_error_string(error) == "Error: first",
+                         require(js::promise_error_message(error) == "first",
                                  "Aggregate rejection changed");
                          done();
                      });
@@ -205,7 +205,7 @@ void unhandled_rejections_reach_the_realm_error_handler() {
     pal::EventLoop loop;
     int failures = 0;
     loop.on_error([&](std::exception_ptr error) {
-        require(js::promise_error_string(error) == "Error: unhandled",
+        require(js::promise_error_message(error) == "unhandled",
                 "Default rejection report lost its error");
         ++failures;
         loop.close();

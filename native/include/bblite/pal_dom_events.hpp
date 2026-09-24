@@ -134,7 +134,6 @@ struct DomInput {
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
     std::function<void(const PlatformMouseEvent&)> pointer_sink;
-    std::function<void(const PlatformKeyboardEvent&)> keyboard_sink;
     std::function<void(std::shared_ptr<DomEventBatch>)> batch_sink;
     std::function<std::vector<DomEventTarget>(double, double)> hit_path;
     std::function<std::vector<DomEventTarget>()> focus_path;
@@ -242,16 +241,6 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
         engine.dom_input->pointer_sink(event);
     else
         engine.dom_input->pointer.dispatch(
-            event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
-}
-
-inline void dispatch_dom_keyboard(Engine& engine, const PlatformKeyboardEvent& event) {
-    if (!engine.dom_input)
-        return;
-    if (engine.dom_input->keyboard_sink)
-        engine.dom_input->keyboard_sink(event);
-    else
-        engine.dom_input->keyboard.dispatch(
             event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 

@@ -159,29 +159,52 @@ test("mesh factory tables flow from the pinned builders", () => {
     const lowered = new FactoryLowerer(context).lowerMeshFactories([
         "mesh:torus",
     ]);
-    // Box: the first face decoded from the pinned BOX_POSITION_SIGNS
-    // words, and one face per pinned table group.
+    // Box: the pinned sign words and sign expansion, and the factory
+    // finishing through createMeshFromData under the pin's own name, so
+    // its bounds are computeAabb's.
     assert.match(
         lowered.source,
-        /add_face\(\n {8}Vec3\{half_width, -half_height, half_depth\},\n {8}Vec3\{-half_width, -half_height, half_depth\},\n {8}Vec3\{-half_width, half_height, half_depth\},\n {8}Vec3\{half_width, half_height, half_depth\},\n {8}Vec3\{0\.0f, 0\.0f, 1\.0f\}\);/,
+        /constexpr std::array<std::uint32_t, 3> signs\{1260470181u, 3738583663u, 128u\};/,
     );
-    assert.equal(lowered.source.match(/add_face\(\n/g)?.length, 6);
-    // The shared local quad pattern and UV quad, decoded from BOX_INDICES
-    // and BOX_UVS.
-    assert.match(
-        lowered.source,
-        /\{start, start \+ 1, start \+ 2, start, start \+ 2, start \+ 3\}/,
-    );
-    assert.match(lowered.source, /Vec2\{1\.0f, 1\.0f\}\},\n\s*ModelVertex\{b/);
+    assert.match(lowered.source, /\(\(sign - 0\.5\) \* static_cast<double>/);
+    for (const [factory, name] of [
+        ["create_box", "box"],
+        ["create_ground", "ground"],
+        ["create_plane", "plane"],
+        ["create_sphere", "sphere"],
+        ["create_torus", "torus"],
+    ] as const) {
+        const start = lowered.source.indexOf(`MeshHandle ${factory}(`);
+        assert.notEqual(start, -1, `${factory} is emitted`);
+        const body = lowered.source.slice(
+            start,
+            lowered.source.indexOf("\n}\n", start),
+        );
+        assert.match(
+            body,
+            new RegExp(
+                `return create_mesh_from_data\\(\\n\\s*engine,\\n\\s*"${name}",`,
+            ),
+            `${factory} finishes through create_mesh_from_data`,
+        );
+        assert.doesNotMatch(body, /bounds_(min|max)/);
+    }
     // Ground: the pinned winding order, name by name, now inside the body
     // PinnedNumericLowerer translated rather than an interpolated list.
     assert.match(
         lowered.source,
         /static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)/,
     );
-    // Plane: the table-driven quad.
-    assert.match(lowered.source, /geometry\.indices = \{0, 1, 2, 0, 2, 3\};/);
-    assert.match(lowered.source, /Vec3\{-half_width, -half_height, 0\.0f\}/);
+    // Plane: the pinned tables, each element the pin's own expression.
+    assert.match(
+        lowered.source,
+        /std::vector<std::uint32_t>\{0u, 1u, 2u, 0u, 2u, 3u\}/,
+    );
+    assert.match(lowered.source, /const double hw = \(width \/ 2\.0\);/);
+    assert.match(
+        lowered.source,
+        /std::vector<float>\{static_cast<float>\(\(-hw\)\), static_cast<float>\(\(-hh\)\)/,
+    );
     // Sphere: the tessellation constants extracted from the pinned
     // arithmetic (2 + segments, 2 * z_steps, the 3-segment clamp) and the
     // pinned triangulation order.
@@ -260,7 +283,7 @@ test("mesh factory tables flow from the pinned builders", () => {
             "src/mesh/create-sphere.ts",
             "createSphereData",
             "pinned_create_sphere_data",
-            "static ModelGeometry build_sphere_geometry",
+            "MeshData create_sphere_data",
         ],
         [
             "src/mesh/create-torus.ts",
@@ -309,8 +332,11 @@ test("environment sizing constants flow slot by slot", () => {
         adapter.source,
         /upstream::mesh_world_matrix\(\*scene\.engine, mesh\)/,
     );
-    assert.match(adapter.source, /world\[12 \+ row\]/);
-    assert.match(adapter.source, /world\[column \* 4 \+ row\]/);
+    // The world-space box comes from the lowered expandWorldAabbForMesh.
+    assert.match(
+        adapter.source,
+        /void expand_world_aabb_for_mesh\(WorldAabb& acc, const WorldAabbMesh& mesh\)/,
+    );
 });
 
 test("harmonic pre-scale terms stay paired with the pinned structure", () => {

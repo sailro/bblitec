@@ -244,12 +244,10 @@ export function readSceneStatus(
         : undefined;
     const executableExists = existsSync(executable);
     const payload = executableExists
-        ? deployedPayloads(resolve(executable, ".."), output).map(
-              ({ label, source, deployed }) => ({
-                  label,
-                  mismatches: comparePayload(source, deployed).length,
-              }),
-          )
+        ? deployedPayloads(resolve(executable, ".."), output).map((entry) => ({
+              label: entry.label,
+              mismatches: comparePayload(entry).length,
+          }))
         : [];
     const binaryCarriesStamp =
         executableExists && expectedStamp !== undefined

@@ -7,6 +7,10 @@ import {
     lowerShPrescaleCpp,
 } from "./gltf-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import {
+    lowerWorldAabbHelpers,
+    worldAabbArrayCopies,
+} from "./world-bounds-lowerer.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
 const DDS_BACKGROUND_MODULE = "src/material/pbr/background-dds-environment.ts";
@@ -422,6 +426,7 @@ ${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#i
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -429,42 +434,25 @@ namespace bbl {
 
 namespace {
 
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Bounds remain local
-// and the pin takes them through the mesh's live float32 world matrix before
-// sizing the deferred environment. Keeping that transform is essential for
-// procedural meshes added after loadEnvironment (including invisible shadow
-// anchors), and the centre/abs-coefficient-radius arithmetic stays in the
-// JavaScript-number width the pin evaluates it at.
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: false })}
+
+// The pinned expansion over one mesh's local geometry box and its live
+// float32 world matrix, into the scene-size bounds. Keeping that transform
+// is essential for procedural meshes added after loadEnvironment
+// (including invisible shadow anchors).
 void expand_world_aabb_for_box(
     std::array<double, 3>& minimum,
     std::array<double, 3>& maximum,
     const Vec3& box_min,
     const Vec3& box_max,
     const std::array<float, 16>& world) {
-    const std::array<double, 3> low{box_min.x, box_min.y, box_min.z};
-    const std::array<double, 3> high{box_max.x, box_max.y, box_max.z};
-    std::array<double, 3> center{};
-    std::array<double, 3> extent{};
-    for (int axis = 0; axis < 3; ++axis) {
-        center[axis] = (low[axis] + high[axis]) * 0.5;
-        extent[axis] = (high[axis] - low[axis]) * 0.5;
-    }
-    for (int row = 0; row < 3; ++row) {
-        double transformed_center = world[12 + row];
-        double transformed_radius = 0.0;
-        for (int column = 0; column < 3; ++column) {
-            const double coefficient = world[column * 4 + row];
-            transformed_center += coefficient * center[column];
-            transformed_radius +=
-                std::abs(coefficient) * extent[column];
-        }
-        minimum[row] = std::min(
-            minimum[row],
-            transformed_center - transformed_radius);
-        maximum[row] = std::max(
-            maximum[row],
-            transformed_center + transformed_radius);
-    }
+    WorldAabb acc{};
+${worldAabbArrayCopies(this.context, "minimum", "maximum").load}
+    expand_world_aabb_for_mesh(acc, WorldAabbMesh{
+        std::array<float, 3>{box_min.x, box_min.y, box_min.z},
+        std::array<float, 3>{box_max.x, box_max.y, box_max.z},
+        world});
+${worldAabbArrayCopies(this.context, "minimum", "maximum").store}
 }
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
@@ -1092,7 +1080,6 @@ ${spec.tail}}
         rootDrop: number;
     } {
         const sizeModule = "src/material/pbr/scene-size.ts";
-        const boundsModule = "src/mesh/mesh-world-bounds.ts";
         const { file, declaration } = this.context.functionDeclaration(
             sizeModule,
             "computeSceneSize",
@@ -1406,21 +1393,6 @@ ${spec.tail}}
             );
         }
         const rootDrop = this.context.numericValue(floor.right, file);
-        const { declaration: expand } = this.context.functionDeclaration(
-            boundsModule,
-            "expandWorldAabbForMesh",
-        );
-        for (const marker of [
-            "transformedCenter += coefficient * center[column]!",
-            "transformedRadius += Math.abs(coefficient) * extent[column]!",
-        ]) {
-            if (!expand.getText().includes(marker)) {
-                this.context.contractError(
-                    expand,
-                    `Expected the pinned OBB-to-AABB term '${marker}'.`,
-                );
-            }
-        }
         return {
             groundDefault,
             skyboxDefault,

@@ -97,8 +97,8 @@ private:
     };
     struct SourceFace {
         std::string family;
-        Rml::Style::FontStyle style;
-        Rml::Style::FontWeight weight;
+        Rml::Style::FontStyle style{};
+        Rml::Style::FontWeight weight{};
         ComPtr<IDWriteFontFace> face;
         bool color = false;
     };
@@ -533,7 +533,7 @@ public:
                 source = candidate.get();
         if (!source || source->color)
             return handle;
-        DWRITE_FONT_METRICS original;
+        DWRITE_FONT_METRICS original{};
         source->face->GetMetrics(&original);
         const float scale = static_cast<float>(size) / original.designUnitsPerEm;
         auto metrics = fallback.GetFontMetrics(handle);

@@ -1,59 +1,12 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBodyScope } from "./pinned-body-lowerer.js";
 import type { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
-export function lowerBabylonNodeTransforms(context: LoweringContext): string {
-    const module = "src/loader-babylon/load-babylon.ts";
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        "loadBabylon",
-    );
-    const mesh = context.callExpression(declaration, "initMeshTransform");
-    const container = context.callExpression(
-        declaration,
-        "createTransformNode",
-    );
-    const scope = (): PinnedBodyScope => babylonNodeTransformScope(context);
-    const meshBody = lowerPinnedBody(
-        file,
-        [ts.factory.createReturnStatement(mesh)],
-        scope(),
-    );
-    const variable = container.parent;
-    const statement = variable.parent.parent;
-    if (
-        !ts.isVariableDeclaration(variable) ||
-        !ts.isVariableStatement(statement) ||
-        !ts.isBlock(statement.parent)
-    )
-        context.contractError(
-            container,
-            "Expected the container transform construction block.",
-        );
-    const containerStatements = statement.parent.statements.slice(
-        0,
-        statement.parent.statements.indexOf(statement),
-    );
-    const containerBody = lowerPinnedBody(
-        file,
-        [...containerStatements, ts.factory.createReturnStatement(container)],
-        scope(),
-    );
-    return `// ${context.provenance(module, "loadBabylon")}
-upstream::TrsLanes babylon_mesh_transform(const Json& source) {
-${meshBody}
-}
-upstream::TrsLanes babylon_container_transform(const Json& source) {
-${containerBody}
-}`;
-}
-
 export function babylonNodeTransformScope(
     context: LoweringContext,
-    source = "source",
+    source: string,
 ): PinnedBodyScope {
     const factory = (
         call: ts.CallExpression,

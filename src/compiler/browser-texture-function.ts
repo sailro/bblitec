@@ -13,11 +13,14 @@ import {
     cachedBakeSync,
     moduleIdentity,
     repositoryModuleClosure,
-    resolveRepositoryModuleFile,
     type BakeKey,
     type RepositoryModuleFile,
 } from "../bake-cache.js";
 import { canvasBakeBrowserArgs, pageBase64Script } from "../browser-harness.js";
+import {
+    commonJsModuleGraph,
+    type ClosureModule,
+} from "../executed-module-graph.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     loadTexture2DOptionFields,
@@ -36,7 +39,6 @@ import {
     CompilerSymbols,
     isBabylonModule,
 } from "./symbols.js";
-import { transpileCommonJs } from "../typescript-transpile.js";
 import type { Value } from "./types.js";
 import {
     tryResolveFunctionDeclaration,
@@ -361,19 +363,12 @@ function returnShape(
 
 // ── Execution ────────────────────────────────────────────────────────────────
 
-export interface ClosureModule {
-    /** Repository-relative, forward-slashed: the module's identity. */
-    key: string;
-    javascript: string;
-    /** Specifier -> module key, for the page's CommonJS loader. */
-    resolved: Record<string, string>;
-}
-
 /**
- * The target module and every repository sibling it reaches, transpiled to
- * CommonJS. The entry additionally exposes the target under a fixed name,
- * which is how a non-exported local function is reached without editing
- * what the module exports.
+ * The target module and every repository sibling its emitted code requires,
+ * as CommonJS keyed by repository-relative path, plus the source closure the
+ * bake is keyed on. The entry additionally exposes the target under a fixed
+ * name, which is how a non-exported local function is reached without
+ * editing what the module exports.
  */
 export function closureModules(
     entryPath: string,
@@ -388,43 +383,14 @@ export function closureModules(
     | undefined {
     const files = repositoryModuleClosure([entryPath], repositoryRoot);
     if (!files) return undefined;
-    const modules: Record<string, ClosureModule> = {};
-    const keyOf = (path: string): string =>
-        repositoryRelativePath(repositoryRoot, path);
-    const entry = keyOf(entryPath);
-    if (entry.startsWith("..")) return undefined;
-    for (const { path, source: bytes } of files) {
-        const key = keyOf(path);
-        if (key.startsWith("..")) return undefined;
-        const source = bytes.toString("utf8");
-        const parsed = ts.createSourceFile(
-            path,
-            source,
-            ts.ScriptTarget.ES2022,
-            true,
-        );
-        const resolved: Record<string, string> = {};
-        for (const statement of parsed.statements) {
-            const specifier =
-                (ts.isImportDeclaration(statement) ||
-                    ts.isExportDeclaration(statement)) &&
-                statement.moduleSpecifier &&
-                ts.isStringLiteral(statement.moduleSpecifier)
-                    ? statement.moduleSpecifier.text
-                    : undefined;
-            if (!specifier || !specifier.startsWith(".")) continue;
-            const file = resolveRepositoryModuleFile(
-                resolve(dirname(path), specifier),
-            );
-            if (!file) return undefined;
-            resolved[specifier] = keyOf(file);
-        }
-        let javascript = transpileCommonJs(source, path);
-        if (key === entry) {
-            javascript += `\nexports.${browserTextureTargetExport} = ${entryFunction};\n`;
-        }
-        modules[key] = { key, javascript, resolved };
-    }
+    const built = commonJsModuleGraph(entryPath, (path) => {
+        const key = repositoryRelativePath(repositoryRoot, path);
+        return key.startsWith("..") ? undefined : key;
+    });
+    if ("refusal" in built) return undefined;
+    const { entry, modules } = built.graph;
+    modules[entry]!.javascript +=
+        `\nexports.${browserTextureTargetExport} = ${entryFunction};\n`;
     return { entry, modules, files };
 }
 
@@ -861,6 +827,7 @@ function runBrowserTextureFunctionInChromium(
             server,
             {
                 serverName: "browser texture bake server",
+                shared: true,
                 browserRequirement:
                     "Baking a scene function's browser-produced textures requires Chromium.",
                 browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
