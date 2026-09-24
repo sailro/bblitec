@@ -719,11 +719,17 @@ export const spriteCoreAdditionalProvenance = [
     },
 ] as const;
 
-/** The two optional metallic-reflectance pairs are independent slots. */
+/** The optional single-slot material maps, each keyed on its composed binding. */
 export function metallicReflectanceCapabilityDefines(
     pbrBindingNames: ReadonlySet<string>,
 ): string {
     return (
+        `#define BBLITE_MATERIAL_TRANSMISSION_MAP ${
+            pbrBindingNames.has("refractionMapTexture") ? 1 : 0
+        }\n` +
+        `#define BBLITE_MATERIAL_THICKNESS_MAP ${
+            pbrBindingNames.has("thicknessTexture_") ? 1 : 0
+        }\n` +
         `#define BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ${
             pbrBindingNames.has("metallicReflectanceMap") ? 1 : 0
         }\n` +
@@ -961,6 +967,8 @@ class GeneratedSourceWriter {
             materialTextureSlotsHeader(
                 {
                     transmission,
+                    transmissionMap: composedMaterials.transmissionMap,
+                    thicknessMap: composedMaterials.thicknessMap,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,

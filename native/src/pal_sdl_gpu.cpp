@@ -231,8 +231,12 @@ struct GpuMeshResources {
     SDL_GPUTexture* metallic_roughness = nullptr;
     SDL_GPUTexture* normal = nullptr;
     SDL_GPUTexture* emissive = nullptr;
+#if BBLITE_MATERIAL_TRANSMISSION_MAP
     SDL_GPUTexture* transmission = nullptr;
+#endif
+#if BBLITE_MATERIAL_THICKNESS_MAP
     SDL_GPUTexture* thickness = nullptr;
+#endif
 #if BBLITE_MATERIAL_CLEARCOAT
     SDL_GPUTexture* clearcoat = nullptr;
     SDL_GPUTexture* clearcoat_roughness = nullptr;
@@ -284,8 +288,12 @@ struct GpuMeshResources {
     SDL_GPUSampler* metallic_roughness_sampler = nullptr;
     SDL_GPUSampler* normal_sampler = nullptr;
     SDL_GPUSampler* emissive_sampler = nullptr;
+#if BBLITE_MATERIAL_TRANSMISSION_MAP
     SDL_GPUSampler* transmission_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_THICKNESS_MAP
     SDL_GPUSampler* thickness_sampler = nullptr;
+#endif
 #if BBLITE_MATERIAL_CLEARCOAT
     SDL_GPUSampler* clearcoat_sampler = nullptr;
     SDL_GPUSampler* clearcoat_roughness_sampler = nullptr;
@@ -537,10 +545,14 @@ GpuMeshSlotMembers mesh_slot_members(upstream::MaterialTextureSource source) {
         return {&GpuMesh::emissive, &GpuMesh::emissive_sampler};
     case Source::standard_emissive:
         return {&GpuMesh::standard_emissive, &GpuMesh::standard_emissive_sampler};
+#if BBLITE_MATERIAL_TRANSMISSION_MAP
     case Source::transmission:
         return {&GpuMesh::transmission, &GpuMesh::transmission_sampler};
+#endif
+#if BBLITE_MATERIAL_THICKNESS_MAP
     case Source::thickness:
         return {&GpuMesh::thickness, &GpuMesh::thickness_sampler};
+#endif
 #if BBLITE_MATERIAL_CLEARCOAT
     case Source::clearcoat:
         return {&GpuMesh::clearcoat, &GpuMesh::clearcoat_sampler};

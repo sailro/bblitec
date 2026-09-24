@@ -186,15 +186,13 @@ constexpr std::uint32_t instance_uniform_binding = 1;
 // backends execute; the constants below only size this backend's arrays
 // and place the transcribed bind path's pairs, and the static_assert under
 // them keeps the two in step.
-#if BBLITE_RENDERER_TRANSMISSION
-constexpr std::size_t transmission_texture_slots = 2;
-// The bound trio is one pair wider than the mesh-owned slots: the
-// scene-color pair rebinds the base color when no grab exists.
-constexpr std::size_t transmission_texture_pairs = 3;
-#else
-constexpr std::size_t transmission_texture_slots = 0;
-constexpr std::size_t transmission_texture_pairs = 0;
-#endif
+// The transmission and thickness maps follow their composed bindings; the
+// scene-color pair follows the transmission renderer, whose grab it binds,
+// and rebinds the base color when no grab exists.
+constexpr std::size_t transmission_texture_slots =
+    (BBLITE_MATERIAL_TRANSMISSION_MAP ? 1 : 0) + (BBLITE_MATERIAL_THICKNESS_MAP ? 1 : 0);
+constexpr std::size_t scene_color_pairs = BBLITE_RENDERER_TRANSMISSION ? 1 : 0;
+constexpr std::size_t transmission_texture_pairs = scene_color_pairs + transmission_texture_slots;
 constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_CLEARCOAT ? 3 : 0) + (BBLITE_MATERIAL_SHEEN ? 2 : 0) +
     (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0) + (BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ? 1 : 0) +
@@ -6742,13 +6740,14 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
         mesh.samplers[2],      mesh.samplers[3],
         state.default_sampler, binding_traits.standard ? mesh.samplers[4] : state.clamp_sampler,
     };
-    // The transmission trio and material-extension pairs append after
-    // the base six. The superset layout requires every pair for every
-    // kind; shaders that ignore a slot never sample it. The
-    // scene-color slot binds the grab texture through the pinned
-    // repeat trilinear anisotropic sampler when transmission runs,
-    // and the base color as an inert stand-in otherwise (exactly like
-    // the SDL backend with transmission disabled at runtime).
+    // The scene-color pair, the transmission and thickness maps and the
+    // material-extension pairs append after the base six. The superset
+    // layout requires every pair for every kind; shaders that ignore a
+    // slot never sample it. The scene-color slot binds the grab texture
+    // through the pinned repeat trilinear anisotropic sampler when
+    // transmission runs, and the base color as an inert stand-in
+    // otherwise (exactly like the SDL backend with transmission disabled
+    // at runtime).
     std::size_t pair = 6;
 #if BBLITE_RENDERER_TRANSMISSION
     if (state.transmission_color_view) {
@@ -6759,16 +6758,12 @@ DawnMeshBindings& bindings_for(DawnState& state, DawnMesh& mesh, upstream::Rende
         samplers[pair] = mesh.samplers[0];
     }
     ++pair;
-    views[pair] = mesh.views[5];
-    samplers[pair] = mesh.samplers[5];
-    ++pair;
-    views[pair] = mesh.views[6];
-    samplers[pair] = mesh.samplers[6];
-    ++pair;
 #endif
-    for (std::size_t slot = 0; slot < material_extension_slots; ++slot) {
-        views[pair] = mesh.views[material_extension_slot_base + slot];
-        samplers[pair] = mesh.samplers[material_extension_slot_base + slot];
+    // The mesh-owned slots past the base five, in the table's own order.
+    for (std::size_t slot = 5; slot < material_extension_slot_base + material_extension_slots;
+         ++slot) {
+        views[pair] = mesh.views[slot];
+        samplers[pair] = mesh.samplers[slot];
         ++pair;
     }
 #if BBLITE_MATERIAL_STANDARD_BUMP

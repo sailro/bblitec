@@ -2193,7 +2193,12 @@ inline std::size_t pbr_variant_for(
 /** Which slot groups a scene compiles, mirroring the render capabilities. */
 export interface MaterialTextureSlotFeatures {
     localCubemap?: boolean;
+    /** The transmission renderer, whose scene-colour grab is a scene-owned row. */
     transmission: boolean;
+    /** A composed variant binds `refractionMapTexture`. */
+    transmissionMap: boolean;
+    /** A composed variant binds `thicknessTexture_`. */
+    thicknessMap: boolean;
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
@@ -2247,7 +2252,8 @@ interface MaterialSlotRow {
  * each hand-encoded: which record field fills which slot, the per-slot sRGB
  * rule, the per-slot fallback texel, and the pin's own binding names for the
  * slot. The order is a contract — the five base slots, the transmission
- * pair, the reached material-extension pairs in registration order, then
+ * and thickness maps, the reached material-extension pairs in registration
+ * order, then
  * the Standard bump and 2D reflection pairs, each appended after
  * everything before it so no existing slot index moves when one appears.
  */
@@ -2292,23 +2298,25 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
             samplerName: "",
         },
     ];
-    if (features.transmission) {
-        mesh.push(
-            {
-                source: "transmission",
-                srgb: "linear",
-                fallback: "white",
-                textureName: "refractionMapTexture",
-                samplerName: "refractionMapSampler",
-            },
-            {
-                source: "thickness",
-                srgb: "linear",
-                fallback: "white",
-                textureName: "thicknessTexture_",
-                samplerName: "thicknessSampler_",
-            },
-        );
+    // Each keyed on the composed binding: the translucency fragment binds
+    // the thickness map without the refraction fragment's grab.
+    if (features.transmissionMap) {
+        mesh.push({
+            source: "transmission",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "refractionMapTexture",
+            samplerName: "refractionMapSampler",
+        });
+    }
+    if (features.thicknessMap) {
+        mesh.push({
+            source: "thickness",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "thicknessTexture_",
+            samplerName: "thicknessSampler_",
+        });
     }
     if (features.clearcoat) {
         mesh.push(
@@ -2667,10 +2675,10 @@ export function materialTextureSlotsHeader(
 // The material texture-slot table both render backends execute: which
 // record field fills each slot, the slot's sRGB rule and fallback texel,
 // and the pin's own binding names for it. Rows follow the append order the
-// backends bind -- the five base slots, the transmission pair, reached
-// material-extension pairs in registration order (clearcoat intensity/
-// roughness/normal, sheen color/roughness, iridescence intensity/
-// thickness, dedicated uv2 occlusion), then the Standard bump and 2D
+// backends bind -- the five base slots, the transmission and thickness
+// maps, reached material-extension pairs in registration order (clearcoat
+// intensity/roughness/normal, sheen color/roughness, iridescence
+// intensity/thickness, dedicated uv2 occlusion), then the Standard bump and 2D
 // reflection pairs, each appended after everything before it so no
 // existing slot index moves. Scene-owned resources follow with no mesh
 // slot. A per-slot rule hand-kept in a PAL is the drift this table exists
