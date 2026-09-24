@@ -452,6 +452,31 @@ test("a comparison against a statically absent value folds as JavaScript's", () 
     );
 });
 
+test("typeof a statically absent value is its absence's, not its stand-in's", () => {
+    const cpp = lower(
+        'let result = 0; if (typeof flags === "undefined") { result = 1; } if (typeof flags === "boolean") { result = flags; } const none = null; if (typeof none === "object") { result = 2; } if (typeof none !== "undefined") { result = 3; } if (typeof hook === "function") { result = hook; }',
+        [
+            ["flags", absentBinding("undefined")],
+            ["hook", absentBinding()],
+        ],
+    );
+    // `undefined` is "undefined", `null` is "object", and an absence of
+    // either kind is never "function", whatever the stand-in's type.
+    assert.match(cpp, /result = 1\.0;/);
+    assert.match(cpp, /result = 2\.0;/);
+    assert.match(cpp, /result = 3\.0;/);
+    assert.doesNotMatch(cpp, /result = flags|result = hook/);
+    // Which absence it is decides "undefined"; unsaid, it is not decided.
+    assert.throws(
+        () =>
+            lower(
+                'let result = 0; if (typeof hook === "undefined") { result = 1; }',
+                [["hook", absentBinding()]],
+            ),
+        /Unsupported pinned expression: typeof hook/,
+    );
+});
+
 test("initialized Vec3 locals retain vector members through assignment", () => {
     const cpp = lower(
         `let delta: Vec3 = { x: 1, y: 2, z: 3 }; const projection = delta.x; delta = { x: projection, y: 0, z: 0 };`,
