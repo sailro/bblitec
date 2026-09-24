@@ -53,6 +53,7 @@ import {
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { PendingActivations } from "./compiler/pending-activations.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
     compileTextModuleValue,
@@ -77,7 +78,7 @@ import {
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
-import { AsyncLowerer } from "./compiler/async.js";
+import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
     cppIdentifierPattern,
@@ -625,6 +626,11 @@ function compileSourceApplication(
                 ) {
                     resolved.runtimeSearchParams = true;
                     if (error.location) resolved.runtimeLocationSearch = true;
+                } else if (
+                    error instanceof PendingActivationsRequired &&
+                    !resolved.pendingActivations
+                ) {
+                    resolved.pendingActivations = true;
                 } else throw error;
             }
         }
@@ -2867,6 +2873,57 @@ class Compiler implements LoweringServices {
         return this.options.workers
             ? this.asyncLowerer.compileCall(declaration, arguments_, node)
             : undefined;
+    }
+
+    public compileSynchronousPromise(node: ts.NewExpression): Value {
+        return this.asyncLowerer.compileSynchronousConstructor(node);
+    }
+
+    private pendingActivationAnalysis: PendingActivations | undefined;
+
+    /** Built once a reached constructed promise sets `pendingActivations`. */
+    public pendingActivations(): PendingActivations {
+        this.pendingActivationAnalysis ??= new PendingActivations(
+            this.checker,
+            this.sourceFiles(),
+            (construction) =>
+                this.browserErasure.isFrameYield(construction) ||
+                this.browserErasure.isBoundedNestedFrameYield(construction) ||
+                this.browserErasure.frameDrainCondition(construction) !==
+                    undefined ||
+                framePollExecutor(construction, this.checker, (expression) =>
+                    this.libraryGlobal(expression),
+                ) !== undefined,
+            (node, message) => this.fail(node, message),
+        );
+        return this.pendingActivationAnalysis;
+    }
+
+    /**
+     * An expression statement that discards the promise of an activation
+     * which can end at a pending await is where that ending stops: the
+     * statements after it run, as they do after JavaScript's suspension.
+     */
+    public emitActivationBoundary(
+        statement: ts.ExpressionStatement,
+        emit: () => boolean | void,
+    ): boolean | void {
+        if (
+            !this.options.pendingActivations ||
+            !this.pendingActivations().discards(statement)
+        )
+            return emit();
+        const lines = this.captureEmittedLines(() => {
+            emit();
+        });
+        this.emit("try {");
+        this.increaseIndent();
+        for (const line of lines) this.emit(line);
+        this.decreaseIndent();
+        this.emit("} catch (const bbl::js::PendingActivation&) {");
+        this.emit("    bbl::js::end_abandoned_activation();");
+        this.emit("}");
+        return false;
     }
 
     public withEngineBootstrap<T>(
@@ -10351,6 +10408,8 @@ class Compiler implements LoweringServices {
         this.increaseIndent();
         const workerAbort = this.workerAbortCpp();
         if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        else if (this.options.pendingActivations)
+            this.emit("if (bbl::js::activation_abandoned()) return;");
         for (const line of cleanup) this.emit(line);
         this.decreaseIndent();
         this.emit("});");
@@ -10686,6 +10745,7 @@ class Compiler implements LoweringServices {
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
             continuationStorageReached: this.continuationStorageReached,
+            pendingActivations: !!this.options.pendingActivations,
             throwReached: this.throwReached,
             postProcessCompositeCount:
                 this.sceneManifest.postProcessComposites.length,

@@ -2891,6 +2891,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeSearchParams?: boolean;
     /** Reached navigation makes location.search observable across reloads. */
     runtimeLocationSearch?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     fileName: string;
     title: string;
     width: number;

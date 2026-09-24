@@ -533,6 +533,8 @@ interface MainCppProjection {
     jsRandomReached: boolean;
     audioSessionReached?: boolean;
     continuationStorageReached?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
@@ -811,7 +813,7 @@ ${(
     .filter(([feature]) => features.includes(feature))
     .map(([, header]) => `#include <bblite/${header}.hpp>\n`)
     .join("")}\
-${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}#include <bblite/pal.hpp>
+${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}${projection.pendingActivations ? "#include <bblite/js_synchronous_promise.hpp>\n" : ""}#include <bblite/pal.hpp>
 ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""}${workerInclude}${textInclude}${jsDataInclude}${cameraMathInclude}${cameraGeospatialInclude}${cameraProjectionInclude}${clusteredInclude}${normalizeVec3Include}${lookDirectionInclude}${mat4InvertInclude}${spriteInclude}${billboardInclude}${spriteAnimationInclude}${nodeParticleInclude}${physicsInclude}${navigationInclude}${audioInclude}${imageInclude}${bakedMeshInclude}${uiInclude}${shadowInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
@@ -889,7 +891,7 @@ ${
 }\
 ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
-    } catch (const std::exception& error) {
+    }${projection.pendingActivations ? " catch (const bbl::js::PendingActivation&) {\n        // The entry awaited a promise nothing settled: it has no more work.\n        return 0;\n    }" : ""} catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\\n';
         return 1;
     }

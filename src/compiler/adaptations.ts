@@ -12,6 +12,7 @@ export interface AdaptationContext extends Pick<
     | "erasedBrowserInstrumentation"
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
+    | "options"
     | "jsRandomReached"
     | "voxelFileStorageReached"
     | "browserTextureFunctions"
@@ -259,6 +260,21 @@ export function compileAdaptations(
                 "voxel file-boundary compiler test",
                 "native SaveData JSON round-trip",
                 "non-interactive file-dialog path override",
+            ],
+        });
+    }
+    if (context.options.pendingActivations) {
+        adaptations.push({
+            id: "synchronous-constructed-promise",
+            category: "async",
+            sourceSemantics:
+                "A constructed promise settles whenever its escaped resolving functions run, and an await on it suspends until then, for good when nothing settles it.",
+            nativeSemantics:
+                "The executor and the platform callbacks it starts run in place, so an await reads the settlement where it stands: a value, a rejection rethrown, or a still-pending promise that ends the awaiting activation there without running its catch or finally blocks, resuming after the statement that discarded its promise. A settlement after that throws; an activation that can end this way is only awaited, returned or discarded as a statement.",
+            risk: "medium",
+            validation: [
+                "synchronous promise compiler and native execution fixture",
+                "pending-activation refusal tests",
             ],
         });
     }

@@ -89,6 +89,12 @@ export interface LoweringServices {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined;
+    compileSynchronousPromise(node: ts.NewExpression): Value;
+    pendingActivations(): import("./pending-activations.js").PendingActivations;
+    emitActivationBoundary(
+        statement: ts.ExpressionStatement,
+        emit: () => boolean | void,
+    ): boolean | void;
     compileAsyncReturn(
         expression: ts.Expression,
         type: DataType | undefined,
