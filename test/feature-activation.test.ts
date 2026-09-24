@@ -307,9 +307,7 @@ function everythingOnInputs(): FeatureActivationInputs {
         }),
         activation: activationPlan({
             gpuDeformation: decided("a glTF asset carries animations"),
-            morphStorage: decided(
-                "a glTF primitive carries morph targets (maxMorphTargets > 0)",
-            ),
+            morphStorage: decided("a glTF asset runs the pinned morph feature"),
             gpuInstancing: decided("an asset uses EXT_mesh_gpu_instancing"),
             nodeVisibility: decided("an asset uses KHR_node_visibility"),
             linearImageProcessing: decided(

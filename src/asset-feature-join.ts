@@ -280,8 +280,7 @@ export async function joinAssetFeatures({
             morphStorage: activation([
                 [
                     specialization.morphStorage,
-                    "a glTF primitive carries morph targets " +
-                        "(maxMorphTargets > 0)",
+                    "a glTF asset runs the pinned morph feature",
                 ],
                 [
                     has("mesh:morph-targets"),
