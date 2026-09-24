@@ -813,10 +813,11 @@ test("adds one module-level callback once from two owners", () => {
     `);
 
     // Two constructions, two receivers, still the one handler `onTick`
-    // names -- a Set that saw both must hold a single member.
+    // names -- a Set that saw both must hold a single member. Both calls
+    // may run one shared registration body.
     const identities = callbackIdentities(result.cpp);
-    assert.equal(identities.length, 2);
-    assert.equal(identities[0], identities[1]);
+    assert.ok(identities.length >= 1);
+    assert.equal(new Set(identities).size, 1);
 });
 
 test("gives two instances of one class-field callback two identities", () => {

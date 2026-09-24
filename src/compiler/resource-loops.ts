@@ -557,7 +557,17 @@ export function canIterateHandleTableNatively(
     body: ts.Node,
     callEffects = false,
 ): boolean {
-    if (requiresStaticDataIteration(context, body, callEffects)) return false;
+    return (
+        !requiresStaticDataIteration(context, body, callEffects) &&
+        !reachesOpaqueCallee(context, body)
+    );
+}
+
+/** Whether the body calls a function value whose body this walk cannot reach. */
+export function reachesOpaqueCallee(
+    context: ResourceLoopContext,
+    body: ts.Node,
+): boolean {
     let opaque = false;
     walkReachedLoopNodes(context, body, (node, resolved) => {
         if (!ts.isCallExpression(node)) return;
@@ -568,10 +578,13 @@ export function canIterateHandleTableNatively(
         )
             opaque = true;
     });
-    return !opaque;
+    return opaque;
 }
 
-/** Construction and generation-dependent operations replay their ordinary recorder effects. */
+/**
+ * Construction and generation-dependent operations replay their ordinary
+ * recorder effects; a function value the walk cannot reach may construct.
+ */
 export function sharedFunctionHasCallEffects(
     context: ResourceLoopContext,
     body: ts.Node,
@@ -588,7 +601,7 @@ export function sharedFunctionHasCallEffects(
         if (imported && runtimeProfileConstructionIntrinsics.has(imported))
             constructs = true;
     });
-    return constructs;
+    return constructs || reachesOpaqueCallee(context, body);
 }
 
 /** A folded bound must not be invalidated by the loop or its called helpers. */

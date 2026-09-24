@@ -1,4 +1,7 @@
-import type { BindingScopes } from "./binding-scopes.js";
+import {
+    valueContainsPlatformEvent,
+    type BindingScopes,
+} from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
@@ -1121,6 +1124,7 @@ export interface UserFunctionContext
             | "canShareFunctionBody"
             | "canReplaySharedCallEffects"
             | "emitReusableNativeBody"
+            | "reachesOpaqueCallee"
             | "requiresStaticDataIteration"
             | "probeEmission"
             | "conditions"
@@ -2118,6 +2122,20 @@ export class UserFunctionLowerer {
                         call,
                         keepsArgumentFacts,
                     );
+                // The callee may grow or clear a collection it receives,
+                // so the caller no longer knows its elements.
+                if (
+                    evaluated?.kind === "data" &&
+                    ts.isIdentifier(parameter.name) &&
+                    !parameterIsReadOnly(
+                        this.checker,
+                        declaration,
+                        parameter.name,
+                    )
+                )
+                    context.dataLowerer.invalidateEscapingCollection(
+                        evaluated,
+                    );
                 const borrowedReference = borrowsReferenceParameter(
                     context,
                     parameter.name,
@@ -2234,8 +2252,8 @@ export class UserFunctionLowerer {
      * generation facts about it no longer hold. A primitive or callback
      * field that no reached code reassigns keeps its binding; any other
      * field reads the native struct again, since its contents may change.
-     * A shared call that would lose a static fact specializes inline
-     * instead (`keepsFacts`), where the lowering keeps it.
+     * A shared call that would lose a static fact of a field it cannot prove
+     * unchanged specializes inline instead (`keepsFacts`).
      */
     private invalidateArgumentFacts(
         context: UserFunctionContext,
@@ -2288,8 +2306,11 @@ export class UserFunctionLowerer {
                             value.dataType?.kind === "boolean" ||
                             value.dataType?.kind === "enum")));
             if (stable) continue;
+            // A field the callee reassigns loses its fact either way; one
+            // this walk cannot clear keeps it only on the inline path.
             if (
                 keepsFacts &&
+                !reassigned?.has(key) &&
                 (value.staticNumber !== undefined ||
                     value.staticString !== undefined ||
                     value.staticBoolean !== undefined)
@@ -2561,6 +2582,14 @@ export class UserFunctionLowerer {
             !recursive &&
             root.declaration.body !== undefined &&
             context.canReplaySharedCallEffects(root.declaration.body);
+        // A replayed call records its constructions at this site; one that
+        // reaches them through a callback keeps the callback's iteration
+        // facts only inline.
+        if (
+            callSiteEffects &&
+            context.reachesOpaqueCallee(root.declaration.body!)
+        )
+            throw new SharedCallRequiresInline();
         rootArguments = rootArguments.map((value, index) => {
             const expression = argumentExpressions[index];
             return isHandleKind(value.kind) &&
@@ -2826,6 +2855,17 @@ export class UserFunctionLowerer {
             rootEntry.captured[index] = value;
         });
 
+        // A borrowed platform event lives on the dispatch stack of the
+        // listener that received it; a separate native body cannot name it.
+        if (
+            !recursive &&
+            rootEntry.captured.some(
+                (value) =>
+                    value !== undefined &&
+                    valueContainsPlatformEvent(context.dataTypes, value),
+            )
+        )
+            throw new SharedCallRequiresInline();
         const escapes = this.groupStorageEscapes(declarations);
         const sharedBody = !recursive;
         const scope = sharedBody
@@ -3461,6 +3501,10 @@ export class UserFunctionLowerer {
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 entry.value.nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
+                // A namespace body reaches its caller's locals only through
+                // its environment; a value that names one uncaptured stays
+                // with an inline specialization.
+                if (captured.uncaptured) throw new SharedCallRequiresInline();
                 closure = context.renderSharedClosure(
                     captured,
                     returnCpp,

@@ -283,6 +283,7 @@ import {
     requiresStaticDataIteration,
     canShareFunctionBody,
     canIterateHandleTableNatively,
+    reachesOpaqueCallee,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
@@ -7073,11 +7074,21 @@ class Compiler implements LoweringServices {
                 struct.declaration,
             );
         }
+        const captured = new EmissionSet(capture.nativeCaptures);
+        const uncaptured = [...identifiers].filter((name) => {
+            const binding = this.nativeBindings.get(name);
+            return (
+                binding !== undefined &&
+                binding.sequence <= capture.boundary &&
+                !captured.has(binding)
+            );
+        });
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             ...(environmentType ? { environmentType } : {}),
+            ...(uncaptured.length > 0 ? { uncaptured } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,
@@ -7798,6 +7809,10 @@ class Compiler implements LoweringServices {
             body,
             this.definiteCollectionMutation(),
         );
+    }
+
+    public reachesOpaqueCallee(body: ts.Node): boolean {
+        return reachesOpaqueCallee(this, body);
     }
 
     public canIterateHandleTableNatively(body: ts.Node): boolean {

@@ -50,9 +50,16 @@ test("unchanged device-loss scene retains polling predicates, GPU identities and
         result.cpp,
         /defer_capture_until\([^\n]+canvas_dataset\([^\n]+"ready"/,
     );
+    // The poll predicate is a shared body; the deferred start calls it.
+    const predicate = result.cpp.match(
+        /defer_start_continuation_until\([^\n]+\[&\]\(\)[^\n]*bblscene::(bbl_recursive_fn\d+_group)\)\(\)/,
+    )?.[1];
+    assert.ok(predicate);
     assert.match(
         result.cpp,
-        /defer_start_continuation_until\([^\n]+\[&\]\(\).*canvas_dataset\([^\n]+"preLossReady"/,
+        new RegExp(
+            `\\n\\w+ ${predicate}\\([^\\n]*\\) \\{\\n[^}]*canvas_dataset\\([^\\n]+"preLossReady"`,
+        ),
     );
     assert.ok(
         result.manifest.scenePbrMaterials?.some(
