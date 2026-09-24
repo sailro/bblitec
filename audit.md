@@ -68,13 +68,13 @@ and performance.
 | CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | Extract recorder, scopes, declarations, property access, conditions, browser predicates. | open |
 | CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Needs generic support first: absent file-picker globals, escaping Promise `resolve`, `FileReader`, `JSON.parse(text) as T`. | open |
 | CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared. Remaining: pinned `Math.max/min` via `math_extreme`. | partial |
-| CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()`. | open |
+| CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` (bare names, `globalThis`, `window.`/`self.` members) at 185 sites; user declarations named `Number`, `String`, `Object` or `Map` lower as user code. Remaining: the platform timer arm accepts only bare names, and `undefined` has 12 hand checks. | partial |
 | CC-6 | med | Declaration origin decided 8 ways. | One `declarationOrigin()`. | fixed |
 | CC-7 | med | Nullable-union rule had no owner. | `presentMembers()`/`nullability()`. | fixed |
 | CC-8 | med | Class members found by name in ≥12 loops. | One `ClassMemberTable`. Remaining: inheritance and mutable statics. | partial |
-| CC-9 | med | String and presence facts spelled per site. | Shared accessors. | open |
+| CC-9 | med | String and presence facts spelled per site. | String tests through `isStringValue` (5 → 32 callers); presence through `optionalPresentCpp`/`presenceCpp` (literal `has_value()` 61 → 12). Remaining: `truthinessCpp`, `optionalFoundCpp` and `conditionFromValue` sites each need a truthiness-versus-presence proof. | partial |
 | CC-10 | med | Methods inlined at every call; constant tables wrapped each element. | Tables emit typed literals (tetris `renderer.cpp` 1.96 → 0.83 MB). Method sharing is blocked by `canShareFunctionBody` refusals (function-typed parameters, retained-canvas reads). | partial |
-| CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `resolvedSymbol()` in classification files. | partial |
+| CC-11 | low | Raw symbol lookups bypass `valueSymbol`. | `resolvedSymbol`/`aliasTarget` replace 19 alias idioms (`getAliasedSymbol` only in `symbols.ts`). Remaining: 93 raw lookups, mostly deliberate unresolved reads; value positions change imported-name behaviour. | partial |
 | CC-12 | low | Truthiness/comparison lowering split three ways. | `comparisons.ts` owns operators, folds, boolean comparisons and `instanceof`. Remaining: condition lowerer extraction. | partial |
 | CC-13 | low | Literal `renderCanvas` id, silent GitHub asset fallback, `offsetX` as `clientX`. | Canvas keyed on `createEngine`; `--public-url` or refusal; offsets recorded as an adaptation. | fixed |
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
