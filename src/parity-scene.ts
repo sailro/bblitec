@@ -160,7 +160,6 @@ export interface ParityArguments {
     singleSample: boolean;
     recaptureReference: boolean;
     noFail: boolean;
-    gpuDebug: boolean;
 }
 
 /** The native switch `--without` drives for each suppressible element. */
@@ -237,7 +236,6 @@ export function parityArgumentsFrom(parsed: ParsedFlags): ParityArguments {
         singleSample: parsed.flags.has("--single-sample"),
         recaptureReference: parsed.flags.has("--recapture-reference"),
         noFail: parsed.flags.has("--no-fail"),
-        gpuDebug: parsed.flags.has("--gpu-debug"),
     };
     const modes = [
         ["--runs", result.runs !== undefined],
