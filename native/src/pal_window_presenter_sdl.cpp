@@ -10,9 +10,7 @@ class SdlWindowPresenter final : public WindowPresenter {
 public:
     explicit SdlWindowPresenter(SDL_Window* window)
         : window_(window),
-          device_(SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV |
-                                          SDL_GPU_SHADERFORMAT_MSL,
-                                      environment_variable("BBLITE_GPU_DEBUG") == "1", nullptr),
+          device_(create_compiled_shader_device(environment_variable("BBLITE_GPU_DEBUG") == "1"),
                   &SDL_DestroyGPUDevice),
           shared_(device_.get()) {
         if (!device_)
