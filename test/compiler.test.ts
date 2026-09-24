@@ -15873,6 +15873,11 @@ test("lowers the Sprite2D handle and Y-sort entry points", () => {
         result.cpp,
         /bbl::sprite_renderer_before_update\(\w+, \w+, bbl::js::make_closure\(std::tuple\{std::ref\(v_hero\), std::ref\(v_engine\), std::ref\(v_layer\)\}, bblscene::\w+/,
     );
+    // The hook takes the delta the renderer passes, a double (GC-20).
+    assert.match(
+        result.cpp,
+        /void v_bblite_closure_body_\d+\(\[\[maybe_unused\]\] Environment& \w+, double\)/,
+    );
     // Both handle entry points resolve the slot the id names at the call,
     // never the slot the add returned.
     assert.match(result.cpp, /bbl::update_sprite_2d_id\(/);

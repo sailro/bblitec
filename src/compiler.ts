@@ -310,7 +310,10 @@ import type {
     ValueKind,
     VariableBinding,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import {
+    frameCallbackParameterType,
+    isCompileTimeOnlyValue,
+} from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import {
@@ -3347,7 +3350,8 @@ class Compiler implements LoweringServices {
             this.sceneManifest.recordRuntimeMeshProfile(index);
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
-            writable(value).cpp = `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
+            writable(value).cpp =
+                `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -4058,9 +4062,7 @@ class Compiler implements LoweringServices {
                                       parameter,
                                       false,
                                       false,
-                                      signature === "timestamp"
-                                          ? "double"
-                                          : "float",
+                                      frameCallbackParameterType(signature),
                                   ),
                               ],
                           },
@@ -4079,7 +4081,7 @@ class Compiler implements LoweringServices {
                 "void",
                 unwrapped,
                 parameter
-                    ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+                    ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
                     : "",
                 parameter ? [parameter] : [],
             );
@@ -4215,7 +4217,7 @@ class Compiler implements LoweringServices {
                 if (parameter && ts.isIdentifier(parameter.name)) {
                     this.registerNativeBindingType(
                         parameterCppName!,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                     this.bindings.defineVariable(parameter.name, {
                         kind: "number",
@@ -4261,11 +4263,9 @@ class Compiler implements LoweringServices {
         // would be a second answer to it.
         const cppParameter = parameterName
             ? `[[maybe_unused]] ` +
-              `${signature === "timestamp" ? "double" : "float"} ` +
+              `${frameCallbackParameterType(signature)} ` +
               `${parameterCppName}`
-            : signature === "timestamp"
-              ? "double"
-              : "float";
+            : frameCallbackParameterType(signature);
         const lambdaParameter =
             signature === "void" || signature === "interval"
                 ? ""
@@ -4388,7 +4388,7 @@ class Compiler implements LoweringServices {
                         parameter,
                         false,
                         false,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                 const stored = this.bindings.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
@@ -4428,7 +4428,7 @@ class Compiler implements LoweringServices {
                 previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
-            ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
             : "";
         return this.renderSharedClosure(
             compiled,

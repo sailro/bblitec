@@ -171,6 +171,75 @@ test("indexed store adapters survive buffer aliases and refuse unsupported updat
     );
 });
 
+test("a string set and a composed throw message lower as JavaScript's", (t) => {
+    const strings: [string, PinnedBinding][] = [
+        ["first", { cpp: "first", type: "string" }],
+        ["second", { cpp: "second", type: "string" }],
+    ];
+    const body = lower(
+        'const names = new Set<string>(); names.add(first); names.add(second); names.add(first); if (names.size) { throw new Error(`missing: ${Array.from(names).sort().join(", ")}. ` + "Register them."); }',
+        strings,
+    );
+    assert.match(body, /bbl::js::Set<std::string> names;/);
+    assert.match(body, /names\.add\(first\);/);
+    assert.match(body, /if \(static_cast<double>\(names\.size\(\)\)\) \{/);
+    // A number inside a template would need JavaScript's own formatting.
+    assert.throws(
+        () =>
+            lower("const n = 2; throw new Error(`count ${n}`);", [
+                ["n", { cpp: "n", type: "scalar" }],
+            ]),
+        /string expression/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const output = resolve("artifacts/pinned-numeric-strings");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    // JavaScript's default sort compares UTF-16 code units, so "Z" < "a".
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <cstdio>
+        #include <stdexcept>
+        #include <string>
+        static void run(const std::string& first, const std::string& second) {
+            ${body}
+        }
+        int main() {
+            try {
+                run("text", "Zone");
+            } catch (const std::runtime_error& error) {
+                std::fputs(error.what(), stdout);
+            }
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8" }),
+        `missing: ${Array.from(new Set(["text", "Zone", "text"]))
+            .sort()
+            .join(", ")}. Register them.`,
+    );
+});
+
 test("native typed-array chains capture indices before writes and preserve unrounded assignment values", (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

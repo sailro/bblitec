@@ -2991,9 +2991,11 @@ ${
                 ts.isElementAccessExpression(rhs) ||
                 ts.isNonNullExpression(rhs)
             ) {
+                // The Float32Array store rounds; a double-precision camera
+                // world (floating origin) converts explicitly.
                 lines.set(
                     index,
-                    `    view[${index}] = world[${this.pinnedElementIndex(rhs, "w")}];\n`,
+                    `    view[${index}] = static_cast<float>(world[${this.pinnedElementIndex(rhs, "w")}]);\n`,
                 );
                 continue;
             }

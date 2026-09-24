@@ -2107,7 +2107,7 @@ export class PropertyAccessLowerer {
                 recordProperties: {
                     length: {
                         kind: "number",
-                        cpp: `bbl::scene_renderable_count(${owner.cpp})`,
+                        cpp: `static_cast<double>(bbl::scene_renderable_count(${owner.cpp}))`,
                         impure: true,
                     },
                 },
@@ -2115,7 +2115,11 @@ export class PropertyAccessLowerer {
         }
         if (owner.kind === "engine" && property === "drawCallCount") {
             this.context.reachFeature("engine:device-recovery", expression);
-            return { kind: "number", cpp: `${owner.cpp}.draw_call_count` };
+            // A JavaScript number read of the native counter.
+            return {
+                kind: "number",
+                cpp: `static_cast<double>(${owner.cpp}.draw_call_count)`,
+            };
         }
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };

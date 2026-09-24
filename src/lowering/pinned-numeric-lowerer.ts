@@ -373,7 +373,15 @@ export interface PinnedBinding {
          * pushed onto and sorted as JavaScript's own array, with `record`
          * naming the native struct each element is.
          */
-        | "record-list";
+        | "record-list"
+        /** A `std::string` the body reads, compares and concatenates. */
+        | "string"
+        /**
+         * The pin's `new Set<string>()`: `bbl::js::Set<std::string>`, which
+         * keeps JavaScript's insertion order for `add`, `size` and
+         * `Array.from`.
+         */
+        | "string-set";
     /**
      * The native struct a `record-list`'s elements are, or the one an
      * `opaque` binding is: its members read through it, and a literal
@@ -1083,16 +1091,17 @@ export class PinnedNumericLowerer {
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
                 thrown.expression.text !== "Error" ||
-                thrown.arguments?.length !== 1 ||
-                !ts.isStringLiteral(thrown.arguments[0]!)
+                thrown.arguments?.length !== 1
             ) {
                 this.fail(statement, "throw statement");
             }
-            const message = thrown.arguments[0].text;
-            return [
-                `${indent}throw std::runtime_error(` +
-                    `${JSON.stringify(message)});`,
-            ];
+            const argument = thrown.arguments[0]!;
+            // A literal message is the literal; a composed one (a template
+            // naming what failed) is the string the pin builds.
+            const message = ts.isStringLiteral(argument)
+                ? JSON.stringify(argument.text)
+                : this.stringExpression(argument);
+            return [`${indent}throw std::runtime_error(${message});`];
         }
         if (ts.isReturnStatement(statement)) {
             if (!this.scope.returnValue) {
@@ -1732,6 +1741,21 @@ export class PinnedNumericLowerer {
                     );
                     continue;
                 }
+            }
+            // `new Set<string>()`: an insertion-ordered set of strings, the
+            // pin's own collection of distinct names.
+            const set = unwrapExpression(source);
+            if (
+                ts.isNewExpression(set) &&
+                ts.isIdentifier(set.expression) &&
+                set.expression.text === "Set" &&
+                (set.arguments?.length ?? 0) === 0 &&
+                set.typeArguments?.length === 1 &&
+                set.typeArguments[0]!.kind === ts.SyntaxKind.StringKeyword
+            ) {
+                this.scope.bindings.set(name, { cpp, type: "string-set" });
+                lines.push(`${indent}bbl::js::Set<std::string> ${cpp};`);
+                continue;
             }
             const allocation = this.allocation(source);
             if (allocation) {
@@ -2805,6 +2829,86 @@ export class PinnedNumericLowerer {
      * what `-Wparentheses-equality` refuses, so the one enclosing pair is
      * dropped where the statement supplies its own.
      */
+    /**
+     * A string the pin composes: a literal, a bound string, a template or a
+     * `+` over strings, or `join` over a string array. A number inside a
+     * template would need JavaScript's own number formatting, so it refuses
+     * rather than printing C++'s.
+     */
+    private stringExpression(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node)
+        ) {
+            return `std::string(${JSON.stringify(node.text)})`;
+        }
+        const bound = this.scope.bindings.get(node.getText(this.file));
+        if (bound?.type === "string") return bound.cpp;
+        if (ts.isTemplateExpression(node)) {
+            const parts = [`std::string(${JSON.stringify(node.head.text)})`];
+            for (const span of node.templateSpans) {
+                parts.push(this.stringExpression(span.expression));
+                if (span.literal.text)
+                    parts.push(JSON.stringify(span.literal.text));
+            }
+            return `(${parts.join(" + ")})`;
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken
+        ) {
+            return `(${this.stringExpression(node.left)} + ${this.stringExpression(node.right)})`;
+        }
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "join" &&
+            node.arguments.length === 1
+        ) {
+            return (
+                `bbl::js::array_join(` +
+                `${this.stringArray(node.expression.expression)}, ` +
+                `${this.stringExpression(node.arguments[0]!)})`
+            );
+        }
+        return this.fail(node, "string expression");
+    }
+
+    /**
+     * An array of strings: `Array.from` over a string set, in its insertion
+     * order, and `sort()` with no comparator, JavaScript's ascending UTF-16
+     * code-unit order.
+     */
+    private stringArray(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Array" &&
+                callee.name.text === "from" &&
+                node.arguments.length === 1
+            ) {
+                const set = this.scope.bindings.get(
+                    unwrapExpression(node.arguments[0]!).getText(this.file),
+                );
+                if (set?.type === "string-set") {
+                    return `bbl::js::array_from_iterable<std::string>(${set.cpp})`;
+                }
+            }
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                callee.name.text === "sort" &&
+                node.arguments.length === 0
+            ) {
+                return `bbl::js::string_array_sort(${this.stringArray(callee.expression)})`;
+            }
+        }
+        return this.fail(node, "string array");
+    }
+
     private condition(expression: ts.Expression): string {
         const known = this.staticCondition(expression);
         if (known !== undefined) return known ? "true" : "false";
@@ -3866,6 +3970,9 @@ export class PinnedNumericLowerer {
                 return `static_cast<double>(${binding.cpp}.size())`;
             }
         }
+        if (binding?.type === "string-set" && node.name.text === "size") {
+            return `static_cast<double>(${binding.cpp}.size())`;
+        }
         // The global `Number.NaN`, the one quiet NaN JavaScript has.
         if (
             ts.isIdentifier(owner) &&
@@ -3982,6 +4089,19 @@ export class PinnedNumericLowerer {
                     this.expression(node.arguments[1]!),
                 );
             }
+        }
+        // `names.add(name)` on a string set: kept once, in first-add order.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "add" &&
+            node.arguments.length === 1 &&
+            this.scope.bindings.get(callee.expression.getText(this.file))
+                ?.type === "string-set"
+        ) {
+            const set = this.scope.bindings.get(
+                callee.expression.getText(this.file),
+            )!;
+            return `${set.cpp}.add(${this.stringExpression(node.arguments[0]!)})`;
         }
         // `positions.push(x, y, z)` onto a grown list. The pin appends in
         // argument order and the comma expression keeps that order while

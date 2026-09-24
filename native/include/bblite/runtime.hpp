@@ -3811,6 +3811,8 @@ struct EnvironmentIdentity {
 };
 struct DeviceRecoveryRegistration {
     Engine* engine = nullptr;
+    /** `_kind`: the rendering-context kind this strategy recovers. */
+    std::string kind;
     bool disabled = false;
     std::function<void()> on_lost;
     std::function<void()> on_recovered;

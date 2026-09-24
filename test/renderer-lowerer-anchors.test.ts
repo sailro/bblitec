@@ -167,8 +167,10 @@ test("derives the view transpose from the pinned getViewMatrix store map", () =>
         plan.source,
         /const double cx = static_cast<double>\(world\[12\]\);/,
     );
-    assert.match(plan.source, /view\[0\] = world\[0\];/);
-    assert.match(plan.source, /view\[6\] = world\[9\];/);
+    // The Float32Array store converts explicitly: a floating-origin world
+    // is double (GC-20).
+    assert.match(plan.source, /view\[0\] = static_cast<float>\(world\[0\]\);/);
+    assert.match(plan.source, /view\[6\] = static_cast<float>\(world\[9\]\);/);
     assert.match(plan.source, /view\[11\] = 0\.0f;/);
     assert.match(
         plan.source,
