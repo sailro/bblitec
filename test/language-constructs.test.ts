@@ -2568,6 +2568,112 @@ check(
 );
 
 check(
+    "recursion-through-stored-instances",
+    `
+    class TreeNode {
+        children: TreeNode[] = [];
+        constructor(readonly value: number) {}
+        add(child: TreeNode): TreeNode {
+            this.children.push(child);
+            return this;
+        }
+        sum(): number {
+            let total = this.value;
+            for (const child of this.children) total += child.sum();
+            return total;
+        }
+    }
+    const root = new TreeNode(1);
+    const mid = new TreeNode(2);
+    mid.add(new TreeNode(3));
+    root.add(mid).add(new TreeNode(4));
+    if (root.sum() !== 10) throw new Error("sum " + root.sum());
+`,
+);
+
+check(
+    "recursion-through-a-stored-hierarchy",
+    `
+    abstract class Shape {
+        abstract area(): number;
+        describe(depth: number): string {
+            return "shape@" + depth;
+        }
+    }
+    class Square extends Shape {
+        constructor(readonly side: number) {
+            super();
+        }
+        area(): number {
+            return this.side * this.side;
+        }
+    }
+    class Group extends Shape {
+        readonly children: Shape[] = [];
+        add(shape: Shape): Group {
+            this.children.push(shape);
+            return this;
+        }
+        area(): number {
+            let total = 0;
+            for (const child of this.children) total += child.area();
+            return total;
+        }
+        override describe(depth: number): string {
+            const parts: string[] = [];
+            for (const child of this.children) parts.push(child.describe(depth + 1));
+            return "group@" + depth + "[" + parts.join(",") + "]";
+        }
+        count(): number {
+            return this.children.reduce((sum, child) => sum + (child instanceof Group ? child.count() : 1), 0);
+        }
+    }
+    const inner = new Group().add(new Square(1)).add(new Square(2));
+    const root = new Group().add(inner).add(new Square(3));
+    if (root.area() !== 14) throw new Error("composite area " + root.area());
+    if (root.describe(0) !== "group@0[group@1[shape@2,shape@2],shape@1]") throw new Error("describe " + root.describe(0));
+    if (root.count() !== 3) throw new Error("count " + root.count());
+    const shapes: Shape[] = [root, new Square(4)];
+    let total = 0;
+    for (const shape of shapes) total += shape.area();
+    if (total !== 30) throw new Error("total " + total);
+`,
+);
+
+check(
+    "mutual-recursion-through-stored-instances",
+    `
+    class Ping {
+        next: Pong | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight + (this.next ? this.next.total() : 0);
+        }
+    }
+    class Pong {
+        next: Ping | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight * 10 + (this.next ? this.next.total() : 0);
+        }
+    }
+    const pongs: Pong[] = [];
+    const chain: Ping[] = [];
+    const a = new Ping(1);
+    const b = new Pong(2);
+    const c = new Ping(3);
+    a.next = b;
+    b.next = c;
+    pongs.push(b);
+    chain.push(a, c);
+    if (a.total() !== 24) throw new Error("mutual " + a.total());
+    let sum = 0;
+    for (const ping of chain) sum += ping.total();
+    if (sum !== 27) throw new Error("sum " + sum);
+`,
+);
+
+check(
     "callbacks-calling-abstract-methods",
     `
     abstract class Animal {
@@ -2658,14 +2764,18 @@ test("class inheritance and static state refuse what one record or struct cannot
             /Private name '#x' is declared by both 'A' and 'B'/,
         ],
         [
-            `class TreeNode {
-                children: TreeNode[] = [];
-                constructor(readonly value: number) {}
-                sum(): number { let total = this.value; for (const child of this.children) total += child.sum(); return total; }
+            `class Leaf { constructor(readonly weight: number) {} }
+            class Holder {
+                other: Leaf | null = null;
+                read(): number { return this.other ? this.other.weight : -1; }
             }
-            const root = new TreeNode(1); root.children.push(new TreeNode(2));
-            const unused = root.sum();`,
-            /calls itself on another stored instance/,
+            const holders: Holder[] = [];
+            const holder = new Holder();
+            holders.push(holder);
+            const leaf = new Leaf(5);
+            holder.other = leaf;
+            const unused = holder.read();`,
+            /Field 'other' of a shared class instance is not stored per instance/,
         ],
         [
             `class A { value = 1; }

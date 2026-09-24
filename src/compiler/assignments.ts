@@ -1384,6 +1384,19 @@ export function emitPropertyAssignment(
                         left,
                         "Replacing a record callback requires a native function slot on a locally bound record.",
                     );
+                // A shared instance keeps a field outside its struct only
+                // when every instance holds the same value; rebinding it here
+                // would change it for all of them.
+                if (
+                    owner.dataType?.kind === "struct" &&
+                    context.dataTypes.isClassStruct(owner.dataType.name)
+                )
+                    context.fail(
+                        left,
+                        `Field '${left.name.text}' of a shared class instance is ` +
+                            "not stored per instance, so assigning it would " +
+                            "change it for every instance.",
+                    );
                 writable((writable(owner).recordProperties ??= {}))[
                     left.name.text
                 ] = assigned;

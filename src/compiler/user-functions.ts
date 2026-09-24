@@ -987,6 +987,7 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "classLowerer"
             | "options"
             | "withAsyncActivation"
             | "compileAsyncCall"
@@ -2628,6 +2629,9 @@ export class UserFunctionLowerer {
                       ? context.activeThis()
                       : undefined,
                   functionDependencies(context, declarations),
+                  // A body calling a method whose recursive group is being
+                  // emitted calls that group, which the next group is not.
+                  context.classLowerer.activeRecursion(),
               ]);
         const previous =
             specialization === undefined
