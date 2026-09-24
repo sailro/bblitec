@@ -4,7 +4,11 @@ import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
-import { aliasTarget, type CompilerSymbols } from "./symbols.js";
+import {
+    aliasTarget,
+    declaredSymbol,
+    type CompilerSymbols,
+} from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -288,7 +292,8 @@ class ModuleInitializerPlanner {
                     moduleImportKind(statement) === "type"
                 )
                     continue;
-                const symbol = this.checker.getSymbolAtLocation(
+                const symbol = declaredSymbol(
+                    this.checker,
                     statement.moduleSpecifier,
                 );
                 const dependency = symbol?.declarations?.find(ts.isSourceFile);
@@ -463,7 +468,7 @@ class ModuleInitializerPlanner {
             });
         visit(this.sourceFile);
         for (const file of projectModules) {
-            const moduleSymbol = this.checker.getSymbolAtLocation(file);
+            const moduleSymbol = declaredSymbol(this.checker, file);
             const exported = new EmissionSet(
                 moduleSymbol
                     ? this.checker

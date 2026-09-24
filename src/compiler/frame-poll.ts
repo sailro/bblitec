@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { argumentAt, identifierText } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
-import type { LibraryGlobal } from "./symbols.js";
+import { declaredSymbol, type LibraryGlobal } from "./symbols.js";
 
 /** A closed Promise executor: local setup, one zero-argument RAF poll, and its initial call. */
 export function framePollExecutor(
@@ -78,9 +78,8 @@ export function framePollExecutor(
     )
         return undefined;
     const sameSymbol = (left: ts.Node, right: ts.Node) =>
-        checker.getSymbolAtLocation(left) !== undefined &&
-        checker.getSymbolAtLocation(left) ===
-            checker.getSymbolAtLocation(right);
+        declaredSymbol(checker, left) !== undefined &&
+        declaredSymbol(checker, left) === declaredSymbol(checker, right);
     if (
         !sameSymbol(resolve.expression.expression, resolveParameter) ||
         !sameSymbol(argumentAt(raf, 0), poll.name) ||

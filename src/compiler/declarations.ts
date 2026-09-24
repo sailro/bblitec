@@ -35,6 +35,7 @@ import {
 } from "./option-helpers.js";
 import { readProperty, type PropertyContext } from "./properties.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import {
     argumentAt,
     assignmentTargets,
@@ -213,7 +214,7 @@ export class DeclarationLowerer {
             ts.isTypeReferenceNode(declaration.type) &&
             ts.isIdentifier(declaration.type.typeName) &&
             declaration.type.typeName.text === "GPUTexture" &&
-            !this.context.checker.getSymbolAtLocation(declaration.type.typeName)
+            !declaredSymbol(this.context.checker, declaration.type.typeName)
                 ?.declarations?.length &&
             ts.isIdentifier(declaration.name)
         ) {
@@ -2512,11 +2513,10 @@ export class DeclarationLowerer {
                             : this.context.checker.getResolvedSignature(value)
                                   ?.declaration
                         : ts.isPropertyAccessExpression(value)
-                          ? this.context.checker
-                                .getSymbolAtLocation(value.name)
-                                ?.declarations?.find(
-                                    ts.isGetAccessorDeclaration,
-                                )
+                          ? resolvedSymbol(
+                                this.context.checker,
+                                value,
+                            )?.declarations?.find(ts.isGetAccessorDeclaration)
                           : undefined;
                     if (
                         (!isSupportedFunction(called) &&

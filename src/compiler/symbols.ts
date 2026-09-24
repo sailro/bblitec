@@ -168,7 +168,7 @@ export function isAbsentTypeofIdentifier(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(identifier);
+    const symbol = declaredSymbol(checker, identifier);
     if (!symbol) return true;
     if (
         (symbol.flags & ts.SymbolFlags.Alias) !== 0 ||
@@ -196,6 +196,23 @@ export function isAbsentTypeofIdentifier(
                     0,
         )
     );
+}
+
+/**
+ * The symbol a node names where it is written, an import alias NOT
+ * followed: a declaration's own symbol (a variable, parameter, function or
+ * class name), a module's symbol (its source file or a module specifier),
+ * or for a use, the binding its scope resolves. It is the identity names
+ * are compared by: a use agrees with its declaration, an imported name
+ * with its import specifier, and two distinct locals never do. A reader
+ * after the declaration a use stands for, or a member's own declaration,
+ * reads {@link resolvedSymbol}.
+ */
+export function declaredSymbol(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): ts.Symbol | undefined {
+    return checker.getSymbolAtLocation(node);
 }
 
 /** The binding an import alias stands for; any other symbol is itself. */
@@ -247,7 +264,7 @@ function isCheckerGlobal(
     identifier: ts.Identifier,
 ): boolean {
     return (
-        checker.getSymbolAtLocation(identifier) ===
+        declaredSymbol(checker, identifier) ===
         checker.resolveName(
             identifier.text,
             undefined,
@@ -384,9 +401,10 @@ export class CompilerSymbols {
         ) {
             return undefined;
         }
-        const declaration = this.checker
-            .getSymbolAtLocation(expression.name)
-            ?.declarations?.find(ts.isPropertySignature);
+        const declaration = resolvedSymbol(
+            this.checker,
+            expression,
+        )?.declarations?.find(ts.isPropertySignature);
         if (
             !declaration?.modifiers?.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
@@ -416,7 +434,7 @@ export class CompilerSymbols {
             ts.isIdentifier(parameter.name) &&
             ts.isParameterPropertyDeclaration(parameter, parameter.parent)
         ) {
-            return this.checker.getSymbolAtLocation(parameter.name) ?? resolved;
+            return declaredSymbol(this.checker, parameter.name) ?? resolved;
         }
         return resolved;
     }
@@ -438,7 +456,8 @@ export class CompilerSymbols {
         const value = this.valueSymbol(identifier);
         const declaration = value?.declarations?.[0];
         if (!value || !declaration) return false;
-        const sourceSymbol = this.checker.getSymbolAtLocation(
+        const sourceSymbol = declaredSymbol(
+            this.checker,
             declaration.getSourceFile(),
         );
         for (const exported of sourceSymbol?.exports?.values() ?? []) {
@@ -461,8 +480,10 @@ export class CompilerSymbols {
               typeOnly?: true;
           }
         | undefined {
-        const declarations =
-            this.checker.getSymbolAtLocation(identifier)?.declarations;
+        const declarations = declaredSymbol(
+            this.checker,
+            identifier,
+        )?.declarations;
         const named = declarations?.find(ts.isImportSpecifier);
         const namespace = declarations?.find(ts.isNamespaceImport);
         const clause =

@@ -35,6 +35,7 @@ import { isStringValue, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
+    declaredSymbol,
     isGlobalUndefined,
     libraryGlobal,
     type LibraryGlobal,
@@ -1221,7 +1222,7 @@ export class StaticEvaluator {
      */
     private isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
         const symbol = ts.isIdentifier(declaration.name)
-            ? this.checker.getSymbolAtLocation(declaration.name)
+            ? declaredSymbol(this.checker, declaration.name)
             : undefined;
         if (symbol === undefined) {
             return true;
@@ -1232,7 +1233,7 @@ export class StaticEvaluator {
         }
         const namesBinding = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
-            this.checker.getSymbolAtLocation(node) === symbol;
+            declaredSymbol(this.checker, node) === symbol;
         const throughBinding = (node: ts.Node): boolean =>
             (ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)) &&

@@ -33,6 +33,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
     aliasTarget,
+    declaredSymbol,
     isAbsentTypeofIdentifier,
     resolvedSymbol,
 } from "./symbols.js";
@@ -677,8 +678,9 @@ export class ExpressionLowerer {
             if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
-            const member = this.context.checker.getSymbolAtLocation(
-                unwrapped.name,
+            const member = resolvedSymbol(
+                this.context.checker,
+                unwrapped,
             )?.valueDeclaration;
             const constant =
                 member && ts.isEnumMember(member)
@@ -4063,8 +4065,8 @@ export class ExpressionLowerer {
                   : undefined;
             return tested &&
                 ts.isIdentifier(tested) &&
-                this.context.checker.getSymbolAtLocation(tested) ===
-                    this.context.checker.getSymbolAtLocation(selected)
+                declaredSymbol(this.context.checker, tested) ===
+                    declaredSymbol(this.context.checker, selected)
                 ? this.context.dataLowerer.narrowOptional(
                       value,
                       expression,

@@ -47,7 +47,7 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import { babylonPackages } from "./symbols.js";
+import { babylonPackages, declaredSymbol } from "./symbols.js";
 import { resolveFunctionDeclaration } from "./user-functions.js";
 import {
     argumentAt,
@@ -253,8 +253,8 @@ export function compileBlockLoader(
     const discriminant = unwrapLoaderExpression(statement.expression);
     if (
         !ts.isIdentifier(discriminant) ||
-        context.checker.getSymbolAtLocation(discriminant) !==
-            context.checker.getSymbolAtLocation(parameter)
+        declaredSymbol(context.checker, discriminant) !==
+            declaredSymbol(context.checker, parameter)
     ) {
         context.fail(
             statement.expression,

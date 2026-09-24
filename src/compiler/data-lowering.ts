@@ -24,8 +24,10 @@ import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     CompilerSymbols,
+    declaredSymbol,
     isGlobalUndefined,
     isNullishLiteral,
+    resolvedSymbol,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -162,7 +164,7 @@ export function isNeverResized(
     checker: ts.TypeChecker,
     name: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(name);
+    const symbol = declaredSymbol(checker, name);
     return (
         symbol !== undefined &&
         !resizedSymbols(checker, name.getSourceFile()).has(symbol)
@@ -779,7 +781,7 @@ export class DataLowerer {
         // name node itself answers `any`.
         const checker = this.context.checker;
         const symbol = ts.isPrivateIdentifier(node)
-            ? checker.getSymbolAtLocation(node)
+            ? resolvedSymbol(checker, node)
             : undefined;
         return this.context.dataTypes.fromTsType(
             symbol
@@ -1432,7 +1434,7 @@ export class DataLowerer {
         }
         const unwrapped = this.context.unwrap(expression);
         const symbol = ts.isIdentifier(unwrapped)
-            ? this.context.checker.getSymbolAtLocation(unwrapped)
+            ? resolvedSymbol(this.context.checker, unwrapped)
             : undefined;
         const declaration = symbol?.declarations?.[0] ?? unwrapped;
         let local = false;
@@ -1677,8 +1679,7 @@ export class DataLowerer {
             return undefined;
         }
         const declarations =
-            this.context.checker.getSymbolAtLocation(unwrapped)?.declarations ??
-            [];
+            resolvedSymbol(this.context.checker, unwrapped)?.declarations ?? [];
         if (declarations.length !== 1) {
             return undefined;
         }
@@ -3203,8 +3204,10 @@ export class DataLowerer {
         if (!ts.isIdentifier(indexExpression)) {
             return false;
         }
-        const indexSymbol =
-            this.context.checker.getSymbolAtLocation(indexExpression);
+        const indexSymbol = declaredSymbol(
+            this.context.checker,
+            indexExpression,
+        );
         if (!indexSymbol) {
             return false;
         }
@@ -3285,7 +3288,8 @@ export class DataLowerer {
         if (start === undefined || !Number.isInteger(start) || start < 0) {
             return undefined;
         }
-        const indexSymbol = this.context.checker.getSymbolAtLocation(
+        const indexSymbol = declaredSymbol(
+            this.context.checker,
             declaration.name,
         );
         if (!indexSymbol) {
@@ -3327,7 +3331,7 @@ export class DataLowerer {
         const unwrapped = this.context.unwrap(expression);
         return (
             ts.isIdentifier(unwrapped) &&
-            this.context.checker.getSymbolAtLocation(unwrapped) === symbol
+            declaredSymbol(this.context.checker, unwrapped) === symbol
         );
     }
 
@@ -3436,10 +3440,10 @@ export class DataLowerer {
         const a = this.context.unwrap(left);
         const b = this.context.unwrap(right);
         if (ts.isIdentifier(a) && ts.isIdentifier(b)) {
-            const symbol = this.context.checker.getSymbolAtLocation(a);
+            const symbol = declaredSymbol(this.context.checker, a);
             return (
                 symbol !== undefined &&
-                symbol === this.context.checker.getSymbolAtLocation(b)
+                symbol === declaredSymbol(this.context.checker, b)
             );
         }
         if (
@@ -3993,10 +3997,10 @@ export class DataLowerer {
         if (bound && bound.kind !== "tuple") {
             return undefined;
         }
-        const declaration =
-            this.context.checker.getSymbolAtLocation(
-                unwrapped,
-            )?.valueDeclaration;
+        const declaration = resolvedSymbol(
+            this.context.checker,
+            unwrapped,
+        )?.valueDeclaration;
         const localLiteral =
             bound?.kind === "tuple" &&
             declaration &&
@@ -5179,7 +5183,7 @@ export class DataLowerer {
         if (this.context.lookupIdentifierValue(owner)) {
             return undefined;
         }
-        const ownerSymbol = this.context.checker.getSymbolAtLocation(owner);
+        const ownerSymbol = resolvedSymbol(this.context.checker, owner);
         const declaration = ownerSymbol?.valueDeclaration;
         if (
             !declaration ||
@@ -5210,7 +5214,8 @@ export class DataLowerer {
             if (!ts.isIdentifier(loopDeclaration.name)) {
                 continue;
             }
-            const loopSymbol = this.context.checker.getSymbolAtLocation(
+            const loopSymbol = declaredSymbol(
+                this.context.checker,
                 loopDeclaration.name,
             );
             let matchedField: string | undefined;
@@ -5221,9 +5226,8 @@ export class DataLowerer {
                     !ts.isPropertyAccessExpression(target) ||
                     target.name.text !== "set" ||
                     !ts.isIdentifier(target.expression) ||
-                    this.context.checker.getSymbolAtLocation(
-                        target.expression,
-                    ) !== ownerSymbol ||
+                    declaredSymbol(this.context.checker, target.expression) !==
+                        ownerSymbol ||
                     node.arguments.length !== 2
                 ) {
                     return false;
@@ -5233,11 +5237,10 @@ export class DataLowerer {
                 if (
                     ts.isPropertyAccessExpression(key) &&
                     ts.isIdentifier(key.expression) &&
-                    this.context.checker.getSymbolAtLocation(key.expression) ===
+                    declaredSymbol(this.context.checker, key.expression) ===
                         loopSymbol &&
                     ts.isIdentifier(value) &&
-                    this.context.checker.getSymbolAtLocation(value) ===
-                        loopSymbol
+                    declaredSymbol(this.context.checker, value) === loopSymbol
                 ) {
                     matchedField = key.name.text;
                     return true;
@@ -8411,11 +8414,11 @@ export class DataLowerer {
                 );
                 continue;
             }
-            const symbol = ts.isPropertyAccessExpression(name)
-                ? this.context.checker.getSymbolAtLocation(name.name)
-                : ts.isElementAccessExpression(name)
-                  ? this.context.checker.getSymbolAtLocation(name)
-                  : undefined;
+            const symbol =
+                ts.isPropertyAccessExpression(name) ||
+                ts.isElementAccessExpression(name)
+                    ? resolvedSymbol(this.context.checker, name)
+                    : undefined;
             if (
                 symbol?.declarations?.some(
                     (declaration) =>

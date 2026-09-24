@@ -10374,7 +10374,7 @@ class Compiler implements LoweringServices {
             )
                 return;
             const properties = ts.isPropertyAccessExpression(node)
-                ? [this.checker.getSymbolAtLocation(node.name)]
+                ? [resolvedSymbol(this.checker, node)]
                 : ts.isElementAccessExpression(node)
                   ? this.checker
                         .getTypeAtLocation(node.expression)

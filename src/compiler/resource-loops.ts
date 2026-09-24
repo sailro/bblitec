@@ -16,7 +16,9 @@ import {
     aliasTarget,
     declarationInDefaultLibrary,
     declaredInDomLibrary,
+    declaredSymbol,
     libraryGlobal,
+    resolvedSymbol,
     type CompilerSymbols,
 } from "./symbols.js";
 import {
@@ -192,7 +194,7 @@ export function walkReachedLoopNodes(
         const value = unwrapExpression(expression);
         if (isSupportedFunction(value)) return value;
         if (!ts.isIdentifier(value)) return undefined;
-        const symbol = context.checker.getSymbolAtLocation(value);
+        const symbol = declaredSymbol(context.checker, value);
         if (symbol && callbacks.has(symbol)) return callbacks.get(symbol);
         const target = symbol && aliasTarget(context.checker, symbol);
         if (
@@ -240,7 +242,7 @@ export function walkReachedLoopNodes(
                     : undefined;
                 const symbol =
                     callee && ts.isIdentifier(callee)
-                        ? context.checker.getSymbolAtLocation(callee)
+                        ? declaredSymbol(context.checker, callee)
                         : undefined;
                 const called = invocation
                     ? symbol && callbacks.has(symbol)
@@ -270,7 +272,8 @@ export function walkReachedLoopNodes(
                                     .getCallSignatures().length === 0
                             )
                                 continue;
-                            const symbol = context.checker.getSymbolAtLocation(
+                            const symbol = declaredSymbol(
+                                context.checker,
                                 parameter.name,
                             );
                             if (!symbol) continue;
@@ -317,8 +320,9 @@ export function walkReachedLoopNodes(
                     }
                 }
                 if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of context.checker.getSymbolAtLocation(
-                        node.name,
+                    for (const declaration of resolvedSymbol(
+                        context.checker,
+                        node,
                     )?.declarations ?? []) {
                         if (
                             ts.isGetAccessorDeclaration(declaration) ||
@@ -396,7 +400,7 @@ export function requiresStaticDataIteration(
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)
-                    ? context.checker.getSymbolAtLocation(member.name)
+                    ? resolvedSymbol(context.checker, member)
                     : undefined;
                 return symbol !== undefined && declaredInDomLibrary(symbol);
             })
@@ -405,9 +409,9 @@ export function requiresStaticDataIteration(
             return false;
         }
         const symbol = ts.isPropertyAccessExpression(node)
-            ? context.checker.getSymbolAtLocation(node.name)
+            ? resolvedSymbol(context.checker, node)
             : ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-              ? context.checker.getSymbolAtLocation(node.expression)
+              ? resolvedSymbol(context.checker, node.expression)
               : undefined;
         if (
             symbol &&
@@ -1144,14 +1148,12 @@ export function parameterizedResourceLoop(
         }
         if (
             ts.isPropertyAccessExpression(node) &&
-            context.checker
-                .getSymbolAtLocation(node.name)
-                ?.declarations?.some(
-                    (declaration) =>
-                        (ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)) &&
-                        declaration.body !== undefined,
-                )
+            resolvedSymbol(context.checker, node)?.declarations?.some(
+                (declaration) =>
+                    (ts.isGetAccessorDeclaration(declaration) ||
+                        ts.isSetAccessorDeclaration(declaration)) &&
+                    declaration.body !== undefined,
+            )
         ) {
             safe = false;
             return;

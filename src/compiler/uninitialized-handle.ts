@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { libraryGlobal } from "./symbols.js";
+import { declaredSymbol, libraryGlobal, resolvedSymbol } from "./symbols.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
 export function inferPromiseRejectStorage(
@@ -9,7 +9,7 @@ export function inferPromiseRejectStorage(
 ): DataType | undefined {
     if (declaration.initializer || !ts.isIdentifier(declaration.name))
         return undefined;
-    const symbol = checker.getSymbolAtLocation(declaration.name);
+    const symbol = declaredSymbol(checker, declaration.name);
     if (!symbol) return undefined;
     let found = false;
     let compatible = true;
@@ -19,10 +19,10 @@ export function inferPromiseRejectStorage(
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             ts.isIdentifier(node.left) &&
-            checker.getSymbolAtLocation(node.left) === symbol
+            declaredSymbol(checker, node.left) === symbol
         ) {
             const rhs = ts.isIdentifier(node.right)
-                ? checker.getSymbolAtLocation(node.right)
+                ? resolvedSymbol(checker, node.right)
                 : undefined;
             const parameter = rhs?.valueDeclaration;
             const executor =
@@ -69,7 +69,7 @@ export function inferUninitializedHandle(
         !ts.isIdentifier(declaration.name)
     )
         return undefined;
-    const symbol = checker.getSymbolAtLocation(declaration.name);
+    const symbol = declaredSymbol(checker, declaration.name);
     if (!symbol) return undefined;
     let inferred: (DataType & { kind: "handle" }) | undefined;
     let writes = 0;
@@ -80,7 +80,7 @@ export function inferUninitializedHandle(
         if (
             ts.isIdentifier(node) &&
             node !== declaration.name &&
-            checker.getSymbolAtLocation(node) === symbol
+            declaredSymbol(checker, node) === symbol
         ) {
             const assignment =
                 ts.isBinaryExpression(node.parent) &&

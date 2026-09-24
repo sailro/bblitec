@@ -3,7 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
-import { declaredInDefaultLibrary } from "./symbols.js";
+import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
 
 type Context = Pick<
     LoweringServices,
@@ -47,7 +47,7 @@ export class WindowProperties {
             alias?.domEventTargetCpp !== "bbl::DomEventTarget::window()"
         )
             return undefined;
-        const symbol = context.checker.getSymbolAtLocation(node.name);
+        const symbol = resolvedSymbol(context.checker, node);
         if (declaredInDefaultLibrary(symbol)) return undefined;
         return node;
     }

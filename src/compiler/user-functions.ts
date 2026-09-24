@@ -49,6 +49,7 @@ import {
 import {
     CompilerSymbols,
     declarationInDefaultLibrary,
+    declaredSymbol,
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
@@ -126,7 +127,7 @@ function dataArgumentMayRunCode(
                 return true;
             }
             if (!ts.isPropertyAccessExpression(node)) return false;
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = resolvedSymbol(checker, node);
             return (
                 !symbol ||
                 (symbol.declarations ?? []).some((declaration) =>
@@ -430,7 +431,7 @@ export function parameterIsMutated(
     parameter: ts.Identifier,
     active = new EmissionSet<ts.Symbol>(),
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(parameter);
+    const symbol = declaredSymbol(checker, parameter);
     if (!symbol || !declaration.body) return false;
     const rootQuery = active.size === 0;
     let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
@@ -444,7 +445,7 @@ export function parameterIsMutated(
     const symbols = new CompilerSymbols(checker);
     const mutated = aliasedMutationScan(
         parameter,
-        (name) => checker.getSymbolAtLocation(name),
+        (name) => declaredSymbol(checker, name),
         {
             aliasingInitializer: (initializer, scan) => {
                 const root = rootIdentifier(unwrapExpression(initializer));
@@ -511,7 +512,7 @@ export function parameterIsReadOnly(
     parameter: ts.Identifier,
     active = new EmissionSet<ts.Symbol>(),
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(parameter);
+    const symbol = declaredSymbol(checker, parameter);
     if (!symbol || !declaration.body) return false;
     const rootQuery = active.size === 0;
     let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
@@ -524,8 +525,7 @@ export function parameterIsReadOnly(
     active.add(symbol);
     const aliases = new EmissionSet<ts.Symbol>([symbol]);
     const namesParameter = (node: ts.Node): boolean =>
-        ts.isIdentifier(node) &&
-        aliases.has(checker.getSymbolAtLocation(node)!);
+        ts.isIdentifier(node) && aliases.has(declaredSymbol(checker, node)!);
     const containsParameter = (node: ts.Node): boolean =>
         someAnalysisNode(node, namesParameter);
     const rootNamesParameter = (expression: ts.Expression): boolean => {
@@ -576,7 +576,7 @@ export function parameterIsReadOnly(
             rootNamesParameter(node.initializer) &&
             typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
         ) {
-            const alias = checker.getSymbolAtLocation(node.name);
+            const alias = declaredSymbol(checker, node.name);
             if (alias) aliases.add(alias);
             return "skip";
         }
@@ -666,8 +666,7 @@ function returnedValueCanMove(
     // all, which is what keeps `Math.hypot(x, y)` from reading as a write.
     const ownFile = declaration.getSourceFile();
     const namesSharedBinding = (identifier: ts.Identifier): boolean => {
-        const declarations =
-            checker.getSymbolAtLocation(identifier)?.declarations;
+        const declarations = resolvedSymbol(checker, identifier)?.declarations;
         if (!declarations || declarations.length === 0) return false;
         return declarations.some(
             (node) =>
@@ -2547,7 +2546,7 @@ export class UserFunctionLowerer {
                 }
             }
             const symbol = ts.isIdentifier(parameter.name)
-                ? this.checker.getSymbolAtLocation(parameter.name)
+                ? declaredSymbol(this.checker, parameter.name)
                 : undefined;
             const loopBound =
                 callSiteEffects &&
@@ -2563,8 +2562,7 @@ export class UserFunctionLowerer {
                             node.condition,
                             (part) =>
                                 ts.isIdentifier(part) &&
-                                this.checker.getSymbolAtLocation(part) ===
-                                    symbol,
+                                declaredSymbol(this.checker, part) === symbol,
                         ),
                 );
             const tupleFacts =
@@ -2921,7 +2919,7 @@ export class UserFunctionLowerer {
                 if (!type) {
                     const value = entry.captured[index]!;
                     const symbol = ts.isIdentifier(parameter.name)
-                        ? this.checker.getSymbolAtLocation(parameter.name)
+                        ? declaredSymbol(this.checker, parameter.name)
                         : undefined;
                     const stableHandle =
                         isHandleKind(value.kind) &&
@@ -2939,9 +2937,8 @@ export class UserFunctionLowerer {
                                 target = unwrapExpression(target);
                                 if (ts.isIdentifier(target))
                                     return (
-                                        this.checker.getSymbolAtLocation(
-                                            target,
-                                        ) === symbol
+                                        declaredSymbol(this.checker, target) ===
+                                        symbol
                                     );
                                 if (ts.isArrayLiteralExpression(target))
                                     return target.elements.some(rebinds);
@@ -4517,11 +4514,12 @@ export class UserFunctionLowerer {
         }
         const successStatements = shape.tryStatements;
         const constructed = shape.returned;
-        const constructedSymbol = this.checker.getSymbolAtLocation(
+        const constructedSymbol = declaredSymbol(
+            this.checker,
             constructed.expression,
         );
         const ownerSymbol = owner.name
-            ? this.checker.getSymbolAtLocation(owner.name)
+            ? declaredSymbol(this.checker, owner.name)
             : undefined;
         if (!constructedSymbol || constructedSymbol !== ownerSymbol) {
             return undefined;
@@ -4548,7 +4546,8 @@ export class UserFunctionLowerer {
                         ts.isCallExpression(call) &&
                         libraryGlobal(this.checker, call.expression) === "fetch"
                     ) {
-                        const symbol = this.checker.getSymbolAtLocation(
+                        const symbol = declaredSymbol(
+                            this.checker,
                             declaration.name,
                         );
                         if (symbol) packagedFetchResponses.add(symbol);
@@ -4571,7 +4570,7 @@ export class UserFunctionLowerer {
                 ) {
                     const response = unwrapExpression(tested.expression);
                     const symbol = ts.isIdentifier(response)
-                        ? this.checker.getSymbolAtLocation(response)
+                        ? declaredSymbol(this.checker, response)
                         : undefined;
                     packagedFetchMiss =
                         symbol !== undefined &&
