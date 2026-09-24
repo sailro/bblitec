@@ -41,6 +41,33 @@ test("a switch a clause leaves by break keeps what follows it", () => {
     }
 });
 
+test("an endless loop left only by return needs no fallthrough", () => {
+    const result = compileSource(`
+        function firstAbove(values: number[], limit: number): number {
+            let index = 0;
+            while (true) {
+                if (index >= values.length) return -1;
+                if (values[index]! > limit) return index;
+                index++;
+            }
+        }
+        if (firstAbove([1, 5, Date.now()], 4) !== 1) throw new Error("above");
+    `);
+    assert.doesNotMatch(result.cpp, fallthrough);
+    const leaving = compileSource(`
+        function count(values: number[]): number {
+            let index = 0;
+            for (;;) {
+                if (index >= values.length) break;
+                index++;
+            }
+            return index;
+        }
+        if (count([1, Date.now()]) !== 2) throw new Error("count");
+    `);
+    assert.match(leaving.cpp, /return v_\w*index;/);
+});
+
 test("an exhaustive switch without a default keeps the fallthrough", () => {
     const result = compileSource(`
         type Side = "left" | "right";

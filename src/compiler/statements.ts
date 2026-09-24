@@ -3863,6 +3863,23 @@ function terminatesFlow(
                     )))
         );
     }
+    const endlessLoop =
+        ts.isWhileStatement(statement) || ts.isDoStatement(statement)
+            ? statement.expression.kind === ts.SyntaxKind.TrueKeyword
+                ? statement
+                : undefined
+            : ts.isForStatement(statement) &&
+                (statement.condition === undefined ||
+                    statement.condition.kind === ts.SyntaxKind.TrueKeyword)
+              ? statement
+              : undefined;
+    if (endlessLoop) {
+        // `while (true)` / `for (;;)` is left only by a `break`; without one
+        // the code after it never runs.
+        return !enclosingLoopControl(endlessLoop.statement, {
+            continues: false,
+        });
+    }
     if (ts.isSwitchStatement(statement)) {
         // Every path leaves when a `default` exists and each clause ends
         // in control that leaves: an empty clause falls into the next one,
