@@ -105,7 +105,8 @@ destination-rectangle canvas drawImage and bounded fillText. Offscreen pixels ar
 Closed canvas producers can bake getImageData; mutable module/engine inputs refuse.
 
 The primary canvas is the element the program passes to createEngine, found by the id it is looked up
-by (the host document's `renderCanvas` otherwise). Engine-less renderCanvas presents through Window/input/RAF. That primary canvas cannot also own a
+by (the host document's `renderCanvas` otherwise); a program that looks it up by several ids refuses.
+An engine-less primary canvas presents through Window/input/RAF under that id and cannot also own a
 source-created GPU engine. Partial clear, source-rectangle blits, general transforms/clipping/shaping
 and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 
