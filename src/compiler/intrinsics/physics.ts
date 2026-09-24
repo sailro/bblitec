@@ -65,10 +65,8 @@ export interface PhysicsIntrinsicContext
             | "compileBoolean"
             | "castNumber"
             | "vec3FromRecord"
-            | "materializeEscapingValue"
-            | "pinValueToTemporary"
+            | "bindings"
             | "readResolvedProperty"
-            | "bindDataTuple"
             | "expectSameEngine"
             | "expectObjectLiteral"
             | "compileFrameCallback"
@@ -201,7 +199,7 @@ function nullableShapeParameter(
                 "Optional physics geometry values must retain their numeric or vector type.",
             );
         }
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             value,
             "physics_optional_vector",
         );
@@ -222,7 +220,7 @@ function nullableShapeParameter(
         value.dataType?.kind === "struct" &&
         context.dataTypes.isReferenceStruct(value.dataType.name)
     ) {
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             value,
             "physics_optional_vector",
         );
@@ -269,7 +267,7 @@ function pinRayNumber(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
 ): string {
-    return context.pinValueToTemporary(
+    return context.bindings.pinValueToTemporary(
         {
             kind: "number",
             cpp: context.compileNumber(expression, "double"),
@@ -338,7 +336,7 @@ function compileRayPointArgument(
         });
         return temporary;
     }
-    let value = context.materializeEscapingValue(
+    let value = context.bindings.materializeEscapingValue(
         context.compileValue(point),
         "ray_point",
         point,
@@ -346,7 +344,7 @@ function compileRayPointArgument(
     if (isDataTuple(value, 3)) {
         // Tuple copies retain their shared element storage, just as reference
         // structs retain their owner below; later alias writes stay visible.
-        const owner = context.bindDataTuple(value, 3, "ray_point");
+        const owner = context.bindings.bindDataTuple(value, 3, "ray_point");
         return `bbl::Vec3d{${tupleComponents(owner, 3, "double").join(", ")}}`;
     }
     if (value.kind === "tuple" && value.tupleElements?.length === 3) {
@@ -368,7 +366,11 @@ function compileRayPointArgument(
                 "Retained physics ray point objects require a native reference representation.",
             );
         }
-        value = context.pinValueToTemporary(value, "ray_point_owner", point);
+        value = context.bindings.pinValueToTemporary(
+            value,
+            "ray_point_owner",
+            point,
+        );
     }
     return context.vec3FromRecord(value, point, "double");
 }
@@ -391,7 +393,7 @@ function compileShapeParameters(
     );
     if (record.kind === "data" && record.dataType?.kind === "struct") {
         const type = record.dataType;
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             record,
             "physics_shape_parameters",
         );
@@ -1232,7 +1234,7 @@ function compileAddPhysicsShapeChildFromParent(
 ): Value | undefined {
     context.expectArgumentCount(call, 5, 5);
     const values = call.arguments.map((argument) =>
-        context.pinValueToTemporary(
+        context.bindings.pinValueToTemporary(
             context.compileValue(argument),
             "shape_child_arg",
             argument,
@@ -1640,7 +1642,10 @@ function compileShapeProximity(
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
-    const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
+    const worldCpp = context.bindings.pinValueToTemporary(
+        world,
+        "query_world",
+    ).cpp;
     const argument = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(argument)) {
         context.fail(
@@ -1678,7 +1683,8 @@ function compileShapeProximity(
             context.expectSameEngine(world, value, expression);
             fields.set(
                 name,
-                context.pinValueToTemporary(value, `query_${name}`).cpp,
+                context.bindings.pinValueToTemporary(value, `query_${name}`)
+                    .cpp,
             );
         } else if (name === "rotation") {
             const rotation = context.unwrap(expression);
@@ -1717,7 +1723,7 @@ function compileShapeProximity(
         } else if (name === "shouldHitTriggers") {
             fields.set(
                 name,
-                context.pinValueToTemporary(
+                context.bindings.pinValueToTemporary(
                     {
                         kind: "boolean",
                         cpp: context.compileBoolean(expression),
@@ -1858,7 +1864,7 @@ function compilePhysicsRaycast(
                         ? context.compileBoolean(expression)
                         : context.compileNumber(expression, "double");
             }
-            const snapshot = context.pinValueToTemporary(
+            const snapshot = context.bindings.pinValueToTemporary(
                 { kind, cpp },
                 `ray_${name}`,
             ).cpp;

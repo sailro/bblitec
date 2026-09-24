@@ -478,7 +478,10 @@ export function compileDataMethodCall(
             // Receiver elements are evaluated before either endpoint, even
             // when the selected interval later excludes them.
             const elements = tupleOwnerElements.map((value) =>
-                lowerer.context.pinValueToTemporary(value, "slice_member"),
+                lowerer.context.bindings.pinValueToTemporary(
+                    value,
+                    "slice_member",
+                ),
             );
             const begin = call.arguments[0]
                 ? lowerer.context.compileValue(call.arguments[0])
@@ -677,7 +680,7 @@ export function compileDataMethodCall(
                     dynamicOwner,
                 ];
                 return storedCallback
-                    ? lowerer.context.pinValueToTemporary(
+                    ? lowerer.context.bindings.pinValueToTemporary(
                           lowerer.compileFunctionValueCall(
                               storedCallback,
                               arguments_,
@@ -699,7 +702,7 @@ export function compileDataMethodCall(
     // keeps an omitted method endpoint from constructing it again for size().
     let constructedOwner: Value | undefined;
     if (ts.isNewExpression(ownerExpression) && dynamicOwner?.kind === "data") {
-        constructedOwner = lowerer.context.pinValueToTemporary(
+        constructedOwner = lowerer.context.bindings.pinValueToTemporary(
             dynamicOwner,
             "constructed_receiver",
             ownerExpression,
@@ -1991,7 +1994,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
                       ...(index < lastEffect ? { cpp: prepared } : {}),
                   };
                   delete snapshot.nativeBinding;
-                  const pinned = lowerer.context.pinValueToTemporary(
+                  const pinned = lowerer.context.bindings.pinValueToTemporary(
                       snapshot,
                       "array_handle",
                       argument,
@@ -2796,7 +2799,8 @@ function compileStringDataMethod(
                 value = { ...value };
                 delete value.staticString;
             }
-            return lowerer.context.pinValueToTemporary(value, label).cpp;
+            return lowerer.context.bindings.pinValueToTemporary(value, label)
+                .cpp;
         };
         const source = snapshot(narrowed, "replace_source", argumentsMayChange);
         const pattern = lowerer.context.compileValue(argumentAt(call, 0));

@@ -165,7 +165,6 @@ interface UiProjectionContext extends Pick<
     | "isInRuntimeControlFlow"
     | "bindings"
     | "options"
-    | "pinValueToTemporary"
     | "probeEmission"
     | "reachFeature"
     | "registerAsset"
@@ -329,7 +328,7 @@ export class UiProjection {
                     return undefined;
                 const selected = { ...narrowed };
                 delete selected.nativeBinding;
-                const snapshot = this.context.pinValueToTemporary(
+                const snapshot = this.context.bindings.pinValueToTemporary(
                     selected,
                     "event_target",
                     expression,
@@ -413,7 +412,7 @@ export class UiProjection {
                 return asElement(
                     value?.kind === "data" &&
                         value.dataType?.kind === "optional"
-                        ? this.context.pinValueToTemporary(
+                        ? this.context.bindings.pinValueToTemporary(
                               value,
                               "ui_lookup",
                               owner,
@@ -4022,7 +4021,7 @@ export class UiProjection {
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, site);
         const { nativeBinding, ...receiver } = element;
-        const styleElement = this.context.pinValueToTemporary(
+        const styleElement = this.context.bindings.pinValueToTemporary(
             receiver,
             "style_receiver",
         );

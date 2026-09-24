@@ -45,7 +45,6 @@ interface JsonBridgeContext extends Pick<
     | "compileNumber"
     | "conditions"
     | "castNumber"
-    | "pinValueToTemporary"
     | "cppString"
     | "reachFeature"
     | "reachJsData"
@@ -134,13 +133,16 @@ export function compileJsonElementRead(
         | "dataTypes"
         | "cppString"
         | "fail"
-        | "pinValueToTemporary"
+        | "bindings"
         | "compileValue"
     >,
     owner: Value,
     index: ts.Expression,
 ): Value {
-    const receiver = context.pinValueToTemporary(owner, "json_receiver");
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "json_receiver",
+    );
     const key = context.compileValue(index);
     return {
         ...jsonValue(

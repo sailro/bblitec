@@ -60,7 +60,7 @@ interface AudioCallContext
             | "hoistForwardCallbackBindings"
             | "compilePlatformCallback"
             | "platformEventCallbackIdentity"
-            | "pinValueToTemporary"
+            | "bindings"
             | "emitDiscardedValue"
         > {}
 
@@ -505,7 +505,7 @@ export function compileAudioMethodCall(
                     );
                 const selected = { ...receiver };
                 delete selected.nativeBinding;
-                const target = context.pinValueToTemporary(
+                const target = context.bindings.pinValueToTemporary(
                     selected,
                     "audio_event_target",
                     callee.expression,
@@ -533,7 +533,7 @@ export function compileAudioMethodCall(
                         delete value.nativeBinding;
                         const snapshot =
                             value.kind === "data"
-                                ? context.pinValueToTemporary(
+                                ? context.bindings.pinValueToTemporary(
                                       value,
                                       "audio_event_callback",
                                       callback,

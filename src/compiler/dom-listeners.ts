@@ -24,7 +24,7 @@ type Context = Pick<
     | "dataTypes"
     | "hoistForwardCallbackBindings"
     | "compilePlatformCallback"
-    | "pinValueToTemporary"
+    | "bindings"
     | "cppString"
     | "emit"
     | "emitDiscardedValue"
@@ -170,14 +170,14 @@ export function listenerOptions(
 }
 
 function pinDetached(
-    context: Pick<Context, "pinValueToTemporary">,
+    context: Pick<Context, "bindings">,
     value: Value,
     label: string,
     node: ts.Expression,
 ): Value {
     const snapshot = { ...value };
     delete snapshot.nativeBinding;
-    return context.pinValueToTemporary(snapshot, label, node);
+    return context.bindings.pinValueToTemporary(snapshot, label, node);
 }
 
 /** One listener path for native DOM identities; error/visibility/file services

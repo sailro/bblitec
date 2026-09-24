@@ -52,7 +52,6 @@ interface TextSurfaceContext extends Pick<
     | "bindings"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "pinValueToTemporary"
     | "emit"
     | "expectKind"
     | "fail"
@@ -313,7 +312,7 @@ export function compileTextMutation(
     ) {
         const vector = ownerValue(context, node.expression.expression);
         if (!vector || vector.kind !== "text-vector") return undefined;
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             vector,
             "text_owner",
             node.expression.expression,
@@ -358,7 +357,7 @@ export function compileTextMutation(
             left,
             "Computed text property writes are not represented.",
         );
-    const owner = context.pinValueToTemporary(
+    const owner = context.bindings.pinValueToTemporary(
         value,
         "text_owner",
         left.expression,

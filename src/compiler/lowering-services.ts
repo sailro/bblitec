@@ -809,22 +809,6 @@ export interface LoweringServices {
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): Value;
-    materializeEscapingValue(
-        value: Value,
-        label: string,
-        node?: ts.Expression,
-    ): Value;
-    pinValueToTemporary(
-        value: Value,
-        label: string,
-        node?: ts.Expression,
-    ): Value;
-    bindDataTuple(
-        value: Value,
-        arity: number,
-        label?: string,
-        initializerBoundary?: number,
-    ): string;
     compileCallbackWithValues(
         declaration:
             | ts.Identifier

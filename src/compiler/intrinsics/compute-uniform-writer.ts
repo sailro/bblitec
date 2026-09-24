@@ -53,7 +53,7 @@ export function compileComputeUniformWriterIntrinsic(
                 input,
                 "Uniform vector and matrix setters require retained numeric arrays.",
             );
-        const retained = context.pinValueToTemporary(
+        const retained = context.bindings.pinValueToTemporary(
             value,
             "uniform_elements",
             input,

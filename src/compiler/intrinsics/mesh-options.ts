@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap, EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 // Mesh option lowering: the size arguments of the primitive builders.
@@ -35,8 +36,10 @@ export interface MeshOptionContext
             | "expectStaticArrayLiteral"
             | "objectProperty"
             | "compileNumber"
-            | "pinValueToTemporary"
-        > {}
+            | "bindings"
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * The option names each builder accepts, spelled once.
@@ -69,7 +72,7 @@ export function compileBoxOptions(
     const number = (value: ts.Expression): string => {
         const cpp = context.compileNumber(value, precision);
         if (precision === "float") return cpp;
-        return context.pinValueToTemporary(
+        return context.bindings.pinValueToTemporary(
             { kind: "number", cpp },
             "box_dimension",
         ).cpp;

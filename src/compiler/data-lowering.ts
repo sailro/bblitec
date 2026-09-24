@@ -184,8 +184,6 @@ export interface DataLoweringContext
             | "dataTypes"
             | "classLowerer"
             | "compileValue"
-            | "pinValueToTemporary"
-            | "materializeEscapingValue"
             | "emitDiscardedValue"
             | "compileNumber"
             | "castNumber"
@@ -1108,7 +1106,7 @@ export class DataLowerer {
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
             const selected = ts.isCallExpression(access)
-                ? this.context.pinValueToTemporary(
+                ? this.context.bindings.pinValueToTemporary(
                       owner,
                       "optional_chain",
                       access.expression,
@@ -1180,7 +1178,7 @@ export class DataLowerer {
         let selected: Value | undefined;
         const selectedLines = this.context.captureEmittedLines(() => {
             if (snapshotPresentOwner) {
-                presentOwner = this.context.pinValueToTemporary(
+                presentOwner = this.context.bindings.pinValueToTemporary(
                     presentOwner,
                     "optional_receiver",
                     ts.isCallExpression(access) ? access.expression : undefined,
@@ -1899,7 +1897,7 @@ export class DataLowerer {
         // a flag another source supplied selects the value once already.
         const left =
             computed.ownedCpp !== undefined
-                ? this.context.pinValueToTemporary(
+                ? this.context.bindings.pinValueToTemporary(
                       computed,
                       "nullish",
                       expression.left,
@@ -1909,7 +1907,7 @@ export class DataLowerer {
                     computed.optionalFoundCpp ===
                         this.referencePresence(computed.cpp) &&
                     !cppIdentifierPattern.test(computed.cpp)
-                  ? this.context.pinValueToTemporary(
+                  ? this.context.bindings.pinValueToTemporary(
                         computed,
                         "nullish",
                         expression.left,
@@ -1933,7 +1931,10 @@ export class DataLowerer {
                 : `([&]() -> ${this.context.dataTypes.cppType(type)} {\n${lines.join("\n")}\nreturn ${cpp};\n}())`;
         };
         if (isJsonValue(left)) {
-            const value = this.context.pinValueToTemporary(left, "nullish");
+            const value = this.context.bindings.pinValueToTemporary(
+                left,
+                "nullish",
+            );
             const type: DataType = { kind: "json" };
             const fallback = fallbackForSink(type);
             return this.leafValue(
@@ -2117,7 +2118,7 @@ export class DataLowerer {
                         : {}),
                 };
             }
-            const temp = this.context.pinValueToTemporary(
+            const temp = this.context.bindings.pinValueToTemporary(
                 left,
                 "nullish",
                 expression.left,
@@ -5604,7 +5605,7 @@ export class DataLowerer {
             }
             // Constructor arguments evaluate left-to-right, including an
             // owner or numeric expression that changes another binding.
-            const buffer = this.context.pinValueToTemporary(
+            const buffer = this.context.bindings.pinValueToTemporary(
                 source,
                 "view_buffer",
                 unwrapped,
@@ -5633,7 +5634,7 @@ export class DataLowerer {
             // record retains its final element as a delayed expression.
             // Capturing that view also retains its backing buffer without
             // exposing the constructor's temporary arguments to a closure.
-            return this.context.pinValueToTemporary(
+            return this.context.bindings.pinValueToTemporary(
                 {
                     kind: "data",
                     cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
@@ -7480,7 +7481,7 @@ export class DataLowerer {
 
     /** String-valued logical operators keep the selected value and a lazy RHS. */
     public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
-        const left = this.context.pinValueToTemporary(
+        const left = this.context.bindings.pinValueToTemporary(
             this.context.compileValue(expression.left),
             "logical_left",
             expression.left,
@@ -7685,7 +7686,7 @@ export class DataLowerer {
             return false;
         }
         if (isJsonRootedExpression(this.context, left.expression)) {
-            const owner = this.context.pinValueToTemporary(
+            const owner = this.context.bindings.pinValueToTemporary(
                 this.context.compileValue(left.expression),
                 "assignment_owner",
             );
@@ -7697,7 +7698,7 @@ export class DataLowerer {
                     );
                 const key = ts.isPropertyAccessExpression(left)
                     ? this.context.cppString(left.name.text)
-                    : this.context.pinValueToTemporary(
+                    : this.context.bindings.pinValueToTemporary(
                           {
                               kind: "string",
                               cpp: compileJsonPropertyKey(
@@ -8303,7 +8304,7 @@ export class DataLowerer {
             } else {
                 // Keep the RHS identity across writes to the assignment
                 // targets, reusing an already stable result when possible.
-                value = this.context.pinValueToTemporary(
+                value = this.context.bindings.pinValueToTemporary(
                     value,
                     "destructure_source",
                 );
@@ -9153,11 +9154,11 @@ export class DataLowerer {
             (ts.isCallExpression(left) || ts.isCallExpression(right))
         ) {
             const dynamic = this.context.probeEmission(() => {
-                const a = this.context.pinValueToTemporary(
+                const a = this.context.bindings.pinValueToTemporary(
                     this.context.compileValue(left),
                     "comparison_left",
                 );
-                const b = this.context.pinValueToTemporary(
+                const b = this.context.bindings.pinValueToTemporary(
                     this.context.compileValue(right),
                     "comparison_right",
                 );

@@ -14,7 +14,7 @@ export interface LightIntrinsicContext
             | "compileNumber"
             | "requireDefaultEngine"
             | "requireEngine"
-            | "pinValueToTemporary"
+            | "bindings"
         > {}
 
 export function compileLightIntrinsic(
@@ -26,7 +26,7 @@ export function compileLightIntrinsic(
         case "setLightIntensity":
         case "setLightDiffuseColor": {
             context.expectArgumentCount(call, 2, 2);
-            const light = context.pinValueToTemporary(
+            const light = context.bindings.pinValueToTemporary(
                 context.compileValue(argumentAt(call, 0)),
                 "light_owner",
                 call,

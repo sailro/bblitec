@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -46,13 +47,15 @@ export interface SpriteIntrinsicContext
             | "registerSpriteAtlasAsset"
             | "probePixelsAsset"
             | "allocateTemporaryCppName"
-            | "bindDataTuple"
+            | "bindings"
             | "compileSpriteAtlas"
             | "sceneManifest"
             | "emit"
             | "propertyName"
             | "fail"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /**
  * The pin's billboard blend descriptors are pure-data exports a scene
@@ -411,7 +414,7 @@ function tupleOption(
         // Bound before its lanes are read, because `tupleComponents` reads
         // the base once per lane -- the rule `bindDataTuple` states.
         return tupleComponents(
-            context.bindDataTuple(value, arity, `sprite_${name}`),
+            context.bindings.bindDataTuple(value, arity, `sprite_${name}`),
             arity,
         );
     }

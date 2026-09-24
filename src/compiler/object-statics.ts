@@ -18,7 +18,6 @@ export type ObjectStaticContext = Pick<
     | "allocateTemporaryCppName"
     | "emit"
     | "emitDiscardedValue"
-    | "pinValueToTemporary"
     | "isInRuntimeControlFlow"
     | "bindings"
     | "lookupIdentifierValue"
@@ -238,7 +237,10 @@ function compileObjectEntries(
             tupleElements: [
                 staticStringValue(key, (text) => context.cppString(text)),
                 value.cpp && value.kind !== "callback"
-                    ? context.pinValueToTemporary(value, "object_entry")
+                    ? context.bindings.pinValueToTemporary(
+                          value,
+                          "object_entry",
+                      )
                     : value,
             ],
         })),

@@ -11,11 +11,7 @@ export interface GpuTaskTimingIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            | "dataLowerer"
-            | "dataTypes"
-            | "fail"
-            | "reachJsData"
-            | "pinValueToTemporary"
+            "dataLowerer" | "dataTypes" | "fail" | "reachJsData" | "bindings"
         > {}
 
 /** Convert PAL timestamp results to the reached, pinned public record types. */
@@ -92,7 +88,11 @@ export function compileGpuTaskTimingIntrinsic(
     if (!engine.ownedEngineCpp) throw new ApplicationRealmRequired();
     context.reachFeature("backend:sdl", call);
     context.reachFeature("engine:gpu-task-timing", call);
-    const pinned = context.pinValueToTemporary(engine, "timing_engine", call);
+    const pinned = context.bindings.pinValueToTemporary(
+        engine,
+        "timing_engine",
+        call,
+    );
     const state = `bbl::pal::gpu_task_timing_state(${pinned.cpp})`;
     if (name === "isRenderTaskGpuTimingSupported")
         return booleanValue(

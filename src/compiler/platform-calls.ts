@@ -112,7 +112,6 @@ interface PlatformCallContext
             | "bindings"
             | "objectProperty"
             | "options"
-            | "pinValueToTemporary"
             | "emitDiscardedValue"
             | "reachFeature"
             | "reachJsData"
@@ -1599,7 +1598,7 @@ export class PlatformCalls {
                 node: ts.Expression,
             ): Value => {
                 const { nativeBinding, ...expression } = value;
-                return this.context.pinValueToTemporary(
+                return this.context.bindings.pinValueToTemporary(
                     expression,
                     label,
                     node,

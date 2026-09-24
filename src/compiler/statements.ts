@@ -101,7 +101,6 @@ export interface StatementLoweringContext extends Pick<
     | "meshTransformDirtyEntry"
     | "captureEmittedLines"
     | "canShareFunctionBody"
-    | "pinValueToTemporary"
     | "useNativeValue"
     | "emitFinallyGuard"
     | "emitEngineFinally"
@@ -110,7 +109,6 @@ export interface StatementLoweringContext extends Pick<
     | "captureHoistedLines"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "bindDataTuple"
     | "dataLowerer"
     | "emitVariableDeclaration"
     | "emitAssignment"
@@ -2551,7 +2549,7 @@ export class StatementLowerer {
         const cppType =
             context.handleCollections.staticHandleTableCppType(kind)!;
         const values = elements.map((element) =>
-            context.pinValueToTemporary(element, "handle_element"),
+            context.bindings.pinValueToTemporary(element, "handle_element"),
         );
         for (const value of values) context.useNativeValue(value);
         const table = context.allocateTemporaryCppName("handle_table");
@@ -2773,7 +2771,7 @@ export class StatementLowerer {
                     "A statically expanded resource iteration requires an unchanged array size.",
                 );
             }
-            const range = context.pinValueToTemporary(
+            const range = context.bindings.pinValueToTemporary(
                 target.container,
                 "resource_range",
                 statement.expression,
@@ -3661,7 +3659,7 @@ export class StatementLowerer {
                 );
             }
             const components = tupleComponents(
-                context.bindDataTuple(value, arity, "spread"),
+                context.bindings.bindDataTuple(value, arity, "spread"),
                 arity,
             );
             return precision === "float"

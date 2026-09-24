@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionSet, EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
@@ -35,7 +36,7 @@ export interface TextIntrinsicContext
             | "unwrap"
             | "emit"
             | "allocateTemporaryCppName"
-            | "pinValueToTemporary"
+            | "bindings"
             | "compileNumber"
             | "compileBoolean"
             | "compileForDataSink"
@@ -45,7 +46,9 @@ export interface TextIntrinsicContext
             | "recordTextAttachment"
             | "assertTextDisposal"
             | "noteTextSceneLifecycle"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 export function compileTextIntrinsic(
     context: TextIntrinsicContext,
@@ -74,7 +77,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 3, 3);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             data,
             "text_owner",
             argumentAt(call, 0),
@@ -96,7 +99,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 2, 2);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             data,
             "text_owner",
             argumentAt(call, 0),
@@ -113,7 +116,7 @@ export function compileTextIntrinsic(
             else if (name === "previous") {
                 const value = context.compileValue(expression);
                 context.expectKind(value, "text-run", expression);
-                previous = context.pinValueToTemporary(
+                previous = context.bindings.pinValueToTemporary(
                     value,
                     "text_owner",
                     expression,
@@ -135,7 +138,7 @@ export function compileTextIntrinsic(
                     record.properties[0].expression,
                 );
                 context.expectKind(source, "text-run", record.properties[0]);
-                const retained = context.pinValueToTemporary(
+                const retained = context.bindings.pinValueToTemporary(
                     source,
                     "text_owner",
                     record.properties[0].expression,
@@ -171,7 +174,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 1, 2);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             data,
             "text_owner",
             argumentAt(call, 0),
@@ -290,7 +293,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 2, 3);
         const owner = context.compileValue(argumentAt(call, 0));
         context.expectKind(owner, "text-data", argumentAt(call, 0));
-        const retained = context.pinValueToTemporary(
+        const retained = context.bindings.pinValueToTemporary(
             owner,
             "text_owner",
             argumentAt(call, 0),
@@ -330,7 +333,7 @@ export function compileTextIntrinsic(
         const value = context.compileValue(call.arguments[0]);
         context.expectKind(value, "text-renderable", call.arguments[0]);
         context.reachFeature("text:data", call);
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             value,
             "text_owner",
             call.arguments[0],
@@ -351,7 +354,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 1, 2);
         const value = context.compileValue(argumentAt(call, 0));
         context.expectKind(value, "text-data", argumentAt(call, 0));
-        const data = context.pinValueToTemporary(
+        const data = context.bindings.pinValueToTemporary(
             value,
             "text_owner",
             argumentAt(call, 0),
@@ -451,7 +454,7 @@ export function compileTextIntrinsic(
     const textInput = context.compileValue(argumentAt(call, 2));
     const textValue =
         textInput.staticString === undefined
-            ? context.pinValueToTemporary(
+            ? context.bindings.pinValueToTemporary(
                   textInput,
                   "text_content",
                   argumentAt(call, 2),
@@ -740,7 +743,10 @@ function compileRenderableOptions(
                 context.expectKind(value, "number", component.initializer);
                 values.set(
                     component.name.text,
-                    context.pinValueToTemporary(value, "text_component").cpp,
+                    context.bindings.pinValueToTemporary(
+                        value,
+                        "text_component",
+                    ).cpp,
                 );
             }
             if (values.size !== lanes.length)

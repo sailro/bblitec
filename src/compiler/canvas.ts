@@ -313,7 +313,7 @@ export function emitCanvasAssignment(
             expression,
             "Canvas dimensions currently support direct assignment.",
         );
-    const receiver = context.pinValueToTemporary(
+    const receiver = context.bindings.pinValueToTemporary(
         owner,
         "canvas_receiver",
         target.expression,

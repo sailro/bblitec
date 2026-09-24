@@ -221,7 +221,6 @@ interface ClassLoweringContext extends Pick<
     | "lookupIdentifierValue"
     | "identifierIsRebound"
     | "compileValue"
-    | "pinValueToTemporary"
     | "emitStatement"
     | "bindings"
     | "bindClassParameterValue"
@@ -1543,7 +1542,7 @@ export class ClassLowerer {
                         value.dataType &&
                         dataTypesEqual(value.dataType, type)
                     ) {
-                        return this.context.pinValueToTemporary(
+                        return this.context.bindings.pinValueToTemporary(
                             value,
                             "function_argument",
                             argument,

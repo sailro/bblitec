@@ -179,7 +179,6 @@ export interface ExpressionContext
             | "evaluator"
             | "sceneManifest"
             | "dataLowerer"
-            | "bindDataTuple"
             | "classLowerer"
             | "userFunctions"
             | "nativeFunctions"
@@ -201,7 +200,6 @@ export interface ExpressionContext
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
-            | "materializeEscapingValue"
             | "captureRecordScopes"
             | "probeEmission"
             | "recordAccessor"
@@ -990,7 +988,7 @@ export class ExpressionLowerer {
                 tupleElements: unwrapped.elements.map((element, index) => {
                     const value = this.laneValue(element);
                     return index < lastEffect
-                        ? this.context.pinValueToTemporary(
+                        ? this.context.bindings.pinValueToTemporary(
                               value,
                               "array_member",
                               element,
@@ -1091,12 +1089,12 @@ export class ExpressionLowerer {
             // Library callback rest arguments can be inferred as any even when their
             // supplied native values are concrete strings. Preserve ordinary + semantics.
             const concatenated = this.context.probeEmission(() => {
-                const left = this.context.pinValueToTemporary(
+                const left = this.context.bindings.pinValueToTemporary(
                     this.compileValue(unwrapped.left),
                     "plus_left",
                     unwrapped.left,
                 );
-                const right = this.context.pinValueToTemporary(
+                const right = this.context.bindings.pinValueToTemporary(
                     this.compileValue(unwrapped.right),
                     "plus_right",
                     unwrapped.right,
@@ -1456,7 +1454,7 @@ export class ExpressionLowerer {
                       );
             const value =
                 known === undefined && index <= lastEffect
-                    ? this.context.pinValueToTemporary(
+                    ? this.context.bindings.pinValueToTemporary(
                           compiled,
                           "template_part",
                           span.expression,
@@ -1809,7 +1807,7 @@ export class ExpressionLowerer {
             containsEvaluatedCall(expression) &&
             !value.nativeBinding
         ) {
-            return this.context.pinValueToTemporary(
+            return this.context.bindings.pinValueToTemporary(
                 value,
                 "resource_member",
                 expression,
@@ -3111,7 +3109,7 @@ export class ExpressionLowerer {
                     return { kind: "void", cpp: "" } satisfies Value;
                 }
                 return method === "map"
-                    ? this.context.pinValueToTemporary(
+                    ? this.context.bindings.pinValueToTemporary(
                           result,
                           "mapped_result",
                           callback,
@@ -4371,7 +4369,10 @@ export class ExpressionLowerer {
                         ),
             );
         return asyncReceiver
-            ? this.context.materializeEscapingValue(record, "async_receiver")
+            ? this.context.bindings.materializeEscapingValue(
+                  record,
+                  "async_receiver",
+              )
             : record;
     }
 
@@ -4656,7 +4657,7 @@ export class ExpressionLowerer {
                                 level > 0 &&
                                 element.dataType?.kind === "tuple"
                             ) {
-                                const cpp = this.context.bindDataTuple(
+                                const cpp = this.context.bindings.bindDataTuple(
                                     element,
                                     element.dataType.arity,
                                 );

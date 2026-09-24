@@ -60,7 +60,6 @@ export interface NativeFunctionContext extends Pick<
     | "registerNativeBinding"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
-    | "pinValueToTemporary"
     | "identifierIsRebound"
     | "beginNativeFunctionBody"
     | "endNativeFunctionBody"
@@ -782,7 +781,7 @@ export class NativeFunctionLowerer {
                         this.context.useNativeValue(value);
                         return value.cpp;
                     }
-                    return this.context.pinValueToTemporary(
+                    return this.context.bindings.pinValueToTemporary(
                         value,
                         "function_argument",
                         expression,

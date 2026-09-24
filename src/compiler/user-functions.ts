@@ -1018,9 +1018,6 @@ export interface UserFunctionContext
             | "statementTerminatesAfterLowering"
             | "bindings"
             | "bindObjectPattern"
-            | "materializeEscapingValue"
-            | "pinValueToTemporary"
-            | "bindDataTuple"
             | "allocateUserFunctionPrefix"
             | "allocateTemporaryCppName"
             | "reachJsData"
@@ -1537,7 +1534,7 @@ export class UserFunctionLowerer {
                 pinArguments,
             );
             if (result.kind !== "void")
-                result = context.pinValueToTemporary(
+                result = context.bindings.pinValueToTemporary(
                     result,
                     "shared_result",
                     ts.isExpression(call) ? call : undefined,
@@ -2040,7 +2037,7 @@ export class UserFunctionLowerer {
                                       context.useNativeValue(value);
                                       return value.cpp;
                                   }
-                                  return context.pinValueToTemporary(
+                                  return context.bindings.pinValueToTemporary(
                                       value,
                                       "function_argument",
                                       argument,
@@ -2350,7 +2347,7 @@ export class UserFunctionLowerer {
             return isHandleKind(value.kind) &&
                 expression &&
                 !ts.isIdentifier(unwrapExpression(expression))
-                ? context.pinValueToTemporary(
+                ? context.bindings.pinValueToTemporary(
                       value,
                       "resource_argument",
                       expression,
@@ -2806,7 +2803,7 @@ export class UserFunctionLowerer {
             return withNativeMetadata(result, metadata);
         if (result.kind !== "data") return result;
         if (metadata.recordProperties && result.dataType?.kind === "struct")
-            result = context.pinValueToTemporary(
+            result = context.bindings.pinValueToTemporary(
                 result,
                 "shared_return",
                 ts.isExpression(call) ? call : undefined,
@@ -4323,8 +4320,12 @@ export class UserFunctionLowerer {
             // expression OVER that state, so it is read here rather than
             // at the use site, where the next call would have moved it.
             ...(ir.returnNeedsSnapshot
-                ? context.pinValueToTemporary(returned, label, expression)
-                : context.materializeEscapingValue(
+                ? context.bindings.pinValueToTemporary(
+                      returned,
+                      label,
+                      expression,
+                  )
+                : context.bindings.materializeEscapingValue(
                       returned,
                       label,
                       expression,
@@ -4834,7 +4835,7 @@ export class UserFunctionLowerer {
                     // A numeric tuple's lanes are its arguments, read off
                     // one bound evaluation of the tuple.
                     const arity = spread.dataType.arity;
-                    const bound = context.bindDataTuple(
+                    const bound = context.bindings.bindDataTuple(
                         spread,
                         arity,
                         "spread_tuple",
@@ -4910,7 +4911,7 @@ export class UserFunctionLowerer {
             } else {
                 sink.push(
                     pinArguments && value.kind !== "callback"
-                        ? context.pinValueToTemporary(
+                        ? context.bindings.pinValueToTemporary(
                               value,
                               "call_argument",
                               argument,
