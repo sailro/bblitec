@@ -390,8 +390,9 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                     ts.isPropertyAssignment(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === "skipSkybox" &&
-                    /^skyboxIsDds \|\| skyboxIsEnv \|\| options\?\.skipSkybox$/.test(
-                        node.initializer.getText(file).trim(),
+                    this.context.expressionMatchesShape(
+                        node.initializer,
+                        "skyboxIsDds || skyboxIsEnv || options?.skipSkybox",
                     ),
             )
         ) {
