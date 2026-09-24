@@ -130,8 +130,8 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
     const server = createSuiteSceneServer("export {};\n", {
         hostUi: {
             sourcePath: "ui/app-host.json",
-            classStyles: [{ className: "hud", style: "color: red" }],
             styleRules: [
+                { kind: "class", primary: "hud", style: "color: red" },
                 {
                     kind: "class",
                     primary: "entry",
@@ -179,9 +179,9 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
             html,
             /@media\(max-width:800px\)\{@media\(prefers-reduced-motion:reduce\)\{@container\(max-width:320px\)\{\.compact\{width:40px\}\}\}\}/,
         );
-        // Legacy classStyles and generic selector flags share the same
-        // normalized sheet. Dropping focus-visible paints every button as
-        // selected in the reference.
+        // Plain class rules and generic selector flags share one sheet.
+        // Dropping focus-visible paints every button as selected in the
+        // reference.
         assert.match(html, /\.entry:focus-visible\{outline: 2px solid cyan\}/);
     } finally {
         await new Promise<void>((done) => server.close(() => done()));

@@ -14,26 +14,12 @@ import {
     withBrowserPage,
 } from "./browser-harness.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import { findRepositoryRoot } from "./upstream-source.js";
 
 // generateBrdfLut's `const size = 256` and the shader's own 256u bounds.
 const lutSize = 256;
 // rgba16float: four 2-byte half floats per texel.
 const lutBytes = lutSize * lutSize * 8;
-
-export function getIblBrdfLutProvenance() {
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
-    const pin = readUpstreamPin(repositoryRoot);
-    return {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-gltf/ibl-env-assembly.ts",
-        shader: "shaders/hdr-brdf-lut.compute.wgsl",
-        sampleCount: 1024,
-    } as const;
-}
 
 // The chunk file name carries a content hash, so it is resolved through
 // the import in ibl-env-assembly.js — the same module whose

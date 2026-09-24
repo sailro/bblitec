@@ -914,14 +914,7 @@ function compileKnownDataMethod(
         );
     }
     if (dataType?.kind === "string") {
-        const result = compileStringDataMethod(
-            lowerer,
-            call,
-            callee,
-            method,
-            narrowed,
-            dataType,
-        );
+        const result = compileStringDataMethod(lowerer, call, method, narrowed);
         if (result) return result;
     }
     if (
@@ -2596,10 +2589,8 @@ function compileSetDataMethod(
 function compileStringDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    _callee: ts.PropertyAccessExpression,
     method: string,
     narrowed: Value,
-    _dataType: DataType & { kind: "string" },
 ): Value | undefined {
     lowerer.context.reachJsData();
     const stringValue = compileStringValueMethod(

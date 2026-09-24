@@ -316,17 +316,6 @@ async function standardExtensions(
     );
 }
 
-/** The std extension ids the pin has registered, in its own sorted order. */
-export async function registeredStandardExtensionIds(): Promise<
-    readonly string[]
-> {
-    await registerStandardExtensions();
-    const flags = await importPinnedModule<{
-        _getStdExtsSorted: () => readonly StdExtDescriptor[];
-    }>("material/standard/standard-flags.js");
-    return flags._getStdExtsSorted().map((ext) => ext._id);
-}
-
 /**
  * Derives a material's Standard feature bits the way the pin does.
  *

@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
-import { lowerBabylonSubmeshMaterial } from "../src/lowering/babylon-submesh-material.js";
-import { lowerBabylonSubmeshIndices } from "../src/lowering/babylon-submesh-indices.js";
-import { LoweringContext } from "../src/lowering/context.js";
+import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-construction.js";
+import { lowerBabylonSubmeshDefaults } from "../src/lowering/babylon-submesh-indices.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
+import { runBabylonLoaderCheck } from "./babylon-loader-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
-import {
-    cppFunction,
-    nativeFixtureVcpkgRoot,
-    optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+import { cppFunction, optionalNativeFixtureTools } from "./native-fixture.js";
 
 test("Babylon submeshes select pinned materials and allocate independent fallback records", async (t) => {
     const native = optionalNativeFixtureTools();
@@ -93,86 +86,47 @@ test("Babylon submeshes select pinned materials and allocate independent fallbac
     } finally {
         imported.release();
     }
-    const loader = new BabylonLowerer(
-        new LoweringContext(),
-    ).lowerLoaderAdapter().source;
-    const helpers =
-        [
-            "std::string string_or(",
-            "void apply_babylon_material_properties(",
-            "MaterialHandle default_material(",
-        ]
-            .map((signature) => cppFunction(loader, signature))
-            .join("\n") +
-        "\n" +
-        lowerBabylonSubmeshMaterial(new LoweringContext());
-    const changed = lowerBabylonSubmeshMaterial(
+    const changed = lowerBabylonMeshConstruction(
         doctoredContext(
             "src/loader-babylon/load-babylon.ts",
             "else if (matIds && matIds.length === 1)",
             "else if (matIds && matIds.length === 2)",
         ),
-    ).replace("select_babylon_submesh_material(", "select_changed_material(");
+    ).replace("construct_babylon_meshes(", "construct_changed_materials(");
     const directory = resolve("artifacts/test-babylon-submesh-material");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "source.json"), JSON.stringify(document));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    const source = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        source,
-        `#include <bblite/runtime.hpp>
-#include <nlohmann/json.hpp>
-#include <cassert>
-#include <fstream>
-namespace bbl {
-using Json=nlohmann::json;
-${helpers}
-${changed}
-}
-int main() {
-    using namespace bbl;
-    Json document, expected;
+    runBabylonLoaderCheck(
+        native,
+        directory,
+        changed,
+        `    Json document, expected;
     std::ifstream("source.json") >> document;
     std::ifstream("expected.json") >> expected;
     Engine engine;
-    std::unordered_map<std::string,MaterialHandle> materials;
-    std::unordered_map<std::string,std::vector<std::string>> multi;
-    for(const auto& row:document.at("materials")) {
-        const auto handle=default_material(engine);
-        apply_babylon_material_properties(engine.materials.at(handle.value),row,{0,0,0});
-        materials.emplace(row.at("id").get<std::string>(),handle);
-    }
-    for(const auto& row:document.at("multiMaterials")) multi.emplace(row.at("id").get<std::string>(),row.at("materials").get<std::vector<std::string>>());
+    const auto loaded=load_babylon(engine,"source.json");
+    const auto& asset=engine.assets.at(loaded.value);
+    assert(asset.meshes.size()==expected.at("alpha").size());
     std::vector<MaterialHandle> selected;
-    for(const auto& mesh:document.at("meshes")) for(const auto& sub:mesh.at("subMeshes"))
-        selected.push_back(select_babylon_submesh_material(engine,mesh,sub.at("materialIndex").get<std::size_t>(),materials,multi));
-    assert(selected.size()==expected.at("alpha").size());
+    for(const auto mesh:asset.meshes) selected.push_back(engine.meshes.at(mesh.value).material);
     for(std::size_t a=0;a<selected.size();++a) {
         assert(engine.materials.at(selected[a].value).alpha==expected.at("alpha")[a].get<float>());
         for(std::size_t b=0;b<selected.size();++b) assert((selected[a]==selected[b])==expected.at("equal")[a][b].get<bool>());
     }
     assert(engine.materials.size()==11);
-    const auto changed=select_changed_material(engine,document.at("meshes")[1],5,materials,multi);
-    assert(changed==materials.at("one"));
-}`,
+    std::unordered_map<std::string,MaterialHandle> materials;
+    std::unordered_map<std::string,std::vector<std::string>> multi;
+    load_babylon_material_maps(engine,document,"",babylon_scene_ambient(document),false,materials,multi);
+    std::vector<BabylonHierarchyNode> nodes;
+    BabylonNodeMap node_map;
+    std::unordered_map<std::string,std::vector<std::size_t>> meshes_by_id;
+    std::vector<std::size_t> all_meshes;
+    auto many=document.at("meshes")[1];
+    many.at("subMeshes")=Json::array({{{"materialIndex",5},{"indexStart",0},{"indexCount",3}}});
+    construct_changed_materials(engine,Json::array({many}),materials,multi,nodes,node_map,meshes_by_id,all_meshes);
+    assert(engine.meshes.back().material==materials.at("one"));`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
-        source,
-    ]);
-    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });
 
 test("Babylon submesh defaults and index slices follow the pinned loader", async (t) => {
@@ -240,9 +194,8 @@ test("Babylon submesh defaults and index slices follow the pinned loader", async
     } finally {
         imported.release();
     }
-    const helpers = lowerBabylonSubmeshIndices(new LoweringContext());
     const changed = cppFunction(
-        lowerBabylonSubmeshIndices(
+        lowerBabylonSubmeshDefaults(
             doctoredContext(
                 "src/loader-babylon/load-babylon.ts",
                 "indexStart: 0,",
@@ -255,52 +208,19 @@ test("Babylon submesh defaults and index slices follow the pinned loader", async
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "source.json"), JSON.stringify(document));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    const source = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        source,
-        `#include <bblite/js_data.hpp>
-#include <nlohmann/json.hpp>
-#include <cassert>
-#include <fstream>
-namespace bbl {
-using Json=nlohmann::json;
-${helpers}
-${changed}
-}
-int main() {
-    using namespace bbl;
-    Json document, expected;
-    std::ifstream("source.json") >> document;
+    runBabylonLoaderCheck(
+        native,
+        directory,
+        changed,
+        `    Json expected;
     std::ifstream("expected.json") >> expected;
+    Engine engine;
+    const auto loaded=load_babylon(engine,"source.json");
     Json actual=Json::array();
-    for(const auto& mesh:document.at("meshes")) {
-        const auto indices=mesh.at("indices").get<std::vector<std::uint32_t>>();
-        const auto submeshes=babylon_submeshes(mesh,mesh.at("positions").size(),indices.size());
-        for(const auto& sub:submeshes) {
-            const auto count=sub.at("indexCount").get<double>();
-            if(keep_babylon_submesh(count)) actual.push_back(babylon_submesh_indices(indices,sub.at("indexStart").get<double>(),count));
-        }
-    }
+    for(const auto mesh:engine.assets.at(loaded.value).meshes)
+        actual.push_back(engine.geometries.at(engine.meshes.at(mesh.value).geometry).indices);
     assert(actual==expected);
     const auto changed=changed_submeshes(Json::object(),12,6);
-    assert(changed[0].at("indexStart")==3 && changed[0].at("verticesCount")==4);
-}`,
+    assert(changed[0].at("indexStart")==3 && changed[0].at("verticesCount")==4);`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
-        source,
-    ]);
-    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

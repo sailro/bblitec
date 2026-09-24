@@ -1,62 +1,13 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBodyScope } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 /** The pin selects a material independently for each uploaded submesh. */
-export function lowerBabylonSubmeshMaterial(context: LoweringContext): string {
-    const module = "src/loader-babylon/load-babylon.ts";
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        "loadBabylon",
-    );
-    const declarations = context.findNodes(
-        declaration,
-        (node): node is ts.VariableDeclaration =>
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            (node.name.text === "matIds" ||
-                (node.name.text === "mat" && !node.initializer)),
-    );
-    const statements: ts.Statement[] = [];
-    for (const name of ["matIds", "mat"]) {
-        const found = declarations.filter(
-            (node) => ts.isIdentifier(node.name) && node.name.text === name,
-        );
-        const variable = found[0],
-            statement = variable?.parent.parent;
-        if (
-            found.length !== 1 ||
-            !statement ||
-            !ts.isVariableStatement(statement) ||
-            !ts.isBlock(statement.parent)
-        )
-            context.contractError(
-                declaration,
-                `Expected the submesh '${name}' declaration.`,
-            );
-        const index = statement.parent.statements.indexOf(statement);
-        const next = statement.parent.statements[index + 1];
-        if (!next || !ts.isIfStatement(next))
-            context.contractError(
-                statement,
-                `Expected the submesh '${name}' selection.`,
-            );
-        statements.push(statement, next);
-    }
-    const body = lowerPinnedBody(
-        file,
-        statements,
-        babylonSubmeshMaterialScope(context),
-    );
-    return `// ${context.provenance(module, "loadBabylon")}\nMaterialHandle select_babylon_submesh_material(Engine& engine, const Json& source, std::size_t material_index,\n    const std::unordered_map<std::string, MaterialHandle>& materials,\n    const std::unordered_map<std::string, std::vector<std::string>>& multi_materials) {\n${body}\n    return material;\n}`;
-}
-
 export function babylonSubmeshMaterialScope(
     context: LoweringContext,
-    source = "source",
-    materialIndex = "material_index",
+    source: string,
+    materialIndex: string,
 ): PinnedBodyScope {
     const bindings = new Map<string, PinnedBinding>([
         [

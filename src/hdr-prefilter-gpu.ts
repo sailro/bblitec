@@ -1,27 +1,10 @@
 import { createServer } from "node:http";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
 import { readPinnedRawShader } from "./pinned-shader-composer.js";
-
-export function getHdrGgxPrefilterProvenance() {
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
-    const pin = readUpstreamPin(repositoryRoot);
-    return {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-hdr/hdr-ibl-pipeline.ts",
-        shader: "shaders/hdr-prefilter-cube.compute.wgsl",
-        sampleCount: 1024,
-    } as const;
-}
 
 export interface HdrPrefilterSource {
     width: number;

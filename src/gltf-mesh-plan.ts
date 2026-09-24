@@ -683,16 +683,7 @@ async function recordingLoader(
 }
 
 /** Run complete pinned extraction and mesh upload with real bytes and recording GPU resources. */
-export async function gltfMeshPlan(
-    document: JsonObject,
-    bin: DataView,
-    context?: LoweringContext,
-    options: GltfLoadFeatures = {},
-): Promise<GltfMeshPlan> {
-    return (await recordMeshPlan(document, bin, context, options)).plan;
-}
-
-async function recordMeshPlan(
+export async function recordMeshPlan(
     document: JsonObject,
     bin: DataView,
     context: LoweringContext | undefined,

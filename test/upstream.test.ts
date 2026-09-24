@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lightSetter } from "../src/compiler/assignments.js";
 import type { LightKind } from "../src/compiler/types.js";
@@ -61,8 +60,11 @@ import {
 import { float32Literal } from "../src/cpp-literals.js";
 import { gzipSync } from "node:zlib";
 import { packageSpz } from "../src/splat-packager.js";
-import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
-import { buildGlb, readGlbFixture } from "./glb-fixture.js";
+import {
+    buildGlb,
+    readGlbFixture,
+    resolveGeometryExtensions,
+} from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
@@ -2214,22 +2216,6 @@ test("emits only reached custom shader variants", () => {
                 /\.(?:hlsl|msl)$/.test(shader.output),
         ),
     );
-});
-
-test("builds a conservative reachable module graph", () => {
-    const graph = analyzeUpstreamGraph(new UpstreamSourceStore(), [
-        "createHemisphericLight",
-        "createDefaultCamera",
-    ]);
-    assert.ok(graph.summary.moduleCount > 5);
-    assert.ok(
-        graph.modules.some(
-            (module) => module.path === "src/light/light-base.ts",
-        ),
-    );
-    assert.ok(graph.summary.diagnostics.closures > 0);
-    assert.equal(graph.capabilities.explicitAnyAllowed, false);
-    assert.equal(graph.capabilities.asyncAwait, "synchronous-aot");
 });
 
 test("lifts the Dawn utility WGSL from the pinned literals", () => {

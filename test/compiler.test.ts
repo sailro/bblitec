@@ -11076,13 +11076,12 @@ test("projects an audited native host-page UI companion without changing scene s
         {
             nativeHostUi: {
                 sourcePath: "ui/test-host.json",
-                classStyles: [
+                styleRules: [
                     {
-                        className: "touch-controls",
+                        kind: "class",
+                        primary: "touch-controls",
                         style: "display:none;",
                     },
-                ],
-                styleRules: [
                     {
                         kind: "class-descendant-tag",
                         primary: "title",
