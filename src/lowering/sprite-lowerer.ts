@@ -1698,9 +1698,8 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
             throw std::runtime_error(
                 "createSpriteAtlasFromFrames: frame has non-positive size.");
         }
-        const std::uint32_t stride = source.src_stride_bytes == 0u
-            ? source.width * 4u
-            : source.src_stride_bytes;
+        const std::uint32_t stride =
+            source.src_stride_bytes.value_or(source.width * 4u);
         const std::uint64_t row_end =
             static_cast<std::uint64_t>(source.src_x + source.width) * 4u;
         if (row_end > stride) {
@@ -1761,9 +1760,8 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
     atlas.frames.reserve(sources.size());
     for (std::size_t index = 0; index < sources.size(); ++index) {
         const SpriteAtlasFramePixelsView& source = sources[index];
-        const std::uint32_t stride = source.src_stride_bytes == 0u
-            ? source.width * 4u
-            : source.src_stride_bytes;
+        const std::uint32_t stride =
+            source.src_stride_bytes.value_or(source.width * 4u);
         const std::size_t row_bytes =
             static_cast<std::size_t>(source.width) * 4u;
         for (std::uint32_t row = 0; row < source.height; ++row) {

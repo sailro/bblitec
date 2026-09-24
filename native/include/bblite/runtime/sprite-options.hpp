@@ -49,7 +49,8 @@ struct SpriteAtlasFramePixelsView {
     std::uint32_t height = 0;
     std::uint32_t src_x = 0;
     std::uint32_t src_y = 0;
-    std::uint32_t src_stride_bytes = 0;
+    /** Absent where the scene named none: `srcStrideBytes ?? width * 4`. */
+    std::optional<std::uint32_t> src_stride_bytes{};
     Vec2 pivot{0.5f, 0.5f};
 };
 
