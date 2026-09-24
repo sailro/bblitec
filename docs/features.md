@@ -22,8 +22,9 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 `generated/<id>/upstream/feature-activation.json` records repository-relative reach sites, asset joins,
 the activation plan's reasons and checked consumers. An asset's loader trigger joins the same runtime
 feature a scene call reaches before anything reads the feature list; material and shader capabilities,
-including the transmission renderer, come from the composed arms. Reaching a factory can activate its
-module even when one of its options is disabled.
+including the transmission renderer, come from the composed arms. Reaching a factory activates its
+module even when one of its options is disabled, except where a literal option opts a parser out, as
+`loadBabylon({ loadCamera: false })` does for the camera parser.
 
 ### API coverage inventory
 
