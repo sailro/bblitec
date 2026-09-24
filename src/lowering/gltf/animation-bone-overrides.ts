@@ -24,9 +24,7 @@ export function lowerGltfAnimationBoneOverrides(
     ]);
     for (const name of ["TRS_STRIDE", "T_OFF", "R_OFF", "S_OFF"])
         bindings.set(name, {
-            cpp: context.doubleLiteral(
-                context.numericValue(ts.factory.createIdentifier(name), pose),
-            ),
+            cpp: context.doubleLiteral(context.pinnedNumber(pose, name)),
             type: "scalar",
         });
     for (const field of hidden === undefined

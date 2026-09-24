@@ -3,6 +3,7 @@ import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "./repository-root.js";
+import { PinnedProgram, registerPinnedSource } from "./pinned-program.js";
 import { listFiles } from "./tooling/records.js";
 export { findRepositoryRoot } from "./repository-root.js";
 
@@ -121,6 +122,7 @@ export class UpstreamSourceStore {
     private readonly packagedModules = new Map<string, string>();
     private readonly declarationModules = new Map<string, string[]>();
     private readonly publicExports = new Map<string, PublicExport>();
+    private typedProgram: PinnedProgram | undefined;
 
     public constructor(
         repositoryRoot = findRepositoryRoot(
@@ -210,7 +212,17 @@ export class UpstreamSourceStore {
             normalized.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
         );
         this.sourceFiles.set(normalized, sourceFile);
+        registerPinnedSource(sourceFile, () => this.program);
         return sourceFile;
+    }
+
+    /**
+     * The checked program over these sources, built on the first question
+     * asked of it and shared by every reader of this store.
+     */
+    public get program(): PinnedProgram {
+        this.typedProgram ??= new PinnedProgram(this);
+        return this.typedProgram;
     }
 
     public listSources(): string[] {

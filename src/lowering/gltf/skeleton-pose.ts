@@ -36,12 +36,7 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
     bind("visited", "visited", "u8");
     bind("idx", "idx");
     for (const name of ["TRS_STRIDE", "T_OFF", "R_OFF", "S_OFF"])
-        bind(
-            name,
-            context.doubleLiteral(
-                context.numericValue(ts.factory.createIdentifier(name), file),
-            ),
-        );
+        bind(name, context.doubleLiteral(context.pinnedNumber(file, name)));
     for (const name of [
         "tx",
         "ty",

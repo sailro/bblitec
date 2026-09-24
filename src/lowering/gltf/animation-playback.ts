@@ -406,12 +406,7 @@ export function lowerGltfAnimationPlayback(
                   mixerModule,
                   "advanceGroupTime",
               );
-              if (
-                  context.numericValue(
-                      ts.factory.createIdentifier("GLTF_CLIP"),
-                      file,
-                  ) !== 0
-              )
+              if (context.pinnedNumber(file, "GLTF_CLIP") !== 0)
                   context.contractError(
                       file,
                       "Weighted playback clip tuple identity changed.",
