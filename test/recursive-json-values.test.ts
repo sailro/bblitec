@@ -670,6 +670,18 @@ test("a guarded parse returned as its record type keeps the document", (t) => {
         const odd = read('{"v":1,"name":"c","origin":{"x":"1"},"marks":[]}');
         if (!odd || typeof odd.origin.x !== "string" || odd.origin.y !== undefined)
             throw new Error("mistyped members");
+        class Holder {
+            private x = 0;
+            place(origin: { x: number; y: number }): void {
+                this.x = origin.x;
+            }
+            get placed(): number {
+                return this.x;
+            }
+        }
+        const holder = new Holder();
+        holder.place(again.origin);
+        if (holder.placed !== 1) throw new Error("parsed member as a method argument");
         if (read('{"v":2,"name":"a","marks":[]}') !== null) throw new Error("guard");
         if (read("{") !== null) throw new Error("malformed");
         if (read("null") !== null) throw new Error("null document");

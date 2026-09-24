@@ -696,9 +696,18 @@ export class NativeFunctionLowerer {
         // Type annotations do not replace the representation of a parsed
         // object. Bind that actual value inline instead of materializing a
         // fixed native shape that would lose fields and object identity.
-        const represented =
-            this.context.knownValueWithoutEvaluation(argument)?.dataType;
-        if (represented?.kind === "json" && parameter.type.kind !== "json") {
+        // A member of a parsed object is itself parsed (`data.player`).
+        const parsed = (expression: ts.Expression): boolean => {
+            const node = this.context.unwrap(expression);
+            const known = this.context.knownValueWithoutEvaluation(node);
+            if (known) return known.dataType?.kind === "json";
+            return (
+                (ts.isPropertyAccessExpression(node) ||
+                    ts.isElementAccessExpression(node)) &&
+                parsed(node.expression)
+            );
+        };
+        if (parsed(argument) && parameter.type.kind !== "json") {
             const target =
                 parameter.type.kind === "optional"
                     ? parameter.type.inner
