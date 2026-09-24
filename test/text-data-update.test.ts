@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { jsonArray } from "./json.js";
 import {
     compiledTextDataSource,
@@ -20,7 +19,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { materializePinnedText } from "../src/pinned-text-data.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { doctoredContext } from "./doctored-store.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -28,37 +27,7 @@ import {
 } from "./native-fixture.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 
-/** A store whose one pinned module reads with one replacement. */
-class ChangedStore extends UpstreamSourceStore {
-    constructor(
-        private readonly path: string,
-        private readonly before: string,
-        private readonly after: string,
-    ) {
-        super();
-    }
-    override getSource(modulePath: string): string {
-        const source = super.getSource(modulePath);
-        if (modulePath !== this.path) return source;
-        assert(source.includes(this.before), this.before);
-        return source.replace(this.before, this.after);
-    }
-    private changedFile: ts.SourceFile | undefined;
-    // The base store parses (and caches) modules while it indexes exports,
-    // before this store knows which module it changes.
-    override getSourceFile(modulePath: string): ts.SourceFile {
-        if (modulePath !== this.path) return super.getSourceFile(modulePath);
-        return (this.changedFile ??= ts.createSourceFile(
-            modulePath,
-            this.getSource(modulePath),
-            ts.ScriptTarget.Latest,
-            true,
-        ));
-    }
-}
-
-const changed = (path: string, before: string, after: string) =>
-    new LoweringContext(new ChangedStore(path, before, after));
+const changed = doctoredContext;
 
 test("text data bodies are lowered from the pin's own statements", () => {
     // A changed pinned statement is a changed native statement.
@@ -132,7 +101,7 @@ test("text data bodies are lowered from the pin's own statements", () => {
             ).header(),
         /text-data\.ts:\d+:\d+/,
     );
-    // The layer factory is lowered; the renderer factory stays guarded.
+    // The layer and renderer factories are the pin's own statements.
     assert.match(
         new TextRendererLowerer(
             changed(
@@ -143,7 +112,7 @@ test("text data bodies are lowered from the pin's own statements", () => {
         ).header(),
         /->version = 1\.0; return record_\d+; \}\(\);/,
     );
-    assert.throws(() =>
+    assert.match(
         new TextRendererLowerer(
             changed(
                 "src/text/text-renderer.ts",
@@ -151,6 +120,7 @@ test("text data bodies are lowered from the pin's own statements", () => {
                 "opts.layers",
             ),
         ).header(),
+        /bbl::js::Array<bbl::TextLayer> layers = opts\.layers;/,
     );
 });
 

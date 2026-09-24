@@ -169,6 +169,13 @@ template <class T> [[nodiscard]] double typed_get(const js::TypedArray<T>& value
                : std::numeric_limits<double>::quiet_NaN();
 }
 
+/** `typed.fill(value)`: every element, stored as its element type stores it. */
+template <class T> js::TypedArray<T>& typed_fill(js::TypedArray<T>& values, double value) {
+    for (std::size_t index = 0; index < values.size(); ++index)
+        js::typed_array_write(values, static_cast<double>(index), value);
+    return values;
+}
+
 /** A tuple read; past the end reads NaN. */
 template <std::size_t N> [[nodiscard]] double tuple_at(const js::Tuple<N>& values, double index) {
     if (!js::array_has_index(values, index))

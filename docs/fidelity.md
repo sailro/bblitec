@@ -167,9 +167,10 @@ different properties.
 Live text uses HarfBuzz and pinned layout over the packaged repertoire, whose outlines are extracted
 and packed at generation. TextData is the pin's record graph (runs, draw groups, style palette, slot
 allocator) updated by the pin's lowered bodies; it retains identity, and shared data owns group caches
-and captured styles. Disposal releases GPU leases while CPU data
-follows source lifetime. Deferred registration publishes only after successful construction. Arbitrary
-async builders refuse. Both backends use Slug WGSL.
+and captured styles. Buffer, texture, bind-group and bundle creation, writes and draws are the pin's
+own calls on a WebGPU-shaped device; SDL_GPU keeps uniform buffers as CPU copies pushed at each draw.
+Disposal destroys GPU resources while CPU data follows source lifetime. Deferred registration publishes
+only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 
