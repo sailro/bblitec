@@ -4056,8 +4056,12 @@ struct Engine {
      */
 #if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
+#if !defined(BBLITE_HAS_CAMERA_GIZMOS) || BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
+#endif
+#if !defined(BBLITE_HAS_LIGHT_GIZMOS) || BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
+#endif
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;

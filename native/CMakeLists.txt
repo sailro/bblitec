@@ -869,6 +869,8 @@ bblite_feature_define(BBLITE_HAS_SPRITES "sprite:2d" "sprite:billboard" "sprite:
 bblite_feature_define(BBLITE_HAS_SPRITE_ANIMATION "sprite:animation")
 bblite_feature_define(BBLITE_HAS_ANIMATION "animation:property" "animation:managed-groups")
 bblite_feature_define(BBLITE_HAS_GIZMOS "gizmo:utility-layer")
+bblite_feature_define(BBLITE_HAS_CAMERA_GIZMOS "gizmo:camera")
+bblite_feature_define(BBLITE_HAS_LIGHT_GIZMOS "gizmo:light")
 bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:esm" "shadow:pcf" "shadow:pcf-directional" "shadow:csm" "shadow:task")
 bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
 bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")

@@ -938,13 +938,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/gizmo/utility-layer.ts",
         consumers: CMAKE,
     },
+    // Each display gizmo's factories, geometry and record vector, emitted
+    // and compiled only for a scene that builds that gizmo.
     "gizmo:camera": {
         provenance: "src/gizmo/camera-gizmo.ts",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     "gizmo:light": {
         provenance: "src/gizmo/light-gizmo.ts",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     // The four editing widgets, one row per pinned module. Each builds
     // its own geometry over the same layer, follow and material builder,

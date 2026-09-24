@@ -785,33 +785,60 @@ ${declaration.body!.statements.flatMap((statement) => lowerer.statement(statemen
 }`;
 }
 
+/** Which display gizmos a scene builds: each half is emitted only for its own. */
+export interface ReachedDisplayGizmos {
+    camera: boolean;
+    light: boolean;
+}
+
 /**
  * CPU geometry stays at JS-number width until the pin constructs typed arrays
  * or the native transform setter stores its float lanes. Resource handles,
  * materials and parenting remain in GizmoLowerer's native scene adapter.
+ *
+ * The light gizmo's hemisphere and line definitions and the camera gizmo's
+ * frustum edges are separate halves, each read from its own pinned module
+ * only for a scene that builds that gizmo.
  */
-export function pinnedGizmoGeometry(context: LoweringContext): string {
-    return `struct GizmoHemisphereGeometry {
+export function pinnedGizmoGeometry(
+    context: LoweringContext,
+    reached: ReachedDisplayGizmos,
+): string {
+    const carriers = [
+        ...(reached.light
+            ? [
+                  `struct GizmoHemisphereGeometry {
     std::string name;
     bbl::js::F32Array positions;
     bbl::js::F32Array normals;
     bbl::js::U32Array indices;
     bbl::js::F32Array uvs;
-};
-struct GizmoFrustumEdge {
+};`,
+              ]
+            : []),
+        ...(reached.camera
+            ? [
+                  `struct GizmoFrustumEdge {
 ${CYLINDER_MEMBERS.map((member) => `    double ${member};`).join("\n")}
     Vec3d position{};
     Vec3d scaling{1.0, 1.0, 1.0};
     std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
-};
+};`,
+              ]
+            : []),
+    ];
+    if (carriers.length === 0) return "";
+    const bodies = [
+        ...(reached.light
+            ? [lowerHemisphere(context), lowerLineDefinitions(context)]
+            : []),
+        ...(reached.camera
+            ? [lowerFrustumEdge(context), lowerFrustum(context)]
+            : []),
+    ];
+    return `${carriers.join("\n")}
 
-${lowerHemisphere(context)}
-
-${lowerLineDefinitions(context)}
-
-${lowerFrustumEdge(context)}
-
-${lowerFrustum(context)}
+${bodies.join("\n\n")}
 `;
 }
 
@@ -909,11 +936,59 @@ function scaleBody(
     return lowerPinnedBody(context.sourceFile(modulePath), statements, scope);
 }
 
-/** The live-record seam supplies matrices/presence; the callbacks supply all scaling arithmetic. */
+/**
+ * The live-record seam supplies matrices/presence; the callbacks supply all
+ * scaling arithmetic. Each follow is emitted only beside the gizmo it drives.
+ */
 export function pinnedGizmoFollowGeometry(
     context: LoweringContext,
-    editing: boolean,
+    reached: ReachedDisplayGizmos & { editing: boolean },
 ): string {
+    const cameraFollow = reached.camera ? cameraGizmoFollow(context) : "";
+    const lightFollow = reached.light ? lightGizmoFollow(context) : "";
+    let projected = "";
+    if (reached.editing) {
+        const follow = context.functionDeclaration(
+            CORE,
+            "attachFollowTarget",
+        ).declaration;
+        const update = callback(
+            context,
+            context.callExpression(follow, "onBeforeRender"),
+            1,
+        );
+        const guardedScale = containingIf(
+            context,
+            update,
+            "gizmoRoot.scaling.set",
+        );
+        const projectedBody = scaleBody(
+            context,
+            CORE,
+            block(context, guardedScale.thenStatement).statements,
+            [
+                ...POINT_MEMBERS.map((lane): [string, PinnedBinding] => [
+                    `t${lane}`,
+                    { cpp: `position.${lane}`, type: "scalar" },
+                ]),
+                ["scaleRatio", { cpp: "scale_ratio", type: "scalar" }],
+            ],
+            "gizmoRoot.scaling",
+            ["scene", "camera", "worldMatrix"],
+        );
+        projected = `// ${context.provenance(CORE, "attachFollowTarget")}
+Vec3d gizmo_projected_scaling(Vec3d position, const std::array<float, 16>& cw, double scale_ratio) {
+    Vec3d result{};
+${projectedBody}
+    return result;
+}
+`;
+    }
+    return `${cameraFollow}${lightFollow}${projected}`;
+}
+
+/** `createCameraGizmo`'s body-outer follow. */
+function cameraGizmoFollow(context: LoweringContext): string {
     const camera = context.functionDeclaration(
         CAMERA,
         "createCameraGizmo",
@@ -953,7 +1028,17 @@ export function pinnedGizmoFollowGeometry(
             "Expected the pinned camera-body follow to use the utility camera.",
         );
     }
+    return `// ${context.provenance(CAMERA, "createCameraGizmo")}
+Vec3d gizmo_camera_scaling(bool has_camera, const std::array<float, 16>& cw, const std::array<float, 16>& wm) {
+    Vec3d result{};
+${cameraBody}
+    return result;
+}
+`;
+}
 
+/** `createLightGizmo`'s per-frame root scaling. */
+function lightGizmoFollow(context: LoweringContext): string {
     const light = context.functionDeclaration(
         LIGHT,
         "createLightGizmo",
@@ -992,57 +1077,13 @@ export function pinnedGizmoFollowGeometry(
             "Expected the pinned light follow to use the utility camera.",
         );
     }
-    let projected = "";
-    if (editing) {
-        const follow = context.functionDeclaration(
-            CORE,
-            "attachFollowTarget",
-        ).declaration;
-        const update = callback(
-            context,
-            context.callExpression(follow, "onBeforeRender"),
-            1,
-        );
-        const guardedScale = containingIf(
-            context,
-            update,
-            "gizmoRoot.scaling.set",
-        );
-        const projectedBody = scaleBody(
-            context,
-            CORE,
-            block(context, guardedScale.thenStatement).statements,
-            [
-                ...POINT_MEMBERS.map((lane): [string, PinnedBinding] => [
-                    `t${lane}`,
-                    { cpp: `position.${lane}`, type: "scalar" },
-                ]),
-                ["scaleRatio", { cpp: "scale_ratio", type: "scalar" }],
-            ],
-            "gizmoRoot.scaling",
-            ["scene", "camera", "worldMatrix"],
-        );
-        projected = `// ${context.provenance(CORE, "attachFollowTarget")}
-Vec3d gizmo_projected_scaling(Vec3d position, const std::array<float, 16>& cw, double scale_ratio) {
-    Vec3d result{};
-${projectedBody}
-    return result;
-}
-`;
-    }
-    return `// ${context.provenance(CAMERA, "createCameraGizmo")}
-Vec3d gizmo_camera_scaling(bool has_camera, const std::array<float, 16>& cw, const std::array<float, 16>& wm) {
-    Vec3d result{};
-${cameraBody}
-    return result;
-}
-// ${context.provenance(LIGHT, "createLightGizmo")}
+    return `// ${context.provenance(LIGHT, "createLightGizmo")}
 Vec3d gizmo_light_scaling(bool has_camera, const std::array<float, 16>& cw, Vec3d position) {
     Vec3d result{};
 ${lightBody}
     return result;
 }
-${projected}`;
+`;
 }
 
 function boundsValue(
