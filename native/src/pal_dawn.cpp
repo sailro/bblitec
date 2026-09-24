@@ -537,11 +537,18 @@ struct DawnRenderTarget {
     std::uint32_t allocation = 0;
 };
 
+/** A depth-only task's mesh: its world block and the group binding it. */
+struct DawnDepthOnlyDraw {
+    DawnBuffer world{};
+    DawnBindGroup group{};
+};
+
 struct DawnRenderTask {
     upstream::RenderDrawLists draw_lists;
     DawnBuffer view_projection{};
-    // Lazily created group-1 bind group for depth-only passes.
-    DawnBindGroup scene_group{};
+    // Depth-only passes bind group 1 per mesh: the task's view-projection
+    // and the mesh's world, keyed by the mesh's slot.
+    std::unordered_map<std::uint32_t, DawnDepthOnlyDraw> depth_only_draws;
     // A task the scene gave its own camera composes its own view-projection
     // and eye position, so it needs its own copy of the pin's per-pass scene
     // block; the lights beside it are the scene's and stay shared. Null for
@@ -1160,9 +1167,7 @@ struct DawnState : DawnDevice {
     // and rebuild together with the meshes.
     void release_render_tasks() {
         for (DawnRenderTask& task : render_tasks) {
-            if (task.scene_group) {
-                task.scene_group.reset();
-            }
+            task.depth_only_draws.clear();
             if (task.pinned_frame_group) {
                 task.pinned_frame_group.reset();
             }
@@ -11223,32 +11228,52 @@ public:
                                 pass_descriptor.depthStencilAttachment = &depth_attachment;
                                 DawnRenderPass task_pass{
                                     wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
-                                if (!render_task.scene_group) {
-                                    DawnBindGroupLayout scene_layout{
-                                        wgpuRenderPipelineGetBindGroupLayout(
-                                            depth_only_pipeline_for(state, false, samples,
-                                                                    target.depth_format),
-                                            1)};
-                                    WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-                                    scene_entry.binding = 0;
-                                    scene_entry.buffer = render_task.view_projection;
-                                    scene_entry.size = 64;
-                                    WGPUBindGroupDescriptor scene_descriptor =
-                                        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                                    scene_descriptor.layout = scene_layout;
-                                    scene_descriptor.entryCount = 1;
-                                    scene_descriptor.entries = &scene_entry;
-                                    render_task.scene_group =
-                                        wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-                                    scene_layout.reset();
-                                }
+                                const auto depth_only_group =
+                                    [&](const MeshHandle handle) -> WGPUBindGroup {
+                                    DawnDepthOnlyDraw& draw =
+                                        render_task.depth_only_draws[handle.value];
+                                    if (!draw.group) {
+                                        WGPUBufferDescriptor world_descriptor =
+                                            WGPU_BUFFER_DESCRIPTOR_INIT;
+                                        world_descriptor.size = 64;
+                                        world_descriptor.usage =
+                                            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+                                        draw.world = DawnBuffer{wgpuDeviceCreateBuffer(
+                                            state.device, &world_descriptor)};
+                                        if (!draw.world)
+                                            dawn_error("depth-only world buffer creation failed.");
+                                        DawnBindGroupLayout layout{
+                                            wgpuRenderPipelineGetBindGroupLayout(
+                                                depth_only_pipeline_for(state, false, samples,
+                                                                        target.depth_format),
+                                                1)};
+                                        std::array<WGPUBindGroupEntry, 2> entries{
+                                            WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+                                        entries[0].binding = 0;
+                                        entries[0].buffer = render_task.view_projection;
+                                        entries[0].size = 64;
+                                        entries[1].binding = 1;
+                                        entries[1].buffer = draw.world;
+                                        entries[1].size = 64;
+                                        WGPUBindGroupDescriptor descriptor =
+                                            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+                                        descriptor.layout = layout;
+                                        descriptor.entryCount = entries.size();
+                                        descriptor.entries = entries.data();
+                                        draw.group = DawnBindGroup{
+                                            wgpuDeviceCreateBindGroup(state.device, &descriptor)};
+                                    }
+                                    const std::array<float, 16> world = mesh_block_world(
+                                        graph_scene, engine, handle_at(engine.meshes, handle));
+                                    wgpuQueueWriteBuffer(state.queue, draw.world, 0, world.data(),
+                                                         sizeof(world));
+                                    return draw.group;
+                                };
                                 for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
                                     wgpuRenderPassEncoderSetPipeline(
                                         task_pass,
                                         depth_only_pipeline_for(state, sided_mode == 1, samples,
                                                                 target.depth_format));
-                                    wgpuRenderPassEncoderSetBindGroup(
-                                        task_pass, 1, render_task.scene_group, 0, nullptr);
                                     for (const RenderTaskMesh& entry : task.render_meshes) {
                                         const auto material_handle =
                                             render_task_mesh_material(engine, entry);
@@ -11285,6 +11310,8 @@ public:
                                                 "scene.");
                                         }
                                         DawnMesh& mesh = graph_meshes[mesh_index];
+                                        wgpuRenderPassEncoderSetBindGroup(
+                                            task_pass, 1, depth_only_group(entry.mesh), 0, nullptr);
                                         wgpuRenderPassEncoderSetVertexBuffer(
                                             task_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
 #if BBLITE_GPU_INSTANCING
