@@ -15,11 +15,12 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import {
     pinnedMaterialVertex,
-    pinnedPbrVertexTemplate,
+    pinnedPbrVertexOutputs,
 } from "../src/pinned-material-vertex.js";
 import {
     extractWgslFunction,
     importPinnedModule,
+    pinnedLibraryRoot,
 } from "../src/pinned-shader-composer.js";
 import { composePinnedPbrShader } from "./pinned-pbr-shader-fixture.js";
 import {
@@ -91,6 +92,17 @@ class EditedContext extends LoweringContext {
                   true,
               )
             : super.sourceFile(module);
+    }
+    /** The executed half of the doctored pin: the packaged module run. */
+    public packagedModuleText(module: string): string | undefined {
+        if (module !== this.module) return undefined;
+        const packaged = readFileSync(
+            join(pinnedLibraryRoot(), store.packagedModulePath(module)),
+            "utf8",
+        );
+        const edited = this.edit(packaged);
+        assert.notEqual(edited, packaged, `edit missed packaged ${module}`);
+        return edited;
     }
 }
 
@@ -303,7 +315,7 @@ test("the reusable PBR vertex template matches the executed pin before transport
         ): { _vertexTemplate: string };
     }>("material/pbr/pbr-template.js");
     for (const morph of [false, true]) {
-        const template = pinnedPbrVertexTemplate(
+        const template = pinnedPbrVertexOutputs(
             new LoweringContext(store),
             morph,
         );
@@ -915,7 +927,7 @@ test("unrepresentable pin drift refuses rather than retaining a transcript or em
             templateModule,
             '_hasMorph ? "morphedPos" : "position"',
             '_hasMorph ? "morphedPos * 0.5" : "position"',
-            /morph template inputs|unbound input/,
+            /morph template inputs|unbound input|homogeneous position transport/,
         ],
         [
             templateModule,
