@@ -247,3 +247,23 @@ test("units hold only the declarations their code reaches, with argument-depende
     assert.match(unit("other.ts"), /struct OtherData/);
     assert.doesNotMatch(unit("other.ts"), /UsedData/);
 });
+
+test("a large loop moves whole rather than calling out once per iteration", () => {
+    const outlined = outlineFunctionDefinition({
+        lines: [
+            "void frame([[maybe_unused]] bbl::Engine& v_engine, [[maybe_unused]] double v_delta) {",
+            "    while (v_delta > 0.0) {",
+            ...largeBody([], "bbl::step(v_engine, v_delta);"),
+            "    }",
+            "}",
+        ],
+        bindingType: () => undefined,
+        allocateName: () => "bbl_outlined_loop",
+    });
+    assert.equal(outlined.segments.length, 1);
+    assert.match(
+        outlined.segments[0]!.lines.join("\n"),
+        /^void bbl_outlined_loop\([^\n]*\{\n {4}while \(v_delta > 0\.0\) \{/,
+    );
+    assert.doesNotMatch(outlined.lines.join("\n"), /while/);
+});

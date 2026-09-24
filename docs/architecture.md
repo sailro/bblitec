@@ -68,7 +68,7 @@ and shared bindings retain their ordered entry execution. An entry or function b
 `outlinedBodyMinimumBytes` moves its compound and expression statements, and large initializers of typed
 declarations, into functions of its source (`body-outlining.ts`) that take the locals they read by
 reference; declarations, statements that leave the body or a loop, and statements reading a local without
-a native type stay in place.
+a native type stay in place, and a loop moves whole or not at all.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,

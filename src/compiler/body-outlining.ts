@@ -290,11 +290,12 @@ function outlineBlock(
 }
 
 /**
- * Outlines inside the blocks of an `if`/`else` chain, a `while` or `do` loop,
- * a bare block or a `try` body: the statements whose scopes can see nothing
- * the frame does not name. A block whose header can declare a name (a
- * condition declaration, a `for` variable, a caught exception) keeps its
- * statements; a statement that breaks out of its loop stays in it.
+ * Outlines inside the blocks of an `if`/`else` chain, a bare block, a `try`
+ * body or a `do { ... } while (false)`: blocks that run at most once, whose
+ * scopes see nothing the frame does not name. A loop body stays whole, so no
+ * iteration pays a call it did not before; a block whose header can declare a
+ * name (a condition declaration, a caught exception) keeps its statements;
+ * a statement that breaks out of its block stays in it.
  */
 function outlineCompoundBlocks(
     outliner: Outliner,
@@ -316,7 +317,12 @@ function outlineCompoundBlocks(
         if (token.text !== "{") continue;
         const end = closingIndex(tokens, index, "{");
         if (end === undefined) return statement;
-        if (blockHeaderDeclaresNothing(tokens.slice(headerStart, index))) {
+        if (
+            runsOnceWithoutDeclaring(
+                tokens.slice(headerStart, index),
+                tokens.slice(end + 1),
+            )
+        ) {
             const interiorStart = token.end - offset;
             const interiorEnd = tokens[end]!.start - offset;
             const interior = statement.text.slice(interiorStart, interiorEnd);
@@ -348,19 +354,23 @@ function outlineCompoundBlocks(
 }
 
 /**
- * Whether a block's introducing tokens (`if (...)`, `while (...)`, `else`,
- * `do`, `try`, none) declare nothing.
+ * Whether the block between `header` (`if (...)`, `else if (...)`, `else`,
+ * `try`, `do`, none) and `tail` runs at most once and its header declares
+ * nothing: a `do` block only when its tail is `while (false);`.
  */
-function blockHeaderDeclaresNothing(header: readonly CppToken[]): boolean {
+function runsOnceWithoutDeclaring(
+    header: readonly CppToken[],
+    tail: readonly CppToken[],
+): boolean {
     const head = header[0]?.text;
     if (header.length === 0) return true;
-    if (
-        header.length === 1 &&
-        (head === "try" || head === "else" || head === "do")
-    )
-        return true;
+    if (header.length === 1 && (head === "try" || head === "else")) return true;
+    if (header.length === 1 && head === "do")
+        return (
+            tail.map((token) => token.text).join(" ") === "while ( false ) ;"
+        );
     const conditionStart =
-        head === "if" || head === "while"
+        head === "if"
             ? 1
             : head === "else" && header[1]?.text === "if"
               ? 2
