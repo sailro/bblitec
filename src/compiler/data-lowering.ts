@@ -34,6 +34,7 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
+import { nullability } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { requireDynamicBindingStorage } from "./dynamic-binding-storage.js";
@@ -9152,6 +9153,55 @@ export class DataLowerer {
         return undefined;
     }
 
+    /** Which absent value a nullish operand names: `null`, `undefined`, or neither for another expression. */
+    private absentLiteral(
+        expression: ts.Expression,
+    ): "null" | "undefined" | undefined {
+        const node = this.context.unwrap(expression);
+        if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
+        if (isGlobalUndefined(this.context.checker, node)) return "undefined";
+        if (ts.isIdentifier(node)) {
+            const bound = this.context.bindings.lookupOptional(node);
+            if (bound?.kind === "json-null")
+                return bound.cpp === "std::nullopt" ? "undefined" : "null";
+        }
+        return undefined;
+    }
+
+    /**
+     * Whether an absent operand is the absent value `literal` names. A
+     * native absence is one state, so the operand's type says which it is:
+     * a type that admits only `undefined` -- or a lookup that can miss, of
+     * values that are never `null` -- is `undefined`, one that admits only
+     * `null` is `null`, and one that admits both refuses. A type that
+     * admits neither was narrowed by the program; its absence test stands.
+     */
+    private absenceOf(
+        operand: ts.Expression,
+        value: Value,
+        literal: "null" | "undefined",
+    ): boolean {
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(operand),
+        );
+        const state =
+            value.preserveUncheckedLookup && !absent.null
+                ? "undefined"
+                : absent.undefined && !absent.null
+                  ? "undefined"
+                  : absent.null && !absent.undefined
+                    ? "null"
+                    : absent.null && absent.undefined
+                      ? undefined
+                      : literal;
+        if (state === undefined)
+            this.context.fail(
+                operand,
+                `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
+            );
+        return state === literal;
+    }
+
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
@@ -9275,31 +9325,65 @@ export class DataLowerer {
               ? left
               : undefined;
         if (nullSide) {
+            const literal = this.absentLiteral(
+                nullSide === left ? right : left,
+            );
             const value =
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
+            // `==` takes null and undefined as one; `===` asks which absent
+            // state the operand is in, which a native absence answers only
+            // through what the operand's type admits (`absenceOf`).
+            const absentTest = (
+                present: string,
+                absent = `!(${present})`,
+            ): string => {
+                // A lookup that knows whether its key was there tells a
+                // miss (`undefined`) from a stored `null` exactly.
+                if (!loose && literal !== undefined && value.keyFoundCpp) {
+                    const found = value.keyFoundCpp;
+                    if (literal === "undefined")
+                        return negated ? found : `!${found}`;
+                    const storedNull = `(${found} && ${absent})`;
+                    return negated ? `!${storedNull}` : storedNull;
+                }
+                const same =
+                    loose || literal === undefined
+                        ? true
+                        : this.absenceOf(nullSide, value, literal);
+                if (!same) return negated ? "true" : "false";
+                return negated ? present : absent;
+            };
+            if (value.kind === "json-null") {
+                const equal =
+                    loose ||
+                    literal === undefined ||
+                    (value.cpp === "std::nullopt" ? "undefined" : "null") ===
+                        literal;
+                return equal !== negated ? "true" : "false";
+            }
             if (value?.kind === "data" && value.dataType?.kind === "optional") {
-                return negated
-                    ? optionalPresentCpp(value.cpp)
-                    : `!${optionalPresentCpp(value.cpp)}`;
+                return absentTest(
+                    optionalPresentCpp(value.cpp),
+                    `!${optionalPresentCpp(value.cpp)}`,
+                );
             }
             if (value?.dataType?.kind === "function") {
-                return `${negated ? "" : "!"}static_cast<bool>(${value.cpp})`;
+                return absentTest(
+                    `static_cast<bool>(${value.cpp})`,
+                    `!static_cast<bool>(${value.cpp})`,
+                );
             }
             const found = presenceFlagCpp(value);
             if (found !== undefined) {
-                return negated ? found : `!(${found})`;
-            }
-            if (value.kind === "json-null") {
-                return negated ? "false" : "true";
+                return absentTest(found);
             }
             if (
                 value.kind === "data" &&
                 value.dataType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(value.dataType.name)
             ) {
-                const present = this.referencePresence(value.cpp);
-                return negated ? present : `!(${present})`;
+                return absentTest(this.referencePresence(value.cpp));
             }
             // A value whose representation is already non-nullable has
             // either been flow-narrowed by TypeScript or was statically
