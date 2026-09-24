@@ -28,7 +28,7 @@ import {
     installVcpkgManifest,
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 
 export type ShippingPlatform = "win32" | "linux" | "darwin";
