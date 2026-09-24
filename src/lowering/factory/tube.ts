@@ -489,9 +489,6 @@ ${body}
                 callShapes: this.vectorShapes,
                 recordLiteral: this.vec3Literal,
                 vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
-                // The tessellation is scene input, so its `| 0` is the full
-                // JavaScript ToInt32.
-                checkedBitwiseCoercions: true,
                 booleanAnd: true,
                 booleanOr: true,
                 returnValue: (expression, lowerer) => {
