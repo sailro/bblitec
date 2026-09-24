@@ -663,7 +663,7 @@ test(
                 }
                 assert(false);
             };
-            for (auto kind : {Kind::pbr, Kind::grid, Kind::shader, Kind::node}) {
+            for (auto kind : {Kind::pbr, Kind::shader, Kind::node}) {
                 draws.transparent.commands.push_back({{kind}});
                 refuses("material draw adapter"); draws.transparent.commands.clear();
             }

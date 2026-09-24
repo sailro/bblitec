@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1291,6 +1292,19 @@ async function main(): Promise<void> {
         splatSh === undefined && splatFragments.length > 0
             ? await composeSplatModule(splatFragments)
             : undefined;
+    // The pin's background renderables: each reached factory runs against
+    // the recording device and is drawn once, so the modules, layouts,
+    // states and buffer bindings the backends build from are its own.
+    const backgroundFeatures = result.manifest.features;
+    const pinnedBackgrounds = await composePinnedBackgroundModules({
+        ground: backgroundFeatures.includes("background:ground"),
+        skybox: backgroundFeatures.includes("background:skybox"),
+        ddsEnvironment: backgroundFeatures.includes(
+            "background:dds-environment",
+        ),
+        solidSkybox: backgroundFeatures.includes("background:solid-skybox"),
+        imageSkybox: backgroundFeatures.includes("background:image-skybox"),
+    });
     // A composite runs its own factory instead: which passes it records, over
     // which intermediates and at which sizes, is the factory's answer.
     const postProcessComposites = await Promise.all(
@@ -1436,6 +1450,7 @@ async function main(): Promise<void> {
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
         ...(splatSh !== undefined ? { splatSh } : {}),
+        ...(pinnedBackgrounds.length > 0 ? { pinnedBackgrounds } : {}),
         splatContainerRotations,
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,

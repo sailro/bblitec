@@ -3902,18 +3902,6 @@ template <bool Maximum>
 }
 
 /**
- * Over a call's own argument list whose operands share one floating type,
- * computed and returned at that type. A pinned float writer lane computes
- * the arithmetic around the call in `float`; the extreme is one of its
- * operands either way, so keeping the type keeps that arithmetic, and what
- * it stores, while NaN and signed zero follow JavaScript.
- */
-template <bool Maximum, std::floating_point Number>
-[[nodiscard]] inline Number math_extreme_lane(std::initializer_list<Number> operands) {
-    return math_extreme_in<Maximum, Number>(operands);
-}
-
-/**
  * `Math.round`, at ECMA-262's own rule rather than C's.
  *
  * The two differ on a negative tie: JavaScript rounds halves toward

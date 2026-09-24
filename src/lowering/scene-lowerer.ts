@@ -473,11 +473,10 @@ export class SceneLowerer {
             // silently missing term. The writer's float offsets (80-86
             // in the browser scene UBO) are deliberately NOT asserted:
             // nothing in the generated tree uses them — fog reaches the
-            // native shaders through named uniform-struct fields packed
-            // by the renderer lowerer, and the WGSL component reads come
-            // from the pin's own WGSL_FOG, lifted verbatim by
-            // shader-builtins-utility.ts fogFactorWgsl(), so they track
-            // the pin without a copy here.
+            // native shaders through the pinned scene block the PALs
+            // fill, and the WGSL component reads are the pin's own
+            // WGSL_FOG inside every composed module, so they track the
+            // pin without a copy here.
             const { declaration: writeFogUbo } =
                 this.context.functionDeclaration(fogModulePath, "writeFogUbo");
             const fogReads = new Set<string>();

@@ -229,63 +229,35 @@ inline void release_dawn_sprite_atlas_bindings(std::vector<DawnSpriteAtlasBindin
     bindings.clear();
 }
 
+/** The vertex stage a layer's plan draws with. */
+inline const char* sprite_vertex_stem(const SpriteLayerPipelinePlan& plan) {
+    return plan.has_depth ? (plan.scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
+                          : (plan.scroll ? "sprite_uvscroll.vert" : "sprite.vert");
+}
+
 /**
- * The four bind-group layouts one layer's pipeline is laid out with.
+ * The four bind-group layouts one layer's pipeline is laid out with, each
+ * from what the layer's two modules declare in that group (their `.slots`
+ * layout lines).
  *
- * Group 0 is unused by the specialized WGSL and is declared empty so the
- * pipeline layout's group indexes line up with it; the rest follow the
- * SDL_GPU grouping the generated WGSL is written in -- vertex uniforms at
- * 1, the atlas pair at 2, fragment uniforms at 3. A custom-shader layer
- * adds the fx block beside its layer block in group 3, which is why these
- * belong to the layer rather than to the pass.
+ * The generated WGSL is written in the SDL_GPU grouping -- vertex uniforms
+ * at 1, the atlas pair and a custom program's extra pairs at 2, fragment
+ * uniforms at 3 -- so group 0 is declared by neither module and lays out
+ * empty, which keeps the pipeline layout's group indexes lined up with it.
+ * A custom-shader layer's fragment declares the fx block beside its layer
+ * block, which is why these belong to the layer rather than to the pass.
  */
 inline std::array<WGPUBindGroupLayout, 4>
-create_dawn_sprite_layer_layouts(WGPUDevice device, std::uint32_t custom_shader,
-                                 std::size_t extra_textures) {
+create_dawn_sprite_layer_layouts(WGPUDevice device, const SpriteLayerPipelinePlan& plan,
+                                 std::uint32_t custom_shader) {
+    const std::string fragment = sprite_fragment_shader_name(custom_shader);
+    const std::array<DawnLayoutStage, 2> stages{{
+        {sprite_vertex_stem(plan), WGPUShaderStage_Vertex},
+        {fragment, WGPUShaderStage_Fragment},
+    }};
     std::array<WGPUBindGroupLayout, 4> layouts{};
-
-    WGPUBindGroupLayoutDescriptor empty = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    layouts[0] = wgpuDeviceCreateBindGroupLayout(device, &empty);
-
-    WGPUBindGroupLayoutEntry vertex_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    vertex_entry.binding = 0;
-    vertex_entry.visibility = WGPUShaderStage_Vertex;
-    vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    vertex_entry.buffer.minBindingSize = sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
-    WGPUBindGroupLayoutDescriptor vertex_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    vertex_layout.entryCount = 1;
-    vertex_layout.entries = &vertex_entry;
-    layouts[1] = wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
-
-    // The atlas pair, then one pair per extra texture a custom shader
-    // named -- the order the composed program declares them in.
-    const std::vector<WGPUBindGroupLayoutEntry> texture_entries =
-        dawn_texture_pair_layout_entries(1u + extra_textures);
-    WGPUBindGroupLayoutDescriptor texture_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    texture_layout.entryCount = static_cast<std::uint32_t>(texture_entries.size());
-    texture_layout.entries = texture_entries.data();
-    layouts[2] = wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
-
-    // A custom-shader layer declares the fx block beside the layer block,
-    // whether or not its body reads either. WebGPU takes a group entry the
-    // shader ignores, so unlike SDL_GPU this side needs no dense slots.
-    std::array<WGPUBindGroupLayoutEntry, 2> fragment_entries{};
-    fragment_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    fragment_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    fragment_entries[0].binding = 0;
-    fragment_entries[0].visibility = WGPUShaderStage_Fragment;
-    fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    fragment_entries[0].buffer.minBindingSize =
-        sizeof(DawnSpriteLayerResources::uploaded_layer_ubo);
-    fragment_entries[1].binding = 1;
-    fragment_entries[1].visibility = WGPUShaderStage_Fragment;
-    fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
-    fragment_entries[1].buffer.minBindingSize = upstream::sprite_fx_ubo_bytes;
-    WGPUBindGroupLayoutDescriptor fragment_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    fragment_layout.entryCount = custom_shader ? 2u : 1u;
-    fragment_layout.entries = fragment_entries.data();
-    layouts[3] = wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
-
+    for (std::uint32_t group = 0; group < layouts.size(); ++group)
+        layouts[group] = create_dawn_reflected_layout(device, stages, group);
     return layouts;
 }
 
@@ -303,9 +275,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     const SpriteBlendDescriptor& blend, const SpriteLayerPipelinePlan& plan,
     std::uint32_t custom_shader, WGPUTextureFormat target_format, WGPUTextureFormat depth_format,
     std::uint32_t sample_count) {
-    DawnShaderModule vertex_module{load_wgsl_module(
-        device, plan.has_depth ? (plan.scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
-                               : (plan.scroll ? "sprite_uvscroll.vert" : "sprite.vert"))};
+    DawnShaderModule vertex_module{load_wgsl_module(device, sprite_vertex_stem(plan))};
     // The custom program replaces the fragment stage alone -- the pin
     // composes it from the same prologue -- so it pairs with whichever
     // vertex stage the layout chose.
@@ -432,8 +402,7 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
         gpu.pipeline = shared_pipeline;
     } else {
         const SpriteLayerPipelinePlan plan = sprite_layer_pipeline_plan(layer);
-        gpu.group_layouts = create_dawn_sprite_layer_layouts(device, layer.custom_shader,
-                                                             layer.custom_textures.size());
+        gpu.group_layouts = create_dawn_sprite_layer_layouts(device, plan, layer.custom_shader);
         gpu.pipeline = create_dawn_sprite_layer_pipeline(device, gpu.group_layouts, layer.blend,
                                                          plan, layer.custom_shader, target_format,
                                                          depth_format, sample_count);

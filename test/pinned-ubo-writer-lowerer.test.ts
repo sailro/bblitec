@@ -54,24 +54,24 @@ test("lowers the pinned clearcoat UBO writer from its own AST", () => {
     });
     const body = lines.join("\n");
     // The pin computes `a = 1 - ior`, `b = 1 + ior`, then
-    // `pow(-a / b, 2)` and `1 / ior`. None of that is written here.
+    // `pow(-a / b, 2)` and `1 / ior`, in double. None of that is written here.
     assert.match(
         body,
-        /const float ior = material\.clearcoat_index_of_refraction;/,
+        /const double ior = material\.clearcoat_index_of_refraction;/,
     );
-    assert.match(body, /const float a = 1\.0f - ior;/);
-    assert.match(body, /const float b = 1\.0f \+ ior;/);
+    assert.match(body, /const double a = 1\.0 - ior;/);
+    assert.match(body, /const double b = 1\.0 \+ ior;/);
     assert.match(
         body,
         /out\.ccParams\[0\] = static_cast<float>\(material\.clearcoat_intensity\)/,
     );
     assert.match(
         body,
-        /out\.ccRefractionParams\[0\] = static_cast<float>\(std::pow\(-a \/ b, 2\.0f\)\)/,
+        /out\.ccRefractionParams\[0\] = static_cast<float>\(std::pow\(-a \/ b, 2\.0\)\)/,
     );
     assert.match(
         body,
-        /out\.ccRefractionParams\[1\] = static_cast<float>\(1\.0f \/ ior\)/,
+        /out\.ccRefractionParams\[1\] = static_cast<float>\(1\.0 \/ ior\)/,
     );
     assert.match(
         body,

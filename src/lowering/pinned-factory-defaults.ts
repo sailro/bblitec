@@ -83,28 +83,6 @@ function factory(module: string, symbol: string) {
     };
 }
 
-/** `createGridMaterial`'s defaults, one `const <option> = options.<option> ?? <default>` each. */
-export const gridMaterialDefaults = once(() => {
-    const grid = factory(
-        "src/material/grid/grid-material.ts",
-        "createGridMaterial",
-    );
-    return {
-        mainColor: grid.color({ local: "mainColor" }),
-        lineColor: grid.color({ local: "lineColor" }),
-        gridRatio: grid.number({ local: "gridRatio" }),
-        gridOffset: grid.color({ local: "gridOffset" }),
-        majorUnitFrequency: grid.number({ local: "majorUnitFrequency" }),
-        minorUnitVisibility: grid.number({ local: "minorUnitVisibility" }),
-        opacity: grid.number({ local: "opacity" }),
-        visibility: grid.number({ local: "visibility" }),
-        antialias: grid.flag({ local: "antialias" }),
-        preMultiplyAlpha: grid.flag({ local: "preMultiplyAlpha" }),
-        useMaxLine: grid.flag({ local: "useMaxLine" }),
-        backFaceCulling: grid.flag({ local: "backFaceCulling" }),
-    };
-});
-
 /**
  * `createSprite2DLayer`'s defaults. The pivot is two lanes the pin
  * defaults one at a time (`opts.pivot?.[i] ?? <lane>`), read lane by lane

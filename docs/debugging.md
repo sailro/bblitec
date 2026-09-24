@@ -62,7 +62,7 @@ clock, which stops while the console session is locked: a run with a frame budge
 | --- | --- |
 | Ordinary native captures | Reconstructed CPU blocks, not intercepted GPU uploads |
 | Browser capture | Shaders, buffers, textures, bundles and draws |
-| SDL .slots | Compiled bindings after dead declarations disappear |
+| .slots | SDL's compiled bindings after dead declarations disappear; the module's declared layout for Dawn |
 | diff --compose | Asset materials; excludes scene-created materials/later writes |
 | textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
 | nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |
@@ -123,7 +123,6 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | --- | --- |
 | `BBLITE_GPU_BACKEND` | Runtime backend in dual builds: exactly `sdl_gpu` or `dawn` |
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
-| `BBLITE_DEFORMATION_DUMP` | Supported SDL bone/morph dump |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
 | `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated presentation frames before the final screenshot, written as `<stem>.frame-<n>.png` with build stamps; excludes engine-frame capture |
 | `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing |

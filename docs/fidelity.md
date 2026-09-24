@@ -60,8 +60,7 @@ PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/bui
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
 Shared vertex transport uses baked worlds, fixed PAL bindings and a 64-matrix palette.
-Lifted skybox fog uses interpolated world position; HDR positionUVW is world position minus background
-center. SDL single-sample image processing samples texel centers. Single-sample transmission replaces
+SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
 ### Numeric width
@@ -90,6 +89,11 @@ does not establish matching CSM bounds, instance coverage or sampler bindings.
 
 ### Background and environment
 
+Background arms (ground, DDS, .env, solid and image skyboxes) run their pinned factories at generation:
+the composed modules deploy whole, and the vertex layouts, rasterizer/depth/blend state, group-1
+layout and buffer bindings are what the factory built and drew. Geometry and mesh blocks are the
+pinned builders and writers, lowered and run over the scene's double-width sizes and root; the
+scene block is the pass's own.
 Cube orientation, mips, encoding, samplers and pass order follow the reached source. GLTF IBL retains
 Float32 harmonics, RGBD decoding and the 256-square RGBA16F BRDF bake. Local probes execute source
 validation/grid/UBO/copy planning.

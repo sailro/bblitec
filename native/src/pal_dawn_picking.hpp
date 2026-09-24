@@ -139,60 +139,48 @@ inline void ensure_dawn_pick_targets(WGPUDevice device, DawnPickTargets& targets
         dawn_error("pick staging buffer");
 }
 
-/** The mesh pass's two groups, in the pin's own order. */
+/**
+ * The mesh pick module's stages. The pin composes one module for both, so
+ * the vertex and fragment stems carry the same declarations.
+ */
+inline constexpr std::array<DawnLayoutStage, 2> dawn_pick_mesh_stages{{
+    {"picking.vert", WGPUShaderStage_Vertex},
+    {"picking.frag", WGPUShaderStage_Fragment},
+}};
+
+/**
+ * Group 0, the scene block every pick pipeline shares -- mesh, thin,
+ * detailed, deformed, cloud and billboard -- laid out from the mesh
+ * module's declaration of it.
+ */
 inline WGPUBindGroupLayout create_dawn_pick_scene_layout(WGPUDevice device) {
-    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    entry.binding = 0;
-    entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    entry.buffer.type = WGPUBufferBindingType_Uniform;
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = 1;
-    descriptor.entries = &entry;
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("pick scene bind group layout");
-    return layout.release();
+    return create_dawn_reflected_layout(device, dawn_pick_mesh_stages, 0);
 }
 
+/**
+ * Group 1, the mesh block. Every candidate's block lives in one buffer at
+ * this backend's 256-byte stride and is bound at its own dynamic offset,
+ * where the pin binds a group per mesh -- the one binding fact the module
+ * cannot state.
+ */
 inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(WGPUDevice device) {
-    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    entry.binding = 0;
-    entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    entry.buffer.type = WGPUBufferBindingType_Uniform;
-    entry.buffer.hasDynamicOffset = true;
-    entry.buffer.minBindingSize = sizeof(DawnPickMeshUniforms);
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = 1;
-    descriptor.entries = &entry;
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("pick mesh bind group layout");
-    return layout.release();
+    return create_dawn_reflected_layout(device, dawn_pick_mesh_stages, 1,
+                                        {.dynamic_offsets = dawn_binding_bit(0)});
 }
 
 #if BBLITE_GPU_INSTANCING
-/** The advanced thin arm adds the instance-matrix storage binding. */
+/**
+ * The advanced thin arm's group 1: the mesh block, bound at its dynamic
+ * offset like the mesh pass's, then the instance-matrix storage its module
+ * declares.
+ */
 inline WGPUBindGroupLayout create_dawn_pick_thin_layout(WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 2> entries{};
-    for (WGPUBindGroupLayoutEntry& entry : entries) {
-        entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    }
-    entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    entries[0].buffer.hasDynamicOffset = true;
-    entries[0].buffer.minBindingSize = sizeof(DawnPickMeshUniforms);
-    entries[1].binding = 1;
-    entries[1].visibility = WGPUShaderStage_Vertex;
-    entries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    entries[1].buffer.minBindingSize = sizeof(std::array<float, 16>);
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("pick thin bind group layout");
-    return layout.release();
+    constexpr std::array<DawnLayoutStage, 2> stages{{
+        {"picking-thin.vert", WGPUShaderStage_Vertex},
+        {"picking-thin.frag", WGPUShaderStage_Fragment},
+    }};
+    return create_dawn_reflected_layout(device, stages, 1,
+                                        {.dynamic_offsets = dawn_binding_bit(0)});
 }
 #endif
 
@@ -294,21 +282,19 @@ private:
         WGPUBindGroup group = nullptr;
         std::uint32_t capacity = 0;
     };
+    /**
+     * Group 1, the system block, from the pin's billboard pick module --
+     * composed once for both stages, the axis-locked arm forking only the
+     * vertex stage's basis -- so both orientations share it.
+     */
     WGPUBindGroupLayout ensure_system_layout() {
         if (system_layout_)
             return system_layout_;
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 0;
-        entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entry.buffer.minBindingSize = sizeof(BillboardPickUniforms);
-        WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        descriptor.entryCount = 1;
-        descriptor.entries = &entry;
-        system_layout_ = wgpuDeviceCreateBindGroupLayout(device_, &descriptor);
-        if (!system_layout_) {
-            dawn_error("billboard pick bind group layout");
-        }
+        const std::array<DawnLayoutStage, 2> stages{{
+            {billboard_pick_vertex_stem(BillboardOrientation::facing), WGPUShaderStage_Vertex},
+            {billboard_pick_fragment_stem(), WGPUShaderStage_Fragment},
+        }};
+        system_layout_ = create_dawn_reflected_layout(device_, stages, 1);
         return system_layout_;
     }
 

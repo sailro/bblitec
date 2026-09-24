@@ -3126,7 +3126,6 @@ export function pinnedStandardVariantsHeader(
                   vectorHooks: {
                       _uvOffsetResolver: { property: "uvOffset", lanes: 2 },
                   },
-                  scalarPrecision: "double",
               }
             : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],

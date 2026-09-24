@@ -70,57 +70,69 @@ test("the emitted loader carries the complete source sampler evaluator", () => {
 
 const expectedShPrescale = `std::array<Color3, 9> pre_scale_harmonics(
     const std::array<Color3, 9>& polynomial) {
-    constexpr float c00xy = 0.3333338747897695f;
-    constexpr float c00z = 0.33333298856284405f;
-    constexpr float c1 = 1.4999984284682104f;
-    constexpr float c2 = 3.999982863580422f;
-    constexpr float c20zz = 1.3333326611423701f;
-    constexpr float c20xy = 0.6666653397393608f;
-    constexpr float c22 = 1.999991431790211f;
+    constexpr double c00xy = 0.3333338747897695;
+    constexpr double c00z = 0.33333298856284405;
+    constexpr double c1 = 1.4999984284682104;
+    constexpr double c2 = 3.999982863580422;
+    constexpr double c20zz = 1.3333326611423701;
+    constexpr double c20xy = 0.6666653397393608;
+    constexpr double c22 = 1.999991431790211;
     std::array<Color3, 9> result{};
     for (int channel = 0; channel < 3; ++channel) {
-        const float x =
+        const double x =
             color_channel(polynomial[0], channel);
-        const float y =
+        const double y =
             color_channel(polynomial[1], channel);
-        const float z =
+        const double z =
             color_channel(polynomial[2], channel);
-        const float xx =
+        const double xx =
             color_channel(polynomial[3], channel);
-        const float yy =
+        const double yy =
             color_channel(polynomial[4], channel);
-        const float zz =
+        const double zz =
             color_channel(polynomial[5], channel);
-        const float yz =
+        const double yz =
             color_channel(polynomial[6], channel);
-        const float zx =
+        const double zx =
             color_channel(polynomial[7], channel);
-        const float xy =
+        const double xy =
             color_channel(polynomial[8], channel);
         set_color_channel(
             result[0],
             channel,
-            (xx + yy) * c00xy + zz * c00z);
+            static_cast<float>((xx + yy) * c00xy + zz * c00z));
         set_color_channel(
-            result[1], channel, y * c1);
+            result[1],
+            channel,
+            static_cast<float>(y * c1));
         set_color_channel(
-            result[2], channel, z * c1);
+            result[2],
+            channel,
+            static_cast<float>(z * c1));
         set_color_channel(
-            result[3], channel, x * c1);
+            result[3],
+            channel,
+            static_cast<float>(x * c1));
         set_color_channel(
-            result[4], channel, xy * c2);
+            result[4],
+            channel,
+            static_cast<float>(xy * c2));
         set_color_channel(
-            result[5], channel, yz * c2);
+            result[5],
+            channel,
+            static_cast<float>(yz * c2));
         set_color_channel(
             result[6],
             channel,
-            zz * c20zz - (xx + yy) * c20xy);
+            static_cast<float>(zz * c20zz - (xx + yy) * c20xy));
         set_color_channel(
-            result[7], channel, zx * c2);
+            result[7],
+            channel,
+            static_cast<float>(zx * c2));
         set_color_channel(
             result[8],
             channel,
-            (xx - yy) * c22);
+            static_cast<float>((xx - yy) * c22));
     }
     return result;
 }`;
@@ -143,7 +155,7 @@ test("a changed SH band constant flows through both pinned copies", () => {
         mutatedFile(loadEnvModule, needle, replacement),
     );
     assert.notEqual(lowered, expectedShPrescale);
-    assert.match(lowered, /constexpr float c1 = 1\.25f;/);
+    assert.match(lowered, /constexpr double c1 = 1\.25;/);
 });
 
 test("SH prescale copies that diverge refuse generation", () => {
