@@ -69,50 +69,37 @@ export function gridSpriteAtlasFramesCpp(premultipliedAlpha?: string): string {
                 premultipliedAlpha === undefined
                     ? ""
                     : `,
+            .has_premultiplied_alpha = true,
             .premultiplied_alpha = ${premultipliedAlpha}`
             }});`;
 }
 
-/**
- * The options `GridSpriteAtlasOptions` carries on its own members: each
- * pinned read, and the member the value lands in. The native record keeps
- * every one of them, so a read here takes the record's value -- the
- * record's member default is what an omitted option holds, which is why
- * `nullishOptions` below checks that default against the pin's own `??`.
- */
-const optionMembers: ReadonlyArray<
-    readonly [string, string, "scalar" | "bool"]
-> = [
-    ["options.cellWidthPx", "options.cell_width_px", "scalar"],
-    ["options.cellHeightPx", "options.cell_height_px", "scalar"],
-    ["options.marginPx", "options.margin_px", "scalar"],
-    ["options.spacingPx", "options.spacing_px", "scalar"],
-    ["options.premultipliedAlpha", "options.premultiplied_alpha", "bool"],
+/** The two required options, each the member its value lands in. */
+const optionMembers: ReadonlyArray<readonly [string, string]> = [
+    ["options.cellWidthPx", "options.cell_width_px"],
+    ["options.cellHeightPx", "options.cell_height_px"],
 ];
 
 /**
- * The `?? <literal>` fallbacks the native record resolves through its member
- * defaults, and the default it declares. A pin that moves one fails here by
- * name rather than partitioning with the record's stale default.
- */
-const nullishOptions: ReadonlyMap<string, string> = new Map([
-    ["options.marginPx", "0"],
-    ["options.spacingPx", "0"],
-    ["options.premultipliedAlpha", "false"],
-]);
-
-/**
- * The options the native record carries with an explicit presence flag, so
- * the pin's own `??` right side is what an absent one takes.
+ * The optional options: the native record carries each with an explicit
+ * presence flag, so the pin's own `??` right side -- lowered where the pin
+ * writes it -- is what an absent one takes.
  */
 const presenceOptions: ReadonlyMap<string, { present: string; cpp: string }> =
-    new Map([
-        [
-            "options.columns",
-            { present: "options.has_columns", cpp: "options.columns" },
-        ],
-        ["options.rows", { present: "options.has_rows", cpp: "options.rows" }],
-    ]);
+    new Map(
+        (
+            [
+                ["options.columns", "columns"],
+                ["options.rows", "rows"],
+                ["options.marginPx", "margin_px"],
+                ["options.spacingPx", "spacing_px"],
+                ["options.premultipliedAlpha", "premultiplied_alpha"],
+            ] as const
+        ).map(([pinned, member]) => [
+            pinned,
+            { present: `options.has_${member}`, cpp: `options.${member}` },
+        ]),
+    );
 
 /** `SpriteFrame`'s members, in the order the native aggregate declares them. */
 const frameFields: readonly string[] = [
@@ -162,9 +149,9 @@ export function gridSpriteAtlasCpp(context: LoweringContext): string {
             "texture.height",
             { cpp: "static_cast<double>(atlas.height)", type: "scalar" },
         ],
-        ...optionMembers.map(([pinned, cpp, type]): [string, PinnedBinding] => [
+        ...optionMembers.map(([pinned, cpp]): [string, PinnedBinding] => [
             pinned,
-            { cpp, type },
+            { cpp, type: "scalar" },
         ]),
     ]);
     const body = lowerPinnedBody(file, declaration.body!.statements, {
@@ -181,15 +168,6 @@ export function gridSpriteAtlasCpp(context: LoweringContext): string {
             const presence = presenceOptions.get(read);
             if (presence) {
                 return `(${presence.present} ? ${presence.cpp} : ${lowerer.expression(node.right)})`;
-            }
-            const fallback = nullishOptions.get(read);
-            if (fallback !== undefined) {
-                context.assertExpressionShape(
-                    node.right,
-                    fallback,
-                    `createGridSpriteAtlas ${read} default (GridSpriteAtlasOptions' own)`,
-                );
-                return bindings.get(read)!.cpp;
             }
             return undefined;
         },
@@ -229,20 +207,32 @@ function gridAtlasStatement(
             return undefined;
         }
         if (local.name.text === "pivot") {
-            // `options.pivot ?? [0.5, 0.5]`: the native record's `pivot`
-            // member holds the caller's pair or that default.
-            context.assertExpressionShape(
-                local.initializer,
-                "options.pivot ?? [0.5, 0.5]",
-                "createGridSpriteAtlas pivot (GridSpriteAtlasOptions' own default)",
-            );
-            bindings.set("pivot[0]", {
-                cpp: "static_cast<double>(options.pivot.x)",
-                type: "scalar",
-            });
-            bindings.set("pivot[1]", {
-                cpp: "static_cast<double>(options.pivot.y)",
-                type: "scalar",
+            // `options.pivot ?? [x, y]`: each lane is the caller's pair
+            // when the record carries one, or that lane of the pin's own
+            // default, lowered where the pin writes it.
+            const nullish = context.nullishDefault(local.initializer);
+            const fallback = nullish
+                ? unwrapExpression(nullish.right)
+                : undefined;
+            if (
+                !nullish ||
+                !fallback ||
+                unwrapExpression(nullish.left).getText() !== "options.pivot" ||
+                !ts.isArrayLiteralExpression(fallback) ||
+                fallback.elements.length !== 2
+            ) {
+                return context.contractError(
+                    local.initializer,
+                    "Expected createGridSpriteAtlas to default its pivot pair through '??'.",
+                );
+            }
+            (["x", "y"] as const).forEach((lane, index) => {
+                bindings.set(`pivot[${index}]`, {
+                    cpp:
+                        `(options.has_pivot ? static_cast<double>(options.pivot.${lane}) : ` +
+                        `${lowerer.expression(fallback.elements[index]!)})`,
+                    type: "scalar",
+                });
             });
             return [];
         }

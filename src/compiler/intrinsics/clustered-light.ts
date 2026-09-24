@@ -46,6 +46,8 @@ import { argumentAt } from "../syntax.js";
 import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
+import { doubleLiteral } from "../../cpp-literals.js";
+import { clusteredLightDefaults } from "../../lowering/pinned-factory-defaults.js";
 
 export interface ClusteredLightIntrinsicContext
     extends
@@ -148,21 +150,30 @@ function appendLight(
     };
     const range = context.objectProperty(literal, "range");
     const intensity = context.objectProperty(literal, "intensity");
-    // Each `??` is resolved where the pin resolves it, so nothing downstream
-    // restates a default: `range ?? 1`, `intensity ?? 1`, `angle ?? PI / 2`.
+    // Each `??` is resolved where the pin resolves it, from that factory's
+    // own default, so nothing downstream restates one.
+    const defaults = spot
+        ? clusteredLightDefaults().spot
+        : clusteredLightDefaults().point;
+    const number = (value: ts.Expression | undefined, fallback: number) =>
+        value
+            ? context.compileNumber(value, "double")
+            : doubleLiteral(fallback);
     const arguments_ = [
         engine,
         container.cpp,
         context.compileVec3(required("position"), "double"),
         context.compileVec3(required("diffuse"), "double"),
-        range ? context.compileNumber(range, "double") : "1.0",
-        intensity ? context.compileNumber(intensity, "double") : "1.0",
+        number(range, defaults.range),
+        number(intensity, defaults.intensity),
     ];
     if (spot) {
-        const angle = context.objectProperty(literal, "angle");
         arguments_.push(
             context.compileVec3(required("direction"), "double"),
-            angle ? context.compileNumber(angle, "double") : `${Math.PI / 2}`,
+            number(
+                context.objectProperty(literal, "angle"),
+                clusteredLightDefaults().spot.angle,
+            ),
         );
         container.state.hasSpots = true;
     }
@@ -184,10 +195,15 @@ export function compileClusteredLightIntrinsic(
         case "createClusteredLightContainer": {
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
-            // The pin's own `?? 64` / `?? 64` / `?? 16`; its `| 0` truncation
-            // and `Math.max(1, …)` clamp happen where it applies them, in
+            // The pin's own `??` defaults; its `| 0` truncation and
+            // `Math.max(1, …)` clamp happen where it applies them, in
             // `buildClusteredLightGpuState`, so the values travel unclamped.
-            const tiles = ["64.0", "64.0", "16.0"];
+            const defaults = clusteredLightDefaults();
+            const tiles = [
+                defaults.horizontalTiles,
+                defaults.verticalTiles,
+                defaults.zSlices,
+            ].map(doubleLiteral);
             if (call.arguments[0]) {
                 const literal = context.expectObjectLiteral(call.arguments[0]);
                 validateOptions(

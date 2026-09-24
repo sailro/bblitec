@@ -20,7 +20,11 @@ import {
 } from "../material-plugin.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { enclosingLoopControl } from "../loop-control.js";
-import { requiredStaticColor3, staticColor3Value } from "./material-options.js";
+import {
+    gridMaterialOptionsCpp,
+    requiredStaticColor3,
+    staticColor3Value,
+} from "./material-options.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
 import {
@@ -665,20 +669,7 @@ function compileCreateGridMaterial(
     const engine = context.requireDefaultEngine(call);
     const options = call.arguments[0]
         ? context.compileGridMaterialOptions(call.arguments[0])
-        : [
-              "bbl::Color3{0.0f, 0.0f, 0.0f}",
-              "bbl::Color3{0.0f, 0.5f, 0.5f}",
-              "1.0f",
-              "bbl::Vec3{}",
-              "10.0f",
-              "0.33f",
-              "1.0f",
-              "1.0f",
-              "true",
-              "false",
-              "false",
-              "true",
-          ];
+        : gridMaterialOptionsCpp({});
     context.reachFeature("material:grid", call);
     context.reachFeature("renderer:scene", call);
     return {
