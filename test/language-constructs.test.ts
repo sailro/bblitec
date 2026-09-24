@@ -18,6 +18,23 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "string-collection-foreach",
+    `
+    const names = new Set<string>(["alpha", "beta"]);
+    const seen: string[] = [];
+    names.forEach(name => {
+        seen.push(name);
+        if (name === "alpha") names.delete("beta");
+    });
+    if (seen.join(",") !== "alpha") throw new Error("set forEach order " + seen.join(","));
+    const labels = new Map<string, string>([["a", "one"], ["b", "two"]]);
+    const pairs: string[] = [];
+    labels.forEach((value, key) => { pairs.push(key + "=" + value); });
+    if (pairs.join(",") !== "a=one,b=two") throw new Error("map forEach " + pairs.join(","));
+`,
+);
+
+check(
     "record-arrow-lexical-this",
     `
     function select(values: number[], options: {test: (value: number) => boolean}): number[] {
