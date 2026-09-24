@@ -2968,6 +2968,34 @@ test("text refuses a value that may be either null or undefined", () => {
     );
 });
 
+check(
+    "enum members inside array and object literals",
+    `
+    enum Shape {
+        Box,
+        Ball,
+    }
+    enum Tone {
+        Soft = "soft",
+        Bold = "bold",
+    }
+    function main(): void {
+        const shapes: Shape[] = [Shape.Ball, Shape["Box"]];
+        if (shapes.length !== 2 || shapes[0] !== Shape.Ball || shapes[1] !== 0) throw new Error("numeric enum array literal");
+        const tones: Tone[] = [Tone.Bold, Tone["Soft"]];
+        if (tones.join(",") !== "bold,soft") throw new Error("string enum array literal " + tones.join(","));
+        const pair: [Shape, number] = [Shape.Ball, 2];
+        if (pair[0] + pair[1] !== 3) throw new Error("enum tuple lane");
+        const counts = [5, 7];
+        counts[Shape.Box] -= 1;
+        if (counts[Shape.Ball] !== 7 || counts[Shape.Box] !== 4) throw new Error("array indexed by an enum member");
+        const byShape: Record<string, Shape> = { ball: Shape.Ball };
+        if (byShape.ball !== 1) throw new Error("enum record member");
+    }
+    main();
+`,
+);
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

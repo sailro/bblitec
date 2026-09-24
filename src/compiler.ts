@@ -242,6 +242,7 @@ import {
     CompilerSymbols,
     declaredIn,
     declaredInDomLibrary,
+    enumMemberConstant,
     resolvedSymbol,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
@@ -3280,7 +3281,7 @@ class Compiler implements LoweringServices {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
         const constant =
-            this.checker.getConstantValue(expression) ??
+            enumMemberConstant(this.checker, expression) ??
             this.symbols.pinnedConstantProperty(expression);
         if (typeof constant === "number") {
             return {
