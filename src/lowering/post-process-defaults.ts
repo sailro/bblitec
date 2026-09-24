@@ -20,7 +20,7 @@ import { sharedUpstreamStore } from "../upstream-source.js";
 import { LoweringContext } from "./context.js";
 
 /** A default as the pin states it: a number, or a flag's keyword. */
-export type PostProcessDefault = number | boolean;
+type PostProcessDefault = number | boolean;
 
 /** Where an effect row's factory body is: its module and declaring function. */
 type EffectSite = Pick<
