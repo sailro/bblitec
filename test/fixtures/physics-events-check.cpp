@@ -23,7 +23,7 @@ int main() {
     const auto handle = u::create_havok_world(scene, {0, 0, 0});
     auto& world = *handle.ownership.lock();
     assert(!world.events);
-    const auto ordinary = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 0},
+    const auto ordinary = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                  u::PhysicsMotionType::STATIC, false);
 #if TEST_THIN
     std::vector<float> matrices(48);
@@ -36,7 +36,7 @@ int main() {
     carrier.instance_source = &matrices;
     u::enable_havok_thin_instance_physics(handle);
 #endif
-    const auto target = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 1},
+    const auto target = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{1}),
                                                u::PhysicsMotionType::DYNAMIC, false);
     std::vector<p::PhysicsBodyHandle> native_handles{target.handle};
 #if TEST_THIN
@@ -99,7 +99,7 @@ int main() {
     assert(first == native_handles.size() && second == first && added == 1);
 
     world.after_step.clear();
-    const auto throwing = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 2},
+    const auto throwing = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{2}),
                                                  u::PhysicsMotionType::STATIC, false);
     u::on_physics_after_step(handle, [&](float) {
         u::remove_physics_body(handle, throwing);
@@ -117,10 +117,10 @@ int main() {
     world.after_step.clear();
 
     // Real Bullet contact records retain both native IDs, signed separation and FINISHED data.
-    const auto ground = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 2},
+    const auto ground = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{2}),
                                                u::PhysicsMotionType::STATIC, false);
     engine.meshes[3].position = {0, 1.5, 0};
-    const auto ball = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 3},
+    const auto ball = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{3}),
                                              u::PhysicsMotionType::DYNAMIC, false);
     const u::PhysicsShape shape{p::physics_shape_create_sphere({0, 0, 0}, 1)};
     u::set_physics_body_shape(handle, ground, shape);

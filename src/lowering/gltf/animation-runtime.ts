@@ -239,9 +239,13 @@ ${cameraRefresh}
         };
         const auto publish_mesh=[animation_runtime=animation_runtime.get(),&engine](std::size_t index) {
             const auto& binding=animation_runtime->meshes.at(index);
-            auto& mesh=engine.meshes.at(binding.mesh);
+            // The pin keeps posing a mesh removeFromScene disposed; nothing
+            // draws it, and its geometry went with the removal.
+            MeshRecord* found=current_mesh_record(engine,binding.mesh);
+            if(!found||found->retired)return;
+            auto& mesh=*found;
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
-            auto& geometry=engine.geometries.at(binding.geometry);
+            auto& geometry=engine.geometries.at(mesh.geometry);
             const auto& world=animation_runtime->nodes.at(binding.node).world;
             publish_gltf_deformation(mesh,geometry,world,binding.initial_joint_matrices,
                 binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
@@ -433,11 +437,11 @@ ${
     options.vat
         ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
         const auto skeleton_binding=[animation_runtime,&engine](MeshHandle mesh)->std::pair<GltfAnimationPoseSkeleton*,AnimatedMeshBinding*> {
-            if(mesh.value>=engine.meshes.size()||${recordAt("engine.meshes", "mesh")}.has_vat)return {};
+            if(${recordAt("engine.meshes", "mesh")}.has_vat)return {};
             for(const auto& skeleton:animation_runtime->source_skeletons.entries)
                 for(const auto index:skeleton->meshes) {
                     auto& binding=animation_runtime->meshes.at(index);
-                    if(binding.mesh==mesh.value)return {skeleton.get(),&binding};
+                    if(binding.mesh==mesh)return {skeleton.get(),&binding};
                 }
             return {};
         };
@@ -476,15 +480,15 @@ ${
 }
         asset.clone_mesh_animation=[animation_runtime,&engine](MeshHandle source,MeshHandle clone) {
             const auto found=std::find_if(animation_runtime->meshes.begin(),animation_runtime->meshes.end(),
-                [&](const auto& binding){return binding.mesh==source.value;});
+                [&](const auto& binding){return binding.mesh==source;});
             if(found==animation_runtime->meshes.end())return;
             if(found->skin==std::numeric_limits<std::size_t>::max()) {
-                if(!engine.geometries.at(found->geometry).morph_positions.empty())
+                if(!engine.geometries.at(${recordAt("engine.meshes", "source")}.geometry).morph_positions.empty())
                     throw std::runtime_error("Cloning an animated morph hierarchy requires shared morph weights with an independent node world.");
                 return;
             }
             const auto source_index=static_cast<std::size_t>(found-animation_runtime->meshes.begin());
-            auto binding=*found;binding.mesh=clone.value;
+            auto binding=*found;binding.mesh=clone;
             const auto index=animation_runtime->meshes.size();
             animation_runtime->meshes.push_back(binding);
             if(binding.skeleton_binding<animation_runtime->source_skeletons.size())

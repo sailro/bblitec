@@ -442,12 +442,25 @@ struct CameraHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct TransformNodeLease;
+
 struct TransformNodeHandle {
     std::uint32_t value = invalid_handle;
+    /** The slot's `TransformNodeRecord::generation` when the node was created. */
+    std::uint32_t generation = 0;
+    /**
+     * What keeps the node's record: every copy of a node's handle, in the
+     * program or in an engine table, shares its lease, and the record is
+     * reclaimed once none is left (`TransformNodeLease`).
+     */
+    std::shared_ptr<const TransformNodeLease> lease{};
 
     // The same identity a MeshHandle carries, for the same reason: the
     // parent setter's child registry looks a node up by the id it is.
-    [[nodiscard]] bool operator==(const TransformNodeHandle&) const = default;
+    [[nodiscard]] bool operator==(const TransformNodeHandle& other) const noexcept {
+        return value == other.value && generation == other.generation;
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(lease); }
 };
 
 /**
@@ -544,7 +557,8 @@ struct VatBake {
  * one record rather than three captured lambdas.
  */
 struct VatHandle {
-    std::uint32_t value = invalid_handle;
+    /** The mesh `attachVat` baked; a kept handle refuses once a later mesh takes its slot. */
+    MeshHandle mesh{};
 };
 
 /**
@@ -2001,12 +2015,6 @@ struct ModelGeometry {
      * scanning every record the engine ever created.
      */
     std::uint32_t owners = 1;
-    /**
-     * Whether a table outside the mesh records (a loader's animation
-     * bindings) or a retired record that keeps its slot may name this
-     * geometry, so its slot is never reused.
-     */
-    bool slot_reserved = false;
 };
 
 /**
@@ -2049,6 +2057,10 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
  * reason: one emitted composition serves both.
  */
 struct TransformNodeRecord {
+    /** Bumped each time `create_transform_node` reuses this slot. */
+    std::uint32_t generation = 0;
+    /** Whether `reclaim_transform_nodes` reclaimed this record. */
+    bool retired = false;
     std::string name;
     Vec3d position{};
     Vec3 rotation{};
@@ -2169,30 +2181,15 @@ struct MeshRecord {
      * releasing a sharer's geometry twice.
      */
     bool retired = false;
+    /** Whether `offer_retired_mesh_slot` offered this retired record's slot. */
+    bool slot_offered = false;
     /** Bumped each time `store_mesh_record` reuses this slot. */
     std::uint32_t generation = 0;
     /**
-     * The slot this record would hold if storage never reused one: its
-     * position among every record `store_mesh_record` stored. Generated
-     * composition tables are in creation order, so a draw with no
-     * assigned feature row reads its row here rather than at its slot.
+     * The generated shader-feature table row this mesh's draws read, which
+     * `store_mesh_record` assigns (`MeshCompositionRows`). A clone copies
+     * its source's record and so keeps its source's row.
      */
-    std::uint32_t creation_ordinal = invalid_handle;
-    /**
-     * Whether a loader's asset tables (animation bindings, node maps, flow
-     * graph) name this record and its geometry by index. Such a record's
-     * slot stays reserved after retirement, since those tables outlive the
-     * mesh's scene membership.
-     */
-    bool asset_indexed = false;
-    // Before renderer startup a clone records the runtime handle of its
-    // source mesh here. The renderer uses that link while assigning stable
-    // creation-order composition rows, then keeps it for clone provenance.
-    std::uint32_t feature_source_mesh = invalid_handle;
-    // Generated shader-feature tables describe only original meshes, in
-    // source creation order. Runtime clone handles can be interleaved with
-    // later imports, so every original receives a stable row and every clone
-    // inherits its source row before the first render plan is built.
     std::uint32_t composition_feature_row = invalid_handle;
     // A cloned imported root remains an outer scene-node transform. Unlike
     // ordinary mesh TRS this is applied by the draw world after deformation,
@@ -2367,6 +2364,30 @@ struct MeshRecord {
     // PAL re-uploads only when the animation evaluator writes them.
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
+};
+
+/**
+ * The generated shader-feature tables' rows, by the meshes a program
+ * stores. The tables list the scene's mesh creation sites in source order;
+ * `store_mesh_record` hands each mesh its row as it is stored, so a row is
+ * one identity whatever slot the mesh takes.
+ *
+ * Without runtime profiles the k-th mesh stored that is not a clone reads
+ * row k. With them (a creation site that runs a generation-unknown number of
+ * times) the program announces the site before its factory runs
+ * (`store_next_mesh_with_profile`) and that mesh reads the site's row
+ * (`profile_rows`), while every other original reads `static_rows[k]` and,
+ * past those, a row after the table (`row_count + k - static_rows.size()`),
+ * which the draw reads as a runtime mesh. `create_engine` installs the
+ * generated rows.
+ */
+struct MeshCompositionRows {
+    std::vector<std::uint32_t> static_rows;
+    std::vector<std::uint32_t> profile_rows;
+    std::uint32_t row_count = 0;
+    /** Originals stored so far, profiled ones excepted. */
+    std::uint32_t originals_stored = 0;
+    std::optional<std::uint32_t> pending_profile;
 };
 
 inline bool has_instance_colors(const MeshRecord& mesh) {
@@ -2943,9 +2964,10 @@ struct LightRecord {
     // The meshes this light applies to, as the pinned engine keeps them: an
     // inclusion list wins outright when it is non-empty, otherwise the
     // exclusion list filters. Empty on both means every mesh, which is what
-    // a light created in scene code gets.
-    std::vector<std::uint32_t> included_meshes;
-    std::vector<std::uint32_t> excluded_meshes;
+    // a light created in scene code gets. The pin's removal leaves an entry
+    // in place; its generation matches no later mesh taking the slot.
+    std::vector<MeshHandle> included_meshes;
+    std::vector<MeshHandle> excluded_meshes;
     /**
      * `light.shadowGenerator`. The pin's `ShadowTask` walks `scene.lights`
      * and renders each light's generator, and `standard-renderable.ts`
@@ -3789,7 +3811,17 @@ struct DeviceRecoveryRegistration {
 
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
+/** The (slot, generation) of each transform node whose lease ended. */
+using ReleasedTransformNodes = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
 struct Engine {
+    /**
+     * Queued by `TransformNodeLease`, released by `reclaim_transform_nodes`.
+     * Declared first so it outlives every table whose handles end a lease
+     * while the engine is torn down.
+     */
+    std::shared_ptr<ReleasedTransformNodes> released_transform_nodes =
+        std::make_shared<ReleasedTransformNodes>();
     /** Realm allocations publish a weak owner for APIs reached through scene borrows. */
     std::weak_ptr<Engine> realm_owner;
     std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>>
@@ -3986,15 +4018,12 @@ struct Engine {
     std::vector<MeshRecord> meshes;
     /** Retired mesh slots `store_mesh_record` reuses (see there). */
     std::vector<std::uint32_t> free_mesh_slots;
-    /** Mesh records ever stored: the creation ordinal of the next one. */
-    std::uint32_t mesh_records_created = 0;
+    MeshCompositionRows mesh_composition_rows;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
     // culling-enabled thin-instance pool crossing zero active rows. Matrix or
     // count changes within one membership state touch no draw-list storage.
     std::uint64_t draw_list_epoch = 0;
-    /** Whether original meshes and their clones have stable feature rows. */
-    bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
@@ -4014,6 +4043,8 @@ struct Engine {
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
     std::vector<TransformNodeRecord> transform_nodes;
+    /** Reclaimed transform-node slots `create_transform_node` reuses. */
+    std::vector<std::uint32_t> free_transform_node_slots;
     // Camera controls and render loops keep references to active records while
     // UI callbacks may construct the next mode's cameras. End insertion must
     // therefore preserve those references until the loop observes the scene
@@ -4242,27 +4273,139 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
 }
 
 /**
- * The handle of the mesh `slot` holds now, for a table that names a mesh by
- * its slot alone (a physics body's node, a property-animation target). Such
- * a table carries no generation, so it cannot tell its own mesh from a
- * later occupant of a reused slot.
+ * The record a table's handle names, or null once a later mesh took the
+ * slot of the disposed mesh it named. The pin keeps writing a disposed mesh
+ * a table still names -- a physics body's pose, an animation target, a
+ * deformation. While its record is retired but still in its slot, the
+ * write lands on it, and a child still parented under it follows; a slot
+ * is reused only once no mesh composes under it
+ * (`offer_retired_mesh_slot`), so a writer that finds no record skips a
+ * write nothing can observe.
  */
-inline MeshHandle mesh_slot_handle(const Engine& engine, std::uint32_t slot) {
-    return MeshHandle{slot, engine.meshes.at(slot).generation};
+inline MeshRecord* current_mesh_record(Engine& engine, MeshHandle mesh) {
+    return handle_find(engine.meshes, mesh);
+}
+
+inline const MeshRecord* current_mesh_record(const Engine& engine, MeshHandle mesh) {
+    return handle_find(engine.meshes, mesh);
+}
+
+/** The generated composition-table row a draw of `mesh` reads (`MeshCompositionRows`). */
+inline std::uint32_t composition_feature_mesh(const Engine& engine, MeshHandle mesh) {
+    return handle_at(engine.meshes, mesh).composition_feature_row;
 }
 
 /**
- * The generated composition-table row a draw of `mesh` reads: the row
- * renderer startup or a mesh profile assigned, else the record's creation
- * ordinal -- the tables are in creation order, and a reused slot is not.
+ * The next mesh `store_mesh_record` stores comes from the runtime creation
+ * site `profile` and reads that site's composition row.
  */
-inline std::uint32_t composition_feature_mesh(const Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) {
-        return mesh.value;
+inline void store_next_mesh_with_profile(Engine& engine, std::uint32_t profile) {
+    MeshCompositionRows& rows = engine.mesh_composition_rows;
+    if (profile >= rows.profile_rows.size()) {
+        throw std::runtime_error("A runtime mesh names no generated composition profile.");
     }
-    const MeshRecord& record = handle_at(engine.meshes, mesh);
-    return record.composition_feature_row != invalid_handle ? record.composition_feature_row
-                                                            : record.creation_ordinal;
+    rows.pending_profile = profile;
+}
+
+/**
+ * The row a mesh stored now reads, per `MeshCompositionRows`: its runtime
+ * creation site's, else the row a clone copied from its source, else the
+ * next original's.
+ */
+inline std::uint32_t stored_mesh_composition_row(Engine& engine, std::uint32_t copied_row) {
+    MeshCompositionRows& rows = engine.mesh_composition_rows;
+    if (const auto profile = std::exchange(rows.pending_profile, std::nullopt)) {
+        return rows.profile_rows[*profile];
+    }
+    if (copied_row != invalid_handle) {
+        return copied_row;
+    }
+    const std::uint32_t original = rows.originals_stored++;
+    const auto static_count = static_cast<std::uint32_t>(rows.static_rows.size());
+    return original < static_count ? rows.static_rows[original]
+                                   : rows.row_count + (original - static_count);
+}
+
+/**
+ * A transform node's liveness. The pin's TransformNode is a JavaScript
+ * object the collector frees once nothing reaches it, and it has no
+ * disposal of its own: removing it from a scene detaches it and nothing
+ * more. So a node's record lives exactly as long as some handle to it
+ * does -- the program's, a mesh's `parent`, another node's `parent` or
+ * `children`, a physics body's, a gizmo's -- and every handle shares this
+ * lease. It is a collected value: its trace names the handles the node's
+ * own record holds (`parent`, `children`, the registry), so a hierarchy
+ * nothing else reaches is freed as a cycle, as JavaScript frees it. The
+ * lease's end queues the record; `reclaim_transform_nodes` releases it at
+ * the next safe point.
+ */
+struct TransformNodeLease {
+    /** The engine, while `engine_alive` says it has not moved or gone. */
+    const Engine* engine = nullptr;
+    std::weak_ptr<const int> engine_alive;
+    std::weak_ptr<ReleasedTransformNodes> released;
+    std::uint32_t slot = invalid_handle;
+    std::uint32_t generation = 0;
+
+    TransformNodeLease(Engine& owner, std::uint32_t node_slot, std::uint32_t node_generation)
+        : engine(&owner), engine_alive(owner.lifetime.token()),
+          released(owner.released_transform_nodes), slot(node_slot), generation(node_generation) {}
+    TransformNodeLease(const TransformNodeLease&) = delete;
+    TransformNodeLease& operator=(const TransformNodeLease&) = delete;
+    ~TransformNodeLease();
+    void gc_trace(const js::TraceVisitor& visitor) const;
+};
+
+inline TransformNodeLease::~TransformNodeLease() {
+    if (const auto queue = released.lock()) {
+        queue->emplace_back(slot, generation);
+    }
+}
+
+inline void TransformNodeLease::gc_trace(const js::TraceVisitor& visitor) const {
+    if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
+        return;
+    }
+    const TransformNodeRecord& record = engine->transform_nodes[slot];
+    if (record.generation != generation || record.retired) {
+        return;
+    }
+    visitor(record.parent);
+    visitor(record.children);
+    visitor(record.parented_nodes);
+}
+
+/**
+ * Releases the records of the transform nodes whose lease ended: each
+ * drops the handles it held, which may end further leases, and offers its
+ * slot to the next `create_transform_node`. A mesh composing under a node
+ * holds a handle to it, so no live mesh names a released node.
+ */
+inline void reclaim_transform_nodes(Engine& engine) {
+    ReleasedTransformNodes& released = *engine.released_transform_nodes;
+    while (!released.empty()) {
+        const auto [slot, generation] = released.back();
+        released.pop_back();
+        if (slot >= engine.transform_nodes.size()) {
+            continue;
+        }
+        TransformNodeRecord& record = engine.transform_nodes[slot];
+        if (record.generation != generation || record.retired) {
+            continue;
+        }
+        record.retired = true;
+        // Moved out first: destroying the handles can end more leases,
+        // which queue their records while this one is already settled.
+        TransformNodeHandle parent = std::move(record.parent);
+        std::vector<TransformNodeChild> children = std::move(record.children);
+        std::vector<TransformNodeHandle> parented_nodes = std::move(record.parented_nodes);
+        release_storage(record.parented_meshes);
+        record.parent = TransformNodeHandle{};
+        record.children = {};
+        record.parented_nodes = {};
+        std::string().swap(record.name);
+        engine.free_transform_node_slots.push_back(slot);
+    }
 }
 
 /** Stores a new geometry record in a slot no record names any more, or a new one. */
@@ -4279,17 +4422,32 @@ inline std::uint32_t store_geometry_record(Engine& engine, ModelGeometry geometr
 
 /** Frees the arrays of a geometry its last owner let go, and offers its slot. */
 inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
-    ModelGeometry& record = engine.geometries.at(geometry);
-    release_geometry_storage(record);
-    if (!record.slot_reserved) {
-        engine.free_geometry_slots.push_back(geometry);
+    release_geometry_storage(engine.geometries.at(geometry));
+    engine.free_geometry_slots.push_back(geometry);
+}
+
+/**
+ * Offers a retired mesh's slot for reuse once no live mesh composes its
+ * world under it. The pin keeps a disposed parent alive for as long as a
+ * child's `parent` names it, and that child keeps drawing under the
+ * parent's last world matrix; every other table that names a disposed mesh
+ * (a traversal `children` list, a loader's asset tables, a physics body,
+ * an animation target) holds its handle, whose generation tells it apart
+ * from the slot's next occupant.
+ */
+inline void offer_retired_mesh_slot(Engine& engine, MeshHandle mesh) {
+    MeshRecord* record = handle_find(engine.meshes, mesh);
+    if (record && record->retired && !record->slot_offered && record->parented_meshes.empty()) {
+        record->slot_offered = true;
+        engine.free_mesh_slots.push_back(mesh.value);
     }
 }
 
 /**
  * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
- * parent `record` names, a transform node or a mesh. The traversal
- * `children` lists are the pin's own arrays and keep their entries.
+ * parent `record` names, a transform node or a mesh, which is the pin's
+ * `_removeChild` in the parent setter. The traversal `children` lists are
+ * the pin's own arrays and keep their entries.
  */
 inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
     if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
@@ -4297,6 +4455,21 @@ inline void unregister_from_parents(Engine& engine, const MeshRecord& record, Me
     }
     if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
         std::erase(parent->parented_meshes, mesh);
+        offer_retired_mesh_slot(engine, record.parent);
+    }
+}
+
+/**
+ * A retired mesh as a new parent: its slot may already be offered, and a
+ * child registered under it would then compose under the slot's next
+ * occupant. The pin allows it -- the child follows the detached object --
+ * and no reached program does it.
+ */
+inline void require_live_mesh_parent(const MeshRecord& parent) {
+    if (parent.retired) {
+        throw std::runtime_error("Mesh '" + parent.name +
+                                 "' was disposed when it left its last scene; parenting a "
+                                 "mesh under it is outside the reached subset.");
     }
 }
 
@@ -4304,21 +4477,19 @@ inline void unregister_from_parents(Engine& engine, const MeshRecord& record, Me
  * Stores a new mesh record and returns its handle.
  *
  * The pin's JavaScript collector frees a disposed mesh once nothing
- * references it. Here `retire_mesh_record` offers a retired record's slot
- * and the next record takes it under the next generation, so a program
- * that keeps building and retiring meshes holds a table no larger than the
- * most meshes it held at once. The retired record's parent registration
- * leaves with the reuse. Reuse waits until the renderer has assigned the
- * composition rows of the meshes created before it started, which it
- * assigns in slot order.
+ * references it. Here a retired record's slot is offered
+ * (`offer_retired_mesh_slot`) and the next record takes it under the next
+ * generation, so a program that keeps building and retiring meshes holds a
+ * table no larger than the most meshes it held at once. The record takes
+ * its composition row here (`stored_mesh_composition_row`).
  */
 inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
-    record.creation_ordinal = engine.mesh_records_created++;
-    if (engine.composition_feature_rows_initialized && !engine.free_mesh_slots.empty()) {
+    record.composition_feature_row =
+        stored_mesh_composition_row(engine, record.composition_feature_row);
+    if (!engine.free_mesh_slots.empty()) {
         const std::uint32_t slot = engine.free_mesh_slots.back();
         engine.free_mesh_slots.pop_back();
         MeshRecord& retired = engine.meshes[slot];
-        unregister_from_parents(engine, retired, MeshHandle{slot, retired.generation});
         record.generation = retired.generation + 1;
         retired = std::move(record);
         engine.mesh_material_scenes.erase(slot);
@@ -4330,54 +4501,27 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
 }
 
 /**
- * `removeFromScene` taking a mesh out of its last scene: the record is
- * retired and gives up its claim on its geometry, whose arrays go with the
- * last claim. The record's slot, and its geometry's once unowned, are
- * offered for reuse unless some table can still name the record: a
- * loader's asset tables index it, or another record's hierarchy lists it
- * (as a parent, or as a traversal `children` entry, which the pin's
- * removal leaves in place). Such a record keeps its slot and its geometry
- * link, and that geometry keeps its slot too. Any other retired record
- * drops its geometry link at once.
+ * `removeFromScene` taking a mesh out of its last scene (`disposeMeshGpu`):
+ * the record is retired and gives up its claim on its geometry, whose
+ * arrays and slot go with the last claim, and its own slot is offered once
+ * no live mesh composes under it (`offer_retired_mesh_slot`).
  */
 inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
     MeshRecord& record = handle_at(engine.meshes, mesh);
-    const std::uint32_t geometry = record.geometry;
-    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
+    if (record.retired) {
         return;
     }
     record.retired = true;
-    const auto listed_as_child = [&engine, mesh] {
-        for (const MeshRecord& other : engine.meshes) {
-            if (std::find(other.children.begin(), other.children.end(), mesh) !=
-                other.children.end()) {
-                return true;
-            }
+    const std::uint32_t geometry = std::exchange(record.geometry, invalid_handle);
+    if (geometry < engine.geometries.size()) {
+        ModelGeometry& shared = engine.geometries[geometry];
+        if (shared.owners > 1) {
+            --shared.owners;
+        } else {
+            release_unowned_geometry(engine, geometry);
         }
-        for (const TransformNodeRecord& node : engine.transform_nodes) {
-            for (const TransformNodeChild& child : node.children) {
-                const auto* listed = std::get_if<MeshHandle>(&child);
-                if (listed && *listed == mesh) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    };
-    const bool reserved = record.asset_indexed || !record.children.empty() ||
-                          !record.parented_meshes.empty() || listed_as_child();
-    ModelGeometry& shared = engine.geometries[geometry];
-    if (reserved) {
-        shared.slot_reserved = true;
-    } else {
-        record.geometry = invalid_handle;
-        engine.free_mesh_slots.push_back(mesh.value);
     }
-    if (shared.owners > 1) {
-        --shared.owners;
-        return;
-    }
-    release_unowned_geometry(engine, geometry);
+    offer_retired_mesh_slot(engine, mesh);
 }
 
 inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {

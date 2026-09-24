@@ -17,6 +17,7 @@ interface Line {
     workingSet?: number;
     meshRecords?: number;
     sceneMeshes?: number;
+    transformNodeRecords?: number;
     geometryRecords?: number;
     liveGeometries?: number;
     gcNodes?: number;
@@ -26,6 +27,7 @@ interface Line {
 const line = (sample: Line): string =>
     `[mem][frame] frame=${sample.frame} working_set_mb=${(sample.workingSet ?? 100).toFixed(1)} ` +
     `mesh_records=${sample.meshRecords ?? 40} scene_meshes=${sample.sceneMeshes ?? 40} ` +
+    `transform_node_records=${sample.transformNodeRecords ?? 3} ` +
     `gc_nodes=${sample.gcNodes ?? 500} gc_allocations=${sample.gcAllocations ?? 1000} ` +
     `geometry_records=${sample.geometryRecords ?? 40} live_geometries=${sample.liveGeometries ?? 40} ` +
     "geometry_mb=8.0 gpu_meshes=40 shared_geometries=12 shared_geometry_mb=6.5";
@@ -74,6 +76,7 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
         workingSetMb: 104.5,
         meshRecords: 41,
         sceneMeshes: 40,
+        transformNodeRecords: 3,
         geometryRecords: 43,
         liveGeometries: 39,
         geometryMb: 8,

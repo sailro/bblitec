@@ -2897,9 +2897,12 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
     casters.clear();
     casters.reserve(generator.caster_meshes.size());
     for (const MeshHandle handle : generator.caster_meshes) {
-        if (handle.value >= engine.meshes.size())
+        // The caster array keeps a removed mesh, as the pin's does; its
+        // record stays in the fit until a later mesh takes its slot.
+        const MeshRecord* found = current_mesh_record(engine, handle);
+        if (!found)
             continue;
-        const MeshRecord& record = handle_at(engine.meshes, handle);
+        const MeshRecord& record = *found;
         upstream::ShadowCaster caster;
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
@@ -3437,8 +3440,8 @@ inline std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const E
  * this walk, so it is written once over whichever block's lanes.
  */
 template <typename Block>
-inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine,
-                                        std::uint32_t mesh_index, Block& block) {
+inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine, MeshHandle mesh,
+                                        Block& block) {
     if constexpr (requires {
                       block.li;
                       block.lc;
@@ -3450,7 +3453,7 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
                 break;
             if (handle.value >= engine.lights.size())
                 continue;
-            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh_index)) {
+            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh)) {
                 block.li[count / 4][count % 4] = light_index;
                 ++count;
             }
@@ -3463,10 +3466,10 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
 #if BBLITE_PINNED_MATERIAL_VARIANTS
 inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
                                                 const std::array<float, 16>& world,
-                                                std::uint32_t mesh_index) {
+                                                MeshHandle mesh) {
     upstream::MeshUniforms block{};
     block.world = world;
-    pinned_mesh_light_selection(scene, engine, mesh_index, block);
+    pinned_mesh_light_selection(scene, engine, mesh, block);
     // The velocity geometry arm's tail. The native worlds are constant
     // frame to frame (node motion re-bakes vertices), so the previous
     // world is the world itself and the flag stays on: the composed
@@ -3503,10 +3506,10 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
  * draws a receiving mesh and a non-receiving one alike.
  */
 inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engine& engine,
-                                                  std::uint32_t mesh_index,
+                                                  MeshHandle mesh,
                                                   bool uses_local_attributes = false) {
     upstream::NodeMeshUniforms block{};
-    const MeshRecord& record = engine.meshes[mesh_index];
+    const MeshRecord& record = handle_at(engine.meshes, mesh);
     if (!uses_local_attributes) {
         block.world = record.scene_morph_targets
                           ? scene_deformation_draw_world(record, scene, engine)
@@ -3547,7 +3550,7 @@ inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engi
         block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
         block.receivesShadow[3] = geometry.has_vertex_colors ? 1.0f : 0.0f;
     }
-    pinned_mesh_light_selection(scene, engine, mesh_index, block);
+    pinned_mesh_light_selection(scene, engine, mesh, block);
     return block;
 }
 #endif
@@ -3720,7 +3723,7 @@ inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& eng
         if (handle.value >= engine.lights.size())
             continue;
         const LightRecord& light = handle_at(engine.lights, handle);
-        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+        if (!upstream::light_affects_mesh(light, draw.item.mesh)) {
             continue;
         }
         ++light_count;
@@ -3897,7 +3900,7 @@ inline upstream::MeshUniforms pinned_draw_mesh_block(const Scene& scene, const E
                                                conventions.world_from_palette,
                                                upstream::pbr_variants[variant].uses_local_position,
                                                record, scene, engine),
-                             draw.item.mesh.value);
+                             draw.item.mesh);
 }
 
 /**
@@ -6458,7 +6461,9 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
     line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
          << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size() - engine.free_mesh_slots.size()
-         << " scene_meshes=" << scene_meshes << " gc_nodes=" << bbl::js::managed_node_count()
+         << " scene_meshes=" << scene_meshes << " transform_node_records="
+         << engine.transform_nodes.size() - engine.free_transform_node_slots.size()
+         << " gc_nodes=" << bbl::js::managed_node_count()
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
          << " geometry_records=" << engine.geometries.size() - engine.free_geometry_slots.size()
          << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb

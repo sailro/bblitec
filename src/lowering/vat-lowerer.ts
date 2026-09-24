@@ -158,15 +158,12 @@ constexpr float kVatDefaultFrameRate = ${this.context.floatLiteral(
 
 ${lowerGltfVatBinding(this.context)}
 
-MeshRecord& vat_mesh(Engine& engine, std::uint32_t mesh) {
-    if (mesh >= engine.meshes.size()) {
-        throw std::runtime_error("VAT names no such mesh.");
-    }
-    return engine.meshes[mesh];
+MeshRecord& vat_mesh(Engine& engine, MeshHandle mesh) {
+    return ${recordAt("engine.meshes", "mesh")};
 }
 
 VatData& vat_data(Engine& engine, VatHandle handle) {
-    MeshRecord& record = vat_mesh(engine, handle.value);
+    MeshRecord& record = vat_mesh(engine, handle.mesh);
     if (!record.has_vat) {
         throw std::runtime_error("VatHandle names a mesh with no VAT.");
     }
@@ -198,7 +195,7 @@ VatBake bake_vat(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<AnimationGroupHandle>& groups) {
-    MeshRecord& record = vat_mesh(engine, mesh.value);
+    MeshRecord& record = vat_mesh(engine, mesh);
     gltf_vat_require_skeleton(record.skinned && !record.has_vat, record.name);
     VatBakeRecord bake;
     // Every clip contributes a contiguous row block, clip 0 first, in the
@@ -297,7 +294,7 @@ VatHandle attach_vat(
     if (baked.value >= engine.vat_bakes.size()) {
         throw std::runtime_error("attachVat names no such bake.");
     }
-    MeshRecord& record = vat_mesh(engine, mesh.value);
+    MeshRecord& record = vat_mesh(engine, mesh);
     if (!record.skinned) {
         throw std::runtime_error(
             "attachVat: mesh has no skeleton (bake first, attach before clearing it).");
@@ -309,7 +306,7 @@ VatHandle attach_vat(
     // palette upload. The pose pass skips the record from here.
     record.skinned = false;
     record.bone_matrices.clear();
-    const VatHandle handle{mesh.value};
+    const VatHandle handle{mesh};
     const VatBakeRecord& bake = ${recordAt("engine.vat_bakes", "baked")};
     const std::string selected = clip.empty() && !bake.clips.empty()
         ? bake.clips[0].name

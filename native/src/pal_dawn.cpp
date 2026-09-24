@@ -4749,7 +4749,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
     const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(
         scene, engine, standard_draw_world(record, entry.uses_local_position, scene, engine),
-        draw.item.mesh.value);
+        draw.item.mesh);
     wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
@@ -6207,8 +6207,7 @@ struct NodeMeshBlockCache {
 };
 
 const upstream::NodeMeshUniforms& node_mesh_block_for(NodeMeshBlockCache& cache, const Scene& scene,
-                                                      const Engine& engine,
-                                                      std::uint32_t mesh_index,
+                                                      const Engine& engine, MeshHandle mesh,
                                                       bool uses_local_attributes = false) {
     if (cache.scene != &scene) {
         cache.scene = &scene;
@@ -6217,15 +6216,16 @@ const upstream::NodeMeshUniforms& node_mesh_block_for(NodeMeshBlockCache& cache,
         }
     }
     auto& mode = cache.modes[uses_local_attributes ? 1u : 0u];
-    if (mode.composed.size() <= mesh_index) {
-        mode.blocks.resize(mesh_index + 1u);
-        mode.composed.resize(mesh_index + 1u, 0u);
+    const std::size_t slot = mesh.value;
+    if (mode.composed.size() <= slot) {
+        mode.blocks.resize(slot + 1u);
+        mode.composed.resize(slot + 1u, 0u);
     }
-    if (!mode.composed[mesh_index]) {
-        mode.blocks[mesh_index] = node_mesh_block(scene, engine, mesh_index, uses_local_attributes);
-        mode.composed[mesh_index] = 1u;
+    if (!mode.composed[slot]) {
+        mode.blocks[slot] = node_mesh_block(scene, engine, mesh, uses_local_attributes);
+        mode.composed[slot] = 1u;
     }
-    return mode.blocks[mesh_index];
+    return mode.blocks[slot];
 }
 
 /**
@@ -6268,8 +6268,7 @@ void write_node_geometry_task(DawnState& state, NodeMeshBlockCache& mesh_blocks,
             DawnDrawState& draw_state =
                 ensure_node_geometry_draw_buffers(state, mesh, geometry_variant);
             write_node_mesh_block(state,
-                                  node_mesh_block_for(mesh_blocks, scene, engine,
-                                                      draw.item.mesh.value,
+                                  node_mesh_block_for(mesh_blocks, scene, engine, draw.item.mesh,
                                                       node_uses_local_attributes(geometry_variant)),
                                   draw_state);
             if (!draw_state.group) {
@@ -9740,10 +9739,10 @@ class DawnSceneRun {
                 DawnDrawState& node_state =
                     ensure_node_draw_buffers(state, draw_mesh, draw.item.material.value,
                                              upstream::node_variants.at(variant));
-                write_node_mesh_block(state,
-                                      node_mesh_block_for(node_mesh_blocks, *pass_scene, engine,
-                                                          draw.item.mesh.value),
-                                      node_state);
+                write_node_mesh_block(
+                    state,
+                    node_mesh_block_for(node_mesh_blocks, *pass_scene, engine, draw.item.mesh),
+                    node_state);
                 // The group itself is built at encode: a receiving
                 // graph binds the generators' maps, which the frame
                 // graph has not created yet at this point.
@@ -10157,7 +10156,6 @@ public:
             initialize_render_tasks();
             cpu_startup_mark("draw-lists-ready");
         };
-        upstream::initialize_composition_feature_rows(engine);
         rebuild_meshes();
 
         initialize_dawn_environment(state, scene, use_skybox, use_ground, background_enabled);

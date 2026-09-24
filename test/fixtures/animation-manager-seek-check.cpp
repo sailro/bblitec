@@ -25,11 +25,11 @@ int main() {
                                                      10.0f);
     const auto group = create_property_animation_group(
         manager, engine,
-        {{PropertyAnimationTargetKind::callback, 0u, [&](float next) { value = next; }}}, clip,
+        {{PropertyAnimationTargetKind::callback, {}, 0u, [&](float next) { value = next; }}}, clip,
         {0.0f, 1.0f, 1.0f, false});
     create_property_animation_group(
         other_manager, other,
-        {{PropertyAnimationTargetKind::callback, 0u, [&](float next) { other_value = next; }}},
+        {{PropertyAnimationTargetKind::callback, {}, 0u, [&](float next) { other_value = next; }}},
         clip, {0.0f, 1.0f, 1.0f, false});
     start_animation_manager(manager, engine);
     scene.animation_seekers.front()(0.5f);

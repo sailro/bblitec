@@ -3147,7 +3147,7 @@ function emitIncludedOnlyMeshIdsAssignment(
         context.emit(
             `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
                 `.included_meshes = {` +
-                `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
+                `${meshes.join(", ")}};`,
         );
         return true;
     }

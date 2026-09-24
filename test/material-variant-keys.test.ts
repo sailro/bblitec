@@ -66,7 +66,7 @@ std::array<std::size_t, 1> standard_renderable_mesh_features{base | pinned_msh_r
 std::size_t pbr_runtime_mesh_features = base, standard_runtime_mesh_features = base;
 constexpr unsigned standard_no_color_output_flag = 1, standard_alpha_blend_flag = 2, standard_esm_shadow_output_flag = 4;
 unsigned standard_material_features(const MaterialRecord&) { return 0; }
-bool light_affects_mesh(const LightRecord&, std::uint32_t) { return false; }
+bool light_affects_mesh(const LightRecord&, MeshHandle) { return false; }
 std::string_view pinned_single_light_type(const LightRecord&) { return {}; }
 unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }

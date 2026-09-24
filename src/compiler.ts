@@ -3296,7 +3296,7 @@ class Compiler implements LoweringServices {
             this.sceneManifest.recordRuntimeMeshProfile(index);
             value.sceneMeshProfileIndex = index;
             delete value.sceneMeshIndex;
-            value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+            value.cpp = `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }

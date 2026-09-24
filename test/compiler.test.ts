@@ -4144,7 +4144,7 @@ test("fully initializes direct property-animation targets", () => {
 
     assert.match(
         result.cpp,
-        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,]+\.value, \{\}\}/,
+        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,{}]+, 0u, \{\}\}/,
     );
 });
 
@@ -12937,11 +12937,11 @@ test("folds a light include set to the meshes its ids name", () => {
     // frame's alias of the caller's handle.
     assert.match(
         result.cpp,
-        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box\.value, v_ball\.value\};/,
+        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box, v_ball\};/,
     );
     assert.match(
         result.cpp,
-        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\.value\};/,
+        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\};/,
     );
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its

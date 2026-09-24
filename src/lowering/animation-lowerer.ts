@@ -1012,6 +1012,7 @@ PropertyAnimationBucket& track_bucket(
     for (PropertyAnimationBucket& candidate : buckets) {
         if (
             candidate.target.kind == target.kind &&
+            candidate.target.mesh == target.mesh &&
             candidate.target.index == target.index &&
             candidate.target.object_identity == target.object_identity &&
             candidate.target.property == target.property &&
@@ -1868,18 +1869,16 @@ ${this.propertyWriterArms("camera", "            ", cameraVersions)}
         }
         return;
     }
-    if (target.index >= engine.meshes.size()) {
-        throw std::runtime_error(
-            "Property animation group has an invalid mesh target.");
-    }
-    MeshRecord& mesh = engine.meshes[target.index];
+    MeshRecord* found = current_mesh_record(engine, target.mesh);
+    if (!found) return;
+    MeshRecord& mesh = *found;
     switch (path) {
 ${this.propertyWriterArms("mesh", "        ")}
         default:
             throw std::runtime_error(
                 "Property animation path does not belong to a mesh.");
     }
-    mark_mesh_runtime_transform(engine, mesh_slot_handle(engine, target.index));
+    mark_mesh_runtime_transform(engine, target.mesh);
 }
 
 void apply_group_at(

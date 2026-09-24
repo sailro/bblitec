@@ -239,8 +239,8 @@ int main() {
         const auto world=bbl::upstream::light_world_matrix(light);
         assert(world[12]==light.position.x && world[13]==light.position.y && world[14]==light.position.z);
     }
-    assert(engine.lights.at(asset.lights[0].value).included_meshes==std::vector<std::uint32_t>({asset.meshes[1].value,asset.meshes[2].value}));
-    assert(engine.lights.at(asset.lights[1].value).excluded_meshes==std::vector<std::uint32_t>({asset.meshes[0].value}));
+    assert(engine.lights.at(asset.lights[0].value).included_meshes==std::vector<MeshHandle>({asset.meshes[1],asset.meshes[2]}));
+    assert(engine.lights.at(asset.lights[1].value).excluded_meshes==std::vector<MeshHandle>({asset.meshes[0]}));
     const auto disabled=load_babylon(engine,"source.json",false,false);
     assert(!engine.assets.at(disabled.value).has_camera && engine.cameras.size()==1);
     document["activeCameraID"]="missing";

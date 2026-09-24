@@ -264,7 +264,9 @@ export function compileAnimationIntrinsic(
                         () =>
                             `bbl::PropertyAnimationTarget{` +
                             `bbl::PropertyAnimationTargetKind::${targetKind}, ` +
-                            `${target.cpp}.value, {}}`,
+                            (targetKind === "mesh"
+                                ? `${target.cpp}, 0u, {}}`
+                                : `{}, ${target.cpp}.value, {}}`),
                     )
                     .join(", ")}}`;
                 context.expectSameEngine(manager, target, call);

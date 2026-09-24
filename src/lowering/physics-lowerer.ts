@@ -2128,24 +2128,16 @@ struct PhysicsShape {
  * write the same two properties on either. A trigger volume is the reached
  * case: scene 101 hangs one off a bare \`createTransformNode\`.
  */
-enum class PhysicsNodeKind : std::int32_t {
-    mesh,
-    transform_node,
-};
-
-struct PhysicsNodeRef {
-    PhysicsNodeKind kind = PhysicsNodeKind::mesh;
-    std::uint32_t value = 0;
-};
+using PhysicsNodeRef = std::variant<MeshHandle, TransformNodeHandle>;
 
 [[nodiscard]] std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node);
 
 [[nodiscard]] inline PhysicsNodeRef physics_node(MeshHandle mesh) {
-    return PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value};
+    return mesh;
 }
 
 [[nodiscard]] inline PhysicsNodeRef physics_node(TransformNodeHandle node) {
-    return PhysicsNodeRef{PhysicsNodeKind::transform_node, node.value};
+    return node;
 }
 
 /**
@@ -2581,12 +2573,24 @@ struct PhysicsNodePose {
 [[nodiscard]] PhysicsNodePose physics_node_pose(
     const Engine& engine,
     PhysicsNodeRef node) {
-    if (node.kind == PhysicsNodeKind::transform_node) {
-        const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
+    if (const auto* transform_node = std::get_if<TransformNodeHandle>(&node)) {
+        const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "*transform_node")};
         return PhysicsNodePose{record.position, record.rotation_quaternion};
     }
-    const MeshRecord& mesh = ${recordAt("engine.meshes", "node")};
+    const MeshRecord& mesh = ${recordAt("engine.meshes", "std::get<MeshHandle>(node)")};
     return PhysicsNodePose{mesh.position, mesh.rotation_quaternion};
+}
+
+/**
+ * Whether the node a body follows still has its record. The pin keeps
+ * syncing a body with a mesh \`removeFromScene\` disposed; once a later
+ * mesh took that mesh's slot nothing composes under it, nothing can move it
+ * and the body teleported to its pose last step, so both directions of the
+ * sync skip it (\`current_mesh_record\`).
+ */
+[[nodiscard]] bool physics_node_current(const Engine& engine, const PhysicsNodeRef& node) {
+    const auto* mesh = std::get_if<MeshHandle>(&node);
+    return !mesh || current_mesh_record(engine, *mesh) != nullptr;
 }
 
 /**
@@ -2604,21 +2608,20 @@ void write_node_pose(
     PhysicsNodeRef node,
     Vec3d position,
     Vec4 rotation) {
-    if (node.kind == PhysicsNodeKind::transform_node) {
-        TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
+    if (const auto* transform_node = std::get_if<TransformNodeHandle>(&node)) {
+        TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "*transform_node")};
         record.position = position;
         record.rotation_quaternion = rotation;
         record.has_rotation_quaternion = true;
-        mark_transform_node_runtime_transform(
-            engine,
-            TransformNodeHandle{node.value});
+        mark_transform_node_runtime_transform(engine, *transform_node);
         return;
     }
-    MeshRecord& mesh = ${recordAt("engine.meshes", "node")};
+    const MeshHandle handle = std::get<MeshHandle>(node);
+    MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
     mesh.position = position;
     mesh.rotation_quaternion = rotation;
     mesh.has_rotation_quaternion = true;
-    mark_mesh_runtime_transform(engine, mesh_slot_handle(engine, node.value));
+    mark_mesh_runtime_transform(engine, handle);
 }
 
 /** The quaternion half both sync directions read out of a transform. */
@@ -2644,6 +2647,7 @@ ${
 ${events}
 ${afterStep}
 void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
+    if (!physics_node_current(engine, body.node)) return;
 ${
     thin
         ? `    if (thin_from(*body.owner.lock(), body)) return;
@@ -2668,6 +2672,7 @@ void sync_node_to_body(
     const Engine& engine,
     const PhysicsBody& body,
     bool as_target) {
+    if (!physics_node_current(engine, body.node)) return;
 ${
     thin
         ? `    auto& world = *body.owner.lock();
@@ -2768,6 +2773,7 @@ void fo_sync_body_to_node(
     Engine& engine,
     const PhysicsBody& body,
     Vec3d origin) {
+    if (!physics_node_current(engine, body.node)) return;
     const pal::PhysicsTransform transform =
         pal::physics_body_get_transform(body.handle);
     write_node_pose(
@@ -2786,6 +2792,7 @@ void fo_sync_node_to_body(
     const Engine& engine,
     const PhysicsBody& body,
     Vec3d origin) {
+    if (!physics_node_current(engine, body.node)) return;
     const PhysicsNodePose pose = physics_node_pose(engine, body.node);
     pal::physics_body_set_transform(
         body.handle,
@@ -3279,9 +3286,12 @@ double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step
 std::string physics_body_node_name(PhysicsBody body) {
     const auto& live = owning_body_record(body);
     const auto& engine = *live.owner.lock()->engine;
-    return live.node.kind == PhysicsNodeKind::mesh
-        ? ${recordAt("engine.meshes", "live.node")}.name
-        : ${recordAt("engine.transform_nodes", "live.node")}.name;
+    return std::visit([&engine](const auto& node) -> std::string {
+        if constexpr (std::is_same_v<std::decay_t<decltype(node)>, MeshHandle>)
+            return ${recordAt("engine.meshes", "node")}.name;
+        else
+            return ${recordAt("engine.transform_nodes", "node")}.name;
+    }, live.node);
 }
 void remove_physics_body(PhysicsWorldHandle handle, PhysicsBody body) {
     auto& world = physics_world_record(handle);
@@ -3640,7 +3650,7 @@ PhysicsAggregate create_physics_aggregate(
     const MeshBounds bounds = mesh_bounds(engine, record);
 ${
     thin
-        ? `    if (world.thin_enabled) thin_validate(world, PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value});
+        ? `    if (world.thin_enabled) thin_validate(world, physics_node(mesh));
 `
         : ""
 }
