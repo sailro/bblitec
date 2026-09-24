@@ -200,6 +200,7 @@ and performance.
 | TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
 | TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | Fail a measured run after a bounded streak with the actual status, then drop the tool timeout. | open |
 | TL-18 | med | 18 test files slice `pal_sdl_gpu.cpp`/`pal_dawn.cpp` as text and stub what the slice needs (the camera is non-null), so the camera-less arms are never run by a harness. | Link harnesses against extracted shared stage units (after RDN-20/NT-13). | open |
+| TL-19 | low | `build-labsound.ps1` and `build-rmlui.ps1` reset their checkout and re-apply patches on every `demos:release`, recompiling everything (build-sdl-min now records its applied series). | One applied-series record in `bblite-tools.psm1` for every builder. | open |
 
 ## Building (BD)
 
