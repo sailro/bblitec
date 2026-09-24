@@ -16819,6 +16819,26 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
     assert.match(result.cpp, /bbl::add_task_at_start/);
     assert.match(result.cpp, /scene146-impostor-worldPosition/);
+    // The loop-built names are folded, so the manifest carries every copy
+    // task in the order the scene adds them.
+    assert.deepEqual(result.manifest.copyTasks, [
+        ...[
+            "normViewDepth",
+            "viewNormal",
+            "worldNormal",
+            "worldPosition",
+            "reflectivity",
+            "albedo",
+            "irradiance",
+            "localPosition",
+            "viewDepth",
+            "screenspaceDepth",
+            "linearVelocity",
+            "realColor",
+        ].map((name) => `scene146-impostor-${name}`),
+        "scene146-resolve",
+        "scene146-to-swap",
+    ]);
     assert.match(
         result.cpp,
         /double (v_fn\d+_tileW) = \(1\.0 \/ 6\.0\)[\s\S]*scene146-impostor-worldPosition[^\n]*NormalizedViewport\{\(3\.0 \* \1\), 0\.0, \1, 0\.15\}/,

@@ -945,6 +945,7 @@ class Compiler implements LoweringServices {
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
         emissionArray([]);
+    private readonly copyTasks: string[] = emissionArray([]);
     public readonly postProcessTasks: PostProcessTaskManifest[] = emissionArray(
         [],
     );
@@ -1374,6 +1375,9 @@ class Compiler implements LoweringServices {
                     ? { toneMapping: this.selectedToneMapping }
                     : {}),
                 geometryOutputTasks: this.geometryOutputTasks,
+                ...(this.copyTasks.length > 0
+                    ? { copyTasks: this.copyTasks }
+                    : {}),
                 postProcessTasks: this.postProcessTasks,
                 postProcessComposites: this.postProcessComposites,
                 screenSpaceTasks: this.screenSpaceTasks,
@@ -18629,6 +18633,10 @@ class Compiler implements LoweringServices {
         manifest: GeometryOutputTaskManifest,
     ): void {
         this.geometryOutputTasks.push(manifest);
+    }
+
+    public recordCopyTask(name: string): void {
+        this.copyTasks.push(name);
     }
 
     public recordPostProcessTask(manifest: PostProcessTaskManifest): void {
