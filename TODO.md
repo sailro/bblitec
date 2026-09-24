@@ -6,26 +6,26 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
-- [ ] Give opaque engine values and borrowed aliases native capture types, so the remaining shared closure templates move to their owning source units (`closure-captures.ts`, `compiler/source-units.ts:115`).
-- [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize`, `compiler.ts:13688`; `option-helpers.ts:361`); read the running canvas or refuse where it can differ.
-- [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison`, `data-lowering.ts:9333`; `dictionaryEntryTarget`, `:7355`).
-- [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped`, `data-lowering.ts:4093`; `compileArrayFrom`, `:4202`).
-- [ ] Lower `devicePixelRatio` in one place (`browser-erasure.ts:571`, `:618-626`, `:977-982`; `expressions.ts:600`; `canvas.ts:98`, `:109`) and fold a nested browser-operand chain once per node.
-- [ ] Parse a runtime deployment query bag once per realm instead of once per emitting function (`deploymentSearchParamsValue`, `search-params.ts:32`).
-- [ ] Refuse two packaged sources that map to one output name (`hash`, `compiler/assets.ts:526`; output name `:327`).
+- [ ] Give opaque engine values and borrowed aliases native capture types, so the remaining shared closure templates move to their owning source units (`closure-captures.ts`, `compiler/source-units.ts`).
+- [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
+- [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
+- [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped` and `compileArrayFrom` in `data-lowering.ts`).
+- [ ] Lower `devicePixelRatio` in one place (`browser-erasure.ts`, `expressions.ts`, `canvas.ts`) and fold a nested browser-operand chain once per node.
+- [ ] Parse a runtime deployment query bag once per realm instead of once per emitting function (`deploymentSearchParamsValue` in `search-params.ts`).
+- [ ] Refuse two packaged sources that map to one output name (`hash` and the output name in `compiler/assets.ts`).
 
 ## UI
 
-- [ ] Match live style rules through RmlUi instead of `UiSelectorMatcher` (`ui_selector_match.hpp:11`; `pal_ui_rml.cpp:288`, `:3836`, `:4055`), keeping authored-tree queries, generated nodes and input state; measure `Element::Matches` reparsing before caching it.
-- [ ] Replace the private `--bbl-crosshair` bridge and its fixed 22 px bar markup (`ui-projection.ts:2135`; `pal_ui_rml.cpp:2351`, `:4135`) with general layered-background projection.
+- [ ] Match live style rules through RmlUi instead of `UiSelectorMatcher` (`ui_selector_match.hpp`; `pal_ui_rml.cpp`), keeping authored-tree queries, generated nodes and input state; measure `Element::Matches` reparsing before caching it.
+- [ ] Replace the private `--bbl-crosshair` bridge and its fixed 22 px bar markup (`ui-projection.ts`; `pal_ui_rml.cpp`) with general layered-background projection.
 
 ## Platform and runtime
 
-- [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp:724`).
-- [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts:36`, `js_file.hpp`, `js_voxel_file.hpp:25-27`).
+- [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
+- [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
 - [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
 - [ ] Parse ordered `JsonValue` directly, without intermediate JSON conversion (`js_json.hpp`).
-- [ ] Reclaim retired shadow-generator records and map targets without compacting handles (`rebuild_scene_renderables`, `scene-lowerer.ts:2611-2658`).
+- [ ] Reclaim retired shadow-generator records and map targets without compacting handles (`rebuild_scene_renderables` in `scene-lowerer.ts`).
 
 ## Qualification
 

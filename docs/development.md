@@ -393,8 +393,7 @@ Reports, logs and receipts live in ignored `artifacts/api-coverage` (`--output <
 [features](features.md#api-coverage-inventory) owns the metrics. `report --run` collects compiler evidence
 from all tests and registered scenes/demos (registered query and host companion), then runs semantic cases;
 missing corpus entries, failed/skipped tests or missing scene receipts block publication. `report` reuses
-current receipts and runs no tests or native programs. The API readiness of one external entry is part of
-`scene -- survey`.
+current receipts and runs no tests or native programs.
 
 Semantic cases contain `id`, `level` (`generation`, `native`, `parity`, `refusal`), `scope`, `limitations`,
 `test: {file, name}`, and `targets: [{id, fingerprint}]`. Targets describe the named test's assertions.

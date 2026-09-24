@@ -1,5 +1,5 @@
 {
-  "$comment": "The retained-mode UI library behind bblite/pal_ui.hpp. vcpkg carries an rmlui port, but not at this pinned revision and not carrying the maintained RmlUi patches native/patches/manifest.json lists, so the library is built from this commit by tools/build-rmlui.ps1 into artifacts/tools/rmlui -- the same shape the pinned Dawn, Tint and LabSound builds take. The script applies the listed patches in order and records the commit and each patch's SHA-256 (native/patch-identity.cmake refuses an artifact whose record differs), enables RmlUi's inline-SVG plugin for development, and installs Backends/RmlUi_Platform_SDL.{h,cpp}, which RmlUi builds only under its samples and never installs; FreeType and LunaSVG stay vcpkg concerns supplied by the ui manifest feature for both the artifact build and each consuming tree.",
+  "$comment": "The retained-mode UI library behind bblite/pal_ui.hpp. vcpkg carries an rmlui port, but not at this pinned revision and not with the maintained patches native/patches/manifest.json lists, so tools/build-rmlui.ps1 builds this commit.",
   "repository": "https://github.com/mikke89/RmlUi.git",
   "commit": "b7b4a0688262832eacf3b9abb41f8bbe73868af8",
   "license": "MIT"

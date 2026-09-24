@@ -20,6 +20,7 @@ and performance.
 | FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | `morph_bounds` and its release compile under `BBLITE_SHADOW_MORPH_BOUNDS`; builders clear it only when `shadow:morph-bounds` is reached. | fixed |
 | FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Key the slots on the composed arms. | open |
 | FA-11 | low | Native test fixtures compile with ad-hoc `/D` flags and harness defaults, without the undefined-macro check. | Derive fixture flags from the CMake table and add `/we4668`. | open |
+| FA-12 | med | CMake re-derives feature→macro for 58 macros the activation plan already decides, and a test greps CMakeLists to keep them in sync. | Generate every macro from the activation plan (per unit, with BD-7); CMake keeps source and link selection. | open |
 
 ## Re-derivation in TypeScript (RDT)
 
@@ -38,6 +39,7 @@ and performance.
 | RDT-11 | low | Pinned defaults copied into tables and checked. | Material, billboard, post-process and navigation defaults read or emitted from the pin. | fixed |
 | RDT-12 | low | Hand SDL blit, stale comment, predeclared shader programs. | Comment fixed. The predeclared programs are live (alpha-card gate); the pinned blit differs in LOD and group, so only a measured vertex lift remains. | partial |
 | RDT-13 | low | Grid material and sprite-grid absent-arm defaults are literals (`material-options.ts`, `material.ts`, `intrinsics/sprite.ts`); the node-particle Sprite2D bridge relies on header defaults. | Read them from the pin. | open |
+| RDT-14 | med | The clustered-light refresh uses a hand dirty key (view/projection equality, `topologyDirty` bound true) and matches generic JS by source text in its statement hook. | Lower the pin's dirty test with `scene_camera_change_key`; move truncation/push/sort/destructuring into the shared pinned lowerer; match platform calls by symbol. | open |
 
 ## Re-derivation in native code (RDN)
 
@@ -62,6 +64,7 @@ and performance.
 | RDN-17 | med | Mesh removal leaves physics node poses, property-animation targets, light include/exclude lists, shadow casters, render-task mesh lists and node-material groups naming the mesh; the pin prunes render tasks and material groups and clears `parent`. | Lower the pin's removal pruning. | open |
 | RDN-18 | low | A camera-less overlay or utility layer projects through the base camera on Dawn and the SDL_GPU swapchain overlay, and through none on SDL_GPU graph layers; the pin uses each layer's `cfg.cam ?? scene.camera`. | Align both backends on the pin. | open |
 | RDN-19 | low | Animation seek harness and glTF group operations (`set_animation_current_time`, `set_animation_speed_ratio`, `go_to_frame`, additive setters) take float where the pin passes numbers. | Double parameters. | open |
+| RDN-20 | med | The camera-less pass contract is ~26 `if (camera)` arms per backend, and render-task-base's `cfg.cam ?? scene.camera` / `cfg.clrColor ?? sc.clearColor` resolution is transcribed in each backend. | Lower the pass resolution once into an `upstream::` function; one shared pass-camera builder yielding the zero block; lowered pinned early returns do the per-renderable skips. | open |
 
 ## Compiler core (CC)
 
@@ -70,7 +73,7 @@ and performance.
 | CC-1 | high | Nullable resource kinds classified by bare type name. | Declaration-origin checks; user `class Mesh`/`interface Material` compile. | fixed |
 | CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | `SceneManifestRecorder`, `BindingScopes`, `ConditionLowerer`, browser predicates in `BrowserErasure`, `DeclarationLowerer` and `PropertyAccessLowerer` own their slices behind narrow contexts (19,183 → 10,725 lines; 448 → 349 service members; output identical). Remaining: closures, async/lifecycle, option adapters, the native-emission registry, assets and the `note*` admissions. | partial |
 | CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Needs generic support first: absent file-picker globals, escaping Promise `resolve`, `FileReader`, `JSON.parse(text) as T`. | open |
-| CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared; pinned and scene-code `Math.max/min` lower through one `math_extreme` at any arity (float writer lanes `math_extreme_lane`; camera controls included); pinned Uint32Array stores use `to_uint32`. Remaining: hand templates that spell `std::max`/`std::min` (RDT-1). | fixed |
+| CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared; pinned and scene-code `Math.max/min` lower through one `math_extreme` at any arity (float writer lanes `math_extreme_lane`; camera controls included); pinned Uint32Array stores use `to_uint32`. | fixed |
 | CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` (bare names, `globalThis`, `window.`/`self.` members) at 185 sites; user declarations named `Number`, `String`, `Object` or `Map` lower as user code. Remaining: the platform timer arm accepts only bare names, and `undefined` has 12 hand checks. | partial |
 | CC-6 | med | Declaration origin decided 8 ways. | One `declarationOrigin()`. | fixed |
 | CC-7 | med | Nullable-union rule had no owner. | `presentMembers()`/`nullability()`. | fixed |
@@ -84,6 +87,7 @@ and performance.
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
 | CC-16 | med | Lazy singletons (`let c: C \| null = null; c = new C()`) refused. | Rebound locals store their declared type. | fixed |
 | CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | One lookup spelling; a lookup hook for the two folds. | open |
+| CC-18 | med | Colour-shape refusals (DEAD-13) are placed per site; the compiler never reads TypeScript assignability diagnostics, which would refuse every off-API object shape at once. | Refuse user sources on assignability diagnostics, measured over the corpus first; at minimum decide colour shape from the contextual type. | open |
 
 ## Lowering layer (LW)
 
@@ -99,6 +103,7 @@ and performance.
 | LW-8 | med | Regex/text scans where AST helpers exist. | AST helpers. | fixed |
 | LW-9 | med | Pinned constants read 7 ways. | Public `pinnedConstant` family. | fixed |
 | LW-10 | low | Dead lowering exports. | Deleted. | fixed |
+| LW-11 | med | Pinned UBO-writer, glTF-leaf and SH-prescale scopes compute in float (`math_extreme_lane`, `scalarPrecision`, the deduced width) where the pin computes in double and rounds at the Float32Array store. | Compute every pinned numeric scope in double and convert at the typed-array sink; delete the width options. | open |
 
 ## Native PAL (NT)
 
@@ -116,13 +121,15 @@ and performance.
 | NT-10 | low | Patches lack purpose headers; stale upstream notes. | Every owned patch opens with a purpose header mirrored in the manifest; upstream states corrected. | fixed |
 | NT-11 | low | Single-backend builds deployed both backends' shaders. | Deploy and payload checks filter by compiled backend. | fixed |
 | NT-12 | low | 8-way backend `#if` matrix. | `pal_gpu_dispatch.hpp` table. | fixed |
+| NT-13 | med | `synchronize()`'s internal order (overlay refresh, rematch, draw lists, plan-mesh sync, storage publication, submit, camera update) is written per backend and still differs (storage publication). | A shared `synchronize_scene<Backend>` in the frame conductor owning the order, with backend hooks (with NT-4). | open |
+| NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | One `cmake -P` record script invoked by builders and doctor; artifacts record their variants; portfiles read PATCHES from the manifest. | open |
 
 ## Generated C++ (GC)
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges records against the scene's peak. Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
-| GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates (doom and minecraft fail until GC-1). | fixed |
+| GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates. | fixed |
 | GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
 | GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Every generated access goes through `recordAt` → `bbl::handle_at` (registry: 24,699 direct sites → 0); bounds and the mesh generation are checked in every build (≤0.6% of a cold frame), so a retired mesh's handle throws. The check found an SDL_GPU sync of the previous plan after mesh retirement, now fixed. | fixed |
 | GC-5 | med | Every `Array<T>` registered a GC node. | Only traceable element types register. Remaining: records without traced edges still declare `gc_trace_edges`. | partial |
@@ -138,6 +145,8 @@ and performance.
 | GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
 | GC-16 | med | Physics node refs, property-animation targets, animated-mesh bindings and light include/exclude lists name a mesh by slot without its generation (`mesh_slot_handle` stopgap), so the retired-mesh check cannot see them. | Store `MeshHandle`s. | open |
 | GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | Route them through `handle_at`; keep the slot allocator raw. | open |
+| GC-18 | med | `handle_at` checks a generation only when the handle type carries one, so slot-only references (`PhysicsNodeRef`, `mesh_slot_handle` callers) pass unchecked and retirement scans child lists to protect them. | Store `MeshHandle`s (a variant for physics nodes), make a generation-carrying table reject generation-less handles at compile time, delete `mesh_slot_handle`. | open |
+| GC-19 | low | Slot reuse waits on `composition_feature_rows_initialized`, and `composition_feature_mesh` falls back to the creation ordinal, because composition rows have two identities. | Assign the row in `store_mesh_record` (clones take their source's). | open |
 
 ## Dead code (DEAD)
 
@@ -156,6 +165,7 @@ and performance.
 | DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Writer and type fields deleted; only the 35 PBR manifests moved. | fixed |
 | DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | The four kinds and `dimensions` deleted; the default camera skips a mesh without bounds, as the pin does. | fixed |
 | DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | `{r,g,b}` and `{r,g,b,a}` refuse wherever the pin types a number tuple (every Color3 site, `baseColorFactor`); Color4 objects stay where pinned (clear colours, lines). | fixed |
+| DEAD-14 | low | `PrimitiveKind` decides default-camera framing and normal mirroring, standing in for the pin's bounds presence. | Record bounds presence where the pin sets it and read that. | open |
 
 ## Documentation (DOC)
 
@@ -188,6 +198,8 @@ and performance.
 | TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
 | TL-15 | low | Package `.staging/` folders accumulate. | A published run removes its staging folder; a failed one keeps it. | fixed |
 | TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
+| TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | Fail a measured run after a bounded streak with the actual status, then drop the tool timeout. | open |
+| TL-18 | med | 18 test files slice `pal_sdl_gpu.cpp`/`pal_dawn.cpp` as text and stub what the slice needs (the camera is non-null), so the camera-less arms are never run by a harness. | Link harnesses against extracted shared stage units (after RDN-20/NT-13). | open |
 
 ## Building (BD)
 

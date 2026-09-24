@@ -43,8 +43,8 @@ Exercise percentages separate signatures, fields/accessors, constants and callba
 excluded) and qualify exercised forms only; failed compilations, discarded probes and stale receipts earn
 no credit. Unassessed declarations and type-dependent probe fallthrough are unknown; `partial` combines
 positive and refusal evidence. The adapter boundary is unclassified, so there is no overall PAL completion
-percentage. `scene -- survey` credits one external entry's referenced declarations by the same evidence
-and lists its unrouted functions and pin gaps. See [collection commands](development.md#api-coverage).
+percentage. See [collection commands](development.md#api-coverage) and, for one external entry,
+[sizing](development.md#sizing-a-capability-before-implementing-it).
 
 ## Program compilation
 
