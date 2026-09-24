@@ -12,7 +12,13 @@ import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import { declaredInDomLibrary, type CompilerSymbols } from "./symbols.js";
+import {
+    aliasTarget,
+    declarationInDefaultLibrary,
+    declaredInDomLibrary,
+    libraryGlobal,
+    type CompilerSymbols,
+} from "./symbols.js";
 import {
     aliasedMutationScan,
     callArgumentIsReadOnly,
@@ -34,7 +40,6 @@ import {
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
-import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
@@ -189,10 +194,7 @@ export function walkReachedLoopNodes(
         if (!ts.isIdentifier(value)) return undefined;
         const symbol = context.checker.getSymbolAtLocation(value);
         if (symbol && callbacks.has(symbol)) return callbacks.get(symbol);
-        const target =
-            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? context.checker.getAliasedSymbol(symbol)
-                : symbol;
+        const target = symbol && aliasTarget(context.checker, symbol);
         if (
             target?.declarations?.some(
                 (declaration) =>

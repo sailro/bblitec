@@ -198,6 +198,16 @@ export function isAbsentTypeofIdentifier(
     );
 }
 
+/** The binding an import alias stands for; any other symbol is itself. */
+export function aliasTarget(
+    checker: ts.TypeChecker,
+    symbol: ts.Symbol,
+): ts.Symbol {
+    return (symbol.flags & ts.SymbolFlags.Alias) !== 0
+        ? checker.getAliasedSymbol(symbol)
+        : symbol;
+}
+
 /**
  * The symbol a name resolves to: an import alias to the binding it imports,
  * a shorthand property (`{ canvas }`) to the value it names rather than the
@@ -215,9 +225,7 @@ export function resolvedSymbol(
         name.parent.name === name
             ? checker.getShorthandAssignmentValueSymbol(name.parent)
             : checker.getSymbolAtLocation(name);
-    return symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-        ? checker.getAliasedSymbol(symbol)
-        : symbol;
+    return symbol && aliasTarget(checker, symbol);
 }
 
 /** The names the library binds the global object itself to. */
@@ -381,11 +389,7 @@ export class CompilerSymbols {
             declaration.getSourceFile(),
         );
         for (const exported of sourceSymbol?.exports?.values() ?? []) {
-            const resolved =
-                (exported.flags & ts.SymbolFlags.Alias) !== 0
-                    ? this.checker.getAliasedSymbol(exported)
-                    : exported;
-            if (resolved === value) return true;
+            if (aliasTarget(this.checker, exported) === value) return true;
         }
         return false;
     }

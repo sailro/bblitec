@@ -1,5 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
@@ -106,12 +107,7 @@ function seedFactoryDeclaration(
 ): ts.FunctionDeclaration {
     // A factory is normally imported from a shared module, so the identifier
     // resolves to the import alias; the declaration is behind it.
-    const bound = checker.getSymbolAtLocation(callee);
-    const symbol =
-        bound && bound.flags & ts.SymbolFlags.Alias
-            ? checker.getAliasedSymbol(bound)
-            : bound;
-    const declaration = symbol?.valueDeclaration;
+    const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
     if (
         !declaration ||
         !ts.isFunctionDeclaration(declaration) ||

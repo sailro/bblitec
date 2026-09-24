@@ -291,6 +291,7 @@ import {
     CompilerSymbols,
     declaredIn,
     declaredInDomLibrary,
+    resolvedSymbol,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import { isNullable, presentMembers } from "./compiler/type-facts.js";
@@ -10494,13 +10495,7 @@ class Compiler implements LoweringServices {
                 }
                 for (const imported of statement.importClause.namedBindings
                     .elements) {
-                    const symbol = this.checker.getSymbolAtLocation(
-                        imported.name,
-                    );
-                    const target =
-                        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                            ? this.checker.getAliasedSymbol(symbol)
-                            : symbol;
+                    const target = resolvedSymbol(this.checker, imported.name);
                     const variable = target?.declarations?.find(
                         (candidate): candidate is ts.VariableDeclaration =>
                             ts.isVariableDeclaration(candidate) &&
@@ -10723,14 +10718,10 @@ class Compiler implements LoweringServices {
                             (element) => element.name.text === importedName,
                         );
                     if (!imported) continue;
-                    const symbol = this.checker.getSymbolAtLocation(
+                    return resolvedSymbol(
+                        this.checker,
                         imported.name,
-                    );
-                    const target =
-                        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                            ? this.checker.getAliasedSymbol(symbol)
-                            : symbol;
-                    return target?.declarations?.[0]?.getSourceFile().fileName;
+                    )?.declarations?.[0]?.getSourceFile().fileName;
                 }
                 return undefined;
             },

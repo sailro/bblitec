@@ -30,7 +30,11 @@ import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
-import { isAbsentTypeofIdentifier } from "./symbols.js";
+import {
+    aliasTarget,
+    isAbsentTypeofIdentifier,
+    resolvedSymbol,
+} from "./symbols.js";
 import {
     compileNumberPredicate,
     numberConstant,
@@ -1525,10 +1529,7 @@ export class ExpressionLowerer {
                     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
                 );
             for (const exported of exports) {
-                const value =
-                    exported.flags & ts.SymbolFlags.Alias
-                        ? this.context.checker.getAliasedSymbol(exported)
-                        : exported;
+                const value = aliasTarget(this.context.checker, exported);
                 if ((value.flags & ts.SymbolFlags.Value) === 0) continue;
                 const declaration =
                     value.valueDeclaration ?? value.declarations?.[0];
@@ -2218,11 +2219,10 @@ export class ExpressionLowerer {
     private isModuleConstantRecord(expression: ts.Expression): boolean {
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return false;
-        let symbol = this.context.checker.getSymbolAtLocation(owner);
-        if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
-            symbol = this.context.checker.getAliasedSymbol(symbol);
-        }
-        const declaration = symbol?.valueDeclaration;
+        const declaration = resolvedSymbol(
+            this.context.checker,
+            owner,
+        )?.valueDeclaration;
         return (
             declaration !== undefined &&
             ts.isVariableDeclaration(declaration) &&

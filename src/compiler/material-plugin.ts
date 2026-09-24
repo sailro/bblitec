@@ -1,5 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 /** Fold source plugin declarations and retain their live textures and UBO callbacks.
  * Shader injection, binding layout and enabled-plugin ordering execute the pin's
  * composers. The fold proves that bindTextures/getActiveTextures refer to the
@@ -171,9 +172,7 @@ function resolveTextureIdentity(
         return { root: "this", path };
     }
     const symbol = ts.isIdentifier(node)
-        ? ts.isShorthandPropertyAssignment(node.parent)
-            ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
-            : context.checker.getSymbolAtLocation(node)
+        ? resolvedSymbol(context.checker, node)
         : undefined;
     if (!symbol) {
         context.fail(
@@ -183,13 +182,7 @@ function resolveTextureIdentity(
                 "texture is bound and kept alive.",
         );
     }
-    return {
-        root:
-            symbol.flags & ts.SymbolFlags.Alias
-                ? context.checker.getAliasedSymbol(symbol)
-                : symbol,
-        path,
-    };
+    return { root: symbol, path };
 }
 
 /** A folded `material.plugins = [...]` right-hand side. */

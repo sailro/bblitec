@@ -38,6 +38,8 @@ import {
     babylonPackages,
     CompilerSymbols,
     isBabylonModule,
+    libraryGlobal,
+    resolvedSymbol,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import {
@@ -45,7 +47,6 @@ import {
     writesThroughTrackedRoot,
 } from "./user-functions.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { libraryGlobal } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = [
@@ -302,12 +303,8 @@ function localFunctionDeclaration(
     identifier: ts.Identifier,
     sourceFile: ts.SourceFile,
 ): ts.FunctionDeclaration | "foreign" | undefined {
-    const symbol = checker.getSymbolAtLocation(identifier);
-    if (!symbol) return undefined;
-    const target =
-        (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
+    const target = resolvedSymbol(checker, identifier);
+    if (!target) return undefined;
     for (const declaration of target.declarations ?? []) {
         // The browser executor deliberately owns functions whose bodies use
         // Canvas APIs the ordinary user-function lowerer refuses.

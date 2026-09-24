@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import type { SupportedFunction } from "./user-functions.js";
 
@@ -20,10 +21,7 @@ export function arrayReturnStorage(
         seen.add(node);
         if (ts.isArrayLiteralExpression(node)) return "fresh";
         if (ts.isIdentifier(node)) {
-            let symbol = checker.getSymbolAtLocation(node);
-            if (symbol && symbol.flags & ts.SymbolFlags.Alias)
-                symbol = checker.getAliasedSymbol(symbol);
-            const binding = symbol?.valueDeclaration;
+            const binding = resolvedSymbol(checker, node)?.valueDeclaration;
             if (
                 !binding ||
                 !ts.isVariableDeclaration(binding) ||
@@ -41,10 +39,7 @@ export function arrayReturnStorage(
             while (ts.isElementAccessExpression(root))
                 root = unwrapExpression(root.expression);
             if (!ts.isIdentifier(root)) return undefined;
-            let symbol = checker.getSymbolAtLocation(root);
-            if (symbol && symbol.flags & ts.SymbolFlags.Alias)
-                symbol = checker.getAliasedSymbol(symbol);
-            const binding = symbol?.valueDeclaration;
+            const binding = resolvedSymbol(checker, root)?.valueDeclaration;
             if (
                 !binding ||
                 !ts.isVariableDeclaration(binding) ||

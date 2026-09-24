@@ -49,6 +49,7 @@ import {
     CompilerSymbols,
     declarationInDefaultLibrary,
     libraryGlobal,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     assignmentTargets,
@@ -182,12 +183,10 @@ export function requiresDefaultParameterBinding(
         const argument = call.arguments[index];
         const initializer = unwrapExpression(parameter.initializer);
         if (!argument && ts.isIdentifier(initializer)) {
-            const alias = checker.getSymbolAtLocation(initializer);
-            const symbol =
-                alias && (alias.flags & ts.SymbolFlags.Alias) !== 0
-                    ? checker.getAliasedSymbol(alias)
-                    : alias;
-            const binding = symbol?.valueDeclaration;
+            const binding = resolvedSymbol(
+                checker,
+                initializer,
+            )?.valueDeclaration;
             const type = checker.getTypeAtLocation(initializer);
             if (
                 binding &&
@@ -750,18 +749,10 @@ export function resolveFunctionDeclaration(
     // A record property written in shorthand (`{ sync }`) resolves at
     // its own identifier to the literal's property symbol, so the
     // shorthand's value symbol is what names the function it refers to.
-    const symbol =
-        ts.isShorthandPropertyAssignment(identifier.parent) &&
-        identifier.parent.name === identifier
-            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
-            : checker.getSymbolAtLocation(identifier);
-    if (!symbol) {
+    const target = resolvedSymbol(checker, identifier);
+    if (!target) {
         return undefined;
     }
-    const target =
-        (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
     let declaration: SupportedFunction | undefined;
     for (const candidate of target.declarations ?? []) {
         if (ts.isFunctionDeclaration(candidate) && candidate.body) {
@@ -3854,20 +3845,8 @@ export class UserFunctionLowerer {
                 ts.isIdentifier(declaration.parent.name)
               ? declaration.parent.name
               : undefined;
-        const valueSymbol = (
-            candidate: ts.Identifier,
-        ): ts.Symbol | undefined => {
-            const found =
-                ts.isShorthandPropertyAssignment(candidate.parent) &&
-                candidate.parent.name === candidate
-                    ? this.checker.getShorthandAssignmentValueSymbol(
-                          candidate.parent,
-                      )
-                    : this.checker.getSymbolAtLocation(candidate);
-            return found && (found.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.checker.getAliasedSymbol(found)
-                : found;
-        };
+        const valueSymbol = (candidate: ts.Identifier): ts.Symbol | undefined =>
+            resolvedSymbol(this.checker, candidate);
         const symbol = identifier ? valueSymbol(identifier) : undefined;
         if (!symbol || !declaration.body) return false;
 
