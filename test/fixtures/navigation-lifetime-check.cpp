@@ -144,10 +144,10 @@ int main() try {
         NavMeshBuildParams tile_params;
         tile_params.max_obstacles = 8;
         tile_params.tile_size = 32;
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params);
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
         const auto obstacle = navigation_add_box_obstacle(plugin, {0, 0, 0}, {1, 2, 1}, 0);
         navigation_remove_obstacle(plugin, obstacle);
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params);
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
         bool refused = false;
         try {
             navigation_remove_obstacle(plugin, obstacle);
@@ -156,7 +156,7 @@ int main() try {
         }
         require(refused, "obstacle from a retired tile cache was accepted");
         boundary_allocations = 0;
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params);
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
         const unsigned build_allocations = boundary_allocations;
         for (unsigned failure = 1; failure <= build_allocations; ++failure) {
             const auto before = allocations.size();
@@ -165,7 +165,7 @@ int main() try {
             fail_boundary = failure;
             bool failed = false;
             try {
-                navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params);
+                navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
             } catch (const std::runtime_error&) {
                 failed = true;
             }
