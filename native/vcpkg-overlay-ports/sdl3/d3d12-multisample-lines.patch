@@ -1,3 +1,7 @@
+Set D3D12 MultisampleEnable on multisampled pipelines. Without it a LINELIST
+pipeline takes D3D12's aliased diamond-exit rule, while Vulkan and Metal always
+resolve line coverage against the target's samples.
+
 diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
 index e7fefa3e815c7..b1c5d0a2f7e91 100644
 --- a/src/gpu/d3d12/SDL_gpu_d3d12.c

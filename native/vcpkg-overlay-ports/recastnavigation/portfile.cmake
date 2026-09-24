@@ -11,12 +11,9 @@ vcpkg_from_github(
     REF 599fd0f023181c0a484df2a18cf1d75a3553852e
     SHA512 6e3a1ac837396eebbbd7cfb1fdd223433aaa498843278ebe8b01613c9a372f87a0b1bc7e7c9deaee63838657acf3b5c0248a90c06313f5a307d7782a59f61674
     HEAD_REF main
+    # native/patches/manifest.json lists each patch's purpose and upstream
+    # state; every patch this repository owns opens with its rationale.
     PATCHES
-        # The one libm call in the build pipeline. musl (the wasm's libc)
-        # computes cosf through double precision; ucrt need not, and a ULP
-        # between the two thresholds would flip a borderline-slope
-        # triangle's walkability. Measured equal on the current corpus —
-        # the patch pins the arithmetic so that stays true for any asset.
         walkable-threshold-libm.patch
         optional-components.patch
         checked-allocations.patch

@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { discoverDevelopmentTools } from "./development-tools.js";
 import { holdDistLock } from "./dist-lock.js";
 import type { SceneDefinition } from "./scene-registry.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 import { NATIVE_BACKENDS } from "./tooling/artifacts.js";
 

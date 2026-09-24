@@ -1,38 +1,12 @@
-# Creates (or removes) a linked git worktree that shares this repository's
-# disposable caches through directory junctions, so a second checkout builds
-# without re-downloading or re-compiling any dependency.
+# Creates or removes a linked worktree whose disposable caches are junctions
+# to the main checkout's (docs/development.md#native-builds).
 #
-# Shared through junctions (all disposable, all concurrency-safe: the
-# tool trees are read-only pins, node_modules and the asset cache are
-# written only by installs/downloads of identical content, and the shader
-# and bake caches store temp-file-plus-rename):
-#   node_modules                            npm install
-#   .cache                                  downloaded corpus assets
-#   artifacts\tools                         pinned Dawn / LabSound / RmlUi / Tint
-#   artifacts\shader-cache                  content-addressed shader replays
-#   artifacts\bake-cache                    content-addressed bake replays
-#   tools\shader-compiler\vcpkg_installed   pinned DXC
-#
-# NOT shared by default: artifacts\vcpkg-installed. Concurrent vcpkg use of
-# one install root is unreliable (docs/development.md), and worktrees exist
-# here precisely so several agents can build at once — so each worktree
-# pays one vcpkg install for that safety. Pass `-SharedVcpkg` to junction
-# it too when you know the trees will never run native builds concurrently.
-#
-# Everything that carries per-checkout meaning stays local: sources, dist\,
-# generated\, native build trees, and parity evidence.
-#
-# Never delete a worktree with a recursive remove: PowerShell's
-# Remove-Item -Recurse follows junctions and would empty the shared caches
-# of the MAIN checkout. Use `-Remove` here, which unlinks the junctions
-# first and then runs `git worktree remove`.
-#
-# Usage:
-#   tools\setup-worktree.ps1 -Path C:\Dev\bbl-fix -Branch my-branch
+#   tools\setup-worktree.ps1 -Path C:\Dev\bbl-fix -Branch my-branch [-Commit 294fd23] [-SharedVcpkg]
 #   tools\setup-worktree.ps1 -Path C:\Dev\bbl-old -Commit 294fd23
 #   tools\setup-worktree.ps1 -Path C:\Dev\bbl-fix -Remove
-# -Branch with -Commit creates the new branch at that commit; -Commit alone
-# checks out detached; -Branch alone branches from the current HEAD.
+#
+# Never delete a worktree with a recursive remove: it follows the junctions
+# and empties the main checkout's caches. -Remove unlinks them first.
 param(
     [Parameter(Mandatory = $true)][string]$Path,
     [string]$Branch,

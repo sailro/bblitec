@@ -1,34 +1,7 @@
-# Builds the pinned RmlUi into artifacts/tools/rmlui.
-#
-# Same shape as build-labsound.ps1, build-tint.ps1 and build-dawn.ps1, and
-# for the same reason: vcpkg's rmlui port is neither at the revision the
-# backend-neutral UI recorder was validated against nor patched with the
-# maintained native/patches/rmlui-*.patch files, so the pin lives in
-# upstream/rmlui.json and the library is built once from it instead of
-# being re-fetched and re-built inside every UI scene's build tree.
-#
-# Three deliberate departures from RmlUi's own default build:
-#
-#   * **Static core only.** Static libraries, no samples, no Lua bindings,
-#     no precompiled headers, no RmlUi-injected compiler flags.
-#   * **FreeType and LunaSVG come from the consuming triplet.** rmlui_core
-#     records both targets as link interfaces, and every consuming configure
-#     resolves them from its own vcpkg install (the `ui` manifest feature --
-#     dynamic development triplet or the x64-windows-static mini triplet).
-#     This build compiles against that same prefix; -FreetypeRoot retains its
-#     historical name and defaults to the shared development install.
-#   * **Backends/RmlUi_Platform_SDL.{h,cpp} are installed beside the
-#     package.** RmlUi builds its Backends/ directory only under samples
-#     and tests and installs none of it, while the scene build compiles
-#     that translation unit directly (the file includes nothing else from
-#     Backends/). Carrying the pair keeps the artifact self-contained and
-#     the .cache checkout disposable.
-#
-# The artifact records what it was built from -- the pinned commit and
-# every patch with its SHA-256 -- in bblite-rmlui-features.cmake, and
-# native/CMakeLists.txt refuses an artifact whose record differs from the
-# current pin and patch directory: a stale artifact would ship UI
-# behaviour the development validation never saw.
+# Builds the pinned RmlUi (upstream/rmlui.json says why it is not vcpkg's
+# port) with its maintained patches into artifacts/tools/rmlui: static core
+# only, FreeType/LunaSVG from the consuming vcpkg prefix (-FreetypeRoot), and
+# the SDL platform backend RmlUi never installs carried beside the package.
 
 param(
     [string]$Workspace = "",
@@ -163,40 +136,11 @@ $build = Join-Path $workspacePath "build"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 
-# The maintained patches are the files under native/patches, and the pin
-# names the same set: a patch added to one place and not the other is a
-# refusal here, not a silently different library. Name order is application
-# order; background clipping extends the earlier box-model patch.
-$patchDirectory = Join-Path $root "native\patches"
-$patches = @(Get-ChildItem $patchDirectory -Filter "rmlui-*.patch" -File | Sort-Object Name)
-if ($patches.Count -eq 0) {
-    throw "No rmlui-*.patch files were found under $patchDirectory."
-}
-$pinnedPatches = @($pin.patches | Sort-Object)
-$directoryPatches = @($patches | ForEach-Object { $_.Name })
-if (($pinnedPatches -join ";") -ne ($directoryPatches -join ";")) {
-    throw (
-        "upstream/rmlui.json names the patches [$($pinnedPatches -join ', ')] " +
-        "but native/patches holds [$($directoryPatches -join ', ')]; " +
-        "bring the two in step before building."
-    )
-}
+$patches = Get-MaintainedPatches rmlui
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
-
-# The maintained patch-application script: applies each pinned patch, or
-# verifies it is already present, and fails on anything else. docs/ui.md
-# states what each patch corrects and the measurement behind it.
-foreach ($patch in $patches) {
-    & $CMake `
-        "-DRMLUI_SOURCE_DIR=$source" `
-        "-DRMLUI_PATCH=$($patch.FullName)" `
-        -P (Join-Path $root "native\apply-rmlui-patch.cmake")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to apply the pinned RmlUi patch $($patch.Name)."
-    }
-}
+Install-MaintainedPatches $source $patches "RmlUi"
 
 $configureArguments = @(
     "-S", $source,
@@ -303,22 +247,13 @@ Copy-Item -Recurse -Force (Join-Path $source "Backends\RmlUi_SDL_GPU") `
 Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
 
 # Native configuration reads this record and refuses the artifact when the
-# pin or a patch moved since it was built. The patch set is "name=sha256"
-# per file, in name order, as CMake recomputes it over native/patches.
+# pin or a patch moved since it was built (native/patch-identity.cmake).
 $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
-$patchRecord = @(
-    $patches | ForEach-Object {
-        $digest = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$($_.Name)=$digest"
-    }
-) -join ";"
-@(
+$record = @(
     "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
     "set(BBLITE_RMLUI_MINSIZE $minSizeSetting)"
-    "set(BBLITE_RMLUI_COMMIT `"$($pin.commit)`")"
-    "set(BBLITE_RMLUI_PATCHES `"$patchRecord`")"
-) -join "`n" |
-    Set-Content (Join-Path $output "bblite-rmlui-features.cmake") -Encoding Ascii
+) + @(Get-PatchRecord rmlui $pin.commit $patches)
+$record -join "`n" | Set-Content (Join-Path $output "bblite-rmlui-features.cmake") -Encoding Ascii
 
 Write-Host "RmlUi installed to $output (commit $($pin.commit), $($patches.Count) patches)."

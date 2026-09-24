@@ -1,3 +1,6 @@
+Let BBLITE_FREETYPE_MODULES replace the generated ftmodule.h, so the static
+Windows packages register only the SFNT (TrueType/CFF) drivers and rasterizers.
+
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt

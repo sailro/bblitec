@@ -221,11 +221,12 @@ set(
 
 # Installed pinned RmlUi root (tools/build-rmlui.ps1). vcpkg carries an
 # rmlui port, but not at the revision pinned in upstream/rmlui.json and
-# not carrying the native/patches/rmlui-*.patch files, so the library is built
-# once into artifacts/tools the way Dawn, Tint and LabSound are. Unlike
-# LabSound it is consumed through find_package: RmlUi's root-project
-# install exports exactly the targets it built, so its package config
-# resolves. Minimal builds point this at artifacts/tools/rmlui-static.
+# not carrying the maintained RmlUi patches (native/patches/manifest.json),
+# so the library is built once into artifacts/tools the way Dawn, Tint and
+# LabSound are. Unlike LabSound it is consumed through find_package:
+# RmlUi's root-project install exports exactly the targets it built, so its
+# package config resolves. Minimal builds point this at
+# artifacts/tools/rmlui-static.
 set(BBLITE_RMLUI_DEFAULT "${BBLITE_NATIVE_ROOT}/../artifacts/tools/rmlui")
 if(BBLITE_MINSIZE)
     string(APPEND BBLITE_RMLUI_DEFAULT "-static")
@@ -761,47 +762,8 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     if(BBLITE_MINSIZE AND UNIX AND NOT BBLITE_RMLUI_MINSIZE)
         message(FATAL_ERROR "Minimal UI builds require RmlUi built with -MinSize: ${BBLITE_RMLUI_BUILD_COMMAND}.")
     endif()
-    # The artifact records the commit and the patch set (name=sha256, in
-    # name order) it was built from; the pin and native/patches say what
-    # they are now. An artifact that predates a patch would ship UI
-    # behaviour the development validation never saw, so a difference is
-    # a refusal naming the rebuild.
-    file(READ "${BBLITE_NATIVE_ROOT}/../upstream/rmlui.json" BBLITE_RMLUI_PIN)
-    string(JSON BBLITE_RMLUI_PINNED_COMMIT GET "${BBLITE_RMLUI_PIN}" commit)
-    file(GLOB BBLITE_RMLUI_PATCH_FILES "${BBLITE_NATIVE_ROOT}/patches/rmlui-*.patch")
-    list(SORT BBLITE_RMLUI_PATCH_FILES)
-    set(BBLITE_RMLUI_EXPECTED_PATCHES "")
-    foreach(bblite_rmlui_patch IN LISTS BBLITE_RMLUI_PATCH_FILES)
-        get_filename_component(bblite_rmlui_patch_name "${bblite_rmlui_patch}" NAME)
-        file(SHA256 "${bblite_rmlui_patch}" bblite_rmlui_patch_digest)
-        list(APPEND BBLITE_RMLUI_EXPECTED_PATCHES "${bblite_rmlui_patch_name}=${bblite_rmlui_patch_digest}")
-    endforeach()
-    if(NOT DEFINED BBLITE_RMLUI_COMMIT OR NOT DEFINED BBLITE_RMLUI_PATCHES)
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} records neither the "
-            "commit nor the patch set it was built from. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
-    if(NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT)
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built from commit "
-            "${BBLITE_RMLUI_COMMIT}; upstream/rmlui.json pins "
-            "${BBLITE_RMLUI_PINNED_COMMIT}. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
-    if(NOT "${BBLITE_RMLUI_PATCHES}" STREQUAL "${BBLITE_RMLUI_EXPECTED_PATCHES}")
-        message(
-            FATAL_ERROR
-            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built with the patch "
-            "set [${BBLITE_RMLUI_PATCHES}], but native/patches now holds "
-            "[${BBLITE_RMLUI_EXPECTED_PATCHES}]. Rebuild it with "
-            "${BBLITE_RMLUI_BUILD_COMMAND}."
-        )
-    endif()
+    # The artifact's source and patch record is verified with the other
+    # prebuilt dependencies (bblite_verify_dependency_artifacts, below).
     # The package config resolves Freetype::Freetype and lunasvg::lunasvg
     # itself (RmlUi's own Dependencies.cmake), against this tree's vcpkg
     # install via the ui manifest feature -- so both linked libraries follow
@@ -1175,6 +1137,11 @@ if(BBLITE_MINSIZE)
     endif()
 endif()
 
+# Every prebuilt dependency artifact this tree consumes must carry the source
+# and patch record the pin and native/patches/manifest.json select.
+include("${BBLITE_NATIVE_ROOT}/patch-identity.cmake")
+bblite_verify_dependency_artifacts()
+
 # Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp
 # and their standard-library closure before its own text; a small generated
 # unit spends most of its compile there (docs/development.md carries the
@@ -1193,9 +1160,14 @@ option(
     "Precompile the stable native headers once per build tree"
     ${BBLITE_PCH_DEFAULT}
 )
-# Cached builds reuse complete objects and do not allocate a PCH per scene.
-# Keeping PCH flags out of cache keys also avoids scene-specific PCH paths.
-if(BBLITE_PCH AND NOT BBLITE_NATIVE_CACHE_ACTIVE)
+# Under the native cache only Clang keeps the PCH: without a timestamp in it
+# (and with the PCH sloppiness compiler-cache.cmake sets) a rebuilt tree's PCH
+# and its users hit, and the checkout-relative PCH path is the same in every
+# tree. Other compilers under the cache build without one.
+if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+    if(BBLITE_NATIVE_CACHE_ACTIVE)
+        target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
+    endif()
     # The four repository headers bring the standard library they use; the
     # rest are what the PAL units include beyond them.
     set(

@@ -1,0 +1,35 @@
+Round premultiplied colour channels to the nearest byte instead of truncating, so
+translucent UI colours match the GPU's premultiplication in Chromium.
+
+diff --git a/Include/RmlUi/Core/Colour.h b/Include/RmlUi/Core/Colour.h
+index d63540a..01cfe43 100644
+--- a/Include/RmlUi/Core/Colour.h
++++ b/Include/RmlUi/Core/Colour.h
+@@ -77,9 +77,9 @@ public:
+ 	inline Colour<ColourType, AlphaDefault, true> ToPremultiplied() const
+ 	{
+ 		return {
+-			ColourType((red * alpha) / 255),
+-			ColourType((green * alpha) / 255),
+-			ColourType((blue * alpha) / 255),
++			ColourType((red * alpha + 127) / 255),
++			ColourType((green * alpha + 127) / 255),
++			ColourType((blue * alpha + 127) / 255),
+ 			alpha,
+ 		};
+ 	}
+@@ -90,10 +90,10 @@ public:
+ 	{
+ 		const float new_alpha = alpha * opacity;
+ 		return {
+-			ColourType(red * (new_alpha / 255.f)),
+-			ColourType(green * (new_alpha / 255.f)),
+-			ColourType(blue * (new_alpha / 255.f)),
+-			ColourType(new_alpha),
++			ColourType(red * (new_alpha / 255.f) + 0.5f),
++			ColourType(green * (new_alpha / 255.f) + 0.5f),
++			ColourType(blue * (new_alpha / 255.f) + 0.5f),
++			ColourType(new_alpha + 0.5f),
+ 		};
+ 	}
+ 

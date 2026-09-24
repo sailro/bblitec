@@ -308,6 +308,18 @@ test("shipping packages require the trimmed static build", () => {
     assert.match(smoke, /WorkingDirectory = \$packageDirectory/);
     assert.match(smoke, /WaitForExit\(120000\)/);
     assert.match(smoke, /\$smoke\.ExitCode -ne 0/);
+    // A failed start shows the program's own output, and a payload path the
+    // non-long-path-aware executable cannot open is refused before it runs.
+    assert.match(smoke, /RedirectStandardOutput = \$true/);
+    assert.match(smoke, /RedirectStandardError = \$true/);
+    assert.match(
+        smoke,
+        /exited with \$\(\$smoke\.ExitCode\)[^\n]*Output tail:/,
+    );
+    assert.match(
+        script.slice(0, script.indexOf("$smokeFrames = 5")),
+        /FullName\.Length -ge 260/,
+    );
 });
 
 test("the trimmed SDL build has a separate audio-capable variant", () => {
@@ -333,13 +345,19 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /Contains\('\$'\)/);
     assert.match(script, /BBLITE_SDL_DIALOG \$dialogSetting/);
     assert.match(script, /bblite-sdl-features\.cmake/);
-    // The script-only patch lives beside the LabSound one, outside the
-    // overlay port directory that keys the development vcpkg install.
-    assert.match(script, /tools\\patches\\sdl-static-no-dynapi\.patch/);
-    assert.doesNotMatch(script, /overlay-ports\\sdl3\\static-no-dynapi/);
-    assert.ok(existsSync("tools/patches/sdl-static-no-dynapi.patch"));
+    // Every trimmed-SDL patch comes from the inventory; the script-only one
+    // lives outside the overlay port directory that keys the development
+    // vcpkg install. Only SDL's own options (BOOL, or INTERNAL when SDL
+    // forces a dependent one) are admitted to the trim table.
+    assert.match(script, /Get-MaintainedPatches sdl3 @\("trimmed"\)/);
+    assert.match(script, /Get-PatchRecord sdl3 \$sdlVersion \$patches/);
+    assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
+    assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
+    assert.ok(existsSync("native/patches/sdl3/0009-static-no-dynapi.patch"));
     assert.ok(
-        !existsSync("native/vcpkg-overlay-ports/sdl3/static-no-dynapi.patch"),
+        !existsSync(
+            "native/vcpkg-overlay-ports/sdl3/0009-static-no-dynapi.patch",
+        ),
     );
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
@@ -638,31 +656,24 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(String(record.repository), /^https:\/\/github\.com\//);
     assert.match(String(record.commit), /^[0-9a-f]{40}$/);
     assert.equal(record.license, "MIT");
-
-    // The pin names every maintained patch, and the directory is the
-    // set the builder applies and records; the two must be one set.
-    const directoryPatches = readdirSync("native/patches")
-        .filter((name) => /^rmlui-.*\.patch$/.test(name))
-        .sort();
-    assert.deepEqual(record.patches, directoryPatches);
-    assert.ok(directoryPatches.length >= 5);
+    // The inventory, not the pin, lists the maintained patches.
+    assert.equal(record.patches, undefined);
+    assert.ok(
+        readdirSync("native/patches/rmlui").filter((name) =>
+            /^\d{4}-[a-z0-9-]+\.patch$/.test(name),
+        ).length >= 5,
+    );
 
     const builder = readFileSync("tools/build-rmlui.ps1", "utf8");
     assert.match(builder, /\[switch\]\$StaticRuntime/);
     assert.match(builder, /upstream\\rmlui\.json/);
-    assert.match(builder, /apply-rmlui-patch\.cmake/);
+    assert.match(builder, /Get-MaintainedPatches rmlui/);
     assert.match(
         builder,
-        /Get-ChildItem \$patchDirectory -Filter "rmlui-\*\.patch"/,
+        /Install-MaintainedPatches \$source \$patches "RmlUi"/,
     );
-    assert.match(
-        builder,
-        /\$pinnedPatches -join ";"\) -ne \(\$directoryPatches -join ";"/,
-    );
-    assert.doesNotMatch(builder, /rmlui-premultiplied-rounding\.patch/);
-    assert.match(builder, /Get-FileHash \$_\.FullName -Algorithm SHA256/);
-    assert.match(builder, /set\(BBLITE_RMLUI_COMMIT/);
-    assert.match(builder, /set\(BBLITE_RMLUI_PATCHES/);
+    assert.match(builder, /Get-PatchRecord rmlui \$pin\.commit \$patches/);
+    assert.doesNotMatch(builder, /\.patch\b/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
     assert.match(builder, /RMLUI_SVG_PLUGIN=\$rmlSvgSetting/);
@@ -683,31 +694,16 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(cmake, /NOT BBLITE_RMLUI_STATIC_RUNTIME/);
     assert.match(cmake, /ui:inline-svg/);
     assert.match(cmake, /NOT RMLUI_SVG_PLUGIN/);
-    // An artifact is refused when its recorded commit or patch set is not
-    // what the pin and native/patches say now, naming the rebuild.
+    // Every prebuilt artifact's recorded source and patch set is verified
+    // by one function against the pin and the inventory
+    // (executed in test/patch-inventory.test.ts).
     assert.match(
         cmake,
-        /string\(JSON BBLITE_RMLUI_PINNED_COMMIT GET "\$\{BBLITE_RMLUI_PIN\}" commit\)/,
+        /include\("\$\{BBLITE_NATIVE_ROOT\}\/patch-identity\.cmake"\)\s*bblite_verify_dependency_artifacts\(\)/,
     );
     assert.match(
-        cmake,
-        /file\(GLOB BBLITE_RMLUI_PATCH_FILES "\$\{BBLITE_NATIVE_ROOT\}\/patches\/rmlui-\*\.patch"\)/,
-    );
-    assert.match(
-        cmake,
-        /file\(SHA256 "\$\{bblite_rmlui_patch\}" bblite_rmlui_patch_digest\)/,
-    );
-    assert.match(
-        cmake,
-        /NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT/,
-    );
-    assert.match(
-        cmake,
-        /NOT "\$\{BBLITE_RMLUI_PATCHES\}" STREQUAL "\$\{BBLITE_RMLUI_EXPECTED_PATCHES\}"/,
-    );
-    assert.match(
-        cmake,
-        /Rebuild it with "\s*"\$\{BBLITE_RMLUI_BUILD_COMMAND\}\."/,
+        readFileSync("native/patch-identity.cmake", "utf8"),
+        /bblite_verify_patch_record\(rmlui "\$\{BBLITE_RMLUI_DIR\}" "\$\{BBLITE_RMLUI_BUILD_COMMAND\}"\)/,
     );
     assert.match(
         cmake,

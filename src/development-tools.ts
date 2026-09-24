@@ -2,6 +2,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { developmentTriplet } from "./build-options.js";
+import {
+    artifactPatchState,
+    readPatchManifest,
+    type ArtifactPatchState,
+} from "./patch-inventory.js";
 
 import type { canonicalDevelopmentCompiler } from "./build-options.js";
 
@@ -22,12 +27,23 @@ export interface WindowsBuildTools {
     visualStudioRoot: string;
 }
 
+/** A pinned development artifact's source and patch record against the manifest. */
+export interface DependencyPatchRecord {
+    library: "dawn" | "labsound" | "rmlui";
+    directory: string;
+    state: ArtifactPatchState;
+    /** What doctor and setup report; absent when the record is current. */
+    message: string | undefined;
+}
+
 export interface DevelopmentTools {
     ccache: string | undefined;
     cmake: string | undefined;
     cc: string | undefined;
     cxx: string | undefined;
     ninja: string | undefined;
+    /** Records of the pinned artifacts present; a stale one counts as not installed. */
+    dependencyPatchRecords: DependencyPatchRecord[];
     dawnDirectory: string;
     dawnInstalled: boolean;
     dxc: string | undefined;
@@ -377,6 +393,81 @@ export function discoverDevelopmentTools(
     const rmlUiHasSvg =
         existsSync(rmlUiConfig) &&
         /\bset\(RMLUI_SVG_PLUGIN ON\)/.test(readFileSync(rmlUiConfig, "utf8"));
+    const dawnBuilt = dawnFiles.every(existsSync);
+    const labSoundBuilt =
+        existsSync(
+            join(
+                labSoundDirectory,
+                "lib",
+                platform === "win32" ? "LabSound.lib" : "libLabSound.a",
+            ),
+        ) &&
+        existsSync(
+            join(
+                labSoundDirectory,
+                "lib",
+                platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a",
+            ),
+        ) &&
+        existsSync(
+            join(labSoundDirectory, "include", "libnyquist", "Decoders.h"),
+        );
+    const rmlUiBuilt =
+        // The package must carry the SVG-enabled option set now consumed
+        // by bounded inner markup, plus the SDL platform source the UI
+        // feature compiles directly.
+        rmlUiHasSvg &&
+        existsSync(join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"));
+    // The variant tokens each builder selected its patches by: Dawn applies
+    // its Metal patches on macOS, LabSound its core-only patch when the
+    // artifact says it was built that way.
+    const labSoundFeatures = join(
+        labSoundDirectory,
+        "bblite-labsound-features.cmake",
+    );
+    const labSoundCoreOnly =
+        existsSync(labSoundFeatures) &&
+        /\bset\(BBLITE_LABSOUND_CORE_ONLY ON\)/.test(
+            readFileSync(labSoundFeatures, "utf8"),
+        );
+    const manifest = readPatchManifest();
+    const dependencyPatchRecords: DependencyPatchRecord[] = (
+        [
+            [
+                dawnBuilt,
+                "dawn",
+                dawnDirectory,
+                platform === "darwin" ? ["metal"] : [],
+            ],
+            [
+                labSoundBuilt,
+                "labsound",
+                labSoundDirectory,
+                labSoundCoreOnly ? ["core-only"] : [],
+            ],
+            [rmlUiBuilt, "rmlui", rmlUiDirectory, []],
+        ] as const
+    )
+        .filter(([built]) => built)
+        .map(([, library, directory, variants]) => {
+            const state = artifactPatchState(
+                manifest,
+                library,
+                directory,
+                variants,
+            );
+            return {
+                library,
+                directory,
+                state,
+                message: describePatchState(library, directory, state),
+            };
+        });
+    const current = (library: DependencyPatchRecord["library"]): boolean =>
+        dependencyPatchRecords.some(
+            (record) =>
+                record.library === library && record.state.state !== "stale",
+        );
 
     return {
         ccache:
@@ -411,8 +502,9 @@ export function discoverDevelopmentTools(
         vcpkgToolchain: vcpkgRoot
             ? join(vcpkgRoot, "scripts", "buildsystems", "vcpkg.cmake")
             : undefined,
+        dependencyPatchRecords,
         dawnDirectory,
-        dawnInstalled: dawnFiles.every(existsSync),
+        dawnInstalled: current("dawn"),
         tint:
             environment.TINT_PATH !== undefined
                 ? findExecutable(environment.TINT_PATH, options)
@@ -426,32 +518,23 @@ export function discoverDevelopmentTools(
                   ? localDxc
                   : findExecutable("dxc", options),
         labSoundDirectory,
-        labSoundInstalled:
-            existsSync(
-                join(
-                    labSoundDirectory,
-                    "lib",
-                    platform === "win32" ? "LabSound.lib" : "libLabSound.a",
-                ),
-            ) &&
-            existsSync(
-                join(
-                    labSoundDirectory,
-                    "lib",
-                    platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a",
-                ),
-            ) &&
-            existsSync(
-                join(labSoundDirectory, "include", "libnyquist", "Decoders.h"),
-            ),
+        labSoundInstalled: current("labsound"),
         rmlUiDirectory,
-        rmlUiInstalled:
-            // The package must carry the SVG-enabled option set now consumed
-            // by bounded inner markup, plus the SDL platform source the UI
-            // feature compiles directly.
-            rmlUiHasSvg &&
-            existsSync(
-                join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"),
-            ),
+        rmlUiInstalled: current("rmlui"),
     };
+}
+
+function describePatchState(
+    library: DependencyPatchRecord["library"],
+    directory: string,
+    state: ArtifactPatchState,
+): string | undefined {
+    switch (state.state) {
+        case "current":
+            return undefined;
+        case "unrecorded":
+            return `${library} at ${directory} records no source/patch set (${state.recordPath}); rebuild it to record one.`;
+        case "stale":
+            return `${library} at ${directory} was built from '${state.recorded.source ?? "unrecorded"}' with [${state.recorded.patches ?? ""}], but the pin and native/patches/manifest.json select '${state.expected.source}' with [${state.expected.patches}]; setup rebuilds it.`;
+    }
 }

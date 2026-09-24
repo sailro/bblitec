@@ -152,6 +152,8 @@ foreach ($buildPath in $buildPaths) {
     $uiReached = $featuresText -match '"ui:rml"'
     $uiSvgReached = $featuresText -match '"ui:inline-svg"'
     $textLayoutReached = $featuresText -match '"text:layout"'
+    # The features native/CMakeLists.txt links nlohmann-json for.
+    $jsonReached = $featuresText -match '"(?:loader:gltf|loader:babylon|data:json)"'
 
     $executable = @(
         (Join-Path $buildPath "bblite_native$exeExtension"),
@@ -330,10 +332,20 @@ $vcpkgShare = @(
 if (-not $vcpkgShare) {
     throw "vcpkg share directory with dependency licenses was not found for $BuildDirectory."
 }
-$licensePackages = @{
-    "SDL3.txt" = "sdl3"
-    "nlohmann-json.txt" = "nlohmann-json"
+$licensePackages = @{}
+# A trimmed SDL (BBLITE_SDL_DIR) carries the notices of exactly the code it
+# compiles (tools/build-sdl-min.ps1); vcpkg's sdl3 notice covers its own build.
+$sdlDir = if ($cache.ContainsKey("BBLITE_SDL_DIR")) { $cache["BBLITE_SDL_DIR"] } else { "" }
+if ($sdlDir) {
+    $sdlNotice = Join-Path $sdlDir "NOTICES.txt"
+    if (-not (Test-Path -LiteralPath $sdlNotice)) {
+        throw "Trimmed SDL notices not found: $sdlNotice. Rebuild it with tools/build-sdl-min.ps1."
+    }
+    Copy-Item -LiteralPath $sdlNotice (Join-Path $licenses "SDL3.txt")
+} else {
+    $licensePackages["SDL3.txt"] = "sdl3"
 }
+if ($jsonReached) { $licensePackages["nlohmann-json.txt"] = "nlohmann-json" }
 if ($IsMacOS) { $licensePackages["Boost.Charconv.txt"] = "boost-charconv" }
 foreach ($license in $imageCodecLicenses.GetEnumerator()) {
     $licensePackages[$license.Key] = $license.Value
@@ -626,11 +638,22 @@ if ($IsLinux) {
     }
 }
 
+if ($IsWindows) {
+    # The shipped executable is not long-path aware: a payload file whose
+    # full path reaches MAX_PATH fails to open at startup, far from the cause.
+    $tooLong = @(Get-ChildItem -LiteralPath $packageDirectory -Recurse -File |
+        Where-Object { $_.FullName.Length -ge 260 } | Sort-Object { $_.FullName.Length } -Descending)
+    if ($tooLong.Count -gt 0) {
+        throw "Staged payload paths reach Windows' 260-character limit ($($tooLong.Count) files; longest $($tooLong[0].FullName.Length): $($tooLong[0].FullName)). Choose a shorter -OutputRoot."
+    }
+}
+
 # The staged package must start: run it from the package directory for a
 # few frames -- BBLITE_MAX_FRAMES is the run limit every backend's loop
 # honours -- and require a clean exit. A shader the payload lacks, a
 # device the trimmed dependencies cannot bring up, or a library the
-# loader cannot resolve all fail here, before the archive exists.
+# loader cannot resolve all fail here, before the archive exists; the
+# failure shows the tail of the program's output.
 $smokeFrames = 5
 $smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
 $smokeStart.FileName = Join-Path $packageDirectory $exeName
@@ -662,13 +685,24 @@ if ($IsMacOS) {
     }
 }
 $smokeStart.Environment["SDL_ASSERT"] = "abort"
+$smokeStart.RedirectStandardOutput = $true
+$smokeStart.RedirectStandardError = $true
 $smoke = [System.Diagnostics.Process]::Start($smokeStart)
-if (-not $smoke.WaitForExit(120000)) {
-    $smoke.Kill()
-    throw "Package smoke run did not exit within 120 s: $exeName did not stop after $smokeFrames frames."
+# Both streams drain concurrently so neither pipe fills and blocks the run.
+$smokeOutput = $smoke.StandardOutput.ReadToEndAsync()
+$smokeErrors = $smoke.StandardError.ReadToEndAsync()
+$smokeExited = $smoke.WaitForExit(120000)
+if (-not $smokeExited) { $smoke.Kill($true) }
+$smoke.WaitForExit()
+$smokeLog = (@($smokeOutput.Result, $smokeErrors.Result) -join "`n") -split "\r?\n" |
+    Where-Object { $_ -ne "" }
+Set-Content -LiteralPath (Join-Path $outputPlan.Staging "smoke-output.txt") -Value $smokeLog -Encoding utf8
+$smokeTail = ($smokeLog | Select-Object -Last 40) -join "`n"
+if (-not $smokeExited) {
+    throw "Package smoke run did not exit within 120 s: $exeName did not stop after $smokeFrames frames. Output tail:`n$smokeTail"
 }
 if ($smoke.ExitCode -ne 0) {
-    throw "Package smoke run failed: $exeName exited with $($smoke.ExitCode) after at most $smokeFrames frames."
+    throw "Package smoke run failed: $exeName exited with $($smoke.ExitCode) after at most $smokeFrames frames. Output tail:`n$smokeTail"
 }
 Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 

@@ -117,15 +117,15 @@ try {
             }
         )
         if ($MinSize) {
-            $inputs = @("$PSScriptRoot/build-sdl-min.ps1", "$PSScriptRoot/patches/sdl-static-no-dynapi.patch") +
-                @(Get-ChildItem "$root/native/vcpkg-overlay-ports/sdl3" -Filter '*.patch' -File | ForEach-Object FullName)
+            $inputs = @("$PSScriptRoot/build-sdl-min.ps1", "$root/native/patches/manifest.json", "$root/native/vcpkg-overlay-ports/sdl3/vcpkg.json") +
+                @(Get-MaintainedPatches sdl3 @('trimmed') | ForEach-Object Path)
             Build-DependencyArtifact 'SDL iOS trimmed' $sdl $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libSDL3.a', 'lib/cmake/SDL3/SDL3Config.cmake', 'bblite-sdl-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-sdl-min.ps1" -IosSdk $Sdk -EnableAudio:$audioReached -EnableGamepad:$gamepadReached -Jobs $Jobs -CMake $cmake
             }
         }
         if ('ui:rml' -in $features) {
-            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/apply-rmlui-patch.cmake") +
-                @(Get-ChildItem "$root/native/patches" -Filter 'rmlui-*.patch' -File | ForEach-Object FullName) +
+            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches rmlui | ForEach-Object Path) +
                 @(@('freetype', 'boost-charconv') + $(if (-not $MinSize -or $svgReached) { @('lunasvg') } else { @() }) |
                     ForEach-Object { "$installed/$triplet/share/$_/vcpkg_abi_info.txt" })
             Build-DependencyArtifact 'RmlUi iOS' $rmlui $dependencyIdentity ($dependencyInputs + $inputs) @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
@@ -133,7 +133,8 @@ try {
             }
         }
         if ('audio:engine' -in $features) {
-            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch", "$PSScriptRoot/patches/labsound-core-only.patch")
+            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches labsound @('core-only') | ForEach-Object Path)
             $required = @('lib/libLabSound.a', 'include/LabSound/LabSound.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt')
             if (-not $MinSize -or $audioDecoded) {
                 $required += @('lib/liblibnyquist.a', 'include/libnyquist/Decoders.h', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt')
@@ -143,8 +144,9 @@ try {
             }
         }
         if ($Backend -ne 'SDL_GPU') {
-            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$PSScriptRoot/patches/dawn-metal-sdk-compat.patch", "$PSScriptRoot/patches/dawn-metal-primitive-index.patch", "$PSScriptRoot/patches/dawn-metal-simulator-capabilities.patch")
-            Build-DependencyArtifact 'Dawn iOS' $dawn $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'provenance.json', 'LICENSE.txt') {
+            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches dawn @('metal', 'ios') | ForEach-Object Path)
+            Build-DependencyArtifact 'Dawn iOS' $dawn $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'bblite-dawn-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-dawn.ps1" -IosSdk $Sdk -IosArchitecture $Architecture -OutputDirectory $dawn -Jobs $Jobs -CMake $cmake
             }
         }

@@ -1,0 +1,148 @@
+Resolve line-height: normal from each element's current font metrics and inherit it
+as a keyword; half-leading and text-area line metrics follow Chromium.
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 45a4826..9b5257e 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -117,7 +117,7 @@ namespace Style {
+ 
+ 		Direction direction : 2;
+ 
+-		LineHeight::InheritType line_height_inherit_type : 1;
++		LineHeight::InheritType line_height_inherit_type : 2;
+ 		float line_height = 12.f * 1.2f;
+ 		float line_height_inherit = 1.2f;
+ 
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index fd22f6b..3ed11de 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -68,7 +68,7 @@ namespace Style {
+ 
+ 	struct LineHeight {
+ 		float value = 12.f * 1.2f; // The computed value (length)
+-		enum InheritType : uint8_t { Number, Length } inherit_type = Number;
++		enum InheritType : uint8_t { Number, Length, Normal } inherit_type = Number;
+ 		float inherit_value = 1.2f;
+ 		LineHeight() {}
+ 		LineHeight(float value, InheritType inherit_type, float inherit_value) :
+diff --git a/Source/Core/ComputeProperty.cpp b/Source/Core/ComputeProperty.cpp
+index 2dff457..8e52336 100644
+--- a/Source/Core/ComputeProperty.cpp
++++ b/Source/Core/ComputeProperty.cpp
+@@ -135,6 +135,9 @@ Style::Clip ComputeClip(const Property* property)
+ 
+ Style::LineHeight ComputeLineHeight(const Property* property, float font_size, float document_font_size, float dp_ratio, Vector2f vp_dimensions)
+ {
++	if (property->unit == Unit::KEYWORD)
++		return Style::LineHeight(0.f, Style::LineHeight::Normal, 0.f);
++
+ 	if (Any(property->unit & Unit::LENGTH))
+ 	{
+ 		float value = ComputeLength(property->GetNumericValue(), font_size, document_font_size, dp_ratio, vp_dimensions);
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 412f9ba..eac7528 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -5,6 +5,7 @@
+ #include "../../Include/RmlUi/Core/ElementDocument.h"
+ #include "../../Include/RmlUi/Core/ElementUtilities.h"
+ #include "../../Include/RmlUi/Core/FontEngineInterface.h"
++#include "../../Include/RmlUi/Core/FontMetrics.h"
+ #include "../../Include/RmlUi/Core/Log.h"
+ #include "../../Include/RmlUi/Core/Math.h"
+ #include "../../Include/RmlUi/Core/Profiling.h"
+@@ -1000,6 +1001,27 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 			GetFontEngineInterface()->GetFontFaceHandle(values.font_family(), values.font_style(), values.font_weight(), (int)values.font_size()));
+ 	}
+ 
++	// The normal keyword inherits unchanged and resolves using each element's
++	// current face, including changes to family, weight, style, and size.
++	if (values.line_height().inherit_type == Style::LineHeight::Normal)
++	{
++		const FontFaceHandle face = values.font_face_handle();
++		const float spacing = face ? GetFontEngineInterface()->GetFontMetrics(face).line_spacing : font_size * 1.2f;
++		values.line_height(Style::LineHeight(spacing, Style::LineHeight::Normal, 0.f));
++		if (line_height_before.value != spacing || line_height_before.inherit_type != Style::LineHeight::Normal)
++		{
++			dirty_properties.Insert(PropertyId::LineHeight);
++			dirty_properties.Insert(PropertyId::VerticalAlign);
++			if (const Property* property = GetProperty(PropertyId::VerticalAlign))
++			{
++				variable_dependencies.clear();
++				property = ResolveVariables(PropertyId::VerticalAlign, property, variable_dependencies, property_storage);
++				if (property)
++					values.vertical_align(ComputeVerticalAlign(property, spacing, font_size, document_font_size, dp_ratio, vp_dimensions));
++			}
++		}
++	}
++
+ 	// Next, pass inheritable dirty properties onto our children
+ 	PropertyIdSet dirty_inherited_properties = (dirty_properties & StyleSheetSpecification::GetRegisteredInheritedProperties());
+ 
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+index 1ff0750..b52a8bb 100644
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -1,4 +1,5 @@
+ #include "WidgetTextInput.h"
++#include <cmath>
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Context.h"
+ #include "../../../Include/RmlUi/Core/Core.h"
+@@ -1256,7 +1257,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 	// Determine the line-height of the text element.
+ 	const float line_height = GetLineHeight();
+ 
+-	const float half_leading = 0.5f * (line_height - (font_metrics.ascent + font_metrics.descent));
++	const float half_leading = std::floor(0.5f * (line_height - (font_metrics.ascent + font_metrics.descent)));
+ 	const float top_to_baseline = font_metrics.ascent + half_leading;
+ 
+ 	// When the selection contains endlines, we expand the selection area by this width.
+@@ -1624,9 +1625,7 @@ void WidgetTextInput::SetKeyboardActive(bool active)
+ 
+ float WidgetTextInput::GetLineHeight() const
+ {
+-	// This is rounded to improve the navigation experience in a multi-line text field. If it's not rounded then lines
+-	// may move a single pixel for every line, which looks a bit jaggedy when moving up and down.
+-	return Math::Round(parent->GetLineHeight());
++	return parent->GetLineHeight();
+ }
+ 
+ float WidgetTextInput::GetAvailableWidth() const
+diff --git a/Source/Core/Layout/InlineBox.cpp b/Source/Core/Layout/InlineBox.cpp
+index 557e674..98db290 100644
+--- a/Source/Core/Layout/InlineBox.cpp
++++ b/Source/Core/Layout/InlineBox.cpp
+@@ -2,6 +2,7 @@
+ #include "../../../Include/RmlUi/Core/Box.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
+ #include "../../../Include/RmlUi/Core/FontMetrics.h"
++#include <cmath>
+ 
+ namespace Rml {
+ 
+@@ -24,7 +25,7 @@ void InlineBoxBase::GetStrut(float& out_total_height_above, float& out_total_dep
+ 	const FontMetrics& font_metrics = GetFontMetrics();
+ 	const float line_height = GetElement()->GetLineHeight();
+ 
+-	const float half_leading = 0.5f * (line_height - (font_metrics.ascent + font_metrics.descent));
++	const float half_leading = std::floor(0.5f * (line_height - (font_metrics.ascent + font_metrics.descent)));
+ 	out_total_height_above = font_metrics.ascent + half_leading;
+ 	out_total_depth_below = line_height - out_total_height_above;
+ }
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 800733b..90fac6d 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -327,7 +327,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::MinHeight, "min-height", "0px", false, true).AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::MaxHeight, "max-height", "none", false, true).AddParser("keyword", "none").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 
+-	RegisterProperty(PropertyId::LineHeight, "line-height", "1.2", true, true).AddParser("number_length_percent").SetRelativeTarget(RelativeTarget::FontSize);
++	RegisterProperty(PropertyId::LineHeight, "line-height", "1.2", true, true)
++		.AddParser("keyword", "normal").AddParser("number_length_percent").SetRelativeTarget(RelativeTarget::FontSize);
+ 	RegisterProperty(PropertyId::VerticalAlign, "vertical-align", "baseline", false, true)
+ 		.AddParser("keyword", "baseline, middle, sub, super, text-top, text-bottom, top, center, bottom")
+ 		.AddParser("length_percent").SetRelativeTarget(RelativeTarget::LineHeight);

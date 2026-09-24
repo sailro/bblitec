@@ -9,6 +9,10 @@ import {
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
+import {
+    expectedPatchRecord,
+    readPatchManifest,
+} from "../src/patch-inventory.js";
 
 function touch(path: string): void {
     mkdirSync(dirname(path), { recursive: true });
@@ -239,3 +243,49 @@ for (const platform of ["linux", "darwin"] as const)
         rmSync(dawnLibrary);
         assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
     });
+
+test("a pinned artifact whose patch record differs counts as not installed; an unrecorded one is reported", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-patch-record-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const dawn = join(root, "artifacts/tools/dawn");
+    touch(join(dawn, "lib/cmake/Dawn/DawnConfig.cmake"));
+    touch(join(dawn, "lib/libwebgpu_dawn.so"));
+    const options = {
+        cwd: root,
+        platform: "linux" as const,
+        environment: { PATH: "" },
+    };
+    const record = (): { state: string; message: string | undefined } => {
+        const found = discoverDevelopmentTools(
+            options,
+        ).dependencyPatchRecords.find((entry) => entry.library === "dawn");
+        assert.ok(found, "a built Dawn artifact carries a record state");
+        return { state: found.state.state, message: found.message };
+    };
+
+    // Artifacts built before records existed stay usable and are reported.
+    assert.equal(discoverDevelopmentTools(options).dawnInstalled, true);
+    assert.equal(record().state, "unrecorded");
+    assert.match(record().message ?? "", /records no source\/patch set/);
+
+    // Linux Dawn applies no maintained patch: the record names the pin only.
+    const expected = expectedPatchRecord(readPatchManifest(), "dawn", []);
+    assert.equal(expected.patches, "");
+    const write = (source: string, patches: string): void =>
+        writeFileSync(
+            join(dawn, "bblite-dawn-features.cmake"),
+            `set(BBLITE_DAWN_SOURCE "${source}")\nset(BBLITE_DAWN_PATCHES "${patches}")\n`,
+        );
+    write(expected.source, expected.patches);
+    assert.equal(record().state, "current");
+    assert.equal(record().message, undefined);
+    assert.equal(discoverDevelopmentTools(options).dawnInstalled, true);
+
+    // A different patch set or source is stale: setup rebuilds it.
+    write(expected.source, "0001-android-surface-loss.patch=00");
+    assert.equal(record().state, "stale");
+    assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
+    write("0000000000000000000000000000000000000000", expected.patches);
+    assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
+    assert.match(record().message ?? "", /setup rebuilds it/);
+});

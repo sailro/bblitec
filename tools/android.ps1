@@ -87,21 +87,24 @@ try {
         $installArguments += @($dependencyFeatures.Split(';', [StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { "--x-feature=$_" })
         Invoke-Checked $vcpkg $installArguments
         if ('ui:rml' -in $runtimeFeatures) {
-            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/apply-rmlui-patch.cmake") +
-                @(Get-ChildItem "$root/native/patches" -Filter 'rmlui-*.patch' -File | ForEach-Object FullName) +
+            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches rmlui | ForEach-Object Path) +
                 @('freetype', 'lunasvg', 'boost-charconv' | ForEach-Object { "$root/artifacts/android-vcpkg/$triplet/share/$_/vcpkg_abi_info.txt" })
             Build-DependencyArtifact 'RmlUi Android' $rmlui $dependencyIdentity ($dependencyInputs + $inputs) @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
                 & "$PSScriptRoot/build-rmlui.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -FreetypeRoot "$root/artifacts/android-vcpkg/$triplet" -Jobs $Jobs -CMake $cmake
             }
         }
         if ('audio:engine' -in $runtimeFeatures) {
-            Build-DependencyArtifact 'LabSound Android' $labsound $dependencyIdentity ($dependencyInputs + @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch")) @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
+            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches labsound | ForEach-Object Path)
+            Build-DependencyArtifact 'LabSound Android' $labsound $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
                 & "$PSScriptRoot/build-labsound.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -Jobs $Jobs -CMake $cmake
             }
         }
         if ($Backend -ne 'SDL_GPU') {
-            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$PSScriptRoot/patches/dawn-android-surface-loss.patch")
-            Build-DependencyArtifact 'Dawn Android' $dawn $dependencyIdentity (@("$Ndk/source.properties") + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'provenance.json', 'LICENSE.txt') {
+            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$root/native/patches/manifest.json") +
+                @(Get-MaintainedPatches dawn @('android') | ForEach-Object Path)
+            Build-DependencyArtifact 'Dawn Android' $dawn $dependencyIdentity (@("$Ndk/source.properties") + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'bblite-dawn-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-dawn.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -OutputDirectory $dawn -Jobs $Jobs -CMake $cmake
             }
         }
