@@ -16,6 +16,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/text_gpu.hpp>
 #if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
