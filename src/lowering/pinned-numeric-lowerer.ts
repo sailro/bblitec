@@ -496,6 +496,8 @@ export interface PinnedNumericScope {
     forOf?: (
         iterated: string,
         element: string,
+        /** What the iterated expression is bound to, where it is bound. */
+        binding: PinnedBinding | undefined,
     ) =>
         | {
               /** The C++ range expression, e.g. `scene.caster_meshes`. */
@@ -962,7 +964,11 @@ export class PinnedNumericLowerer {
                 this.file,
             );
             const iterated = statement.expression.getText(this.file);
-            const resolved = this.scope.forOf?.(iterated, element);
+            const resolved = this.scope.forOf?.(
+                iterated,
+                element,
+                this.scope.bindings.get(iterated),
+            );
             if (!resolved) {
                 this.fail(statement, `for-of over '${iterated}'`);
             }
@@ -2352,7 +2358,14 @@ export class PinnedNumericLowerer {
                 ? { cpp: this.elementAccess(node), type: "vec3" }
                 : undefined;
         }
-        return undefined;
+        // A member the caller bound as a record by its dotted text
+        // (`region.origin`), read the way a record local is.
+        const member = ts.isPropertyAccessExpression(node)
+            ? this.scope.bindings.get(node.getText(this.file))
+            : undefined;
+        return member && isRecordType(member.type)
+            ? { cpp: member.cpp, type: member.type }
+            : undefined;
     }
 
     /** Capture element references before writes; assignment results retain the original number. */

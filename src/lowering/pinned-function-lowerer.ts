@@ -576,6 +576,10 @@ export function lowerPinnedFunction(
         trailingParameters?: readonly string[];
         /** See `PinnedNumericScope.statement`. */
         statement?: PinnedNumericScope["statement"];
+        /** See `PinnedNumericScope.expression`. */
+        expression?: PinnedNumericScope["expression"];
+        /** See `PinnedNumericScope.vec3Literal`. */
+        vec3Literal?: PinnedNumericScope["vec3Literal"];
         /** See `PinnedNumericScope.indexedCall`. */
         indexedCall?: PinnedNumericScope["indexedCall"];
         /** See `PinnedNumericScope.callShapes`. */
@@ -796,6 +800,8 @@ export function lowerPinnedFunctionParts(
             : {}),
         ...(options.forOf ? { forOf: options.forOf } : {}),
         ...(options.statement ? { statement: options.statement } : {}),
+        ...(options.expression ? { expression: options.expression } : {}),
+        ...(options.vec3Literal ? { vec3Literal: options.vec3Literal } : {}),
         ...(options.returns === "void"
             ? {}
             : {
