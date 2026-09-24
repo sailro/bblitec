@@ -113,7 +113,7 @@ export interface ComparisonContext extends Pick<
     | "evaluator"
     | "dataTypes"
     | "compileValue"
-    | "compilePropertyAccess"
+    | "propertyAccess"
     | "bindings"
     | "probeEmission"
     | "fail"
@@ -154,7 +154,7 @@ export function foldBooleanComparison(
         const value = ts.isIdentifier(resolved)
             ? context.bindings.lookupOptional(resolved)
             : ts.isPropertyAccessExpression(resolved)
-              ? context.compilePropertyAccess(resolved)
+              ? context.propertyAccess.compilePropertyAccess(resolved)
               : undefined;
         if (value?.kind === "json-null") return "nullish";
         return value?.kind === "boolean" &&

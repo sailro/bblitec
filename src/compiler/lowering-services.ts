@@ -61,6 +61,7 @@ import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
+import type { PropertyAccessLowerer } from "./properties.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -121,6 +122,7 @@ export interface LoweringServices {
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
+    readonly propertyAccess: PropertyAccessLowerer;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -203,7 +205,6 @@ export interface LoweringServices {
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
     compileBrowserGeneratedString(call: ts.CallExpression): Value | undefined;
-    compilePropertyAccess(expression: ts.PropertyAccessExpression): Value;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileStaticFetch(
         call: ts.CallExpression,
@@ -782,13 +783,6 @@ export interface LoweringServices {
         node: ts.Node,
         destination: string,
     ): void;
-    declaredDataProperty(
-        expression: ts.PropertyAccessExpression,
-    ): Value | undefined;
-    readResolvedProperty(
-        owner: Value,
-        expression: ts.PropertyAccessExpression,
-    ): Value | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;

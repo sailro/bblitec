@@ -33,6 +33,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `program.ts`, `symbols.ts`, `type-facts.ts` | TypeScript program, declaration origin and symbol resolution, nullable-union members |
 | Expressions, statements, assignments, `intrinsics/` | Source lowering |
 | `declarations.ts` | Variable declarations and binding patterns |
+| `properties.ts` | Property rules and property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |

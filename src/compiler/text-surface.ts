@@ -44,7 +44,7 @@ const textKinds = [
     "text-vector",
 ];
 
-interface TextSurfaceContext extends Pick<
+export interface TextSurfaceContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"

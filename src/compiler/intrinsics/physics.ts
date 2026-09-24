@@ -66,7 +66,7 @@ export interface PhysicsIntrinsicContext
             | "castNumber"
             | "vec3FromRecord"
             | "bindings"
-            | "readResolvedProperty"
+            | "propertyAccess"
             | "expectSameEngine"
             | "expectObjectLiteral"
             | "compileFrameCallback"
@@ -1839,7 +1839,10 @@ function compilePhysicsRaycast(
                     argument,
                     name!,
                 );
-                const field = context.readResolvedProperty(captured, access);
+                const field = context.propertyAccess.readResolvedProperty(
+                    captured,
+                    access,
+                );
                 if (!field)
                     context.fail(
                         argument,

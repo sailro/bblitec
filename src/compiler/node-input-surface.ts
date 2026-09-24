@@ -11,7 +11,7 @@ const textureType: DataType = {
     inner: { kind: "handle", handle: "texture" },
 };
 
-interface NodeInputContext extends Pick<
+export interface NodeInputContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"

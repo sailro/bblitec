@@ -1,5 +1,3 @@
-import { optionalPresentCpp, valueForKind } from "./types.js";
-import type { LoweringServices } from "./lowering-services.js";
 // Property reads on the compiled surface.
 //
 // Every read here answers the same question -- given a handle and a
@@ -10,38 +8,69 @@ import type { LoweringServices } from "./lowering-services.js";
 // engine again. The table below states the three tokens; `readProperty`
 // holds the ceremony once.
 //
-// Reads that are not a field lookup stay in the compiler: `this.x`
-// resolves through the instance record, a record read runs its getter, a
-// tuple length and an engine's MSAA sample count come from compile-time
-// metadata rather than from a native field, and `camera.target`
-// synthesizes a three-component record. Those differ in what they *do*,
-// not in which field they name.
-// Property reads on the compiled surface.
-//
-// Every read here answers the same question -- given a handle and a
-// property name, which native expression names the value -- and the
-// answers differed by about three tokens each while the ceremony around
-// them was copied verbatim: resolve the owning engine, index the record
-// collection, carry `engineCpp` forward so a later read can resolve the
-// engine again. The table below states the three tokens; `readProperty`
-// holds the ceremony once.
-//
-// Reads that are not a field lookup stay in the compiler: `this.x`
-// resolves through the instance record, a record read runs its getter, a
-// tuple length and an engine's MSAA sample count come from compile-time
-// metadata rather than from a native field, and `camera.target`
-// synthesizes a three-component record. Those differ in what they *do*,
-// not in which field they name.
+// Reads that are not a field lookup are `PropertyAccessLowerer`'s, below:
+// `this.x` resolves through the instance record, a record read runs its
+// getter, a tuple length and an engine's MSAA sample count come from
+// compile-time metadata rather than from a native field, and
+// `camera.target` synthesizes a three-component record. Those differ in
+// what they *do*, not in which field they name.
 import ts from "typescript";
-
-import type { DataType } from "./data-types.js";
-import type { Feature, Value, ValueKind } from "./types.js";
-import { isAssignmentOperator } from "./syntax.js";
+import { doubleLiteral } from "../cpp-literals.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
 } from "../lowering/post-process-accessors.js";
+import { screenSpaceFacts } from "../pinned-screen-space.js";
+import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import { readPngDimensionsSync } from "./asset-bytes-sync.js";
+import {
+    cameraVectorProperties,
+    sceneNodeVectorProperties,
+    type BindingScopes,
+} from "./binding-scopes.js";
+import {
+    browserDeploymentValue,
+    browserEnvironmentPropertyValue,
+    type BrowserGlobalContext,
+} from "./browser-erasure.js";
+import {
+    compileBrowserFileProperty,
+    type BrowserFileContext,
+} from "./browser-file.js";
+import {
+    compileCanvasValue,
+    readMediaQueryProperty,
+    type CanvasContext,
+} from "./canvas.js";
+import { renderClosure } from "./closure-captures.js";
+import { handleCppType, type DataType } from "./data-types.js";
+import { EmissionMap } from "./emission-transaction.js";
+import { engineSampleCountCpp } from "./engine-samples.js";
+import { httpResponseProperty } from "./http.js";
+import { readCharacterProperty } from "./intrinsics/character-controller.js";
+import { geometryEnumMember } from "./intrinsics/engine-options.js";
+import type { PhysicsIntrinsicContext } from "./intrinsics/physics.js";
+import type { LoweringServices } from "./lowering-services.js";
+import {
+    readNodeInputProperty,
+    type NodeInputContext,
+} from "./node-input-surface.js";
+import { readFrozenParticleProperty } from "./particle-buffer.js";
 import { recordAt } from "./record-access.js";
+import { staticFetchProperty } from "./static-fetch.js";
+import { isAssignmentOperator } from "./syntax.js";
+import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import {
+    optionalPresentCpp,
+    valueForKind,
+    type Feature,
+    type GeometryOutputTaskManifest,
+    type GeometryTextureTypeName,
+    type Value,
+    type ValueKind,
+} from "./types.js";
+import type { UiProjection } from "./ui-projection.js";
+import type { WindowProperties } from "./window-properties.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -1693,4 +1722,1522 @@ export function pickedMeshHandleCpp(
         );
     }
     return `bbl::picked_mesh(${value.cpp})`;
+}
+
+/**
+ * What property-access lowering reads of the compiler: the surfaces its
+ * special readers take, and the members it reads itself.
+ */
+interface PropertyAccessContext
+    extends
+        PropertyContext,
+        PhysicsIntrinsicContext,
+        CanvasContext,
+        BrowserFileContext,
+        BrowserGlobalContext,
+        TextSurfaceContext,
+        NodeInputContext,
+        Pick<
+            LoweringServices,
+            | "captureManagedClosureLines"
+            | "checker"
+            | "classLowerer"
+            | "compileValue"
+            | "cppString"
+            | "dataLowerer"
+            | "dataTypes"
+            | "emit"
+            | "fail"
+            | "handleCollections"
+            | "isCanvasElement"
+            | "libraryGlobal"
+            | "options"
+            | "reachFeature"
+            | "reachJsData"
+            | "requireDefaultEngine"
+            | "requireEngine"
+            | "resolveStaticExpression"
+            | "unwrap"
+            | "useNativeValue"
+        > {
+    readonly bindings: BindingScopes;
+    /** Bound only while lowering a platform visibility callback body. */
+    readonly platformDocumentHiddenCpp: string | undefined;
+    /** Platform owner for an entry that has no source-created engine. */
+    readonly presentationHostCpp: string | undefined;
+    readonly ui: UiProjection;
+    readonly windowProperties: WindowProperties;
+    compileRecordGetter(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration,
+    ): Value;
+    enumMemberValue(expression: ts.PropertyAccessExpression): Value | undefined;
+}
+
+const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
+    ["repeat", "repeat"],
+    ["shiftKey", "shift_key"],
+    ["ctrlKey", "ctrl_key"],
+    ["altKey", "alt_key"],
+    ["metaKey", "meta_key"],
+]);
+const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
+    ["bubbles", "bubbles"],
+    ["cancelable", "cancelable"],
+    ["composed", "composed"],
+    ["isTrusted", "trusted"],
+]);
+
+/** Property access on every owner the compiler represents. */
+export class PropertyAccessLowerer {
+    constructor(private readonly context: PropertyAccessContext) {}
+
+    /** The complete chained property path containing a failed sub-read. */
+    private propertyPathForDiagnostic(
+        expression: ts.PropertyAccessExpression,
+    ): string {
+        let path: ts.Expression = expression;
+        while (
+            path.parent &&
+            ts.isPropertyAccessExpression(path.parent) &&
+            this.context.unwrap(path.parent.expression) === path
+        ) {
+            path = path.parent;
+        }
+        return path.getText();
+    }
+
+    public compilePropertyAccess(
+        expression: ts.PropertyAccessExpression,
+    ): Value {
+        const windowProperty = this.context.windowProperties.read(expression);
+        if (windowProperty) return windowProperty;
+        const environment = browserEnvironmentPropertyValue(
+            this.context,
+            expression,
+        );
+        if (environment) return environment;
+        const deployed = browserDeploymentValue(this.context, expression);
+        if (deployed === null)
+            return { kind: "json-null", cpp: "std::nullopt" };
+        if (typeof deployed === "boolean")
+            return {
+                kind: "boolean",
+                cpp: deployed ? "true" : "false",
+                staticBoolean: deployed,
+            };
+        if (deployed !== undefined)
+            return {
+                kind: "string",
+                cpp: this.context.cppString(deployed),
+                staticString: deployed,
+            };
+        const dataset = this.context.ui.primaryCanvasDataset(expression);
+        if (dataset)
+            return {
+                kind: "string",
+                cpp: `bbl::canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(dataset)})`,
+                dataType: { kind: "string" },
+            };
+        const canvas = compileCanvasValue(this.context, expression);
+        if (canvas) return canvas;
+        if (
+            expression.name.text === "activeElement" &&
+            this.context.libraryGlobal(expression.expression) === "document"
+        ) {
+            const engine = this.context.requireDefaultEngine(expression);
+            this.context.reachFeature("ui:rml", expression);
+            return {
+                kind: "ui-element",
+                cpp: `bbl::ui_active_element(${engine})`,
+                engineCpp: engine,
+                dataType: { kind: "handle", handle: "ui-element" },
+            };
+        }
+        if (
+            expression.questionDotToken &&
+            expression.name.text === "direction" &&
+            ts.isPropertyAccessExpression(
+                this.context.unwrap(expression.expression),
+            )
+        ) {
+            const ray = this.context.unwrap(
+                expression.expression,
+            ) as ts.PropertyAccessExpression;
+            if (ray.name.text === "ray") {
+                const pick = this.context.compileValue(ray.expression);
+                if (pick.kind === "picking-info") {
+                    // `pickAsync` is only lowered in its pinned BASIC mode.
+                    // Upstream sets `info.ray = null` in that mode, so the
+                    // optional access is exactly the nullish left operand.
+                    return { kind: "json-null", cpp: "std::nullopt" };
+                }
+            }
+        }
+        const ownerExpression = this.context.unwrap(expression.expression);
+        const enumMember = this.context.enumMemberValue(expression);
+        if (enumMember) {
+            return enumMember;
+        }
+        if (ts.isNewExpression(ownerExpression)) {
+            // `new C().member`: the temporary instance is a record like
+            // any other, read once here.
+            const instance = this.context.compileValue(ownerExpression);
+            if (instance.kind === "record") {
+                const accessor = instance.recordGetters?.[expression.name.text];
+                const member = accessor
+                    ? this.context.compileRecordGetter(instance, accessor)
+                    : instance.recordProperties?.[expression.name.text];
+                if (member) {
+                    return member;
+                }
+            }
+        }
+        const staticField =
+            this.context.classLowerer.resolveStaticField(expression);
+        if (staticField?.initializer) {
+            return this.context.compileValue(staticField.initializer);
+        }
+        if (
+            ts.isPropertyAccessExpression(ownerExpression) &&
+            ownerExpression.name.text === "style"
+        ) {
+            const element = this.context.ui.uiElementValue(
+                ownerExpression.expression,
+            );
+            if (element) {
+                const engine = this.context.requireEngine(element, expression);
+                const property = this.context.ui.nativeUiStyleProperty(
+                    expression.name.text,
+                );
+                this.context.ui.auditUiStylePropertyName(
+                    property,
+                    expression.name,
+                );
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_style_property(${engine}, ${element.cpp}, ${this.context.cppString(property)})`,
+                };
+            }
+        }
+        const documentRoot = this.context.ui.documentRootValue(expression);
+        if (documentRoot) return documentRoot;
+        if (
+            expression.name.text === "hidden" &&
+            this.context.libraryGlobal(ownerExpression) === "document" &&
+            this.context.platformDocumentHiddenCpp !== undefined
+        ) {
+            return {
+                kind: "boolean",
+                cpp: this.context.platformDocumentHiddenCpp,
+            };
+        }
+        if (
+            this.context.libraryGlobal(ownerExpression) === "window" &&
+            (expression.name.text === "innerWidth" ||
+                expression.name.text === "innerHeight")
+        ) {
+            const property =
+                expression.name.text === "innerWidth" ? "width" : "height";
+            return {
+                kind: "number",
+                cpp:
+                    `static_cast<double>(${this.context.requireDefaultEngine(expression)}` +
+                    `.options.${property})`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (ownerExpression.kind === ts.SyntaxKind.ThisKeyword) {
+            // Field reads resolve through the instance record the
+            // constructor built.
+            const instance = this.context.compileValue(ownerExpression);
+            const field = instance.recordProperties?.[expression.name.text];
+            if (!field) {
+                const accessor = instance.recordGetters?.[expression.name.text];
+                if (accessor) {
+                    return this.context.compileRecordGetter(instance, accessor);
+                }
+                this.context.fail(
+                    expression,
+                    `Field '${expression.name.text}' is not assigned before this read ` +
+                        `(class ${instance.classDeclaration?.name?.text ?? "unknown"}; ` +
+                        `fields ${Object.keys(instance.recordProperties ?? {}).join(", ") || "none"}).`,
+                );
+            }
+            return field;
+        }
+        if (
+            !ts.isIdentifier(ownerExpression) &&
+            !ts.isPropertyAccessExpression(ownerExpression) &&
+            !ts.isElementAccessExpression(ownerExpression) &&
+            !ts.isCallExpression(ownerExpression) &&
+            !ts.isStringLiteralLike(ownerExpression)
+        ) {
+            this.context.fail(
+                expression,
+                `Unsupported property value '${this.propertyPathForDiagnostic(expression)}'.`,
+            );
+        }
+        if (
+            expression.name.text === "className" &&
+            this.context.isCanvasElement(ownerExpression) &&
+            !this.context.ui.uiElementValue(ownerExpression)
+        ) {
+            // The generated host's primary renderCanvas has no class
+            // attribute. Keep that browser fact available to multi-surface
+            // code which mirrors its class onto an auxiliary canvas.
+            return {
+                kind: "string",
+                cpp: this.context.cppString(""),
+                staticString: "",
+                dataType: { kind: "string" },
+            };
+        }
+        // Through compileValue rather than lookup: a module-level
+        // constant is never bound in a variable scope, so it resolves
+        // through its own initializer the way an entry-scope constant
+        // resolves through its binding, and a property-access owner
+        // resolves by recursing here, so `camera.ortho.halfHeight` reads
+        // as the path it is written as. Unknown identifiers still fail
+        // in lookup at the end of that chain, and an owner that is
+        // itself unsupported fails naming the sub-path that failed.
+        const compiledOwner = this.context.compileValue(ownerExpression);
+        const rawOwner =
+            this.context.presentationHostCpp &&
+            compiledOwner.browserValue?.kind === "object" &&
+            compiledOwner.browserValue.primaryCanvas
+                ? this.context.ui.primaryPresentationCanvas(ownerExpression)
+                : compiledOwner;
+        // A shared class instance read back out of a container is a `Ref`
+        // with no compile-time shape of its own. Hydrating it here is what
+        // gives the ordinary record path its fields, getters and setters,
+        // so `part.locked` and `part.size` read the same way whether the
+        // receiver was just constructed or came out of an array.
+        const owner = this.context.classLowerer.hydrate(rawOwner) ?? rawOwner;
+        const httpProperty = httpResponseProperty(
+            this.context.dataLowerer,
+            owner,
+            expression.name.text,
+        );
+        if (httpProperty) return httpProperty;
+        if (
+            owner.kind === "json-null" &&
+            (expression.questionDotToken ||
+                (ts.isOptionalChain(expression) &&
+                    owner.optionalChainShortCircuited))
+        ) {
+            return {
+                kind: "json-null",
+                cpp: "std::nullopt",
+                optionalChainShortCircuited: true,
+            };
+        }
+        const property = expression.name.text;
+        if (owner.kind === "physics-viewer" && property === "scene") {
+            return {
+                kind: "scene",
+                cpp: `(${owner.cpp})->scene`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            };
+        }
+        if (owner.kind === "scene" && property === "_envTextures") {
+            this.context.reachFeature("engine:device-recovery", expression);
+            return {
+                kind: "gpu-environment",
+                cpp: `bbl::environment_identity(${owner.cpp})`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                dataType: { kind: "handle", handle: "gpu-environment" },
+                impure: true,
+            };
+        }
+        if (owner.kind === "gpu-environment" && property === "specularCube") {
+            return {
+                kind: "gpu-texture",
+                cpp: `bbl::environment_texture_identity(${owner.cpp})`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                dataType: { kind: "handle", handle: "gpu-texture" },
+                impure: true,
+            };
+        }
+        if (owner.kind === "engine" && property === "_pbrFallbackTex") {
+            this.context.reachFeature("engine:device-recovery", expression);
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    texture: {
+                        kind: "gpu-texture",
+                        cpp: `bbl::fallback_texture_identity(${owner.cpp})`,
+                        engineCpp: owner.cpp,
+                        dataType: { kind: "handle", handle: "gpu-texture" },
+                        impure: true,
+                    },
+                },
+            };
+        }
+        if (owner.kind === "shadow-generator" && property === "_depthTexture") {
+            this.context.reachFeature("engine:device-recovery", expression);
+            return {
+                kind: "gpu-texture",
+                cpp: `bbl::shadow_texture_identity(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                dataType: { kind: "handle", handle: "gpu-texture" },
+                impure: true,
+            };
+        }
+        if (owner.kind === "scene" && property === "_renderables") {
+            this.context.reachFeature("engine:device-recovery", expression);
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    length: {
+                        kind: "number",
+                        cpp: `bbl::scene_renderable_count(${owner.cpp})`,
+                        impure: true,
+                    },
+                },
+            };
+        }
+        if (owner.kind === "engine" && property === "drawCallCount") {
+            this.context.reachFeature("engine:device-recovery", expression);
+            return { kind: "number", cpp: `${owner.cpp}.draw_call_count` };
+        }
+        if (owner.kind === "ui-element" && property === "dataset") {
+            return { ...owner, uiDataset: true };
+        }
+        if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (property === "checked") {
+                if (owner.uiTag && owner.uiTag !== "input")
+                    this.context.fail(
+                        expression,
+                        "UI checked requires an input element.",
+                    );
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_get_checked(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            }
+            if (property === "selected") {
+                if (owner.uiTag && owner.uiTag !== "option")
+                    this.context.fail(
+                        expression,
+                        "UI selected requires an option element.",
+                    );
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_get_selected(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    impure: true,
+                };
+            }
+            if (
+                this.context.options.workers &&
+                ["complete", "naturalWidth", "naturalHeight"].includes(property)
+            ) {
+                if (owner.uiTag && owner.uiTag !== "img")
+                    this.context.fail(
+                        expression,
+                        "Image readiness requires an img element.",
+                    );
+                const method =
+                    property === "complete"
+                        ? "complete"
+                        : property === "naturalWidth"
+                          ? "natural_width"
+                          : "natural_height";
+                return this.context.dataLowerer.leafValue(
+                    `bbl::ui_image_${method}(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    { kind: property === "complete" ? "boolean" : "number" },
+                );
+            }
+            if (this.context.options.workers && property === "decode") {
+                if (owner.uiTag && owner.uiTag !== "img")
+                    this.context.fail(
+                        expression,
+                        "Image decoding requires an img element.",
+                    );
+                const engine = this.context.requireEngine(owner, expression);
+                const compiled = this.context.captureManagedClosureLines(() => {
+                    this.context.useNativeValue(owner);
+                    this.context.emit(
+                        `return bbl::ui_decode_image(${engine}, ${owner.cpp});`,
+                    );
+                });
+                const type: DataType = {
+                    kind: "function",
+                    parameters: [],
+                    result: { kind: "promise" },
+                };
+                return this.context.dataLowerer.leafValue(
+                    `${this.context.dataTypes.cppType(type)}{${renderClosure(compiled, "")}}`,
+                    type,
+                );
+            }
+            if (property === "lang")
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, "lang")`,
+                    dataType: { kind: "string" },
+                };
+            if (["min", "max", "step"].includes(property)) {
+                if (owner.uiTag !== "input")
+                    this.context.fail(
+                        expression,
+                        `UI ${property} requires an input element.`,
+                    );
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(property)})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                };
+            }
+            const attribute = this.context.ui.booleanAttribute(
+                owner,
+                property,
+                expression,
+            );
+            if (attribute)
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_has_attribute(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(attribute)})`,
+                    impure: true,
+                };
+        }
+        if (
+            owner.kind === "ui-element" &&
+            property === "value" &&
+            ["textarea", "input", "select", "option", "output"].includes(
+                owner.uiTag ?? "",
+            ) &&
+            !owner.uiFileInput
+        ) {
+            return {
+                kind: "string",
+                cpp: `bbl::ui_get_form_value(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                dataType: { kind: "string" },
+                freshData: true,
+            };
+        }
+        if (owner.kind === "ui-element" && owner.uiDataset) {
+            const dataName = property.replace(
+                /[A-Z]/g,
+                (letter) => `-${letter.toLowerCase()}`,
+            );
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "string",
+                cpp:
+                    `bbl::ui_get_attribute(${engine}, ${owner.cpp}, ` +
+                    `${this.context.cppString(`data-${dataName}`)})`,
+                dataType: { kind: "string" },
+                engineCpp: engine,
+            };
+        }
+        if (
+            owner.kind === "animation-group" &&
+            owner.animationGroupSource === "property"
+        ) {
+            if (property === "loopAnimation" || property === "isPlaying") {
+                return {
+                    kind: "boolean",
+                    cpp:
+                        `${owner.cpp}->` +
+                        (property === "loopAnimation" ? "loop" : "playing"),
+                    dataType: { kind: "boolean" },
+                };
+            }
+            const field = {
+                currentTime: "current_time",
+                duration: "clip.duration",
+                frameRate: "clip.frame_rate",
+                speedRatio: "speed_ratio",
+                weight: "weight",
+            }[property];
+            if (field) {
+                return {
+                    kind: "number",
+                    cpp: `${owner.cpp}->${field}`,
+                    dataType: { kind: "number" },
+                };
+            }
+        }
+        const browserFileProperty = compileBrowserFileProperty(
+            this.context,
+            owner,
+            expression,
+        );
+        if (browserFileProperty) {
+            return browserFileProperty;
+        }
+        const ownerTsType =
+            this.context.checker.getTypeAtLocation(ownerExpression);
+        const ownerTsMembers =
+            (ownerTsType.flags & ts.TypeFlags.Union) !== 0
+                ? (ownerTsType as ts.UnionType).types
+                : [ownerTsType];
+        const sourceIsCanvas = ownerTsMembers.some(
+            (member) =>
+                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
+                member.getSymbol()?.getName() === "OffscreenCanvas",
+        );
+        if (
+            owner.kind === "ui-element" &&
+            (owner.uiCanvas || sourceIsCanvas) &&
+            !owner.uiCanvasContext &&
+            (property === "width" || property === "height")
+        ) {
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "number",
+                cpp: `bbl::ui_canvas_${property}(${engine}, ${owner.cpp})`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (owner.kind === "picking-info" && property === "ray") {
+            // Basic GPU picks publish a null ray; only the detailed pipeline
+            // carries one. Keeping that null in the value model lets the
+            // source's optional chain and fallback lower unchanged.
+            return { kind: "json-null", cpp: "std::nullopt" };
+        }
+        if (
+            owner.kind === "platform-mouse-event" ||
+            owner.kind === "platform-keyboard-event"
+        ) {
+            if (
+                property === "target" ||
+                property === "currentTarget" ||
+                property === "relatedTarget"
+            ) {
+                if (
+                    property === "relatedTarget" &&
+                    (owner.kind !== "platform-mouse-event" ||
+                        owner.platformEventBase)
+                )
+                    this.context.fail(
+                        expression,
+                        "This event view does not expose relatedTarget.",
+                    );
+                this.context.reachFeature("input:dom", expression);
+                this.context.reachJsData();
+                const field =
+                    property === "target"
+                        ? "exposed_target()"
+                        : property === "currentTarget"
+                          ? "current_target"
+                          : "related_target";
+                const value = this.context.dataLowerer.leafValue(
+                    `bbl::dom_target_value(bbl::dom_event_owner(${owner.cpp}), bbl::dom_event_state(${owner.cpp}).${field})`,
+                    property === "target"
+                        ? { kind: "event-target" }
+                        : { kind: "optional", inner: { kind: "event-target" } },
+                );
+                return value;
+            }
+            if (property === "defaultPrevented")
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.${owner.platformEventBase ? "is_default_prevented()" : "default_prevented"}`,
+                };
+            const declared = readProperty(
+                this.context,
+                owner,
+                property,
+                expression,
+            );
+            if (declared) return declared;
+            if (property === "type")
+                return {
+                    kind: "string",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).type`,
+                };
+            if (property === "eventPhase")
+                return {
+                    kind: "number",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).phase`,
+                };
+            const booleanField = DOM_EVENT_FLAGS.get(property);
+            if (booleanField)
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).${booleanField}`,
+                };
+        }
+        if (owner.platformEventBase) {
+            this.context.fail(
+                expression.name,
+                `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
+            );
+        }
+        if (owner.kind === "platform-keyboard-event") {
+            const field = KEY_EVENT_FIELDS.get(property);
+            if (field) {
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.${field}`,
+                };
+            }
+            if (property === "code") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.code`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
+            if (property === "key") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.key`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
+            this.context.fail(
+                expression.name,
+                `Platform keyboard events do not expose '${property}'.`,
+            );
+        }
+        if (owner.kind === "platform-mouse-event") {
+            if (property === "pointerType")
+                return { kind: "string", cpp: `${owner.cpp}.pointer_type` };
+            if (property === "isPrimary")
+                return { kind: "boolean", cpp: `${owner.cpp}.is_primary` };
+            const modifier = KEY_EVENT_FIELDS.get(property);
+            if (modifier && property !== "repeat")
+                return { kind: "boolean", cpp: `${owner.cpp}.${modifier}` };
+            if (
+                property === "button" ||
+                property === "buttons" ||
+                property === "clientX" ||
+                property === "clientY" ||
+                property === "offsetX" ||
+                property === "offsetY" ||
+                property === "movementX" ||
+                property === "movementY" ||
+                property === "deltaY" ||
+                property === "pointerId"
+            ) {
+                return {
+                    kind: "number",
+                    cpp:
+                        property === "pointerId"
+                            ? `${owner.cpp}.pointer_id`
+                            : property === "button"
+                              ? `${owner.cpp}.button`
+                              : property === "buttons"
+                                ? `${owner.cpp}.buttons`
+                                : property === "clientX" ||
+                                    property === "offsetX"
+                                  ? `${owner.cpp}.client_x`
+                                  : property === "clientY" ||
+                                      property === "offsetY"
+                                    ? `${owner.cpp}.client_y`
+                                    : property === "movementX"
+                                      ? `${owner.cpp}.movement_x`
+                                      : property === "movementY"
+                                        ? `${owner.cpp}.movement_y`
+                                        : `${owner.cpp}.delta_y`,
+                    dataType: { kind: "number" },
+                };
+            }
+            this.context.fail(
+                expression.name,
+                `Platform mouse events do not expose '${property}'.`,
+            );
+        }
+        if (
+            owner.kind === "browser" &&
+            owner.browserValue?.kind === "dom-rect" &&
+            (property === "left" ||
+                property === "top" ||
+                property === "width" ||
+                property === "height")
+        ) {
+            const axis =
+                property === "width" || property === "height"
+                    ? property
+                    : undefined;
+            return {
+                kind: "number",
+                cpp: axis
+                    ? `${this.context.requireDefaultEngine(expression)}.canvas_client_${axis}`
+                    : "0.0",
+                ...(axis ? {} : { staticNumber: 0 }),
+                dataType: { kind: "number" },
+            };
+        }
+        const fetchedProperty = staticFetchProperty(owner, property);
+        if (fetchedProperty) return fetchedProperty;
+        if (owner.kind === "regexp" && property === "lastIndex") {
+            return {
+                kind: "number",
+                cpp: `${owner.cpp}.last_index()`,
+            };
+        }
+        if (
+            owner.kind === "texture" &&
+            (property === "width" || property === "height")
+        ) {
+            let size =
+                property === "width" ? owner.textureWidth : owner.textureHeight;
+            if (
+                size === undefined &&
+                owner.textureFile?.source &&
+                owner.textureFile.entryFileName
+            ) {
+                const dimensions = readPngDimensionsSync(
+                    owner.textureFile.source,
+                    owner.textureFile.entryFileName,
+                );
+                if (dimensions) {
+                    owner.textureWidth = dimensions.width;
+                    owner.textureHeight = dimensions.height;
+                    size =
+                        property === "width"
+                            ? dimensions.width
+                            : dimensions.height;
+                }
+            }
+            if (size === undefined) {
+                if (owner.textureStorage === "file") {
+                    return {
+                        kind: "number",
+                        cpp: `static_cast<double>(${owner.cpp}.${property})`,
+                        dataType: { kind: "number" },
+                    };
+                }
+                this.context.fail(
+                    expression,
+                    `Texture ${property} requires a PNG source with generation-known dimensions.`,
+                );
+            }
+            return {
+                kind: "number",
+                cpp: doubleLiteral(size),
+                staticNumber: size,
+            };
+        }
+        if (owner.kind === "sprite-renderer" && property === "layers") {
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "data",
+                cpp: `${recordAt(`${engine}.sprite_renderers`, owner.cpp)}.layers`,
+                dataType: {
+                    kind: "vector",
+                    element: {
+                        kind: "handle",
+                        handle: "sprite-layer",
+                    },
+                },
+                borrowedData: true,
+                nativeVectorData: true,
+                engineCpp: engine,
+            };
+        }
+        if (owner.kind === "record") {
+            const accessor = owner.recordGetters?.[property];
+            const value = accessor
+                ? this.context.compileRecordGetter(owner, accessor)
+                : owner.recordProperties?.[property];
+            if (!value) {
+                const method = owner.recordMethods?.[property];
+                if (method) {
+                    return {
+                        kind: "callback",
+                        cpp: "",
+                        callbackDeclaration: method,
+                        callbackRecordOwner: owner,
+                    };
+                }
+                const declared =
+                    this.context.dataLowerer.dataTypeAt(expression);
+                const declaredTsType =
+                    this.context.checker.getTypeAtLocation(expression);
+                const declaredMembers = declaredTsType.isUnion()
+                    ? declaredTsType.types
+                    : [declaredTsType];
+                const optionalProperty = this.context.checker
+                    .getTypeAtLocation(expression.expression)
+                    .getProperty(property);
+                if (
+                    declared?.kind === "optional" ||
+                    (optionalProperty !== undefined &&
+                        (optionalProperty.flags & ts.SymbolFlags.Optional) !==
+                            0) ||
+                    (declared?.kind === "function" &&
+                        declaredMembers.some(
+                            (member) =>
+                                (member.flags &
+                                    (ts.TypeFlags.Null |
+                                        ts.TypeFlags.Undefined)) !==
+                                0,
+                        ))
+                ) {
+                    // Object literals omit optional fields entirely. A
+                    // compile-time record preserves that absence as the
+                    // nullish value consumed by `??` and equality guards.
+                    return { kind: "json-null", cpp: "" };
+                }
+                this.context.fail(
+                    expression,
+                    `Static record has no property '${property}' ` +
+                        `(fields: ${Object.keys(owner.recordProperties ?? {}).join(", ") || "none"}; ` +
+                        `getters: ${Object.keys(owner.recordGetters ?? {}).join(", ") || "none"}; ` +
+                        `class: ${owner.classDeclaration?.name?.text ?? "none"}).`,
+                );
+            }
+            return this.propertyWithOwnerPresence(owner, value, expression);
+        }
+        // `baked.clips`: the bake's own row map. It carries the bake and
+        // nothing else, so the name lookup that follows is the native row
+        // read rather than a generation-time table.
+        if (owner.kind === "vat-bake" && property === "clips") {
+            return {
+                kind: "vat-clip-map",
+                cpp: owner.cpp,
+                ...(owner.engineCpp !== undefined
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        // A container's own handle collection, read without the `?? []`
+        // guard the nullish resolver already claims. Asked before the
+        // failure below rather than in `readOwnerProperty`, because the
+        // collection concept resolves the owner itself.
+        if (
+            owner.kind === "asset" ||
+            owner.kind === "hierarchy-instance-pool"
+        ) {
+            const collection =
+                this.context.handleCollections.resolveCollectionRead(
+                    expression,
+                );
+            if (collection) return collection;
+        }
+        if (owner.kind === "surface" && property === "engine") {
+            if (!owner.engineCpp) {
+                this.context.fail(
+                    expression,
+                    "A surface without an owning engine cannot expose SurfaceContext.engine.",
+                );
+            }
+            return {
+                kind: "engine",
+                cpp: owner.engineCpp,
+                engineCpp: owner.engineCpp,
+            };
+        }
+        const resolved = this.readOwnerProperty(owner, expression);
+        if (resolved) {
+            return expression.questionDotToken
+                ? this.propertyWithOwnerPresence(owner, resolved, expression)
+                : resolved;
+        }
+        return this.context.fail(
+            expression,
+            `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,
+        );
+    }
+
+    public lookupRecordProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (ts.isPropertyAccessExpression(expression.expression)) {
+            // A path resolves one link at a time, through this same
+            // non-throwing lookup: an owner nobody here can name is
+            // still the data lowerer's to try, not an error.
+            const nested = this.lookupRecordProperty(expression.expression);
+            return nested
+                ? this.readOwnerProperty(nested, expression)
+                : undefined;
+        }
+        if (!ts.isIdentifier(expression.expression)) {
+            return undefined;
+        }
+        const owner =
+            this.context.bindings.lookupOptional(expression.expression) ??
+            (() => {
+                const resolved = this.context.resolveStaticExpression(
+                    expression.expression,
+                );
+                return resolved !== expression.expression
+                    ? this.context.compileValue(resolved)
+                    : undefined;
+            })();
+        return owner ? this.readOwnerProperty(owner, expression) : undefined;
+    }
+
+    /**
+     * A declared property of an engine handle that the table types as plain
+     * data. The data lowerer asks here so a comparison, a sink and a binding
+     * all read the one table the expression path reads, instead of each
+     * growing its own notion of which handle properties are data.
+     */
+    public declaredDataProperty(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        // The owner is looked up rather than compiled: this runs inside the
+        // data lowerer's path resolution, which must stay free of emission
+        // and of failure, and every current producer of a handle in a data
+        // position is a bound local. The boundary this draws: a handle
+        // STORED IN DATA (`groups[0]` out of a pushed vector) does not
+        // resolve here — its owner path is data, not a local — so its
+        // declared properties stay unreadable until this consults the
+        // nested resolution `lookupRecordProperty` already implements.
+        const owner = ts.isIdentifier(expression.expression)
+            ? this.context.bindings.lookupOptional(expression.expression)
+            : undefined;
+        if (!owner || owner.kind === "data" || owner.kind === "record") {
+            return undefined;
+        }
+        // Through the same single funnel every other read uses, so this
+        // does not become a third reader of the table.
+        const declared = this.readOwnerProperty(owner, expression);
+        return declared?.dataType ? declared : undefined;
+    }
+
+    public readResolvedProperty(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const hydrated = this.context.classLowerer.hydrate(owner) ?? owner;
+        const value = this.readOwnerProperty(hydrated, expression);
+        return value &&
+            (hydrated.kind === "record" || expression.questionDotToken)
+            ? this.propertyWithOwnerPresence(hydrated, value, expression)
+            : value;
+    }
+
+    private propertyWithOwnerPresence(
+        owner: Value,
+        value: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value {
+        const ownerPresent =
+            owner.optionalFoundCpp ??
+            (expression.questionDotToken &&
+            owner.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(owner.dataType.name)
+                ? `static_cast<bool>(${owner.cpp})`
+                : undefined);
+        if (ownerPresent === undefined) return value;
+        const present =
+            value.optionalFoundCpp === undefined
+                ? ownerPresent
+                : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+        return { ...value, optionalFoundCpp: present };
+    }
+
+    /**
+     * One link of a path, once the owner is resolved. Every read site
+     * ends here -- the general property path, the static evaluator's
+     * lookup, the data lowerer's plain-data property bridge, and each
+     * nested link -- so a path resolves the same way wherever it is
+     * written and however deep it goes. The readings that are not a
+     * declared field lookup live here because they are what differs, and
+     * each used to sit in only one of the two paths: `camera.target` and
+     * the geometry-task outputs resolved in an expression but not in a
+     * numeric context.
+     *
+     * A record owner is the exception: this returns the property or
+     * nothing, because the lookup path must stay non-throwing for the
+     * data lowerer to try next. The general path handles records itself,
+     * where a missing property is an error with a message.
+     */
+    private readOwnerProperty(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const media = readMediaQueryProperty(this.context, owner, expression);
+        if (media) return media;
+        const character = readCharacterProperty(
+            this.context,
+            owner,
+            expression.name.text,
+        );
+        if (character) return character;
+        if (owner.kind === "physics-body" && expression.name.text === "node") {
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    name: {
+                        kind: "string",
+                        cpp: `bbl::upstream::physics_body_node_name(${owner.cpp})`,
+                        dataType: { kind: "string" },
+                    },
+                },
+            };
+        }
+        const staticProperty = owner.recordProperties?.[expression.name.text];
+        if (staticProperty) {
+            // A materialized record can still carry an exact value for a
+            // property produced during static iteration. Prefer that fact
+            // over reconstructing the field from its wider declared type
+            // (notably `boolean | undefined`), just as a plain record does.
+            return staticProperty;
+        }
+        if (owner.kind === "record") {
+            const accessor = owner.recordGetters?.[expression.name.text];
+            if (accessor) {
+                return this.context.compileRecordGetter(owner, accessor);
+            }
+            return undefined;
+        }
+        // A handle collection's size. The concept's other operations are
+        // its loop and its searches; this is the same native vector read
+        // through its one remaining JavaScript member, which is how both
+        // VAT scenes ask whether the file carried any clips at all.
+        if (
+            owner.kind === "handle-collection" &&
+            owner.handleCollection &&
+            expression.name.text === "length"
+        ) {
+            return {
+                kind: "number",
+                cpp:
+                    "static_cast<double>(" +
+                    `${owner.handleCollection.containerCpp}.size())`,
+                engineCpp: owner.handleCollection.engineCpp,
+            };
+        }
+        if (owner.kind === "data") {
+            const dataProperty =
+                this.context.dataLowerer.compilePropertyFromValue(
+                    owner,
+                    expression,
+                );
+            if (dataProperty) {
+                return dataProperty;
+            }
+        }
+        const frozenParticleProperty = readFrozenParticleProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (frozenParticleProperty) return frozenParticleProperty;
+        const textProperty = readTextProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (textProperty) return textProperty;
+        const inputProperty = readNodeInputProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (inputProperty) return inputProperty;
+        // A live pure-2D binding's bridges, and the one path scene code
+        // reads through one: `bridge.system.buffer.alive`, the simulated
+        // count the generated registrar keeps. `bridges` is the pin's own
+        // array, read as the binding again so the element access that
+        // follows names one bridge by index -- the same shape
+        // `set.systems[k]` takes.
+        if (
+            owner.kind === "node-particle-2d-binding" &&
+            expression.name.text === "bridges" &&
+            owner.nodeParticleLive
+        ) {
+            return owner;
+        }
+        if (
+            owner.kind === "node-particle-2d-bridge" &&
+            expression.name.text === "system"
+        ) {
+            return { ...owner, kind: "node-particle-system" };
+        }
+        if (
+            owner.kind === "node-particle-system" &&
+            expression.name.text === "buffer" &&
+            owner.nodeParticleLive
+        ) {
+            return { ...owner, kind: "node-particle-buffer" };
+        }
+        if (
+            owner.kind === "node-particle-buffer" &&
+            expression.name.text === "alive" &&
+            owner.nodeParticleLive
+        ) {
+            return {
+                kind: "number",
+                cpp:
+                    "bbl::upstream::node_particle_2d_alive(" +
+                    `${owner.nodeParticleRequestIndex!}, ` +
+                    `${owner.nodeParticleBridgeIndex!})`,
+                dataType: { kind: "number" },
+            };
+        }
+        // The same table the general property path reads. Keeping a
+        // second copy here is what made `camera.ortho.halfHeight`
+        // resolve in an expression but not in a numeric context: the
+        // copy was never told about the orthographic bounds.
+        const declared = readProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (declared) {
+            return declared;
+        }
+        if (owner.kind === "tuple" && expression.name.text === "length") {
+            const length = owner.tupleElements?.length ?? 0;
+            return {
+                kind: "number",
+                cpp: `${length}.0f`,
+                staticNumber: length,
+            };
+        }
+        if (owner.kind === "string" && expression.name.text === "length") {
+            const length = owner.staticString?.length;
+            if (length === undefined) this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp:
+                    length === undefined
+                        ? `bbl::js::string_length(${owner.cpp})`
+                        : doubleLiteral(length),
+                ...(length === undefined ? {} : { staticNumber: length }),
+                dataType: { kind: "number" },
+            };
+        }
+        if (owner.kind === "engine" && expression.name.text === "msaaSamples") {
+            if (owner.msaaSamples === "runtime")
+                return {
+                    kind: "number",
+                    cpp: engineSampleCountCpp(owner),
+                    dataType: { kind: "number" },
+                };
+            return {
+                kind: "number",
+                cpp: `${owner.msaaSamples ?? 4}.0f`,
+                staticNumber: owner.msaaSamples ?? 4,
+            };
+        }
+        if (
+            owner.kind === "frame-graph-context" &&
+            expression.name.text === "frameGraph"
+        ) {
+            return owner;
+        }
+        if (
+            owner.kind === "utility-layer" &&
+            expression.name.text === "scene"
+        ) {
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "scene",
+                cpp: `bbl::utility_layer_scene(${engine}, ${owner.cpp})`,
+                engineCpp: engine,
+                sceneEnvironmentState: {
+                    rotationSet: false,
+                    hasTexturedSkybox: false,
+                },
+                sceneTopologyState: { lights: [] },
+            };
+        }
+        if (owner.kind === "position-gizmo") {
+            const parts: Readonly<
+                Record<
+                    string,
+                    {
+                        index: number;
+                        kind: "axis-drag-gizmo" | "plane-drag-gizmo";
+                    }
+                >
+            > = {
+                xGizmo: { index: 0, kind: "axis-drag-gizmo" },
+                yGizmo: { index: 1, kind: "axis-drag-gizmo" },
+                zGizmo: { index: 2, kind: "axis-drag-gizmo" },
+                xPlaneGizmo: { index: 3, kind: "plane-drag-gizmo" },
+                yPlaneGizmo: { index: 4, kind: "plane-drag-gizmo" },
+                zPlaneGizmo: { index: 5, kind: "plane-drag-gizmo" },
+            };
+            const part = parts[expression.name.text];
+            if (part) {
+                const engine = this.context.requireEngine(owner, expression);
+                const cpp = `${owner.cpp}.parts[${part.index}]`;
+                const drag: Value = {
+                    kind: "pointer-drag",
+                    cpp: `${handleCppType("pointer-drag")}{${cpp}.value}`,
+                    engineCpp: engine,
+                    dataType: { kind: "handle", handle: "pointer-drag" },
+                };
+                return valueForKind(part.kind, {
+                    cpp,
+                    engineCpp: engine,
+                    ...(part.index >= 3
+                        ? {
+                              optionalFoundCpp: `${owner.cpp}.part_count > ${part.index}u`,
+                              truthinessCpp: `${owner.cpp}.part_count > ${part.index}u`,
+                          }
+                        : {}),
+                    recordProperties: {
+                        drag,
+                        _disposePointer: {
+                            kind: "data",
+                            cpp: `${recordAt(`${engine}.edit_gizmos`, cpp)}.dispose_pointer`,
+                            dataType: {
+                                kind: "function",
+                                parameters: [],
+                            },
+                        },
+                    },
+                });
+            }
+        }
+        if (owner.kind === "pointer-drag") {
+            const engine = this.context.requireEngine(owner, expression);
+            const record = `${recordAt(`${engine}.edit_gizmos`, owner.cpp)}`;
+            if (
+                expression.name.text === "enabled" ||
+                expression.name.text === "dragging" ||
+                expression.name.text === "hovering"
+            ) {
+                return {
+                    kind: "boolean",
+                    cpp: `${record}.${expression.name.text}`,
+                    dataType: { kind: "boolean" },
+                    nativeLvalue: true,
+                };
+            }
+            if (expression.name.text === "_colliders") {
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: {
+                        includes: {
+                            kind: "data",
+                            cpp:
+                                `std::function<bool(${handleCppType("mesh")})>{` +
+                                `[&](${handleCppType("mesh")} mesh) { return ` +
+                                `bbl::pointer_drag_has_collider(${engine}, ` +
+                                `${owner.cpp}, mesh); }}`,
+                            dataType: {
+                                kind: "function",
+                                parameters: [
+                                    { kind: "handle", handle: "mesh" },
+                                ],
+                                result: { kind: "boolean" },
+                            },
+                        },
+                    },
+                };
+            }
+            if (
+                expression.name.text === "onHoverStart" ||
+                expression.name.text === "onHoverEnd"
+            ) {
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: {
+                        notify: {
+                            kind: "data",
+                            cpp: `std::function<void()>{[&${engine}, drag = ${owner.cpp}]() { bbl::pointer_drag_hover(${engine}, drag, ${expression.name.text === "onHoverStart"}); }}`,
+                            dataType: {
+                                kind: "function",
+                                parameters: [],
+                            },
+                        },
+                    },
+                };
+            }
+        }
+        if (
+            owner.kind === "camera" &&
+            (expression.name.text === "position" ||
+                expression.name.text === "target" ||
+                expression.name.text === "upVector")
+        ) {
+            // Not a field but three of them: the record this synthesizes
+            // is what makes `camera.position.x`, `camera.target.x`, and
+            // destructuring either vector read the same components.
+            const engine = this.context.requireEngine(owner, expression);
+            const vector =
+                expression.name.text === "upVector"
+                    ? "up_vector"
+                    : expression.name.text;
+            const cameraVector = {
+                owner: { ...owner, engineCpp: engine },
+                field: vector,
+            } as const;
+            return {
+                kind: "record",
+                cpp: "",
+                cameraVector,
+                recordProperties: cameraVectorProperties(cameraVector),
+            };
+        }
+        if (
+            owner.kind === "light" &&
+            (expression.name.text === "position" ||
+                expression.name.text === "direction")
+        ) {
+            const engine = this.context.requireEngine(owner, expression);
+            const vector = expression.name.text;
+            const record = `${recordAt(`${engine}.lights`, owner.cpp)}`;
+            const component = (name: "x" | "y" | "z"): Value => ({
+                kind: "number",
+                cpp: `${record}.${vector}.${name}`,
+                dataType: { kind: "number" },
+                engineCpp: engine,
+            });
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    x: component("x"),
+                    y: component("y"),
+                    z: component("z"),
+                },
+            };
+        }
+        const sceneNodeTransform = sceneNodeTransformDescriptor(
+            expression.name.text,
+        );
+        if (
+            (owner.kind === "mesh" ||
+                owner.kind === "transform-node" ||
+                owner.kind === "scene-node" ||
+                owner.kind === "asset-root") &&
+            sceneNodeTransform
+        ) {
+            const engine = this.context.requireEngine(owner, expression);
+            if (owner.kind === "scene-node") {
+                this.context.reachFeature("scene:node-transforms", expression);
+            }
+            const vectorOwner = { ...owner, engineCpp: engine };
+            return {
+                kind: "record",
+                cpp: "",
+                sceneNodeVector: {
+                    owner: vectorOwner,
+                    transform: sceneNodeTransform,
+                },
+                recordProperties: sceneNodeVectorProperties(
+                    vectorOwner,
+                    sceneNodeTransform,
+                    owner.kind === "scene-node" || owner.kind === "asset-root",
+                ),
+            };
+        }
+        if (owner.kind === "task" && owner.geometryTask) {
+            return this.readGeometryTaskProperty(
+                owner,
+                owner.geometryTask,
+                expression,
+            );
+        }
+        if (
+            owner.kind === "task" &&
+            (owner.postProcessTask || owner.postProcessComposite) &&
+            expression.name.text === "outputTexture"
+        ) {
+            // A pass writes into the target it was given, or into one it
+            // made from the source's own descriptor. The pin resolves that
+            // in `prepareOutputTarget`; the record holds whichever it is,
+            // so chaining a pass onto the one before it reads a field. A
+            // composite's public output may precede a history update pass;
+            // generation resolves it from the pinned facade's identity.
+            return {
+                kind: "render-target",
+                cpp: `${recordAt(`${this.context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.output_target`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            };
+        }
+        if (owner.kind === "task" && owner.screenSpaceTask) {
+            // The pin publishes three targets on a screen-space task: its
+            // output (the composite's, or the stable effect target when it
+            // composes nothing) and the stable target under the effect's
+            // own name. All three are record fields the factory resolved.
+            const fields: Readonly<Record<string, string>> = {
+                outputTexture: "output_target",
+                [screenSpaceFacts(owner.screenSpaceTask.intrinsic)
+                    .stableTexture]: "stable",
+            };
+            const field = fields[expression.name.text];
+            if (field === undefined) return undefined;
+            return {
+                kind: "render-target",
+                cpp: `${recordAt(`${this.context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.screen_space.${field}`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            };
+        }
+        return undefined;
+    }
+
+    /**
+     * A geometry task's outputs, which are gated on what the task was
+     * asked to write rather than on the property name alone.
+     */
+    private readGeometryTaskProperty(
+        owner: Value,
+        task: GeometryOutputTaskManifest,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = expression.name.text;
+        const engineCpp = owner.engineCpp ? { engineCpp: owner.engineCpp } : {};
+        if (property === "outputTexture") {
+            if (!task.emitColor) {
+                this.context.fail(
+                    expression,
+                    "Geometry task has no targetTexture output.",
+                );
+            }
+            return {
+                kind: "render-texture",
+                cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
+                renderTextureSource: "geometry-output",
+                ...engineCpp,
+            };
+        }
+        if (property === "geometryDepthTexture") {
+            // The pin's eager depth wrapper over the task's MRT depth: a later
+            // render task binds and loads it, and owns none of it.
+            return {
+                kind: "render-texture",
+                cpp: `bbl::geometry_task_depth_texture(${owner.cpp})`,
+                isDepthTexture: true,
+                renderTextureSource: "geometry-depth",
+                ...engineCpp,
+            };
+        }
+        const geometryProperties: Record<string, GeometryTextureTypeName> = {
+            geometryIrradianceTexture: "IRRADIANCE",
+            geometryWorldPositionTexture: "WORLD_POSITION",
+            geometryLocalPositionTexture: "LOCAL_POSITION",
+            geometryReflectivityTexture: "REFLECTIVITY",
+            geometryViewDepthTexture: "VIEW_DEPTH",
+            geometryNormalizedViewDepthTexture: "NORMALIZED_VIEW_DEPTH",
+            geometryScreenspaceDepthTexture: "SCREENSPACE_DEPTH",
+            geometryViewNormalTexture: "VIEW_NORMAL",
+            geometryWorldNormalTexture: "WORLD_NORMAL",
+            geometryAlbedoTexture: "ALBEDO",
+            geometryLinearVelocityTexture: "LINEAR_VELOCITY",
+        };
+        const type = geometryProperties[property];
+        if (!type) {
+            return undefined;
+        }
+        if (!task.attachments.includes(type)) {
+            this.context.fail(
+                expression,
+                `Geometry task did not request ${type}.`,
+            );
+        }
+        return {
+            kind: "render-texture",
+            cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${geometryEnumMember(type)})`,
+            renderTextureSource: "geometry",
+            ...engineCpp,
+        };
+    }
 }

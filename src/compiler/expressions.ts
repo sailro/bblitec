@@ -195,8 +195,7 @@ export interface ExpressionContext
             | "resolveThisField"
             | "resolveStaticExpression"
             | "canvasSizeValue"
-            | "compilePropertyAccess"
-            | "readResolvedProperty"
+            | "propertyAccess"
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
@@ -731,7 +730,8 @@ export class ExpressionLowerer {
                 "read",
             );
             const property =
-                data ?? this.context.compilePropertyAccess(unwrapped);
+                data ??
+                this.context.propertyAccess.compilePropertyAccess(unwrapped);
             if (isJsonValue(property))
                 return this.context.dataLowerer.narrowOptional(
                     property,
@@ -3324,7 +3324,10 @@ export class ExpressionLowerer {
         ts.setOriginalNode(property, access);
         ts.setTextRange(property.name, access.argumentExpression);
         ts.setOriginalNode(property.name, access.argumentExpression);
-        const value = this.context.readResolvedProperty(owner, property);
+        const value = this.context.propertyAccess.readResolvedProperty(
+            owner,
+            property,
+        );
         if (value) this.context.emitDiscardedValue(key);
         return value;
     }

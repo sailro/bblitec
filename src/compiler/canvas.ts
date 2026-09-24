@@ -6,7 +6,7 @@ import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { requireWindowHost } from "./window-events.js";
 
-interface CanvasContext
+export interface CanvasContext
     extends
         WorkerLoweringContext,
         Pick<

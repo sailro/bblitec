@@ -10,7 +10,7 @@ import { isStringValue, type Value } from "./types.js";
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-interface BrowserFileContext extends Pick<
+export interface BrowserFileContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"

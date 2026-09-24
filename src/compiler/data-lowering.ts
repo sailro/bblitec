@@ -192,8 +192,7 @@ export interface DataLoweringContext
             | "propertyName"
             | "recordDataAssignmentMetadata"
             | "sceneManifest"
-            | "declaredDataProperty"
-            | "readResolvedProperty"
+            | "propertyAccess"
             | "resolveStaticExpression"
             | "unwrap"
             | "emit"
@@ -907,7 +906,7 @@ export class DataLowerer {
             // through the one table every other read site uses.
             const declared = unwrapped.questionDotToken
                 ? undefined
-                : this.context.declaredDataProperty(unwrapped);
+                : this.context.propertyAccess.declaredDataProperty(unwrapped);
             if (declared) {
                 return declared;
             }
@@ -1012,7 +1011,10 @@ export class DataLowerer {
             return (
                 this.compilePropertyFromValue(owner, unwrapped) ??
                 (mode === "read"
-                    ? this.context.readResolvedProperty(owner, unwrapped)
+                    ? this.context.propertyAccess.readResolvedProperty(
+                          owner,
+                          unwrapped,
+                      )
                     : undefined)
             );
         }
@@ -1317,7 +1319,10 @@ export class DataLowerer {
             access,
             (presentOwner) =>
                 this.propertyRead(presentOwner, access) ??
-                this.context.readResolvedProperty(presentOwner, access),
+                this.context.propertyAccess.readResolvedProperty(
+                    presentOwner,
+                    access,
+                ),
         );
     }
 

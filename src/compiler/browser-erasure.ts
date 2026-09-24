@@ -274,7 +274,7 @@ type HelperOutcome =
     | { returned: true; value: NonNullable<Value["browserValue"]> }
     | { returned: false };
 
-type BrowserGlobalContext = Pick<
+export type BrowserGlobalContext = Pick<
     BrowserErasureContext,
     "unwrap" | "libraryGlobal"
 >;
