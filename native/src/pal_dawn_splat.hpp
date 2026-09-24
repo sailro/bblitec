@@ -152,41 +152,31 @@ inline WGPUTexture upload_dawn_splat_texture(WGPUDevice device, WGPUQueue queue,
     return texture.release();
 }
 
+/** The pin's one splat module, deployed whole under both stage stems. */
+inline constexpr std::array<DawnLayoutStage, 2> dawn_splat_stages{{
+    {"splat.vert", WGPUShaderStage_Vertex},
+    {"splat.frag", WGPUShaderStage_Fragment},
+}};
+
 /**
- * Group 1 exactly as the pinned module declares it: the UBO, a
- * non-filtering sampler, then the four unfilterable-float data textures.
- * The stage samples them with `textureSampleLevel(..., 0.0)`, which is a
- * point fetch, so nothing here is filterable.
+ * Group 1 as the pinned module declares it: the UBO, the point sampler,
+ * the four data textures, and -- for a cloud carrying harmonics -- one
+ * `uint` texture per SH payload from binding 6, which the module declares
+ * as it `textureLoad`s them.
  *
- * A cloud carrying harmonics appends one `uint` texture per SH payload at
- * binding 6, which is what `getOrCreateShPipeline` pushes onto its own
- * layout entries. Those are `textureLoad`ed rather than sampled, so they
- * share the same point sampler and take the `uint` sample type.
+ * The four data textures are rgba32float, a format that does not filter,
+ * read through `textureSampleLevel(..., 0.0)` -- a point fetch. The module
+ * cannot say so; the pin's own layout does, declaring them
+ * `unfilterable-float` and the sampler `non-filtering`, and so does this
+ * binding model.
  */
 inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, dawn_splat_binding_count> entries{};
-    for (std::size_t index = 0; index < entries.size(); ++index) {
-        entries[index] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entries[index].binding = static_cast<std::uint32_t>(index);
-        entries[index].visibility = WGPUShaderStage_Vertex;
-    }
-    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    entries[1].sampler.type = WGPUSamplerBindingType_NonFiltering;
-    for (std::size_t index = dawn_splat_first_texture_binding; index < entries.size(); ++index) {
-        entries[index].texture.sampleType =
-            index < dawn_splat_first_texture_binding + splat_float_payload_count
-                ? WGPUTextureSampleType_UnfilterableFloat
-                : WGPUTextureSampleType_Uint;
-        entries[index].texture.viewDimension = WGPUTextureViewDimension_2D;
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("splat bind group layout");
-    return layout.release();
+    std::uint64_t unfilterable = dawn_binding_bit(1);
+    for (std::size_t slot = 0; slot < splat_float_payload_count; ++slot)
+        unfilterable |=
+            dawn_binding_bit(static_cast<std::uint32_t>(dawn_splat_first_texture_binding + slot));
+    return create_dawn_reflected_layout(device, dawn_splat_stages, 1,
+                                        {.unfilterable = unfilterable});
 }
 
 /**
@@ -297,10 +287,8 @@ create_dawn_splat_pass(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat col
     pass.vertex_count = record.vertex_count;
 
     pass.layout = create_dawn_splat_layout(device);
-    WGPUBindGroupLayoutDescriptor frame_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    pass.frame_layout = wgpuDeviceCreateBindGroupLayout(device, &frame_layout);
-    if (!pass.frame_layout)
-        dawn_error("splat frame bind group layout");
+    // Group 0, which the module does not declare: laid out empty.
+    pass.frame_layout = create_dawn_reflected_layout(device, dawn_splat_stages, 0);
     pass.pipeline = create_dawn_splat_pipeline(device, pass.frame_layout, pass.layout, color_format,
                                                depth_format, samples);
 

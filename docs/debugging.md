@@ -60,7 +60,7 @@ killed after two minutes plus 50 ms per frame.
 | --- | --- |
 | Ordinary native captures | Reconstructed CPU blocks, not intercepted GPU uploads |
 | Browser capture | Shaders, buffers, textures, bundles and draws |
-| SDL .slots | Compiled bindings after dead declarations disappear |
+| .slots | SDL's compiled bindings after dead declarations disappear; the module's declared layout for Dawn |
 | diff --compose | Asset materials; excludes scene-created materials/later writes |
 | textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
 | nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |

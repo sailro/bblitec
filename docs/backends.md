@@ -7,7 +7,7 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Boundary | SDL_GPU | Dawn |
 | --- | --- | --- |
 | Shader input | Offline Tint/target binaries | WGSL |
-| Binding authority | Compiled `.slots` sidecars | WGSL and generated layouts |
+| Binding authority | Compiled `.slots` sidecars | `.slots` layout lines and generated layouts |
 | Uniform transport | Push/uniform/storage API | Queue writes and retained bind groups |
 | Windows / Linux / macOS | D3D12 / Vulkan / Metal | D3D12 / Vulkan / Metal |
 | Android | Vulkan | Vulkan |
@@ -35,6 +35,12 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
 
 - SDL binds compiled resources after dead declarations are removed. Sidecars specify stage visibility,
   resource kind, slot order and uniform size. Large uniform blocks may use read-only storage.
+- Each render stage's `.slots` sidecar ends with `@binding <group> <binding> <resource>` lines
+  reflected from every binding its module declares. Dawn lays sprite, billboard, picking, splat
+  and post-process groups out from them, adding only the site's binding model: dynamic offsets
+  and formats that do not filter. Composed material, effect, text, screen-space and compute
+  layouts come from generated pin descriptor tables; single-pipeline runtime modules use Dawn's
+  reflected layout.
 - SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
   image/sampler descriptors; integer and multisampled loads use separate images.
 - SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.

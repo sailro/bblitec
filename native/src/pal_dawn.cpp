@@ -7095,36 +7095,16 @@ DawnPostProcessProgram build_post_process_program(DawnState& state,
     // Both stages live in one composed module, deployed once under the
     // fragment stem (the vertex stem is an alsoStages declaration carrying
     // only compiled artifacts), so the fragment file is the module.
-    program.module =
-        load_wgsl_module(state, "postprocess-" + std::to_string(info.module_index) + ".frag");
-    std::vector<WGPUBindGroupLayoutEntry> layout_entries;
-    WGPUBindGroupLayoutEntry sampler_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    sampler_entry.binding = 0;
-    sampler_entry.visibility = WGPUShaderStage_Fragment;
-    sampler_entry.sampler.type = WGPUSamplerBindingType_Filtering;
-    layout_entries.push_back(sampler_entry);
-    WGPUBindGroupLayoutEntry texture_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    texture_entry.binding = 1;
-    texture_entry.visibility = WGPUShaderStage_Fragment;
-    texture_entry.texture.sampleType = WGPUTextureSampleType_Float;
-    layout_entries.push_back(texture_entry);
-    for (std::size_t extra = 0; extra < extra_textures; ++extra) {
-        WGPUBindGroupLayoutEntry extra_entry = texture_entry;
-        extra_entry.binding = 2u + static_cast<std::uint32_t>(extra);
-        layout_entries.push_back(extra_entry);
-    }
-    if (uniform_size > 0) {
-        WGPUBindGroupLayoutEntry uniform_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        uniform_entry.binding = info.uniform_binding;
-        uniform_entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        uniform_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        layout_entries.push_back(uniform_entry);
-    }
-    WGPUBindGroupLayoutDescriptor layout_descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.entryCount = layout_entries.size();
-    layout_descriptor.entries = layout_entries.data();
-    program.group_layout = require_dawn_resource(
-        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor), "pass pipeline layout");
+    const std::string stem = "postprocess-" + std::to_string(info.module_index);
+    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
+    program.module = load_wgsl_module(state, fragment_stem);
+    // Group 0 as the module declares it: the source sampler and texture,
+    // the program's extra textures, and its uniform block when it has one.
+    const std::array<DawnLayoutStage, 2> stages{{
+        {vertex_stem, WGPUShaderStage_Vertex},
+        {fragment_stem, WGPUShaderStage_Fragment},
+    }};
+    program.group_layout = create_dawn_reflected_layout(state.device, stages, 0);
     WGPUPipelineLayoutDescriptor pipeline_layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     pipeline_layout.bindGroupLayoutCount = 1;
     const auto group_layout = program.group_layout.get();
@@ -7648,48 +7628,34 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
  * contiguous from 0, so a pick pipeline with no discard rule to fill
  * group 2 still has to declare one. Both are built here for the same
  * reason the pin builds them once per device -- they carry no per-mesh
- * state, only the shapes.
+ * state, only the shapes -- each laid out from what the variant's
+ * modules declare in it (their `.slots` layout lines).
  */
-inline WGPUBindGroupLayout create_dawn_pick_empty_layout(WGPUDevice device) {
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = 0;
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("pick deform empty bind group layout");
-    return layout.release();
+inline std::vector<DawnLayoutStage>
+dawn_pick_deform_stages(const upstream::PickDeformVariant& variant) {
+    std::vector<DawnLayoutStage> stages{{variant.vertex, WGPUShaderStage_Vertex},
+                                        {"picking.frag", WGPUShaderStage_Fragment}};
+    if (variant.detailed_vertex) {
+        stages.push_back({variant.detailed_vertex, WGPUShaderStage_Vertex});
+        stages.push_back({"picking-detailed.frag", WGPUShaderStage_Fragment});
+    }
+    return stages;
 }
 
-/** The projection's own group: the bone palette, then the morph pair. */
+/** Group 2, which no deform module declares: laid out empty. */
+inline WGPUBindGroupLayout
+create_dawn_pick_empty_layout(WGPUDevice device, const upstream::PickDeformVariant& variant) {
+    return create_dawn_reflected_layout(device, dawn_pick_deform_stages(variant), 2);
+}
+
+/**
+ * The projection's own group 3, as the variant's vertex modules declare it:
+ * the bone palette, then the morph pair. Both modes of a variant share it.
+ */
 inline WGPUBindGroupLayout
 create_dawn_pick_deform_layout(WGPUDevice device, const upstream::PickDeformVariant& variant) {
-    std::array<WGPUBindGroupLayoutEntry, 3> entries{};
-    std::size_t entry_count = 0;
-    const auto append = [&]() -> WGPUBindGroupLayoutEntry& {
-        auto& entry = entries[entry_count];
-        entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = static_cast<std::uint32_t>(entry_count++);
-        entry.visibility = WGPUShaderStage_Vertex;
-        return entry;
-    };
-    if (variant.skeleton) {
-        auto& entry = append();
-        entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
-        entry.texture.viewDimension = WGPUTextureViewDimension_2D;
-    }
-    if (variant.morph) {
-        append().buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-        append().buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    }
-
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = static_cast<std::uint32_t>(entry_count);
-    descriptor.entries = entries.data();
-    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
-    if (!layout)
-        dawn_error("pick deform bind group layout");
-    return layout.release();
+    return create_dawn_reflected_layout(device, dawn_pick_deform_stages(variant), 3);
 }
-
 #endif
 
 #if BBLITE_HAS_SPLATS
@@ -8489,7 +8455,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
             "picking-detailed.frag", pick_color_targets);
 #endif
 #if BBLITE_DEFORM_PICKING
-        state.pick_deform_empty_layout = create_dawn_pick_empty_layout(state.device);
+        state.pick_deform_empty_layout =
+            create_dawn_pick_empty_layout(state.device, upstream::pick_deform_variants.front());
         WGPUBindGroupDescriptor empty_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         empty_group.layout = state.pick_deform_empty_layout;
         empty_group.entryCount = 0;
@@ -8659,7 +8626,12 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     // sooner than one elapsed frame yields sooner than the pin's own
     // `firstSortReady` scene does. The pick only reads.
     if (!state.splat_passes.empty() && !state.pick_cloud_pipeline) {
-        state.pick_cloud_color_layout = create_dawn_pick_scene_layout(state.device);
+        // Group 2 of the pin's cloud pick module: the id colour block.
+        constexpr std::array<DawnLayoutStage, 2> cloud_stages{{
+            {"picking-splat.vert", WGPUShaderStage_Vertex},
+            {"picking-splat.frag", WGPUShaderStage_Fragment},
+        }};
+        state.pick_cloud_color_layout = create_dawn_reflected_layout(state.device, cloud_stages, 2);
         state.pick_cloud_pipeline = create_dawn_pick_cloud_pipeline(
             state.device, state.pick_scene_layout, state.splat_passes[0].layout,
             state.pick_cloud_color_layout);

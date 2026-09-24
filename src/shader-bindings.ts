@@ -3,8 +3,11 @@ import { shadowBindingSlotOrNull } from "./pinned-pbr-variant-cpp.js";
 import {
     reflectWgslBindings,
     reflectWgslModule,
+    statementSome,
+    type ShaderExpression,
     type WgslVariableDeclaration,
 } from "./shader-ir.js";
+import type { WgslTypeShape } from "./wgsl-layout.js";
 
 interface Register {
     kind: string;
@@ -689,5 +692,188 @@ export function assertReflectedBindings(
     if (undeclared.length)
         throw new Error(
             `Tint reports binding(s) ${undeclared.join(", ")} that ${source} does not declare.`,
+        );
+}
+
+/** A lone identifier argument, or nothing for any other expression. */
+function identifierArgument(
+    expression: ShaderExpression | undefined,
+): string | undefined {
+    return expression?.kind === "path" && expression.parts.length === 1
+        ? expression.parts[0]
+        : undefined;
+}
+
+/**
+ * The module-scope textures a module passes to a filtering read -- a
+ * `textureSample*` or `textureGather*` builtin -- followed through its own
+ * helper functions: a texture handed to a helper is sampled when the helper
+ * samples the parameter it arrives as.
+ */
+function wgslSampledTextures(wgsl: string): Set<string> {
+    const functions = reflectWgslModule(wgsl).declarations.flatMap(
+        (declaration) => (declaration.kind === "fn" ? [declaration] : []),
+    );
+    const callees = new Map(functions.map((fn) => [fn.name, fn]));
+    // Per function, the names it samples: its own parameters, and the
+    // module-scope textures it reads directly or through a helper.
+    const sampled = new Map(
+        functions.map((fn) => [fn.name, new Set<string>()]),
+    );
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const fn of functions) {
+            const names = sampled.get(fn.name)!;
+            const mark = (name: string | undefined): void => {
+                if (name === undefined || names.has(name)) return;
+                names.add(name);
+                changed = true;
+            };
+            for (const statement of fn.statements)
+                statementSome(statement, (expression) => {
+                    if (expression.kind !== "call") return false;
+                    if (expression.name.startsWith("textureSample")) {
+                        mark(identifierArgument(expression.arguments[0]));
+                    } else if (expression.name.startsWith("textureGather")) {
+                        // A colour gather names its component first.
+                        mark(identifierArgument(expression.arguments[0]));
+                        mark(identifierArgument(expression.arguments[1]));
+                    } else {
+                        const callee = callees.get(expression.name);
+                        const reads = callee && sampled.get(callee.name)!;
+                        callee?.parameters.forEach((parameter, index) => {
+                            if (reads!.has(parameter.name))
+                                mark(
+                                    identifierArgument(
+                                        expression.arguments[index],
+                                    ),
+                                );
+                        });
+                    }
+                    return false;
+                });
+        }
+    }
+    return new Set(
+        functions.flatMap((fn) => {
+            const parameters = new Set(fn.parameters.map(({ name }) => name));
+            return [...sampled.get(fn.name)!].filter(
+                (name) => !parameters.has(name),
+            );
+        }),
+    );
+}
+
+/** The layout view dimension of each WGSL texture type the port lays out. */
+const textureViewDimensions: Readonly<Record<string, string>> = {
+    texture_1d: "1d",
+    texture_2d: "2d",
+    texture_2d_array: "2d-array",
+    texture_3d: "3d",
+    texture_cube: "cube",
+    texture_cube_array: "cube-array",
+    texture_multisampled_2d: "2d",
+    texture_depth_2d: "2d",
+    texture_depth_2d_array: "2d-array",
+    texture_depth_cube: "cube",
+    texture_depth_cube_array: "cube-array",
+    texture_depth_multisampled_2d: "2d",
+    texture_storage_1d: "1d",
+    texture_storage_2d: "2d",
+    texture_storage_2d_array: "2d-array",
+    texture_storage_3d: "3d",
+};
+
+/** WGSL's storage-texture access, as a layout names it. */
+const storageTextureAccess: Readonly<Record<string, string>> = {
+    write: "write-only",
+    read: "read-only",
+    read_write: "read-write",
+};
+
+function shapeArgument(
+    shape: WgslTypeShape,
+    index: number,
+): string | undefined {
+    const argument = shape.arguments[index];
+    return typeof argument === "object" && argument.arguments.length === 0
+        ? argument.name
+        : undefined;
+}
+
+/** One resource's layout shape, as the `@binding` line spells it. */
+function layoutResource(
+    variable: WgslVariableDeclaration & { group: number; binding: number },
+    sampled: ReadonlySet<string>,
+): string {
+    const refuse = (what: string): never => {
+        throw new Error(
+            `Binding '${variable.name}' (@group(${variable.group}) @binding(${variable.binding})) ${what}, which no bind-group layout represents.`,
+        );
+    };
+    if (variable.addressSpace === "uniform") return "uniform";
+    if (variable.addressSpace === "storage")
+        return variable.accessMode === "read_write"
+            ? "storage read_write"
+            : "storage read";
+    const shape = variable.type?.shape;
+    if (!shape) return refuse("declares no type");
+    if (shape.name === "sampler") return "sampler filtering";
+    if (shape.name === "sampler_comparison") return "sampler comparison";
+    const dimension = textureViewDimensions[shape.name];
+    if (dimension === undefined)
+        return refuse(`declares ${variable.type!.text}`);
+    if (shape.name.startsWith("texture_storage_")) {
+        const format = shapeArgument(shape, 0);
+        const access = storageTextureAccess[shapeArgument(shape, 1) ?? ""];
+        if (!format || !access)
+            return refuse(`declares ${variable.type!.text}`);
+        return `storage-texture ${access} ${format} ${dimension}`;
+    }
+    const samples = shape.name.includes("multisampled")
+        ? "multisampled"
+        : "single";
+    if (shape.name.startsWith("texture_depth_"))
+        return `texture depth ${dimension} ${samples}`;
+    const element = shapeArgument(shape, 0);
+    const sampleType =
+        element === "i32"
+            ? "sint"
+            : element === "u32"
+              ? "uint"
+              : element !== "f32"
+                ? refuse(`declares ${variable.type!.text}`)
+                : samples === "single" && sampled.has(variable.name)
+                  ? "float"
+                  : "unfilterable-float";
+    return `texture ${sampleType} ${dimension} ${samples}`;
+}
+
+/**
+ * The bind-group layout of every resource a stage's module declares, one
+ * `@binding <group> <binding> <resource>` line each, for the `.slots`
+ * sidecar.
+ *
+ * SDL_GPU binds by the compacted registers the sidecar's other lines name;
+ * WebGPU binds by the module's own group and binding numbers, so the Dawn
+ * PAL lays each group out from these lines rather than restating the
+ * declarations. The resource is `uniform`, `storage read|read_write`,
+ * `sampler filtering|comparison`, `texture <sample type> <view dimension>
+ * single|multisampled`, or `storage-texture <access> <format> <view
+ * dimension>`. A `texture_*<f32>` the module passes to a `textureSample*` or
+ * `textureGather*` builtin is `float`; one it only `textureLoad`s is
+ * `unfilterable-float`. Every declared binding is listed, read or not: a
+ * bind group carries the entries its module declares.
+ */
+export function stageLayoutBindings(wgsl: string): string[] {
+    const sampled = wgslSampledTextures(wgsl);
+    return reflectWgslBindings(wgsl)
+        .sort(
+            (left, right) =>
+                left.group - right.group || left.binding - right.binding,
+        )
+        .map(
+            (variable) =>
+                `@binding ${variable.group} ${variable.binding} ${layoutResource(variable, sampled)}`,
         );
 }
