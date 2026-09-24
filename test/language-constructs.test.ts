@@ -2821,6 +2821,28 @@ check(
 `,
 );
 
+check(
+    "array-literal-receivers-take-mutating-methods",
+    `
+    const last = [7, 8].pop();
+    if (last !== 8) throw new Error("literal pop");
+    const first = [7, 8].shift();
+    if (first !== 7) throw new Error("literal shift");
+    const none = ([] as number[]).pop();
+    if (none !== undefined) throw new Error("empty literal pop");
+    let count = 1;
+    const drawn = [count, 5].pop()!;
+    if (drawn !== 5) throw new Error("asserted literal pop " + drawn);
+    count = 2;
+    const pushed = [1, 2].push(3);
+    if (pushed !== 3) throw new Error("literal push");
+    const removed = [1, 2, 3].splice(1, 1);
+    if (removed.length !== 1 || removed[0] !== 2) throw new Error("literal splice");
+    const reversed = [1, 2, 3].reverse();
+    if (reversed[0] !== 3) throw new Error("literal reverse");
+`,
+);
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });
