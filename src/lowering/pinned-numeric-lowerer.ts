@@ -425,6 +425,12 @@ export interface PinnedNumericScope {
     /** Native option specialization may make a pinned fallback local dead. */
     maybeUnusedConst?: boolean;
     /**
+     * What every local the body declares is spelled with, for a body lowered
+     * as a member of a native class, where a local named like a member
+     * would hide it.
+     */
+    localPrefix?: string;
+    /**
      * How a `for (const x of xs)` spells its range, and what `x` binds to.
      *
      * The translator has no types, so it cannot know what a pinned
@@ -543,7 +549,7 @@ export class PinnedNumericLowerer {
     /** How many helper bodies are being written out right now. */
     private inlining = 0;
 
-    private localName(name: string): string {
+    protected localName(name: string): string {
         // Caller aliases can name locals declared later (options.offset ->
         // defaultOffset); reserve declarations, not those substitutions.
         const occupied = new Set([
@@ -556,7 +562,7 @@ export class PinnedNumericLowerer {
                 )
                 .map(([, binding]) => binding.cpp),
         ]);
-        const base = cppIdentifier(name);
+        const base = `${this.scope.localPrefix ?? ""}${cppIdentifier(name)}`;
         let cpp = base;
         for (let suffix = 1; occupied.has(cpp); suffix++)
             cpp = `${base}_${suffix}`;
@@ -952,7 +958,13 @@ export class PinnedNumericLowerer {
 
     /** Whether control never continues past `statement`. */
     private terminates(statement: ts.Statement): boolean {
-        if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) {
+        if (
+            ts.isReturnStatement(statement) ||
+            ts.isThrowStatement(statement) ||
+            ((ts.isContinueStatement(statement) ||
+                ts.isBreakStatement(statement)) &&
+                !statement.label)
+        ) {
             return true;
         }
         if (ts.isBlock(statement)) {
@@ -2230,8 +2242,18 @@ export class PinnedNumericLowerer {
             : undefined;
     }
 
+    /**
+     * A store target a subclass owns the representation of, or undefined
+     * for the targets this translator resolves itself.
+     */
+    protected assignmentDomain(_target: ts.Expression): string | undefined {
+        return undefined;
+    }
+
     private assignmentTarget(expression: ts.Expression): string {
         const unwrapped = unwrapExpression(expression);
+        const adapted = this.assignmentDomain(unwrapped);
+        if (adapted !== undefined) return adapted;
         if (ts.isIdentifier(unwrapped)) {
             const binding = this.scope.bindings.get(unwrapped.text);
             if (!binding) this.fail(unwrapped, "assignment target");

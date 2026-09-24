@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { characterControllerModule } from "../src/lowering/character-controller-lowerer.js";
 import {
@@ -17,6 +16,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 test("public character APIs transport collision values, vector aliases and disposer identity", () => {
     const result = compileSource(`
@@ -148,27 +148,6 @@ test(
 );
 
 test("character lifecycle PAL substitutions and observable contracts reject unrepresented source drift", () => {
-    class EditedStore extends UpstreamSourceStore {
-        public constructor(
-            private readonly from: string,
-            private readonly to: string,
-        ) {
-            super();
-        }
-        public override getSourceFile(module: string): ts.SourceFile {
-            const original = super.getSource(module);
-            if (module === characterControllerModule)
-                assert(original.includes(this.from));
-            return ts.createSourceFile(
-                module,
-                module === characterControllerModule
-                    ? original.replace(this.from, this.to)
-                    : original,
-                ts.ScriptTarget.Latest,
-                true,
-            );
-        }
-    }
     for (const [from, to] of [
         ["this._subs.push(cb);", "this._subs.unshift(cb);"],
         ["for (const s of this._subs)", "for (const s of [...this._subs])"],
@@ -190,7 +169,7 @@ test("character lifecycle PAL substitutions and observable contracts reject unre
         assert.throws(
             () =>
                 characterControllerHeader(
-                    new LoweringContext(new EditedStore(from!, to!)),
+                    doctoredContext(characterControllerModule, from!, to!),
                 ),
             { message: /.+/ },
             from,
