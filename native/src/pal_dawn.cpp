@@ -8999,36 +8999,18 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     const Scene& scene = *active_registered_scenes[*layer];
     const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
     auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
+    // The pin's preamble -- camera, pointer mapping, scene block -- is
+    // shared with the SDL pick (pal_gpu_shared.hpp).
+    const std::optional<PickRequest> request = prepare_gpu_pick(engine, picker, scene, x, y);
+    if (!request)
+        return PickingInfo{};
 #if BBLITE_HAS_DETAILED_PICKING
-    // `picker._detailedPicking`, armed by `enableDetailedPicking`.
-    const bool detailed = detailed_pick_armed(engine, picker);
+    const bool detailed = request->detailed;
 #else
     constexpr bool detailed = false;
 #endif
-    if (scene.camera.value >= engine.cameras.size()) {
-        return PickingInfo{};
-    }
-    const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
-    // The picker's public coordinates are CSS pixels, as in the pin.
-    const double width = static_cast<double>(engine.options.width);
-    const double height = static_cast<double>(engine.options.height);
-    x *= width / engine.canvas_client_width;
-    y *= height / engine.canvas_client_height;
-    if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
-        return PickingInfo{};
-    }
-    if (camera.viewport.has_value()) {
-        // `pickAsync` maps the pointer through
-        // `resolveCameraViewport` before it renders the candidates
-        // (src/picking/gpu-picker.ts), which this port has not
-        // ported: no scene reaches both. Refusing by name beats
-        // picking against a frustum the pass never drew.
-        dawn_error("A GPU pick through a camera viewport needs the pin's "
-                   "resolveCameraViewport pointer mapping, which is not "
-                   "ported: no reached scene both picks and splits.");
-    }
-    const double aspect = upstream::effective_aspect_ratio(camera, width, height);
-    const std::array<float, 16> view_projection = upstream::build_view_projection(camera, aspect);
+    [[maybe_unused]] const CameraRecord& camera = *request->camera;
+    [[maybe_unused]] const upstream::PickPointer& pointer = request->pointer;
     ensure_dawn_pick_targets(state.device, state.pick_targets);
     if (!state.pick_mesh_pipeline) {
         state.pick_scene_layout = create_dawn_pick_scene_layout(state.device);
@@ -9089,8 +9071,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         state.pick_scene_group = wgpuDeviceCreateBindGroup(state.device, &scene_group);
     }
 
-    const PickSceneUniforms scene_uniforms =
-        build_pick_scene_uniforms(view_projection, x, y, width, height);
+    const PickSceneUniforms& scene_uniforms = request->scene_uniforms;
     wgpuQueueWriteBuffer(state.queue, state.pick_scene_buffer, 0, &scene_uniforms,
                          sizeof(scene_uniforms));
 
@@ -9265,7 +9246,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         // Refresh data before encoding, retaining the last frame's order.
         sync_dawn_splat_data(state.queue, handle_at(engine.splat_meshes, splat.mesh), splat);
         std::array<float, 16> shear{};
-        compute_cloud_pick_matrix(shear, x, y, width, height);
+        compute_cloud_pick_matrix(shear, pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
         wgpuQueueWriteBuffer(state.queue, state.pick_cloud_shear, 0, shear.data(),
                              shear.size() * sizeof(float));
         const std::array<float, 3> color = encode_pick_id_to_color(next_id);
@@ -9292,33 +9273,27 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state.device, &encoder_descriptor)};
 
     std::array<WGPURenderPassColorAttachment, pick_color_targets> attachments{};
-    for (WGPURenderPassColorAttachment& attachment : attachments) {
-        attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        attachment.loadOp = WGPULoadOp_Clear;
-        attachment.storeOp = WGPUStoreOp_Store;
+    for (std::size_t index = 0; index < attachments.size(); ++index) {
+        const auto& clear = pick_color_clears[index];
+        attachments[index] = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        attachments[index].loadOp = WGPULoadOp_Clear;
+        attachments[index].storeOp = WGPUStoreOp_Store;
+        attachments[index].clearValue = WGPUColor{clear[0], clear[1], clear[2], clear[3]};
     }
     attachments[0].view = state.pick_targets.color_view;
-    attachments[0].clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
     attachments[1].view = state.pick_targets.depth_color_view;
-    // 1 is "nothing here" under reverse-Z, which is the pin's clear.
-    attachments[1].clearValue = WGPUColor{1.0, 0.0, 0.0, 0.0};
-    std::size_t attachment_count = 2;
 #if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        attachments[2].view = state.pick_targets.detail_view;
-        // The pin's own 0xffffffff, which `readDetailTarget` reads
-        // back as "no primitive".
-        attachments[2].clearValue = WGPUColor{pick_detail_clear_red, 0.0, 0.0, 0.0};
-        attachment_count = 3;
-    }
+    attachments[2].view = state.pick_targets.detail_view;
 #endif
+    // The detail attachment only when the pick is detailed.
+    const std::size_t attachment_count = detailed ? 3u : 2u;
 
     WGPURenderPassDepthStencilAttachment depth_attachment =
         WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
     depth_attachment.view = state.pick_targets.depth_view;
     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
     depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
-    depth_attachment.depthClearValue = 0.0f;
+    depth_attachment.depthClearValue = static_cast<float>(pick_depth_clear);
 
     WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = attachment_count;
@@ -9530,24 +9505,10 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         wgpuBufferGetConstMappedRange(state.pick_targets.staging, 0, pick_staging_bytes);
     if (!mapped)
         dawn_error("pick map returned no data.");
-    const auto* bytes = static_cast<const std::uint8_t*>(mapped);
-    const std::uint32_t pick_id = decode_pick_id(bytes);
-    float pick_depth = 1.0f;
-    std::memcpy(&pick_depth, bytes + pick_depth_offset, sizeof(pick_depth));
-#if BBLITE_HAS_DETAILED_PICKING
-    const PickDetailReadback pick_detail =
-        detailed ? decode_pick_detail(bytes + pick_detail_offset) : PickDetailReadback{};
-#endif
+    const PickReadback readback =
+        decode_pick_readback(static_cast<const std::uint8_t*>(mapped), detailed);
     wgpuBufferUnmap(state.pick_targets.staging);
-
-    PickingInfo info = resolve_pick_result(ranges, pick_id);
-    populate_picked_point(info, view_projection, x, y, width, height, pick_depth);
-#if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        finish_detailed_pick(engine, info, pick_detail, view_projection, x, y, width, height);
-    }
-#endif
-    return info;
+    return resolve_gpu_pick(engine, *request, ranges, readback);
 }
 #endif
 

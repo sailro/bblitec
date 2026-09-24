@@ -4482,69 +4482,6 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
     return texture;
 }
 
-/**
- * Finds the topmost visible sprite containing a point in layer-local pixels.
- * Layers and sprites both draw in array order, so picking walks each in the
- * opposite direction. The inverse rotation is pivot-aware through the same
- * normalized coordinates the sprite vertex path uses.
- *
- * `pickSprite2D` asks the optional Y-sort hook for the layer's current draw
- * order first (`pick-sprite-2d.ts`), so a Y-sorted layer is walked in reverse
- * DRAW order and answers with the logical slot that order named. The hook is
- * empty on every layer that never enabled the extension, which is the pin's
- * own `?.drawOrder(layer)` and needs no second detector.
- */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-[[nodiscard]] inline std::optional<Sprite2DPickResult>
-pick_sprite_2d(const Engine& engine, const std::vector<Sprite2DLayerHandle>& layers, double x_px,
-               double y_px) {
-    for (auto layer_it = layers.rbegin(); layer_it != layers.rend(); ++layer_it) {
-        if (layer_it->value >= engine.sprite_layers.size()) {
-            continue;
-        }
-        const auto& layer = engine.sprite_layers[layer_it->value];
-        if (!layer.visible) {
-            continue;
-        }
-        // The hook sorts the CPU permutation if a same-frame mutation left
-        // it stale; nothing here packs or touches the GPU.
-        const std::uint32_t* draw_order = engine.sprite_y_sort_hook.draw_order
-                                              ? engine.sprite_y_sort_hook.draw_order(layer)
-                                              : nullptr;
-        const auto stride = static_cast<std::size_t>(layer.instance_floats_per_sprite);
-        for (std::uint32_t sprite = layer.count; sprite > 0; --sprite) {
-            const auto index = draw_order ? draw_order[sprite - 1u] : sprite - 1u;
-            const auto base = static_cast<std::size_t>(index) * stride;
-            if (base + 8u >= layer.instance_data.size()) {
-                continue;
-            }
-            const double width = layer.instance_data[base + 2u];
-            const double height = layer.instance_data[base + 3u];
-            // `pickSprite2D`'s own `sizeX <= 0 || sizeY <= 0`: a sprite
-            // hidden by a non-positive size is skipped, not just an empty
-            // one.
-            if (width <= 0.0 || height <= 0.0) {
-                continue;
-            }
-            const double dx = x_px - layer.instance_data[base];
-            const double dy = y_px - layer.instance_data[base + 1u];
-            const double rotation = layer.instance_data[base + 8u];
-            const double cosine = std::cos(rotation);
-            const double sine = std::sin(rotation);
-            const double local_x = cosine * dx + sine * dy;
-            const double local_y = -sine * dx + cosine * dy;
-            const double u = local_x / width + layer.pivot.x;
-            const double v = local_y / height + layer.pivot.y;
-            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-                return Sprite2DPickResult{*layer_it, index, u, v};
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-#endif
-
 inline MaterialHandle remember_scene_material(Engine& engine, std::size_t slot,
                                               MaterialHandle material) {
     if (engine.scene_material_slots.size() <= slot) {

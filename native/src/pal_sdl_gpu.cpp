@@ -6268,40 +6268,17 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     const Scene& scene = *active_registered_scenes[*layer];
     const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
     auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
+    // The pin's preamble -- camera, pointer mapping, scene block -- is
+    // shared with the Dawn pick (pal_gpu_shared.hpp).
+    const std::optional<PickRequest> request = prepare_gpu_pick(engine, picker, scene, x, y);
+    if (!request)
+        return PickingInfo{};
 #if BBLITE_HAS_DETAILED_PICKING
-    // `picker._detailedPicking`, which `enableDetailedPicking`
-    // armed: it selects the pin's second pipeline module and the
-    // third attachment, so it is read per pick rather than per
-    // picker resource.
-    const bool detailed = detailed_pick_armed(engine, picker);
+    const bool detailed = request->detailed;
 #else
     constexpr bool detailed = false;
 #endif
-    const CameraRecord* camera_record = scene.camera.value < engine.cameras.size()
-                                            ? &handle_at(engine.cameras, scene.camera)
-                                            : nullptr;
-    if (!camera_record)
-        return PickingInfo{};
-    // The viewport is the whole surface: no reached scene picks
-    // through a camera viewport, and one that did would need the
-    // pin's `resolveCameraViewport` offset here -- so one that
-    // carries a viewport refuses by name rather than picking
-    // against a frustum the pass never drew.
-    const double width = static_cast<double>(engine.options.width);
-    const double height = static_cast<double>(engine.options.height);
-    x *= width / engine.canvas_client_width;
-    y *= height / engine.canvas_client_height;
-    if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
-        return PickingInfo{};
-    }
-    if (camera_record->viewport.has_value()) {
-        gpu_error("A GPU pick through a camera viewport needs the "
-                  "pin's resolveCameraViewport pointer mapping, which "
-                  "is not ported: no reached scene both picks and "
-                  "splits.");
-    }
-    const std::array<float, 16> view_projection = upstream::build_view_projection(
-        *camera_record, upstream::effective_aspect_ratio(*camera_record, width, height));
+    [[maybe_unused]] const upstream::PickPointer& pointer = request->pointer;
 
     ensure_pick_targets(state.device, state.pick_targets);
     ensure_pick_pipelines(state);
@@ -6314,8 +6291,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     }
 #endif
 
-    const PickSceneUniforms scene_uniforms =
-        build_pick_scene_uniforms(view_projection, x, y, width, height);
+    const PickSceneUniforms& scene_uniforms = request->scene_uniforms;
 
 #if BBLITE_HAS_BILLBOARDS
     // Before the pick command buffer exists, because the instance
@@ -6369,31 +6345,22 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
 
     SDL_GPUColorTargetInfo color_targets[pick_color_targets]{};
     color_targets[0].texture = state.pick_targets.color;
-    color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
-    color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
-    color_targets[0].clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
     color_targets[1].texture = state.pick_targets.depth_color;
-    color_targets[1].load_op = SDL_GPU_LOADOP_CLEAR;
-    color_targets[1].store_op = SDL_GPU_STOREOP_STORE;
-    // The pin clears the depth attachment to 1 and the depth
-    // buffer to 0: the colour lane holds the winning fragment's
-    // clip depth, and 1 is "nothing here" under reverse-Z.
-    color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
-    Uint32 color_target_count = 2;
 #if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        color_targets[2].texture = state.pick_targets.detail;
-        color_targets[2].load_op = SDL_GPU_LOADOP_CLEAR;
-        color_targets[2].store_op = SDL_GPU_STOREOP_STORE;
-        // The pin's own 0xffffffff, which `readDetailTarget`
-        // reads back as "no primitive". Only a MISS reads it --
-        // a resolved id means the winning fragment wrote this
-        // attachment in the same draw.
-        color_targets[2].clear_color = {static_cast<float>(pick_detail_clear_red), 0.0f, 0.0f,
-                                        0.0f};
-        color_target_count = 3;
-    }
+    color_targets[2].texture = state.pick_targets.detail;
 #endif
+    // The detail attachment only when the pick is detailed; the clears are
+    // the pin's (`pick_color_clears`). SDL states a clear as float, so
+    // the detail lane's 0xffffffff rounds here, where it is visible.
+    const Uint32 color_target_count = detailed ? 3u : 2u;
+    for (Uint32 index = 0; index < color_target_count; ++index) {
+        const auto& clear = pick_color_clears[index];
+        color_targets[index].load_op = SDL_GPU_LOADOP_CLEAR;
+        color_targets[index].store_op = SDL_GPU_STOREOP_STORE;
+        color_targets[index].clear_color = {
+            static_cast<float>(clear[0]), static_cast<float>(clear[1]),
+            static_cast<float>(clear[2]), static_cast<float>(clear[3])};
+    }
 
     SDL_GPUDepthStencilTargetInfo depth_target{};
     depth_target.texture = state.pick_targets.depth;
@@ -6401,7 +6368,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    depth_target.clear_depth = 0.0f;
+    depth_target.clear_depth = static_cast<float>(pick_depth_clear);
     depth_target.cycle = true;
 
     SdlRenderPass pass{
@@ -6553,8 +6520,8 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     for (const SplatPass& splat : state.splat_passes) {
         if (!pick_sources)
             break;
-        record_cloud_pick_draw(command, pass, state, engine, splat, *camera_record, next_id, x, y,
-                               width, height);
+        record_cloud_pick_draw(command, pass, state, engine, splat, *request->camera, next_id,
+                               pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
         ranges.push_back({next_id, PickedNodeKind::splat_mesh, splat.mesh.value});
         ++next_id;
     }
@@ -6565,7 +6532,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
     if (pick_sources) {
         billboard_pick.record(
             command, pass, engine, scene,
-            upstream::build_view_matrix(upstream::camera_world_matrix(*camera_record)),
+            upstream::build_view_matrix(upstream::camera_world_matrix(*request->camera)),
             scene_uniforms, ranges, next_id);
     }
 #endif
@@ -6609,23 +6576,9 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
         SDL_MapGPUTransferBuffer(state.device, state.pick_targets.staging, false));
     if (!mapped)
         gpu_error("SDL_MapGPUTransferBuffer pick");
-    const std::uint32_t pick_id = decode_pick_id(mapped);
-    float pick_depth = 1.0f;
-    std::memcpy(&pick_depth, mapped + pick_depth_offset, sizeof(pick_depth));
-#if BBLITE_HAS_DETAILED_PICKING
-    const PickDetailReadback pick_detail =
-        detailed ? decode_pick_detail(mapped + pick_detail_offset) : PickDetailReadback{};
-#endif
+    const PickReadback readback = decode_pick_readback(mapped, detailed);
     SDL_UnmapGPUTransferBuffer(state.device, state.pick_targets.staging);
-
-    PickingInfo info = resolve_pick_result(ranges, pick_id);
-    populate_picked_point(info, view_projection, x, y, width, height, pick_depth);
-#if BBLITE_HAS_DETAILED_PICKING
-    if (detailed) {
-        finish_detailed_pick(engine, info, pick_detail, view_projection, x, y, width, height);
-    }
-#endif
-    return info;
+    return resolve_gpu_pick(engine, *request, ranges, readback);
 }
 #endif
 

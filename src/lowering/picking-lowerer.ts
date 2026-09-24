@@ -5,7 +5,10 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import {
+    pinnedNumericMathCalls,
+    pinnedNumericMathCallsWithHypot,
+} from "./pinned-operators.js";
 import { normalizeVec3Call } from "./pinned-normalize-vec3.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -20,6 +23,7 @@ import {
 const detailedModule = "src/picking/detailed-picking.ts";
 const helpersModule = "src/picking/picking-helpers.ts";
 const rayModule = "src/picking/ray.ts";
+const gpuPickerModule = "src/picking/gpu-picker.ts";
 
 /**
  * A native container standing in for one of the pin's nullable typed
@@ -160,14 +164,338 @@ export class PickingLowerer {
                       returns: "void",
                       inline: true,
                   },
-              )
+              ) +
+              "\n\n" +
+              this.lowerEncodeIdToColor()
             : "";
         return pinnedHeader(
-            ["<array>", "<cstdint>"],
+            [
+                "<bblite/js_data.hpp>",
+                "",
+                "<algorithm>",
+                "<array>",
+                "<cmath>",
+                "<cstdint>",
+            ],
             `${projection}
-${cloud}`,
+${cloud}
+
+${this.lowerPickPointer()}
+
+${this.lowerDecodePickId()}`,
             { compactPragma: true },
         );
+    }
+
+    /**
+     * `encodeIdToColor`, the id colour a cloud's picking block carries,
+     * translated from the Gaussian-splatting picking fragment that owns it.
+     * The pin returns the three unit fractions as numbers and stores them
+     * through its `F32` picking block, so the fractions stay doubles here
+     * and each caller rounds at its own float store.
+     */
+    private lowerEncodeIdToColor(): string {
+        const module = "src/mesh/GaussianSplatting/gs-gpu-picking-fragment.ts";
+        const at = this.context.functionDeclaration(
+            module,
+            "encodeIdToColor",
+        ).declaration;
+        return lowerPinnedFunction(
+            this.context,
+            module,
+            "encodeIdToColor",
+            [{ pinned: "id", kind: "number", cpp: "id" }],
+            {
+                cppName: "encode_id_to_color",
+                inline: true,
+                returns: {
+                    type: "std::array<double, 3>",
+                    value: (lowerer, expression) =>
+                        `std::array<double, 3>{${lowerTupleComponents(
+                            this.context,
+                            lowerer,
+                            expression,
+                            { arity: 3, at },
+                        ).join(", ")}}`,
+                },
+            },
+        );
+    }
+
+    /**
+     * The colour attachment's three bytes back into the id they encode:
+     * `pickAsyncImpl`'s own `pickId = (colorData[0]! << 16) | ...` store,
+     * translated from that statement over the mapped staging bytes.
+     */
+    private lowerDecodePickId(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            gpuPickerModule,
+            "pickAsyncImpl",
+        );
+        const stores = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "pickId",
+        );
+        const store = stores[0];
+        if (stores.length !== 1 || !store) {
+            return this.context.contractError(
+                declaration,
+                "Expected pinned pickAsyncImpl to decode pickId once.",
+            );
+        }
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["colorData", { cpp: "color_data", type: "u8" }],
+            ]),
+            calls: new Map(),
+        });
+        return `// ${this.context.provenance(gpuPickerModule, "pickAsyncImpl")}
+// The readback's \`pickId\`, from the colour staging row's first bytes.
+inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
+    return bbl::js::to_uint32(${lowerer.expression(store.right)});
+}`;
+    }
+
+    /**
+     * `pickAsyncImpl`'s pointer mapping and scene block, translated from the
+     * pinned statements that compute them: the CSS-to-backing scale, the
+     * viewport the pointer must land in, the sample inside it, the sheared
+     * view projection (`computePickVP`) and the selected pixel's centre in
+     * the backing framebuffer (`_pickVP[16]`/`[17]`).
+     *
+     * The pin reads its camera, canvas and view projection off live objects;
+     * here the caller hands the canvas extents and two callables -- the
+     * pin's `resolveCameraViewport` and `getViewProjectionMatrix` for the
+     * picked camera -- so this header needs no render plan. What the rest
+     * of the pick reads back (the viewport extent, the sample and the
+     * unsheared view projection the readback reconstructs through) lands in
+     * `PickPointer`; a pointer outside the viewport answers `false`, which
+     * is the pin's empty info.
+     */
+    private lowerPickPointer(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            gpuPickerModule,
+            "pickAsyncImpl",
+        );
+        const statements = declaration.body!.statements;
+        const declares = (statement: ts.Statement, name: string): boolean =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations.length === 1 &&
+            statement.declarationList.declarations[0]!.name.getText(file) ===
+                name;
+        const first = statements.findIndex((statement) =>
+            declares(statement, "backingWidth"),
+        );
+        const last = statements.findIndex(
+            (statement) =>
+                ts.isExpressionStatement(statement) &&
+                this.context.expressionMatchesShape(
+                    statement.expression,
+                    "_pickVP[17] = viewport.y + pixelCenterY",
+                ),
+        );
+        if (first < 0 || last < first) {
+            return this.context.contractError(
+                declaration,
+                "Expected pinned pickAsyncImpl to map the pointer from " +
+                    "backingWidth through _pickVP[17].",
+            );
+        }
+        // The preamble's outputs: each local the rest of the pick reads,
+        // and the member of `PickPointer` it lands in.
+        const outputs = new Map<string, string>([
+            ["w", "pick.w"],
+            ["h", "pick.h"],
+            ["sampleX", "pick.sample_x"],
+            ["sampleY", "pick.sample_y"],
+        ]);
+        // The two locals the native pick computes on its own from the same
+        // inputs: the detailed ray (`populate_pick_ray` over the sample and
+        // the view projection), and the debug trace no reached pick asks for.
+        const skipped = new Map<string, string>([
+            [
+                "pickRay",
+                "detailed || debugLabel ? createPickingRay(sampleX, sampleY, vp, w, h) : null",
+            ],
+            [
+                "debugInput",
+                "debug ? [x, y, pickX, pickY, px, py, backingWidth, backingHeight, clientWidth, clientHeight, viewport.x, viewport.y, viewport.width, viewport.height] : null",
+            ],
+        ]);
+        const bindings = new Map<string, PinnedBinding>([
+            ["x", { cpp: "x", type: "scalar" }],
+            ["y", { cpp: "y", type: "scalar" }],
+            ["canvas.width", { cpp: "backing_width", type: "scalar" }],
+            ["canvas.height", { cpp: "backing_height", type: "scalar" }],
+            ["canvas.clientWidth", { cpp: "client_width", type: "scalar" }],
+            ["canvas.clientHeight", { cpp: "client_height", type: "scalar" }],
+            ["camera", { cpp: "camera", type: "opaque" }],
+            // `_pickVP` is the pin's twenty-float scene block: the sheared
+            // view projection, then the pixel centre.
+            ["_pickVP", { cpp: "scene_block", type: "f32" }],
+            [
+                "_pickVP[16]",
+                {
+                    cpp: "scene_block.fragment_coord[0]",
+                    type: "scalar",
+                    mutable: true,
+                },
+            ],
+            [
+                "_pickVP[17]",
+                {
+                    cpp: "scene_block.fragment_coord[1]",
+                    type: "scalar",
+                    mutable: true,
+                },
+            ],
+        ]);
+        const body = lowerPinnedBody(file, statements.slice(first, last + 1), {
+            bindings,
+            calls: new Map([
+                ...pinnedNumericMathCalls(),
+                [
+                    "computePickVP",
+                    (args: readonly string[]) =>
+                        `compute_pick_view_projection(scene_block.view_projection, ${args
+                            .slice(1)
+                            .join(", ")})`,
+                ],
+            ]),
+            returnValue: (expression) => {
+                if (
+                    !expression ||
+                    !this.context.expressionMatchesShape(
+                        expression,
+                        "createEmptyPickingInfo()",
+                    )
+                ) {
+                    return this.context.contractError(
+                        expression ?? declaration,
+                        "Expected the pick preamble to return only the empty info.",
+                    );
+                }
+                return "false";
+            },
+            expression: (node, lowerer) => {
+                // `("clientWidth" in canvas ? canvas.clientWidth : 0)`:
+                // a native canvas always reports its client extent.
+                if (!ts.isConditionalExpression(node)) return undefined;
+                const test = this.context.unwrapExpression(node.condition);
+                if (
+                    !ts.isBinaryExpression(test) ||
+                    test.operatorToken.kind !== ts.SyntaxKind.InKeyword
+                ) {
+                    return undefined;
+                }
+                this.context.assertExpressionShape(
+                    node.whenFalse,
+                    "0",
+                    "pick canvas client-extent fallback",
+                );
+                return lowerer.expression(node.whenTrue);
+            },
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const local = statement.declarationList.declarations[0]!;
+                const name = local.name.getText(file);
+                const initializer = local.initializer;
+                if (!initializer) return undefined;
+                if (name === "viewport") {
+                    this.context.assertExpressionShape(
+                        initializer,
+                        "resolveCameraViewport(camera, backingWidth, backingHeight)",
+                        "pick viewport",
+                    );
+                    const call = this.context.unwrapExpression(initializer);
+                    if (!ts.isCallExpression(call)) {
+                        return this.context.contractError(
+                            initializer,
+                            "Expected the pick viewport to be resolved by a call.",
+                        );
+                    }
+                    for (const member of ["x", "y", "width", "height"]) {
+                        bindings.set(`viewport.${member}`, {
+                            cpp: `static_cast<double>(viewport.${member})`,
+                            type: "scalar",
+                        });
+                    }
+                    return [
+                        `${indent}const auto viewport = resolve_viewport(` +
+                            `${call.arguments
+                                .slice(1)
+                                .map((argument) => lowerer.expression(argument))
+                                .join(", ")});`,
+                    ];
+                }
+                if (name === "vp") {
+                    this.context.assertExpressionShape(
+                        initializer,
+                        "getViewProjectionMatrix(camera, aspect)",
+                        "pick view projection",
+                    );
+                    bindings.set("vp", {
+                        cpp: "pick.view_projection",
+                        type: "f32",
+                    });
+                    return [
+                        `${indent}pick.view_projection = view_projection(aspect);`,
+                    ];
+                }
+                const output = outputs.get(name);
+                if (output) {
+                    bindings.set(name, { cpp: output, type: "scalar" });
+                    return [
+                        `${indent}${output} = ${lowerer.expression(initializer)};`,
+                    ];
+                }
+                const shape = skipped.get(name);
+                if (shape !== undefined) {
+                    this.context.assertExpressionShape(
+                        initializer,
+                        shape,
+                        `pick preamble ${name}`,
+                    );
+                    return [];
+                }
+                return undefined;
+            },
+        });
+        return `/**
+ * What \`pickAsyncImpl\`'s preamble hands the rest of the pick: the viewport
+ * extent (\`w\`, \`h\`) the sheared projection and the readback are built at,
+ * the sampled point inside it, and the unsheared view projection (\`vp\`).
+ */
+struct PickPointer {
+    double w = 0.0;
+    double h = 0.0;
+    double sample_x = 0.0;
+    double sample_y = 0.0;
+    std::array<float, 16> view_projection{};
+};
+
+// ${this.context.provenance(gpuPickerModule, "pickAsyncImpl")}
+// The pointer mapping and the pick scene block, from \`backingWidth\` through
+// \`_pickVP[17]\`.
+template <typename ResolveViewport, typename ViewProjection, typename SceneBlock>
+inline bool map_pick_pointer(
+    const ResolveViewport& resolve_viewport,
+    const ViewProjection& view_projection,
+    SceneBlock& scene_block,
+    PickPointer& pick,
+    double x,
+    double y,
+    double backing_width,
+    double backing_height,
+    double client_width,
+    double client_height) {
+${body}
+    return true;
+}`;
     }
 
     /**
