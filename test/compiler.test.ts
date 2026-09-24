@@ -11363,7 +11363,7 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
     assert.match(result.cpp, /on_dom_pointer[^\n]*"pointermove"/);
     assert.match(
         result.cpp,
-        /"pointermove", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, bblscene::\w+/,
+        /"pointermove", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{std::ref\(v_bblite_inline_engine_\d+\), v_hit\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\.client_x/);
     const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
