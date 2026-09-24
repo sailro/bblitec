@@ -1,25 +1,5 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
-/**
- * The clustered light field's scene surface.
- *
- * `light/clustered.ts` holds a container as plain data — arrays of point and
- * spot records with a tile/slice configuration — and
- * `addClusteredLightContainer` builds its GPU state from them: three data
- * textures, a params block, and a per-frame `refresh` that re-bins every
- * light against the live camera.
- *
- * All of that is run time here, and measurably so: both reached scenes fill
- * a thousand lights from a seeded PRNG inside a counted loop, which lowers to
- * a native `for` rather than an unrolled table, so the container is a native
- * record filled by the emitted code exactly as the pin fills it.
- *
- * **One fact is compile-time, and it is the one that decides composition.**
- * `createClusteredSpotLight` calls `_enableClusteredSpotSupport`, which
- * installs the stride-3 data layout and registers the spot extension; that
- * extension's `detect` then takes a material over from the point one, so a
- * container that ever held a spot composes a different fragment. The pin
- * reaches that at the spot factory, and so does this.
- */
 /**
  * The clustered light field's scene surface.
  *
@@ -46,6 +26,8 @@ import { argumentAt } from "../syntax.js";
 import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
+import { doubleLiteral } from "../../cpp-literals.js";
+import { clusteredLightDefaults } from "../../lowering/pinned-factory-defaults.js";
 
 export interface ClusteredLightIntrinsicContext
     extends
@@ -148,23 +130,32 @@ function appendLight(
     };
     const range = context.objectProperty(literal, "range");
     const intensity = context.objectProperty(literal, "intensity");
-    // Each `??` is resolved where the pin resolves it, so nothing downstream
-    // restates a default: `range ?? 1`, `intensity ?? 1`, `angle ?? PI / 2`.
+    // Each `??` is resolved where the pin resolves it, from that factory's
+    // own default, so nothing downstream restates one.
+    const defaults = spot
+        ? clusteredLightDefaults().spot
+        : clusteredLightDefaults().point;
+    const number = (value: ts.Expression | undefined, fallback: number) =>
+        value
+            ? context.compileNumber(value, "double")
+            : doubleLiteral(fallback);
     const arguments_ = [
         engine,
         container.cpp,
         context.compileVec3(required("position"), "double"),
         context.compileVec3(required("diffuse"), "double"),
-        range ? context.compileNumber(range, "double") : "1.0",
-        intensity ? context.compileNumber(intensity, "double") : "1.0",
+        number(range, defaults.range),
+        number(intensity, defaults.intensity),
     ];
     if (spot) {
-        const angle = context.objectProperty(literal, "angle");
         arguments_.push(
             context.compileVec3(required("direction"), "double"),
-            angle ? context.compileNumber(angle, "double") : `${Math.PI / 2}`,
+            number(
+                context.objectProperty(literal, "angle"),
+                clusteredLightDefaults().spot.angle,
+            ),
         );
-        container.state.hasSpots = true;
+        writable(container.state).hasSpots = true;
     }
     return {
         kind: "clustered-light",
@@ -184,10 +175,15 @@ export function compileClusteredLightIntrinsic(
         case "createClusteredLightContainer": {
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
-            // The pin's own `?? 64` / `?? 64` / `?? 16`; its `| 0` truncation
-            // and `Math.max(1, …)` clamp happen where it applies them, in
+            // The pin's own `??` defaults; its `| 0` truncation and
+            // `Math.max(1, …)` clamp happen where it applies them, in
             // `buildClusteredLightGpuState`, so the values travel unclamped.
-            const tiles = ["64.0", "64.0", "16.0"];
+            const defaults = clusteredLightDefaults();
+            const tiles = [
+                defaults.horizontalTiles,
+                defaults.verticalTiles,
+                defaults.zSlices,
+            ].map(doubleLiteral);
             if (call.arguments[0]) {
                 const literal = context.expectObjectLiteral(call.arguments[0]);
                 validateOptions(
@@ -236,7 +232,7 @@ export function compileClusteredLightIntrinsic(
                         "another scene's textures.",
                 );
             }
-            container.state.frozen = true;
+            writable(container.state).frozen = true;
             context.reachFeature("light:clustered", call);
             context.reachFeature("renderer:scene", call);
             context.sceneManifest.reachClusteredContainer(

@@ -1,5 +1,13 @@
 #pragma once
 
+#include <bblite/features/audio_decode_flac.hpp>
+#include <bblite/features/audio_decode_mp3.hpp>
+#include <bblite/features/audio_decode_mpc.hpp>
+#include <bblite/features/audio_decode_ogg.hpp>
+#include <bblite/features/audio_decode_opus.hpp>
+#include <bblite/features/audio_decode_wav.hpp>
+#include <bblite/features/audio_decode_wv.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <span>

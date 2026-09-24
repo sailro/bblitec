@@ -1,6 +1,7 @@
-#define BBLITE_HAS_SPRITE_RENDERER 1
-#define BBLITE_HAS_BILLBOARDS 1
 #define BBLITE_PINNED_BACKGROUNDS 1
+#define BBLITE_GPU_MORPH_STORAGE 0
+#define BBLITE_HAS_TAA 0
+#define BBLITE_GPU_INSTANCING 0
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_dawn_resources.hpp"

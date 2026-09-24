@@ -38,11 +38,40 @@ struct HandleSite {};
 }
 
 /**
+ * Whether `handle` names a record of `records`: an index inside the table
+ * and -- for a handle type whose records carry a slot generation
+ * (`MeshHandle`) -- issued for the slot's current occupant rather than for a
+ * retired mesh whose slot a later mesh now holds.
+ */
+template <typename Records, typename Handle>
+[[nodiscard]] bool handle_names_record(const Records& records, Handle handle) {
+    const auto index = static_cast<std::size_t>(handle.value);
+    if (index >= records.size()) {
+        return false;
+    }
+    if constexpr (requires { handle.generation == records[index].generation; }) {
+        return handle.generation == records[index].generation;
+    } else {
+        return true;
+    }
+}
+
+/** The refusal `handle_at` raises for a handle `handle_names_record` rejects. */
+template <typename Records, typename Handle>
+[[noreturn]] void refuse_handle(const Records& records, Handle handle, const HandleSite& site) {
+    const auto index = static_cast<std::size_t>(handle.value);
+    if constexpr (requires { handle.generation == records[index].generation; }) {
+        if (index < records.size()) {
+            refuse_retired_mesh_handle(index, handle.generation, records[index].generation, site);
+        }
+    }
+    refuse_handle_index(index, records.size(), site);
+}
+
+/**
  * `records[handle.value]`, refused in every build when the handle names no
- * record: an index past the table, or -- for a handle type whose records
- * carry a slot generation (`MeshHandle`) -- a handle issued for a retired
- * mesh whose slot a later mesh now holds. JavaScript would still reach the
- * retired object; the index would silently reach the later one. Under
+ * record (`handle_names_record`). JavaScript would still reach a retired
+ * mesh's object; the index would silently reach the later occupant. Under
  * BBLITE_CHECKED_HANDLES the refusal also names the call site.
  */
 template <typename Records, typename Handle>
@@ -53,18 +82,25 @@ decltype(auto) handle_at(Records& records, Handle handle
 #endif
 ) {
 #if !BBLITE_CHECKED_HANDLES
-    constexpr HandleSite site{};
+    // Static: a local whose address reaches the refusal would give every
+    // function inlining this one a stack-protector cookie.
+    static constexpr HandleSite site{};
 #endif
-    const auto index = static_cast<std::size_t>(handle.value);
-    if (index >= records.size()) [[unlikely]] {
-        refuse_handle_index(index, records.size(), site);
+    if (!handle_names_record(records, handle)) [[unlikely]] {
+        refuse_handle(records, handle, site);
     }
-    if constexpr (requires { handle.generation == records[index].generation; }) {
-        if (handle.generation != records[index].generation) [[unlikely]] {
-            refuse_retired_mesh_handle(index, handle.generation, records[index].generation, site);
-        }
-    }
-    return records[index];
+    return records[static_cast<std::size_t>(handle.value)];
+}
+
+/**
+ * The record `handle` names, or null where `handle_at` would refuse: for a
+ * lookup whose absent record is an expected state -- an unset camera, a
+ * draw without a material -- rather than a broken handle.
+ */
+template <typename Records, typename Handle>
+[[nodiscard]] auto* handle_find(Records& records, Handle handle) {
+    return handle_names_record(records, handle) ? &records[static_cast<std::size_t>(handle.value)]
+                                                : nullptr;
 }
 
 } // namespace bbl

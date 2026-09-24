@@ -32,6 +32,7 @@ import {
     recordLiteralCpp,
 } from "../pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
+import { pinnedOptionNumber } from "../pinned-option-defaults.js";
 
 /** A pinned `Vec3` parameter, landing on the runtime's double record. */
 function vec3Parameter(pinned: string): PinnedFunctionParameter {
@@ -678,28 +679,14 @@ ${body}
             TUBE_MODULE,
             "createTubeData",
         );
-        // The arc is the pin's own fallback when no option is given.
-        const arc = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "arc"),
+        // The arc is the pin's own fallback when no option is given, inside
+        // the guard ternary that clamps a supplied one.
+        const arcValue = pinnedOptionNumber(
+            this.context,
+            declaration,
+            { wrapped: "arc" },
+            file,
         );
-        const arcFallback =
-            ts.isConditionalExpression(arc) &&
-            ts.isBinaryExpression(this.context.unwrapExpression(arc.whenFalse))
-                ? (this.context.unwrapExpression(
-                      arc.whenFalse,
-                  ) as ts.BinaryExpression)
-                : undefined;
-        if (
-            !arcFallback ||
-            arcFallback.operatorToken.kind !==
-                ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            return this.context.contractError(
-                arc,
-                "Expected createTubeData's arc to fall back through `??`.",
-            );
-        }
-        const arcValue = this.context.numericValue(arcFallback.right, file);
         return this.lowerSweep(
             TUBE_MODULE,
             "createTubeData",

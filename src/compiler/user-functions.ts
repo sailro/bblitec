@@ -1,7 +1,7 @@
-import type { BindingScopes } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -15,6 +15,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -49,6 +50,7 @@ import {
 import {
     CompilerSymbols,
     declarationInDefaultLibrary,
+    declaredSymbol,
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
@@ -126,7 +128,7 @@ function dataArgumentMayRunCode(
                 return true;
             }
             if (!ts.isPropertyAccessExpression(node)) return false;
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = resolvedSymbol(checker, node);
             return (
                 !symbol ||
                 (symbol.declarations ?? []).some((declaration) =>
@@ -430,7 +432,7 @@ export function parameterIsMutated(
     parameter: ts.Identifier,
     active = new EmissionSet<ts.Symbol>(),
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(parameter);
+    const symbol = declaredSymbol(checker, parameter);
     if (!symbol || !declaration.body) return false;
     const rootQuery = active.size === 0;
     let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
@@ -444,7 +446,7 @@ export function parameterIsMutated(
     const symbols = new CompilerSymbols(checker);
     const mutated = aliasedMutationScan(
         parameter,
-        (name) => checker.getSymbolAtLocation(name),
+        (name) => declaredSymbol(checker, name),
         {
             aliasingInitializer: (initializer, scan) => {
                 const root = rootIdentifier(unwrapExpression(initializer));
@@ -509,9 +511,9 @@ export function parameterIsReadOnly(
     checker: ts.TypeChecker,
     declaration: SupportedFunction,
     parameter: ts.Identifier,
-    active = new EmissionSet<ts.Symbol>(),
+    active: Set<ts.Symbol> = new EmissionSet<ts.Symbol>(),
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(parameter);
+    const symbol = declaredSymbol(checker, parameter);
     if (!symbol || !declaration.body) return false;
     const rootQuery = active.size === 0;
     let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
@@ -524,8 +526,7 @@ export function parameterIsReadOnly(
     active.add(symbol);
     const aliases = new EmissionSet<ts.Symbol>([symbol]);
     const namesParameter = (node: ts.Node): boolean =>
-        ts.isIdentifier(node) &&
-        aliases.has(checker.getSymbolAtLocation(node)!);
+        ts.isIdentifier(node) && aliases.has(declaredSymbol(checker, node)!);
     const containsParameter = (node: ts.Node): boolean =>
         someAnalysisNode(node, namesParameter);
     const rootNamesParameter = (expression: ts.Expression): boolean => {
@@ -576,7 +577,7 @@ export function parameterIsReadOnly(
             rootNamesParameter(node.initializer) &&
             typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
         ) {
-            const alias = checker.getSymbolAtLocation(node.name);
+            const alias = declaredSymbol(checker, node.name);
             if (alias) aliases.add(alias);
             return "skip";
         }
@@ -655,7 +656,7 @@ function finalReturnExpression(
 function returnedValueCanMove(
     checker: ts.TypeChecker,
     declaration: SupportedFunction,
-    active = new EmissionSet<SupportedFunction>(),
+    active: Set<SupportedFunction> = new EmissionSet<SupportedFunction>(),
 ): boolean {
     const body = declaration.body;
     const returnExpression = finalReturnExpression(declaration);
@@ -666,8 +667,7 @@ function returnedValueCanMove(
     // all, which is what keeps `Math.hypot(x, y)` from reading as a write.
     const ownFile = declaration.getSourceFile();
     const namesSharedBinding = (identifier: ts.Identifier): boolean => {
-        const declarations =
-            checker.getSymbolAtLocation(identifier)?.declarations;
+        const declarations = resolvedSymbol(checker, identifier)?.declarations;
         if (!declarations || declarations.length === 0) return false;
         return declarations.some(
             (node) =>
@@ -999,7 +999,6 @@ export interface UserFunctionContext
             | "compileValue"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
-            | "lookupIdentifierValue"
             | "identifierIsRebound"
             | "functionEmissionScope"
             | "activeThis"
@@ -1043,9 +1042,7 @@ export interface UserFunctionContext
             | "increaseIndent"
             | "decreaseIndent"
             | "fail"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * The browser-only nullable fallback shape two success-path matchers share:
@@ -1139,7 +1136,10 @@ export class UserFunctionLowerer {
                 (declaration.body !== undefined &&
                     someAnalysisNode(
                         declaration.body,
-                        (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                        // `super.m()` runs on the receiver as `this.m()` does.
+                        (node) =>
+                            node.kind === ts.SyntaxKind.ThisKeyword ||
+                            node.kind === ts.SyntaxKind.SuperKeyword,
                         { types: "skip" },
                     )) ||
                 [...this.directCalls(declaration)].some(visit)
@@ -1210,7 +1210,7 @@ export class UserFunctionLowerer {
             call.arguments.some((argument) => {
                 const node = unwrapExpression(argument);
                 const bound = ts.isIdentifier(node)
-                    ? context.lookupIdentifierValue(node)
+                    ? context.bindings.lookupOptional(node)
                     : undefined;
                 return bound !== undefined && !knownArgument(bound);
             })
@@ -1618,7 +1618,8 @@ export class UserFunctionLowerer {
                 continue;
             }
             const properties =
-                argument.recordProperties ?? (argument.recordProperties = {});
+                argument.recordProperties ??
+                (writable(argument).recordProperties = {});
             for (const [name, property] of Object.entries(properties)) {
                 const callback = property.callbackDeclaration;
                 const declaration =
@@ -1639,7 +1640,7 @@ export class UserFunctionLowerer {
                 if (dataType?.kind !== "function") continue;
                 const active = this.activeStoredDataFunctions.get(declaration);
                 if (active) {
-                    properties[name] = {
+                    writable(properties)[name] = {
                         kind: "data",
                         cpp: active.cpp,
                         dataType: active.dataType,
@@ -1651,7 +1652,7 @@ export class UserFunctionLowerer {
                     dataType,
                     property.callbackRecordOwner,
                 );
-                properties[name] = {
+                writable(properties)[name] = {
                     kind: "data",
                     cpp,
                     dataType,
@@ -1671,12 +1672,12 @@ export class UserFunctionLowerer {
                 if (dataType?.kind !== "function") continue;
                 const active = this.activeStoredDataFunctions.get(declaration);
                 if (active) {
-                    properties[name] = {
+                    writable(properties)[name] = {
                         kind: "data",
                         cpp: active.cpp,
                         dataType: active.dataType,
                     };
-                    delete argument.recordMethods![name];
+                    delete writable(argument.recordMethods!)[name];
                     continue;
                 }
                 const cpp = context.compileStoredDataFunction(
@@ -1684,12 +1685,12 @@ export class UserFunctionLowerer {
                     dataType,
                     argument,
                 );
-                properties[name] = {
+                writable(properties)[name] = {
                     kind: "data",
                     cpp,
                     dataType,
                 };
-                delete argument.recordMethods![name];
+                delete writable(argument.recordMethods!)[name];
             }
         }
     }
@@ -2091,7 +2092,7 @@ export class UserFunctionLowerer {
                     "A recursive function was called with a different compile-time argument; separate runtime class/resource specializations are not supported at one call site.",
                 );
             }
-            captured[index] = existing ?? value;
+            writable(captured)[index] = existing ?? value;
         });
         const cpp = `${bound.cpp}(${runtimeArguments.join(", ")})`;
         return bound.nativeCallbackReturnType
@@ -2547,7 +2548,7 @@ export class UserFunctionLowerer {
                 }
             }
             const symbol = ts.isIdentifier(parameter.name)
-                ? this.checker.getSymbolAtLocation(parameter.name)
+                ? declaredSymbol(this.checker, parameter.name)
                 : undefined;
             const loopBound =
                 callSiteEffects &&
@@ -2563,8 +2564,7 @@ export class UserFunctionLowerer {
                             node.condition,
                             (part) =>
                                 ts.isIdentifier(part) &&
-                                this.checker.getSymbolAtLocation(part) ===
-                                    symbol,
+                                declaredSymbol(this.checker, part) === symbol,
                         ),
                 );
             const tupleFacts =
@@ -2662,7 +2662,7 @@ export class UserFunctionLowerer {
                   };
         for (const [index, entry] of entries.entries()) {
             if (localGroup) {
-                entry.value.cpp = recursive
+                writable(entry.value).cpp = recursive
                     ? `${localGroup.self}.template call<${index}>`
                     : localGroup.cpp;
                 continue;
@@ -2695,7 +2695,7 @@ export class UserFunctionLowerer {
                 `${returnCpp}(${parametersCpp.join(", ")})`,
                 escapes,
             );
-            Object.assign(entry.value, storage);
+            Object.assign(writable(entry.value), storage);
             entry.cppName = storage.cpp;
         }
 
@@ -2745,7 +2745,7 @@ export class UserFunctionLowerer {
             const bodies = entries
                 .map((entry) => localGroup.bodies.get(entry.declaration)!)
                 .join(",\n");
-            if (sharedBody) rootEntry.value.cpp = bodies;
+            if (sharedBody) writable(rootEntry.value).cpp = bodies;
             else {
                 context.emit({
                     kind: "declaration",
@@ -2761,10 +2761,10 @@ export class UserFunctionLowerer {
                     true,
                 );
                 for (const [index, entry] of entries.entries()) {
-                    entry.value.cpp = recursive
+                    writable(entry.value).cpp = recursive
                         ? `${localGroup.cpp}.template call<${index}>`
                         : localGroup.cpp;
-                    entry.value.nativeCaptures = [binding];
+                    writable(entry.value).nativeCaptures = [binding];
                 }
             }
         }
@@ -2809,7 +2809,7 @@ export class UserFunctionLowerer {
                 ts.isExpression(call) ? call : undefined,
             );
         const projected = { ...result };
-        if (metadata.truthinessCpp === "true")
+        if (statedTruthinessCpp(metadata) === "true")
             Object.assign(projected, {
                 truthinessCpp: "true",
                 optionalFoundCpp: "true",
@@ -2921,7 +2921,7 @@ export class UserFunctionLowerer {
                 if (!type) {
                     const value = entry.captured[index]!;
                     const symbol = ts.isIdentifier(parameter.name)
-                        ? this.checker.getSymbolAtLocation(parameter.name)
+                        ? declaredSymbol(this.checker, parameter.name)
                         : undefined;
                     const stableHandle =
                         isHandleKind(value.kind) &&
@@ -2939,9 +2939,8 @@ export class UserFunctionLowerer {
                                 target = unwrapExpression(target);
                                 if (ts.isIdentifier(target))
                                     return (
-                                        this.checker.getSymbolAtLocation(
-                                            target,
-                                        ) === symbol
+                                        declaredSymbol(this.checker, target) ===
+                                        symbol
                                     );
                                 if (ts.isArrayLiteralExpression(target))
                                     return target.elements.some(rebinds);
@@ -3085,7 +3084,7 @@ export class UserFunctionLowerer {
                                     value.nativeBinding &&
                                     parameterNames.includes(value.cpp)
                                 ) {
-                                    value.nativeCaptures = [
+                                    writable(value).nativeCaptures = [
                                         context.registerNativeBinding(
                                             value.cpp,
                                             true,
@@ -3124,7 +3123,7 @@ export class UserFunctionLowerer {
                                         ts.isIdentifier(statement.expression)
                                     ) {
                                         returnMetadata =
-                                            context.lookupIdentifierValue(
+                                            context.bindings.lookupOptional(
                                                 statement.expression,
                                             );
                                     }
@@ -3177,7 +3176,7 @@ export class UserFunctionLowerer {
                     returnedValues.every(
                         (value) =>
                             value.kind === "record" ||
-                            value.truthinessCpp === "true",
+                            statedTruthinessCpp(value) === "true",
                     )
                 ) {
                     const properties = returnedValues[0]!.recordProperties;
@@ -3233,7 +3232,7 @@ export class UserFunctionLowerer {
                     ],
                 );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
-                entry.value.nativeCaptures = captured.nativeCaptures;
+                writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
                 closure = context.renderSharedClosure(
                     captured,
@@ -3243,7 +3242,7 @@ export class UserFunctionLowerer {
                     parameterNames,
                     localGroup.sharedName,
                 );
-                entry.value.nativeCaptures = captured.nativeCaptures;
+                writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else
                 closure = renderClosure(
                     captured,
@@ -3598,7 +3597,7 @@ export class UserFunctionLowerer {
             : undefined;
         const selfIdentifier =
             ownIdentifier &&
-            !context.lookupIdentifierValue(ownIdentifier)?.sharedStorageCpp
+            !context.bindings.lookupOptional(ownIdentifier)?.sharedStorageCpp
                 ? ownIdentifier
                 : undefined;
         const cppType = context.dataTypes.cppType(dataType);
@@ -3631,7 +3630,7 @@ export class UserFunctionLowerer {
                 ],
                 ...(asynchronous ? { sharedStorageCpp: selfOwnerCpp! } : {}),
             };
-            if (context.lookupIdentifierValue(selfIdentifier)) {
+            if (context.bindings.lookupOptional(selfIdentifier)) {
                 context.bindings.rebindCompileTimeValue(
                     selfIdentifier,
                     selfValue,
@@ -3884,7 +3883,7 @@ export class UserFunctionLowerer {
                 arguments_,
                 callNode,
             );
-            const condition = context.dataLowerer.conditionFromValue(value);
+            const condition = context.dataLowerer.truthinessCondition(value);
             if (condition === undefined)
                 context.fail(
                     declaration,
@@ -3908,7 +3907,7 @@ export class UserFunctionLowerer {
               );
         if (ir?.needsValueLambda) {
             const value = this.lower(context, ir, arguments_, callNode);
-            const condition = context.dataLowerer.conditionFromValue(value);
+            const condition = context.dataLowerer.truthinessCondition(value);
             if (condition === undefined)
                 context.fail(
                     declaration,
@@ -4517,11 +4516,12 @@ export class UserFunctionLowerer {
         }
         const successStatements = shape.tryStatements;
         const constructed = shape.returned;
-        const constructedSymbol = this.checker.getSymbolAtLocation(
+        const constructedSymbol = declaredSymbol(
+            this.checker,
             constructed.expression,
         );
         const ownerSymbol = owner.name
-            ? this.checker.getSymbolAtLocation(owner.name)
+            ? declaredSymbol(this.checker, owner.name)
             : undefined;
         if (!constructedSymbol || constructedSymbol !== ownerSymbol) {
             return undefined;
@@ -4548,7 +4548,8 @@ export class UserFunctionLowerer {
                         ts.isCallExpression(call) &&
                         libraryGlobal(this.checker, call.expression) === "fetch"
                     ) {
-                        const symbol = this.checker.getSymbolAtLocation(
+                        const symbol = declaredSymbol(
+                            this.checker,
                             declaration.name,
                         );
                         if (symbol) packagedFetchResponses.add(symbol);
@@ -4571,7 +4572,7 @@ export class UserFunctionLowerer {
                 ) {
                     const response = unwrapExpression(tested.expression);
                     const symbol = ts.isIdentifier(response)
-                        ? this.checker.getSymbolAtLocation(response)
+                        ? declaredSymbol(this.checker, response)
                         : undefined;
                     packagedFetchMiss =
                         symbol !== undefined &&

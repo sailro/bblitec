@@ -1,10 +1,9 @@
-import type { BindingScopes } from "../binding-scopes.js";
-import { EmissionSet, EmissionMap } from "../emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
-/** Static shaping executes the pin; native text entities retain the resulting bytes. */
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
+import { isGlobalUndefined } from "../symbols.js";
 import {
     materializePinnedText,
     textSha256,
@@ -20,6 +19,12 @@ import {
 import { isStringValue, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
+import { stringLiteral as cppStringLiteral } from "../../cpp-literals.js";
+import { pinnedSnakeCase } from "../../lowering/pinned-record-lowerer.js";
+import type { TransportSchema } from "../../pinned-record-transport.js";
+import { LoweringContext } from "../../lowering/context.js";
+import { textRecordModel } from "../../lowering/text-records.js";
+import { sharedUpstreamStore } from "../../upstream-source.js";
 
 export interface TextIntrinsicContext
     extends
@@ -46,9 +51,7 @@ export interface TextIntrinsicContext
             | "recordTextAttachment"
             | "assertTextDisposal"
             | "noteTextSceneLifecycle"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 export function compileTextIntrinsic(
     context: TextIntrinsicContext,
@@ -104,70 +107,55 @@ export function compileTextIntrinsic(
             "text_owner",
             argumentAt(call, 0),
         );
-        let operation: string | undefined,
-            previous: Value | undefined,
-            run: string | undefined;
-        for (const [name, expression] of textOptionEntries(
+        // The pin's `TextDataUpdate` record, member by member in source
+        // order; which members an operation reads is the lowered
+        // `updateTextData`'s own switch.
+        const update = context.allocateTemporaryCppName("text_update");
+        context.emit(`bbl::TextDataUpdate ${update};`);
+        for (const [member, expression] of textOptionEntries(
             context,
             call.arguments[1],
         )) {
-            if (name === "update")
-                operation = context.compileStaticString(expression);
-            else if (name === "previous") {
-                const value = context.compileValue(expression);
-                context.expectKind(value, "text-run", expression);
-                previous = context.bindings.pinValueToTemporary(
-                    value,
-                    "text_owner",
-                    expression,
-                );
-            } else if (name === "run") {
-                const record = context.unwrap(expression);
-                if (
-                    !ts.isObjectLiteralExpression(record) ||
-                    record.properties.length !== 2 ||
-                    !ts.isSpreadAssignment(record.properties[0]!) ||
-                    !ts.isPropertyAssignment(record.properties[1]!) ||
-                    record.properties[1].name.getText() !== "defaultColor"
-                )
-                    context.fail(
-                        expression,
-                        "Text run replacement requires a retained run spread followed by defaultColor.",
-                    );
-                const source = context.compileValue(
-                    record.properties[0].expression,
-                );
-                context.expectKind(source, "text-run", record.properties[0]);
-                const retained = context.bindings.pinValueToTemporary(
-                    source,
-                    "text_owner",
-                    record.properties[0].expression,
-                );
-                const color = context.compileForDataSink(
-                    record.properties[1].initializer,
-                    { kind: "tuple", arity: 4 },
-                );
-                const name = context.allocateTemporaryCppName("text_run");
+            const field = `${update}.${pinnedSnakeCase(member)}`;
+            if (member === "update")
                 context.emit(
-                    `auto ${name}=bbl::clone_text_run(${retained.cpp}, ${color});`,
+                    `${field} = ${cppStringLiteral(context.compileStaticString(expression))};`,
                 );
-                run = name;
+            else if (member === "run" || member === "previous") {
+                const value = context.unwrap(expression);
+                context.emit(
+                    `${field} = ${ts.isObjectLiteralExpression(value) ? `bbl::TextRunRef{${textRunValue(context, value)}}` : context.compileForDataSink(expression, { kind: "handle", handle: "text-run-ref" })};`,
+                );
+            } else if (member === "insertBefore")
+                context.emit(
+                    `${field} = ${context.compileNumber(expression, "double")};`,
+                );
+            else if (member === "runs") {
+                const list = context.unwrap(expression);
+                context.emit(
+                    `${field} = ${
+                        ts.isArrayLiteralExpression(list)
+                            ? `bbl::js::Array<bbl::TextRun>{${list.elements.map((element) => textRunValue(context, element)).join(", ")}}`
+                            : context.compileForDataSink(expression, {
+                                  kind: "vector",
+                                  element: {
+                                      kind: "handle",
+                                      handle: "text-run",
+                                  },
+                              })
+                    };`,
+                );
             } else
                 context.fail(
                     expression,
-                    `Text data update property '${name}' is not represented.`,
+                    `Text data update member '${member}' is not represented; a replacement GlyphStorage needs outlines extracted at generation.`,
                 );
         }
-        if (operation !== "replaceRun" || !previous || !run)
-            context.fail(
-                call,
-                "Text data updates currently require replaceRun with a retained previous run and color replacement.",
-            );
         promoteLiveTextData(context);
         context.reachFeature("text:layout", call);
         return {
             kind: "void",
-            cpp: `bbl::replace_default_text_run(${owner.cpp}, ${previous.cpp}, ${run})`,
+            cpp: `bbl::update_text_data(${owner.cpp}, ${update})`,
         };
     }
     if (name === "createTextLayer") {
@@ -185,14 +173,7 @@ export function compileTextIntrinsic(
             context,
             call.arguments[1],
         )) {
-            const native =
-                (
-                    {
-                        positionPx: "position_px",
-                        rotationRad: "rotation_rad",
-                        coverageGamma: "coverage_gamma",
-                    } as Record<string, string>
-                )[field] ?? field;
+            const native = pinnedSnakeCase(field);
             if (field === "positionPx") {
                 const components = textOptionEntries(context, value);
                 if (
@@ -206,10 +187,16 @@ export function compileTextIntrinsic(
                         value,
                         "Text layer position requires x and y components.",
                     );
+                // The pin's options record holds the position whole.
+                const position = context.allocateTemporaryCppName(
+                    "text_layer_position",
+                );
+                context.emit(`bbl::Vec2d ${position}{};`);
                 for (const [axis, component] of components)
                     context.emit(
-                        `${options}.${native}.${axis} = ${context.compileNumber(component, "double")};`,
+                        `${position}.${axis} = ${context.compileNumber(component, "double")};`,
                     );
+                context.emit(`${options}.${native} = ${position};`);
             } else if (
                 [
                     "rotationRad",
@@ -300,16 +287,31 @@ export function compileTextIntrinsic(
         );
         const text = context.compileValue(argumentAt(call, 1));
         expectTextString(context, text, argumentAt(call, 1));
-        if (call.arguments[2] && !omitted(context, argumentAt(call, 2)))
-            context.fail(
-                argumentAt(call, 2),
-                "Live text color arguments are not yet represented.",
-            );
+        const color =
+            call.arguments[2] && !omitted(context, argumentAt(call, 2))
+                ? (() => {
+                      // The text operand is evaluated before the color.
+                      const content = context.bindings.pinValueToTemporary(
+                          text,
+                          "text_content",
+                          argumentAt(call, 1),
+                      );
+                      return {
+                          content: content.cpp,
+                          color: context.compileForDataSink(
+                              argumentAt(call, 2),
+                              { kind: "tuple", arity: 4 },
+                          ),
+                      };
+                  })()
+                : undefined;
         promoteLiveTextData(context);
         context.reachFeature("text:layout", call);
         return {
             kind: "void",
-            cpp: `bbl::update_default_text_data(${retained.cpp}, ${text.cpp})`,
+            cpp: color
+                ? `bbl::update_default_text_data(${retained.cpp}, ${color.content}, ${color.color})`
+                : `bbl::update_default_text_data(${retained.cpp}, ${text.cpp})`,
         };
     }
     if (
@@ -587,6 +589,62 @@ export function compileTextIntrinsic(
     };
 }
 
+/**
+ * A `GlyphRun` value: a retained run, or `{ ...run, member: value }` copying
+ * one with members replaced. A run's glyphs come from the pinned layout of
+ * a retained run; a literal glyph list has no packaged outlines to name.
+ */
+function textRunValue(
+    context: TextIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const record = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(record)) {
+        const value = context.compileValue(expression);
+        context.expectKind(value, "text-run", expression);
+        return context.bindings.pinValueToTemporary(
+            value,
+            "text_owner",
+            expression,
+        ).cpp;
+    }
+    const [spread, ...members] = record.properties;
+    if (!spread || !ts.isSpreadAssignment(spread))
+        context.fail(
+            record,
+            "A text run literal copies a retained run first (`{ ...run, ... }`); runs with literal glyph lists are not represented.",
+        );
+    const source = context.compileValue(spread.expression);
+    context.expectKind(source, "text-run", spread);
+    const run = context.allocateTemporaryCppName("text_run");
+    context.emit(
+        `auto ${run} = std::make_shared<bbl::GlyphRun>(*${context.bindings.pinValueToTemporary(source, "text_owner", spread.expression).cpp});`,
+    );
+    for (const member of members) {
+        if (
+            !ts.isPropertyAssignment(member) ||
+            (!ts.isIdentifier(member.name) && !ts.isStringLiteral(member.name))
+        )
+            context.fail(member, "Text run members must be named assignments.");
+        const name = member.name.text;
+        const field = `${run}->${pinnedSnakeCase(name)}`;
+        if (name === "defaultColor")
+            context.emit(
+                `${field} = ${context.compileForDataSink(member.initializer, { kind: "tuple", arity: 4 })};`,
+            );
+        else if (name === "pixelsPerFontUnit")
+            context.emit(
+                `${field} = ${context.compileNumber(member.initializer, "double")};`,
+            );
+        else
+            context.fail(
+                member,
+                `Text run member '${name}' is not represented; its curve set and glyphs come from the packaged repertoire.`,
+            );
+    }
+    return run;
+}
+
 function expectTextString(
     context: TextIntrinsicContext,
     value: Value,
@@ -607,7 +665,7 @@ export function promoteLiveTextData(context: TextIntrinsicContext): void {
             context.assetPayloads.get(row.font.source) ?? row.font.source;
         const bytes = readAssetBytesSync(payload, context.options.fileName);
         Object.assign(
-            row,
+            writable(row),
             textRow(
                 context,
                 bytes,
@@ -644,6 +702,15 @@ function textOptionEntries(
     });
 }
 
+let textTransport: TransportSchema | undefined;
+
+/** The shapes the generation child walks the pin's text records by. */
+function textTransportSchema(): TransportSchema {
+    return (textTransport ??= textRecordModel(
+        new LoweringContext(sharedUpstreamStore()),
+    ).transportSchema());
+}
+
 function textRow(
     context: TextIntrinsicContext,
     fontBytes: Uint8Array,
@@ -651,8 +718,14 @@ function textRow(
     font: CompiledTextData["font"],
     id: number,
 ): CompiledTextData {
-    const baked = materializePinnedText(fontBytes, layout)!;
-    const blob = (base64: string): TextBlob => {
+    const baked = materializePinnedText(
+        fontBytes,
+        layout,
+        textTransportSchema(),
+    )!;
+    const graph = baked.data ?? baked.repertoire!.storage;
+    // Each transported buffer is packaged once; the native rebuild views it.
+    const buffers = graph.buffers.map((base64): TextBlob => {
         const bytes = Buffer.from(base64, "base64");
         const asset = context.registerAsset(
             `data:application/octet-stream;base64,${base64}`,
@@ -663,20 +736,22 @@ function textRow(
             sha256: textSha256(bytes),
             byteLength: bytes.byteLength,
         };
-    };
+    });
     return {
-        ...baked,
         id,
         font,
         layout,
-        instances: { ...baked.instances, bytes: blob(baked.instances.bytes) },
-        styles: { ...baked.styles, bytes: blob(baked.styles.bytes) },
-        atlases: baked.atlases.map((atlas) => ({
-            ...atlas,
-            curves: { ...atlas.curves, bytes: blob(atlas.curves.bytes) },
-            bands: { ...atlas.bands, bytes: blob(atlas.bands.bytes) },
-            metadata: { ...atlas.metadata, bytes: blob(atlas.metadata.bytes) },
-        })),
+        provenance: baked.provenance,
+        ...(baked.data ? { data: { ...baked.data, buffers: [] } } : {}),
+        ...(baked.repertoire
+            ? {
+                  repertoire: {
+                      curveSetId: baked.repertoire.curveSetId,
+                      storage: { ...baked.repertoire.storage, buffers: [] },
+                  },
+              }
+            : {}),
+        buffers,
     };
 }
 
@@ -792,10 +867,8 @@ function omitted(
     context: TextIntrinsicContext,
     expression: ts.Expression,
 ): boolean {
-    const node = context.resolveStaticExpression(expression);
-    return (
-        ts.isIdentifier(node) &&
-        node.text === "undefined" &&
-        !context.bindings.lookupOptional(node)
+    return isGlobalUndefined(
+        context.checker,
+        context.resolveStaticExpression(expression),
     );
 }

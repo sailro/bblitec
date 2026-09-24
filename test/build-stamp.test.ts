@@ -16,8 +16,7 @@ import {
     comparePayload,
     computeBuildStamp,
     deployedPayloads,
-    deployedShaderSuffixes,
-    executableBuildBackend,
+    executableDeployedShaderSuffixes,
     generatorWouldReconfigure,
     incompatibleCacheEntries,
     payloadOrphans,
@@ -239,26 +238,7 @@ test("compares a deployed payload against its generated source", (t) => {
     assert.deepEqual(payloadOrphans(payload), ["orphan.dxil"]);
 });
 
-test("deploys only the compiled renderers' shader files", (t) => {
-    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "win32"), [
-        ".dxil",
-        ".slots",
-    ]);
-    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "darwin"), [
-        ".msl",
-        ".slots",
-    ]);
-    assert.deepEqual(deployedShaderSuffixes("SDL_GPU", "linux"), [
-        ".spv",
-        ".slots",
-    ]);
-    assert.deepEqual(deployedShaderSuffixes("DAWN", "win32"), [".native.wgsl"]);
-    assert.deepEqual(deployedShaderSuffixes("BOTH", "win32"), [
-        ".dxil",
-        ".slots",
-        ".native.wgsl",
-    ]);
-
+test("deploys the shader files the build's CMake cache records", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-payload-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const generated = resolve(root, "generated");
@@ -266,14 +246,15 @@ test("deploys only the compiled renderers' shader files", (t) => {
     const source = resolve(generated, "upstream/shaders");
     mkdirSync(source, { recursive: true });
     mkdirSync(resolve(build, "shaders"), { recursive: true });
-    assert.throws(
-        () => deployedPayloads(build, generated),
-        /No CMake cache with BBLITE_BACKEND/,
-    );
-    writeFileSync(
-        resolve(build, "CMakeCache.txt"),
-        "BBLITE_BACKEND:STRING=DAWN\n",
-    );
+    const shaderPayload = () => {
+        const shaders = deployedPayloads(build, generated).find(
+            (payload) => payload.label === "shaders",
+        );
+        assert.ok(shaders);
+        return shaders;
+    };
+    // A tree without shaders configures no suffix list and needs none.
+    assert.deepEqual(comparePayload(shaderPayload()), []);
     for (const name of [
         "pbr.frag.native.wgsl",
         "pbr.frag.dxil",
@@ -283,23 +264,43 @@ test("deploys only the compiled renderers' shader files", (t) => {
     ]) {
         writeFileSync(resolve(source, name), name);
     }
+    assert.throws(
+        () => comparePayload(shaderPayload()),
+        /No CMake cache with BBLITE_DEPLOYED_SHADER_SUFFIXES/,
+    );
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_BACKEND:STRING=DAWN\nBBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=\n",
+    );
+    assert.throws(
+        () => comparePayload(shaderPayload()),
+        /records no BBLITE_DEPLOYED_SHADER_SUFFIXES/,
+    );
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_BACKEND:STRING=DAWN\nBBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=.native.wgsl\n",
+    );
     writeFileSync(
         resolve(build, "shaders/pbr.frag.native.wgsl"),
         "pbr.frag.native.wgsl",
     );
-    const shaders = deployedPayloads(build, generated).find(
-        (payload) => payload.label === "shaders",
-    );
-    assert.ok(shaders);
-    assert.deepEqual(comparePayload(shaders), []);
+    assert.deepEqual(comparePayload(shaderPayload()), []);
     // An SDL_GPU binary left beside a Dawn-only executable is an orphan.
     writeFileSync(resolve(build, "shaders/pbr.frag.dxil"), "pbr.frag.dxil");
-    assert.deepEqual(payloadOrphans(shaders), ["pbr.frag.dxil"]);
+    assert.deepEqual(payloadOrphans(shaderPayload()), ["pbr.frag.dxil"]);
 
     // A multi-configuration generator keeps the cache one level up.
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=.dxil;.slots;.native.wgsl\n",
+    );
     const release = resolve(build, "Release");
     mkdirSync(release);
-    assert.equal(executableBuildBackend(release), "DAWN");
+    assert.deepEqual(executableDeployedShaderSuffixes(release), [
+        ".dxil",
+        ".slots",
+        ".native.wgsl",
+    ]);
 });
 
 test("reads the cache values that shape a build directory", (t) => {

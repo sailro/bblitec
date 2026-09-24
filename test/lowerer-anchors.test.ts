@@ -6,6 +6,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { NodeParticleLowerer } from "../src/lowering/node-particle-lowerer.js";
+import { cppFunction } from "./native-fixture.js";
 
 /**
  * Round-2 anchors: these lowerers no longer carry re-typed copies of the
@@ -174,12 +175,7 @@ test("mesh factory tables flow from the pinned builders", () => {
         ["create_sphere", "sphere"],
         ["create_torus", "torus"],
     ] as const) {
-        const start = lowered.source.indexOf(`MeshHandle ${factory}(`);
-        assert.notEqual(start, -1, `${factory} is emitted`);
-        const body = lowered.source.slice(
-            start,
-            lowered.source.indexOf("\n}\n", start),
-        );
+        const body = cppFunction(lowered.source, `MeshHandle ${factory}(`);
         assert.match(
             body,
             new RegExp(

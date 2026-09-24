@@ -8,11 +8,13 @@ import type { CompileAdaptation } from "../fidelity.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
-import { shaderMaterialPrograms } from "../shader-material-programs.js";
 import {
     emissionArray,
     EmissionMap,
+    emissionRecord,
     EmissionSet,
+    journaled,
+    writable,
 } from "./emission-transaction.js";
 import { nodeParticleManifest } from "./intrinsics/particle.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -63,8 +65,8 @@ interface SceneManifestContext extends Pick<
 
 /** The generation-owned construction ordinals a resource checkpoint compares. */
 export interface ResourceConstructionState {
-    counters: number[];
-    lightIdentities: NonNullable<Value["lightIdentity"]>[];
+    readonly counters: readonly number[];
+    readonly lightIdentities: readonly NonNullable<Value["lightIdentity"]>[];
 }
 
 /** How many composition records existed when a caller started to watch. */
@@ -99,15 +101,16 @@ export class SceneManifestRecorder {
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] =
         emissionArray([]);
     public readonly meshWalks: CompiledMeshWalk[] = emissionArray([]);
-    public readonly reachedNodeParticles: CompiledNodeParticles = {
-        sets: [],
-        steps: [],
-        billboards: [],
-        registrations: [],
-        textures: [],
-        sprite2d: [],
-        buffers: [],
-    };
+    public readonly reachedNodeParticles: CompiledNodeParticles =
+        emissionRecord({
+            sets: emissionArray([]),
+            steps: emissionArray([]),
+            billboards: emissionArray([]),
+            registrations: emissionArray([]),
+            textures: emissionArray([]),
+            sprite2d: emissionArray([]),
+            buffers: emissionArray([]),
+        });
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
         emissionArray([]);
     private readonly copyTasks: string[] = emissionArray([]);
@@ -120,23 +123,28 @@ export class SceneManifestRecorder {
         [],
     );
     /** The clustered container this scene added, if it added one. */
-    private clusteredContainer: ClusteredContainerState | undefined;
+    @journaled private accessor clusteredContainer:
+        ClusteredContainerState | undefined;
     /** The pinned tone-mapping export the scene selected, if any. */
-    private selectedToneMapping: string | undefined;
-    private readonly effects: EffectManifest[] = emissionArray([]);
+    @journaled private accessor selectedToneMapping: string | undefined;
+    private readonly effects: Readonly<EffectManifest>[] = emissionArray([]);
     private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMaterialGltfAssetsBefore: number[] = emissionArray(
         [],
     );
-    private readonly sceneMeshes: SceneMeshManifest[] = emissionArray([]);
+    private readonly sceneMeshes: Readonly<SceneMeshManifest>[] = emissionArray(
+        [],
+    );
     private readonly shadowGenerators: Array<
-        Omit<ShadowGeneratorManifest, "casters"> & {
-            casters: ShadowCasterMeshManifest[];
-            lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        }
+        Readonly<
+            Omit<ShadowGeneratorManifest, "casters"> & {
+                casters: readonly ShadowCasterMeshManifest[];
+                lightIdentity?: NonNullable<Value["lightIdentity"]>;
+            }
+        >
     > = emissionArray([]);
     private readonly shadowReceiverMeshes = new EmissionSet<number>();
-    private dynamicShadowReceivers = false;
+    @journaled private accessor dynamicShadowReceivers = false;
     /**
      * `mesh.id`, by the handle spelling the write named, and the meshes each
      * id names.
@@ -145,10 +153,13 @@ export class SceneManifestRecorder {
      * the unique id a source file carries, and `src/render/lights-ubo.ts`
      * `affectsMesh` is its only reader. So the string is a join key rather
      * than record state, and the join folds here exactly as the `.babylon`
-     * loader folds its own `mesh_records_by_id` — an id names a LIST,
+     * loader folds its own `meshes_by_id` — an id names a LIST,
      * because nothing upstream enforces uniqueness.
      */
-    private readonly sceneMeshesById = new EmissionMap<string, string[]>();
+    private readonly sceneMeshesById = new EmissionMap<
+        string,
+        readonly string[]
+    >();
     /** The id each mesh handle currently carries, so a rewrite is visible. */
     private readonly sceneMeshIdByHandle = new EmissionMap<string, string>();
     /** Every id an emitted light include set has already resolved against. */
@@ -163,16 +174,17 @@ export class SceneManifestRecorder {
         string,
         NonNullable<Value["sceneTopologyState"]>
     >();
-    private dynamicSceneLights = false;
-    private mutableToneMappingEnabled = false;
-    private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
+    @journaled private accessor dynamicSceneLights = false;
+    @journaled private accessor mutableToneMappingEnabled = false;
+    private readonly sceneSpriteCustomShaders: Readonly<SpriteCustomShaderManifest>[] =
         emissionArray([]);
     /**
      * The splat shader plugins one `loadSplat` call passed, in its order.
      * Undefined until a call records one, so an empty list stays
      * distinguishable from no list at all.
      */
-    private sceneSplatFragments: SplatFragmentManifest[] | undefined;
+    @journaled private accessor sceneSplatFragments:
+        SplatFragmentManifest[] | undefined;
     /**
      * Which material each scene-code mesh ended up carrying.
      *
@@ -185,7 +197,10 @@ export class SceneManifestRecorder {
      */
     private readonly sceneMeshMaterials = new EmissionMap<
         number,
-        { pbrMaterial: number | null; nodeMaterial: number | null }
+        {
+            readonly pbrMaterial: number | null;
+            readonly nodeMaterial: number | null;
+        }
     >();
     /** Every reachable assignment, rather than only the final assignment the
      *  lazy shadow view needs. This closes each PBR material over the meshes
@@ -196,16 +211,16 @@ export class SceneManifestRecorder {
     >();
     private readonly scenePbrMaterialsWithUnknownMesh =
         new EmissionSet<number>();
-    private unknownSceneMaterialAssignment = false;
-    private standardMaterialUnknownMesh = false;
+    @journaled private accessor unknownSceneMaterialAssignment = false;
+    @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
-    private runtimeMeshProfileCount = 0;
+    @journaled private accessor runtimeMeshProfileCount = 0;
     private readonly runtimeShaderProfiles = new EmissionSet<number>();
     private readonly runtimeNodeProfiles = new EmissionSet<number>();
-    private reachedPlainSpriteLayer = false;
+    @journaled private accessor reachedPlainSpriteLayer = false;
     /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
-    private reachedPureSpriteVertex = false;
-    private reachedPlainBillboardSystem = false;
+    @journaled private accessor reachedPureSpriteVertex = false;
+    @journaled private accessor reachedPlainBillboardSystem = false;
 
     constructor(private readonly context: SceneManifestContext) {}
 
@@ -223,12 +238,7 @@ export class SceneManifestRecorder {
                 ? { computePrograms: this.reachedComputePrograms }
                 : {}),
             shaderVariants: this.reachedShaderPrograms.map(({ name }) => name),
-            customShaderPrograms: this.reachedShaderPrograms.filter(
-                ({ name }) =>
-                    !shaderMaterialPrograms.some(
-                        (predeclared) => predeclared.name === name,
-                    ),
-            ),
+            customShaderPrograms: this.reachedShaderPrograms,
             nodeMaterials: this.reachedNodeMaterials,
             ...(this.meshWalks.length ? { meshWalks: this.meshWalks } : {}),
             ...(this.reachedTextData.length > 0
@@ -335,12 +345,12 @@ export class SceneManifestRecorder {
         if (this.unknownSceneMaterialAssignment) {
             if (this.context.hasFeature("material:standard")) {
                 for (const mesh of this.sceneMeshes)
-                    mesh.standardMaterial = true;
+                    writable(mesh).standardMaterial = true;
             }
             // A runtime material choice can make an otherwise-known caster
             // PBR. Its views must use the existing unknown-caster product.
             for (const generator of this.shadowGenerators)
-                generator.dynamicCasters = true;
+                writable(generator).dynamicCasters = true;
         }
         // After the whole entry, because the mesh a shader material ends up
         // on is what decides its instanced form and either may come first.
@@ -479,7 +489,7 @@ export class SceneManifestRecorder {
 
     public recordRuntimeMeshProfile(index: number): void {
         if (this.sceneMeshes[index]!.runtimeInstances) return;
-        this.sceneMeshes[index]!.runtimeInstances = true;
+        writable(this.sceneMeshes[index]!).runtimeInstances = true;
         ++this.runtimeMeshProfileCount;
     }
 
@@ -673,7 +683,10 @@ export class SceneManifestRecorder {
                     "set to be per-material record reads.",
             );
         }
-        asset.sceneLightmap = { meshNamePredicate, options: lightmap };
+        writable(asset).sceneLightmap = {
+            meshNamePredicate,
+            options: lightmap,
+        };
     }
 
     public recordScenePbrSubsurface(
@@ -777,7 +790,7 @@ export class SceneManifestRecorder {
             value.lightIdentity.dataCollectionIndices ??
             new EmissionSet<number>();
         slots.add(index);
-        value.lightIdentity.dataCollectionIndices = slots;
+        writable(value.lightIdentity).dataCollectionIndices = slots;
     }
 
     /**
@@ -818,13 +831,13 @@ export class SceneManifestRecorder {
             // runtime key still selects it only after colors are attached.
             for (const mesh of this.sceneMeshes) {
                 if (mesh.thinInstances) {
-                    mesh.thinInstanceColors = true;
+                    writable(mesh).thinInstanceColors = true;
                 }
             }
             return;
         }
         const mesh = this.sceneMeshes[sceneMeshIndex];
-        if (mesh) mesh.thinInstanceColors = true;
+        if (mesh) writable(mesh).thinInstanceColors = true;
     }
 
     /**
@@ -846,8 +859,8 @@ export class SceneManifestRecorder {
                 variant,
                 this.context.sourceFile,
             );
-            program.useThinInstances = true;
-            if (colors) program.useThinInstanceColors = true;
+            writable(program).useThinInstances = true;
+            if (colors) writable(program).useThinInstanceColors = true;
         }
     }
 
@@ -870,9 +883,9 @@ export class SceneManifestRecorder {
         if (material.standardMaterial) {
             const mesh = this.sceneMeshes[meshIndex];
             if (mesh) {
-                mesh.standardMaterial = true;
+                writable(mesh).standardMaterial = true;
                 if (material.standardMaterialPluginIndex !== undefined) {
-                    mesh.standardMaterialPluginIndex =
+                    writable(mesh).standardMaterialPluginIndex =
                         material.standardMaterialPluginIndex;
                 }
             }
@@ -890,16 +903,20 @@ export class SceneManifestRecorder {
                         : [material.sceneShaderVariant]),
                     ...(material.sceneShaderVariants ?? []),
                 ]);
-                delete shaderMesh.shaderVariant;
+                delete writable(shaderMesh).shaderVariant;
                 if (variants.size > 0)
-                    shaderMesh.shaderVariants = [...variants].sort();
+                    writable(shaderMesh).shaderVariants = [...variants].sort();
             } else {
                 if (material.sceneShaderVariant === undefined)
-                    delete shaderMesh.shaderVariant;
-                else shaderMesh.shaderVariant = material.sceneShaderVariant;
+                    delete writable(shaderMesh).shaderVariant;
+                else
+                    writable(shaderMesh).shaderVariant =
+                        material.sceneShaderVariant;
                 if (material.sceneShaderVariants === undefined)
-                    delete shaderMesh.shaderVariants;
-                else shaderMesh.shaderVariants = material.sceneShaderVariants;
+                    delete writable(shaderMesh).shaderVariants;
+                else
+                    writable(shaderMesh).shaderVariants =
+                        material.sceneShaderVariants;
             }
         }
         if (material.pbrMaterial !== null) {
@@ -932,7 +949,7 @@ export class SceneManifestRecorder {
                 `Scene mesh ${meshIndex} was not recorded before its asset material assignment.`,
             );
         }
-        mesh.assetPbrMaterial = true;
+        writable(mesh).assetPbrMaterial = true;
     }
 
     /**
@@ -960,7 +977,7 @@ export class SceneManifestRecorder {
                     "updates to detached morph resources require independent storage.",
             );
         }
-        mesh[property] = true;
+        writable(mesh)[property] = true;
     }
 
     public recordShadowCasters(
@@ -973,7 +990,7 @@ export class SceneManifestRecorder {
                 `Shadow generator ${generatorIndex} was never recorded.`,
             );
         }
-        generator.casters = [...casters];
+        writable(generator).casters = [...casters];
     }
 
     public recordDynamicShadowCasters(generatorIndex: number): void {
@@ -983,13 +1000,13 @@ export class SceneManifestRecorder {
                 `Shadow generator ${generatorIndex} was never recorded.`,
             );
         }
-        generator.dynamicCasters = true;
+        writable(generator).dynamicCasters = true;
     }
 
     /** A runtime-selected generator may denote any reached generator. */
     public recordDynamicShadowCastersForUnknownGenerator(): void {
         for (const generator of this.shadowGenerators) {
-            generator.dynamicCasters = true;
+            writable(generator).dynamicCasters = true;
         }
     }
 
@@ -1043,12 +1060,12 @@ export class SceneManifestRecorder {
         if (previous !== undefined) {
             const bound = this.sceneMeshesById.get(previous);
             const at = bound?.indexOf(meshCpp) ?? -1;
-            if (bound && at >= 0) bound.splice(at, 1);
+            if (bound && at >= 0) writable(bound).splice(at, 1);
         }
         this.sceneMeshIdByHandle.set(meshCpp, id);
         const meshes = this.sceneMeshesById.get(id);
         if (meshes) {
-            if (!meshes.includes(meshCpp)) meshes.push(meshCpp);
+            if (!meshes.includes(meshCpp)) writable(meshes).push(meshCpp);
         } else {
             this.sceneMeshesById.set(id, [meshCpp]);
         }
@@ -1096,10 +1113,10 @@ export class SceneManifestRecorder {
         }
         const topology = scene.sceneTopologyState ??
             this.sceneTopologyStates.get(scene.cpp) ?? { lights: [] };
-        scene.sceneTopologyState = topology;
+        writable(scene).sceneTopologyState = topology;
         this.sceneTopologyStates.set(scene.cpp, topology);
         const index = topology.lights.length;
-        topology.lights.push({ identity, kind });
+        writable(topology.lights).push({ identity, kind });
         this.sceneLights.push({ identity, kind });
         if (
             identity.sceneLightIndex !== undefined &&
@@ -1110,11 +1127,11 @@ export class SceneManifestRecorder {
                     "scene-specific receiver variants are not lowered.",
             );
         }
-        identity.sceneLightIndex = index;
+        writable(identity).sceneLightIndex = index;
         if (identity.shadowGeneratorIndex !== undefined) {
             const generator =
                 this.shadowGenerators[identity.shadowGeneratorIndex];
-            if (generator) generator.lightIndex = index;
+            if (generator) writable(generator).lightIndex = index;
         }
         if (
             this.context.isInFrameCallback() ||
@@ -1135,25 +1152,25 @@ export class SceneManifestRecorder {
         if (!identity) return;
         const topology = scene.sceneTopologyState ??
             this.sceneTopologyStates.get(scene.cpp) ?? { lights: [] };
-        scene.sceneTopologyState = topology;
+        writable(scene).sceneTopologyState = topology;
         this.sceneTopologyStates.set(scene.cpp, topology);
         const index = topology.lights.findIndex(
             (entry) => entry.identity === identity,
         );
         if (index < 0) return;
-        topology.lights.splice(index, 1);
+        writable(topology.lights).splice(index, 1);
         const globalIndex = this.sceneLights.findIndex(
             (entry) => entry.identity === identity,
         );
         if (globalIndex >= 0) this.sceneLights.splice(globalIndex, 1);
-        delete identity.sceneLightIndex;
+        delete writable(identity).sceneLightIndex;
         for (let slot = index; slot < topology.lights.length; slot++) {
             const moved = topology.lights[slot]!.identity;
-            moved.sceneLightIndex = slot;
+            writable(moved).sceneLightIndex = slot;
             if (moved.shadowGeneratorIndex !== undefined) {
                 const generator =
                     this.shadowGenerators[moved.shadowGeneratorIndex];
-                if (generator) generator.lightIndex = slot;
+                if (generator) writable(generator).lightIndex = slot;
             }
         }
         if (
@@ -1179,9 +1196,9 @@ export class SceneManifestRecorder {
             this.context.isInFrameCallback() &&
             mesh.thinInstances !== "always"
         ) {
-            mesh.thinInstances = "possible";
+            writable(mesh).thinInstances = "possible";
         } else {
-            mesh.thinInstances = "always";
+            writable(mesh).thinInstances = "always";
         }
     }
 
@@ -1212,7 +1229,7 @@ export class SceneManifestRecorder {
         if (sceneMeshIndex === undefined) return;
         const mesh = this.sceneMeshes[sceneMeshIndex];
         if (!mesh) return;
-        mesh.thinInstanceGpuCulling = true;
+        writable(mesh).thinInstanceGpuCulling = true;
     }
 
     /**

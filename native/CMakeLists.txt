@@ -299,15 +299,16 @@ if(NOT BBLITE_BACKEND_SDL_GPU)
     list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 endif()
 
-# The PAL units whose preprocessed text is independent of the generated
-# tree: none of them includes a header under <generated>/upstream/include
-# (verified unit by unit with the preprocessor; the two backend families,
-# the window realm and the build stamp do include one). They compile in
-# their own object library without the generated include directory, so
-# their compile lines are the same in every scene reaching the same
-# features. An object library rather than an archive: the executable
-# links every object exactly as before, where an archive would drop an
-# unreferenced object and the static registrations it carries.
+# The PAL units whose preprocessed text depends on the generated tree only
+# through the activation macros they test (bblite/features/); the two
+# backend families, the window realm and the build stamp include lowered
+# module headers. Under the object cache they compile in their own object
+# library against folders holding only those macros, so their compile lines
+# are the same in every scene whose macros they read agree (a unit reaching
+# any other generated header is refused). An object library rather than an
+# archive: the executable links every object exactly as before, where an
+# archive would drop an unreferenced object and the static registrations it
+# carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
     "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
@@ -363,52 +364,22 @@ target_sources(
     ${BBLITE_APPLICATION_UNITS}
 )
 target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
+# Build-option macros are defined here; every feature-keyed macro is a
+# generated header of its own (bblite/features/, src/feature-macros.ts) that
+# each file testing it includes, and the generator's own decisions live in
+# render_capabilities.hpp. Every macro is always 0/1 and tested with a plain
+# `#if X`; the undefined-macro diagnostic (the warning options below) makes a
+# missing definition a compile error.
 target_compile_definitions(bblite_features INTERFACE BBLITE_CHECKED_HANDLES=$<BOOL:${BBLITE_CHECKED_HANDLES}>)
-if(BBLITE_NATIVE_CACHE_ACTIVE)
-    include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
-    bblite_cached_headers(BBLITE_BACKEND_HEADERS)
-    target_include_directories(bblite_native PRIVATE "${BBLITE_BACKEND_HEADERS}")
-    set_source_files_properties(
-        "${BBLITE_ENTRY_SOURCE}"
-        "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
-        ${BBLITE_GENERATED_SOURCES}
-        ${BBLITE_APPLICATION_UNITS}
-        PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
-else()
-    target_include_directories(bblite_native PRIVATE "${BBLITE_GENERATED_DIR}/upstream/include")
+if(NOT EXISTS "${BBLITE_GENERATED_DIR}/upstream/include/bblite/features")
+    message(
+        FATAL_ERROR
+        "${BBLITE_GENERATED_DIR} carries no feature macro headers; regenerate "
+        "the scene (scene -- compile <id>)."
+    )
 endif()
 
-# One feature, one macro. Every macro named here is defined in every
-# translation unit -- 1 when the generated tree reached any of the listed
-# features, 0 otherwise -- so a `#if` over it never meets an undefined
-# name, and the activation table below reads as the table it is. The
-# macros the generator decides live in the generated
-# render_capabilities.hpp, written in every tree; no macro has both
-# owners. Every test is a plain `#if X`, and the undefined-macro diagnostic
-# (the warning options below) makes a missing definition a compile error.
-function(bblite_feature_define macro)
-    set(value 0)
-    foreach(feature IN LISTS ARGN)
-        if("${feature}" IN_LIST BBLITE_RUNTIME_FEATURES)
-            set(value 1)
-        endif()
-    endforeach()
-    target_compile_definitions(bblite_features INTERFACE "${macro}=${value}")
-endfunction()
-
-set(BBLITE_OFFSCREEN_SURFACES OFF)
-bblite_feature_define(BBLITE_DEVICE_RECOVERY "engine:device-recovery")
-bblite_feature_define(BBLITE_GPU_TASK_TIMING "engine:gpu-task-timing")
-bblite_feature_define(BBLITE_COMPUTE_TEXTURES "compute:storage-texture")
-bblite_feature_define(BBLITE_COMPUTE_MIPMAPS "compute:texture-mipmaps")
-bblite_feature_define(BBLITE_COMPUTE_BUFFERS "compute:storage-buffer" "compute:uniform-buffer")
-bblite_feature_define(BBLITE_COMPUTE_SHADERS "compute:shader")
-bblite_feature_define(BBLITE_COMPUTE_FRAME_GRAPH "compute:frame-graph")
-bblite_feature_define(BBLITE_STORAGE_READBACK "compute:storage-readback")
-bblite_feature_define(BBLITE_COMPUTE_BINDINGS "compute:bindings")
-bblite_feature_define(BBLITE_WORKERS "platform:workers")
 if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
-    set(BBLITE_OFFSCREEN_SURFACES ON)
     if(BBLITE_BACKEND_SDL_GPU)
         target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_sdl.cpp")
     endif()
@@ -416,7 +387,6 @@ if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_dawn.cpp")
     endif()
 endif()
-target_compile_definitions(bblite_features INTERFACE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
 
 if(BBLITE_GENERATED_SHADER_FILES)
     # The snapshot is ordered before the executable by a target dependency,
@@ -449,10 +419,9 @@ target_include_directories(bblite_features INTERFACE "${BBLITE_NATIVE_ROOT}/incl
 target_compile_definitions(bblite_features INTERFACE BBLITE_ASSET_DIR="assets")
 target_compile_definitions(bblite_features INTERFACE
     BBLITE_VISUAL_CAPTURE=$<BOOL:${BBLITE_VISUAL_CAPTURE}>
-    BBLITE_HAS_IMAGE_DECODER=$<BOOL:${BBLITE_HAS_IMAGE_DECODER}>
+    BBLITE_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
 )
 target_compile_definitions(bblite_features INTERFACE BBLITE_GPU_SHADER_DIR="shaders")
-bblite_feature_define(BBLITE_MESH_POSITION_UPDATE "mesh:update-positions")
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     # Deployed by its own always-run target rather than POST_BUILD on the
@@ -480,8 +449,8 @@ if(BBLITE_GENERATED_SHADER_FILES)
     # pinned variant's register order, Dawn the `.native.wgsl` text it
     # compiles in-process. HLSL, reflection dumps, WGSL sources and tool
     # manifests stay in the generated tree as development artifacts.
-    # `deployedShaderSuffixes` (src/build-stamp.ts) verifies the deployment
-    # by this table.
+    # The cache records the table for the deployment check
+    # (`executableDeployedShaderSuffixes`, src/build-stamp.ts).
     set(BBLITE_DEPLOYED_SHADER_SUFFIXES "")
     if(BBLITE_BACKEND_SDL_GPU)
         if(WIN32)
@@ -496,6 +465,12 @@ if(BBLITE_GENERATED_SHADER_FILES)
     if(BBLITE_BACKEND_DAWN)
         list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".native.wgsl")
     endif()
+    set(
+        BBLITE_DEPLOYED_SHADER_SUFFIXES
+        "${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
+        CACHE INTERNAL
+        "Shader file suffixes the compiled renderers read"
+    )
     # Deployed by a stamped target rather than POST_BUILD on the executable,
     # for the reason the asset target above records: a shader-only change
     # relinks nothing, so a POST_BUILD copy never fires and the measured run
@@ -575,9 +550,6 @@ if(NOT SDL3_FOUND)
     )
 endif()
 target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
-bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
-bblite_feature_define(BBLITE_HAS_DOM_INPUT "input:dom")
-bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
 if(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
     enable_language(OBJCXX)
     set_target_properties(bblite_pal_common PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
@@ -710,11 +682,6 @@ if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 
-# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp:
-# the scene transmission reach and the composed refraction/thickness
-# bindings decide it.
-bblite_feature_define(BBLITE_HAS_PBR_RENDERER "renderer:scene")
-
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # The exact RmlUi revision projected by our backend-neutral recorder
     # is pinned in upstream/rmlui.json and installed once by
@@ -811,8 +778,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     )
     target_include_directories(bblite_features INTERFACE "${BBLITE_RMLUI_DIR}/Backends"
     )
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_UI=1 RMLUI_SDL_VERSION_MAJOR=3
-    )
+    target_compile_definitions(bblite_features INTERFACE RMLUI_SDL_VERSION_MAJOR=3)
     target_link_libraries(bblite_features INTERFACE
         RmlUi::Core
         Freetype::Freetype
@@ -835,85 +801,16 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
         target_link_libraries(bblite_features INTERFACE PkgConfig::FONTCONFIG)
     endif()
-else()
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_UI=0)
 endif()
-
-bblite_feature_define(BBLITE_HAS_SPRITE_RENDERER "renderer:sprite")
-bblite_feature_define(BBLITE_HAS_SPRITES "sprite:2d" "sprite:billboard" "sprite:animation" "renderer:sprite")
-bblite_feature_define(BBLITE_HAS_SPRITE_ANIMATION "sprite:animation")
-bblite_feature_define(BBLITE_HAS_ANIMATION "animation:property" "animation:managed-groups")
-bblite_feature_define(BBLITE_HAS_GIZMOS "gizmo:utility-layer")
-bblite_feature_define(BBLITE_HAS_CAMERA_GIZMOS "gizmo:camera")
-bblite_feature_define(BBLITE_HAS_LIGHT_GIZMOS "gizmo:light")
-# A shadow generator's own records: reached by either filter, exactly the
-# `shadowGeneratorFeatures` list (src/shadow-capabilities.ts). The directional
-# and cascaded factories reach `shadow:pcf` beside their own feature, and
-# `shadow:task` schedules without owning a generator.
-bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:pcf" "shadow:esm")
-bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
-bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")
-bblite_feature_define(BBLITE_HAS_FRAME_GRAPH_RENDERER "renderer:frame-graph")
-bblite_feature_define(BBLITE_HAS_EFFECT_WRAPPER "effect:wrapper")
-# The pin's mesh-phase Standard extension: reached only through
-# enableMaterialUvTransform(), which is what emits its uniform block and the
-# writer that fills it into standard_variants.hpp.
-bblite_feature_define(BBLITE_HAS_STANDARD_UV_TRANSFORM "material:standard-uv-transform")
-# A material plugin whose getSamplers declares a texture/sampler pair the
-# composed Standard fragment reads. The record then carries the textures the
-# plugin's bindTextures filled them with, and both backends upload and bind
-# them through the generated standard_plugin_bindings table. That table is
-# composed by the pin's own bridges, which only the opt-in registers -- so a
-# scene attaching plugins without enableMaterialPlugins composes plugin-free
-# and compiles none of this, exactly as it renders none of it.
-if("material:plugin-textures" IN_LIST BBLITE_RUNTIME_FEATURES AND
-   "material:plugins" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1)
-else()
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0)
-endif()
-bblite_feature_define(BBLITE_HAS_EFFECT_TASK "effect:task")
-bblite_feature_define(BBLITE_HAS_TEXT "text:renderable" "renderer:text")
-bblite_feature_define(BBLITE_HAS_TEXT_RENDERABLE "text:renderable")
-bblite_feature_define(BBLITE_HAS_TEXT_RENDERER "renderer:text")
-bblite_feature_define(BBLITE_HAS_BILLBOARDS "sprite:billboard")
-# A Gaussian splat cloud draws inside the scene's pass like a billboard, so
-# it needs no renderer of its own -- only its pipeline and its data textures.
-bblite_feature_define(BBLITE_HAS_SPLATS "loader:splat")
-# A GPU pick renders the candidates into a one-pixel target and reads the id
-# back, so it needs its own pipelines and attachments inside whichever
-# backend is compiled -- and nothing at all in a scene that never picks.
-bblite_feature_define(BBLITE_HAS_PICKING "picking:gpu")
-# The detailed pick adds a third rgba32uint attachment carrying the winning
-# primitive index and the interpolated rest position, its own pipeline built
-# from the pin's second picking module, and a wider readback. A scene that
-# never arms `enableDetailedPicking` carries none of it.
-bblite_feature_define(BBLITE_HAS_DETAILED_PICKING "picking:detailed")
-# The clustered light field binds a params block and three data textures into
-# the composed PBR fragment's own group, from the container the scene holds.
-# A scene that never adds one carries none of it.
-bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
-bblite_feature_define(BBLITE_SHADOWS_CSM "shadow:csm")
-# enableMorphTargetShadows' caster-bounds provider: the generator flag and the
-# fit's morph expansion, compiled only for a scene that registers it.
-bblite_feature_define(BBLITE_SHADOW_MORPH_BOUNDS "shadow:morph-bounds")
 
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
-# (`featureSources`). Nothing generated names Bullet. The arms of that unit
-# follow the physics features the scene reached, one macro each.
+# (`featureSources`). Nothing generated names Bullet.
 if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(Bullet CONFIG REQUIRED)
     target_link_libraries(bblite_features INTERFACE BulletDynamics BulletCollision LinearMath
     )
 endif()
-bblite_feature_define(BBLITE_PHYSICS_VIEWER "physics:viewer")
-bblite_feature_define(BBLITE_HAS_PHYSICS_QUERIES "physics:queries")
-bblite_feature_define(BBLITE_HAS_PHYSICS_CONSTRAINTS "physics:constraints")
-bblite_feature_define(BBLITE_HAS_PHYSICS_TRIGGER "physics:trigger")
-bblite_feature_define(BBLITE_HAS_PHYSICS_HEIGHTFIELD "physics:heightfield")
-bblite_feature_define(BBLITE_HAS_PHYSICS_CHARACTER "physics:character-controller")
-bblite_feature_define(BBLITE_HAS_PHYSICS_FLOATING_ORIGIN "physics:floating-origin")
 
 # The navigation toolset is reached only through
 # `bblite/pal_navigation.hpp`, whose implementation is one translation
@@ -937,8 +834,6 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
         )
     endif()
 endif()
-bblite_feature_define(BBLITE_HAS_NAV_CROWD "navigation:crowd")
-bblite_feature_define(BBLITE_HAS_NAV_TILE_CACHE "navigation:tile-cache")
 
 # The Web Audio engine is reached only through `bblite/pal_audio.hpp`,
 # whose implementation is one translation unit the feature list selects
@@ -1024,31 +919,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     if(BBLITE_AUDIO_DECODE_FILE AND NOT EXISTS "${BBLITE_LABSOUND_DIR}/include/libnyquist/Decoders.h")
         message(FATAL_ERROR "Decoded audio requires the libnyquist headers; reinstall with tools/build-labsound.ps1 (-StaticRuntime -EnableCodecs for a minimal build).")
     endif()
-    target_compile_definitions(bblite_features INTERFACE
-        BBLITE_HAS_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
-        BBLITE_HAS_AUDIO_DECODE_FILE=$<BOOL:${BBLITE_AUDIO_DECODE_FILE}>
-    )
-else()
-    target_compile_definitions(bblite_features INTERFACE
-        BBLITE_HAS_AUDIO_CAPTURE=0
-        BBLITE_HAS_AUDIO_DECODE_FILE=0
-    )
 endif()
-# The engine's node and codec arms. Every audio feature implies audio:engine
-# (`impliedFeatures`), so each is 0 in a scene without the engine.
-bblite_feature_define(BBLITE_HAS_AUDIO "audio:engine")
-bblite_feature_define(BBLITE_HAS_AUDIO_BUFFER_SOURCE "audio:buffer-source")
-foreach(codec IN ITEMS WAV WV MPC FLAC MP3 OPUS OGG)
-    string(TOLOWER "${codec}" codec_feature)
-    bblite_feature_define("BBLITE_AUDIO_DECODE_${codec}" "audio:decode-${codec_feature}")
-endforeach()
-bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
-bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
-bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
-
-bblite_feature_define(BBLITE_HAS_GEOMETRY_OUTPUT "renderer:geometry-output")
-bblite_feature_define(BBLITE_HAS_POST_PROCESS "renderer:post-process")
-bblite_feature_define(BBLITE_HAS_SCREEN_SPACE "renderer:screen-space")
 
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
@@ -1146,10 +1017,10 @@ bblite_verify_dependency_artifacts()
 # and their standard-library closure before its own text; a small generated
 # unit spends most of its compile there (docs/development.md carries the
 # measurement). Precompiling that set once per tree removes the parse from
-# every unit; the generated headers stay out, since they change with every
-# generation. Off for the shipping shape: that build is the one compile of
-# every unit without a precompiled closure, so an include a unit owes and
-# only the PCH supplied fails there instead of in no build at all.
+# every unit; of the generated headers only the activation macros its own
+# headers test enter it. Off for the shipping shape: that build is the one
+# compile of every unit without a precompiled closure, so an include a unit
+# owes and only the PCH supplied fails there instead of in no build at all.
 if(BBLITE_MINSIZE)
     set(BBLITE_PCH_DEFAULT OFF)
 else()
@@ -1204,9 +1075,45 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     endif()
     # Built once, on the object library, and reused by the executable's
     # units: both consume the same interface requirements, and the PCH
-    # closure reaches no generated header.
+    # closure reaches no generated header beyond activation macros.
     target_precompile_headers(bblite_pal_common PRIVATE ${BBLITE_PCH_HEADERS})
     target_precompile_headers(bblite_native REUSE_FROM bblite_pal_common)
+endif()
+
+# Generated headers. Without the object cache every unit reads the tree in
+# place. Under it, generated and application units, the entry and the build
+# stamp still do; every repository unit reads a content-addressed folder
+# holding exactly the generated headers its include closure names
+# (native-header-cache.cmake), so its compile line and dependencies follow
+# what it reads, and a scene-invariant PAL unit's line is the same in every
+# scene whose activation macros it reads agree. The precompiled header reads
+# the folder of its own closure.
+if(BBLITE_NATIVE_CACHE_ACTIVE)
+    set_source_files_properties(
+        "${BBLITE_ENTRY_SOURCE}"
+        "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
+        ${BBLITE_GENERATED_SOURCES}
+        ${BBLITE_APPLICATION_UNITS}
+        PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
+    include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
+    bblite_cache_unit_headers(
+        TARGETS bblite_pal_common bblite_native
+        SCENE_INVARIANT bblite_pal_common
+        EXCLUDE "${BBLITE_ENTRY_SOURCE}" "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
+    )
+    set(BBLITE_PCH_ROOTS "")
+    foreach(bblite_pch_header IN LISTS BBLITE_PCH_HEADERS)
+        if(bblite_pch_header MATCHES "^<(bblite/.+)>$")
+            list(APPEND BBLITE_PCH_ROOTS "${BBLITE_NATIVE_ROOT}/include/${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    bblite_generated_inputs(BBLITE_PCH_GENERATED ${BBLITE_PCH_ROOTS})
+    if(BBLITE_PCH_GENERATED)
+        bblite_cached_headers(BBLITE_PCH_GENERATED_DIR ${BBLITE_PCH_GENERATED})
+        target_include_directories(bblite_pal_common PRIVATE "${BBLITE_PCH_GENERATED_DIR}")
+    endif()
+else()
+    target_include_directories(bblite_features INTERFACE "${BBLITE_GENERATED_DIR}/upstream/include")
 endif()
 
 # Runtime libraries beside the executable: the Dawn DLLs collected above

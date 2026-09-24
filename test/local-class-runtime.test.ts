@@ -580,20 +580,47 @@ test("refuses a stored class whose hoisted field differs per construction", () =
     );
 });
 
-test("refuses a stored class that would need dynamic dispatch", () => {
+test("stores a class hierarchy as one tagged struct and dispatches on the tag", () => {
+    const result = compileSource(`
+        abstract class Shape {
+            abstract area(): number;
+        }
+        class Square extends Shape {
+            side = 2;
+            area(): number { return this.side * this.side; }
+        }
+        class Circle extends Shape {
+            radius = 1;
+            area(): number { return 3 * this.radius * this.radius; }
+        }
+        const shapes: Shape[] = [new Square(), new Circle()];
+        let total = 0;
+        for (const shape of shapes) total += shape.area();
+        const unused = total;
+    `);
+
+    // One struct named after the root holds every class's fields and the
+    // tag; each construction records its class.
+    assert.match(
+        result.cpp,
+        /struct ShapeData \{\s*double side\{\};\s*double radius\{\};\s*int bbl_class_tag\{\};/,
+    );
+    assert.doesNotMatch(result.cpp, /struct (Square|Circle)Data/);
+    assert.match(result.cpp, /->bbl_class_tag = 0;[^]*->bbl_class_tag = 1;/);
+    assert.match(result.cpp, /if \(v_\w+->bbl_class_tag == 0\) \{/);
+});
+
+test("refuses an abstract stored class nothing concrete extends", () => {
     assert.throws(
         () =>
             compileSource(`
                 abstract class Shape {
                     abstract area(): number;
                 }
-                class Square extends Shape {
-                    area(): number { return 4; }
-                }
                 const shapes: Shape[] = [];
                 const unused = shapes.length;
             `),
-        /has no single native representation|extends another class/,
+        /Abstract class 'Shape' has no concrete class under it/,
     );
 });
 

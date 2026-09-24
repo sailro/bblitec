@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 /** The text transform object retains its renderable; it is never a copied Vec3. */
-/** The text transform object retains its renderable; it is never a copied Vec3. */
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -127,7 +126,7 @@ export function readTextProperty(
             context.promoteTextData(site);
             return {
                 kind: "data",
-                cpp: `bbl::text_data_runs(${owner.cpp})`,
+                cpp: `(${owner.cpp})->runs`,
                 dataType: {
                     kind: "vector",
                     element: { kind: "handle", handle: "text-run" },
@@ -138,7 +137,7 @@ export function readTextProperty(
         if (name === "width" || name === "height")
             return {
                 kind: "number",
-                cpp: `(${owner.cpp})->payload->${name}`,
+                cpp: `(${owner.cpp})->${name}`,
                 dataType: { kind: "number" },
                 freshData: true,
             };

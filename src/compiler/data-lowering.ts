@@ -2,7 +2,10 @@ import {
     booleanValue,
     isStringValue,
     nativeDataMetadata,
+    objectTruthinessCpp,
     optionalPresentCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     staticStringValue,
     valueForKind,
     withNativeMetadata,
@@ -17,12 +20,19 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
-import { CompilerSymbols } from "./symbols.js";
+import {
+    CompilerSymbols,
+    declaredSymbol,
+    isGlobalUndefined,
+    isNullishLiteral,
+    resolvedSymbol,
+} from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
@@ -46,6 +56,10 @@ import {
     mathExtremeCall,
     mathExtremeCpp,
 } from "../lowering/pinned-operators.js";
+import {
+    ASSIGNMENT_OPERATORS,
+    COMPOUND_ASSIGNMENT_HELPERS,
+} from "./statements.js";
 import {
     dataTypesEqual,
     doubleLiteral,
@@ -158,7 +172,7 @@ export function isNeverResized(
     checker: ts.TypeChecker,
     name: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(name);
+    const symbol = declaredSymbol(checker, name);
     return (
         symbol !== undefined &&
         !resizedSymbols(checker, name.getSourceFile()).has(symbol)
@@ -211,7 +225,6 @@ export interface DataLoweringContext
             | "compilePredicateWithValues"
             | "compileStoredDataFunction"
             | "compileSpriteAtlasRecord"
-            | "lookupIdentifierValue"
             | "resolveThisField"
             | "resolveRecordMember"
             | "resolveRecordValue"
@@ -339,7 +352,7 @@ export class DataLowerer {
         if (!ts.isIdentifier(left)) {
             return undefined;
         }
-        const scalar = this.context.lookupIdentifierValue(left);
+        const scalar = this.context.bindings.lookupOptional(left);
         if (scalar?.kind === "number") {
             return {
                 kind: "number",
@@ -547,8 +560,7 @@ export class DataLowerer {
                         ((argumentType.flags &
                             (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
                             0 ||
-                            (unwrapped.text === "undefined" &&
-                                !this.context.lookupIdentifierValue(unwrapped)))
+                            isGlobalUndefined(this.context.checker, unwrapped))
                     )) {
                         this.context.fail(
                             argument,
@@ -763,7 +775,7 @@ export class DataLowerer {
             this.context.unwrap(chain),
         );
         if (!node) return true;
-        const bound = this.context.lookupIdentifierValue(node);
+        const bound = this.context.bindings.lookupOptional(node);
         return (
             bound?.kind !== "scene" &&
             bound?.kind !== "engine" &&
@@ -776,7 +788,7 @@ export class DataLowerer {
         // name node itself answers `any`.
         const checker = this.context.checker;
         const symbol = ts.isPrivateIdentifier(node)
-            ? checker.getSymbolAtLocation(node)
+            ? resolvedSymbol(checker, node)
             : undefined;
         return this.context.dataTypes.fromTsType(
             symbol
@@ -803,7 +815,7 @@ export class DataLowerer {
             root = this.context.unwrap(root.expression);
         }
         const value = ts.isIdentifier(root)
-            ? this.context.lookupIdentifierValue(root)
+            ? this.context.bindings.lookupOptional(root)
             : root.kind === ts.SyntaxKind.ThisKeyword && thisField
               ? this.context.resolveThisField(thisField.name.text)
               : undefined;
@@ -823,7 +835,7 @@ export class DataLowerer {
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound?.kind !== "data" && bound?.kind !== "promise") {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
@@ -876,6 +888,9 @@ export class DataLowerer {
                 }
             }
             return bound;
+        }
+        if (ts.isPropertyAccessExpression(unwrapped) && mode === "write") {
+            this.context.classLowerer.refuseInheritedStaticWrite(unwrapped);
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -1101,7 +1116,10 @@ export class DataLowerer {
             | ts.CallExpression,
         read: (presentOwner: Value) => Value | undefined,
     ): Value | undefined {
+        // The presence moves into the chain's own test, so the owner read
+        // inside it carries neither the flag nor the optional storage.
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } = owner;
+        const ownerFound = presenceFlagCpp(owner);
         let present: string;
         let presentOwner: Value;
         let snapshotPresentOwner = false;
@@ -1134,7 +1152,7 @@ export class DataLowerer {
                 this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
                 plainOwner,
             );
-        } else if (optionalFoundCpp !== undefined) {
+        } else if (ownerFound !== undefined) {
             if (
                 owner.dataType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(owner.dataType.name)
@@ -1153,14 +1171,14 @@ export class DataLowerer {
                     attributes: "[[maybe_unused]] ",
                 });
                 const bound = this.leafValue(temporary, owner.dataType);
-                present = bound.optionalFoundCpp!;
+                present = presenceFlagCpp(bound)!;
                 presentOwner = {
                     ...plainOwner,
                     cpp: temporary,
                     objectIdentityCpp: bound.objectIdentityCpp!,
                 };
             } else {
-                present = optionalFoundCpp;
+                present = ownerFound;
                 presentOwner = plainOwner;
                 snapshotPresentOwner = ts.isCallExpression(access);
             }
@@ -1241,7 +1259,7 @@ export class DataLowerer {
             // presence predicates.
             return undefined;
         }
-        const selectedPresent = selected.optionalFoundCpp;
+        const selectedPresent = presenceFlagCpp(selected);
         const combinedPresent = selectedPresent
             ? `(${present} && ${selectedPresent})`
             : present;
@@ -1429,7 +1447,7 @@ export class DataLowerer {
         }
         const unwrapped = this.context.unwrap(expression);
         const symbol = ts.isIdentifier(unwrapped)
-            ? this.context.checker.getSymbolAtLocation(unwrapped)
+            ? resolvedSymbol(this.context.checker, unwrapped)
             : undefined;
         const declaration = symbol?.declarations?.[0] ?? unwrapped;
         let local = false;
@@ -1674,8 +1692,7 @@ export class DataLowerer {
             return undefined;
         }
         const declarations =
-            this.context.checker.getSymbolAtLocation(unwrapped)?.declarations ??
-            [];
+            resolvedSymbol(this.context.checker, unwrapped)?.declarations ?? [];
         if (declarations.length !== 1) {
             return undefined;
         }
@@ -1720,7 +1737,7 @@ export class DataLowerer {
     private isStaticIndex(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound) {
                 return (
                     bound.kind === "number" && bound.staticNumber !== undefined
@@ -1763,13 +1780,14 @@ export class DataLowerer {
             this.leafValue(`(*${value.cpp})`, inner),
             value,
         );
-        present.nativeLvalue = true;
+        writable(present).nativeLvalue = true;
         if (cppIdentifierPattern.test(value.cpp))
-            present.stableOwnerCpp = value.cpp;
+            writable(present).stableOwnerCpp = value.cpp;
         if (value.ownedCpp !== undefined) {
-            present.ownedCpp = `bbl::js::snapshot_value(*(${value.cpp}))`;
+            writable(present).ownedCpp =
+                `bbl::js::snapshot_value(*(${value.cpp}))`;
         } else {
-            delete present.ownedCpp;
+            delete writable(present).ownedCpp;
         }
         return present;
     }
@@ -1911,7 +1929,7 @@ export class DataLowerer {
                   )
                 : !storage &&
                     computed.dataType?.kind === "struct" &&
-                    computed.optionalFoundCpp ===
+                    presenceFlagCpp(computed) ===
                         this.referencePresence(computed.cpp) &&
                     !cppIdentifierPattern.test(computed.cpp)
                   ? this.context.bindings.pinValueToTemporary(
@@ -1952,7 +1970,8 @@ export class DataLowerer {
         if (left.kind === "record" || left.kind === "tuple") {
             return left;
         }
-        if (left.optionalFoundCpp !== undefined) {
+        const leftFound = presenceFlagCpp(left);
+        if (leftFound !== undefined) {
             // A handle a search produced: upstream's `find` yields
             // `undefined` on a miss, and `??` selects the fallback
             // exactly then. A generation-resolved find carries the
@@ -1960,7 +1979,7 @@ export class DataLowerer {
             // search selects on its found flag. The fallback must be
             // the same handle kind; a fallback that can itself miss
             // composes its flag into the result's.
-            if (left.optionalFoundCpp === "true") {
+            if (leftFound === "true") {
                 return left;
             }
             const fallback = this.context.compileValue(expression.right);
@@ -1981,7 +2000,7 @@ export class DataLowerer {
                     expression.right,
                 );
                 return this.leafValue(
-                    `(${left.optionalFoundCpp} ? ${left.cpp} : ${fallbackCpp})`,
+                    `(${leftFound} ? ${left.cpp} : ${fallbackCpp})`,
                     left.dataType,
                 );
             }
@@ -1995,11 +2014,9 @@ export class DataLowerer {
                     );
                     return {
                         ...left,
-                        cpp:
-                            `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
-                            `${cppType}{})`,
+                        cpp: `(${leftFound} ? ${left.cpp} : ` + `${cppType}{})`,
                         objectIdentityCpp:
-                            `(${left.optionalFoundCpp} ? ` +
+                            `(${leftFound} ? ` +
                             `${left.objectIdentityCpp ?? `${left.cpp}.get()`} : nullptr)`,
                     };
                 }
@@ -2011,15 +2028,15 @@ export class DataLowerer {
                 this.context.reachJsData();
                 const objectIdentity =
                     left.dataType.kind === "struct"
-                        ? `(${left.optionalFoundCpp} ? std::addressof(${left.cpp}) : nullptr)`
+                        ? `(${leftFound} ? std::addressof(${left.cpp}) : nullptr)`
                         : undefined;
                 return {
                     kind: "data",
                     cpp:
-                        `(${left.optionalFoundCpp} ? ${cppType}{${left.cpp}} : ` +
+                        `(${leftFound} ? ${cppType}{${left.cpp}} : ` +
                         `${cppType}{std::nullopt})`,
                     dataType: optionalType,
-                    optionalFoundCpp: left.optionalFoundCpp,
+                    optionalFoundCpp: leftFound,
                     ...(objectIdentity
                         ? { objectIdentityCpp: objectIdentity }
                         : {}),
@@ -2038,7 +2055,7 @@ export class DataLowerer {
             ) {
                 return {
                     ...this.leafValue(
-                        `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
+                        `(${leftFound} ? ${left.cpp} : ` +
                             `${this.compileKnownValueForSink(fallback, left.dataType, expression.right)})`,
                         left.dataType,
                     ),
@@ -2058,7 +2075,7 @@ export class DataLowerer {
                 if (common) {
                     return {
                         ...this.leafValue(
-                            `(${left.optionalFoundCpp} ? ` +
+                            `(${leftFound} ? ` +
                                 `${this.compileKnownValueForSink(left, common, expression.left)} : ` +
                                 `${this.compileKnownValueForSink(fallback, common, expression.right)})`,
                             common,
@@ -2079,14 +2096,13 @@ export class DataLowerer {
             // the question open: the composed flag is what a scene's own
             // not-found guard then reads. Both operands are guarded
             // temporaries, so the select is safe either way.
+            const fallbackFound = presenceFlagCpp(fallback);
             const composedFound =
-                fallback.optionalFoundCpp !== undefined
-                    ? `(${left.optionalFoundCpp} || ${fallback.optionalFoundCpp})`
+                fallbackFound !== undefined
+                    ? `(${leftFound} || ${fallbackFound})`
                     : undefined;
             return valueForKind(left.kind, {
-                cpp:
-                    `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
-                    `${fallback.cpp})`,
+                cpp: `(${leftFound} ? ${left.cpp} : ` + `${fallback.cpp})`,
                 ...(left.dataType !== undefined
                     ? { dataType: left.dataType }
                     : {}),
@@ -2131,12 +2147,7 @@ export class DataLowerer {
                 expression.left,
             ).cpp;
             const right = this.context.unwrap(expression.right);
-            if (
-                right.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(right) &&
-                    right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(right))
-            ) {
+            if (isNullishLiteral(this.context.checker, right)) {
                 return {
                     kind: "data",
                     cpp: temp,
@@ -2331,21 +2342,22 @@ export class DataLowerer {
                     : `${owner.cpp}.${field.name}`,
                 field.type,
             );
-            value.nativeLvalue = true;
-            if (field.uncheckedProperty) value.preserveUncheckedLookup = true;
+            writable(value).nativeLvalue = true;
+            if (field.uncheckedProperty)
+                writable(value).preserveUncheckedLookup = true;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
                 field.readOnly
                     ? owner.recordProperties?.[property]
                     : undefined;
             if (staticField?.staticNumber !== undefined) {
-                value.staticNumber = staticField.staticNumber;
+                writable(value).staticNumber = staticField.staticNumber;
             }
             if (staticField?.staticString !== undefined) {
-                value.staticString = staticField.staticString;
+                writable(value).staticString = staticField.staticString;
             }
             if (staticField?.staticBoolean !== undefined) {
-                value.staticBoolean = staticField.staticBoolean;
+                writable(value).staticBoolean = staticField.staticBoolean;
             }
             return value;
         }
@@ -3205,8 +3217,10 @@ export class DataLowerer {
         if (!ts.isIdentifier(indexExpression)) {
             return false;
         }
-        const indexSymbol =
-            this.context.checker.getSymbolAtLocation(indexExpression);
+        const indexSymbol = declaredSymbol(
+            this.context.checker,
+            indexExpression,
+        );
         if (!indexSymbol) {
             return false;
         }
@@ -3287,7 +3301,8 @@ export class DataLowerer {
         if (start === undefined || !Number.isInteger(start) || start < 0) {
             return undefined;
         }
-        const indexSymbol = this.context.checker.getSymbolAtLocation(
+        const indexSymbol = declaredSymbol(
+            this.context.checker,
             declaration.name,
         );
         if (!indexSymbol) {
@@ -3329,7 +3344,7 @@ export class DataLowerer {
         const unwrapped = this.context.unwrap(expression);
         return (
             ts.isIdentifier(unwrapped) &&
-            this.context.checker.getSymbolAtLocation(unwrapped) === symbol
+            declaredSymbol(this.context.checker, unwrapped) === symbol
         );
     }
 
@@ -3438,10 +3453,10 @@ export class DataLowerer {
         const a = this.context.unwrap(left);
         const b = this.context.unwrap(right);
         if (ts.isIdentifier(a) && ts.isIdentifier(b)) {
-            const symbol = this.context.checker.getSymbolAtLocation(a);
+            const symbol = declaredSymbol(this.context.checker, a);
             return (
                 symbol !== undefined &&
-                symbol === this.context.checker.getSymbolAtLocation(b)
+                symbol === declaredSymbol(this.context.checker, b)
             );
         }
         if (
@@ -3652,7 +3667,7 @@ export class DataLowerer {
         ];
         const leaf = this.leafValue(indexed, element);
         // Reference presence belongs to the returned value, not its old array slot.
-        const present = leaf.optionalFoundCpp ?? found;
+        const present = presenceFlagCpp(leaf) ?? found;
         const truthiness =
             element.kind === "boolean"
                 ? indexed
@@ -3841,12 +3856,7 @@ export class DataLowerer {
      */
     public objectIdentity(expression: ts.Expression): string | undefined {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return "nullptr";
         }
         if (ts.isConditionalExpression(unwrapped)) {
@@ -3907,7 +3917,7 @@ export class DataLowerer {
         }
         // A local constant binds as a compile-time tuple; a module-level
         // one is not bound at all and resolves through its initializer.
-        const bound = this.context.lookupIdentifierValue(unwrapped);
+        const bound = this.context.bindings.lookupOptional(unwrapped);
         if (bound && bound.kind !== "tuple") {
             return undefined;
         }
@@ -3996,14 +4006,14 @@ export class DataLowerer {
         // Entry-level static array constants are bound as compile-time
         // tuples; those still materialize. Any other binding is a runtime
         // local and never a static table.
-        const bound = this.context.lookupIdentifierValue(unwrapped);
+        const bound = this.context.bindings.lookupOptional(unwrapped);
         if (bound && bound.kind !== "tuple") {
             return undefined;
         }
-        const declaration =
-            this.context.checker.getSymbolAtLocation(
-                unwrapped,
-            )?.valueDeclaration;
+        const declaration = resolvedSymbol(
+            this.context.checker,
+            unwrapped,
+        )?.valueDeclaration;
         const localLiteral =
             bound?.kind === "tuple" &&
             declaration &&
@@ -4602,9 +4612,9 @@ export class DataLowerer {
             );
         }
         const source = this.typedArrayFromSource(
-            typedArrayStem(kind),
-            this.context.unwrap(argumentAt(call, 0)),
             kind,
+            this.context.unwrap(argumentAt(call, 0)),
+            true,
         );
         if (source === undefined) {
             this.context.fail(
@@ -4794,7 +4804,7 @@ export class DataLowerer {
             ts.isArrowFunction(callback) ||
             ts.isFunctionExpression(callback);
         const value = ts.isIdentifier(callback)
-            ? this.context.lookupIdentifierValue(callback)
+            ? this.context.bindings.lookupOptional(callback)
             : !local
               ? this.context.compileValue(callback)
               : undefined;
@@ -4996,7 +5006,7 @@ export class DataLowerer {
                     result = {
                         kind: "boolean",
                         cpp:
-                            this.conditionFromValue(result) ??
+                            this.truthinessCondition(result) ??
                             this.context.fail(
                                 call,
                                 "Array predicate result has no native truthiness.",
@@ -5048,7 +5058,7 @@ export class DataLowerer {
             value.staticElementsOwner?.collectionCardinality;
         if (!cardinality && !value.staticElements && !value.staticElementsOwner)
             return;
-        if (cardinality) cardinality.untrackedAliases = true;
+        if (cardinality) writable(cardinality).untrackedAliases = true;
         this.invalidateStaticElements(value);
     }
 
@@ -5183,10 +5193,10 @@ export class DataLowerer {
         call: ts.CallExpression,
         owner: ts.Identifier,
     ): Value | undefined {
-        if (this.context.lookupIdentifierValue(owner)) {
+        if (this.context.bindings.lookupOptional(owner)) {
             return undefined;
         }
-        const ownerSymbol = this.context.checker.getSymbolAtLocation(owner);
+        const ownerSymbol = resolvedSymbol(this.context.checker, owner);
         const declaration = ownerSymbol?.valueDeclaration;
         if (
             !declaration ||
@@ -5217,7 +5227,8 @@ export class DataLowerer {
             if (!ts.isIdentifier(loopDeclaration.name)) {
                 continue;
             }
-            const loopSymbol = this.context.checker.getSymbolAtLocation(
+            const loopSymbol = declaredSymbol(
+                this.context.checker,
                 loopDeclaration.name,
             );
             let matchedField: string | undefined;
@@ -5228,9 +5239,8 @@ export class DataLowerer {
                     !ts.isPropertyAccessExpression(target) ||
                     target.name.text !== "set" ||
                     !ts.isIdentifier(target.expression) ||
-                    this.context.checker.getSymbolAtLocation(
-                        target.expression,
-                    ) !== ownerSymbol ||
+                    declaredSymbol(this.context.checker, target.expression) !==
+                        ownerSymbol ||
                     node.arguments.length !== 2
                 ) {
                     return false;
@@ -5240,11 +5250,10 @@ export class DataLowerer {
                 if (
                     ts.isPropertyAccessExpression(key) &&
                     ts.isIdentifier(key.expression) &&
-                    this.context.checker.getSymbolAtLocation(key.expression) ===
+                    declaredSymbol(this.context.checker, key.expression) ===
                         loopSymbol &&
                     ts.isIdentifier(value) &&
-                    this.context.checker.getSymbolAtLocation(value) ===
-                        loopSymbol
+                    declaredSymbol(this.context.checker, value) === loopSymbol
                 ) {
                     matchedField = key.name.text;
                     return true;
@@ -5654,7 +5663,7 @@ export class DataLowerer {
             );
         }
         const converted = this.context.probeEmission(() =>
-            this.typedArrayFromSource(prefix, unwrapped),
+            this.typedArrayFromSource(kind, unwrapped),
         );
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
@@ -5667,9 +5676,9 @@ export class DataLowerer {
     }
 
     /**
-     * One numeric sequence converted into a typed array of `prefix`'s
-     * kind, or undefined where the expression is not a sequence at all --
-     * which is how the constructor tells a source from a length.
+     * One numeric sequence converted into a typed array of `kind`, or
+     * undefined where the expression is not a sequence at all -- which is
+     * how the constructor tells a source from a length.
      *
      * Every conversion the spec performs when a typed array is BUILT from
      * a sequence is the conversion it performs when one is FILLED from the
@@ -5681,13 +5690,14 @@ export class DataLowerer {
      * `keepKind` is where the two callers part: a constructor must produce
      * a NEW array even from a source of its own kind, so it converts
      * unconditionally, while `set` copies such a source straight into the
-     * target and names its kind here to say so.
+     * target and says so here.
      */
     private typedArrayFromSource(
-        prefix: string,
+        kind: TypedArrayKind,
         unwrapped: ts.Expression,
-        keepKind?: TypedArrayKind,
+        keepKind = false,
     ): string | undefined {
+        const prefix = typedArrayStem(kind);
         if (ts.isArrayLiteralExpression(unwrapped)) {
             const elements = unwrapped.elements.map((element) =>
                 this.context.compileNumber(element, "double"),
@@ -5701,7 +5711,7 @@ export class DataLowerer {
                     staticNumberValue(this.context, element) !== undefined,
             );
             return this.typedArrayFromElements(
-                prefix,
+                kind,
                 elements,
                 constant,
                 unwrapped,
@@ -5725,9 +5735,9 @@ export class DataLowerer {
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
         }
         if (
-            keepKind !== undefined &&
+            keepKind &&
             staticSource?.kind === "data" &&
-            staticSource.dataType?.kind === keepKind
+            staticSource.dataType?.kind === kind
         ) {
             return staticSource.cpp;
         }
@@ -5745,7 +5755,7 @@ export class DataLowerer {
                 ),
             );
             return this.typedArrayFromElements(
-                prefix,
+                kind,
                 elements,
                 staticSource.tupleElements.every(
                     (entry) => entry.staticNumber !== undefined,
@@ -5802,11 +5812,12 @@ export class DataLowerer {
      * hoists.
      */
     private typedArrayFromElements(
-        prefix: string,
+        kind: TypedArrayKind,
         elements: readonly string[],
         constant: boolean,
         source: ts.Node,
     ): string {
+        const prefix = typedArrayStem(kind);
         if (
             elements.length < DataLowerer.HOISTED_TYPED_ARRAY_MIN_ELEMENTS ||
             !constant
@@ -5815,12 +5826,12 @@ export class DataLowerer {
         }
         // An element that is not a plain literal keeps the double table
         // the runtime store converts.
-        const table = typedArrayTable(prefix, elements) ?? {
-            elementCppType: prefix === "f32" ? "float" : "double",
+        const table = typedArrayTable(kind, elements) ?? {
+            elementCppType: kind === "f32array" ? "float" : "double",
             elements:
-                prefix === "f32"
+                kind === "f32array"
                     ? elements.map((element) =>
-                          typedArrayStoreExpression("f32array", element),
+                          typedArrayStoreExpression(kind, element),
                       )
                     : [...elements],
         };
@@ -6015,10 +6026,7 @@ export class DataLowerer {
             nullableLogicalSink &&
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
-            (unwrapped.right.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(unwrapped.right) &&
-                    unwrapped.right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(unwrapped.right)))
+            isNullishLiteral(this.context.checker, unwrapped.right)
         ) {
             const left = this.context.unwrap(unwrapped.left);
             if (
@@ -6419,6 +6427,9 @@ export class DataLowerer {
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
+            // A parsed document keeps its own members and identity; typed
+            // storage would copy it. The inline lowering keeps it dynamic.
+            isJsonValue(value) ? "dynamic-storage-required" : "unsupported",
         );
     }
 
@@ -7116,7 +7127,7 @@ export class DataLowerer {
         const target = this.context.unwrap(expression.expression);
         if (ts.isElementAccessExpression(target)) {
             const recordOwner = ts.isIdentifier(target.expression)
-                ? this.context.lookupIdentifierValue(target.expression)
+                ? this.context.bindings.lookupOptional(target.expression)
                 : undefined;
             const key = this.context.compileValue(target.argumentExpression);
             if (recordOwner?.kind === "record") {
@@ -7137,7 +7148,10 @@ export class DataLowerer {
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                delete recordOwner.recordProperties?.[key.staticString];
+                if (recordOwner.recordProperties)
+                    delete writable(recordOwner.recordProperties)[
+                        key.staticString
+                    ];
                 return;
             }
             const owner = this.compileDataPath(target.expression, "read");
@@ -7175,7 +7189,10 @@ export class DataLowerer {
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                delete recordOwner.recordProperties?.[target.name.text];
+                if (recordOwner.recordProperties)
+                    delete writable(recordOwner.recordProperties)[
+                        target.name.text
+                    ];
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -7200,6 +7217,9 @@ export class DataLowerer {
 
     /** `key in object` as a condition. */
     public compileInOperator(expression: ts.BinaryExpression): string {
+        if (ts.isPrivateIdentifier(expression.left)) {
+            return this.context.classLowerer.compileBrandCheck(expression);
+        }
         const key = this.context.compileValue(expression.left);
         const owner = this.context.compileValue(expression.right);
         return this.membershipCpp(
@@ -7355,7 +7375,7 @@ export class DataLowerer {
             return undefined;
         const root = this.context.unwrap(left.expression);
         const represented = ts.isIdentifier(root)
-            ? this.context.lookupIdentifierValue(root)?.dataType
+            ? this.context.bindings.lookupOptional(root)?.dataType
             : undefined;
         if (
             represented?.kind !== "map" &&
@@ -7489,7 +7509,7 @@ export class DataLowerer {
             "logical_left",
             expression.left,
         );
-        const condition = this.conditionFromValue(left);
+        const condition = this.truthinessCondition(left);
         if (condition === undefined)
             this.context.fail(
                 expression.left,
@@ -7552,7 +7572,7 @@ export class DataLowerer {
         // A plain number, boolean or string local is a native scalar rather
         // than a data value; it stores the way its plain assignment does.
         const bound = ts.isIdentifier(left)
-            ? this.context.lookupIdentifierValue(left)
+            ? this.context.bindings.lookupOptional(left)
             : undefined;
         const target =
             bound &&
@@ -7641,7 +7661,7 @@ export class DataLowerer {
                     this.context.unwrap(chain),
                 );
                 const rootValue = root
-                    ? this.context.lookupIdentifierValue(root)
+                    ? this.context.bindings.lookupOptional(root)
                     : undefined;
                 if (rootValue) {
                     this.invalidateStaticElements(rootValue);
@@ -7652,23 +7672,9 @@ export class DataLowerer {
     }
 
     public emitAssignment(expression: ts.BinaryExpression): boolean {
-        const operator = new EmissionMap<ts.SyntaxKind, string>([
-            [ts.SyntaxKind.EqualsToken, "="],
-            [ts.SyntaxKind.PlusEqualsToken, "+="],
-            [ts.SyntaxKind.MinusEqualsToken, "-="],
-            [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-            [ts.SyntaxKind.SlashEqualsToken, "/="],
-            [ts.SyntaxKind.PercentEqualsToken, "%="],
-            [ts.SyntaxKind.AmpersandEqualsToken, "&="],
-            [ts.SyntaxKind.BarEqualsToken, "|="],
-            [ts.SyntaxKind.CaretEqualsToken, "^="],
-            [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
-            [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
-            [
-                ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
-                ">>>=",
-            ],
-        ]).get(expression.operatorToken.kind);
+        const operator = ASSIGNMENT_OPERATORS.get(
+            expression.operatorToken.kind,
+        );
         if (!operator) {
             return false;
         }
@@ -7734,7 +7740,7 @@ export class DataLowerer {
                 left.expression.expression,
             );
             const boundOwner = ts.isIdentifier(ownerExpression)
-                ? this.context.lookupIdentifierValue(ownerExpression)
+                ? this.context.bindings.lookupOptional(ownerExpression)
                 : ts.isPropertyAccessExpression(ownerExpression) &&
                     ownerExpression.expression.kind ===
                         ts.SyntaxKind.ThisKeyword
@@ -7772,7 +7778,7 @@ export class DataLowerer {
                 this.context.unwrap(chain),
             );
             if (root) {
-                const value = this.context.lookupIdentifierValue(root);
+                const value = this.context.bindings.lookupOptional(root);
                 if (value) this.invalidateStaticElements(value);
             }
         };
@@ -7813,7 +7819,7 @@ export class DataLowerer {
         }
         if (ts.isElementAccessExpression(left)) {
             const recordOwner = ts.isIdentifier(left.expression)
-                ? this.context.lookupIdentifierValue(left.expression)
+                ? this.context.bindings.lookupOptional(left.expression)
                 : undefined;
             if (recordOwner?.kind === "record") {
                 if (operator !== "=") {
@@ -7841,8 +7847,9 @@ export class DataLowerer {
                         expression,
                         "Module namespace properties are read-only.",
                     );
-                (recordOwner.recordProperties ??= {})[key.staticString] =
-                    assigned;
+                writable((writable(recordOwner).recordProperties ??= {}))[
+                    key.staticString
+                ] = assigned;
                 return true;
             }
             // This first resolution only asks whether the target is a Map.
@@ -7916,16 +7923,17 @@ export class DataLowerer {
                     keyValue.staticString !== undefined &&
                     narrowed.recordProperties !== undefined
                 ) {
-                    narrowed.recordProperties[keyValue.staticString] = {
-                        ...assignedValue,
-                        // Static consumers need the exact value this
-                        // assignment stored, not a second evaluation of its
-                        // source expression. The key snapshot proves the
-                        // entry exists in every reached successful path.
-                        cpp:
-                            `${narrowed.cpp}.at(` +
-                            `${this.context.cppString(keyValue.staticString)})`,
-                    };
+                    writable(narrowed.recordProperties)[keyValue.staticString] =
+                        {
+                            ...assignedValue,
+                            // Static consumers need the exact value this
+                            // assignment stored, not a second evaluation of its
+                            // source expression. The key snapshot proves the
+                            // entry exists in every reached successful path.
+                            cpp:
+                                `${narrowed.cpp}.at(` +
+                                `${this.context.cppString(keyValue.staticString)})`,
+                        };
                 } else if (keyValue.staticString === undefined) {
                     // A dynamic key means no finite property snapshot is
                     // complete enough for a generation-time consumer.
@@ -7979,13 +7987,13 @@ export class DataLowerer {
             ) {
                 return;
             }
-            const root = this.context.lookupIdentifierValue(targetRoot);
+            const root = this.context.bindings.lookupOptional(targetRoot);
             if (root?.dataType?.kind === "struct" && root.recordProperties) {
                 // A direct write invalidates that field's static fact, not
                 // unrelated fields on the same object. The property snapshot
                 // object is shared by aliases, so deleting in place updates
                 // every view while preserving immutable dimensions/constants.
-                delete root.recordProperties[left.name.text];
+                delete writable(root.recordProperties)[left.name.text];
             }
         };
         if (
@@ -8030,15 +8038,7 @@ export class DataLowerer {
                 expression.right,
                 "double",
             );
-            const helper = new EmissionMap<string, string>([
-                ["%=", "remainder_js"],
-                ["&=", "bitwise_and"],
-                ["|=", "bitwise_or"],
-                ["^=", "bitwise_xor"],
-                ["<<=", "shift_left"],
-                [">>=", "shift_right"],
-                [">>>=", "shift_right_unsigned"],
-            ]).get(operator);
+            const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
             const assigned = helper
                 ? `bbl::js::${helper}(${previous}, ${right})`
                 : undefined;
@@ -8193,7 +8193,7 @@ export class DataLowerer {
             names.some(
                 (name) =>
                     ts.isIdentifier(name) &&
-                    this.context.lookupIdentifierValue(name)
+                    this.context.bindings.lookupOptional(name)
                         ?.optionalStorageCpp,
             )
         )
@@ -8221,12 +8221,10 @@ export class DataLowerer {
                                 : this.dataTypeAt(element);
                     // A generic AST can still say T after its argument has an owned
                     // native representation. Read that value once to obtain its type.
-                    const node = this.context.unwrap(element);
-                    const absence =
-                        node.kind === ts.SyntaxKind.NullKeyword ||
-                        (ts.isIdentifier(node) &&
-                            node.text === "undefined" &&
-                            !this.context.lookupIdentifierValue(node));
+                    const absence = isNullishLiteral(
+                        this.context.checker,
+                        this.context.unwrap(element),
+                    );
                     const compiled =
                         !elementType || absence
                             ? this.context.compileValue(element)
@@ -8423,11 +8421,11 @@ export class DataLowerer {
                 );
                 continue;
             }
-            const symbol = ts.isPropertyAccessExpression(name)
-                ? this.context.checker.getSymbolAtLocation(name.name)
-                : ts.isElementAccessExpression(name)
-                  ? this.context.checker.getSymbolAtLocation(name)
-                  : undefined;
+            const symbol =
+                ts.isPropertyAccessExpression(name) ||
+                ts.isElementAccessExpression(name)
+                    ? resolvedSymbol(this.context.checker, name)
+                    : undefined;
             if (
                 symbol?.declarations?.some(
                     (declaration) =>
@@ -8506,7 +8504,7 @@ export class DataLowerer {
                 indexed ??
                 member ??
                 (ts.isIdentifier(name)
-                    ? this.context.lookupIdentifierValue(name)
+                    ? this.context.bindings.lookupOptional(name)
                     : this.compileDataPath(name, "write"));
             if (!target || target.freshData)
                 this.context.fail(
@@ -8581,7 +8579,7 @@ export class DataLowerer {
             const root = rootIdentifier(name, (node) =>
                 this.context.unwrap(node),
             );
-            const owner = root && this.context.lookupIdentifierValue(root);
+            const owner = root && this.context.bindings.lookupOptional(root);
             if (owner) this.context.bindings.invalidateRecordProperties(owner);
         }
     }
@@ -8774,7 +8772,7 @@ export class DataLowerer {
             const target =
                 this.compileDataPath(element, "write") ??
                 (ts.isIdentifier(element)
-                    ? this.context.lookupIdentifierValue(element)
+                    ? this.context.bindings.lookupOptional(element)
                     : undefined);
             if (!target || target.kind !== "number") {
                 this.context.fail(
@@ -8823,7 +8821,7 @@ export class DataLowerer {
         const rawTarget =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         const target = rawTarget
             ? this.narrowOptional(rawTarget, expression.operand)
@@ -8855,7 +8853,7 @@ export class DataLowerer {
         const target =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         if (target?.kind !== "number") {
             return undefined;
@@ -8869,7 +8867,7 @@ export class DataLowerer {
             })`,
             impure: true,
         };
-        delete value.staticNumber;
+        delete writable(value).staticNumber;
         return value;
     }
 
@@ -8887,7 +8885,7 @@ export class DataLowerer {
         const target =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         if (target?.kind !== "number") {
             return undefined;
@@ -8897,7 +8895,7 @@ export class DataLowerer {
             cpp: `(${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${target.cpp})`,
             impure: true,
         };
-        delete value.staticNumber;
+        delete writable(value).staticNumber;
         return value;
     }
 
@@ -8941,9 +8939,8 @@ export class DataLowerer {
                     // resolving it again would duplicate a call expression
                     // merely to derive the guard predicate.
                     const guarded = this.guardableElementRead(owner, unwrapped);
-                    if (guarded?.truthinessCpp) {
-                        return guarded.truthinessCpp;
-                    }
+                    const truthiness = guarded && statedTruthinessCpp(guarded);
+                    if (truthiness) return truthiness;
                 }
             }
         }
@@ -8953,20 +8950,22 @@ export class DataLowerer {
         if (!value) {
             return undefined;
         }
-        return this.conditionFromValue(value);
+        return this.truthinessCondition(value);
     }
 
-    /** JavaScript truthiness for a value the caller already compiled. */
-    public conditionFromValue(value: Value): string | undefined {
+    /**
+     * The one JavaScript truthiness of a value the caller already compiled,
+     * as a native condition. Presence alone -- whether a nullable is there,
+     * whatever it holds -- is `presenceCpp`'s.
+     */
+    public truthinessCondition(value: Value): string | undefined {
         if (value.kind === "promise")
             return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return (
-                value.truthinessCpp ??
-                value.optionalFoundCpp ??
-                `static_cast<bool>(${value.cpp})`
+                objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`
             );
         }
         if (
@@ -8974,40 +8973,46 @@ export class DataLowerer {
             (value.dataType?.kind === "product" ||
                 value.dataType?.kind === "iterator")
         ) {
-            return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
             return `bbl::js::union_truthy(${value.cpp})`;
         }
+        // A primitive read through a maybe-absent owner (`found?.name`)
+        // carries the owner's presence flag beside a storage read that is
+        // only valid when present: `undefined` is falsy, and the flag
+        // short-circuits the read.
+        const whenPresent = (truthy: string): string => {
+            const present = presenceFlagCpp(value);
+            return present === undefined ? truthy : `(${present} && ${truthy})`;
+        };
         if (
             value.kind === "boolean" ||
             (value.kind === "data" && value.dataType?.kind === "boolean")
         ) {
-            const boolean =
+            return whenPresent(
                 value.staticBoolean === undefined
                     ? value.cpp
                     : value.staticBoolean
                       ? "true"
-                      : "false";
-            return value.optionalFoundCpp === undefined
-                ? boolean
-                : `(${value.optionalFoundCpp} && ${boolean})`;
+                      : "false",
+            );
         }
         if (value.kind === "number") {
             if (value.staticNumber !== undefined) {
                 return value.staticNumber === 0 ||
                     Number.isNaN(value.staticNumber)
                     ? "false"
-                    : "true";
+                    : whenPresent("true");
             }
             this.context.reachJsData();
-            return `bbl::js::number_truthy(${value.cpp})`;
+            return whenPresent(`bbl::js::number_truthy(${value.cpp})`);
         }
         if (value.kind === "tuple" || value.kind === "record") {
             // Present arrays and objects are truthy even when empty.
             // Specialized records can also carry an optional-presence
             // guard instead of storing a native optional value.
-            return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (
             value.kind === "data" &&
@@ -9028,7 +9033,7 @@ export class DataLowerer {
         ) {
             // JavaScript containers and typed arrays are objects and are
             // therefore truthy even when their native storage is empty.
-            return "true";
+            return objectTruthinessCpp(value) ?? "true";
         }
         if (isJsonValue(value)) {
             // A parsed document is JavaScript-falsy exactly where the
@@ -9038,11 +9043,15 @@ export class DataLowerer {
         }
         if (isStringValue(value)) {
             if (value.staticString !== undefined) {
-                return value.staticString.length === 0 ? "false" : "true";
+                return value.staticString.length === 0
+                    ? "false"
+                    : whenPresent("true");
             }
-            return value.kind === "string"
-                ? `!std::string(${value.cpp}).empty()`
-                : `!${value.cpp}.empty()`;
+            return whenPresent(
+                value.kind === "string"
+                    ? `!std::string(${value.cpp}).empty()`
+                    : `!${value.cpp}.empty()`,
+            );
         }
         if (value.kind === "file") {
             // FileList index zero uses an empty opaque handle for absence.
@@ -9050,24 +9059,22 @@ export class DataLowerer {
             // its contents; cancellation is the empty handle.
             return `static_cast<bool>(${value.cpp})`;
         }
-        if (value.truthinessCpp !== undefined) {
-            return value.truthinessCpp;
-        }
-        if (value.optionalFoundCpp !== undefined) {
-            return value.optionalFoundCpp;
-        }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            if (
-                ["boolean", "string", "number"].includes(
-                    value.dataType.inner.kind,
-                )
-            ) {
-                this.context.reachJsData();
-                return `bbl::js::nullable_truthy(${value.cpp})`;
-            }
+            // The stored engagement and, once engaged, the value's own
+            // truthiness. A presence flag beside the storage (an unchecked
+            // element read's in-range test) is the slot's presence, so it
+            // must hold too.
+            const stated = statedTruthinessCpp(value);
+            if (stated !== undefined) return stated;
             const inner = value.dataType.inner;
+            if (["boolean", "string", "number"].includes(inner.kind)) {
+                this.context.reachJsData();
+                return whenPresent(`bbl::js::nullable_truthy(${value.cpp})`);
+            }
             if (inner.kind === "union") {
-                return `([](const auto& value) { return value.has_value() && bbl::js::union_truthy(*value); }(${value.cpp}))`;
+                return whenPresent(
+                    `([](const auto& value) { return value.has_value() && bbl::js::union_truthy(*value); }(${value.cpp}))`,
+                );
             }
             if (
                 inner.kind === "enum" &&
@@ -9078,10 +9085,16 @@ export class DataLowerer {
                     "",
                     this.context.sourceFile,
                 );
-                return `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`;
+                return whenPresent(
+                    `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`,
+                );
             }
-            return optionalPresentCpp(value.cpp);
+            return whenPresent(optionalPresentCpp(value.cpp));
         }
+        // Every other value that states truthiness or carries a presence
+        // flag is an object: truthy exactly when present.
+        const object = objectTruthinessCpp(value);
+        if (object !== undefined) return object;
         if (
             value.kind === "data" &&
             value.dataType?.kind === "struct" &&
@@ -9138,19 +9151,11 @@ export class DataLowerer {
                 return equal !== negated ? "true" : "false";
             }
         }
-        const isNullish = (candidate: ts.Expression): boolean => {
-            if (candidate.kind === ts.SyntaxKind.NullKeyword) {
-                return true;
-            }
-            if (!ts.isIdentifier(candidate)) {
-                return false;
-            }
-            const bound = this.context.bindings.lookupOptional(candidate);
-            return (
-                bound?.kind === "json-null" ||
-                (candidate.text === "undefined" && bound === undefined)
-            );
-        };
+        const isNullish = (candidate: ts.Expression): boolean =>
+            isNullishLiteral(this.context.checker, candidate) ||
+            (ts.isIdentifier(candidate) &&
+                this.context.bindings.lookupOptional(candidate)?.kind ===
+                    "json-null");
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
         if (
             !loose &&
@@ -9242,10 +9247,9 @@ export class DataLowerer {
             if (value?.dataType?.kind === "function") {
                 return `${negated ? "" : "!"}static_cast<bool>(${value.cpp})`;
             }
-            if (value.optionalFoundCpp !== undefined) {
-                return negated
-                    ? value.optionalFoundCpp
-                    : `!(${value.optionalFoundCpp})`;
+            const found = presenceFlagCpp(value);
+            if (found !== undefined) {
+                return negated ? found : `!(${found})`;
             }
             if (value.kind === "json-null") {
                 return negated ? "false" : "true";
@@ -9306,7 +9310,7 @@ export class DataLowerer {
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(operand);
             if (ts.isIdentifier(unwrapped)) {
-                const bound = this.context.lookupIdentifierValue(unwrapped);
+                const bound = this.context.bindings.lookupOptional(unwrapped);
                 return bound?.kind === "data" &&
                     optionalComparable(bound.dataType)
                     ? bound
@@ -10290,7 +10294,7 @@ export class DataLowerer {
             return this.context.cppString(unwrapped.text);
         }
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound?.staticString !== undefined) {
                 return this.context.cppString(bound.staticString);
             }
@@ -10357,12 +10361,7 @@ export class DataLowerer {
         },
     ): string {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return "std::nullopt";
         }
         const optional =
@@ -10412,13 +10411,14 @@ export class DataLowerer {
                 dataType.inner,
                 unwrapped,
             );
-            if (optional.optionalFoundCpp === undefined) {
+            const found = presenceFlagCpp(optional);
+            if (found === undefined) {
                 return inner;
             }
             const cppType = this.context.dataTypes.cppType(dataType);
             this.context.reachJsData();
             return (
-                `(${optional.optionalFoundCpp}` +
+                `(${found}` +
                 ` ? ${cppType}{${inner}}` +
                 ` : ${cppType}{std::nullopt})`
             );

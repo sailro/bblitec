@@ -150,26 +150,30 @@ test("fails retired mesh and geometry records that pile up while the working set
         })),
     );
     assert.equal(summarizeMemoryProfile(growing, 2)?.passed, true);
-    // A table that reuses retired slots holds as many records as the
-    // scene's most meshes at once, however far its count later dips.
+    // The line counts occupied records: a program that retires what it
+    // stops drawing holds as many as it draws, however its count moves.
     const pooled = parseMemoryProfile(
-        run((index) => ({
-            meshRecords: 44,
-            sceneMeshes: index === 5 ? 44 : 40,
-            geometryRecords: 44,
-            liveGeometries: index === 5 ? 44 : 40,
-        })),
+        run((index) => {
+            const drawn = index % 3 === 0 ? 44 : 40;
+            return {
+                meshRecords: drawn,
+                sceneMeshes: drawn,
+                geometryRecords: drawn,
+                liveGeometries: drawn,
+            };
+        }),
     );
     assert.equal(summarizeMemoryProfile(pooled, 2)?.passed, true);
-    // Past that high-water the same dip still leaks.
-    const leaking = parseMemoryProfile(
+    // A leak that refills retired slots keeps the table's size level, but
+    // its occupied records still outgrow what the scene draws.
+    const refilling = parseMemoryProfile(
         run((index) => ({
             meshRecords: 44 + index * 3,
             sceneMeshes: index === 5 ? 44 : 40,
         })),
     );
     assert.match(
-        formatMemorySummary("demo", summarizeMemoryProfile(leaking, 2)),
+        formatMemorySummary("demo", summarizeMemoryProfile(refilling, 2)),
         /FAILED: mesh records the scene no longer draws pile up/,
     );
 });

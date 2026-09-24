@@ -2,6 +2,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakSet,
+    writable,
 } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -643,7 +644,7 @@ function compileDisposeCsg2(
     context.expectKind(value, "csg2-solid", argumentAt(call, 0));
     if (!value.csg2Solid)
         context.fail(call, "CSG2 disposal requires a generation-known solid.");
-    value.csg2Solid.disposed = true;
+    writable(value.csg2Solid).disposed = true;
     context.reachFeature("mesh:csg2", call);
     return { kind: "void", cpp: "" };
 }
@@ -1234,14 +1235,10 @@ function compileMeshOptionalStreams(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ) {
-    // The demo modules skip optional slots with literal
-    // `undefined`, which parses as an identifier expression.
+    // The demo modules skip optional slots with literal `undefined`.
     const isUndefinedArgument = (
         argument: ts.Expression | undefined,
-    ): boolean =>
-        !argument ||
-        argument.kind === ts.SyntaxKind.UndefinedKeyword ||
-        (ts.isIdentifier(argument) && argument.text === "undefined");
+    ): boolean => !argument || context.symbols.isGlobalUndefined(argument);
     // The pin's four optional streams, in its own argument order:
     // uvs, uv2s, tangents, colors. A call that omits one, or hands
     // it a literal `undefined`, settles here. One that hands it a

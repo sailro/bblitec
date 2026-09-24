@@ -1,4 +1,6 @@
 #pragma once
+#include <bblite/features/gpu_task_timing.hpp>
+
 #include <bblite/pal_compute_task_execution.hpp>
 #include <span>
 #if BBLITE_GPU_TASK_TIMING

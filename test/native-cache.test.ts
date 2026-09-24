@@ -29,10 +29,13 @@ project(cache_fixture LANGUAGES CXX)
 set(BBLITE_NATIVE_ROOT "${source.replaceAll("\\", "/")}")
 include("${native}/compiler-cache.cmake")
 include("${native}/native-header-cache.cmake")
-bblite_cached_headers(shared_headers)
-add_executable(check src/main.cpp)
-target_include_directories(check PRIVATE "\${shared_headers}")
+add_executable(check src/main.cpp src/other.cpp)
 target_compile_features(check PRIVATE cxx_std_20)
+if(FIXTURE_SCENE_INVARIANT)
+    bblite_cache_unit_headers(TARGETS check SCENE_INVARIANT check)
+else()
+    bblite_cache_unit_headers(TARGETS check)
+endif()
 `,
         );
         const firstGenerated = join(root, "generated-first"),
@@ -48,19 +51,37 @@ target_compile_features(check PRIVATE cxx_std_20)
                 "#include <bblite/upstream/constants.hpp>\n",
             );
             writeFileSync(header(generated), "#define FIXTURE_VALUE 2\n");
+            writeFileSync(
+                join(generated, "upstream/include/bblite/other.hpp"),
+                "#define OTHER_VALUE 5\n",
+            );
         }
+        // Each unit reads its own generated header, so a change to one is on
+        // neither the other's compile line nor its dependencies.
         writeFileSync(
             join(source, "src/main.cpp"),
-            '#include <bblite/value.hpp>\n#include <cstdio>\nint main() { std::printf("%d", FIXTURE_VALUE); }\n',
+            '#include <bblite/value.hpp>\n#include <cstdio>\nint other();\nint main() { std::printf("%d%d", FIXTURE_VALUE, other()); }\n',
+        );
+        writeFileSync(
+            join(source, "src/other.cpp"),
+            "#include <bblite/other.hpp>\nint other() { return OTHER_VALUE; }\n",
         );
         const log = join(root, "cache.log");
         writeFileSync(log, "");
         const env = { ...windows.environment, CCACHE_LOGFILE: log };
-        const run = (args: string[]): void => {
-            execFileSync(tools.cmake!, args, { env, stdio: "pipe" });
-        };
-        const configure = (build: string, generated: string): void =>
+        const run = (args: string[]): string =>
+            execFileSync(tools.cmake!, args, {
+                env,
+                encoding: "utf8",
+                stdio: "pipe",
+            });
+        const configure = (
+            build: string,
+            generated: string,
+            extra: string[] = [],
+        ): string =>
             run([
+                ...extra,
                 "-S",
                 source,
                 "-B",
@@ -82,7 +103,7 @@ target_compile_features(check PRIVATE cxx_std_20)
         configure(second, secondGenerated);
         run(["--build", second]);
         const executable = join(second, "check.exe");
-        assert.equal(execFileSync(executable, { encoding: "utf8" }), "2");
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "25");
         assert.ok(
             /Result: (?:direct|preprocessed)_cache_hit/.test(
                 readFileSync(log, "utf8"),
@@ -90,8 +111,19 @@ target_compile_features(check PRIVATE cxx_std_20)
             "the second build must reuse a cached object",
         );
         writeFileSync(header(secondGenerated), "#define FIXTURE_VALUE 7\n");
-        run(["--build", second]);
-        assert.equal(execFileSync(executable, { encoding: "utf8" }), "7");
+        const rebuilt = run(["--build", second]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "75");
+        assert.match(rebuilt, /main\.cpp\.obj/);
+        assert.doesNotMatch(rebuilt, /other\.cpp\.obj/);
+
+        // A scene-invariant target admits only activation macros.
+        assert.throws(
+            () =>
+                configure(join(root, "invariant"), firstGenerated, [
+                    "-DFIXTURE_SCENE_INVARIANT=ON",
+                ]),
+            /reads\s+only\s+bblite\/features\/\s+macros/,
+        );
 
         // Two checkouts of the same sources (worktrees), each building inside
         // its own native/ tree, share the cache: paths under a checkout enter
@@ -108,10 +140,11 @@ target_compile_features(check PRIVATE cxx_std_20)
                     native.replaceAll("\\", "/"),
                 ),
             );
-            writeFileSync(
-                join(native, "src/main.cpp"),
-                readFileSync(join(source, "src/main.cpp"), "utf8"),
-            );
+            for (const unit of ["main.cpp", "other.cpp"])
+                writeFileSync(
+                    join(native, "src", unit),
+                    readFileSync(join(source, "src", unit), "utf8"),
+                );
             writeFileSync(log, "");
             const build = join(native, "build");
             run([
@@ -137,7 +170,7 @@ target_compile_features(check PRIVATE cxx_std_20)
             execFileSync(join(worktree.build, "check.exe"), {
                 encoding: "utf8",
             }),
-            "2",
+            "25",
         );
         assert.ok(
             /Result: (?:direct|preprocessed)_cache_hit/.test(worktree.log),

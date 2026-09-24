@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_text_renderable.hpp>
+
 #include "pal_dawn_constants.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_dawn_text_resources.hpp"

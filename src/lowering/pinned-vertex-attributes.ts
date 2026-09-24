@@ -35,7 +35,7 @@ export function vertexFormatFloats(
 
 /**
  * One `{ shaderLocation, offset: <NAMED_OFFSET>, format }` literal, with the
- * offset constant resolved in the literal's own module.
+ * offset constant resolved where the pin declares it.
  */
 export function pinnedVertexAttribute(
     context: LoweringContext,
@@ -78,10 +78,7 @@ export function pinnedVertexAttribute(
             context.propertyInitializer(literal, "shaderLocation"),
             file,
         ),
-        offsetBytes: context.numericValue(
-            context.variableInitializer(file, offset.text),
-            file,
-        ),
+        offsetBytes: context.numericValue(offset, file),
         floatCount: vertexFormatFloats(context, format.text, format),
     };
 }

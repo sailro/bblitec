@@ -10,7 +10,7 @@ import {
     verifyAndroidNativeRun,
 } from "../dist/src/android-capture.js";
 import { resolveScene } from "../dist/src/scene-registry.js";
-import { NATIVE_BACKENDS } from "../dist/src/tooling/artifacts.js";
+import { parseBackendName } from "../dist/src/tooling/backends.js";
 
 const { values } = parseArgs({
     options: {
@@ -26,13 +26,15 @@ const { values } = parseArgs({
 });
 if (!values.adb || !values.output || !values.apk)
     throw new Error("Use --adb, --output, --apk and optionally --device.");
-if (!NATIVE_BACKENDS.includes(values.backend))
-    throw new Error(`--backend must be ${NATIVE_BACKENDS.join(" or ")}.`);
+const adbPath = values.adb;
+const apk = values.apk;
+const backend = parseBackendName(values.backend, "--backend", false);
 const output = resolve(values.output);
 mkdirSync(output, { recursive: true });
 const selector = values.device ? ["-s", values.device] : [];
+/** @param {string[]} args */
 function adb(...args) {
-    return execFileSync(values.adb, [...selector, ...args], {
+    return execFileSync(adbPath, [...selector, ...args], {
         timeout: 15000,
         maxBuffer: 16 * 1024 * 1024,
         windowsHide: true,
@@ -44,17 +46,32 @@ if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(app))
     throw new Error("Invalid application ID.");
 const { captureEnvironment, captureFrame } = androidCaptureSettings(
     values.scene ? resolveScene(values.scene) : undefined,
-    { canvasOnly: values["canvas-only"], backend: values.backend },
+    { canvasOnly: values["canvas-only"], backend },
 );
+/**
+ * @type {{
+ *     runId: string,
+ *     apkSha256: string,
+ *     device: string,
+ *     model: string,
+ *     api: string,
+ *     backend: string,
+ *     passed: boolean,
+ *     scene?: string,
+ *     captureFrame?: string,
+ *     captureEnvironment?: Record<string, string>,
+ *     width?: number,
+ *     height?: number,
+ *     error?: string,
+ * }}
+ */
 const receipt = {
     runId,
-    apkSha256: createHash("sha256")
-        .update(readFileSync(values.apk))
-        .digest("hex"),
+    apkSha256: createHash("sha256").update(readFileSync(apk)).digest("hex"),
     device: adb("get-serialno").toString().trim(),
     model: adb("shell", "getprop", "ro.product.model").toString().trim(),
     api: adb("shell", "getprop", "ro.build.version.sdk").toString().trim(),
-    backend: values.backend,
+    backend,
     passed: false,
     ...(values.scene
         ? { scene: values.scene, captureFrame, captureEnvironment }
@@ -64,30 +81,34 @@ try {
     adb("shell", "am", "force-stop", app);
     adb("shell", "run-as", app, "rm", "-f", "files/capture.png");
     let log = "";
+    /** @type {string[]} */
     const logChunks = [];
     let logLength = 0;
     let markerTail = "";
     const exitMarker = new RegExp(`Native exit: -?\\d+ run=${runId}(?:\\s|$)`);
+    /** @param {string} text */
     function appendLog(text) {
         logChunks.push(text);
         logLength += text.length;
         while (logLength > 16 * 1024 * 1024 && logChunks.length > 1)
-            logLength -= logChunks.shift().length;
+            logLength -= logChunks.shift()?.length ?? 0;
     }
     const logger = spawn(
-        values.adb,
+        adbPath,
         [...selector, "logcat", "-s", "bblite:I", "SDL:E", "AndroidRuntime:E"],
         { windowsHide: true },
     );
+    /** @type {NodeJS.Timeout | undefined} */
     let timer;
     try {
+        /** @type {Promise<void>} */
         const finished = new Promise((resolve) => {
             timer = setTimeout(resolve, 90000);
             logger.on("error", (error) => {
                 appendLog(error.message);
                 resolve();
             });
-            logger.on("exit", resolve);
+            logger.on("exit", () => resolve());
             logger.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 appendLog(text);
@@ -126,7 +147,7 @@ try {
         log = logChunks.join("");
         writeFileSync(join(output, "logcat.txt"), log);
     }
-    verifyAndroidNativeRun(log, runId, values.backend);
+    verifyAndroidNativeRun(log, runId, backend);
     const bytes = adb("exec-out", "run-as", app, "cat", "files/capture.png");
     const png = PNG.sync.read(bytes);
     writeFileSync(join(output, "capture.png"), bytes);
@@ -136,7 +157,7 @@ try {
         height: png.height,
     });
     console.log(
-        `Android ${values.backend} smoke passed on ${receipt.model}: ${png.width}x${png.height}. ${output}`,
+        `Android ${backend} smoke passed on ${receipt.model}: ${png.width}x${png.height}. ${output}`,
     );
 } catch (error) {
     receipt.error = error instanceof Error ? error.message : String(error);

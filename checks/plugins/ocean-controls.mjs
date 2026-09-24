@@ -12,6 +12,45 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ * @import { CompareResult } from "../../dist/src/parity.js"
+ */
+
+/**
+ * @typedef {{ type: string, value: string, checked: boolean }} Control
+ * @typedef {{
+ *     search: string,
+ *     dataset: Record<string, string | undefined>,
+ *     viewport: { width: number, height: number },
+ *     pause?: string,
+ *     controls: Record<string, Control | undefined>,
+ *     timing?: string,
+ * }} OceanState the check's `observe.state` record
+ * @typedef {{
+ *     browser: Record<string, CompareResult | string | undefined>,
+ *     native: Record<string, { pauseHolds: CompareResult }>,
+ * }} Details
+ */
+
+/** @type {ReadonlyArray<readonly [string, string, string, boolean]>} */
+const TOGGLES = [
+    ["shadows-off", "shadows-restored", "Enable shadows", false],
+    ["debug-on", "debug-restored", "Show debug RTT", true],
+    ["bloom-on", "bloom-restored", "Bloom", true],
+];
+
+/**
+ * @param {OceanState} state
+ * @param {string} label
+ */
+function control(state, label) {
+    const found = state.controls[label];
+    assert(found, `the browser controls carry no '${label}'`);
+    return found;
+}
+
+/** @param {PluginContext} context */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
@@ -21,21 +60,26 @@ export function check(context) {
         suiteBrowserModuleDigest(context.scene.source),
         "Ocean observations must use the unchanged pinned module",
     );
+    /** @param {string} id */
     const state = (id) => {
         const step = observedStep(observations, id);
         assert.deepEqual(step.errors ?? [], [], `${id}: browser page errors`);
-        assert.equal(step.state.search, "?seekTime=0.1");
-        assert.deepEqual(step.state.viewport, { width: 1280, height: 720 });
-        assert.equal(step.state.dataset.ready, "true");
-        assert.equal(step.state.dataset.oceanStage, "complete");
-        assert.equal(step.state.dataset.error, undefined);
-        return step.state;
+        assert(step.state, `${id}: browser state is missing`);
+        const observed = /** @type {OceanState} */ (step.state);
+        assert.equal(observed.search, "?seekTime=0.1");
+        assert.deepEqual(observed.viewport, { width: 1280, height: 720 });
+        assert.equal(observed.dataset.ready, "true");
+        assert.equal(observed.dataset.oceanStage, "complete");
+        assert.equal(observed.dataset.error, undefined);
+        return observed;
     };
+    /** @param {string} id */
     const image = (id) => {
         const step = observedStep(observations, id);
         assert(step.image, `${id}: browser screenshot is missing`);
         return observedImage(context, step.image);
     };
+    /** @type {Details} */
     const details = { browser: {}, native: {} };
     for (const id of [
         "frozen-full",
@@ -61,24 +105,20 @@ export function check(context) {
     }
     assert.equal(state("running").dataset.animationFrozen, "false");
     assert.equal(state("running").pause, "Pause");
-    for (const [off, restored, label, enabled] of [
-        ["shadows-off", "shadows-restored", "Enable shadows", false],
-        ["debug-on", "debug-restored", "Show debug RTT", true],
-        ["bloom-on", "bloom-restored", "Bloom", true],
-    ]) {
-        assert.equal(state(off).controls[label].checked, enabled, off);
+    for (const [off, restored, label, enabled] of TOGGLES) {
+        assert.equal(control(state(off), label).checked, enabled, off);
         assert.equal(
-            state(restored).controls[label].checked,
+            control(state(restored), label).checked,
             !enabled,
             restored,
         );
     }
     assert.equal(
-        Number(state("light-zero").controls["Light intensity"].value),
+        Number(control(state("light-zero"), "Light intensity").value),
         0,
     );
     assert.equal(
-        Number(state("light-restored").controls["Light intensity"].value),
+        Number(control(state("light-restored"), "Light intensity").value),
         1,
     );
     for (const id of [
@@ -134,7 +174,8 @@ export function check(context) {
             "120",
             "Native pause stability requires a checkpoint from the same run",
         );
-        const idle = context.results[backend]["paused-idle"];
+        const idle = context.results[backend]?.["paused-idle"];
+        assert(idle, `${backend}: missing phase paused-idle`);
         const imagePath = parse(idle.image);
         const checkpoint = join(
             imagePath.dir,

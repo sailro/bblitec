@@ -1,3 +1,6 @@
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+
 #include <bblite/pal_window_realm.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_animation_frame.hpp>

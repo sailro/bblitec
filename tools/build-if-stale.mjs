@@ -19,7 +19,11 @@ const stampPath = join(root, "dist", ".build-stamp");
 
 /** Every file under `directory`, as sorted repo-relative forward-slash
  *  paths. All files, not just `.ts`: a stray input rebuilding more is
- *  cheap, a missed input running stale dist is not. */
+ *  cheap, a missed input running stale dist is not.
+ * @param {string} directory
+ * @param {string} prefix
+ * @param {Array<{ path: string, relative: string }>} out
+ */
 function listFiles(directory, prefix, out) {
     let entries;
     try {
@@ -50,6 +54,7 @@ function listFiles(directory, prefix, out) {
  * cannot be statted, which the caller treats as "rebuild".
  */
 function computeStamp() {
+    /** @type {Array<{ path: string, relative: string }>} */
     const files = [];
     for (const directory of ["src", "test"]) {
         listFiles(join(root, directory), directory, files);
@@ -101,9 +106,11 @@ function computeStamp() {
     return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
+/** @param {string | undefined} stamp */
 function canReuse(stamp) {
     if (stamp === undefined) return false;
     try {
+        /** @type {{ version?: unknown, input?: unknown, outputs?: unknown }} */
         const recorded = JSON.parse(readFileSync(stampPath, "utf8"));
         return (
             recorded.version === 1 &&
@@ -122,6 +129,10 @@ function canReuse(stamp) {
     }
 }
 
+/**
+ * @param {string} scriptOrBin
+ * @param {string[]} args
+ */
 function run(scriptOrBin, args) {
     const result = spawnSync(process.execPath, [scriptOrBin, ...args], {
         stdio: "inherit",

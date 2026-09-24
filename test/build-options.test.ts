@@ -13,7 +13,6 @@ import {
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
-import { shadowGeneratorFeatures } from "../src/shadow-capabilities.js";
 import { listFiles } from "../src/tooling/records.js";
 
 test("compiled backends have independent build and deployment directories", () => {
@@ -351,6 +350,10 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     // forces a dependent one) are admitted to the trim table.
     assert.match(script, /Get-MaintainedPatches sdl3 @\("trimmed"\)/);
     assert.match(script, /Get-PatchRecord sdl3 \$sdlVersion \$patches/);
+    // A warm workspace that already holds the tag with this series staged is
+    // not reset and re-patched, which would recompile the whole library.
+    assert.match(script, /applied-series\.txt/);
+    assert.match(script, /git -C \$source write-tree/);
     assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
     assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
     assert.ok(existsSync("native/patches/sdl3/0009-static-no-dynapi.patch"));
@@ -424,53 +427,17 @@ test("the PowerShell tools share one module for discovery, checkouts and caches"
     }
 });
 
-test("feature macros come from one CMake function", () => {
+test("a generated tree without its codec list or macro headers is refused", () => {
+    // The one stack reservation sits outside the compiler split.
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
-    assert.match(cmake, /function\(bblite_feature_define macro\)/);
-    for (const [macro, feature] of [
-        ["BBLITE_HAS_GAMEPAD", "input:gamepad"],
-        ["BBLITE_HAS_PBR_RENDERER", "renderer:scene"],
-        ["BBLITE_HAS_PHYSICS_QUERIES", "physics:queries"],
-        ["BBLITE_HAS_PHYSICS_CONSTRAINTS", "physics:constraints"],
-        ["BBLITE_HAS_PHYSICS_TRIGGER", "physics:trigger"],
-        ["BBLITE_HAS_PHYSICS_HEIGHTFIELD", "physics:heightfield"],
-        ["BBLITE_HAS_PHYSICS_CHARACTER", "physics:character-controller"],
-        ["BBLITE_HAS_PHYSICS_FLOATING_ORIGIN", "physics:floating-origin"],
-        ["BBLITE_HAS_NAV_TILE_CACHE", "navigation:tile-cache"],
-        ["BBLITE_PHYSICS_VIEWER", "physics:viewer"],
-    ]) {
-        assert.match(
-            cmake,
-            new RegExp(`bblite_feature_define\\(${macro} "${feature}"\\)`),
-        );
-    }
-    assert.match(
-        cmake,
-        /bblite_feature_define\(BBLITE_HAS_TEXT "text:renderable" "renderer:text"\)/,
-    );
-    // Generator records exist exactly where a shadow generator is reached.
-    assert.match(
-        cmake,
-        new RegExp(
-            `bblite_feature_define\\(BBLITE_HAS_SHADOWS ${shadowGeneratorFeatures
-                .map((feature) => `"${feature}"`)
-                .join(" ")}\\)`,
-        ),
-    );
-    assert.ok((cmake.match(/bblite_feature_define\(/g) ?? []).length >= 36);
-    // No hand-written 1/0 pair is left for a single-feature macro, no
-    // macro is defined without a reader, and the one stack reservation
-    // sits outside the compiler split.
-    assert.doesNotMatch(
-        cmake,
-        /if\("[a-z:-]+" IN_LIST BBLITE_RUNTIME_FEATURES\)\s*target_compile_definitions\(\s*bblite_native\s+PRIVATE\s+BBLITE_[A-Z_]+=1\s*\)\s*else\(\)/,
-    );
-    assert.doesNotMatch(cmake, /BBLITE_HAS_GLTF/);
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
-    // A generated tree without a codec list is refused, not defaulted.
     assert.match(
         readFileSync("native/dependency-features.cmake", "utf8"),
         /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/,
+    );
+    assert.match(
+        cmake,
+        /if\(NOT EXISTS "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include\/bblite\/features"\)\s*message\(\s*FATAL_ERROR/,
     );
 });
 
@@ -509,9 +476,9 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     const pattern = /BBLITE_PAL_COMMON_PATTERN\s*"([^"]+)"/.exec(cmake)?.[1];
     assert.ok(pattern, "no PAL-common pattern");
     const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
-    // Verified with the preprocessor: these units include no header under
-    // the generated tree, the backend families, the window realm and the
-    // build stamp do.
+    // These units read the generated tree only through activation macros;
+    // the backend families, the window realm and the build stamp include
+    // lowered module headers (configure refuses a PAL-common unit that does).
     for (const unit of [
         "pal",
         "pal_sdl",
@@ -553,11 +520,14 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         cmake,
         /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/,
     );
-    // Only the executable's own units see the generated include directory;
-    // every other usage requirement rides the interface target.
+    // Under the object cache each repository unit reads its own
+    // content-addressed header folder, and a PAL-common unit reaching a
+    // generated header other than an activation macro is refused
+    // (executed in native-cache.test.ts); every other usage requirement
+    // rides the interface target.
     assert.match(
         cmake,
-        /target_include_directories\(bblite_native PRIVATE "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include"\)/,
+        /bblite_cache_unit_headers\(\s*TARGETS bblite_pal_common bblite_native\s+SCENE_INVARIANT bblite_pal_common/,
     );
     assert.doesNotMatch(cmake, /target_compile_definitions\(\s*bblite_native/);
     assert.doesNotMatch(
@@ -625,7 +595,7 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
     assert.match(cmake, /NOT BBLITE_LABSOUND_STATIC_RUNTIME/);
     assert.match(
         cmake,
-        /BBLITE_HAS_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/,
+        /BBLITE_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/,
     );
     assert.match(
         cmake,

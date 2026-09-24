@@ -26,6 +26,9 @@
 //     pin binds `gpu.positionBuffer`; these are the same numbers at a
 //     different pitch.
 
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_detailed_picking.hpp>
+
 #include <bblite/runtime.hpp>
 
 #include "pal_gpu_shared.hpp"

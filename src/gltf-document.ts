@@ -118,9 +118,9 @@ export const asNumbers = (value: unknown): number[] | undefined =>
         : undefined;
 
 /**
- * A glTF index field: a non-negative integer. Stricter than `asNumber` on
- * purpose — every field read through this names a position in a document
- * array, and a fractional or negative one is malformed rather than absent.
+ * A glTF index field: a non-negative integer. Every field read through this
+ * names a position in a document array, so a fractional or negative one is
+ * malformed rather than absent.
  */
 export const asIndex = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isInteger(value) && value >= 0

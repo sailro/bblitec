@@ -201,14 +201,13 @@ function Get-MaintainedPatches([string]$Library, [string[]]$Variants = @()) {
 
 # Applies patches to a checkout its builder has just reset to the pin. Each
 # one is staged, so the next forced checkout also removes files an earlier
-# version of a patch added; a patch that does not apply is a refusal.
+# version of a patch added; a patch that does not apply is a refusal, and
+# git applies each patch whole or not at all.
 function Install-MaintainedPatches([string]$Source, [object[]]$Patches, [string]$Label) {
     foreach ($patch in $Patches) {
         if (-not (Test-Path -LiteralPath $patch.Path)) { throw "$Label patch not found: $($patch.Path)" }
-        & git -C $Source apply --index --check $patch.Path
-        if ($LASTEXITCODE -ne 0) { throw "$Label patch $($patch.Name) does not apply to the pinned source at $Source." }
         & git -C $Source apply --index $patch.Path
-        if ($LASTEXITCODE -ne 0) { throw "Unable to apply $Label patch $($patch.Name)." }
+        if ($LASTEXITCODE -ne 0) { throw "$Label patch $($patch.Name) does not apply to the pinned source at $Source." }
         Write-Host "Applied $Label patch $($patch.Name)."
     }
 }
@@ -228,28 +227,23 @@ function Get-PatchRecord([string]$Library, [string]$Source, [object[]]$Patches) 
     return @("set(${prefix}_SOURCE `"$Source`")", "set(${prefix}_PATCHES `"$(@($digests) -join ';')`")")
 }
 
-# The `NAME:TYPE=value` entries of a CMakeCache.txt as a hashtable -- the
-# PowerShell twin of `readCacheConfiguration` (src/build-stamp.ts).
-function Read-CMakeCache([string]$Path) {
+# The `NAME:TYPE=value` entries of a CMakeCache.txt as a hashtable of values
+# -- the PowerShell twin of `readCacheConfiguration` (src/build-stamp.ts).
+# -WithTypes maps each name to its Value and Type instead: BOOL, STRING,
+# INTERNAL, or UNINITIALIZED for a -D the project never declared.
+function Read-CMakeCache([string]$Path, [switch]$WithTypes) {
     $cache = @{}
     foreach ($line in Get-Content $Path) {
-        if ($line -match '^([A-Za-z0-9_]+):[A-Z]+=(.*)$') {
-            $cache[$Matches[1]] = $Matches[2].Trim()
+        if ($line -match '^([A-Za-z0-9_]+):([A-Z]+)=(.*)$') {
+            $value = $Matches[3].Trim()
+            $cache[$Matches[1]] = if ($WithTypes) {
+                [pscustomobject]@{ Value = $value; Type = $Matches[2] }
+            } else {
+                $value
+            }
         }
     }
     return $cache
-}
-
-# The TYPE of each `NAME:TYPE=value` entry: BOOL, STRING, INTERNAL, or
-# UNINITIALIZED for a -D the project never declared.
-function Read-CMakeCacheTypes([string]$Path) {
-    $types = @{}
-    foreach ($line in Get-Content $Path) {
-        if ($line -match '^([A-Za-z0-9_]+):([A-Z]+)=') {
-            $types[$Matches[1]] = $Matches[2]
-        }
-    }
-    return $types
 }
 
 # Match Unix scene builds; explicit CC/CXX select a compatible host toolchain.
@@ -319,12 +313,10 @@ Export-ModuleMember -Function @(
     "Find-CMake",
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
-    "Get-PatchManifest",
     "Get-MaintainedPatches",
     "Install-MaintainedPatches",
     "Get-PatchRecord",
     "Read-CMakeCache",
-    "Read-CMakeCacheTypes"
     "Get-BuildParallelArguments"
     "Get-PosixCompilerArguments"
     "Get-AndroidCompilerArguments"

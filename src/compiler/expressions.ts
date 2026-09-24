@@ -1,5 +1,4 @@
-import type { BindingScopes } from "./binding-scopes.js";
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Expression lowering: the value switch and its call dispatch.
@@ -33,6 +32,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
     aliasTarget,
+    declaredSymbol,
     isAbsentTypeofIdentifier,
     resolvedSymbol,
 } from "./symbols.js";
@@ -115,7 +115,9 @@ import {
     booleanValue,
     commonResourceValue,
     isStringValue,
+    objectTruthinessCpp,
     presenceCpp,
+    presenceFlagCpp,
     staticStringValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
@@ -228,7 +230,7 @@ export interface ExpressionContext
             | "compileThinInstanceUploadHelper"
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"
-            | "compileVoxelFileCall"
+            | "compileSynchronousPromise"
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
             | "compileStaticFetchMethod"
@@ -238,6 +240,7 @@ export interface ExpressionContext
             | "hoistForwardCallbackBindings"
             | "reachJson"
             | "reachLocalStorage"
+            | "reachFileReader"
             | "compileAnimationFrameCall"
             | "compileBrowserGeneratedString"
             | "reachFeature"
@@ -251,9 +254,7 @@ export interface ExpressionContext
             | "isInNativeFunctionBody"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * One operand of a string concatenation, spelled as what `bbl::js::concat`
@@ -580,7 +581,7 @@ export class ExpressionLowerer {
             ) {
                 this.context.fail(
                     unwrapped.parent,
-                    "Private brand checks are outside the supported subset.",
+                    "A private brand check is lowered only as a condition.",
                 );
             }
             const value = this.context.bindings.lookupOptional(unwrapped);
@@ -608,7 +609,7 @@ export class ExpressionLowerer {
                     dataType: { kind: "number" },
                 };
             }
-            if (unwrapped.text === "undefined") {
+            if (this.context.symbols.isGlobalUndefined(unwrapped)) {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
             const numeric = this.context.libraryGlobal(unwrapped);
@@ -677,8 +678,9 @@ export class ExpressionLowerer {
             if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
-            const member = this.context.checker.getSymbolAtLocation(
-                unwrapped.name,
+            const member = resolvedSymbol(
+                this.context.checker,
+                unwrapped,
             )?.valueDeclaration;
             const constant =
                 member && ts.isEnumMember(member)
@@ -855,6 +857,11 @@ export class ExpressionLowerer {
             ) {
                 return this.compileBrowserValue(unwrapped);
             }
+            if (
+                !this.context.options.workers &&
+                this.context.libraryGlobal(unwrapped.expression) === "Promise"
+            )
+                return this.context.compileSynchronousPromise(unwrapped);
             this.context.fail(unwrapped, "Unsupported constructor expression.");
         }
         if (ts.isElementAccessExpression(unwrapped)) {
@@ -1122,7 +1129,7 @@ export class ExpressionLowerer {
             const truthiness = this.context.probeEmission(
                 () => {
                     leftValue = this.compileValue(unwrapped.left);
-                    return this.context.dataLowerer.conditionFromValue(
+                    return this.context.dataLowerer.truthinessCondition(
                         leftValue,
                     );
                 },
@@ -1187,13 +1194,13 @@ export class ExpressionLowerer {
                 };
             }
             if (
-                ts.isIdentifier(expression) &&
-                (expression.text === "undefined" ||
+                this.context.symbols.isGlobalUndefined(expression) ||
+                (ts.isIdentifier(expression) &&
                     isAbsentTypeofIdentifier(
                         this.context.checker,
                         expression,
-                    )) &&
-                !this.context.bindings.lookupOptional(expression)
+                    ) &&
+                    !this.context.bindings.lookupOptional(expression))
             ) {
                 return {
                     kind: "string",
@@ -1718,6 +1725,8 @@ export class ExpressionLowerer {
                 };
             case "null":
                 return { kind: "json-null", cpp: "" };
+            case "undefined":
+                return { kind: "json-null", cpp: "std::nullopt" };
             case "dom-rect":
             case "object":
             case "search-params":
@@ -2004,9 +2013,10 @@ export class ExpressionLowerer {
                 recordProperties: selected,
             };
             if (trueClass && trueClass === falseClass) {
-                selectedRecord.classDeclaration = trueClass;
+                writable(selectedRecord).classDeclaration = trueClass;
                 if (whenTrue.recordGetters) {
-                    selectedRecord.recordGetters = whenTrue.recordGetters;
+                    writable(selectedRecord).recordGetters =
+                        whenTrue.recordGetters;
                 }
             }
             return selectedRecord;
@@ -2131,10 +2141,10 @@ export class ExpressionLowerer {
             absent.cpp.length === 0 &&
             present.kind !== "json-null" &&
             present.cpp.length > 0 &&
-            present.optionalFoundCpp !== undefined
+            presenceFlagCpp(present) !== undefined
                 ? {
                       ...present,
-                      optionalFoundCpp: `(${found} && ${present.optionalFoundCpp})`,
+                      optionalFoundCpp: `(${found} && ${presenceFlagCpp(present)})`,
                   }
                 : undefined;
         if (whenTrue.kind !== whenFalse.kind) {
@@ -2169,27 +2179,26 @@ export class ExpressionLowerer {
             // The C++ conditional operator preserves lvalue category when
             // both branches are lvalues of the same type. Class selection
             // relies on that to pass the selected field by reference.
-            conditional.nativeLvalue = true;
+            writable(conditional).nativeLvalue = true;
         } else {
-            delete conditional.nativeLvalue;
+            delete writable(conditional).nativeLvalue;
         }
-        if (
-            whenTrue.optionalFoundCpp !== undefined ||
-            whenFalse.optionalFoundCpp !== undefined
-        ) {
-            conditional.optionalFoundCpp =
+        const trueFound = presenceFlagCpp(whenTrue);
+        const falseFound = presenceFlagCpp(whenFalse);
+        if (trueFound !== undefined || falseFound !== undefined) {
+            writable(conditional).optionalFoundCpp =
                 `(${condition} ? ` +
-                `${whenTrue.optionalFoundCpp ?? "true"} : ` +
-                `${whenFalse.optionalFoundCpp ?? "true"})`;
+                `${trueFound ?? "true"} : ` +
+                `${falseFound ?? "true"})`;
         }
         if (whenTrue.staticNumber !== whenFalse.staticNumber) {
-            delete conditional.staticNumber;
+            delete writable(conditional).staticNumber;
         }
         if (whenTrue.staticString !== whenFalse.staticString) {
-            delete conditional.staticString;
+            delete writable(conditional).staticString;
         }
         if (whenTrue.spriteDepthMode !== whenFalse.spriteDepthMode) {
-            delete conditional.spriteDepthMode;
+            delete writable(conditional).spriteDepthMode;
         }
         return conditional;
     }
@@ -2251,6 +2260,22 @@ export class ExpressionLowerer {
 
     private compileCall(call: ts.CallExpression): Value {
         const target = this.context.unwrap(call.expression);
+        if (target.kind === ts.SyntaxKind.SuperKeyword) {
+            this.context.fail(
+                call,
+                "super(...) is lowered as a top-level statement of a derived " +
+                    "class constructor.",
+            );
+        }
+        if (
+            ts.isPropertyAccessExpression(target) &&
+            target.expression.kind === ts.SyntaxKind.SuperKeyword
+        ) {
+            return this.context.classLowerer.compileSuperMethodCall(
+                call,
+                target,
+            );
+        }
         const hostFunction = ts.isIdentifier(target)
             ? this.context.bindings.lookupOptional(target)?.hostFunction
             : ts.isPropertyAccessExpression(target)
@@ -2678,11 +2703,7 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             }
-            if (
-                ts.isIdentifier(argument) &&
-                argument.text === "undefined" &&
-                !this.context.bindings.lookupOptional(argument)
-            ) {
+            if (this.context.symbols.isGlobalUndefined(argument)) {
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
                 );
@@ -2825,10 +2846,6 @@ export class ExpressionLowerer {
         );
         if (compressedJson) {
             return compressedJson;
-        }
-        const voxelFile = this.context.compileVoxelFileCall(call, callee);
-        if (voxelFile) {
-            return voxelFile;
         }
         const staticResult = this.context.userFunctions.tryCompileStaticResult(
             this.context,
@@ -3131,7 +3148,7 @@ export class ExpressionLowerer {
                     this.inRuntimeControlFlow(() => {
                         const result = invoke(element, index);
                         condition =
-                            this.context.dataLowerer.conditionFromValue(
+                            this.context.dataLowerer.truthinessCondition(
                                 result,
                             ) ??
                             this.context.fail(
@@ -3723,7 +3740,8 @@ export class ExpressionLowerer {
                         value.kind === "animation-group" &&
                         animationGroupSource
                     ) {
-                        value.animationGroupSource = animationGroupSource;
+                        writable(value).animationGroupSource =
+                            animationGroupSource;
                     }
                     return {
                         ...value,
@@ -3897,11 +3915,9 @@ export class ExpressionLowerer {
             // needing a per-kind truthiness rule. Scene 140 writes
             // `const sg = noShadows ? null : createPcf(...)` and then
             // `if (sg)`, with `noShadows` folded from its query.
-            const droppedNode = this.context.unwrap(dropped);
-            const droppedIsNullish =
-                droppedNode.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(droppedNode) &&
-                    droppedNode.text === "undefined");
+            const droppedIsNullish = this.context.symbols.isNullishLiteral(
+                this.context.unwrap(dropped),
+            );
             // Only for a RESOURCE, because `optionalFoundCpp` means
             // presence and the consumers read it as truthiness. Those
             // two agree for a handle -- a mesh that exists is truthy
@@ -3917,8 +3933,7 @@ export class ExpressionLowerer {
             if (
                 droppedIsNullish &&
                 survivorIsResource &&
-                selected.optionalFoundCpp === undefined &&
-                selected.truthinessCpp === undefined
+                objectTruthinessCpp(selected) === undefined
             ) {
                 return { ...selected, optionalFoundCpp: "true" };
             }
@@ -4058,15 +4073,10 @@ export class ExpressionLowerer {
                 guard.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsToken;
             if ((!equal && !unequal) || truth === equal) return value;
-            const absent = (node: ts.Expression): boolean => {
-                const operand = this.context.unwrap(node);
-                return (
-                    operand.kind === ts.SyntaxKind.NullKeyword ||
-                    (ts.isIdentifier(operand) &&
-                        operand.text === "undefined" &&
-                        !this.context.bindings.lookupOptional(operand))
+            const absent = (node: ts.Expression): boolean =>
+                this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(node),
                 );
-            };
             const tested = absent(guard.left)
                 ? this.context.unwrap(guard.right)
                 : absent(guard.right)
@@ -4074,8 +4084,8 @@ export class ExpressionLowerer {
                   : undefined;
             return tested &&
                 ts.isIdentifier(tested) &&
-                this.context.checker.getSymbolAtLocation(tested) ===
-                    this.context.checker.getSymbolAtLocation(selected)
+                declaredSymbol(this.context.checker, tested) ===
+                    declaredSymbol(this.context.checker, selected)
                 ? this.context.dataLowerer.narrowOptional(
                       value,
                       expression,
@@ -4837,10 +4847,12 @@ export class ExpressionLowerer {
                     staticMethod,
                 );
             if (factory) return factory;
-            return this.context.userFunctions.compileCallbackCall(
-                this.context,
-                call,
-                staticMethod,
+            return this.context.classLowerer.withStaticReceiver(callee, () =>
+                this.context.userFunctions.compileCallbackCall(
+                    this.context,
+                    call,
+                    staticMethod,
+                ),
             );
         }
         // A method on a constructed instance inlines with `this`
@@ -4863,7 +4875,7 @@ export class ExpressionLowerer {
                   ? this.context.activeThis()
                   : this.compileValue(receiver);
             const instance = receiverValue
-                ? (this.context.classLowerer.hydrate(receiverValue) ??
+                ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
             const callableProperty = instance
@@ -4891,7 +4903,7 @@ export class ExpressionLowerer {
                 callee.name.text === "updateData"
             ) {
                 this.context.expectArgumentCount(call, 1, 1);
-                if (instance.optionalFoundCpp) {
+                if (presenceFlagCpp(instance)) {
                     this.context.fail(
                         call,
                         "updateData requires a present splat cloud.",
@@ -5022,7 +5034,7 @@ export class ExpressionLowerer {
             }
             if (instance && declaration) {
                 const optionalFound =
-                    instance.optionalFoundCpp ??
+                    presenceFlagCpp(instance) ??
                     (instance.dataType?.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(
                         instance.dataType.name,

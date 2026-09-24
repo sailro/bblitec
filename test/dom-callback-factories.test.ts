@@ -56,5 +56,11 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         { fileName: join(directory, "entry.ts") },
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "dom-callback-factories");
+    runRmlUiFixture(t, "dom-callback-factories", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
 });

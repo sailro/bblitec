@@ -1,4 +1,6 @@
 #pragma once
+#include <bblite/features/has_gamepad.hpp>
+
 #include "pal_sdl_gpu_device.hpp"
 #include "pal_sdl_gpu_resources.hpp"
 #include "pal_spirv_vertex.hpp"

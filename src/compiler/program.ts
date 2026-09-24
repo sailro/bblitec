@@ -1,37 +1,17 @@
-import { EmissionMap } from "./emission-transaction.js";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import { LoweringContext } from "../lowering/context.js";
 import {
+    isLibraryTyping,
+    libraryTypingFile,
+} from "../typescript-library-files.js";
+import {
     findRepositoryRoot,
     repositoryRelativePath,
     sharedUpstreamStore,
 } from "../upstream-source.js";
-
-let sharedSourceFiles: Map<string, ts.SourceFile> | undefined;
-
-function cachedSourceFile(
-    path: string,
-    load: () => ts.SourceFile | undefined,
-): ts.SourceFile | undefined {
-    sharedSourceFiles ??= new EmissionMap();
-    const key = resolve(path);
-    const cached = sharedSourceFiles.get(key);
-    if (cached) {
-        return cached;
-    }
-    const sourceFile = load();
-    if (sourceFile) {
-        sharedSourceFiles.set(key, sourceFile);
-    }
-    return sourceFile;
-}
-
-function canCacheSourceFile(path: string): boolean {
-    return resolve(path).includes(`${sep}node_modules${sep}`);
-}
 
 /**
  * The pinned members the published typings erase.
@@ -80,7 +60,7 @@ const erasedInternalMembers: readonly {
 /**
  * The restored declarations, appended to the typings once per process.
  *
- * `cachedSourceFile` keeps the composed typings for the life of the process,
+ * `libraryTypingFile` keeps the composed typings for the life of the process,
  * so this runs on the first compile alone.
  */
 function pinnedInternalDeclarations(): string {
@@ -257,8 +237,8 @@ export function createCompilerProgram(
                           onError,
                           shouldCreateNewSourceFile,
                       );
-            return canCacheSourceFile(path)
-                ? cachedSourceFile(path, load)
+            return isLibraryTyping(path)
+                ? libraryTypingFile(path, load)
                 : load();
         },
         resolveModuleNameLiterals: (

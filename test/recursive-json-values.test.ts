@@ -642,3 +642,50 @@ test("typed dictionaries retain scalar, enum and record aliases through dynamic 
         t,
     );
 });
+
+test("a guarded parse returned as its record type keeps the document", (t) => {
+    nativeCheck(
+        "guarded-record-return",
+        `
+        interface Saved { v: 1; name: string; origin: { x: number; y: number }; marks: number[] }
+        function read(text: string): Saved | null {
+            try {
+                const data = JSON.parse(text) as Saved;
+                if (data && data.v === 1 && typeof data.name === "string" && Array.isArray(data.marks)) {
+                    return data;
+                }
+            } catch {
+                /* malformed */
+            }
+            return null;
+        }
+        const good = read('{"v":1,"name":"a","origin":{"x":1,"y":2},"marks":[3,4],"extra":5}');
+        if (!good || good.name !== "a" || good.origin.y !== 2 || good.marks.length !== 2 ||
+            good.marks[1] !== 4 || (good as unknown as { extra: number }).extra !== 5)
+            throw new Error("returned document");
+        good.origin.x = 9;
+        const again = read('{"v":1,"name":"b","origin":{"x":1,"y":2},"marks":[]}');
+        if (!again || again.origin.x !== 1 || again.name !== "b") throw new Error("independent documents");
+        // JavaScript keeps a member of another type, and so does the document.
+        const odd = read('{"v":1,"name":"c","origin":{"x":"1"},"marks":[]}');
+        if (!odd || typeof odd.origin.x !== "string" || odd.origin.y !== undefined)
+            throw new Error("mistyped members");
+        class Holder {
+            private x = 0;
+            place(origin: { x: number; y: number }): void {
+                this.x = origin.x;
+            }
+            get placed(): number {
+                return this.x;
+            }
+        }
+        const holder = new Holder();
+        holder.place(again.origin);
+        if (holder.placed !== 1) throw new Error("parsed member as a method argument");
+        if (read('{"v":2,"name":"a","marks":[]}') !== null) throw new Error("guard");
+        if (read("{") !== null) throw new Error("malformed");
+        if (read("null") !== null) throw new Error("null document");
+    `,
+        t,
+    );
+});

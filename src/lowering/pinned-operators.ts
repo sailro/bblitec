@@ -126,6 +126,31 @@ export const JS_BITWISE_FUNCTIONS: ReadonlyMap<ts.SyntaxKind, string> = new Map<
     ],
 ]);
 
+/**
+ * The compound bitwise assignments, each by the binary operator it applies:
+ * `v |= w` stores `v | w`, whose `ToInt32` result is a number again.
+ */
+export const PINNED_BITWISE_ASSIGNMENT_OPERATORS: ReadonlyMap<
+    ts.SyntaxKind,
+    ts.SyntaxKind
+> = new Map<ts.SyntaxKind, ts.SyntaxKind>([
+    [ts.SyntaxKind.AmpersandEqualsToken, ts.SyntaxKind.AmpersandToken],
+    [ts.SyntaxKind.BarEqualsToken, ts.SyntaxKind.BarToken],
+    [ts.SyntaxKind.CaretEqualsToken, ts.SyntaxKind.CaretToken],
+    [
+        ts.SyntaxKind.LessThanLessThanEqualsToken,
+        ts.SyntaxKind.LessThanLessThanToken,
+    ],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+        ts.SyntaxKind.GreaterThanGreaterThanToken,
+    ],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+    ],
+]);
+
 /** A bitwise operator as its `bbl::js` call, or undefined for another kind. */
 export function jsBitwiseCall(
     kind: ts.SyntaxKind,

@@ -109,12 +109,6 @@ export function lowerGltfMaterialObjectFunction(
             (args) =>
                 `GltfPbrValue{${emit(args.map((argument) => `(${argument}).number()`))}}`,
         );
-    for (const operation of ["min", "max"])
-        calls.set(
-            `Math.${operation}`,
-            (args) =>
-                `GltfPbrValue{gltf_pbr_extremum({${args.map((argument) => `(${argument}).number()`).join(", ")}}, ${operation === "max"})}`,
-        );
     let temporary = 0;
     const value = (expression: ts.Expression, lowerer: PinnedNumericLowerer) =>
         `(${lowerer.expression(expression)})`;

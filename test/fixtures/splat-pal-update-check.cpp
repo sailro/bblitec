@@ -89,6 +89,9 @@ struct DawnSplatPass : PassState {
     std::array<Texture*, 7> textures{};
     Buffer* uniforms = nullptr;
 };
+// The render capability the extracted upload functions test: the
+// fixture payload carries no spherical-harmonic textures.
+#define BBLITE_SPLAT_SH 0
 #include "pal_update.hpp"
 #include "frame_uploads.hpp"
 } // namespace bbl::pal

@@ -139,6 +139,7 @@ test("local geometry survives shader, physics, imported-wheel and hierarchy-pool
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_PBR_RENDERER=1",
         "/W4",
         "/WX",
         "/EHsc",

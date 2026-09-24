@@ -6,6 +6,7 @@ import type {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { lowerObjectComponents } from "./pinned-function-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const boundsModule = "src/mesh/mesh-world-bounds.ts";
 
@@ -31,9 +32,13 @@ function accumulatorLanes(context: LoweringContext): string[] {
         );
 }
 
-/** The lane one accumulator key occupies. */
-export function worldAabbLane(context: LoweringContext, key: string): number {
-    const lane = accumulatorLanes(context).indexOf(key);
+/** The lane one accumulator key occupies among `lanes`. */
+function accumulatorLane(
+    context: LoweringContext,
+    lanes: readonly string[],
+    key: string,
+): number {
+    const lane = lanes.indexOf(key);
     if (lane < 0)
         context.contractError(
             context.functionDeclaration(boundsModule, "emptyWorldAabb")
@@ -53,6 +58,7 @@ export function worldAabbArrayCopies(
     maximum: string,
     indent = "    ",
 ): { load: string; store: string } {
+    const keys = accumulatorLanes(context);
     const lanes = (["X", "Y", "Z"] as const).flatMap((axis, index) =>
         (
             [
@@ -62,7 +68,7 @@ export function worldAabbArrayCopies(
         ).map(
             ([side, array]) =>
                 [
-                    worldAabbLane(context, `${side}${axis}`),
+                    accumulatorLane(context, keys, `${side}${axis}`),
                     `${array}[${index}]`,
                 ] as const,
         ),
@@ -195,7 +201,7 @@ export function lowerWorldAabbHelpers(
                                   node,
                                   `Unknown accumulator key '${node.text}'.`,
                               );
-                          return `${lane}.0`;
+                          return context.doubleLiteral(lane);
                       },
                   }
                 : {}),
@@ -258,14 +264,11 @@ export function lowerWorldAabbHelpers(
         ]),
         {
             calls: new Map([
+                ...pinnedNumericMathCalls(),
                 [
                     "addRange",
                     (args: readonly string[]) =>
                         `world_aabb_add_range(${args.join(", ")})`,
-                ],
-                [
-                    "Math.abs",
-                    (args: readonly string[]) => `std::abs(${args.join(", ")})`,
                 ],
             ]),
         },

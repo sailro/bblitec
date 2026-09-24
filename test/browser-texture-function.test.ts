@@ -42,7 +42,7 @@ function compileFixture(
 }
 
 /** The fixture module's declarations, by name, through a real program. */
-function fixtureDeclarations(module: "tiles" | "refusals"): {
+function fixtureDeclarations(module: "tiles" | "refusals" | "import-cache"): {
     checker: ts.TypeChecker;
     declaration(this: void, name: string): ts.FunctionDeclaration;
 } {
@@ -134,6 +134,22 @@ test("declines every shape it cannot bound", () => {
             checker,
             declaration("loadFetchedTileBesideCanvas"),
         ),
+    );
+});
+
+test("a write through an imported module binding is module state too", () => {
+    const { checker, declaration } = fixtureDeclarations("import-cache");
+    assert.ok(
+        browserTextureFunctionShape(checker, declaration("createUncachedTile")),
+        "the producer without the write is accepted",
+    );
+    assert.equal(
+        browserTextureFunctionShape(
+            checker,
+            declaration("createImportCachedTile"),
+        ),
+        undefined,
+        "memoizing through an imported binding must fall through to ordinary inlining",
     );
 });
 

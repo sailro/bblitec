@@ -19,7 +19,11 @@ import {
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { TextLowerer } from "./lowering/text-lowerer.js";
 import { TextLayoutLowerer } from "./lowering/text-layout-lowerer.js";
-import { TextDataUpdateLowerer } from "./lowering/text-data-update-lowerer.js";
+import {
+    compiledTextDataSource,
+    TextDataUpdateLowerer,
+    textRecordsHeader,
+} from "./lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
@@ -30,7 +34,6 @@ import {
     textPipelineHeader,
     textPipelineStem,
 } from "./pinned-text-pipeline-cpp.js";
-import { stringLiteral as cppStringLiteral } from "./cpp-literals.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -101,6 +104,7 @@ import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { morphTargetsHeader } from "./lowering/morph-targets-lowerer.js";
 import { pinnedQuaternionHeader } from "./lowering/pinned-euler-proxy.js";
 import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
@@ -730,11 +734,17 @@ export const spriteCoreAdditionalProvenance = [
     },
 ] as const;
 
-/** The two optional metallic-reflectance pairs are independent slots. */
+/** The optional single-slot material maps, each keyed on its composed binding. */
 export function metallicReflectanceCapabilityDefines(
     pbrBindingNames: ReadonlySet<string>,
 ): string {
     return (
+        `#define BBLITE_MATERIAL_TRANSMISSION_MAP ${
+            pbrBindingNames.has("refractionMapTexture") ? 1 : 0
+        }\n` +
+        `#define BBLITE_MATERIAL_THICKNESS_MAP ${
+            pbrBindingNames.has("thicknessTexture_") ? 1 : 0
+        }\n` +
         `#define BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ${
             pbrBindingNames.has("metallicReflectanceMap") ? 1 : 0
         }\n` +
@@ -991,6 +1001,14 @@ class GeneratedSourceWriter {
         // detailed pick's own two bodies import it. Gated rather than
         // always emitted because nothing else reaches it, and the header
         // is what its consumers on both sides of the split include.
+        // The pin's deltas packing, where the morph storage the two render
+        // backends upload compiles at all (`BBLITE_GPU_MORPH_STORAGE`).
+        if (gpuMorphStorage) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/morph_targets.hpp",
+                morphTargetsHeader(new LoweringContext(this.store)),
+            );
+        }
         if (features.includes("math:normalize-vec3")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
@@ -1035,6 +1053,8 @@ class GeneratedSourceWriter {
             materialTextureSlotsHeader(
                 {
                     transmission,
+                    transmissionMap: composedMaterials.transmissionMap,
+                    thicknessMap: composedMaterials.thicknessMap,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
@@ -1750,7 +1770,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // composed family, because the receiver fragment is composed per family
 // and a scene composing no variant of a family compiles none of its
 // shadow code even having reached a generator. The reach alone gates only
-// the generator records, through CMake's BBLITE_HAS_SHADOWS.
+// the generator records, through BBLITE_HAS_SHADOWS (feature-macros.ts).
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the
@@ -1870,10 +1890,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         generated: { modulePath: string; symbolName: string }[],
     ): void {
         if (features.includes("text:data")) {
-            const text = new TextLowerer(context);
+            this.tree.write(
+                "upstream/include/bblite/upstream_text_records.hpp",
+                textRecordsHeader(context),
+            );
             this.tree.write(
                 "upstream/include/bblite/upstream_text.hpp",
-                text.header(),
+                new TextLowerer(context).header(),
             );
             if (features.includes("text:layout")) {
                 this.tree.write(
@@ -1896,19 +1919,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     modulePath: "src/text/default-text-data.ts",
                     symbolName: "createDefaultTextData",
                     header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
-                    source:
-                        "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\n" +
-                        (features.includes("text:layout")
-                            ? "#include <bblite/upstream_text_update.hpp>\n"
-                            : "") +
-                        "namespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
-                        (options.textData ?? [])
-                            .map(
-                                (row) =>
-                                    `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`,
-                            )
-                            .join("\n") +
-                        '\n    default: throw std::out_of_range("Compiled text data index");\n    }\n}\n}\n',
+                    source: compiledTextDataSource(
+                        context,
+                        options.textData ?? [],
+                        features.includes("text:layout"),
+                    ),
                 },
                 generated,
                 "upstream/include/bblite/upstream/text_data.hpp",

@@ -32,9 +32,9 @@ import {
 } from "../src/upstream-source.js";
 import type { CompiledShaderProgram } from "../src/compiler.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "../src/shader-material-programs.js";
+    fixtureShaderProgram,
+    reachedFixtureProgram,
+} from "./shader-program-fixtures.js";
 import {
     spriteCoreAdditionalProvenance,
     spriteVertexPermutations,
@@ -78,15 +78,9 @@ function pinnedProvenance(): RegExp {
 }
 
 function reachedPrograms(names: string[]): CompiledShaderProgram[] {
-    return names.map((name) => {
-        const program = shaderMaterialPrograms.find(
-            (candidate) => candidate.name === name,
-        );
-        if (!program) {
-            throw new Error(`Unknown predeclared shader program '${name}'.`);
-        }
-        return predeclaredShaderProgram(program);
-    });
+    return names.map((name) =>
+        reachedFixtureProgram(fixtureShaderProgram(name)),
+    );
 }
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -1749,7 +1743,15 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         gpuInstancing: true,
         punctualLights: true,
     });
-    const shaders = lowerer.lowerShaders();
+    const shaders = lowerer.lowerShaders({
+        transmission: true,
+        shaderPrograms: reachedPrograms(["alpha-card", "circular-cutout"]),
+        idDiagnostics: true,
+        geometryOutputTasks: [],
+        gpuDeformation: false,
+        morphStorage: false,
+        gpuInstancing: false,
+    });
     const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task-base.ts");
     assert.match(lowered.header, /struct RenderItem/);
@@ -1799,8 +1801,8 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         lowered.source,
         /"circular-cutout",[\s\S]*?ShaderVariantStageBlock\{true, \{ShaderSystemMatrix::world_view_projection\}, 16u, \{\}\},\s*\r?\n\s*ShaderVariantStageBlock\{false, \{\}, 0u, \{\}\},\s*\r?\n\s*\{\},/,
     );
-    // The alpha-card entry carries the historical native defaults
-    // (depth 0.5, opacity 1.0) at their declaration-order value offsets
+    // The alpha-card fixture carries its uniform defaults (depth 0.5,
+    // opacity 1.0) at their declaration-order value offsets
     // and gathers both stage blocks from the flat storage.
     assert.match(
         lowered.source,
@@ -2204,34 +2206,54 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     assert.doesNotMatch(plain, /y_sort/);
 
     const sorted = String(new SpriteLowerer(context).lowerCore(true).source);
+    // Every body of the module is lowered from the pin, the state struct
+    // from its interface.
+    for (const symbol of [
+        "Sprite2DYSortState",
+        "allocateSerial",
+        "keyAt",
+        "ensureStorage",
+        "syncCount",
+        "comesBefore",
+        "ensureSorted",
+        "markPackedDirty",
+        "observeDirty",
+        "observeAdd",
+        "observeRemove",
+        "observeClear",
+        "packRange",
+        "uploadSorted",
+        "getDrawOrder",
+        "setSprite2DYSortBias",
+        "enableSprite2DYSort",
+    ]) {
+        assert.match(sorted, new RegExp(`sprite-2d-y-sort\\.ts#${symbol}\\.`));
+    }
+    assert.match(
+        sorted,
+        /sprite-2d-handle-y-sort\.ts#setSprite2DYSortHandleBias\./,
+    );
     // The draw key is the stored positionPx.y lane plus the slot's bias,
-    // summed at the width the pin's F64 bias array gives it, translated
-    // from the pinned keyAt: a bump that moved the lane moves this.
-    assert.match(sorted, /sprite-2d-y-sort\.ts#keyAt\./);
+    // summed at the width the pin's F64 bias array gives it.
     assert.match(
         sorted,
-        /\+ 1\.0\)\)\]\) \+ static_cast<double>\(state\.biases\[static_cast<std::size_t>\(index\)\]\)\);/,
+        /\+ 1\.0\)\)\]\) \+ static_cast<double>\(state\._biases\[static_cast<std::size_t>\(index\)\]\)\);/,
     );
-    // Equal keys keep insertion order, which is what makes two sprites at
-    // the same Y stable across an unrelated removal.
-    assert.match(sorted, /sprite-2d-y-sort\.ts#comesBefore\./);
+    // The merge ping-pongs two pointers and asks which one holds the
+    // result by identity, never by contents.
+    assert.match(sorted, /auto\* source = &\(state\._permutation\);/);
+    assert.match(sorted, /auto\* const previousSource = source;/);
+    assert.match(sorted, /if \(source != &\(state\._permutation\)\) \{/);
+    // Growth copies the old run into the new array and hands it over.
     assert.match(
         sorted,
-        /if \(leftKey < rightKey\) \{\n\s*return true;\n\s*\}\n\s*if \(leftKey > rightKey\) \{\n\s*return false;\n\s*\}\n\s*return \(static_cast<double>\(state\.serials\[static_cast<std::size_t>\(left\)\]\) < static_cast<double>\(state\.serials\[static_cast<std::size_t>\(right\)\]\)\);/,
+        /bbl::js::typed_array_set\(permutation, state\._permutation, 0\.0\);\n\s*state\._permutation = std::move\(permutation\);/,
     );
-    // The permutation is the GPU's, never the layer's own rows. The pin's
-    // own `packRange` writes lane by lane because JavaScript has nothing
-    // else; the run is the same values either way.
-    assert.match(
-        sorted,
-        /std::copy_n\(\n\s*layer\.instance_data\.data\(\) \+ source_base,\n\s*stride,\n\s*state\.packed_instances\.data\(\) \+ target_base\);/,
-    );
+    // A key that did not move under Object.is leaves the order alone.
+    assert.match(sorted, /!bbl::js::same_value\(key, /);
     // The enabler is the opt-in: it installs the hook the always-loaded
     // upload and pick paths read, and nothing else does.
-    assert.match(
-        sorted,
-        /engine\.sprite_y_sort_hook\.stage = stage_y_sort_upload;/,
-    );
+    assert.match(sorted, /engine\.sprite_y_sort_hook\.upload = y_sort_upload;/);
     assert.match(
         sorted,
         /engine\.sprite_y_sort_hook\.draw_order = y_sort_draw_order;/,
@@ -2243,7 +2265,7 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /enableSprite2DYSort requires a layer with depth == none/,
+        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#575"\);/,
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

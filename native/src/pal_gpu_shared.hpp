@@ -2,6 +2,23 @@
 // Moved verbatim from pal_sdl_gpu.cpp so both backends upload
 // byte-identical vertex data.
 #pragma once
+#include <bblite/features/compute_frame_graph.hpp>
+#include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_audio.hpp>
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_detailed_picking.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_picking.hpp>
+#include <bblite/features/has_post_process.hpp>
+#include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprites.hpp>
+#include <bblite/features/has_standard_uv_transform.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/workers.hpp>
+
 #include "pal_compressed_formats.hpp"
 #include "pal_record_sync.hpp"
 #if BBLITE_HAS_AUDIO
@@ -102,6 +119,9 @@
 #include <bblite/upstream/esm_shadow.hpp>
 #endif
 #include <bblite/upstream/pinned_depth_state.hpp>
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 #include <cstdio>
 
 namespace bbl::pal {
@@ -210,8 +230,6 @@ request_renderer_restart_if_scene_set_changed(Engine& engine,
  */
 #if BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
-    if (canvas.value >= engine.ui_elements.size())
-        throw std::runtime_error("Invalid surface canvas.");
     const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     return rect.width > 0.0 && rect.height > 0.0;
 }
@@ -390,6 +408,30 @@ inline std::string sprite_fragment_shader_name(std::uint32_t program) {
 }
 
 /**
+ * The scene's active camera, read from the live `scene.camera` at each
+ * use as the pin reads it, or null when the scene has none. Without one
+ * the pin still runs the scene pass: it clears and draws, but writes no
+ * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
+ * so the pass draws through the zero block the frame starts with and
+ * nothing it projects reaches a fragment.
+ */
+inline CameraRecord* scene_camera(Engine& engine, const Scene& scene) {
+    return handle_find(engine.cameras, scene.camera);
+}
+
+/**
+ * A render task's camera, the pin's `cfg.cam ?? scene.camera`: the task's
+ * own when it was given one, else `scene`'s, the camera of the scene it
+ * renders. Null is the no-camera pass `scene_camera` describes.
+ */
+inline const CameraRecord* render_task_camera(const Engine& engine, const FrameTaskRecord& task,
+                                              const CameraRecord* scene) {
+    const CameraRecord* own =
+        task.render.has_camera ? handle_find(engine.cameras, task.render.camera) : nullptr;
+    return own ? own : scene;
+}
+
+/**
  * The pin's nullish camera, as a record.
  *
  * `getEffectiveAspectRatio` and `resolveCameraViewport` both answer the
@@ -424,9 +466,8 @@ inline const CameraRecord no_camera_record{};
  * unrounded eye and every `large - large = small` runs at full width.
  */
 inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
-    if (scene.camera.value >= engine.cameras.size())
-        return Vec3d{};
-    return upstream::arc_rotate_eye_position(handle_at(engine.cameras, scene.camera));
+    const CameraRecord* camera = handle_find(engine.cameras, scene.camera);
+    return camera ? upstream::arc_rotate_eye_position(*camera) : Vec3d{};
 }
 
 /**
@@ -3102,9 +3143,9 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
     // rather than per generator.
     const PixelViewport surface_extent =
         scene_surface_extent(engine, scene, engine.options.width, engine.options.height);
+    const CameraRecord* const aspect_camera = scene_camera(engine, scene);
     const double csm_camera_aspect = upstream::effective_aspect_ratio(
-        scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                   : no_camera_record,
+        aspect_camera ? *aspect_camera : no_camera_record,
         static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height));
 #endif
     for_each_shadow_generator(
@@ -3182,16 +3223,16 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             // folded in) and the near/far pair the split formula reads. A
             // forced generator's gate returns before reading it, so the
             // key is built only when the gate will.
-            const bool csm_fit = generator.filter == ShadowFilter::csm_directional &&
-                                 scene.camera.value < engine.cameras.size();
+            const CameraRecord* const fit_camera = scene_camera(engine, scene);
+            const bool csm_fit =
+                generator.filter == ShadowFilter::csm_directional && fit_camera != nullptr;
             upstream::CsmCameraKey camera_key;
             if (csm_fit)
                 csm_camera = &camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
-                const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
-                camera_key.view_projection = upstream::build_view_projection(camera, aspect);
-                camera_key.near_plane = camera.near_plane;
-                camera_key.far_plane = camera.far_plane;
+                camera_key.view_projection = upstream::build_view_projection(*fit_camera, aspect);
+                camera_key.near_plane = fit_camera->near_plane;
+                camera_key.far_plane = fit_camera->far_plane;
             }
 #endif
             // The pin's render gate, ahead of each family's fit exactly as
@@ -4252,41 +4293,12 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(const Material
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE
-// Storage-buffer morph payloads shared by both render backends (moved
-// verbatim from the two upload paths). Both backends must pack these
-// byte-identically: the deltas are indexed by the shader as
-// (target * vertexCount + vertex) * 6, and the weights blob carries a
-// 16-byte header the shader reads before the float array.
+// Storage-buffer morph payloads shared by both render backends. The deltas
+// are the pin's own packing (`upstream::pack_morph_deltas`); the weights
+// blob carries a 16-byte header the shader reads before the float array.
 // The empty binding still needs the 16-byte header plus one runtime-array
 // element. Both WebGPU and Metal validate that 20-byte minimum.
 inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
-
-inline std::vector<float> pack_morph_deltas(const ModelGeometry& geometry) {
-    // Flat 6-float deltas indexed
-    // (target * vertexCount + vertex) * 6, packed with the
-    // same x negation as the vertex attributes.
-    const std::size_t target_count = geometry.morph_positions.size();
-    const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<float> deltas(target_count * vertex_count * 6, 0.0f);
-    for (std::size_t target = 0; target < target_count; ++target) {
-        const std::vector<Vec3>& positions = geometry.morph_positions[target];
-        for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
-            const std::size_t offset = (target * vertex_count + vertex) * 6;
-            const Vec3 position = vertex < positions.size() ? positions[vertex] : Vec3{};
-            const Vec3 normal = target < geometry.morph_normals.size() &&
-                                        vertex < geometry.morph_normals[target].size()
-                                    ? geometry.morph_normals[target][vertex]
-                                    : Vec3{};
-            deltas[offset] = -position.x;
-            deltas[offset + 1] = position.y;
-            deltas[offset + 2] = position.z;
-            deltas[offset + 3] = -normal.x;
-            deltas[offset + 4] = normal.y;
-            deltas[offset + 5] = normal.z;
-        }
-    }
-    return deltas;
-}
 
 /**
  * The float array behind the weights blob's 16-byte header: one weight
@@ -4682,13 +4694,6 @@ inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& la
             needs_full_upload ? layer.count : std::min(layer.dirty_sprite_end, layer.count)};
 }
 
-/** Stamp the shared range consumed once a copy has uploaded it. */
-inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
-    layer.dirty_sprite_reset_version = layer.version;
-    layer.dirty_sprite_begin = invalid_handle;
-    layer.dirty_sprite_end = 0u;
-}
-
 /**
  * The rows an instance copy transfers, once the optional Y-sort extension
  * has had its say.
@@ -4701,15 +4706,26 @@ inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
  */
 inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
                                                            Sprite2DLayerRecord& layer,
-                                                           std::uint32_t dirty_begin,
-                                                           std::uint32_t dirty_end) {
-    // Asked unconditionally, exactly as the pin asks it: the hook itself
-    // answers for a layer that never enabled the extension, so there is one
-    // fallback rather than one here and another inside it.
-    if (engine.sprite_y_sort_hook.stage) {
-        return engine.sprite_y_sort_hook.stage(layer, dirty_begin, dirty_end);
+                                                           bool uploaded,
+                                                           std::uint64_t uploaded_version) {
+    // The pin's `uploadedVersion`: this buffer's stamp, or -1 where it holds
+    // none of the current rows -- a fresh buffer, or one whose stamp
+    // predates the last consumption of the shared range.
+    const bool stale = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
+    if (engine.sprite_y_sort_hook.upload) {
+        if (auto ordered = engine.sprite_y_sort_hook.upload(
+                layer, stale ? -1.0 : static_cast<double>(uploaded_version))) {
+            return *ordered;
+        }
     }
-    return {layer.instance_data.data(), dirty_begin, dirty_end};
+    const auto [dirty_begin, dirty_end] =
+        resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
+    if (dirty_end <= dirty_begin)
+        return {};
+    const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
+    const std::size_t offset = static_cast<std::size_t>(dirty_begin) * stride_bytes;
+    return {reinterpret_cast<const std::uint8_t*>(layer.instance_data.data()), offset, offset,
+            static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
 /**
@@ -5922,6 +5938,54 @@ inline std::array<float, 4> shader_camera_position(const Scene& scene, const Eng
 }
 
 /**
+ * One camera pass's matrices -- the effective aspect, the view-projection,
+ * its two factors and the eye -- built from one camera so a pass cannot mix
+ * two sources. A pass without a camera keeps the zeros of the scene block
+ * the pin never writes for it (see `scene_camera`).
+ */
+struct CameraPassMatrices {
+    double aspect = 0.0;
+    std::array<float, 16> view_projection{};
+    std::array<float, 16> view{};
+    std::array<float, 16> projection{};
+    std::array<float, 4> camera_position{};
+
+    /** The pass matrices a shader draw reads, pointing into this record. */
+    [[nodiscard]] ShaderPassMatrices pass() const {
+        ShaderPassMatrices matrices{view_projection.data(), &view, &projection};
+        matrices.camera_position = &camera_position;
+        return matrices;
+    }
+};
+
+/**
+ * `camera`'s pass over a `width` x `height` extent. The aspect is the
+ * pinned `getEffectiveAspectRatio`, a division of two JavaScript numbers
+ * that reaches the projection writers in double: a camera carrying a
+ * viewport scales the extent's ratio by the viewport's own. The projection
+ * is the pin's `getProjectionMatrix`, the arm that branches on the camera,
+ * rather than the perspective writer the skybox takes.
+ */
+inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
+                                               const CameraRecord* camera, double width,
+                                               double height) {
+    CameraPassMatrices matrices;
+    if (!camera)
+        return matrices;
+    matrices.aspect = upstream::effective_aspect_ratio(*camera, width, height);
+    matrices.view_projection = upstream::build_view_projection(*camera, matrices.aspect);
+    matrices.view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
+    matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
+    matrices.camera_position = shader_camera_position(scene, engine, *camera);
+    return matrices;
+}
+
+/** A render task's clear colour, the pin's `cfg.clrColor ?? sc.clearColor`, read live at the pass. */
+inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
+    return task.render.clear_color ? *task.render.clear_color : task.source_scene->clear_color;
+}
+
+/**
  * One custom-shader stage block: declared system matrices followed by the
  * reflected gathers from the material's flat value storage. These exact
  * floats feed SDL pushes, Dawn buffer writes and render capture.
@@ -6402,10 +6466,10 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
     std::ostringstream line;
     line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
          << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
-         << " mesh_records=" << engine.meshes.size() << " scene_meshes=" << scene_meshes
-         << " gc_nodes=" << bbl::js::managed_node_count()
+         << " mesh_records=" << engine.meshes.size() - engine.free_mesh_slots.size()
+         << " scene_meshes=" << scene_meshes << " gc_nodes=" << bbl::js::managed_node_count()
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
-         << " geometry_records=" << engine.geometries.size()
+         << " geometry_records=" << engine.geometries.size() - engine.free_geometry_slots.size()
          << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb
          << " gpu_meshes=" << gpu_meshes << " shared_geometries=" << shared_geometries
          << " shared_geometry_mb=" << shared_geometry_bytes / mb << '\n';

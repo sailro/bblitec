@@ -267,8 +267,7 @@ test(
             executable = join(output, "check.exe");
         writeFileSync(
             fixture,
-            `#define BBLITE_HAS_PBR_RENDERER 1
-#define BBLITE_GPU_DEFORMATION 0
+            `#define BBLITE_GPU_DEFORMATION 0
 #define BBLITE_GPU_INSTANCING 0
 #define BBLITE_FLOATING_ORIGIN 0
 #define BBLITE_PBR_VARIANTS 0
@@ -387,6 +386,7 @@ int main() {
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
             "/W4",
             "/WX",
             "/EHsc",

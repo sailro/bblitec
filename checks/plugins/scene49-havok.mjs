@@ -11,6 +11,38 @@ import { createRequire } from "node:module";
 import HavokPhysics from "@babylonjs/havok";
 import { maxError } from "./support.mjs";
 
+/**
+ * @import { Quaternion, Vector3 } from "@babylonjs/havok"
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ meshes: Array<{ position: Vector3, rotationQuaternion: Quaternion }> }} NativeCapture
+ *     the fields read from a phase's render capture
+ */
+
+/**
+ * @param {Vector3} p
+ * @param {number} n
+ * @returns {Vector3}
+ */
+const nudge = (p, n) => [p[0], p[1] + n * 0.5, p[2] - n * 0.866];
+
+/**
+ * @param {NativeCapture} capture
+ * @param {number} index
+ * @param {string} where
+ */
+function mesh(capture, index, where) {
+    const found = capture.meshes[index];
+    assert(found, `${where}: the capture holds no mesh ${index}`);
+    return found;
+}
+
+/**
+ * @param {PluginContext} context
+ * @returns {Promise<PluginOutcome>}
+ */
 export async function check(context) {
     const require = createRequire(import.meta.url);
     const hp = await HavokPhysics({
@@ -40,18 +72,20 @@ export async function check(context) {
         return body;
     });
     hp.HP_World_Step(world, 1 / 60);
-    const nudge = (p, n) => [p[0], p[1] + n * 0.5, p[2] - n * 0.866];
+    /** @type {Record<string, { markerErrors: number[] }>} */
     const details = {};
     try {
         for (const backend of context.backends) {
+            /** @type {Map<string, Vector3[]>} */
             const markersByPhase = new Map();
-            for (const phase of Object.values(context.results[backend])) {
+            for (const phase of Object.values(context.results[backend] ?? {})) {
                 const where = `${backend}/${phase.id}`;
-                const state = phase.capture;
+                const state = /** @type {NativeCapture} */ (phase.capture);
+                const cylinderMesh = mesh(state, 0, where);
                 hp.HP_World_ShapeProximityWithCollector(world, collector, [
                     cylinder,
-                    state.meshes[0].position,
-                    state.meshes[0].rotationQuaternion,
+                    cylinderMesh.position,
+                    cylinderMesh.rotationQuaternion,
                     10,
                     false,
                     [0n],
@@ -67,7 +101,7 @@ export async function check(context) {
                 )[1];
                 hp.HP_World_ShapeCastWithCollector(world, collector, [
                     cylinder,
-                    state.meshes[4].rotationQuaternion,
+                    mesh(state, 4, where).rotationQuaternion,
                     [-1, -2.5, 0],
                     [4, -2.5, 0],
                     false,
@@ -82,16 +116,17 @@ export async function check(context) {
                     collector,
                     0,
                 )[1];
-                const expected = [
-                    nudge(proximity[1][3], 0.08),
-                    nudge(proximity[2][3], 0.08),
-                    nudge(cast[2][3], 0.2),
-                ];
-                const markers = [2, 3, 7].map(
-                    (index) => state.meshes[index].position,
-                );
-                const errors = markers.map((marker, index) =>
-                    maxError(marker, expected[index]),
+                const pairs = [
+                    { index: 2, expected: nudge(proximity[1][3], 0.08) },
+                    { index: 3, expected: nudge(proximity[2][3], 0.08) },
+                    { index: 7, expected: nudge(cast[2][3], 0.2) },
+                ].map(({ index, expected }) => ({
+                    marker: mesh(state, index, where).position,
+                    expected,
+                }));
+                const markers = pairs.map(({ marker }) => marker);
+                const errors = pairs.map(({ marker, expected }) =>
+                    maxError(marker, expected),
                 );
                 assert(
                     Math.max(...errors) < 0.005,

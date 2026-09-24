@@ -7,14 +7,12 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
+import { textRecordModel } from "../src/lowering/text-records.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import {
-    materializePinnedText,
-    type CompiledTextData,
-    type TextBlob,
-} from "../src/pinned-text-data.js";
+import { materializePinnedText } from "../src/pinned-text-data.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
@@ -79,8 +77,12 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         return;
     }
     const directory = resolve("artifacts/test-text-runtime");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const context = new LoweringContext();
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     writeFileSync(
         resolve(directory, "upstream_text.hpp"),
         new TextLowerer(context).header(),
@@ -317,7 +319,7 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
 #include <stdexcept>
 int main() {
     using namespace bbl;
-    auto data = create_text_data({});
+    auto data = std::make_shared<TextDataState>();
     auto r = create_text_renderable(data);
     auto alias = r;
     auto other = create_text_renderable(data);
@@ -366,6 +368,7 @@ int main() {
         "/WX",
         "/fp:strict",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -544,7 +547,11 @@ test("deferred scene registration observes snapshot order, identity guards, fail
 
     const context = new LoweringContext(),
         directory = resolve("artifacts/test-text-registration");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     const source = new SceneLowerer(context).lowerCore({ text: true }).source;
     const ordinary = new SceneLowerer(context).lowerCore().source;
     assert.doesNotMatch(ordinary, /text_renderables|bblite\/text\.hpp/);
@@ -609,7 +616,7 @@ int main(){
         if(std::string(error.what())!="synchronous throw")return 17;
     }
     if(rejected_order!=${stringLiteral(rejectedOrder)})return 18;
-    auto data=create_text_data({});
+    auto data=std::make_shared<TextDataState>();
     auto r=create_text_renderable(data);
     TextRenderableOptions options; options.order=-5;
     auto other=create_text_renderable(data,options);
@@ -642,6 +649,7 @@ int main(){
         "/WX",
         "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -656,35 +664,23 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         return;
     }
     const directory = resolve("artifacts/test-text-storage");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const fontBytes = readAssetBytesSync(
         `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
         resolve(directory, "source.ts"),
     );
     const layout = { fontSizePx: 180, text: "A2C" };
-    const baked = materializePinnedText(fontBytes, layout)!;
-    const chunks: Buffer[] = [];
-    const blob = (encoded: string): TextBlob => {
-        const bytes = Buffer.from(encoded, "base64"),
-            assetOutput = `${chunks.length}.bin`;
-        chunks.push(bytes);
-        writeFileSync(resolve(directory, assetOutput), bytes);
-        return { assetOutput, sha256: "", byteLength: bytes.length };
-    };
-    const row: CompiledTextData = {
-        ...baked,
-        id: 0,
-        font: { source: "fixture-font", assetOutput: "font", sha256: "" },
+    const records = textRecordModel(new LoweringContext());
+    const baked = materializePinnedText(
+        fontBytes,
         layout,
-        instances: { ...baked.instances, bytes: blob(baked.instances.bytes) },
-        styles: { ...baked.styles, bytes: blob(baked.styles.bytes) },
-        atlases: baked.atlases.map((atlas) => ({
-            ...atlas,
-            curves: { ...atlas.curves, bytes: blob(atlas.curves.bytes) },
-            bands: { ...atlas.bands, bytes: blob(atlas.bands.bytes) },
-            metadata: { ...atlas.metadata, bytes: blob(atlas.metadata.bytes) },
-        })),
-    };
+        records.transportSchema(),
+    )!.data!;
+    for (const [index, base64] of baked.buffers.entries())
+        writeFileSync(
+            resolve(directory, `${index}.bin`),
+            Buffer.from(base64, "base64"),
+        );
     interface PinData {
         width: number;
         height: number;
@@ -695,7 +691,14 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         _dirtyEnd: number;
         _instanceCount: number;
         _styleCount: number;
-        _groups: Array<{ _bindGroup: object | null }>;
+        _instances: Float32Array;
+        _styles: Float32Array;
+        _groups: Array<{
+            _bindGroup: object | null;
+            _slotStart: number;
+            _slotCount: number;
+            _liveCount: number;
+        }>;
         _storage: {
             _curveSets: Map<string, { _atlas: { _gpu: object | null } }>;
         };
@@ -717,15 +720,28 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         layout.fontSizePx,
         layout.text,
     );
-    assert.deepEqual(baked.versions, {
-        data: data._version,
-        style: data._styleVersion,
-        layout: data._layoutVersion,
-    });
-    assert.deepEqual(baked.dirtyRange, {
-        start: data._dirtyStart,
-        end: data._dirtyEnd,
-    });
+    const pinned = {
+        width: data.width,
+        height: data.height,
+        versions: [data._version, data._styleVersion, data._layoutVersion],
+        dirty: [data._dirtyStart, data._dirtyEnd],
+        instances: Buffer.from(
+            data._instances.buffer,
+            data._instances.byteOffset,
+            data._instanceCount * 12,
+        ),
+        styles: Buffer.from(
+            data._styles.buffer,
+            data._styles.byteOffset,
+            data._styles.byteLength,
+        ),
+        groups: data._groups.map((group) => [
+            group._slotStart,
+            group._slotCount,
+            group._liveCount,
+        ]),
+        atlases: data._storage._curveSets.size,
+    };
     let destroyed = "";
     for (const set of data._storage._curveSets.values())
         set._atlas._gpu = {
@@ -741,21 +757,11 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
     assert.equal(data._groups.length, 0);
     assert.equal(data._instanceCount, 0);
     assert.equal(data._styleCount, 0);
-    assert.equal(data._storage._curveSets.size, baked.atlases.length);
+    assert.equal(data._storage._curveSets.size, pinned.atlases);
     assert.equal(destroyed, "");
     pin.disposeDefaultTextData(data);
     pin.disposeDefaultTextData(data);
-    assert.equal(destroyed, "cbm".repeat(baked.atlases.length));
-    assert.equal(data.width, baked.width);
-    assert.equal(data.height, baked.height);
-    assert.deepEqual(
-        {
-            data: data._version,
-            style: data._styleVersion,
-            layout: data._layoutVersion,
-        },
-        baked.versions,
-    );
+    assert.equal(destroyed, "cbm".repeat(pinned.atlases));
     const text = await importPinnedModule<{
         createTextRenderable(
             this: void,
@@ -775,10 +781,16 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
     assert.ok(!Object.is(configured._worldMatrix()[12], -0));
     const context = new LoweringContext(),
         lowerer = new TextLowerer(context);
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     writeFileSync(resolve(directory, "upstream_text.hpp"), lowerer.header());
-    const expression = lowerer.dataExpression(
-        row,
-        (blob) => `read(${stringLiteral(blob.assetOutput)})`,
+    // The pin's own DefaultTextData, rebuilt from its transported records.
+    const expression = records.transportCpp(
+        baked,
+        { kind: "record", name: "DefaultTextData" },
+        (index) => `js::ArrayBuffer(read("${index}.bin"))`,
     );
     const cpp = `#include "upstream_text.hpp"
 #include <fstream>
@@ -788,27 +800,22 @@ int main(){
     using namespace bbl;
     auto first=${expression};auto second=${expression};auto alias=first;
     if(first==second || alias!=first) return 1;
-    if(first->payload->width!=${row.width} || first->payload->height!=${row.height} || first->version!=${row.versions.data} ||
-        first->style_version!=${row.versions.style} || first->layout_version!=${row.versions.layout} || first->dirty_start!=${row.dirtyRange.start} || first->dirty_end!=${row.dirtyRange.end})return 2;
-    const auto& payload=*first->payload;
-    if(payload.instances.capacity_bytes!=${row.instances.capacityBytes} || payload.instances.stride_bytes!=${row.instances.strideBytes} ||
-        payload.styles.capacity_bytes!=${row.styles.capacityBytes} || payload.styles.stride_bytes!=${row.styles.strideBytes}) return 3;
+    if(first->width!=${pinned.width} || first->height!=${pinned.height} || first->version!=${pinned.versions[0]} ||
+        first->style_version!=${pinned.versions[1]} || first->layout_version!=${pinned.versions[2]} || first->dirty_start!=${pinned.dirty[0]} || first->dirty_end!=${pinned.dirty[1]})return 2;
+    if(first->runs!=first->runs_ || first->storage->curve_sets.size()!=${pinned.atlases}) return 3;
     std::ofstream output("bytes.bin",std::ios::binary);
-    auto dump=[&](const auto& bytes){output.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));};
-    dump(payload.instances.bytes);dump(payload.styles.bytes);
-    for(const auto& atlas:payload.atlases){dump(atlas.curves.bytes);dump(atlas.bands.bytes);dump(atlas.metadata.bytes);}
-    ${row.atlases.map((atlas, index) => `if(payload.atlases[${index}].curves.width!=${atlas.curves.width} || payload.atlases[${index}].curves.height!=${atlas.curves.height} || payload.atlases[${index}].curves.used_texels!=${atlas.curves.usedTexels} || payload.atlases[${index}].metadata.capacity_bytes!=${atlas.metadata.capacityBytes} || payload.atlases[${index}].version!=${atlas.version}) return 4;`).join("\n")}
-    ${row.groups.map((group, index) => `if(first->groups[${index}].slot_start!=${group.slotStart} || first->groups[${index}].slot_count!=${group.slotCount} || first->groups[${index}].live_count!=${group.liveCount} || first->groups[${index}].atlas_index!=${group.atlasIndex}) return 5;`).join("\n")}
+    auto dump=[&](const auto& values,std::size_t count){output.write(reinterpret_cast<const char*>(values.buffer().data()+values.byte_offset()),static_cast<std::streamsize>(count));};
+    dump(first->instances,static_cast<std::size_t>(first->instance_count)*12);dump(first->styles,first->styles.byte_length());
+    ${pinned.groups.map(([start, count, live], index) => `if(first->groups[${index}]->slot_start!=${start} || first->groups[${index}]->slot_count!=${count} || first->groups[${index}]->live_count!=${live}) return 5;`).join("\n")}
     std::string destroyed;
-    for(auto& gpu:first->atlas_gpu){gpu=std::make_shared<TextAtlasGpuState>();gpu->destroy_curves=[&]{destroyed+="c";};gpu->destroy_bands=[&]{destroyed+="b";};gpu->destroy_metadata=[&]{destroyed+="m";};}
-    for(auto& group:first->groups)group.bind_group=std::make_shared<int>(1);
+    for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<TextAtlasGpuState>();gpu->destroy_curves=[&]{destroyed+="c";};gpu->destroy_bands=[&]{destroyed+="b";};gpu->destroy_metadata=[&]{destroyed+="m";};entry.second->atlas->gpu=gpu;}
+    for(auto& group:first->groups)group->bind_group=std::make_shared<int>(1);
     auto rendered=create_text_renderable(first);first.reset();
     dispose_text_data(alias);
-    if(!alias->groups.empty() || alias->instance_count || alias->style_count || !destroyed.empty() || alias->atlas_gpu.size()!=${row.atlases.length})return 6;
+    if(!alias->groups.empty() || alias->instance_count!=0 || alias->style_count!=0 || !destroyed.empty() || alias->storage->curve_sets.size()!=${pinned.atlases})return 6;
     dispose_default_text_data(alias);dispose_default_text_data(rendered->data);
-    if(destroyed!=${stringLiteral(destroyed)} || !alias->atlas_gpu.empty() || rendered->data->payload->width!=${data.width} ||
-        rendered->data->version!=${data._version} || rendered->data->style_version!=${data._styleVersion})return 7;
-    if(second->groups.empty() || !second->instance_count) return 8;
+    if(destroyed!=${stringLiteral(destroyed)} || alias->storage->curve_sets.size()!=0 || rendered->data->width!=${pinned.width})return 7;
+    if(second->groups.empty() || second->instance_count==0) return 8;
     TextRenderableOptions options;options.position=Vec3d{-0.0,0,0};options.scaling=Vec3d{1,1,1};options.rotation_quaternion=TextQuaternion{0,0,0,1};options.opacity=0;options.ignore_depth=true;options.order=0;
     auto r=create_text_renderable(second,options);
     if(!std::signbit(r->position.x) || std::signbit(text_world_matrix(*r)[12]) || r->opacity || r->order || !r->ignore_depth)return 9;
@@ -824,6 +831,7 @@ int main(){
         "/W4",
         "/WX",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -831,6 +839,6 @@ int main(){
     execFileSync(exe, [], { cwd: directory, stdio: "pipe" });
     assert.deepEqual(
         readFileSync(resolve(directory, "bytes.bin")),
-        Buffer.concat(chunks),
+        Buffer.concat([pinned.instances, pinned.styles]),
     );
 });

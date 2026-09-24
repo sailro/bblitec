@@ -18,8 +18,17 @@
  */
 import ts from "typescript";
 import { floatLiteral } from "../cpp-literals.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
-import { LoweringContext } from "./context.js";
+import {
+    nullishDefault,
+    sharedPinnedContext,
+    unwrapExpression,
+    type LoweringContext,
+} from "./context.js";
+import {
+    pinnedDefaultValue,
+    samePinnedDefault,
+    type PinnedDefaultValue,
+} from "./pinned-option-defaults.js";
 
 export interface PinnedMaterialDefault {
     /**
@@ -39,9 +48,6 @@ export interface PinnedMaterialDefault {
      */
     readonly divergentSites?: true;
 }
-
-/** A default as the pin states it. */
-export type PinnedDefaultValue = number | boolean | readonly number[];
 
 const clearcoatModule = "src/material/pbr/fragments/clearcoat-fragment.ts";
 const iridescenceModule = "src/material/pbr/fragments/iridescence-fragment.ts";
@@ -228,66 +234,22 @@ export function pinnedDefaultForDiscard(
 function nullishGuardedProperty(
     expression: ts.BinaryExpression,
 ): string | undefined {
-    let node: ts.Expression = expression.left;
-    while (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    const guarded = nullishDefault(expression);
+    if (!guarded) return undefined;
+    let node = guarded.left;
+    for (
+        let chained = nullishDefault(node);
+        chained;
+        chained = nullishDefault(node)
     ) {
-        node = node.left;
+        node = chained.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
-    if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
-        return node.name.text;
-    }
+    node = unwrapExpression(node);
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
     return ts.isIdentifier(node) ? node.text : undefined;
 }
 
-let context: LoweringContext | undefined;
 const derived = new Map<string, readonly PinnedDefaultValue[]>();
-
-/**
- * The constant a `?? <default>` right side states, or undefined where it
- * reads another value (the reflectance chain's `_metallicF0Factor`) rather
- * than a constant.
- */
-function constantDefault(
-    reader: LoweringContext,
-    expression: ts.Expression,
-    file: ts.SourceFile,
-): PinnedDefaultValue | undefined {
-    const node = reader.unwrapExpression(expression);
-    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-    if (ts.isArrayLiteralExpression(node)) {
-        return node.elements.map((element) =>
-            reader.numericValue(element, file),
-        );
-    }
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-    ) {
-        return constantDefault(reader, node.right, file);
-    }
-    if (
-        ts.isPropertyAccessExpression(node) ||
-        ts.isPropertyAccessChain(node) ||
-        (ts.isIdentifier(node) && !reader.pinnedConstant(file, node.text))
-    ) {
-        return undefined;
-    }
-    return reader.numericValue(node, file);
-}
-
-function sameDefault(
-    left: PinnedDefaultValue,
-    right: PinnedDefaultValue,
-): boolean {
-    return Array.isArray(left) && Array.isArray(right)
-        ? left.length === right.length &&
-              left.every((lane, index) => lane === right[index])
-        : left === right;
-}
 
 /**
  * The pin's constant defaults at every site the entry's property is written,
@@ -301,8 +263,7 @@ export function pinnedDefaultSites(
 ): readonly PinnedDefaultValue[] {
     const cached = derived.get(entry.pinned);
     if (cached) return cached;
-    context ??= new LoweringContext(sharedUpstreamStore());
-    const reader: LoweringContext = context;
+    const reader: LoweringContext = sharedPinnedContext();
     const [module, ...rest] = entry.pinned.split("#");
     const property = rest.pop();
     const symbol = rest.join("#");
@@ -317,12 +278,10 @@ export function pinnedDefaultSites(
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken &&
                 nullishGuardedProperty(node) === property,
         )
         .flatMap((site) => {
-            const value = constantDefault(reader, site.right, file);
+            const value = pinnedDefaultValue(reader, site.right, file);
             return value === undefined ? [] : [{ site, value }];
         });
     // `const max = thick?.max ?? 1`: the local the pin binds the property
@@ -349,7 +308,7 @@ export function pinnedDefaultSites(
     }
     if (
         !entry.divergentSites &&
-        sites.some(({ value }) => !sameDefault(value, mirrored.value))
+        sites.some(({ value }) => !samePinnedDefault(value, mirrored.value))
     ) {
         reader.contractError(
             declaration,

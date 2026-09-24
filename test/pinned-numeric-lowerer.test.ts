@@ -25,6 +25,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
     type PinnedNumericScope,
+    type PinnedRecordShape,
 } from "../src/lowering/pinned-numeric-lowerer.js";
 
 function lower(
@@ -76,6 +77,13 @@ test("loop and branch locals preserve outer bindings and avoid native shadowing"
     assert.match(cpp, /double p_1 = 9.0/);
     assert.match(cpp, /\{\n {4}double p_1 = 4.0;/);
     assert.match(cpp, /p \+= pi_1;$/);
+});
+
+test("a number declared from a counted loop index converts explicitly", () => {
+    const cpp = lower(
+        "let total = 0; for (let start = 0; start < 4; start++) { let left = start; total += left; }",
+    );
+    assert.match(cpp, /double left = static_cast<double>\(start\);/);
 });
 
 test("shared statement lowering handles continue and ordered scalar assignment chains", () => {
@@ -223,6 +231,113 @@ test("native typed-array chains capture indices before writes and preserve unrou
             () => lower(source, bindings),
             /scalar chained assignment targets/,
         );
+});
+
+// The recast-navigation generators' `dtIlog2`/`dtNextPow2` shapes: compound
+// bitwise stores on number locals, an array literal the body indexes and
+// updates, and a `const` object whose members the body writes. Each is
+// checked against JavaScript's own evaluation of the same statements.
+test("compound bitwise stores, array literals and written const records run as JavaScript does", (t) => {
+    const source =
+        "let v = 4097; let r = 0; let shift = 0; " +
+        "r = Number(v > 0xffff) << 4; v >>= r; " +
+        "shift = Number(v > 0xff) << 3; v >>= shift; r |= shift; " +
+        "shift = Number(v > 0xf) << 2; v >>= shift; r |= shift; " +
+        "shift = Number(v > 0x3) << 1; v >>= shift; r |= shift; r |= v >> 1; " +
+        "let w = -5; w >>>= 1; let a = 13; a &= 6; a ^= 3; a <<= 30; " +
+        "const b = [1.5, 2, 3]; b[0] -= 0.25; b[2] += b[1]; " +
+        "const p = { x: Infinity, y: 0, z: 0 }; p.x = Math.min(p.x, 3);";
+    const body = lower(source, [], {
+        calls: new Map([
+            ["Number", (args) => `static_cast<double>(${args[0]})`],
+            [
+                "Math.min",
+                (args) => `bbl::js::math_extreme<false>({${args.join(", ")}})`,
+            ],
+        ]),
+        vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+    });
+    assert.match(
+        body,
+        /v = static_cast<double>\(bbl::js::shift_right\(v, r\)\);/,
+    );
+    assert.match(
+        body,
+        /r = static_cast<double>\(bbl::js::bitwise_or\(r, bbl::js::shift_right\(v, 1\.0\)\)\);/,
+    );
+    assert.match(body, /std::vector<double> b\{1\.5, 2\.0, 3\.0\};/);
+    assert.match(body, /^Vec3d p = /m);
+    // The same statements, run by JavaScript itself.
+    const expected = ((): number[] => {
+        let v = 4097;
+        let r = Number(v > 0xffff) << 4;
+        v >>= r;
+        let shift = Number(v > 0xff) << 3;
+        v >>= shift;
+        r |= shift;
+        shift = Number(v > 0xf) << 2;
+        v >>= shift;
+        r |= shift;
+        shift = Number(v > 0x3) << 1;
+        v >>= shift;
+        r |= shift;
+        r |= v >> 1;
+        let w = -5;
+        w >>>= 1;
+        let a = 13;
+        a &= 6;
+        a ^= 3;
+        a <<= 30;
+        const b = [1.5, 2, 3];
+        b[0]! -= 0.25;
+        b[2]! += b[1]!;
+        const p = { x: Infinity, y: 0, z: 0 };
+        p.x = Math.min(p.x, 3);
+        return [r, w, a, b[0]!, b[2]!, p.x];
+    })();
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const output = resolve("artifacts/pinned-numeric-bitwise-stores");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <bblite/runtime.hpp>
+        #include <cassert>
+        struct Vec3d { double x; double y; double z; };
+        int main() {
+            ${body}
+            const double seen[] = {r, w, a, b[0], b[2], p.x};
+            const double expected[] = {${expected.join(", ")}};
+            for (int index = 0; index < 6; ++index) assert(seen[index] == expected[index]);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/Od",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    // An integer loop index would narrow the stored number again.
+    assert.throws(
+        () => lower("for (let i = 0; i < 4; i++) { i |= 1; }"),
+        /compound bitwise assignment to a non-scalar/,
+    );
 });
 
 test("caller substitutions can name later local declarations", () => {
@@ -743,4 +858,151 @@ test("stores an in-place method back over its own receiver as the mutation", () 
         },
     );
     assert.equal(copied.trim(), "indices = copy_of(indices);");
+});
+
+// The pin's own growable lists of object records (`_ClusteredActiveLight[]`):
+// the shared translator owns JavaScript's array operations over them, so a
+// caller names only the native struct each element is.
+const itemShape: PinnedRecordShape = {
+    cpp: "Item",
+    members: [
+        {
+            name: "node",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `(*${owner}.node)`, type: "opaque" }],
+                    [
+                        ".weight",
+                        { cpp: `${owner}.node->weight`, type: "scalar" },
+                    ],
+                ]),
+            store: (value) => `&${value}`,
+        },
+        {
+            name: "depth",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.depth`, type: "scalar" }],
+                ]),
+            store: (value) => value,
+        },
+        {
+            name: "extra",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    [
+                        "",
+                        {
+                            cpp: `${owner}.extra`,
+                            type: "opaque",
+                            absentCpp: `${owner}.extra == nullptr`,
+                        },
+                    ],
+                ]),
+            store: (value) => `&${value}`,
+            absent: "nullptr",
+        },
+    ],
+};
+const nodeShape: PinnedRecordShape = {
+    cpp: "Node",
+    members: [
+        {
+            name: "weight",
+            read: (owner) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.weight`, type: "scalar" }],
+                ]),
+            store: (value) => value,
+        },
+    ],
+};
+
+test("lowers JavaScript's array operations over a record list", () => {
+    const emitted = lower(
+        "items.length = 0;\n" +
+            "for (const node of nodes) { if (node.weight > 0) { items.push({ node, depth: node.weight * 2 }); } }\n" +
+            "items.sort((a, b) => a.depth - b.depth);\n" +
+            "for (let i = 0; i < items.length; i++) { const { node, depth } = items[i]!; total += node.weight + depth; }\n" +
+            "const first = nodes[0]!; total += first.weight;",
+        [
+            ["items", { cpp: "items", type: "record-list", record: itemShape }],
+            ["nodes", { cpp: "nodes", type: "record-list", record: nodeShape }],
+            ["total", { cpp: "total", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /items\.clear\(\);/);
+    assert.match(emitted, /for \(const auto& node : nodes\)/);
+    // Members in the struct's order; the optional one left out is absent.
+    assert.match(
+        emitted,
+        /items\.push_back\(Item\{&node, \(node\.weight \* 2\.0\), nullptr\}\);/,
+    );
+    // ES2019's stable sort, under the comparator's own `< 0`.
+    assert.match(
+        emitted,
+        /std::stable_sort\(items\.begin\(\), items\.end\(\), \[&\]\(const Item& a, const Item& b\) \{ return \(\(a\.depth - b\.depth\)\) < 0\.0; \}\);/,
+    );
+    assert.match(emitted, /i < static_cast<double>\(items\.size\(\)\)/);
+    assert.match(
+        emitted,
+        /const auto& (pinned_\d+_\d+) = items\[static_cast<std::size_t>\(i\)\];\n\s+total \+= \(\1\.node->weight \+ \1\.depth\);/,
+    );
+    assert.match(
+        emitted,
+        /const auto& first = nodes\[static_cast<std::size_t>\(0\.0\)\];\ntotal \+= first\.weight;/,
+    );
+});
+
+test("refuses a record list store it cannot mean", () => {
+    const items: [string, PinnedBinding] = [
+        "items",
+        { cpp: "items", type: "record-list", record: itemShape },
+    ];
+    assert.throws(
+        () => lower("items.length = 2;", [items]),
+        /list length store other than 0/,
+    );
+    assert.throws(
+        () => lower("items.push({ depth: 1 });", [items]),
+        /Item literal without 'node'/,
+    );
+    assert.throws(
+        () =>
+            lower("const sorted = items.sort((a, b) => a.depth - b.depth);", [
+                items,
+            ]),
+        /record list sort/,
+    );
+});
+
+test("keeps a truth-initialized local boolean through logical stores", () => {
+    const emitted = lower(
+        "let dirty = a !== b; let flags = 0; flags |= 2; dirty ||= (flags & 2) !== 0; const fresh = Number.NaN;",
+        [
+            ["a", { cpp: "a", type: "scalar" }],
+            ["b", { cpp: "b", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /bool dirty = \(a != b\);/);
+    assert.match(
+        emitted,
+        /flags = static_cast<double>\(bbl::js::bitwise_or\(flags, 2\.0\)\);/,
+    );
+    assert.match(
+        emitted,
+        /dirty = dirty \|\| \(\(bbl::js::bitwise_and\(flags, 2\.0\) != 0\.0\)\);/,
+    );
+    assert.match(
+        emitted,
+        /const double fresh = std::numeric_limits<double>::quiet_NaN\(\);/,
+    );
+    assert.throws(
+        () => lower("let total = 1; total ||= 2;"),
+        /'\|\|=' over a non-boolean/,
+    );
+    assert.throws(
+        () => lower("let dirty = false; dirty = 3;"),
+        /non-boolean store into a boolean local/,
+    );
 });

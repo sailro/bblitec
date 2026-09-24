@@ -14,7 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import ts from "typescript";
-import { pinnedModuleExport } from "../lowering/pinned-shader-builders.js";
+import { pinnedModuleFunction } from "../lowering/pinned-shader-builders.js";
 import { isShaderSystemMatrix } from "../shader-ir.js";
 import { shaderUniformValueLayout } from "../shader-material-programs.js";
 import { validateObjectProperties } from "./option-helpers.js";
@@ -192,7 +192,7 @@ function foldGridMaterial(options: Record<string, unknown>): {
     program: Omit<CompiledShaderProgram, "name">;
     uniforms: FoldedUniform[];
 } {
-    const material = pinnedModuleExport(
+    const material = pinnedModuleFunction(
         gridModule,
         "createGridMaterial",
     )(options);

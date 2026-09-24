@@ -14,12 +14,13 @@ import {
     setShaderUniform,
     setShaderVector3,
     startEngine,
+    type ShaderUniformOption,
 } from "@babylonjs/lite";
 
 const CARD_VERTEX = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
 @vertex fn mainVertex(input:VertexInput)->VertexOutput{let c=cos(shaderUniforms.angle);let s=sin(shaderUniforms.angle);let local=input.position.xy*1.65;let rotated=vec2<f32>(local.x*c-local.y*s,local.x*s+local.y*c);let world=shaderUniforms.center+rotated;var out:VertexOutput;out.position=vec4<f32>(world.x/3.3,world.y/2.2,shaderUniforms.depth,1.0);return out;}`;
 const CARD_FRAGMENT = `@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(shaderUniforms.color,shaderUniforms.opacity);}`;
-const CARD_UNIFORMS = [
+const CARD_UNIFORMS: readonly ShaderUniformOption[] = [
     { name: "center", type: "vec2<f32>" },
     { name: "angle", type: "f32" },
     { name: "depth", type: "f32" },

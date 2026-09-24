@@ -1,3 +1,4 @@
+import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
@@ -20,7 +21,6 @@ export type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
-    | "lookupIdentifierValue"
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
@@ -350,7 +350,7 @@ function compileObjectAssign(
         }
         const properties = fresh
             ? { ...target.recordProperties }
-            : (target.recordProperties ??= {});
+            : (writable(target).recordProperties ??= {});
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
                 const existing = properties[key];
@@ -371,14 +371,14 @@ function compileObjectAssign(
                         source,
                     );
                     context.emit(`${existing.cpp} = ${stored};`);
-                    properties[key] = {
+                    writable(properties)[key] = {
                         kind: scalarKind,
                         cpp: existing.cpp,
                         dataType: { kind: scalarKind },
                     };
                     continue;
                 }
-                properties[key] = value;
+                writable(properties)[key] = value;
             }
         }
         return fresh ? { ...target, recordProperties: properties } : target;
@@ -409,7 +409,7 @@ function compileObjectAssign(
         // binding the target was read from, not only on this read of it.
         context.bindings.invalidateRecordProperties(target);
         const bound = ts.isIdentifier(targetExpression)
-            ? context.lookupIdentifierValue(targetExpression)
+            ? context.bindings.lookupOptional(targetExpression)
             : undefined;
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);

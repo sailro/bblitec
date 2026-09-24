@@ -17,6 +17,7 @@ import {
     computeBuildStamp,
     deployedPayloads,
 } from "../build-stamp.js";
+import { readCompiledSceneManifest } from "./generated-readers.js";
 
 /**
  * Runs `body` with one environment variable set (or, for `undefined`,
@@ -225,27 +226,6 @@ export function spawnNativeMeasured(
 }
 
 /**
- * Whether the generated tree's scene presents through the native Window
- * host: its manifest carries the `platform:window` feature.
- */
-function presentsThroughWindowHost(generatedDirectory: string): boolean {
-    const path = resolve(generatedDirectory, "manifest.json");
-    if (!existsSync(path)) {
-        throw new Error(
-            `The generated tree has no manifest.json (${path}); run 'scene -- compile' first.`,
-        );
-    }
-    const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const features =
-        typeof manifest === "object" &&
-        manifest !== null &&
-        "features" in manifest
-            ? manifest.features
-            : undefined;
-    return Array.isArray(features) && features.includes("platform:window");
-}
-
-/**
  * The Window host paces presentation on the desktop compositor's clock,
  * which does not tick while the Windows console session is locked or where
  * no compositor runs; a run then waits forever instead of failing.
@@ -266,9 +246,12 @@ export function nativeRunBound(
     frames: number,
     timeoutMs: number | undefined,
 ): Pick<NativeSpawnOptions, "timeoutMs" | "timeoutCause"> {
+    // The Window host presents a scene whose manifest carries `platform:window`.
     if (
         generatedDirectory === undefined ||
-        !presentsThroughWindowHost(generatedDirectory)
+        !readCompiledSceneManifest(generatedDirectory).features.includes(
+            "platform:window",
+        )
     ) {
         return timeoutMs === undefined ? {} : { timeoutMs };
     }

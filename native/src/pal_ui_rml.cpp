@@ -1,3 +1,8 @@
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_dom_input.hpp>
+#include <bblite/features/has_image_decoder.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/pal_ui.hpp>
 #include <bblite/ui_selector.hpp>
 #include <bblite/pal_dom_events.hpp>
@@ -175,9 +180,6 @@ std::string normalize_html_entities_for_rml(std::string_view markup) {
 }
 
 UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
-    if (handle.value >= engine.ui_elements.size()) {
-        throw std::runtime_error("Native UI element handle is out of range.");
-    }
     return handle_at(engine.ui_elements, handle);
 }
 

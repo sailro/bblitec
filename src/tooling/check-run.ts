@@ -90,6 +90,7 @@ export interface CheckVerdict {
 export interface ObservationsReport {
     sourceSha256?: string;
     moduleSha256?: string;
+    referenceSearch?: string;
     referenceSha256?: string;
     captureFrames?: Array<{ frame: number; image?: string; state?: unknown }>;
     steps?: Array<{

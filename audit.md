@@ -56,7 +56,7 @@ and performance.
 | RDN-9 | low | UI composite WGSL duplicated. | One compositor per backend. | fixed |
 | RDN-10 | low | Dawn hand-writes bind-group layouts. | One keyed layout cache; sprite UBO size from the generated writer. Remaining: layouts from `.slots`/reflection. | partial |
 | RDN-11 | low | Recast wrapper defaults copied without version provenance. | Emitted from the pinned wrapper packages, whose versions are recorded. | fixed |
-| RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Lower them from the pinned wrapper or emit their constants. | open |
+| RDN-12 | low | The Recast wrapper's query half-extents, generator config transforms and 2048-node path query are hand ports (`pal_navigation_recast.cpp`). | Query half-extents and the 2048-node pool are emitted from the pinned wrapper and read by every search. Each generator's build-config step (`generateSoloNavMeshData`/`generateTileCache`: region areas squared, detail sampling in cells, tile grid, padded tile extent) is lowered from the installed generators package into the generated navigation header and handed to the PAL over `NavRcConfig`; the hand port is deleted. | fixed |
 | RDN-13 | low | The pin sorts sprite `_layers` in place; native builds a fresh permutation each frame, so ties after an order change differ. | Stable in-place sort. | open |
 | RDN-14 | low | Billboard sorting under a floating origin and Sprite2D pivots use float where the pin uses numbers (205/206 identical today). | Double lanes. | open |
 | RDN-15 | low | `update_surface_cameras` gives every scene the primary frame delta, wrong for a scene with its own `fixedDeltaMs`. | Per-scene delta. | open |
@@ -65,6 +65,9 @@ and performance.
 | RDN-18 | low | A camera-less overlay or utility layer projects through the base camera on Dawn and the SDL_GPU swapchain overlay, and through none on SDL_GPU graph layers; the pin uses each layer's `cfg.cam ?? scene.camera`. | Align both backends on the pin. | open |
 | RDN-19 | low | Animation seek harness and glTF group operations (`set_animation_current_time`, `set_animation_speed_ratio`, `go_to_frame`, additive setters) take float where the pin passes numbers. | Double parameters. | open |
 | RDN-20 | med | The camera-less pass contract is ~26 `if (camera)` arms per backend, and render-task-base's `cfg.cam ?? scene.camera` / `cfg.clrColor ?? sc.clearColor` resolution is transcribed in each backend. | Lower the pass resolution once into an `upstream::` function; one shared pass-camera builder yielding the zero block; lowered pinned early returns do the per-renderable skips. | open |
+| RDN-21 | med | Tile-cache builds defaulted `expectedLayersPerTile` to the wrapper's 4; the pinned `_createNavMeshFromMerged` resolves `?? 1` first. | `createNavMesh` emits the pinned default read from the module; the PAL requires the key. | fixed |
+| RDN-22 | low | The PAL threw on a refused obstacle add, leaving the generated null check dead. | The PAL returns an empty optional and the generated layer refuses. | fixed |
+| RDN-23 | low | Arithmetic the generators hand to Detour after the config step is hand-ported in the PAL: solo `NavMeshCreateParams` walkable values and `buildBvTree`, tile-cache params and `maxTiles`, the tile/poly bit split (`dtIlog2`/`dtNextPow2`), `NavMeshParams.tileWidth`, `getBoundingBox` and `createRcConfig`'s spread. | Extend the step lowering to the arguments the generators pass to those Detour calls. | open |
 
 ## Compiler core (CC)
 
@@ -86,7 +89,7 @@ and performance.
 | CC-14 | high | Silent miscompiles: static blocks dropped, `Object.assign` on handles erased, embedded NUL truncated. | Static blocks and handle `Object.assign` refuse; NUL-containing strings keep their length. | fixed |
 | CC-15 | high | `??=` onto a nullable class reference emitted nothing. | Presence-guarded store. | fixed |
 | CC-16 | med | Lazy singletons (`let c: C \| null = null; c = new C()`) refused. | Rebound locals store their declared type. | fixed |
-| CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | One lookup spelling; a lookup hook for the two folds. | open |
+| CC-17 | low | `lookupIdentifierValue` restates `bindings.lookupOptional` (55 callers), and 11 context interfaces redeclare `bindings` because two folds narrow it to lookups. | `bindings.lookupOptional` is the one lookup (51 callers moved); the two narrowing folds take a `StaticFoldContext`, so no context redeclares `bindings`. | fixed |
 | CC-18 | med | Colour-shape refusals (DEAD-13) are placed per site; the compiler never reads TypeScript assignability diagnostics, which would refuse every off-API object shape at once. | Refuse user sources on assignability diagnostics, measured over the corpus first; at minimum decide colour shape from the contextual type. | open |
 
 ## Lowering layer (LW)
@@ -104,6 +107,7 @@ and performance.
 | LW-9 | med | Pinned constants read 7 ways. | Public `pinnedConstant` family. | fixed |
 | LW-10 | low | Dead lowering exports. | Deleted. | fixed |
 | LW-11 | med | Pinned UBO-writer, glTF-leaf and SH-prescale scopes compute in float (`math_extreme_lane`, `scalarPrecision`, the deduced width) where the pin computes in double and rounds at the Float32Array store. | Compute every pinned numeric scope in double and convert at the typed-array sink; delete the width options. | open |
+| LW-12 | low | About 12 modules outside `src/lowering` still build their own `new LoweringContext(sharedUpstreamStore())` instead of `sharedPinnedContext()`. | Use the shared context. | open |
 
 ## Native PAL (NT)
 
@@ -123,12 +127,13 @@ and performance.
 | NT-12 | low | 8-way backend `#if` matrix. | `pal_gpu_dispatch.hpp` table. | fixed |
 | NT-13 | med | `synchronize()`'s internal order (overlay refresh, rematch, draw lists, plan-mesh sync, storage publication, submit, camera update) is written per backend and still differs (storage publication). | A shared `synchronize_scene<Backend>` in the frame conductor owning the order, with backend hooks (with NT-4). | open |
 | NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | One `cmake -P` record script invoked by builders and doctor; artifacts record their variants; portfiles read PATCHES from the manifest. | open |
+| NT-15 | low | Three Dawn invalid-handle checks raise `GpuTransportError` (reaching the device-recovery listeners) where the SDL_GPU equivalents raise `std::runtime_error`. | One classification for an invalid handle on both backends. | open |
 
 ## Generated C++ (GC)
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
-| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges records against the scene's peak. Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
+| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges occupied records against the meshes the scene draws (doom 178 for 178, tetris 46 for 46, minecraft 455 for 455). Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
 | GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates. | fixed |
 | GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
 | GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Every generated access goes through `recordAt` → `bbl::handle_at` (registry: 24,699 direct sites → 0); bounds and the mesh generation are checked in every build (≤0.6% of a cold frame), so a retired mesh's handle throws. The check found an SDL_GPU sync of the previous plan after mesh retirement, now fixed. | fixed |
@@ -144,7 +149,7 @@ and performance.
 | GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | `float32Literal` and `floatLiteral` spell a float32-midpoint double as `Math.fround` stores it; table literals defer to them. | fixed |
 | GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
 | GC-16 | med | Physics node refs, property-animation targets, animated-mesh bindings and light include/exclude lists name a mesh by slot without its generation (`mesh_slot_handle` stopgap), so the retired-mesh check cannot see them. | Store `MeshHandle`s. | open |
-| GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | Route them through `handle_at`; keep the slot allocator raw. | open |
+| GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | `runtime.hpp` render-task, material, asset, storage-buffer and CSM helpers go through `handle_at`/`handle_find` (one shared validity predicate); the slot allocator stays raw. | fixed |
 | GC-18 | med | `handle_at` checks a generation only when the handle type carries one, so slot-only references (`PhysicsNodeRef`, `mesh_slot_handle` callers) pass unchecked and retirement scans child lists to protect them. | Store `MeshHandle`s (a variant for physics nodes), make a generation-carrying table reject generation-less handles at compile time, delete `mesh_slot_handle`. | open |
 | GC-19 | low | Slot reuse waits on `composition_feature_rows_initialized`, and `composition_feature_mesh` falls back to the creation ordinal, because composition rows have two identities. | Assign the row in `store_mesh_record` (clones take their source's). | open |
 
@@ -186,7 +191,7 @@ and performance.
 | TL-2 | med | 8 of 25 scene commands restated others. | 21 commands; parity measures both backends by default. | fixed |
 | TL-3 | med | Four sizing tools. | `scene -- survey`. | fixed |
 | TL-4 | med | PowerShell packaging re-implements TypeScript helpers. | Move desktop packaging into TypeScript. | open |
-| TL-5 | med | Tools import `dist/src` unchecked. | Import-name test. Remaining: `checkJs` reports real errors in `checks/plugins/break-meshes-timing.mjs`, `ocean-controls.mjs` and `tools/android-smoke.mjs` beside inference noise. | partial |
+| TL-5 | med | Tools import `dist/src` unchecked. | `tsconfig.tools.json` (strict + `checkJs`) checks tools/ and checks/plugins/ at 0 errors through `npm run lint:tools` (part of `lint`); the build emits declarations; the import-name test is subsumed and deleted. Remaining: the three `checks/plugins/*.init.js` browser scripts (TL-24). | fixed |
 | TL-6 | med | Backend names and `--exe` accepted inconsistently. | One backend parser; `BBLITE_NATIVE_EXE` for every measuring command. | fixed |
 | TL-7 | med | Seek handled 3 ways; `parity --seek` could overwrite a golden. | One pose resolver; seeks are diagnostic. | fixed |
 | TL-8 | med | `geometry` used weaker staleness and regex task discovery. | Capture provenance and configured output; tasks from the manifest's `copyTasks`. | fixed |
@@ -195,11 +200,17 @@ and performance.
 | TL-11 | low | Dead entry points and aliases. | Deleted. | fixed |
 | TL-12 | low | Duplicated walkers and runners. | Walkers, runners and the record writer shared in `tooling/`; `validation-resume.ts` deleted. | fixed |
 | TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
-| TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
+| TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | The check reads the error codes the pinned `buildResolvePath` throws (1.31 renumbered #84 to #86); break-meshes-60/240/live, scene149, scene180, scene46 and scene47 re-observed; all pass on both backends. | fixed |
 | TL-15 | low | Package `.staging/` folders accumulate. | A published run removes its staging folder; a failed one keeps it. | fixed |
 | TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
 | TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | Fail a measured run after a bounded streak with the actual status, then drop the tool timeout. | open |
 | TL-18 | med | 18 test files slice `pal_sdl_gpu.cpp`/`pal_dawn.cpp` as text and stub what the slice needs (the camera is non-null), so the camera-less arms are never run by a harness. | Link harnesses against extracted shared stage units (after RDN-20/NT-13). | open |
+| TL-19 | low | `build-labsound.ps1` and `build-rmlui.ps1` reset their checkout and re-apply patches on every `demos:release`, recompiling everything (build-sdl-min now records its applied series). | One applied-series record in `bblite-tools.psm1` for every builder. | open |
+| TL-20 | med | `window-input-order` is timing-dependent: it passes alone and fails under machine load (2 of 4 runs at one head). | Drive the fixture's frame clock and presentation deterministically. | open |
+| TL-21 | low | scene181 cannot be observed: its golden (2026-09-08) differs from the current Chrome only at the textarea resize grip. | Recapture the golden with provenance, then observe. | open |
+| TL-22 | low | `check scene149-transport` fails ("Generated source differs from browser source"): its inputs were captured at pin 1.27 by an observer the repository does not contain. | Capture them with repository tooling at the current pin. | open |
+| TL-23 | med | `check scene261-live` fails: the "moving" capture describes frame 161 where the phase asked for 35, and the input tape does not move the camera. | Fix the native frame timing / input replay. | open |
+| TL-24 | low | The three `checks/plugins/*.init.js` browser scripts are not type-checked (40 errors). | A browser tsconfig (DOM + WebGPU types, declared globals) in `lint:tools`. | open |
 
 ## Building (BD)
 

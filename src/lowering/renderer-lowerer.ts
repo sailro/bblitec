@@ -23,11 +23,7 @@ import type {
     ShaderProgramReflection,
     ShaderSystemMatrix,
 } from "../shader-ir.js";
-import {
-    composeStandaloneWgsl,
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "../shader-material-programs.js";
+import { composeStandaloneWgsl } from "../shader-material-programs.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -749,10 +745,7 @@ export class RendererLowerer {
                 "Expected the pinned sort to name its comparator.",
             );
         }
-        const { declaration } = this.context.functionDeclaration(
-            renderTaskModule,
-            comparator.text,
-        );
+        const { declaration } = this.context.functionOf(comparator);
         const statement = declaration.body?.statements[0];
         if (
             declaration.body?.statements.length !== 1 ||
@@ -2442,9 +2435,7 @@ ${
             gpuInstancing?: boolean;
         } = {
             transmission: true,
-            shaderPrograms: shaderMaterialPrograms.map(
-                predeclaredShaderProgram,
-            ),
+            shaderPrograms: [],
             idDiagnostics: true,
             geometryOutputTasks: [],
             gpuDeformation: false,
@@ -2495,11 +2486,11 @@ ${
             result.push(
                 {
                     output: "upstream/shaders/blit.vert.native.wgsl",
-                    data: blitVertexWgsl(),
+                    data: blitVertexWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/blit.frag.native.wgsl",
-                    data: blitFragmentWgsl(),
+                    data: blitFragmentWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/depth-only.frag.native.wgsl",

@@ -196,13 +196,16 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                 parameter,
                 "Expected a feature document parameter.",
             );
+        const declared = ts.isIdentifier(expression)
+            ? context.declarationOf(expression)
+            : undefined;
         const predicate =
-            ts.isIdentifier(expression) &&
+            declared !== undefined &&
+            ts.isFunctionDeclaration(declared) &&
             functions.some(
                 (target) =>
-                    target.name === expression.text &&
-                    target.module ===
-                        context.moduleOfImport(registryModule, expression.text),
+                    target.name === declared.name?.text &&
+                    target.module === declared.getSourceFile().fileName,
             );
         const body = ts.isArrowFunction(expression)
             ? ts.isBlock(expression.body)

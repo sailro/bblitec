@@ -149,6 +149,8 @@ test(
                 materialTextureSlotsHeader(
                     {
                         transmission: false,
+                        transmissionMap: false,
+                        thicknessMap: false,
                         clearcoat: false,
                         sheen: false,
                         iridescence: false,

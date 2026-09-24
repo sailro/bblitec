@@ -8,7 +8,8 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
-import { navigationBuildDefaultsDeclaration } from "../src/lowering/navigation-lowerer.js";
+import { navigationBuildPlanDeclarations } from "../src/lowering/navigation-build-plan.js";
+import { navigationQueryDefaultsDeclaration } from "../src/lowering/navigation-lowerer.js";
 import { pinnedHeader } from "../src/lowering/pinned-header.js";
 
 const tools = optionalNativeFixtureTools();
@@ -16,12 +17,25 @@ function runNavigationFixture(name: string): string {
     const output = resolve("artifacts", name);
     mkdirSync(output, { recursive: true });
     const executable = join(output, `${name}.exe`);
-    // The build defaults the generated navigation header hands the PAL.
+    // The query defaults and both arms' build plans the generated
+    // navigation header hands the PAL.
     writeFileSync(
-        join(output, "navigation_build_defaults.hpp"),
+        join(output, "navigation_build_plan.hpp"),
         pinnedHeader(
-            ["<bblite/pal_navigation.hpp>"],
-            navigationBuildDefaultsDeclaration(),
+            [
+                "<bblite/js_data.hpp>",
+                "<bblite/pal_navigation.hpp>",
+                "<bblite/runtime.hpp>",
+                "",
+                "<cmath>",
+                "<cstdint>",
+                "<type_traits>",
+                "<vector>",
+            ],
+            [
+                navigationQueryDefaultsDeclaration(),
+                navigationBuildPlanDeclarations(["solo", "tileCache"]),
+            ].join("\n"),
         ),
     );
     runNativeFixtureCompiler(tools!, [
@@ -91,3 +105,42 @@ test(
         );
     },
 );
+
+test("navigation build plans are lowered from the recast-navigation packages", () => {
+    const solo = navigationBuildPlanDeclarations(["solo"]);
+    // Each rcConfig store narrows at the field's own width, as the wrapper's
+    // setter does, and each comparison is JavaScript's: against the double
+    // 0.9, which a float-width port would have spelled 0.9f.
+    assert.match(
+        solo,
+        /rcConfig\.minRegionArea = bbl::js::numeric_store_value<std::remove_reference_t<decltype\(rcConfig\.minRegionArea\)>>/,
+    );
+    assert.match(
+        solo,
+        /static_cast<double>\(rcConfig\.detailSampleDist\) < 0\.9\)/,
+    );
+    // The spreads between the pinned cfg and createRcConfig resolve per
+    // key: a key the scene may give falls back to the wrapper's default,
+    // and one the solo arm's cfg never carries is that default alone.
+    assert.match(solo, /params\.cs\.value_or\(0\.2\)/);
+    assert.match(
+        solo,
+        /rcConfig\.tileSize = bbl::js::numeric_store_value<[^;]*>\(0\.0\);/,
+    );
+    assert.match(solo, /navMeshCreateParams\.buildBvTree = true;/);
+    const tile = navigationBuildPlanDeclarations(["tileCache"]);
+    // The tile-cache arm's cfg always sets its own three, the pin's `?? N`
+    // included.
+    assert.match(tile, /params\.expected_layers_per_tile\.value_or\(1\.0\)/);
+    assert.match(tile, /params\.max_obstacles\.value\(\)/);
+    // The package's own tile/poly bit split, over its own dtIlog2.
+    assert.match(tile, /inline double dt_ilog2\(\s*double v\)/);
+    assert.match(tile, /dt_ilog2\(dt_next_pow2\(/);
+    // The tile grid is the one pair of locals the rest of generateTileCache
+    // reads out of its step.
+    assert.match(
+        tile,
+        /return bbl::pal::NavTileGrid\{tileWidth, tileHeight\};/,
+    );
+    assert.match(tile, /build\.linear_allocator_capacity = 32000\.0;/);
+});

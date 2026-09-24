@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { selectedCompiledBackend } from "../build-options.js";
 import {
+    compiledSelection,
     NATIVE_BACKENDS,
     parseBackendName,
     type NativeBackend,
@@ -145,9 +146,7 @@ export function measuredBackends(
         explicit !== undefined
             ? parseBackendName(explicit, `${command}: --backend`, true)
             : (ambientGpuBackend() ??
-              ({ SDL_GPU: "sdl_gpu", DAWN: "dawn", BOTH: "both" } as const)[
-                  selectedCompiledBackend()
-              ]);
+              compiledSelection(selectedCompiledBackend()));
     return selection === "both" ? [...NATIVE_BACKENDS] : [selection];
 }
 

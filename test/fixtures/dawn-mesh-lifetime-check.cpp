@@ -3,6 +3,17 @@
 #define BBLITE_NODE_VARIANTS 1
 #define BBLITE_NODE_GEOMETRY_VARIANTS 1
 #define BBLITE_PINNED_MATERIALS 1
+// The render capabilities the extracted records and teardown test. The
+// state below carries the background arms and none of the optional
+// deformation, instancing, shadow-receiver or local-cubemap members.
+#define BBLITE_PINNED_BACKGROUNDS 1
+#define BBLITE_GPU_MORPH_STORAGE 0
+#define BBLITE_VAT 0
+#define BBLITE_GPU_DEFORMATION 0
+#define BBLITE_GPU_INSTANCING 0
+#define BBLITE_GPU_INSTANCE_COLORS 0
+#define BBLITE_SHADOW_RECEIVERS 0
+#define BBLITE_LOCAL_CUBEMAP 0
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_record_sync.hpp"

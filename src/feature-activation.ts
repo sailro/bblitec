@@ -33,6 +33,7 @@ import type { Activation, ActivationPlan } from "./asset-feature-join.js";
 import type { Feature } from "./compiler/types.js";
 import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
+import { featureMacrosOf } from "./feature-macros.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { imageCodecs } from "./image-codec-manifest.js";
 import {
@@ -55,7 +56,8 @@ export type FeatureActivationMechanism =
 /**
  * What reads an activation unit. The vocabulary is closed so consumers
  * stay greppable: `features.cmake` (BBLITE_RUNTIME_FEATURES and the
- * source lists), the two generated capability headers, the three family
+ * source lists), the `bblite/features/` macro headers (`feature-macros.ts`),
+ * the two generated capability headers, the three family
  * headers that carry the code a capability define gates (the
  * post-process, Standard variant and render-plan headers), the
  * character-controller header the physics lowerer specializes, the
@@ -69,6 +71,7 @@ export type FeatureActivationMechanism =
  */
 export type FeatureActivationConsumer =
     | "features.cmake"
+    | "feature macros"
     | "render_capabilities.hpp"
     | "material_texture_slots.hpp"
     | "frame_graph_post_process.hpp"
@@ -1660,7 +1663,12 @@ function runtimeFeatureRows(
                 active,
                 activatedBy,
                 entry?.provenance ?? "none",
-                entry?.consumers ?? CMAKE,
+                [
+                    ...(entry?.consumers ?? CMAKE),
+                    ...(featureMacrosOf(name).length > 0
+                        ? (["feature macros"] as const)
+                        : []),
+                ],
             ),
         );
     };
@@ -1755,23 +1763,36 @@ function capabilityRows(
         ),
         ...(
             [
+                // Both follow the composed binding rather than the
+                // transmission renderer: the translucency fragment binds
+                // the thickness map without the scene-colour grab.
+                [
+                    "BBLITE_MATERIAL_TRANSMISSION_MAP",
+                    "refractionMapTexture",
+                    ["refraction-rtt"],
+                ],
+                [
+                    "BBLITE_MATERIAL_THICKNESS_MAP",
+                    "thicknessTexture_",
+                    ["refraction-rtt", "subsurface"],
+                ],
                 [
                     "BBLITE_MATERIAL_ANISOTROPY_MAP",
                     "anisotropyTexture_",
-                    "anisotropy",
+                    ["anisotropy"],
                 ],
                 [
                     "BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP",
                     "translucencyColorTexture_",
-                    "subsurface",
+                    ["subsurface"],
                 ],
                 [
                     "BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP",
                     "translucencyIntensityTexture_",
-                    "subsurface",
+                    ["subsurface"],
                 ],
             ] as const
-        ).map(([name, binding, fragment]) =>
+        ).map(([name, binding, fragments]) =>
             checkedRow(
                 name,
                 "capability",
@@ -1783,7 +1804,7 @@ function capabilityRows(
                     ],
                 ],
                 `no composed PBR variant binds ${binding}`,
-                `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
+                `${fragments.map((fragment) => `src/material/pbr/fragments/${fragment}-fragment.ts`).join(", ")}; the pinned glTF extension mapper and feature detection select this texture arm`,
                 [
                     "render_capabilities.hpp",
                     "material_texture_slots.hpp",

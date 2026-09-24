@@ -41,5 +41,7 @@ test("document roots retain separate identity, styles and attached descendants",
         { fileName: join(directory, "entry.ts") },
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-document-roots");
+    runRmlUiFixture(t, "ui-document-roots", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });

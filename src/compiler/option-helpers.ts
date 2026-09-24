@@ -51,22 +51,29 @@ export function validateObjectProperties(
     }
 }
 
+/** What the static folds read, as a lowering context carries it. */
 export interface PositiveIntegerContext
     extends
         Pick<
             LoweringServices,
-            "resolveStaticExpression" | "libraryGlobal" | "fail"
+            "resolveStaticExpression" | "libraryGlobal" | "fail" | "bindings"
         >,
-        Partial<Pick<LoweringServices, "staticCanvasSize">> {
-    /**
-     * The name lookups alone: a fold may narrow them. A context that also
-     * binds names redeclares the whole `BindingScopes`.
-     */
+        Partial<Pick<LoweringServices, "staticCanvasSize">> {}
+
+/**
+ * The folds' own parameter: the same reads with the name lookups alone, so a
+ * caller may narrow them -- a resource loop hides its own index, and the
+ * static evaluator folds through its lookup closures.
+ */
+export interface StaticFoldContext extends Omit<
+    PositiveIntegerContext,
+    "bindings"
+> {
     readonly bindings: BindingLookup;
 }
 
 export function compilePositiveInteger(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): string {
     const unwrapped = context.resolveStaticExpression(expression);
@@ -185,7 +192,7 @@ export function compileOptionalStaticBoolean(
  * refused rather than defaulted.
  */
 export function compileStaticNumber(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
     label: string,
 ): number {
@@ -318,7 +325,7 @@ export function pinnedEnumMemberName(
  * refuse by name rather than substituting.
  */
 export function staticNumberValue(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): number | undefined {
     const node = context.resolveStaticExpression(expression);
@@ -427,14 +434,6 @@ export function staticNumberValue(
 }
 
 /**
- * A static `{ x, y, z }` record, or undefined when any component is not a
- * constant.
- *
- * Two compile-time records read a vector this way -- a camera's target and a
- * node-particle emitter -- and both need the VALUE rather than the native
- * expression `compileVec3` emits.
- */
-/**
  * The two numbers an `[x, y]` literal or a current tuple snapshot states,
  * or undefined where the scene computes one.
  *
@@ -444,7 +443,7 @@ export function staticNumberValue(
  * not the expression.
  */
 export function staticNumberPair(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly [number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
@@ -465,7 +464,7 @@ export function staticNumberPair(
 
 /** Read the current tuple snapshot; native writes invalidate it through aliases. */
 export function staticTupleElements(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly Value[] | undefined {
     if (!ts.isIdentifier(expression)) return undefined;
@@ -477,8 +476,16 @@ export function staticTupleElements(
     );
 }
 
+/**
+ * A static `{ x, y, z }` record, or undefined when any component is not a
+ * constant.
+ *
+ * Two compile-time records read a vector this way -- a camera's target and a
+ * node-particle emitter -- and both need the VALUE rather than the native
+ * expression `compileVec3` emits.
+ */
 export function staticVec3Value(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);

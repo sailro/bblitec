@@ -20,6 +20,18 @@
 // receipts supplied by the PALs; their bytes are not rebuilt here.
 #pragma once
 
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_effect_renderer.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_effect_wrapper.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+
 #include <type_traits>
 
 #include <bblite/pal.hpp>
@@ -913,9 +925,7 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
         // The transcribed StandardUniforms block is retired: the
         // draw path fills the pin's own 96-byte material mirror, so
         // the capture dumps the same bytes the same writer builds.
-        const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                             ? &handle_at(engine.materials, draw.item.material)
-                                             : nullptr;
+        const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
         std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
         if (material && material->no_color) {
             features |= upstream::standard_no_color_output_flag;

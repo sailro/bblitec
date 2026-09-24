@@ -10,6 +10,7 @@ import { composeScenePipeline } from "../src/compose-pipeline.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
+import { morphTargetsHeader } from "../src/lowering/morph-targets-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
@@ -324,7 +325,7 @@ test(
             checks.push(`{
             bbl::attach_morph_target(engine, mesh, {${cppFloats(positionDeltas)}}, {${normal ? cppFloats(normal) : ""}}, 2.0, 0.75f);
             assert(engine.meshes[0].scene_morph_targets);
-            same(bbl::pal::pack_morph_deltas(engine.geometries[0]), {${[...new Uint32Array(morph.deltasBuffer.data)].map((bits) => `${bits}u`).join(", ")}});
+            same(bbl::upstream::pack_morph_deltas(engine.geometries[0]), {${[...new Uint32Array(morph.deltasBuffer.data)].map((bits) => `${bits}u`).join(", ")}});
             assert((bbl::pal::pack_morph_weights(engine.geometries[0], engine.meshes[0]) == std::vector<std::uint8_t>{${[...new Uint8Array(morph.weightsBuffer.data)].join(", ")}}));
         `);
             for (const weights of [[-0.35], [], [0.5, 0.75]]) {
@@ -363,6 +364,10 @@ test(
             join(output, "pinned_world_transform.hpp"),
             pinnedWorldTransformHeader(context),
         );
+        writeFileSync(
+            join(output, "morph_targets.hpp"),
+            morphTargetsHeader(context),
+        );
         const source = join(output, "check.cpp");
         writeFileSync(
             join(output, "picking_projection.hpp"),
@@ -395,13 +400,14 @@ test(
         writeFileSync(
             source,
             `#define BBLITE_GPU_DEFORMATION 1
-#define BBLITE_HAS_PBR_RENDERER 1
 #define BBLITE_GPU_INSTANCING 0
 #define BBLITE_FLOATING_ORIGIN 0
 #define BBLITE_PBR_VARIANTS 1
+#define BBLITE_VAT 0
 #include <bblite/runtime.hpp>
 #include "pinned_matrix.hpp"
 #include "pinned_world_transform.hpp"
+#include "morph_targets.hpp"
 #include "picking_projection.hpp"
 #include <bit>
 #include <cassert>
@@ -442,7 +448,6 @@ ${[
     "std::array<float, 16> pinned_x_mirrored_world(",
     "std::array<float, 16> pinned_draw_world(",
     "std::array<float, 16> standard_draw_world(",
-    "std::vector<float> pack_morph_deltas(",
     "std::vector<float> morph_weight_values(",
     "std::vector<std::uint8_t> pack_morph_weights(",
 ]
@@ -492,7 +497,7 @@ ${checks.join("\n")}
         const auto block = bbl::pal::node_mesh_block(scene, engine, 0);
         assert(block.world == expected);
         const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
-        const auto deltas = bbl::pal::pack_morph_deltas(engine.geometries[0]);
+        const auto deltas = bbl::upstream::pack_morph_deltas(engine.geometries[0]);
         for (const float weight : {0.0f, 0.75f}) {
             const bbl::Vec3 deformed{packed[0].position[0] + weight * deltas[0],
                 packed[0].position[1] + weight * deltas[1], packed[0].position[2] + weight * deltas[2]};
@@ -539,6 +544,7 @@ ${checks.join("\n")}
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
             "/W4",
             "/WX",
             "/EHsc",

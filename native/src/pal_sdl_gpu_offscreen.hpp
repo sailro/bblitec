@@ -1,5 +1,12 @@
 #pragma once
 
+#include <bblite/features/compute_buffers.hpp>
+#include <bblite/features/compute_mipmaps.hpp>
+#include <bblite/features/compute_shaders.hpp>
+#include <bblite/features/compute_textures.hpp>
+#include <bblite/features/gpu_task_timing.hpp>
+#include <bblite/features/storage_readback.hpp>
+
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_offscreen_gpu.hpp"
 #if BBLITE_GPU_TASK_TIMING

@@ -46,7 +46,9 @@ test("CSS declaration methods share field storage and preserve custom property c
         { fileName: join(directory, "entry.ts") },
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-style-methods");
+    runRmlUiFixture(t, "ui-style-methods", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });
 
 test("CSS method priority and unsupported property names refuse explicitly", () => {

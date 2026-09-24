@@ -89,7 +89,6 @@ test("entry points acquire the dist lock and only its owner sets the nesting mar
 test("shared compiler helpers have one declaration owner", () => {
     for (const [name, path] of [
         ["pinnedLibraryRoot", "src/pinned-shader-composer.ts"],
-        ["formatStatements", "src/shader-builtins-utility.ts"],
         ["isTrsVectorName", "src/scene-node-transform-descriptor.ts"],
         ["emitHandleCollectionLoop", "src/compiler/handle-collections.ts"],
         ["isRecursiveImportedMeshWalk", "src/compiler/handle-collections.ts"],

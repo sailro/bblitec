@@ -17,6 +17,7 @@
  */
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
+import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
 
 export interface SurveySite {
@@ -204,7 +205,7 @@ export class SurveyCollector {
         // Every statement this refusal rolled back loses its declarations,
         // whichever caller reached the site first.
         for (const name of declaredNames(statement)) {
-            const symbol = checker.getSymbolAtLocation(name);
+            const symbol = declaredSymbol(checker, name);
             if (symbol && !attempt.declarations.has(symbol))
                 attempt.declarations.set(symbol, census.site);
         }
@@ -223,7 +224,7 @@ export class SurveyCollector {
             attempt.declarations.size === 0
         )
             return undefined;
-        const symbol = checker.getSymbolAtLocation(subject);
+        const symbol = declaredSymbol(checker, subject);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 

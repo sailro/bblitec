@@ -1,5 +1,4 @@
-import type { BindingScopes } from "../binding-scopes.js";
-import { EmissionMap } from "../emission-transaction.js";
+import { EmissionMap, writable } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
     type StorageBufferIntrinsicContext,
@@ -84,16 +83,13 @@ export interface MaterialIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "compileNodeMaterialOptions"
-            | "expectShaderVariant"
             | "resolveShaderUniform"
             | "resolveShaderTextureSlot"
             | "resolveShaderStorageBufferSlot"
             | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 function compileStorageBufferData(
     context: MaterialIntrinsicContext,
@@ -1100,7 +1096,7 @@ function compileSetPbrEmissive(
     );
     const bindings =
         material.materialUboArrayFields ??
-        (material.materialUboArrayFields = new EmissionMap());
+        (writable(material).materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
     context.sceneManifest.recordScenePbrEmissive(
         channels,
@@ -1647,7 +1643,19 @@ function compileSetAlphaToCoverage(
         // turn, so yielding is how a shared name reaches it.
         return undefined;
     }
-    context.expectShaderVariant(material, "alpha-card", argumentAt(call, 0));
+    // Every reached shader-material program takes the flag at its pipeline;
+    // the Standard/PBR targets the pin also accepts are not reached here.
+    if (!material.shaderVariant) {
+        context.fail(
+            argumentAt(call, 0),
+            "setAlphaToCoverage reaches shader materials; a Standard or " +
+                "PBR target is not supported.",
+        );
+    }
+    context.sceneManifest.reachedShaderProgram(
+        material.shaderVariant,
+        argumentAt(call, 0),
+    );
     const enabled = context.compileBoolean(argumentAt(call, 1));
     return {
         kind: "void",

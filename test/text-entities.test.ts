@@ -1,3 +1,5 @@
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
+import { textRecordModel } from "../src/lowering/text-records.js";
 import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -176,6 +178,10 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
     const include = resolve(directory, "bblite");
     mkdirSync(resolve(include, "upstream"), { recursive: true });
     const lowerer = new TextLowerer(new LoweringContext());
+    writeFileSync(
+        resolve(include, "upstream_text_records.hpp"),
+        textRecordsHeader(new LoweringContext()),
+    );
     writeFileSync(resolve(include, "upstream_text.hpp"), lowerer.header());
     writeFileSync(
         resolve(include, "upstream_text_gpu.hpp"),
@@ -202,10 +208,11 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
                 parseDataUrl(data)!.bytes,
             );
     }
+    const records = textRecordModel(new LoweringContext());
     const constructor = result.manifest
         .textData!.map(
             (row) =>
-                `case ${row.id}:return ${lowerer.dataExpression(row, (blob) => `read_bytes(${stringLiteral(blob.assetOutput)})`)};`,
+                `case ${row.id}:return ${records.transportCpp(row.data!, { kind: "record", name: "DefaultTextData" }, (index) => `bbl::js::ArrayBuffer(read_bytes(${stringLiteral(row.buffers[index]!.assetOutput)}))`)};`,
         )
         .join("\n");
     writeFileSync(
@@ -333,12 +340,12 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
             /requires a layer array/,
         ],
         [
-            `${setup} updateTextData(data,{update:"reset"});`,
-            /require replaceRun/,
+            `${setup} updateTextData(data,{update:"addRun",run:{curveSet:"x",glyphs:[],pixelsPerFontUnit:1}});`,
+            /literal glyph lists are not represented/,
         ],
         [
-            `${setup} const previous=data.runs[0]!;updateTextData(data,{update:"replaceRun",previous:previous,run:{...previous}});`,
-            /spread followed by defaultColor/,
+            `${setup} updateTextData(data,{update:"reset",storage:data.storage});`,
+            /'storage' is not represented/,
         ],
     ] as const)
         assert.throws(() => compile(body), diagnostic);

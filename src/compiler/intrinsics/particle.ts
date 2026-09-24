@@ -1,4 +1,4 @@
-import type { BindingScopes } from "../binding-scopes.js";
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
 // Frozen systems execute the pin during generation, preserving V8-dependent
@@ -76,9 +76,7 @@ export interface ParticleIntrinsicContext
             | "allocateTemporaryCppName"
             | "compileForDataSink"
             | "compileNumber"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /** The four builders the corpus reaches, by their own export names. */
 const builders: Readonly<Record<string, NodeParticleBuilder>> = {
@@ -166,7 +164,7 @@ function staticArgumentJson(
     expression: ts.Expression,
 ): unknown {
     const node = context.unwrap(expression);
-    if (ts.isIdentifier(node) && node.text === "undefined") {
+    if (context.symbols.isGlobalUndefined(node)) {
         return undefined;
     }
     if (ts.isObjectLiteralExpression(node)) {
@@ -744,7 +742,7 @@ export function compileParticleIntrinsic(
                         "carries one state.",
                 );
             }
-            frozen.synced = true;
+            writable(frozen).synced = true;
             const engineCpp =
                 billboard.engineCpp ?? context.requireDefaultEngine(call);
             context.emit(
@@ -787,7 +785,7 @@ export function compileParticleIntrinsic(
                     "Native particle blend modes must be enabled before registration and recurring frame callbacks; the enabler affects future billboards.",
                 );
             }
-            request.enableBlendModes = true;
+            writable(request).enableBlendModes = true;
             return set;
         }
 

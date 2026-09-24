@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
-import {
-    composeStandaloneWgsl,
-    shaderMaterialPrograms,
-    type ShaderMaterialProgramSource,
-} from "../src/shader-material-programs.js";
+import { composeStandaloneWgsl } from "../src/shader-material-programs.js";
+import { fixtureShaderProgram as predeclaredProgram } from "./shader-program-fixtures.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -15,14 +12,6 @@ import {
     diagnosticIdFragmentWgsl,
 } from "../src/shader-builtins-utility.js";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
-
-function predeclaredProgram(name: string): ShaderMaterialProgramSource {
-    const program = shaderMaterialPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    assert.ok(program, `predeclared shader program '${name}'`);
-    return program;
-}
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
     const program = lowerWgslShaderProgram(predeclaredProgram("alpha-card"));
@@ -150,12 +139,16 @@ test("composes Babylon custom shader snippets into standalone WGSL", () => {
 });
 
 test("generates Tint utility WGSL entry points and bindings", () => {
+    // The pin's copy-task blit: its vertex stage alone, its sampler pair
+    // re-homed to the native fragment-resource group.
     assert.match(blitVertexWgsl(), /@builtin\(vertex_index\)/);
+    assert.match(blitVertexWgsl(), /fn mainVertex\(/);
+    assert.doesNotMatch(blitVertexWgsl(), /@group/);
     assert.match(
         blitFragmentWgsl(),
-        /@group\(2\) @binding\(1\) var sourceSampler/,
+        /@group\(2\) @binding\(1\) var s: sampler/,
     );
-    assert.match(blitFragmentWgsl(), /textureSampleLevel/);
+    assert.match(blitFragmentWgsl(), /textureSampleLevel\(t, s, v\.u, 0\.0\)/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);

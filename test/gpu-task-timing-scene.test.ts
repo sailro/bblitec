@@ -46,7 +46,6 @@ for (const placement of ["before", "after", "callback"] as const) {
             "/Zs",
             "/DBBLITE_WORKERS=1",
             "/DBBLITE_OFFSCREEN_SURFACES=1",
-            "/DBBLITE_WINDOW_SURFACES=1",
             "/DBBLITE_HAS_UI=1",
             "/I",
             "native/include",

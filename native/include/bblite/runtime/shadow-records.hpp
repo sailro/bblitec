@@ -1,5 +1,7 @@
 #pragma once
-// Included within namespace bbl by runtime.hpp.
+// Included within namespace bbl by runtime.hpp, after the macro headers.
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
 
 enum class ShadowFilter {
     pcf_spot,

@@ -9,13 +9,17 @@ import {
     writeFixture,
 } from "./glb.mjs";
 
+/** @typedef {[number, number, number]} Vec3 */
+
 const chunk = createBinaryChunk();
+/** @type {Vec3[]} */
 const positions = [
     [-0.7, -0.5, 0],
     [0.7, -0.5, 0],
     [0.7, 0.5, 0],
     [-0.7, 0.5, 0],
 ];
+/** @type {Vec3[]} */
 const normals = [
     [-0, 0.3, 2.75],
     [0.2, -0.4, 1.25],
@@ -43,9 +47,18 @@ const indices = chunk.accessor({
     type: "SCALAR",
 });
 const interleaved = chunk.view(
-    f32(positions.flatMap((p, i) => [...p, ...normals[i], ...uv[i]])),
+    f32(
+        positions.flatMap((p, i) => {
+            const n = normals[i];
+            const t = uv[i];
+            if (!n || !t) throw new Error(`vertex ${i} lacks a normal or UV`);
+            return [...p, ...n, ...t];
+        }),
+    ),
 );
-chunk.bufferViews[interleaved].byteStride = 32;
+const interleavedView = chunk.bufferViews[interleaved];
+if (!interleavedView) throw new Error("the interleaved bufferView is missing");
+interleavedView.byteStride = 32;
 const stridedPosition = chunk.accessor({
     ...chunk.accessors[position],
     bufferView: interleaved,
@@ -61,6 +74,15 @@ const stridedUv = chunk.accessor({
     bufferView: interleaved,
     byteOffset: 24,
 });
+const negativePrimitive = {
+    attributes: {
+        POSITION: position,
+        NORMAL: normal,
+        TEXCOORD_0: texcoord,
+    },
+    indices,
+    material: 0,
+};
 const document = {
     asset: {
         version: "2.0",
@@ -115,17 +137,7 @@ const document = {
         },
         {
             name: "negative-source",
-            primitives: [
-                {
-                    attributes: {
-                        POSITION: position,
-                        NORMAL: normal,
-                        TEXCOORD_0: texcoord,
-                    },
-                    indices,
-                    material: 0,
-                },
-            ],
+            primitives: [negativePrimitive],
         },
     ],
     materials: [
@@ -141,7 +153,7 @@ writeFixture(
 );
 // Separate refusal control: NodeMaterial's pinned tight streams currently bind
 // the whole interleaved buffer. Accessor de-striding is a different draw.
-document.meshes[1].primitives[0].attributes = {
+negativePrimitive.attributes = {
     POSITION: stridedPosition,
     NORMAL: stridedNormal,
     TEXCOORD_0: stridedUv,

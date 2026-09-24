@@ -6,8 +6,11 @@ import type { Value } from "./values/model.js";
 export type { Value } from "./values/model.js";
 export {
     nativeDataMetadata,
+    objectTruthinessCpp,
     optionalPresentCpp,
     presenceCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./values/model.js";
@@ -709,19 +712,17 @@ export interface ScenePbrMaterialManifest {
     doubleSided: boolean;
 }
 
-/**
- * A scene-local shader-material program compiled from the entry file's
- * own WGSL sources through the typed shader IR. Predeclared variants
- * (the ShaderMaterialVariantName registry) keep their pinned records;
- * scene-local programs carry the equivalent fields plus the typed
- * uniform defaults the pinned createShaderMaterial applies at creation.
- */
 export interface CompiledComputeProgram {
     name: string;
     source: string;
     entryPoint: string;
 }
 
+/**
+ * A reached shader-material program, compiled from the scene's own WGSL
+ * through the typed shader IR, with the typed uniform defaults the pinned
+ * `createShaderMaterial` applies at creation.
+ */
 export interface CompiledShaderProgram {
     name: string;
     vertexSource: string;
@@ -1071,8 +1072,6 @@ export type GeometryTextureTypeName =
     | "ALBEDO"
     | "LINEAR_VELOCITY";
 
-export type ShaderMaterialVariantName = "alpha-card" | "circular-cutout";
-
 export type LightKind = "directional" | "hemispheric" | "point" | "spot";
 
 export interface GeometryOutputTaskManifest {
@@ -1144,7 +1143,7 @@ export interface PostProcessCompositeManifest {
     /** Whether the scene named a target, which a composite branches on. */
     hasTarget: boolean;
     /** Scalar accessor pairs actually reached by scene code. */
-    scalarAccesses?: string[];
+    readonly scalarAccesses?: readonly string[];
 }
 
 export interface PostProcessTaskManifest {
@@ -1279,6 +1278,8 @@ export type ValueKind =
     | "file-list"
     /** A shared opaque handle to immutable bytes returned by the host picker. */
     | "file"
+    /** A FileReader: its handlers and the text of its last read. */
+    | "file-reader"
     /** A DOM element created by reached scene code and owned by the native UI IR. */
     | "ui-element"
     | "callback"
@@ -1716,11 +1717,11 @@ export interface VariableBinding {
  */
 interface LightIdentity {
     /** Current `scene.lights` slot, absent while the light is not in the scene. */
-    sceneLightIndex?: number;
+    readonly sceneLightIndex?: number;
     /** Generator assigned through `light.shadowGenerator`, when present. */
-    shadowGeneratorIndex?: number;
+    readonly shadowGeneratorIndex?: number;
     /** Candidate slots observed when this light is stored in an ordered data array. */
-    dataCollectionIndices?: Set<number>;
+    readonly dataCollectionIndices?: Set<number>;
 }
 
 /**
@@ -1732,18 +1733,25 @@ interface LightIdentity {
  * into one process-global index.
  */
 interface SceneTopologyState {
-    lights: Array<{ identity: LightIdentity; kind: LightKind }>;
+    readonly lights: ReadonlyArray<{
+        readonly identity: LightIdentity;
+        readonly kind: LightKind;
+    }>;
 }
 
-/** Collection size is independent of whether generation can name its elements. */
+/**
+ * Collection size is independent of whether generation can name its
+ * elements. Compiler state: written in place only through `writable()`; its
+ * sets are journaled.
+ */
 export interface CollectionCardinality {
-    kind: "array" | "keyed";
-    count: number | undefined;
-    keys?: Set<string | number | boolean>;
-    createdIn: readonly object[];
-    varyingIn: Set<object>;
+    readonly kind: "array" | "keyed";
+    readonly count: number | undefined;
+    readonly keys?: Set<string | number | boolean>;
+    readonly createdIn: readonly object[];
+    readonly varyingIn: Set<object>;
     /** An untracked alias can mutate this collection without visiting its cell. */
-    untrackedAliases?: true;
+    readonly untrackedAliases?: true;
 }
 
 export interface DefaultRenderTaskEmission {
@@ -1911,7 +1919,10 @@ export interface ValueFields {
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
     environmentAsset?: CompileAsset;
-    localCubemap?: { plan: LocalCubemapPlan; environments: Value[] };
+    localCubemap?: {
+        readonly plan: LocalCubemapPlan;
+        readonly environments: readonly Value[];
+    };
     /** The live DOMStringMap view returned by an element's `dataset`. */
     uiDataset?: true;
     /**
@@ -1937,13 +1948,17 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
+    /** The file input's `onchange` handler property has been assigned. */
+    uiFileChangeHandler?: true;
+    /** The FileReader bound here has started a read. */
+    fileReaderStarted?: true;
     /**
      * Exact members held by a native array at this point in the source walk.
      * Runtime storage preserves JavaScript array semantics while this complete
      * snapshot lets generation-only consumers iterate known handles or records.
      * Any mutation generation cannot enumerate clears it.
      */
-    staticElements?: Value[];
+    staticElements?: readonly Value[];
     /** The sampled provider options retain callback identity and their initial matrix. */
     nodeParticleProvider?: {
         callbackCpp: string;
@@ -2009,7 +2024,7 @@ export interface ValueFields {
      */
     nativeCallbackParameterTypes?: readonly (DataType | undefined)[];
     /** Captured values learned from calls within one recursive specialization. */
-    nativeCallbackStaticArguments?: (Value | undefined)[];
+    nativeCallbackStaticArguments?: readonly (Value | undefined)[];
     /** Undefined is also the native void return type. */
     nativeCallbackReturnType?: DataType;
     /** An owned promise's resolving function; cpp names its retained settlement state. */
@@ -2030,6 +2045,13 @@ export interface ValueFields {
     platformCallbackIdentity?: number;
     /** Constructed class identity, retained when an inlined return wraps Value. */
     classDeclaration?: ts.ClassDeclaration;
+    /**
+     * The concrete classes a stored instance read as `classDeclaration` can
+     * be at run time, when there are several; absent when its class is exact.
+     */
+    classCandidates?: readonly ts.ClassDeclaration[];
+    /** The class whose static fields this record holds: the value of a class name. */
+    classStatics?: ts.ClassDeclaration;
     /**
      * What the class's own type parameters stand for on this instance.
      *
@@ -2386,9 +2408,9 @@ export interface ValueFields {
      * expressions that build them, in binding order. They ride the
      * descriptor because that is what the layer or system is handed.
      */
-    spriteCustomTextures?: string[];
+    spriteCustomTextures?: readonly string[];
     /** The corresponding shader identifiers, in the same binding order. */
-    spriteCustomTextureNames?: string[];
+    spriteCustomTextureNames?: readonly string[];
     /** One-based program index; zero is the stock sprite/billboard shader. */
     spriteCustomShaderIndex?: number;
     /**
@@ -2450,8 +2472,8 @@ export interface ValueFields {
     dynamicAssetPathCpp?: string;
     /** Parsed payload carried only by a generation-time fetch response. */
     staticJson?: unknown;
-    tupleElements?: Value[];
-    recordProperties?: Record<string, Value>;
+    tupleElements?: readonly Value[];
+    recordProperties?: Readonly<Record<string, Value>>;
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /** Module namespace exports are live bindings and cannot be written through this record. */
@@ -2467,20 +2489,22 @@ export interface ValueFields {
      * the literal form is the callback path a function-literal argument
      * already takes.
      */
-    recordMethods?: Record<
-        string,
-        | ts.Identifier
-        | ts.ArrowFunction
-        | ts.FunctionExpression
-        | ts.MethodDeclaration
+    recordMethods?: Readonly<
+        Record<
+            string,
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration
+        >
     >;
     /**
      * Record properties declared with `get`. The accessor is kept
      * rather than its value, so each read re-evaluates it.
      */
-    recordGetters?: Record<string, ts.GetAccessorDeclaration>;
+    recordGetters?: Readonly<Record<string, ts.GetAccessorDeclaration>>;
     /** Class or object properties declared with `set`; assignment evaluates the body. */
-    recordSetters?: Record<string, ts.SetAccessorDeclaration>;
+    recordSetters?: Readonly<Record<string, ts.SetAccessorDeclaration>>;
     /** Native map materialized for a runtime-valued record in one emitted scope. */
     runtimeRecordCpp?: string;
     /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
@@ -2501,8 +2525,8 @@ export interface ValueFields {
     recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
     /** Shared across compiler aliases of one native scene. */
     sceneEnvironmentState?: {
-        rotationSet: boolean;
-        hasTexturedSkybox: boolean;
+        readonly rotationSet: boolean;
+        readonly hasTexturedSkybox: boolean;
     };
     /** Shared across aliases of one native scene. */
     sceneTopologyState?: SceneTopologyState;
@@ -2528,6 +2552,7 @@ export interface ValueFields {
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
+        | { kind: "undefined" }
         | { kind: "dom-rect" }
         | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
         | { kind: "search-params"; search: string }
@@ -2540,11 +2565,11 @@ export interface ValueFields {
     msaaSamples?: 1 | 4 | "runtime";
     directMorphCompatible?: boolean;
     morphTarget?: {
-        positionsCpp: string;
-        normalsCpp: string;
-        vertexCountCpp: string;
-        weightCpp: string;
-        meshCpp?: string;
+        readonly positionsCpp: string;
+        readonly normalsCpp: string;
+        readonly vertexCountCpp: string;
+        readonly weightCpp: string;
+        readonly meshCpp?: string;
     };
 }
 
@@ -2889,6 +2914,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeSearchParams?: boolean;
     /** Reached navigation makes location.search observable across reloads. */
     runtimeLocationSearch?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     fileName: string;
     title: string;
     width: number;

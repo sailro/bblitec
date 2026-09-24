@@ -43,7 +43,7 @@ import {
     staticJsonValue,
     type ObjectValidationContext,
 } from "../option-helpers.js";
-import { optionalPresentCpp, type Value } from "../types.js";
+import { optionalPresentCpp, presenceCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     requiredObjectNumber,
@@ -541,23 +541,15 @@ function compileImpulsePoint(
         unwrapped = unwrapped.expression;
     }
     if (ts.isConditionalExpression(unwrapped)) {
-        let absent = unwrapped.whenFalse;
-        while (ts.isParenthesizedExpression(absent)) {
-            absent = absent.expression;
-        }
-        if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
+        const absent = unwrapped.whenFalse;
+        if (!context.symbols.isGlobalUndefined(absent)) {
             context.fail(
                 absent,
                 "An optional physics impulse point must use undefined for its absent arm.",
             );
         }
         const condition = context.compileValue(unwrapped.condition);
-        const present =
-            condition.optionalFoundCpp ??
-            (condition.kind === "data" &&
-            condition.dataType?.kind === "optional"
-                ? optionalPresentCpp(condition.cpp)
-                : undefined);
+        const present = presenceCpp(condition);
         if (!present) {
             context.fail(
                 unwrapped.condition,

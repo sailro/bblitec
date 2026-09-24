@@ -57,8 +57,8 @@ int main() {
         assert(native_world.expired());
         assert(callback_capture.expired());
         assert(!native_body.expired() && !native_shape.expired());
-        assert(!retained_body.region.ownership->world); // Retained region was closed.
-        assert(retained_body.region.ownership->members.empty());
+        assert(!retained_body.region->_world.ownership->world); // Retained region was closed.
+        assert(retained_body.region->_world.ownership->members.empty());
         retained_scene.before_render.front()(20); // Engine is gone: no callback/dangling access.
         bool refused = false;
         try {

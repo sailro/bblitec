@@ -1,4 +1,8 @@
 #pragma once
+#include <bblite/features/compute_mipmaps.hpp>
+#include <bblite/features/compute_shaders.hpp>
+#include <bblite/features/gpu_task_timing.hpp>
+
 #include <bblite/pal_offscreen.hpp>
 #include "pal_dawn_resources.hpp"
 #if BBLITE_GPU_TASK_TIMING

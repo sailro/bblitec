@@ -1,6 +1,5 @@
 import ts from "typescript";
-import { sharedUpstreamStore } from "../../upstream-source.js";
-import { LoweringContext } from "../context.js";
+import { sharedPinnedContext } from "../context.js";
 import { lowerPinnedFunction } from "../pinned-function-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "../pinned-operators.js";
 import type { GltfLoaderOptions } from "./loader.js";
@@ -19,7 +18,7 @@ export function gltfAnimatedLightCpp(): {
     root: string;
     forward: string;
 } {
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const helper = lowerPinnedFunction(
         context,
         "src/light/light-base.ts",

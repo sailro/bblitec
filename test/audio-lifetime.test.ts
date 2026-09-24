@@ -33,7 +33,7 @@ test(
             "/DBBLITE_HAS_AUDIO_OSCILLATOR=1",
             "/DBBLITE_HAS_AUDIO_BIQUAD_FILTER=1",
             "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
-            "/DBBLITE_HAS_AUDIO_CAPTURE=1",
+            "/DBBLITE_AUDIO_CAPTURE=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",

@@ -15,15 +15,19 @@
  * merely by trajectory.
  *
  * The functions below carry the wrapper's semantics exactly where they
- * add any: the solo-build pipeline is `generateSoloNavMesh`'s sequence
- * with its config defaults and unit transforms; the debug geometry is
- * the wrapper's detached-triangle flat-normal build with its reversed
- * stored winding; the raycast is `findNearestPoly` (±1 half-extents,
- * include-all filter) then `dtNavMeshQuery::raycast`, hit exactly when
- * `0 < t < 1`. Nothing generated names Recast — swapping the toolset is
- * dropping in a different translation unit.
+ * add any: each build is the generator's Recast sequence over a plan of
+ * every number it computes, generated from the installed packages and
+ * handed in (`NavSoloBuild`, `NavTileCacheBuild`); the debug geometry is the wrapper's
+ * detached-triangle flat-normal build with its reversed stored winding;
+ * the raycast is `findNearestPoly` (±1 half-extents, include-all filter)
+ * then `dtNavMeshQuery::raycast`, hit exactly when `0 < t < 1`. Nothing
+ * generated names Recast — swapping the toolset is dropping in a different
+ * translation unit.
  */
 
+#include <bblite/features/has_nav_tile_cache.hpp>
+
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -73,35 +77,27 @@ struct NavOffMeshConnection {
 };
 
 /**
- * The wrapper's build-config defaults: `recastConfigDefaults` and the
- * tile-cache arm's `expectedLayersPerTile`, each a JavaScript number as
- * the installed @recast-navigation packages state it. The generated
- * navigation header reads them from the packages at generation and hands
- * them to the build, which narrows each the way `createRcConfig` stores it.
+ * The query every build arm ends by constructing (`new
+ * NavMeshQuery(navMesh)`), each a JavaScript number as the installed
+ * @recast-navigation/core states it.
  */
-struct NavBuildDefaults {
-    double border_size;
-    double tile_size;
-    double cs;
-    double ch;
-    double walkable_slope_angle;
-    double walkable_height;
-    double walkable_climb;
-    double walkable_radius;
-    double max_edge_len;
-    double max_simplification_error;
-    double min_region_area;
-    double merge_region_area;
-    double max_verts_per_poly;
-    double detail_sample_dist;
-    double detail_sample_max_error;
-    double expected_layers_per_tile;
+struct NavQueryDefaults {
+    /** The `maxNodes` default the query initializes with. */
+    double max_nodes;
+    /** `NavMeshQuery.defaultQueryHalfExtents`, x-y-z: the box every
+     *  nearest-polygon search spans around its position. */
+    double half_extents[3];
+    /** `computePath`'s corridor capacity, and `findStraightPath`'s point
+     *  capacity and options, when handed no options. */
+    double max_path_polys;
+    double max_straight_path_points;
+    double straight_path_options;
 };
 
 /**
- * The build parameters a reached `createNavMesh` may carry. Absent
- * fields take the wrapper's defaults (`NavBuildDefaults`) inside the
- * build, exactly as its `{...defaults, ...cfg}` spread does.
+ * The build parameters a reached `createNavMesh` may carry, present where
+ * the scene named them. The generated build plan reads them where the
+ * pinned module's `cfg` does, beneath the wrapper's default spreads.
  */
 struct NavMeshBuildParams {
     std::optional<double> cs;
@@ -119,14 +115,122 @@ struct NavMeshBuildParams {
     std::optional<double> detail_sample_max_error;
     /** Baked into the navmesh as teleport segments; empty means none. */
     std::vector<NavOffMeshConnection> off_mesh_connections;
-    /**
-     * The tile-cache arm's three, which the pinned `createNavMesh` reads
-     * before any of the above: `maxObstacles > 0` selects the arm, and the
-     * other two carry `tileCacheGeneratorConfigDefaults` when absent.
-     */
+    /** The tile-cache arm's three: `maxObstacles > 0` selects the arm. */
     std::optional<double> tile_size;
     std::optional<double> expected_layers_per_tile;
     std::optional<double> max_obstacles;
+};
+
+/**
+ * The wrapper's `rcConfig` object, field for field at Recast's own width. A
+ * store narrows the way the wrapper's setter does -- an `int` field takes
+ * ToInt32 of the JavaScript number, a `float` field its nearest float --
+ * and a read widens exactly. The build checks it against `rcConfig`.
+ */
+struct NavRcConfig {
+    int width = 0;
+    int height = 0;
+    int tileSize = 0;
+    int borderSize = 0;
+    float cs = 0.0f;
+    float ch = 0.0f;
+    float bmin[3] = {0.0f, 0.0f, 0.0f};
+    float bmax[3] = {0.0f, 0.0f, 0.0f};
+    float walkableSlopeAngle = 0.0f;
+    int walkableHeight = 0;
+    int walkableClimb = 0;
+    int walkableRadius = 0;
+    int maxEdgeLen = 0;
+    float maxSimplificationError = 0.0f;
+    int minRegionArea = 0;
+    int mergeRegionArea = 0;
+    int maxVertsPerPoly = 0;
+    float detailSampleDist = 0.0f;
+    float detailSampleMaxError = 0.0f;
+};
+
+/** `getBoundingBox`'s `bbMin`/`bbMax`, the JavaScript numbers the plan reads. */
+struct NavBounds {
+    std::array<double, 3> min{};
+    std::array<double, 3> max{};
+};
+
+/** `calcGridSize`'s answer: the voxel columns the bounds span at `cs`. */
+struct NavGridSize {
+    int width = 0;
+    int height = 0;
+};
+
+/** The tile grid `generateTileCache` measures, as the numbers it holds. */
+struct NavTileGrid {
+    double width = 0.0;
+    double height = 0.0;
+};
+
+/**
+ * The `dtNavMeshCreateParams` scalars the solo generator sets through the
+ * wrapper's `NavMeshCreateParams` setters, at Detour's own width. The mesh
+ * data itself is the library's, copied in by the build.
+ */
+struct NavMeshCreateScalars {
+    float walkableHeight = 0.0f;
+    float walkableRadius = 0.0f;
+    float walkableClimb = 0.0f;
+    float cs = 0.0f;
+    float ch = 0.0f;
+    bool buildBvTree = false;
+};
+
+/** `dtTileCacheParams`, field for field, as `DetourTileCacheParams.create` fills it. */
+struct NavTileCacheParams {
+    float orig[3] = {0.0f, 0.0f, 0.0f};
+    float cs = 0.0f;
+    float ch = 0.0f;
+    int width = 0;
+    int height = 0;
+    float walkableHeight = 0.0f;
+    float walkableRadius = 0.0f;
+    float walkableClimb = 0.0f;
+    float maxSimplificationError = 0.0f;
+    int maxTiles = 0;
+    int maxObstacles = 0;
+};
+
+/** `dtNavMeshParams`, field for field, as `NavMeshParams.create` fills it. */
+struct NavTiledMeshParams {
+    float orig[3] = {0.0f, 0.0f, 0.0f};
+    float tileWidth = 0.0f;
+    float tileHeight = 0.0f;
+    int maxTiles = 0;
+    int maxPolys = 0;
+};
+
+/**
+ * A solo build's plan: every number `generateSoloNavMeshData` computes
+ * before it hands it to Recast or Detour, generated from the installed
+ * @recast-navigation packages.
+ */
+struct NavSoloBuild {
+    NavBounds bounds;
+    NavRcConfig config;
+    NavMeshCreateScalars create;
+};
+
+/** One tile's config and bounds, generated from `rasterizeTileLayers`. */
+using NavTileConfigStep = NavRcConfig (*)(const NavRcConfig& config, const NavBounds& bounds,
+                                          double tile_x, double tile_y);
+
+/** A tile-cache build's plan, generated from `generateTileCache`. */
+struct NavTileCacheBuild {
+    NavBounds bounds;
+    NavRcConfig config;
+    NavTileGrid tiles;
+    NavTileCacheParams cache;
+    NavTiledMeshParams mesh;
+    NavTileConfigStep tile_config = nullptr;
+    double linear_allocator_capacity = 0.0;
+    double tris_per_chunk = 0.0;
+    double max_chunk_ids = 0.0;
 };
 
 /** One merged-geometry source: world-space positions, reversed winding
@@ -158,16 +262,20 @@ struct NavRaycastHit {
 /** `createNavigationPluginAsync`: a fresh plugin slot. */
 NavigationHandle navigation_create_plugin();
 
+/** `calcGridSize(bbMin, bbMax, cs)`, which each plan reads part-way. */
+NavGridSize navigation_grid_size(const NavBounds& bounds, float cs);
+
 /**
- * The solo-navmesh build (`generateSoloNavMesh` semantics): bounds from
- * the indexed positions, the wrapper's defaults and unit transforms,
- * the sample build sequence, area/flag normalization, and the query
- * (2048 nodes, include-all filter). Throws with the wrapper's own
+ * The solo-navmesh build (`generateSoloNavMeshData` semantics): the Recast
+ * sequence over the plan's config and bounds, area/flag normalization,
+ * the plan's create params with the off-mesh connections packed beside
+ * them, and the wrapper's default query. Throws with the wrapper's own
  * failure spelling when a stage fails.
  */
 void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                     const NavMeshBuildParams& params,
-                                     const NavBuildDefaults& defaults);
+                                     const NavSoloBuild& build,
+                                     const std::vector<NavOffMeshConnection>& off_mesh_connections,
+                                     const NavQueryDefaults& defaults);
 
 #if BBLITE_HAS_NAV_TILE_CACHE
 /**
@@ -177,24 +285,23 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
  * tile's heightfield layers compressed into the cache rather than turned
  * into polygons straight away: the cache owns the layers, and rebuilding a
  * tile after an obstacle moves is a decompress-and-remesh of that tile
- * alone. So the build here is the wrapper's own -- its tile-cache params,
- * its `dtIlog2(dtNextPow2(...))` tile/poly bit split, its chunky-triangle
- * partition and its two passes (rasterize every tile into the cache, then
- * build the initial meshes) -- and the obstacle entry points below are what
- * the arm exists for. Throws with the wrapper's own failure spelling when a
- * stage fails.
+ * alone. So the build here is the wrapper's own -- the plan's cache and
+ * navmesh params, its chunky-triangle partition and its two passes
+ * (rasterize every tile into the cache, then build the initial meshes) --
+ * and the obstacle entry points below are what the arm exists for. Throws
+ * with the wrapper's own failure spelling when a stage fails.
  */
 void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                           const NavMeshBuildParams& params,
-                                           const NavBuildDefaults& defaults);
+                                           const NavTileCacheBuild& build,
+                                           const NavQueryDefaults& defaults);
 
 /**
  * One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
  *
- * Zero is the null: Detour never issues that reference, and the pinned
- * factories return `null` for a refused add. This port throws there
- * instead, as it does for every other failed stage, so the zero handle is
- * only ever what a SCENE cleared a name to.
+ * Zero is the null: Detour never issues that reference. The pinned
+ * factories return `null` for a refused add, which the adds below report
+ * as an empty optional for the generated layer to decide on, so the zero
+ * handle is only ever what a SCENE cleared a name to.
  */
 struct NavObstacleHandle {
     std::uint32_t value = 0;
@@ -203,14 +310,16 @@ struct NavObstacleHandle {
 
 /**
  * `addBoxObstacle(position, halfExtents, angle)`: the cache's own oriented
- * box. Throws where the pinned factory returns null -- the cache is full.
+ * box. Empty where the pinned factory returns null -- the cache is full.
  */
-NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
-                                              NavVec3 half_extents, float angle);
+std::optional<NavObstacleHandle> navigation_add_box_obstacle(NavigationHandle plugin,
+                                                             NavVec3 position, NavVec3 half_extents,
+                                                             float angle);
 
 /** `addCylinderObstacle(position, radius, height)`, likewise. */
-NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
-                                                   float radius, float height);
+std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(NavigationHandle plugin,
+                                                                  NavVec3 position, float radius,
+                                                                  float height);
 
 /** `removeObstacle`: drop one the cache holds. */
 void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obstacle);

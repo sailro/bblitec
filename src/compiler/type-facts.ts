@@ -68,6 +68,26 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/**
+ * Whether the type a position expects rules out a colour written as an
+ * object of named channels (`{ r, g, b[, a] }`): the type is known (not
+ * `any` or `unknown`) and no present member has an `r`. The pin types every
+ * RGB option and field and `baseColorFactor` as number tuples, and only its
+ * Color4 dictionaries (a `GPUColorDict` clear colour, line colours) as
+ * objects, so the checker's contextual type at the use decides -- the same
+ * fact an assignability diagnostic reports there.
+ */
+export function excludesObjectColour(expected: ts.Type | undefined): boolean {
+    if (
+        expected === undefined ||
+        (expected.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    )
+        return false;
+    return !presentMembers(expected).some(
+        (member) => member.getProperty("r") !== undefined,
+    );
+}
+
 /** Whether a type admits `null`, `undefined` or `void`. */
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);

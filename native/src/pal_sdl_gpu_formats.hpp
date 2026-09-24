@@ -6,6 +6,8 @@
 // renderer enums (cull mode, primitive topology, ESM formats) and the
 // device-dependent depth format stay with the one unit that reaches them.
 
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/runtime.hpp>
 
 #include <cstdint>

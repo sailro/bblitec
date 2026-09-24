@@ -15,7 +15,7 @@ import {
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
-import { pinnedModuleExport } from "./lowering/pinned-shader-builders.js";
+import { pinnedModuleFunction } from "./lowering/pinned-shader-builders.js";
 import {
     createRecordingDevice,
     RecordedTexture,
@@ -68,7 +68,7 @@ interface ImageProcessingShapes extends DescriptorShapes {
  */
 function imageProcessingModule(multisampled: boolean): PinnedUtilityModule {
     const symbolName = "createImageProcessingState";
-    const create = pinnedModuleExport(imageProcessingTask, symbolName);
+    const create = pinnedModuleFunction(imageProcessingTask, symbolName);
     const { device, recorder } = createRecordingDevice<ImageProcessingShapes>({
         producer: `image-processing-task (${multisampled ? "multisampled" : "single-sample"})`,
         device: [

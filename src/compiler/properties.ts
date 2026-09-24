@@ -26,7 +26,6 @@ import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
-    type BindingScopes,
 } from "./binding-scopes.js";
 import {
     browserDeploymentValue,
@@ -44,7 +43,7 @@ import {
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
 import { handleCppType, type DataType } from "./data-types.js";
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
@@ -62,6 +61,7 @@ import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import {
     optionalPresentCpp,
+    presenceFlagCpp,
     valueForKind,
     type Feature,
     type GeometryOutputTaskManifest,
@@ -331,7 +331,6 @@ export function isHandleCollectionProperty(property: string): boolean {
     );
 }
 
-/** The rule in a table claiming this (owner kind, property) pair. */
 /**
  * `node.<name>` for every automatable parameter the PAL serves. A node
  * and a source both carry them, so each name yields two rows -- the
@@ -359,6 +358,7 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     }),
 );
 
+/** The rule in a table claiming this (owner kind, property) pair. */
 function ruleFor<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
     owner: Value,
@@ -1501,7 +1501,7 @@ export function readProperty(
             property,
         ]).find((entry) => entry.property === property);
         if (accessor) {
-            composite.scalarAccesses = [
+            writable(composite).scalarAccesses = [
                 ...new Set([...(composite.scalarAccesses ?? []), property]),
             ];
             const engineCpp = context.requireEngine(owner, expression);
@@ -1726,7 +1726,7 @@ export function pickedMeshHandleCpp(
 
 /**
  * What property-access lowering reads of the compiler: the surfaces its
- * special readers take, and the members it reads itself.
+ * special readers take, and the further members it reads itself.
  */
 interface PropertyAccessContext
     extends
@@ -1740,27 +1740,10 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
-            | "checker"
             | "classLowerer"
-            | "compileValue"
-            | "cppString"
-            | "dataLowerer"
-            | "dataTypes"
-            | "emit"
-            | "fail"
             | "handleCollections"
-            | "isCanvasElement"
-            | "libraryGlobal"
-            | "options"
-            | "reachFeature"
-            | "reachJsData"
-            | "requireDefaultEngine"
-            | "requireEngine"
-            | "resolveStaticExpression"
-            | "unwrap"
             | "useNativeValue"
         > {
-    readonly bindings: BindingScopes;
     /** Bound only while lowering a platform visibility callback body. */
     readonly platformDocumentHiddenCpp: string | undefined;
     /** Platform owner for an entry that has no source-created engine. */
@@ -1898,6 +1881,12 @@ export class PropertyAccessLowerer {
         if (staticField?.initializer) {
             return this.context.compileValue(staticField.initializer);
         }
+        const staticStorage =
+            this.context.classLowerer.readStaticField(expression);
+        if (staticStorage) return staticStorage;
+        if (ownerExpression.kind === ts.SyntaxKind.SuperKeyword) {
+            return this.context.classLowerer.compileSuperProperty(expression);
+        }
         if (
             ts.isPropertyAccessExpression(ownerExpression) &&
             ownerExpression.name.text === "style"
@@ -2013,7 +2002,9 @@ export class PropertyAccessLowerer {
         // gives the ordinary record path its fields, getters and setters,
         // so `part.locked` and `part.size` read the same way whether the
         // receiver was just constructed or came out of an array.
-        const owner = this.context.classLowerer.hydrate(rawOwner) ?? rawOwner;
+        const owner =
+            this.context.classLowerer.hydrate(rawOwner, ownerExpression) ??
+            rawOwner;
         const httpProperty = httpResponseProperty(
             this.context.dataLowerer,
             owner,
@@ -2492,8 +2483,8 @@ export class PropertyAccessLowerer {
                     owner.textureFile.entryFileName,
                 );
                 if (dimensions) {
-                    owner.textureWidth = dimensions.width;
-                    owner.textureHeight = dimensions.height;
+                    writable(owner).textureWidth = dimensions.width;
+                    writable(owner).textureHeight = dimensions.height;
                     size =
                         property === "width"
                             ? dimensions.width
@@ -2702,7 +2693,9 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const hydrated = this.context.classLowerer.hydrate(owner) ?? owner;
+        const hydrated =
+            this.context.classLowerer.hydrate(owner, expression.expression) ??
+            owner;
         const value = this.readOwnerProperty(hydrated, expression);
         return value &&
             (hydrated.kind === "record" || expression.questionDotToken)
@@ -2716,17 +2709,18 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value {
         const ownerPresent =
-            owner.optionalFoundCpp ??
+            presenceFlagCpp(owner) ??
             (expression.questionDotToken &&
             owner.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(owner.dataType.name)
                 ? `static_cast<bool>(${owner.cpp})`
                 : undefined);
         if (ownerPresent === undefined) return value;
+        const valuePresent = presenceFlagCpp(value);
         const present =
-            value.optionalFoundCpp === undefined
+            valuePresent === undefined
                 ? ownerPresent
-                : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+                : `(${ownerPresent} && ${valuePresent})`;
         return { ...value, optionalFoundCpp: present };
     }
 
