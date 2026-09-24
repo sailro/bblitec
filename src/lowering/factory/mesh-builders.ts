@@ -147,6 +147,10 @@ export class MeshBuilderLowerer {
             features.includes("mesh:tube");
         const torusKnot = features.includes("mesh:torus-knot");
         const reachedTorus = features.includes("mesh:torus");
+        // `enableMorphTargetShadows`' per-target range cache exists only in
+        // a scene that registers it, so only there has a replaced delta set
+        // a cache to drop.
+        const morphBounds = features.includes("shadow:morph-bounds");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -513,7 +517,7 @@ ${
 
 namespace bbl {
 
-${this.boxFactorySource(boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeData, sphereBuilderBody)}${this.morphAndBuilderSource(reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${features.includes("mesh:resize-geometry") ? lowerMeshGeometryResize(this.context) : ""}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
+${this.boxFactorySource(boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeData, sphereBuilderBody)}${this.morphAndBuilderSource(morphBounds, reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${features.includes("mesh:resize-geometry") ? lowerMeshGeometryResize(this.context) : ""}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
 `,
         };
     }
@@ -2242,6 +2246,7 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     }
 
     private morphAndBuilderSource(
+        morphBounds: boolean,
         reachedTorus: boolean,
         torusBuilderBody: string,
         computeNormals: string,
@@ -2319,12 +2324,16 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     geometry.morph_positions.clear();
     geometry.morph_positions.push_back(
         std::move(position_deltas));
-    // The shadow fit caches each target's own delta AABB beside these,
+${
+    morphBounds
+        ? `    // The shadow fit caches each target's own delta AABB beside these,
     // keyed on the list's length; a second call replaces the deltas
     // without changing that length, so the cache is dropped HERE, where
     // the thing it is derived from is replaced.
     geometry.morph_bounds.clear();
-    geometry.morph_normals.clear();
+`
+        : ""
+}    geometry.morph_normals.clear();
     geometry.morph_normals.push_back(
         std::move(normal_deltas));
     geometry.morph_tangents.assign(

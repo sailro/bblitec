@@ -41,6 +41,8 @@ enum class PropertyAnimationTargetKind {
 struct PropertyAnimationTarget {
     PropertyAnimationTargetKind kind = PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
+    // The pinned writer stores one Float32Array sample lane
+    // (`target[property] = output[offset]`, property-animation.ts).
     js::Callback<void(float)> write_scalar;
     // A plain-data writer retains this owner through its managed closure.
     // The mixer keys the pin's resolved (object, property) pair.
@@ -54,6 +56,12 @@ enum class PropertyAnimationInterpolation {
     step,
 };
 
+/**
+ * One key as `createSampler` stores it: the time into the sampler's
+ * Float32Array `input`, the value lanes into its Float32Array `output`
+ * (property-animation.ts), so both are float here too. Everything the
+ * clock and the mixers compute around them is a JavaScript number.
+ */
 struct PropertyAnimationKey {
     float time = 0.0f;
     std::array<float, 4> value{};
@@ -75,22 +83,22 @@ struct PropertyAnimationTrack {
 struct PropertyAnimationClip {
     std::string name;
     std::vector<PropertyAnimationTrack> tracks;
-    float duration = 0.0f;
-    float frame_rate = 60.0f;
+    double duration = 0.0;
+    double frame_rate = 60.0;
 };
 
 struct PropertyAnimationGroupRecord {
     std::vector<PropertyAnimationTarget> targets;
     PropertyAnimationClip clip;
-    float from_time = 0.0f;
-    float to_time = 0.0f;
-    float current_time = 0.0f;
-    float speed_ratio = 1.0f;
+    double from_time = 0.0;
+    double to_time = 0.0;
+    double current_time = 0.0;
+    double speed_ratio = 1.0;
     bool loop = true;
     bool playing = true;
     bool stopped = false;
     /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
-    float weight = 1.0f;
+    double weight = 1.0;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
 };
@@ -132,10 +140,10 @@ using AnimationGroupReference = AnimationWeightFadeTarget;
  */
 struct PropertyAnimationWeightFade {
     AnimationWeightFadeTarget target;
-    float from = 0.0f;
-    float to = 0.0f;
-    float duration_ms = 0.0f;
-    float elapsed_ms = 0.0f;
+    double from = 0.0;
+    double to = 0.0;
+    double duration_ms = 0.0;
+    double elapsed_ms = 0.0;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
 };
 
@@ -153,13 +161,15 @@ struct PropertyAnimationBucket {
     PropertyAnimationTarget target{};
     PropertyAnimationPath property = PropertyAnimationPath::position;
     PropertyAnimationComponent component = PropertyAnimationComponent::whole_lane;
+    /** The pin's `values: new F32(arity)` (weighted-pointer-mixer.ts). */
     std::array<float, 4> values{};
     /** The track's own rotation-channel flag, as the pin's bucket keeps it. */
     bool quaternion = false;
     bool contested = false;
     bool active = false;
     bool has_reference = false;
-    std::array<float, 4> reference{0.0f, 0.0f, 0.0f, 1.0f};
+    /** `refX`..`refW`, JavaScript numbers. */
+    std::array<double, 4> reference{0.0, 0.0, 0.0, 1.0};
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
 };
 
@@ -176,7 +186,7 @@ enum class AnimationCategoryHandler {
 
 struct Engine;
 using AnimationManagerPreUpdate =
-    std::function<void(Engine&, PropertyAnimationManagerRecord&, float)>;
+    std::function<void(Engine&, PropertyAnimationManagerRecord&, double)>;
 
 struct PropertyAnimationManagerRecord {
     /** The engine inferred from the first attached group or scene. */
@@ -227,8 +237,8 @@ struct PropertyAnimationManagerOptions {
 };
 
 struct PropertyAnimationGroupOptions {
-    float from_time = 0.0f;
-    float to_time = 0.0f;
-    float speed_ratio = 1.0f;
+    double from_time = 0.0;
+    double to_time = 0.0;
+    double speed_ratio = 1.0;
     bool loop = true;
 };

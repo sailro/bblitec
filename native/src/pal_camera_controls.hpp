@@ -154,8 +154,9 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
     }
 }
 
+// `primary` is the scene's active camera, null when it has none.
 inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, const SDL_Event& event,
-                                            CameraRecord& primary,
+                                            CameraRecord* primary,
                                             CameraPointerState& primary_state,
                                             SurfaceCameraPointerState& surfaces) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -200,8 +201,10 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
     }
 #endif
     (void)surfaces;
-    handle_camera_pointer_event(event, primary, primary_state, engine.canvas_client_width,
-                                engine.canvas_client_height);
+    if (primary) {
+        handle_camera_pointer_event(event, *primary, primary_state, engine.canvas_client_width,
+                                    engine.canvas_client_height);
+    }
 }
 
 // One frame of a camera's pinned before-render hook, at the frame's own
@@ -243,7 +246,8 @@ inline void update_camera(CameraRecord& camera, double delta_ms) {
     upstream::free_camera_update(camera, delta_ms, pressed);
 }
 
-inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord& primary,
+// `primary` is the scene's active camera, null when it has none.
+inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord* primary,
                                    double delta_ms) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     if (engine.surface_canvas) {
@@ -257,7 +261,9 @@ inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord
         return;
     }
 #endif
-    update_camera(primary, delta_ms);
+    if (primary) {
+        update_camera(*primary, delta_ms);
+    }
 }
 
 } // namespace bbl::pal

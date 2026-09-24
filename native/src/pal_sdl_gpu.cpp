@@ -132,10 +132,12 @@ namespace {
  * overlay loads that and draws the other.
  */
 void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene, const Engine& engine,
-                              const CameraRecord& camera, std::uint32_t target_width,
+                              const CameraRecord* camera, std::uint32_t target_width,
                               std::uint32_t target_height) {
-    const std::optional<PixelViewport> resolved =
-        scene_camera_viewport(engine, scene, camera, target_width, target_height);
+    // A pass without a camera keeps the whole target, the nullish camera's
+    // answer (`no_camera_record`).
+    const std::optional<PixelViewport> resolved = scene_camera_viewport(
+        engine, scene, camera ? *camera : no_camera_record, target_width, target_height);
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -6644,8 +6646,6 @@ class SdlSceneRun {
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         std::optional<SdlTextResourceOps> text_ops;
 #endif
-        CameraRecord fallback_camera;
-        CameraRecord* camera = nullptr;
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
@@ -6701,6 +6701,27 @@ class SdlSceneRun {
         return *frame_;
     }
 
+    /**
+     * The scene's active camera, read from the live `scene.camera` at each
+     * use as the pin reads it, or null when the scene has none. Without one
+     * the pin still runs the scene pass: it clears and draws, but writes no
+     * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
+     * so the pass draws through the zero block the frame starts with and
+     * nothing it projects reaches a fragment.
+     */
+    CameraRecord* active_camera() {
+        return data_.scene.camera.value < data_.engine.cameras.size()
+                   ? &handle_at(data_.engine.cameras, data_.scene.camera)
+                   : nullptr;
+    }
+
+    /** A registered layer's own camera, null when it has none. */
+    CameraRecord* layer_camera(const Scene& layer) {
+        return layer.camera.value < data_.engine.cameras.size()
+                   ? &handle_at(data_.engine.cameras, layer.camera)
+                   : nullptr;
+    }
+
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -6736,7 +6757,6 @@ class SdlSceneRun {
         [[maybe_unused]] auto& scene = data_.scene;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& state = data_.resources.state;
-        [[maybe_unused]] auto& camera = *data_.camera;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
         [[maybe_unused]] const auto& matrix = current_frame().matrix;
@@ -6744,8 +6764,13 @@ class SdlSceneRun {
 
         if (capture_ready && !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
+            const CameraRecord* camera = active_camera();
+            if (!camera) {
+                throw std::runtime_error("The render capture records the active camera and the "
+                                         "draws it projects; this scene has no active camera.");
+            }
             write_render_capture(frame_options.render_capture_path, "sdl_gpu", scene, engine,
-                                 camera, render_plan, matrix, static_cast<int>(width),
+                                 *camera, render_plan, matrix, static_cast<int>(width),
                                  static_cast<int>(height), frame
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
                                  ,
@@ -6784,7 +6809,6 @@ public:
             data_.synced_render_topology_version;
         [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
         [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
-        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
@@ -7821,10 +7845,6 @@ public:
         text_ops.sampler = state.text->sampler;
 #endif
 
-        data_.camera =
-            &(scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                         : fallback_camera);
-
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 
 #endif
@@ -7864,7 +7884,6 @@ public:
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
-        [[maybe_unused]] auto& camera = *data_.camera;
         [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
@@ -7879,7 +7898,7 @@ public:
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
                 return;
-            dispatch_surface_camera_pointer(engine, event, camera, pointer_state,
+            dispatch_surface_camera_pointer(engine, event, active_camera(), pointer_state,
                                             surface_pointer_state);
         };
 
@@ -8055,7 +8074,7 @@ public:
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
-        [[maybe_unused]] auto& camera = *data_.camera;
+        CameraRecord* const camera = active_camera();
         [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
         [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
@@ -8371,8 +8390,12 @@ public:
         frame_buffer_uploads.submit();
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
         update_surface_cameras(engine, camera, delta_ms);
-        trace_camera_state(camera, camera_trace_state, frame);
-        upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, camera);
+        if (camera) {
+            trace_camera_state(*camera, camera_trace_state, frame);
+            // `sortTransparentBindings` sorts only with a camera
+            // (render-task-base.ts).
+            upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
+        }
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
         // The pin's bone palettes for every draw the gate resolves,
         // streamed here because a copy pass cannot open inside the render
@@ -8465,32 +8488,38 @@ public:
         // viewport scales the target ratio by the viewport's own,
         // and one without takes the pin's literal 1.
         surface_extent = scene_surface_extent(engine, scene, width, height);
-        aspect = upstream::effective_aspect_ratio(camera, static_cast<double>(surface_extent.width),
-                                                  static_cast<double>(surface_extent.height));
-        matrix = upstream::build_view_projection(camera, aspect);
+        if (camera) {
+            aspect =
+                upstream::effective_aspect_ratio(*camera, static_cast<double>(surface_extent.width),
+                                                 static_cast<double>(surface_extent.height));
+            matrix = upstream::build_view_projection(*camera, aspect);
+            skybox_matrix = upstream::build_skybox_view_projection(*camera, aspect);
+            // The frame's own two factors, built once. Three consumers read
+            // them and each used to build its own: a shader material may
+            // declare either beside the product, the pin's splat UBO stores
+            // them separately, and the billboard sort reads the view. The
+            // projection is the pin's `getProjectionMatrix` -- the arm that
+            // branches on the camera -- rather than the perspective writer
+            // the skybox deliberately takes.
+            frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
+            frame_projection = upstream::build_scene_projection(*camera, aspect);
+            frame_camera_position = shader_camera_position(scene, engine, *camera);
+        }
+        // Without a camera the matrices above keep the frame's zeros: the
+        // scene block the pin never writes (see `active_camera`).
+        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
+        frame_pass_matrices.camera_position = &frame_camera_position;
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera),
-                                          aspect};
-        state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera
-                                                                            : nullptr,
+        const std::optional<TextCameraInput> text_camera =
+            camera ? std::optional<TextCameraInput>{TextCameraInput{
+                         matrix, upstream::scene_camera_change_key(*camera), aspect}}
+                   : std::nullopt;
+        state.text->scene.update(text_camera ? &*text_camera : nullptr,
                                  static_cast<double>(surface_extent.width),
                                  static_cast<double>(surface_extent.height), text_ops);
 #endif
-        skybox_matrix = upstream::build_skybox_view_projection(camera, aspect);
-        // The frame's own two factors, built once. Three consumers read
-        // them and each used to build its own: a shader material may
-        // declare either beside the product, the pin's splat UBO stores
-        // them separately, and the billboard sort reads the view. The
-        // projection is the pin's `getProjectionMatrix` -- the arm that
-        // branches on the camera -- rather than the perspective writer
-        // the skybox deliberately takes.
-        frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(camera));
-        frame_projection = upstream::build_scene_projection(camera, aspect);
-        frame_camera_position = shader_camera_position(scene, engine, camera);
-        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
-        frame_pass_matrices.camera_position = &frame_camera_position;
 #if BBLITE_HAS_BILLBOARDS
         // The sorted order depends on the camera alone, so the upload
         // happens here -- before the frame's command buffer is acquired,
@@ -8504,19 +8533,23 @@ public:
         // The sort runs on this thread before the draw that reads it,
         // which is the state `firstSortReady` waits for. The view and
         // projection are built once for the frame here and the draw
-        // below reads the same matrices, as the billboard pass does.
+        // below reads the same matrices, as the billboard pass does. The
+        // splat renderable's update returns without a camera
+        // (gaussian-splatting-pipeline.ts), leaving its block unwritten.
         for (SplatPass& splat : state.splat_passes) {
-            upload_splat_pass(state.device, engine, splat, frame_view);
+            if (camera)
+                upload_splat_pass(state.device, engine, splat, frame_view);
         }
 #endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
         // The cluster binning, in the same place the splat sort runs and
         // for the same reason: it reads this frame's camera and the draw
-        // below reads what it wrote.
+        // below reads what it wrote. The pinned updater returns without a
+        // camera (clustered.ts).
         if (ClusteredLightContainer* clustered =
-                upstream::clustered_container(engine, scene.clustered_lights)) {
+                camera ? upstream::clustered_container(engine, scene.clustered_lights) : nullptr) {
             upload_clustered_lights(state.device, *clustered, frame_view, frame_projection,
-                                    camera.near_plane, camera.far_plane, state.clustered);
+                                    camera->near_plane, camera->far_plane, state.clustered);
         }
 #endif
 
@@ -8536,7 +8569,6 @@ public:
         [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
         [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
         [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
-        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
         [[maybe_unused]] auto& shader_block_scratch = data_.shader_block_scratch;
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] const bool transmission_enabled = data_.transmission_enabled;
@@ -8553,7 +8585,7 @@ public:
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
-        [[maybe_unused]] auto& camera = *data_.camera;
+        CameraRecord* const camera = active_camera();
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
@@ -8613,22 +8645,23 @@ public:
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
-                    const CameraRecord& graph_camera =
-                        graph_scene.camera.value < engine.cameras.size()
-                            ? handle_at(engine.cameras, graph_scene.camera)
-                            : fallback_camera;
+                    const CameraRecord* const graph_camera = layer_camera(graph_scene);
                     const PixelViewport graph_extent =
                         scene_surface_extent(engine, graph_scene, width, height);
-                    const double graph_aspect = upstream::effective_aspect_ratio(
-                        graph_camera, graph_extent.width, graph_extent.height);
-                    const auto graph_matrix =
-                        upstream::build_view_projection(graph_camera, graph_aspect);
-                    const auto graph_view =
-                        upstream::build_view_matrix(upstream::camera_world_matrix(graph_camera));
-                    const auto graph_projection =
-                        upstream::build_scene_projection(graph_camera, graph_aspect);
-                    const auto graph_eye =
-                        shader_camera_position(graph_scene, engine, graph_camera);
+                    // A layer without a camera draws through the zero block
+                    // the pin never writes for it (see `active_camera`).
+                    std::array<float, 16> graph_matrix{}, graph_view{}, graph_projection{};
+                    std::array<float, 4> graph_eye{};
+                    if (graph_camera) {
+                        const double graph_aspect = upstream::effective_aspect_ratio(
+                            *graph_camera, graph_extent.width, graph_extent.height);
+                        graph_matrix = upstream::build_view_projection(*graph_camera, graph_aspect);
+                        graph_view = upstream::build_view_matrix(
+                            upstream::camera_world_matrix(*graph_camera));
+                        graph_projection =
+                            upstream::build_scene_projection(*graph_camera, graph_aspect);
+                        graph_eye = shader_camera_position(graph_scene, engine, *graph_camera);
+                    }
                     ShaderPassMatrices graph_pass_matrices{graph_matrix.data(), &graph_view,
                                                            &graph_projection};
                     graph_pass_matrices.camera_position = &graph_eye;
@@ -8999,7 +9032,8 @@ public:
                                                 const std::vector<SDL_GPUGraphicsPipeline*>&
                                                     shader_variant_a2c_pipelines,
                                                 const std::array<float, 16>& draw_matrix,
-                                                [[maybe_unused]] const CameraRecord& draw_camera,
+                                                // Null for a pass without a camera.
+                                                [[maybe_unused]] const CameraRecord* draw_camera,
                                                 // The three matrices this pass
                                                 // renders with, for a shader
                                                 // material declaring the product
@@ -9080,13 +9114,20 @@ public:
                         // pinned family reads them, the node graphs included --
                         // this is the frame-state question, not the
                         // composed-variant one.
+                        if (!draw_camera && shadow_generator) {
+                            throw std::runtime_error(
+                                "A shadow caster pass fills its scene block's camera lanes from "
+                                "the scene's active camera; a scene without one is not reached.");
+                        }
+                        // A pass without a camera pushes the zero block the pin
+                        // never writes (see `active_camera`).
                         upstream::SceneUniforms pass_scene_block =
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                            deferred_scene
-                                ? temporal_clean_scene_block(*deferred_scene)
-                                :
+                            deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
 #endif
-                                pinned_scene_block(draw_context, engine, draw_camera, draw_matrix);
+                            draw_camera ? pinned_scene_block(draw_context, engine, *draw_camera,
+                                                             draw_matrix)
+                                        : upstream::SceneUniforms{};
 #if BBLITE_SHADOW_RECEIVERS
                         // The pin installs the light-space matrices on a camera
                         // facade whose caches it pins, so its caster pass reads
@@ -9489,10 +9530,12 @@ public:
                                     "Temporal source requires a prepared Standard color pass in its owning scene.");
                             }
 #endif
-                            const CameraRecord& task_camera =
+                            // `cfg.cam ?? scene.camera`; null is a pass the pin
+                            // runs without writing its scene block.
+                            const CameraRecord* const task_camera =
                                 task.render.has_camera &&
                                         task.render.camera.value < engine.cameras.size()
-                                    ? handle_at(engine.cameras, task.render.camera)
+                                    ? &handle_at(engine.cameras, task.render.camera)
                                     : graph_camera;
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                             CameraRecord* source_camera =
@@ -9508,17 +9551,6 @@ public:
                                                             graph_extent.height,
                                                             [](const float*, std::size_t) {});
 #endif
-                            // `_writePassSceneUBO` folds the camera's own
-                            // viewport into whichever extent the task was
-                            // configured for -- the canvas or the target.
-                            const double task_aspect =
-                                task.render.canvas_size
-                                    ? upstream::effective_aspect_ratio(
-                                          task_camera, static_cast<double>(graph_extent.width),
-                                          static_cast<double>(graph_extent.height))
-                                    : upstream::effective_aspect_ratio(
-                                          task_camera, static_cast<double>(target.width),
-                                          static_cast<double>(target.height));
                             // A shadow task renders from the light, not from
                             // a camera: the generator's own matrices replace
                             // both of these below, so building and pushing a
@@ -9526,20 +9558,35 @@ public:
                             // over the camera basis and a dead push.
                             const bool shadow_task =
                                 task.render.shadow_generator.value != invalid_handle;
-                            const std::array<float, 16> task_matrix =
-                                shadow_task
-                                    ? std::array<float, 16>{}
-                                    : upstream::build_view_projection(task_camera, task_aspect);
-                            // The task's own two factors, beside its product,
-                            // for a shader material that declares one. A shadow
-                            // task renders from the light instead and supplies
-                            // what the generator carries.
-                            const std::array<float, 16> task_view = upstream::build_view_matrix(
-                                upstream::camera_world_matrix(task_camera));
-                            const std::array<float, 16> task_projection =
-                                upstream::build_scene_projection(task_camera, task_aspect);
-                            const std::array<float, 4> task_camera_position =
-                                shader_camera_position(graph_scene, engine, task_camera);
+                            double task_aspect = 0.0;
+                            std::array<float, 16> task_matrix{}, task_view{}, task_projection{};
+                            std::array<float, 4> task_camera_position{};
+                            if (task_camera) {
+                                // `_writePassSceneUBO` folds the camera's own
+                                // viewport into whichever extent the task was
+                                // configured for -- the canvas or the target.
+                                task_aspect =
+                                    task.render.canvas_size
+                                        ? upstream::effective_aspect_ratio(
+                                              *task_camera, static_cast<double>(graph_extent.width),
+                                              static_cast<double>(graph_extent.height))
+                                        : upstream::effective_aspect_ratio(
+                                              *task_camera, static_cast<double>(target.width),
+                                              static_cast<double>(target.height));
+                                if (!shadow_task)
+                                    task_matrix =
+                                        upstream::build_view_projection(*task_camera, task_aspect);
+                                // The task's own two factors, beside its product,
+                                // for a shader material that declares one. A shadow
+                                // task renders from the light instead and supplies
+                                // what the generator carries.
+                                task_view = upstream::build_view_matrix(
+                                    upstream::camera_world_matrix(*task_camera));
+                                task_projection =
+                                    upstream::build_scene_projection(*task_camera, task_aspect);
+                                task_camera_position =
+                                    shader_camera_position(graph_scene, engine, *task_camera);
+                            }
                             ShaderPassMatrices task_pass_matrices{task_matrix.data(), &task_view,
                                                                   &task_projection};
                             task_pass_matrices.camera_position = &task_camera_position;
@@ -9726,11 +9773,16 @@ public:
                             SDL_GPUColorTargetInfo target_info{};
                             target_info.texture =
                                 target_record.swapchain ? swapchain : target.color;
+                            // `cfg.clrColor ?? sc.clearColor`, the task's own scene
+                            // read live at the pass.
+                            const Color4 task_clear_color = task.render.clear_color
+                                                                ? *task.render.clear_color
+                                                                : task.source_scene->clear_color;
                             target_info.clear_color = SDL_FColor{
-                                task.render.clear_color.r,
-                                task.render.clear_color.g,
-                                task.render.clear_color.b,
-                                task.render.clear_color.a,
+                                task_clear_color.r,
+                                task_clear_color.g,
+                                task_clear_color.b,
+                                task_clear_color.a,
                             };
                             target_info.load_op =
                                 task.render.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
@@ -9782,9 +9834,9 @@ public:
                             prepared.target = target_info;
                             if (task_depth_pointer)
                                 prepared.depth = *task_depth_pointer;
-                            if (source_camera && task_camera.viewport) {
+                            if (source_camera && task_camera && task_camera->viewport) {
                                 const auto rectangle = upstream::resolve_camera_viewport(
-                                    task_camera, target.width, target.height);
+                                    *task_camera, target.width, target.height);
                                 prepared.viewport =
                                     SDL_GPUViewport{static_cast<float>(rectangle.x),
                                                     static_cast<float>(rectangle.y),
@@ -9795,10 +9847,10 @@ public:
                                 prepared.scissor = SDL_Rect{rectangle.x, rectangle.y,
                                                             rectangle.width, rectangle.height};
                             }
-                            if (source_camera)
+                            if (source_camera && task_camera)
                                 upstream::sort_transparent_draws(
                                     handle_at(task_draw_lists, handle).transparent, engine,
-                                    task_camera);
+                                    *task_camera);
                             draw_scene(graph_scene, graph_meshes, nullptr, nullptr, nullptr,
                                        nullptr, nullptr, {}, {}, task_matrix, task_camera,
                                        task_pass_matrices, handle_at(task_draw_lists, handle),
@@ -9810,9 +9862,11 @@ public:
 #endif
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(command, &target_info, 1,
                                                                            task_depth_pointer)};
-                            upstream::sort_transparent_draws(
-                                handle_at(task_draw_lists, handle).transparent, engine,
-                                task_camera);
+                            if (task_camera) {
+                                upstream::sort_transparent_draws(
+                                    handle_at(task_draw_lists, handle).transparent, engine,
+                                    *task_camera);
+                            }
                             if (task.render.scene_stages) {
                                 if (!task_depth_pointer ||
                                     target.color_format != state.frame_color_format ||
@@ -9821,8 +9875,13 @@ public:
                                         state.sample_count)
                                     throw std::runtime_error(
                                         "Compiler-owned scene stages require the frame attachment formats and sample count.");
-                                draw_task_skyboxes(task_pass, task_matrix, task_camera,
-                                                   task_aspect);
+                                // Without a camera the environment stages project
+                                // through the unwritten zero block and reach no
+                                // fragment, so there is nothing to draw.
+                                if (task_camera) {
+                                    draw_task_skyboxes(task_pass, task_matrix, *task_camera,
+                                                       task_aspect);
+                                }
                             }
                             draw_scene(
                                 graph_scene, graph_meshes, task_pass, state.grid_pipeline,
@@ -9845,7 +9904,8 @@ public:
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
                                                  task_sample_count(state, target_record.samples)});
                             if (task.render.scene_stages) {
-                                draw_task_ground(task_pass, task_matrix, task_camera);
+                                if (task_camera)
+                                    draw_task_ground(task_pass, task_matrix, *task_camera);
 #if BBLITE_HAS_BILLBOARDS
                                 draw_task_billboards(task_pass, BillboardDepthMode::transparent,
                                                      task_matrix, task_view);
@@ -9859,21 +9919,26 @@ public:
                                     const Scene& utility = *engine.registered_scenes[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
-                                    const CameraRecord& utility_camera =
-                                        utility.camera.value < engine.cameras.size()
-                                            ? handle_at(engine.cameras, utility.camera)
-                                            : task_camera;
-                                    const double utility_aspect = upstream::effective_aspect_ratio(
-                                        utility_camera, target.width, target.height);
-                                    const auto utility_matrix = upstream::build_view_projection(
-                                        utility_camera, utility_aspect);
-                                    const auto utility_view = upstream::build_view_matrix(
-                                        upstream::camera_world_matrix(utility_camera));
-                                    const auto utility_projection =
-                                        upstream::build_scene_projection(utility_camera,
-                                                                         utility_aspect);
-                                    const auto utility_eye =
-                                        shader_camera_position(utility, engine, utility_camera);
+                                    const CameraRecord* const own_utility_camera =
+                                        layer_camera(utility);
+                                    const CameraRecord* const utility_camera =
+                                        own_utility_camera ? own_utility_camera : task_camera;
+                                    std::array<float, 16> utility_matrix{}, utility_view{},
+                                        utility_projection{};
+                                    std::array<float, 4> utility_eye{};
+                                    if (utility_camera) {
+                                        const double utility_aspect =
+                                            upstream::effective_aspect_ratio(
+                                                *utility_camera, target.width, target.height);
+                                        utility_matrix = upstream::build_view_projection(
+                                            *utility_camera, utility_aspect);
+                                        utility_view = upstream::build_view_matrix(
+                                            upstream::camera_world_matrix(*utility_camera));
+                                        utility_projection = upstream::build_scene_projection(
+                                            *utility_camera, utility_aspect);
+                                        utility_eye = shader_camera_position(utility, engine,
+                                                                             *utility_camera);
+                                    }
                                     ShaderPassMatrices utility_matrices{
                                         utility_matrix.data(), &utility_view, &utility_projection};
                                     utility_matrices.camera_position = &utility_eye;
@@ -9887,9 +9952,11 @@ public:
                                                              target.height);
                                     SDL_PushGPUVertexUniformData(command, 0, utility_matrix.data(),
                                                                  sizeof(utility_matrix));
-                                    upstream::sort_transparent_draws(
-                                        overlay_plans[layer].draw_lists.transparent, engine,
-                                        utility_camera);
+                                    if (utility_camera) {
+                                        upstream::sort_transparent_draws(
+                                            overlay_plans[layer].draw_lists.transparent, engine,
+                                            *utility_camera);
+                                    }
                                     draw_scene(
                                         utility, state.overlay_meshes[layer], utility_pass,
                                         state.grid_pipeline, state.grid_double_sided_pipeline,
@@ -9904,6 +9971,11 @@ public:
                             continue;
                         }
                         if (task.kind == FrameTaskKind::geometry) {
+                            // Without a camera the task does not execute, not
+                            // even its clears (geometry-renderer-task.ts
+                            // executeTask returns 0).
+                            if (!graph_camera)
+                                continue;
                             GpuGeometryTask& geometry = handle_at(state.geometry_tasks, handle);
                             const SDL_GPUSampleCount task_samples =
                                 task_sample_count(state, task.geometry.samples);
@@ -9960,8 +10032,8 @@ public:
                             const PinnedGeometryParams geometry_params{
                                 geometry.previous_view_projection,
                                 {
-                                    static_cast<float>(graph_camera.near_plane),
-                                    static_cast<float>(graph_camera.far_plane),
+                                    static_cast<float>(graph_camera->near_plane),
+                                    static_cast<float>(graph_camera->far_plane),
                                     0.0f,
                                     0.0f,
                                 },
@@ -10001,7 +10073,7 @@ public:
                                                          sizeof(graph_matrix));
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
-                                graph_camera);
+                                *graph_camera);
                             draw_scene(graph_scene, graph_meshes, task_pass, nullptr, nullptr,
                                        nullptr, nullptr, {}, {}, graph_matrix, graph_camera,
                                        graph_pass_matrices, handle_at(task_draw_lists, handle),
@@ -10506,14 +10578,16 @@ public:
             };
 #if BBLITE_SOLID_SKYBOX
             const auto draw_solid_skybox = [&] {
-                if (!state.solid_skybox.enabled)
+                // Without a camera the stage projects through the unwritten
+                // zero block and reaches no fragment.
+                if (!state.solid_skybox.enabled || !camera)
                     return;
                 // The pinned vertex stage reads its own scene block --
                 // scene.viewProjection, scene.view and scene.vEyePosition,
                 // the last of which it offsets the cube by -- so the draw
                 // binds that layout over the frame's matrix.
                 const upstream::SolidSkyboxSceneUniforms solid_skybox_scene =
-                    upstream::build_solid_skybox_scene_uniforms(camera, matrix);
+                    upstream::build_solid_skybox_scene_uniforms(*camera, matrix);
                 const upstream::SolidSkyboxUniforms solid_skybox_mesh =
                     upstream::build_solid_skybox_uniforms(scene);
                 SDL_PushGPUVertexUniformData(command, 0, &solid_skybox_scene,
@@ -10539,11 +10613,13 @@ public:
 #endif
 #if BBLITE_IMAGE_SKYBOX
             const auto draw_image_skybox = [&] {
-                if (!state.image_skybox.enabled)
+                // Without a camera the stage projects through the unwritten
+                // zero block and reaches no fragment.
+                if (!state.image_skybox.enabled || !camera)
                     return;
                 SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
                 const upstream::ImageSkyboxUniforms image_skybox_uniforms =
-                    upstream::build_image_skybox_uniforms(scene, camera);
+                    upstream::build_image_skybox_uniforms(scene, *camera);
                 SDL_BindGPUGraphicsPipeline(pass, state.image_skybox.pipeline);
                 SDL_PushGPUFragmentUniformData(command, 0, &image_skybox_uniforms,
                                                sizeof(image_skybox_uniforms));
@@ -10595,9 +10671,11 @@ public:
 #if BBLITE_PINNED_MATERIALS
             // The frame's scene and lights blocks, once per frame rather
             // than per draw — the same hoist the Dawn backend's
-            // write_pinned_frame_blocks already makes.
+            // write_pinned_frame_blocks already makes. A scene without a
+            // camera pushes the zero block the pin never writes.
             upstream::SceneUniforms pass_scene_block =
-                pinned_scene_block(scene, engine, camera, matrix);
+                camera ? pinned_scene_block(scene, engine, *camera, matrix)
+                       : upstream::SceneUniforms{};
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
 #endif
             const auto draw_render_list = [&](const upstream::RenderDrawList& list) {
@@ -10843,7 +10921,9 @@ public:
                 }
             };
             const auto draw_ground = [&] {
-                if (!state.background.enabled)
+                // Without a camera the stage projects through the unwritten
+                // zero block and reaches no fragment.
+                if (!state.background.enabled || !camera)
                     return;
                 if (!scene_matrix_bound) {
                     SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
@@ -10858,7 +10938,7 @@ public:
                                              sizeof(ground_deformation));
 #endif
                 const upstream::BackgroundUniforms background = upstream::build_background_uniforms(
-                    scene.environment, camera, transmission_enabled);
+                    scene.environment, *camera, transmission_enabled);
                 SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
                 SDL_PushGPUFragmentUniformData(command, 0, &background, sizeof(background));
                 const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
@@ -11009,27 +11089,35 @@ public:
                     gpu_error(
                         "A swapchain overlay changed its renderables after resource synchronization.");
                 }
-                CameraRecord& overlay_camera =
-                    overlay_scene->camera.value < engine.cameras.size()
-                        ? handle_at(engine.cameras, overlay_scene->camera)
-                        : camera;
-                // A layer's own camera answers `getEffectiveAspectRatio`
-                // for itself: upstream each scene's render task writes
-                // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
-                // two scenes splitting one target by viewport project
-                // at two different ratios.
-                const PixelViewport overlay_surface_extent =
-                    scene_surface_extent(engine, *overlay_scene, width, height);
-                const double overlay_aspect = upstream::effective_aspect_ratio(
-                    overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                    static_cast<double>(overlay_surface_extent.height));
-                overlay_matrix = upstream::build_view_projection(overlay_camera, overlay_aspect);
+                // The layer's own camera, or the base scene's for a layer
+                // without one; null when neither has one, which draws
+                // through the zero block (see `active_camera`).
+                const CameraRecord* const own_overlay_camera = layer_camera(*overlay_scene);
+                const CameraRecord* const overlay_camera =
+                    own_overlay_camera ? own_overlay_camera : camera;
+                overlay_matrix = {};
+                if (overlay_camera) {
+                    // A layer's own camera answers `getEffectiveAspectRatio`
+                    // for itself: upstream each scene's render task writes
+                    // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
+                    // two scenes splitting one target by viewport project
+                    // at two different ratios.
+                    const PixelViewport overlay_surface_extent =
+                        scene_surface_extent(engine, *overlay_scene, width, height);
+                    const double overlay_aspect = upstream::effective_aspect_ratio(
+                        *overlay_camera, static_cast<double>(overlay_surface_extent.width),
+                        static_cast<double>(overlay_surface_extent.height));
+                    overlay_matrix =
+                        upstream::build_view_projection(*overlay_camera, overlay_aspect);
+                }
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
                 pass_matrix = &overlay_matrix;
 #if BBLITE_PINNED_MATERIALS
-                pass_scene_block =
-                    pinned_scene_block(*overlay_scene, engine, overlay_camera, overlay_matrix);
+                pass_scene_block = overlay_camera
+                                       ? pinned_scene_block(*overlay_scene, engine, *overlay_camera,
+                                                            overlay_matrix)
+                                       : upstream::SceneUniforms{};
                 pass_lights_block = pinned_lights_block(*overlay_scene, engine);
 #endif
                 color_info.load_op = SDL_GPU_LOADOP_LOAD;

@@ -121,7 +121,7 @@ test("native property playback follows source clock, stopped writes and publicat
 #include <cmath>
 #include <fstream>
 using Json=nlohmann::json;
-struct Group{float current_time=0.5f,from_time=0.5f,to_time=2.5f,speed_ratio=1;bool playing=false,stopped=false,loop=true;};
+struct Group{double current_time=0.5,from_time=0.5,to_time=2.5,speed_ratio=1;bool playing=false,stopped=false,loop=true;};
 ${variants
     .map(
         (context, index) => `namespace variant_${index}{

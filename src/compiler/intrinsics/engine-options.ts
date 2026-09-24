@@ -291,7 +291,7 @@ export function compileRenderTaskOptions(
         nameExpression
             ? context.compileStringLiteral(nameExpression)
             : "render-task",
-    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
+    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "std::nullopt"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
     if (!depthClear && !sharedTarget) return options;
     return `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`;
 }

@@ -829,13 +829,14 @@ struct ClusteredLightContainer {
     bool binned = false;
 };
 
+/**
+ * Which producer's vertex convention a mesh record carries: `babylon` for
+ * a .babylon loader mesh, `gltf` for the glTF loader's primitives and for
+ * `createMeshFromData`, through which every procedural factory finishes.
+ */
 enum class PrimitiveKind {
     babylon,
-    box,
     gltf,
-    ground,
-    sphere,
-    torus,
 };
 
 enum class CameraKind {
@@ -1024,7 +1025,12 @@ struct RenderTextureRef {
 struct RenderTaskOptions {
     std::string name;
     RenderTargetHandle target{};
-    Color4 clear_color{};
+    /**
+     * `clrColor`, absent when the task named none: the pass then clears to
+     * its scene's live `clearColor`, read at execution
+     * (`att.clearValue = cfg.clrColor ?? sc.clearColor`, render-task-base.ts).
+     */
+    std::optional<Color4> clear_color;
     bool clear = false;
     CameraHandle camera{};
     bool has_camera = false;
@@ -1898,9 +1904,9 @@ struct LineSystemData {
 /**
  * Which space a geometry's `vertices[].position` lane is already in.
  *
- * `PrimitiveKind` does not answer this — it says whether a mesh has real
- * geometry rather than parametric dimensions, and `createPlane` and
- * `createMeshFromData` both record `gltf` while keeping local vertices.
+ * `PrimitiveKind` does not answer this — it names the producer's vertex
+ * convention, and `createMeshFromData` records `gltf` while keeping local
+ * vertices.
  * A consumer that needs each vertex's world position has to compose what
  * is missing, so the producer records what it baked:
  *
@@ -1954,12 +1960,13 @@ struct ModelGeometry {
     /** The loader reversed source triangles for its baked material convention. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
+#if BBLITE_SHADOW_MORPH_BOUNDS
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
     // this is a WeakMap cache keyed on the mesh and invalidated when its
     // positions or target list change; a geometry's deltas cannot change
-    // once loaded, so there is nothing here to invalidate. Empty in every
-    // scene that never enables morph-target shadows.
+    // once loaded, so there is nothing here to invalidate. Only a scene
+    // that enables morph-target shadows carries it.
     //
     // `mutable` because it is memoization of immutable data and nothing
     // else: the caster collector reads the engine through a const
@@ -1968,6 +1975,7 @@ struct ModelGeometry {
     // differ. The alternative is folding it afresh every frame for every
     // target, which is what the pin's cache exists to avoid.
     mutable std::vector<std::array<Vec3, 2>> morph_bounds;
+#endif
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
@@ -2035,7 +2043,9 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.local_normals);
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
+#if BBLITE_SHADOW_MORPH_BOUNDS
     release_storage(geometry.morph_bounds);
+#endif
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
@@ -2100,7 +2110,7 @@ struct MeshRecord {
      * lookup checks this lane before the mesh's independently authored name.
      */
     std::string scene_node_name;
-    PrimitiveKind primitive = PrimitiveKind::box;
+    PrimitiveKind primitive = PrimitiveKind::gltf;
     // The pin holds a node's translation as three JavaScript numbers, and
     // at large-world coordinates the float32 ULP is half a unit -- enough
     // to move a silhouette before the eye-relative subtraction can recover
@@ -2110,7 +2120,6 @@ struct MeshRecord {
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
-    Vec3 dimensions{1.0f, 1.0f, 1.0f};
     // `mesh.receiveShadows`. A composition key for the Standard and PBR
     // families, whose variants carry the sampling code -- and a per-draw
     // VALUE for the node family, whose receiver mixes its factor by the
@@ -3095,7 +3104,7 @@ struct AnimationGroupRecord {
     std::uint32_t asset = invalid_handle;
     std::size_t clip = 0;
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
-    float weight = 1.0f;
+    double weight = 1.0;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     double duration = 0;
     double frame_rate = 0;
@@ -6015,7 +6024,7 @@ void off_visibility_change(Engine& engine, std::size_t identity);
 #if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-api.hpp>
 #endif
-void set_animation_weight(Engine& engine, AnimationGroupHandle group, float weight);
+void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
 void go_to_frame(Engine& engine, AnimationGroupHandle group, float frame, bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);

@@ -919,7 +919,10 @@ void set_animation_additive_from_frame(
                     ...(["refX", "refY", "refZ", "refW"] as const).map(
                         (name, lane): [string, PinnedBinding] => [
                             `bucket.${name}`,
-                            { cpp: `reference[${lane}]`, type: "scalar" },
+                            {
+                                cpp: `bucket.reference[${lane}]`,
+                                type: "scalar",
+                            },
                         ],
                     ),
                     ["bucket.values", { cpp: "bucket.values", type: "f32" }],
@@ -964,13 +967,13 @@ void set_animation_additive_from_frame(
                 booleanOr: true,
                 memberBindings: new Map<string, PinnedBinding>([
                     ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
-                    ["group.currentTime", { cpp: "time", type: "scalar" }],
+                    [
+                        "group.currentTime",
+                        { cpp: "group.current_time", type: "scalar" },
+                    ],
                     [
                         "group.speedRatio",
-                        {
-                            cpp: "static_cast<double>(group.speed_ratio)",
-                            type: "scalar",
-                        },
+                        { cpp: "group.speed_ratio", type: "scalar" },
                     ],
                     [
                         "group.loopAnimation",
@@ -978,33 +981,16 @@ void set_animation_additive_from_frame(
                     ],
                     [
                         "mixer[MIX_FROM]",
-                        {
-                            cpp: "static_cast<double>(group.from_time)",
-                            type: "scalar",
-                        },
+                        { cpp: "group.from_time", type: "scalar" },
                     ],
-                    [
-                        "mixer[MIX_TO]",
-                        {
-                            cpp: "static_cast<double>(group.to_time)",
-                            type: "scalar",
-                        },
-                    ],
+                    ["mixer[MIX_TO]", { cpp: "group.to_time", type: "scalar" }],
                     [
                         "mixer[MIX_DURATION]",
-                        {
-                            cpp: "static_cast<double>(group.clip.duration)",
-                            type: "scalar",
-                        },
+                        { cpp: "group.clip.duration", type: "scalar" },
                     ],
                 ]),
             },
         );
-        const nested = (body: string): string =>
-            body
-                .split("\n")
-                .map((line) => (line ? `    ${line}` : line))
-                .join("\n");
         return `
 /**
  * ${this.context.provenance(mixerModule, "updateWeightedPointerAnimations")}
@@ -1044,32 +1030,15 @@ PropertyAnimationBucket& track_bucket(
 }
 
 // ${accumulate.provenance}
-// The pin's refX..refW are JavaScript numbers that only ever hold sample
-// lanes; the bucket record keeps them in float, which holds them exactly.
 ${accumulate.declaration} {
-    std::array<double, 4> reference{
-        bucket.reference[0],
-        bucket.reference[1],
-        bucket.reference[2],
-        bucket.reference[3]};
 ${accumulate.body}
-    for (std::size_t lane = 0; lane < reference.size(); ++lane) {
-        bucket.reference[lane] = static_cast<float>(reference[lane]);
-    }
 }
 
 ${normalize}
 
 // ${advance.provenance}
-// group.currentTime is a JavaScript number the record keeps in float: the
-// advance runs at the pin's width and rounds once, at the record store.
 ${advance.declaration} {
-    double time = group.current_time;
-    const double result = [&]() -> double {
-${nested(advance.body)}
-    }();
-    group.current_time = static_cast<float>(time);
-    return result;
+${advance.body}
 }
 
 /**
@@ -1091,7 +1060,7 @@ bool update_weighted_property_animations(
     }
     bool contested = false;
     for (const PropertyAnimationGroup& group : manager.groups) {
-        if (!group || group->stopped || group->weight == 1.0f) continue;
+        if (!group || group->stopped || group->weight == 1.0) continue;
         for (std::size_t index = 0;
              index < group->clip.tracks.size();
              ++index) {
@@ -1164,9 +1133,7 @@ bool update_weighted_property_animations(
     /**
      * `updateFades`, lowered whole over the manager's native fade list:
      * each fade's clamped advance, the weight it writes and the completed
-     * fade's exact target weight and removal. The fade's elapsed time and
-     * the group weight are JavaScript numbers the native records keep in
-     * float, so they are read widened and each store rounds once.
+     * fade's exact target weight and removal.
      */
     private lowerWeightFadeUpdate(): string {
         const fadeModule = "src/animation/animation-weight-fade.ts";
@@ -1218,48 +1185,28 @@ bool update_weighted_property_animations(
                         },
                     ],
                     ["fades[i]", { cpp: fade, type: "opaque" }],
-                    [
-                        "fades[i].elapsedMs",
-                        {
-                            cpp: `AnimationFloatLane{${fade}.elapsed_ms}`,
-                            type: "scalar",
-                        },
-                    ],
                     ...(
                         [
+                            ["elapsedMs", "elapsed_ms"],
                             ["durationMs", "duration_ms"],
                             ["from", "from"],
                             ["to", "to"],
                         ] as const
                     ).map(([pinned, native]): [string, PinnedBinding] => [
                         `fades[i].${pinned}`,
-                        {
-                            cpp: `static_cast<double>(${fade}.${native})`,
-                            type: "scalar",
-                        },
+                        { cpp: `${fade}.${native}`, type: "scalar" },
                     ]),
                     [
                         "fades[i].group.weight",
                         {
-                            cpp: `AnimationFloatLane{animation_weight_fade_target_weight(engine, ${fade}.target)}`,
+                            cpp: `animation_weight_fade_target_weight(engine, ${fade}.target)`,
                             type: "scalar",
                         },
                     ],
                 ]),
             },
         );
-        return `// A pinned JavaScript-number lane a native record keeps in float: a read
-// widens it, and a store rounds once, where the record keeps it.
-struct AnimationFloatLane {
-    float& lane;
-    operator double() const { return lane; }
-    AnimationFloatLane& operator=(double value) {
-        lane = static_cast<float>(value);
-        return *this;
-    }
-};
-
-// ${parts.provenance}
+        return `// ${parts.provenance}
 ${parts.declaration} {
 ${parts.body}
 }`;
@@ -1340,7 +1287,7 @@ void add_animation_groups(
 void set_animation_weight(
     Engine& engine,
     AnimationGroupHandle group,
-    float weight) {
+    double weight) {
     if (group.value >= engine.animation_groups.size()) {
         throw std::runtime_error(
             "Invalid animation group handle.");
@@ -1584,7 +1531,7 @@ ${[...propertyAnimationLanes.values()]
             ? `
 void set_animation_weight(
     PropertyAnimationGroup group,
-    float weight) {
+    double weight) {
     if (!group) {
         throw std::runtime_error(
             "Property animation group is null.");
@@ -1615,7 +1562,7 @@ bool same_animation_weight_fade_target(
     return left.gltf_group.value == right.gltf_group.value;
 }
 
-float& animation_weight_fade_target_weight(
+double& animation_weight_fade_target_weight(
     Engine& engine,
     const AnimationWeightFadeTarget& target) {
     if (target.kind == AnimationWeightFadeTargetKind::property) {
@@ -1637,7 +1584,7 @@ ${this.lowerWeightFadeUpdate()}
 void run_manager_weight_fades(
     Engine& engine,
     PropertyAnimationManagerRecord& manager,
-    float delta_ms) {
+    double delta_ms) {
     if (manager.prior_weight_fade_pre_update) {
         manager.prior_weight_fade_pre_update(
             engine, manager, delta_ms);
@@ -1648,7 +1595,7 @@ void run_manager_weight_fades(
 void install_weight_fade_hook(
     PropertyAnimationManagerRecord& manager) {
     using PreUpdateFunction = void (*)(
-        Engine&, PropertyAnimationManagerRecord&, float);
+        Engine&, PropertyAnimationManagerRecord&, double);
     const PreUpdateFunction* installed =
         manager.pre_update.target<PreUpdateFunction>();
     if (installed && *installed == &run_manager_weight_fades) {
@@ -1665,12 +1612,12 @@ void schedule_animation_weight_fade(
     Engine& engine,
     PropertyAnimationManager manager,
     AnimationWeightFadeTarget target,
-    float to,
-    float duration_ms) {
-    const float checked_to = checked_animation_weight(to);
-    const float from = checked_animation_weight(
+    double to,
+    double duration_ms) {
+    const double checked_to = checked_animation_weight(to);
+    const double from = checked_animation_weight(
         animation_weight_fade_target_weight(engine, target));
-    if (!std::isfinite(duration_ms) || !(duration_ms > 0.0f)) {
+    if (!std::isfinite(duration_ms) || !(duration_ms > 0.0)) {
         throw std::runtime_error(
             "Animation weight fade duration must be a finite "
             "positive number, got " +
@@ -1697,7 +1644,7 @@ void schedule_animation_weight_fade(
             from,
             checked_to,
             duration_ms,
-            0.0f});
+            0.0});
     install_weight_fade_hook(owner);
 }
 `
@@ -1709,13 +1656,13 @@ void cross_fade_animation_groups(
     Engine& engine,
     AnimationWeightFadeTarget from_group,
     AnimationWeightFadeTarget to_group,
-    float duration_ms,
-    float to_weight) {
+    double duration_ms,
+    double to_weight) {
     // Validate the destination before either source weight is touched,
     // matching crossFadeAnimationGroups' ordering in the pin.
-    const float checked_to = checked_animation_weight(to_weight);
+    const double checked_to = checked_animation_weight(to_weight);
     schedule_animation_weight_fade(
-        engine, manager, std::move(from_group), 0.0f, duration_ms);
+        engine, manager, std::move(from_group), 0.0, duration_ms);
     schedule_animation_weight_fade(
         engine, manager, std::move(to_group), checked_to, duration_ms);
 }
@@ -1740,7 +1687,7 @@ void cross_fade_animation_groups(
         const weightFadeTick = weightFades
             ? `
     if (manager.pre_update) {
-        manager.pre_update(engine, manager, static_cast<float>(delta_ms));
+        manager.pre_update(engine, manager, delta_ms);
     }`
             : "";
         const managerEntryPoints = managedGroups
@@ -1751,11 +1698,11 @@ void cross_fade_animation_groups(
         // even a plain property group associates its manager with a target.
         const weightValidationHelper =
             blending || weightFades || managedGroups
-                ? `float checked_animation_weight(float weight) {
+                ? `double checked_animation_weight(double weight) {
     if (
         !std::isfinite(weight) ||
-        weight < 0.0f ||
-        weight > 1.0f) {
+        weight < 0.0 ||
+        weight > 1.0) {
         throw std::runtime_error(
             "Animation weight must be a finite number between 0 "
             "and 1, got " +
@@ -1998,7 +1945,7 @@ void tick_manager(
 void seek_manager_groups(
     Engine& engine,
     PropertyAnimationManagerRecord& manager,
-    float time) {
+    double time) {
     for (const PropertyAnimationGroup& group : manager.groups) {
         if (!group) continue;
         group->current_time = std::clamp(
@@ -2077,7 +2024,7 @@ void update_animation_manager(
 void seek_animation_manager(
     PropertyAnimationManager manager,
     Engine& engine,
-    float time) {
+    double time) {
     seek_manager_groups(engine, bind_manager_engine(manager, engine), time);
 }
 ${managerEntryPoints}${weightEntryPoints}${weightFadeEntryPoints}
@@ -2085,12 +2032,12 @@ ${managerEntryPoints}${weightEntryPoints}${weightFadeEntryPoints}
 PropertyAnimationClip create_property_animation_clip(
     std::string name,
     std::vector<PropertyAnimationTrack> tracks,
-    float frame_rate) {
+    double frame_rate) {
     if (tracks.empty()) {
         throw std::runtime_error(
             "createPropertyAnimationClip requires at least one track.");
     }
-    if (!(frame_rate > 0.0f)) {
+    if (!(frame_rate > 0.0)) {
         throw std::runtime_error(
             "Property animation frame rate must be positive.");
     }
@@ -2103,9 +2050,10 @@ PropertyAnimationClip create_property_animation_clip(
             throw std::runtime_error(
                 "Property animation track requires at least one key.");
         }
+        // The last Float32Array input time, read as a JavaScript number.
         clip.duration = std::max(
             clip.duration,
-            track.keys.back().time);
+            static_cast<double>(track.keys.back().time));
     }
     return clip;
 }
@@ -2198,7 +2146,7 @@ void stop_animation(PropertyAnimationGroup group) {
 void go_to_frame(
     PropertyAnimationGroup group,
     Engine& engine,
-    float frame) {
+    double frame) {
     if (!group) {
         throw std::runtime_error(
             "Property animation group is null.");

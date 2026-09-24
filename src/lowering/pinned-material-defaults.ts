@@ -5,7 +5,8 @@
  * and the record-mapped lowering discards that fallback ("the record always
  * carries a value") — so the intrinsics that seed the native record
  * (`src/compiler/intrinsics/material-options.ts`, the pure-2D particle
- * bridge in `intrinsics/particle.ts`) need the same numbers. This table names
+ * bridge in `intrinsics/particle.ts`) and the glTF material projection's
+ * absent keys (`gltf/material-projection.ts`) need the same numbers. This table names
  * WHERE each default is written; its value is the pin's own `?? <default>`
  * at that site, folded here, so the record seed cannot drift from the pin.
  *
@@ -51,6 +52,8 @@ const subsurfaceModule = "src/material/pbr/fragments/subsurface-fragment.ts";
 const refractionModule =
     "src/material/pbr/fragments/refraction-rtt-fragment.ts";
 const baseWriterModule = "src/material/pbr/pbr-renderable.ts";
+const alphaTestModule = "src/material/pbr/fragments/alpha-test-fragment.ts";
+const unlitModule = "src/material/pbr/fragments/unlit-fragment.ts";
 const sprite2dBridgeModule = "src/particle/particle-sprite-2d.ts";
 const particleSceneModule = "src/particle/particle-scene.ts";
 
@@ -77,6 +80,10 @@ const PINNED_MATERIAL_DEFAULTS = {
     pbrNormalTextureScale: {
         pinned: `${baseWriterModule}#_writeMaterialData#normalTextureScale`,
     },
+    /** The alpha-test extension's cutoff, absent on a non-MASK glTF material. */
+    alphaCutOff: { pinned: `${alphaTestModule}#pbrExt.writeUbo#_alphaCutOff` },
+    /** `writeUnlitUBO`'s tint, absent unless the unlit setter was given one. */
+    unlitColor: { pinned: `${unlitModule}#writeUnlitUBO#_unlitColor` },
     // `writeClearcoatUBO` — seeded by `compileClearCoatOptions`.
     clearcoatIntensity: {
         pinned: `${clearcoatModule}#writeClearcoatUBO#intensity`,

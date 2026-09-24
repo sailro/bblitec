@@ -388,7 +388,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
                 const auto* name=optional(targeted.as_object(),"targetName");
                 clip.target_names.push_back(name?std::optional<std::string>{name->as_string()}:std::nullopt);
             }
-            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,static_cast<float>(clip.weight),{},clip.duration,clip.frame_rate});
+            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,clip.weight,{},clip.duration,clip.frame_rate});
             asset.animation_groups.push_back(AnimationGroupHandle{static_cast<std::uint32_t>(engine.animation_groups.size()-1)});
             animation_runtime->clips.push_back(std::move(clip));
         }
