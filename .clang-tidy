@@ -44,8 +44,6 @@ CheckOptions:
   # The check already ignores std::bad_alloc; MSVC's allocators throw its
   # subclass when a container default-constructs its sentinel node.
   bugprone-exception-escape.IgnoredExceptions: 'bad_array_new_length'
-  # Generated `main` reports a caught error through std::cerr.
-  bugprone-exception-escape.CheckMain: false
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|[/\\])native[/\\](include|src)[/\\]'
 SystemHeaders: false

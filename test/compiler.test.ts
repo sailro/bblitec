@@ -13551,7 +13551,10 @@ test("stringifies a native exception through a catch binding", () => {
     `);
 
     assert.match(result.cpp, /catch \(const std::exception&/);
-    assert.match(result.cpp, /\.what\(\)/);
+    assert.match(
+        result.cpp,
+        /bbl::js::error_message\(v_bblite_caught_error_\d+\)/,
+    );
     assert.match(result.cpp, /std::rethrow_exception\(bbl::js::make_error/);
     assert.doesNotMatch(result.cpp, /std::string v_[\w]*cause =/);
 });

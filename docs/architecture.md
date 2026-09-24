@@ -91,7 +91,8 @@ belong to scene identity. Property and glTF animation retain separate playback c
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
 - Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
-  terminate.
+  terminate. An exception escaping an application entry (generated `main`, the Window application, a
+  platform entry) is reported through `bblite/uncaught_error.hpp` with the realm reporter's wording.
 
 ## Renderer
 
