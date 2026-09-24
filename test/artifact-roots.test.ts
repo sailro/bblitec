@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -16,14 +16,9 @@ import { listFiles } from "../src/tooling/records.js";
 // `artifacts/<name>` a maintained source spells must be listed.
 
 const scannedRoots = ["src", "tools", "checks"];
-const nativeBuildScripts = [
-    join("native", "CMakeLists.txt"),
-    join("native", "compiler-cache.cmake"),
-    join("native", "dependency-features.cmake"),
-    join("native", "native-header-cache.cmake"),
-    join("native", "link-runtime-libraries.cmake"),
-    join("native", "apply-rmlui-patch.cmake"),
-];
+const nativeBuildScripts = readdirSync("native")
+    .filter((name) => name === "CMakeLists.txt" || name.endsWith(".cmake"))
+    .map((name) => join("native", name));
 
 /** Every top-level artifacts/ name a source spells, by path or path parts. */
 function referencedRoots(): Map<string, string> {

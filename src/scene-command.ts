@@ -151,9 +151,11 @@ import { resolveBrowserPath } from "./browser-path.js";
 import {
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
+    type DependencyPatchRecord,
     type DevelopmentTools,
     type WindowsBuildTools,
 } from "./development-tools.js";
+import { checkPatchInventory } from "./patch-inventory.js";
 import {
     installVcpkgManifest,
     type VcpkgManifestInstall,
@@ -1098,6 +1100,20 @@ interface PreflightScope {
     shaders: boolean;
 }
 
+/** Why a pinned artifact counts as not installed: its stale record, or its absence. */
+function artifactProblem(
+    tools: DevelopmentTools,
+    library: DependencyPatchRecord["library"],
+    directory: string,
+): string {
+    return (
+        tools.dependencyPatchRecords.find(
+            (record) =>
+                record.library === library && record.state.state === "stale",
+        )?.message ?? `not built at ${directory}`
+    );
+}
+
 function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
     const tools = currentDevelopmentTools();
     const checks: DevelopmentCheck[] = [
@@ -1166,7 +1182,13 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "Dawn",
             ...(tools.dawnInstalled
                 ? { path: tools.dawnDirectory }
-                : { problem: `not built at ${tools.dawnDirectory}` }),
+                : {
+                      problem: artifactProblem(
+                          tools,
+                          "dawn",
+                          tools.dawnDirectory,
+                      ),
+                  }),
         });
     }
     if (
@@ -1195,7 +1217,13 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "LabSound",
             ...(tools.labSoundInstalled
                 ? { path: tools.labSoundDirectory }
-                : { problem: `not built at ${tools.labSoundDirectory}` }),
+                : {
+                      problem: artifactProblem(
+                          tools,
+                          "labsound",
+                          tools.labSoundDirectory,
+                      ),
+                  }),
         });
     }
     if (scope.rmlUi) {
@@ -1203,7 +1231,13 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "RmlUi",
             ...(tools.rmlUiInstalled
                 ? { path: tools.rmlUiDirectory }
-                : { problem: `not built at ${tools.rmlUiDirectory}` }),
+                : {
+                      problem: artifactProblem(
+                          tools,
+                          "rmlui",
+                          tools.rmlUiDirectory,
+                      ),
+                  }),
         });
     }
     if (scope.browser) {
@@ -1235,12 +1269,22 @@ function requireDevelopmentPreflight(scope: PreflightScope): void {
 }
 
 function runDoctor(): void {
-    const checks = developmentChecks({
-        browser: true,
-        labSound: true,
-        rmlUi: true,
-        shaders: true,
-    });
+    const checks = [
+        ...developmentChecks({
+            browser: true,
+            labSound: true,
+            rmlUi: true,
+            shaders: true,
+        }),
+        ...checkPatchInventory().map((problem): DevelopmentCheck => ({
+            label: "patch inventory",
+            problem,
+        })),
+    ];
+    for (const record of currentDevelopmentTools().dependencyPatchRecords) {
+        if (record.message && record.state.state !== "stale")
+            console.log(`WARN    ${record.library}: ${record.message}`);
+    }
     for (const check of checks) {
         console.log(
             `${check.problem ? "MISSING" : "OK     "} ${check.label}: ${

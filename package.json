@@ -45,12 +45,13 @@
     "status:verify": "npm run build && node dist/src/verify-status.js",
     "corpus:verify": "npm run build && node dist/src/verify-corpus.js",
     "corpus:manifest": "npm run build && node dist/src/write-corpus-manifest.js",
-    "lint": "npm run lint:ts && npm run lint:cpp --",
+    "lint": "npm run lint:ts && npm run patches:check && npm run lint:cpp --",
     "lint:ts": "eslint src test tools checks/plugins eslint.config.mjs --max-warnings 0",
     "lint:cpp": "npm run build && node dist/src/code-quality.js lint",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"tools/**/*.mjs\" \"checks/plugins/*.{js,mjs}\" \"*.{json,mjs}\" && npm run build && node dist/src/code-quality.js format --write",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"tools/**/*.mjs\" \"checks/plugins/*.{js,mjs}\" \"*.{json,mjs}\" && npm run build && node dist/src/code-quality.js format",
-    "lint:exports": "ts-prune -p tsconfig.json"
+    "lint:exports": "ts-prune -p tsconfig.json",
+    "patches:check": "npm run build && node dist/src/patch-inventory.js"
   },
   "devDependencies": {
     "@babylonjs/havok": "^1.3.14",

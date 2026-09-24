@@ -221,11 +221,12 @@ set(
 
 # Installed pinned RmlUi root (tools/build-rmlui.ps1). vcpkg carries an
 # rmlui port, but not at the revision pinned in upstream/rmlui.json and
-# not carrying the native/patches/rmlui-*.patch files, so the library is built
-# once into artifacts/tools the way Dawn, Tint and LabSound are. Unlike
-# LabSound it is consumed through find_package: RmlUi's root-project
-# install exports exactly the targets it built, so its package config
-# resolves. Minimal builds point this at artifacts/tools/rmlui-static.
+# not carrying the maintained RmlUi patches (native/patches/manifest.json),
+# so the library is built once into artifacts/tools the way Dawn, Tint and
+# LabSound are. Unlike LabSound it is consumed through find_package:
+# RmlUi's root-project install exports exactly the targets it built, so its
+# package config resolves. Minimal builds point this at
+# artifacts/tools/rmlui-static.
 set(BBLITE_RMLUI_DEFAULT "${BBLITE_NATIVE_ROOT}/../artifacts/tools/rmlui")
 if(BBLITE_MINSIZE)
     string(APPEND BBLITE_RMLUI_DEFAULT "-static")

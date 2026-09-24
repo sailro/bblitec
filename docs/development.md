@@ -20,7 +20,9 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 ```
 
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
-Rebuild installed dependencies after maintained patches change, including `pwsh -File tools/build-rmlui.ps1`.
+Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record their source and patch set
+([native/patches/manifest.json](../native/patches/manifest.json)); configure refuses a record that
+differs and warns on an unrecorded artifact, and `dev:setup` rebuilds a stale one.
 
 ### Linux prerequisites
 
@@ -198,6 +200,7 @@ override their executable paths; Unix versioned names such as `clang-tidy-22` ar
 
 ```powershell
 npm run lint:ts
+npm run patches:check
 npm run format
 npm run format:check
 npm run scene -- build scene1 --backend both
@@ -206,6 +209,7 @@ npm run lint -- scene1
 
 ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
 `npm run lint:ts -- --fix` applies safe fixes. Prettier leaves embedded source strings unchanged.
+`patches:check` verifies the patch manifest against the patch files, their headers and every consumer.
 clang-format formats maintained native sources and C++ test fixtures without sorting includes.
 Corpus, example scenes, references, source pins, vendored code and generated output are excluded.
 
@@ -270,10 +274,12 @@ means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_
 Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
 `native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
 
-Development shares `artifacts/vcpkg-installed/development-full`. Reconcile an install once, never
-concurrently; parallel builds use `VCPKG_MANIFEST_INSTALL=OFF`. `BBLITE_VCPKG_INSTALLED_ROOT` relocates it.
-`tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg`
-junctions that install, under the same rule. Use `-Remove` to unlink junctions before removing a worktree.
+Development shares `artifacts/vcpkg-installed/development-full`; `BBLITE_VCPKG_INSTALLED_ROOT` relocates
+it. Each `scene build` reconciles it once, before any configure (configures never run vcpkg), when the
+manifest, overlay ports, features, triplet or vcpkg changed. `tools/setup-worktree.ps1 -Path <path>
+-Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg` junctions the install, so share it only
+between checkouts of the same `native/vcpkg.json` and overlay ports. Use `-Remove` to unlink junctions
+before removing a worktree.
 
 ### Concurrency
 
@@ -285,9 +291,10 @@ junctions that install, under the same rule. Use `-Remove` to unlink junctions b
 | BBLITE_PARALLEL_PARITY | Comparisons; default 8, audio serialized |
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
-Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`);
-`BBLITE_NATIVE_CACHE=0` disables it. Identical generated headers share cache storage; debug keys retain
-directory identity.
+Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`, 25 GiB);
+`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits, and Clang
+builds keep the precompiled header under the cache. Identical generated headers share cache storage;
+debug keys retain directory identity.
 
 ## Shader compilation
 
@@ -316,7 +323,7 @@ CMakeLists edits require process before parity. Explicit payload overrides are d
 npm run demos:release -- --output artifacts/releases
 ```
 
-Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan`. The workflow owns dependency installation,
+Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan` (generates, then prints the plan). The workflow owns dependency installation,
 prepares reached static dependencies, and builds and packages application demos. Plans/logs live in
 `artifacts/shipping/`; receipts include bytes, hashes and startup results. Replaced packages go to
 `.replaced/`; `@previous/` is preserved.
@@ -335,7 +342,8 @@ runs only on the build host's architecture. ARM requires deployment target 11+.
 
 Manual builds use `BBLITE_MINSIZE=ON`, matching backend/CRT/triplet, generated directory and trimmed
 SDL/Dawn/LabSound/RmlUi artifacts. Dependency flags include `-EnableAudio`, `-EnableGamepad`,
-`-EnableCodecs`, `-EnableSvg`, `-MinSize` and Windows `-StaticRuntime`. Missing reached subsystems refuse.
+`-EnableCodecs`, `-EnableSvg`, `-MinSize` and Windows `-StaticRuntime`. Missing reached subsystems refuse,
+as do artifacts whose recorded source or patch set differs.
 `BBLITE_PCH` is off; capture options are explicit and disabled capture requests fail.
 
 ```powershell
