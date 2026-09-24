@@ -2770,6 +2770,29 @@ check(
 `,
 );
 
+check(
+    "map-foreach-invokes-stored-instance-callbacks",
+    `
+    class Animal {
+        readonly listeners: Array<(animal: Animal) => void> = [];
+        constructor(readonly name: string) {}
+        speak(): string { return this.name + " speaks"; }
+    }
+    const zoo = new Map<string, Animal>();
+    const heard: string[] = [];
+    function adopt(animal: Animal): void {
+        zoo.set(animal.name, animal);
+        animal.listeners.push((who) => {
+            heard.push(who.speak());
+        });
+    }
+    adopt(new Animal("rex"));
+    adopt(new Animal("tom"));
+    zoo.forEach((animal) => { for (const listener of animal.listeners) listener(animal); });
+    if (heard.join("|") !== "rex speaks|tom speaks") throw new Error("heard " + heard.join("|"));
+`,
+);
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });
