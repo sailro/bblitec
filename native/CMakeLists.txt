@@ -696,9 +696,9 @@ if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 
-# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
-# because a loaded asset reaches scene transmission on its own and the
-# reached-feature list only records what the scene's code asked for.
+# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp:
+# the scene transmission reach and the composed refraction/thickness
+# bindings decide it.
 bblite_feature_define(BBLITE_HAS_PBR_RENDERER "renderer:scene")
 
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)

@@ -98,10 +98,11 @@ export interface CompileManifest {
      * compiler's walk is a single deterministic pass (entry statements
      * in document order, sub-expressions depth-first), so first-reach
      * wins and regeneration is stable. Features that are reached
-     * without a source node (the seeded "core") and features the CLI
-     * asset-join adds after compilation carry no entry. One site is not
+     * without a source node (the seeded "core") and features the asset
+     * join (`asset-feature-join.ts`) adds carry no entry. One site is not
      * a call site: `ui:rml` reached only by a host-page companion names
      * the companion JSON file, since no scene line exists to name.
+     * manifest.json records the sites repository-relative.
      */
     featureSites: Record<string, string>;
     runtimeSources: string[];

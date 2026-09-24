@@ -20,6 +20,7 @@ import {
     instantiatedPrimitiveRecords,
 } from "../../dist/src/gltf-document.js";
 import { importPinnedModule } from "../../dist/src/pinned-shader-composer.js";
+import { findRepositoryRoot } from "../../dist/src/repository-root.js";
 import { readJson, sha256 } from "./support.mjs";
 
 const rawBytes = (view) =>
@@ -161,7 +162,8 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
     );
     const manifest = readJson(join(generatedDirectory, "manifest.json"));
     assert.equal(
-        sha256(readFileSync(manifest.source)),
+        // manifest.json records repository-relative source paths.
+        sha256(readFileSync(resolve(findRepositoryRoot(), manifest.source))),
         identity.sourceSha256,
         "Generated source differs from browser source",
     );
