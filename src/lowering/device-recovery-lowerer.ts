@@ -5,8 +5,10 @@
  * forced-loss gates, the snapshot of registrations and each `_onLost`), the
  * success continuation (disarm, re-arm, each `_onRecovered`), the failure
  * continuation (each `_onRecoveryFailed`, no re-arm), the scene strategy's
- * registration, the handle's `disable`, `markNextDeviceLossForRecovery` and
- * `forceWebGpuDeviceLossForTesting` are the pinned bodies translated.
+ * registration, the handle's `disable`, `markNextDeviceLossForRecovery`,
+ * `forceWebGpuDeviceLossForTesting` and the run's
+ * `assertEveryActiveContextKindIsRecoverable` are the pinned bodies
+ * translated.
  *
  * The platform around them is the PAL's, and each boundary is named by the
  * statement it replaces:
@@ -39,6 +41,7 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 const recoveryModule = "src/engine/device-lost-recovery.ts";
 const testingModule = "src/engine/device-lost-recovery-testing.ts";
 const sceneModule = "src/engine/device-lost-scene-recovery.ts";
+const runModule = "src/engine/device-lost-recovery-run.ts";
 
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
 
@@ -645,7 +648,150 @@ function sceneRecoveryCpp(context: LoweringContext): string {
 std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine) {
     if (engine.device_recovery && engine.device_recovery->disposed)
         throw std::runtime_error("Cannot register recovery on a disposed engine.");
-    return enable_device_lost_recovery(engine, std::make_shared<DeviceRecoveryRegistration>());
+    auto registration = std::make_shared<DeviceRecoveryRegistration>();
+    registration->kind = ${JSON.stringify(kind.initializer.text)};
+    return enable_device_lost_recovery(engine, std::move(registration));
+}`;
+}
+
+/**
+ * Each native rendering-context registry, and where the pin gives its
+ * contexts their `_kind`: a `_kind` property of the context the module
+ * creates, or the module's own `KIND` constant.
+ */
+const contextRegistries: readonly {
+    registry: string;
+    module: string;
+    kind: "property" | "KIND";
+    macro?: string;
+}[] = [
+    {
+        registry: "registered_scenes",
+        module: "src/scene/scene-core.ts",
+        kind: "property",
+    },
+    {
+        registry: "registered_sprite_renderers",
+        module: "src/sprite/sprite-renderer.ts",
+        kind: "KIND",
+        macro: "BBLITE_HAS_SPRITES",
+    },
+    {
+        registry: "registered_text_renderers",
+        module: "src/text/text-renderer.ts",
+        kind: "KIND",
+    },
+    {
+        registry: "registered_effect_renderers",
+        module: "src/effect/effect-renderer.ts",
+        kind: "property",
+    },
+    {
+        registry: "registered_frame_graph_contexts",
+        module: "src/frame-graph/frame-graph-context.ts",
+        kind: "property",
+    },
+];
+
+/**
+ * `assertEveryActiveContextKindIsRecoverable`, lowered: the kinds of the
+ * active rendering contexts no in-flight registration recovers, refused by
+ * the pin's own message.
+ *
+ * Native keeps one registry per context kind on the engine rather than a
+ * list per surface, so the pin's loop over `engine.surfaces` is one pass
+ * over that registry, and `surface._renderingContexts` is every registered
+ * context, carrying the `_kind` the pin gives it. `handlers` is the
+ * in-flight snapshot, keyed by each registration's kind as the pin's map
+ * is.
+ */
+function contextKindAssertionCpp(context: LoweringContext): string {
+    const kinds = contextRegistries.map((entry) => {
+        if (entry.kind === "KIND")
+            return context.pinnedString(entry.module, "KIND");
+        const file = context.sourceFile(entry.module);
+        const initializer = context.namedPropertyInitializer(file, "_kind");
+        return initializer
+            ? context.stringValue(initializer, file)
+            : context.contractError(
+                  file,
+                  `Expected ${entry.module} to give its rendering context a _kind.`,
+              );
+    });
+    const registries = contextRegistries
+        .map((entry, index) => {
+            const line = `    kinds.insert(kinds.end(), engine.${entry.registry}.size(), std::string(${JSON.stringify(kinds[index])}));`;
+            return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
+        })
+        .join("\n");
+    const assertion = lowerPinnedFunctionParts(
+        context,
+        runModule,
+        "assertEveryActiveContextKindIsRecoverable",
+        [
+            {
+                pinned: "engine",
+                kind: "record",
+                cpp: "engine",
+                cppType: "Engine",
+                annotation: "EngineContext",
+                binding: { cpp: "engine", type: "opaque" },
+            },
+            {
+                pinned: "handlers",
+                kind: "record",
+                cpp: "handlers",
+                cppType:
+                    "std::vector<std::shared_ptr<DeviceRecoveryRegistration>>",
+                annotation:
+                    "ReadonlyMap<string, DeviceLostRecoveryRegistration>",
+                binding: { cpp: "handlers", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "assert_every_active_context_kind_is_recoverable",
+            returns: "void",
+            forOf: (iterated, element) => {
+                if (iterated === "engine.surfaces") {
+                    return {
+                        range: "std::views::single(&engine)",
+                        bindings: new Map([
+                            [element, { cpp: element, type: "opaque" }],
+                        ]),
+                    };
+                }
+                if (iterated.endsWith("._renderingContexts")) {
+                    return {
+                        range: `rendering_context_kinds(*${iterated.slice(0, -"._renderingContexts".length)})`,
+                        bindings: new Map([
+                            [
+                                `${element}._kind`,
+                                { cpp: element, type: "string" },
+                            ],
+                        ]),
+                    };
+                }
+                return undefined;
+            },
+            methods: new Map([
+                [
+                    "has",
+                    (receiver: string, args: readonly string[]) =>
+                        `std::ranges::any_of(${receiver}, [&](const auto& registration) { return registration->kind == ${args[0]}; })`,
+                ],
+            ]),
+        },
+    );
+    return `// Every surface's \`_renderingContexts\`, by kind: one registry per kind.
+static std::vector<std::string> rendering_context_kinds(const Engine& engine) {
+    std::vector<std::string> kinds;
+${registries}
+    return kinds;
+}
+
+// ${assertion.provenance}
+static ${assertion.declaration} {
+${assertion.body}
 }`;
 }
 
@@ -765,7 +911,11 @@ export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/js_data.hpp>
+#include <algorithm>
 #include <iostream>
+#include <ranges>
+#include <string>
+#include <vector>
 
 namespace bbl {
 static Engine::DeviceRecoveryState& recovery_state(Engine& engine) {
@@ -781,6 +931,8 @@ ${registrationCpp(context)}
 ${sceneRecoveryCpp(context)}
 
 ${forcedLossCpp(context)}
+
+${contextKindAssertionCpp(context)}
 
 void force_device_loss(Engine& engine) {
     // A disposed engine rebuilds nothing, and one recovery at a time runs
@@ -804,9 +956,7 @@ void begin_device_recovery(Engine& engine) {
     state.resources_ready = false;
     const bool was_running = !engine.stopped;
     engine.stopped = true;
-    if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() || !engine.registered_frame_graph_contexts.empty()) {
-        throw std::runtime_error("Every active rendering context must have an enabled recovery strategy; only scene contexts are represented.");
-    }
+    assert_every_active_context_kind_is_recoverable(engine, state.in_flight);
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};
     ++engine.device_generation;
     engine.stopped = !was_running;
