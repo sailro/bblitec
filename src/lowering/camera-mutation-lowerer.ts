@@ -9,6 +9,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -17,33 +18,6 @@ const axes = ["x", "y", "z"] as const;
 const scalarFields = ["alpha", "beta", "radius"] as const;
 
 type CallSpelling = (args: readonly string[]) => string;
-
-/**
- * `Math.min`/`Math.max` over two numbers with JavaScript's own semantics:
- * either NaN operand yields NaN, and signed zeros order (`Math.max(-0, 0)`
- * is `+0`). `std::min`/`std::max` alone preserve neither, so every camera
- * control body spells both through this.
- */
-export function jsMinMaxCalls(
-    context: LoweringContext,
-    at: ts.Node,
-): [string, CallSpelling][] {
-    return (["min", "max"] as const).map((name): [string, CallSpelling] => [
-        `Math.${name}`,
-        (args) => {
-            if (args.length !== 2)
-                context.contractError(
-                    at,
-                    "Camera clamp requires two numeric operands.",
-                );
-            return (
-                `([](double a, double b) { if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<double>::quiet_NaN(); ` +
-                `if (a == b) return std::signbit(a) ? ${name === "min" ? "a : b" : "b : a"}; ` +
-                `return std::${name}(a, b); })(${args.join(", ")})`
-            );
-        },
-    ]);
-}
 
 /**
  * The statements of a pinned DOM handler that have no native counterpart,
@@ -584,11 +558,7 @@ ${bulkBody}
             body.body,
             bindings,
             new Map([
-                ...["cos", "sin", "abs"].map((name): [string, CallSpelling] => [
-                    `Math.${name}`,
-                    (args) => `std::${name}(${args.join(", ")})`,
-                ]),
-                ...jsMinMaxCalls(this.context, declaration),
+                ...pinnedNumericMathCalls(),
                 ...scalarFields.map((field): [string, CallSpelling] => [
                     `write_${field}`,
                     (args) =>

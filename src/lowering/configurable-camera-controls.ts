@@ -9,7 +9,6 @@ import type {
 import {
     cameraPlatformStatement,
     cameraPointerDeltaBindings,
-    jsMinMaxCalls,
 } from "./camera-mutation-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -93,13 +92,8 @@ function freeCameraBindings(): Map<string, PinnedBinding> {
     return bindings;
 }
 
-function freeCameraCalls(
-    context: LoweringContext,
-    at: ts.Node,
-): Map<string, CallSpelling> {
+function freeCameraCalls(): Map<string, CallSpelling> {
     const calls = pinnedNumericMathCalls();
-    for (const [name, spelling] of jsMinMaxCalls(context, at))
-        calls.set(name, spelling);
     calls.set("keys.has", (args) => `pressed(${args.join(", ")})`);
     calls.set(
         "camera.target.set",
@@ -171,7 +165,7 @@ function lowerFreeUpdate(
     const { file, callback } = nestedCallback(context, control, "update");
     const bindings = freeCameraBindings();
     for (const [name, binding] of state) bindings.set(name, binding);
-    const calls = freeCameraCalls(context, callback);
+    const calls = freeCameraCalls();
     for (const [name, spelling] of extraCalls) calls.set(name, spelling);
     return lowerPinnedBody(file, callback.body!.statements, {
         bindings,
@@ -209,7 +203,7 @@ function lowerFreePointer(
         bindings.set(source, binding);
     return lowerPinnedBody(file, callback.body!.statements, {
         bindings,
-        calls: freeCameraCalls(context, callback),
+        calls: freeCameraCalls(),
         booleanOr: true,
         statement: cameraPlatformStatement(
             context,
@@ -361,7 +355,7 @@ export function lowerConfigurableCameraControls(
         context.contractError(hasAny, "Expected the pinned key predicate.");
     const predicate = lowerPinnedBody(file, hasAny.body.statements, {
         bindings: new Map(),
-        calls: freeCameraCalls(context, hasAny),
+        calls: freeCameraCalls(),
         expression: stringLiteral,
         forOf: (source, element) =>
             source === "codes"
@@ -429,6 +423,7 @@ export function lowerConfigurableCameraControls(
         source: `
 // ${context.provenance(configurableModule, "attachConfigurableFreeControl")}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>

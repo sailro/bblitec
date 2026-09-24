@@ -527,7 +527,7 @@ test("a changed free-camera key, button arm or frame floor flows into the contro
                 "Math.max(deltaMs, 2)",
             ),
         ),
-        /\(delta_ms, 2\.0\)/,
+        /math_extreme<true>\(\{delta_ms, 2\.0\}\)/,
     );
 });
 

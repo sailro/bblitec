@@ -930,6 +930,7 @@ ${free.declarations}`,
             ),
             source: `// ${this.context.provenance(modulePath, symbolName, `${freeModule}#attachFreeControl`)}
 #include <bblite/upstream/camera_controls.hpp>
+#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <cmath>
