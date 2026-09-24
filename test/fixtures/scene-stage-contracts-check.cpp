@@ -151,7 +151,8 @@ struct Graph {
     struct Lists {
         int opaque = 1, transparent = 2;
     } draw_lists;
-    int draw_matrix = 0, task_matrix = 0, task_view = 0, task_camera = 0, task_aspect = 0;
+    int draw_matrix = 0, task_matrix = 0, task_view = 0, task_camera_record = 0, task_aspect = 0;
+    int* task_camera = &task_camera_record;
     struct Matrices {
         int* view;
     } draw_pass_matrices{&task_view}, task_pass_matrices{&task_view};

@@ -48,6 +48,8 @@ test(
             struct { Recorder* device; Recorder* queue; std::span<${pass}> splat_passes; } state{&recorder, &recorder, {&pass, 1}};
             [[maybe_unused]] const auto frame_projection = frame_view;
             [[maybe_unused]] const std::array<float, 4> frame_camera_position{};
+            const CameraRecord frame_camera{};
+            [[maybe_unused]] const CameraRecord* const camera = &frame_camera;
             [[maybe_unused]] const unsigned width = 1280;
             [[maybe_unused]] const unsigned height = 720;
             ${cppFunction(source, `for (${pass}& splat : state.splat_passes)`)}

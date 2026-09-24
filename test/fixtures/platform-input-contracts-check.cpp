@@ -40,7 +40,7 @@ bool handle_ui_rml_event(int&, SDL_Event&) {
     calls.push_back("ui");
     return !consume_ui;
 }
-void dispatch_surface_camera_pointer(Engine&, const SDL_Event&, int&, int&, int&) {
+void dispatch_surface_camera_pointer(Engine&, const SDL_Event&, int*, int&, int&) {
     calls.push_back("camera");
 }
 struct InputState {
@@ -94,6 +94,7 @@ struct SceneInputDriver {
     };
     std::optional<Frame> frame_;
     explicit SceneInputDriver(SDL_Window* target) : data_(target) {}
+    int* active_camera() { return data_.camera; }
     InputDriver& fixture() { return data_; }
 };
 #include "drivers.hpp"
