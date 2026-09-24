@@ -1,5 +1,5 @@
 {
-  "$comment": "Every upstream patch this repository applies. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the application order; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; a port feature's name: the portfile with that feature; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`; LabSound `core-only`). native/patch-identity.cmake is the one reader: portfiles and builders take their series from it, builders record `<prefix>_SOURCE`, `<prefix>_PATCHES` (name=sha256 in order) and `<prefix>_VARIANTS` in the artifact's record file, and configure and doctor refuse an artifact whose record differs. `npm run patches:check` verifies files, headers, order and portfile coverage. Each owned patch file opens with its rationale; `upstream.state` is unsubmitted, open, merged, closed or vcpkg (the port's own patch, copied verbatim).",
+  "$comment": "Every upstream patch this repository applies. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the application order; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; a port feature's name: the portfile with that feature; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`, `tint` (tools/build-tint.ps1, whose checkout is its own); LabSound `core-only`). native/patch-identity.cmake is the one reader: portfiles and builders take their series from it, builders record `<prefix>_SOURCE`, `<prefix>_PATCHES` (name=sha256 in order) and `<prefix>_VARIANTS` in the artifact's record file, and configure and doctor refuse an artifact whose record differs. `npm run patches:check` verifies files, headers, order and portfile coverage. Each owned patch file opens with its rationale; `upstream.state` is unsubmitted, open, merged, closed or vcpkg (the port's own patch, copied verbatim).",
   "libraries": {
     "rmlui": {
       "pin": { "file": "upstream/rmlui.json", "field": "commit" },
@@ -11,7 +11,7 @@
       "pin": { "file": "upstream/tint.json", "field": "commit" },
       "builder": "tools/build-dawn.ps1",
       "record": { "prefix": "BBLITE_DAWN", "file": "bblite-dawn-features.cmake" },
-      "variants": ["android", "metal", "ios"]
+      "variants": ["android", "metal", "ios", "tint"]
     },
     "labsound": {
       "pin": { "file": "upstream/labsound.json", "field": "commit" },
@@ -284,6 +284,15 @@
       "purpose": "Non-swizzle depth/stencil views on iOS Simulator",
       "upstream": { "state": "unsubmitted" },
       "variants": ["ios"],
+      "inheritedFromVcpkg": false
+    },
+    {
+      "library": "dawn",
+      "order": 5,
+      "file": "native/patches/dawn/0005-tint-hlsl-position-first.patch",
+      "purpose": "HLSL writer option ordering the position builtin first in entry point structures, so separately compiled SDL_GPU stages link on D3D12",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["tint"],
       "inheritedFromVcpkg": false
     },
     {
