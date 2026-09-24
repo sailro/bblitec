@@ -553,6 +553,7 @@ export class DataTypeRegistry {
             elementCppType: string;
             elements: string[];
             source: string;
+            allocates: boolean;
         }
     >();
     private readonly structNamesInProgress = new EmissionMap<
@@ -3074,20 +3075,34 @@ export class DataTypeRegistry {
     }
 
     /**
+     * The native expression naming a generated constant table. A table whose
+     * construction allocates is a function-local static behind an accessor,
+     * since a namespace-scope initializer that throws terminates the process.
+     */
+    private tableReference(name: string, allocates: boolean): string {
+        return allocates ? `bblscene::${name}()` : `bblscene::${name}`;
+    }
+
+    /** Whether constructing a constant of this element type can allocate. */
+    public constantAllocates(element: DataType): boolean {
+        return !["number", "boolean", "enum"].includes(element.kind);
+    }
+
+    /**
      * Materializes a uniform static numeric table (nested readonly array
-     * literals with numeric leaves) as a namespace-scope constant. Returns
-     * the table name and dimensions.
+     * literals with numeric leaves) as a generated constant. Returns the
+     * table's native reference and dimensions.
      */
     public registerTable(
         declaration: ts.Node,
         preferredName: string,
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
-    ): { name: string; dimensions: number[] } {
+    ): { reference: string; dimensions: number[] } {
         const existing = this.tables.get(declaration);
         if (existing) {
             return {
-                name: existing.name,
+                reference: this.tableReference(existing.name, true),
                 dimensions: existing.dimensions,
             };
         }
@@ -3102,25 +3117,26 @@ export class DataTypeRegistry {
             dimensions,
             values,
         });
-        return { name, dimensions };
+        return { reference: this.tableReference(name, true), dimensions };
     }
 
     /**
-     * Materializes a one-dimensional constant array as a
-     * namespace-scope constant, so an index computed at runtime can
-     * read it. Keyed by the array's declaration, so every use site
-     * shares one constant. Returns the constant's name.
+     * Materializes a one-dimensional constant array as a generated
+     * constant, so an index computed at runtime can read it. Keyed by the
+     * array's declaration, so every use site shares one constant. Returns
+     * the constant's native reference.
      */
     public registerConstantArray(
         declaration: ts.Node,
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        allocates: boolean,
         source: ts.Node = declaration,
     ): string {
         const existing = this.tagTables.get(declaration);
         if (existing) {
-            return existing.name;
+            return this.tableReference(existing.name, existing.allocates);
         }
         const name = this.uniqueName(
             sanitizeIdentifier(preferredName),
@@ -3131,8 +3147,9 @@ export class DataTypeRegistry {
             elementCppType,
             elements,
             source: source.getSourceFile().fileName,
+            allocates,
         });
-        return name;
+        return this.tableReference(name, allocates);
     }
 
     private readonly sharedConstantArrays = new EmissionMap<string, string>();
@@ -3141,6 +3158,7 @@ export class DataTypeRegistry {
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        allocates: boolean,
         source: ts.Node,
     ): string {
         const key = createHash("sha256")
@@ -3148,15 +3166,16 @@ export class DataTypeRegistry {
             .digest("hex");
         const existing = this.sharedConstantArrays.get(key);
         if (existing !== undefined) return existing;
-        const name = this.registerConstantArray(
+        const reference = this.registerConstantArray(
             ts.factory.createNumericLiteral("0"),
             preferredName,
             elementCppType,
             elements,
+            allocates,
             source,
         );
-        this.sharedConstantArrays.set(key, name);
-        return name;
+        this.sharedConstantArrays.set(key, reference);
+        return reference;
     }
 
     private tableDimensions(
@@ -3748,14 +3767,20 @@ export class DataTypeRegistry {
             type: string,
             name: string,
             initializer: string,
+            allocates: boolean,
         ): void => {
-            const definition = `const ${type} ${name}${initializer};`;
             lines.push(
-                {
-                    source,
-                    declaration: `extern const ${type} ${name};`,
-                    definition,
-                },
+                allocates
+                    ? {
+                          source,
+                          declaration: `const ${type}& ${name}();`,
+                          definition: `const ${type}& ${name}() {\n    static const ${type} value${initializer};\n    return value;\n}`,
+                      }
+                    : {
+                          source,
+                          declaration: `extern const ${type} ${name};`,
+                          definition: `const ${type} ${name}${initializer};`,
+                      },
                 "",
             );
         };
@@ -3765,6 +3790,7 @@ export class DataTypeRegistry {
                 this.tableCppType(table.dimensions),
                 table.name,
                 ` = ${table.values}`,
+                true,
             );
         }
         for (const table of this.tagTables.values()) {
@@ -3773,6 +3799,7 @@ export class DataTypeRegistry {
                 `std::array<${table.elementCppType}, ${table.elements.length}>`,
                 table.name,
                 `{${table.elements.join(", ")}}`,
+                table.allocates,
             );
         }
         lines.push(...this.renderJsonCodecs(used.structs));

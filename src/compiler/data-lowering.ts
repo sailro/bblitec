@@ -1463,7 +1463,7 @@ export class DataLowerer {
                 freshData: true,
             };
         }
-        const name = this.context.dataTypes.registerConstantArray(
+        const reference = this.context.dataTypes.registerConstantArray(
             declaration,
             ts.isIdentifier(unwrapped) ? unwrapped.text : "static_values",
             this.context.dataTypes.cppType(element),
@@ -1474,11 +1474,12 @@ export class DataLowerer {
                     expression,
                 ),
             ),
+            this.context.dataTypes.constantAllocates(element),
         );
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${name}`,
+            cpp: reference,
             dataType: { kind: "span", element },
         };
     }
@@ -3990,16 +3991,17 @@ export class DataLowerer {
         }
         // An inlined parameter can bind different constants at each call.
         // Share storage only when the element type and contents match.
-        const name = this.context.dataTypes.registerSharedConstantArray(
+        const reference = this.context.dataTypes.registerSharedConstantArray(
             unwrapped.text,
             this.context.dataTypes.cppType(element),
             elements,
+            this.context.dataTypes.constantAllocates(element),
             literal ?? unwrapped,
         );
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${name}`,
+            cpp: reference,
             dataType: { kind: "span", element },
         };
     }
@@ -4046,7 +4048,7 @@ export class DataLowerer {
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${table.name}`,
+            cpp: table.reference,
             dataType: {
                 kind: "table",
                 dimensions: table.dimensions,
@@ -5842,13 +5844,14 @@ export class DataLowerer {
                       )
                     : [...elements],
         };
-        const name = this.context.dataTypes.registerSharedConstantArray(
+        const reference = this.context.dataTypes.registerSharedConstantArray(
             `${prefix}_values`,
             table.elementCppType,
             table.elements,
+            false,
             source,
         );
-        return `bbl::js::${prefix}_array_from(bblscene::${name})`;
+        return `bbl::js::${prefix}_array_from(${reference})`;
     }
 
     /**
@@ -5862,15 +5865,16 @@ export class DataLowerer {
         source: ts.Node,
     ): string {
         const entryType = "std::pair<std::string_view, std::string_view>";
-        return `bblscene::${this.context.dataTypes.registerSharedConstantArray(
+        return this.context.dataTypes.registerSharedConstantArray(
             preferredName,
             entryType,
             pairs.map(
                 ([first, second]) =>
                     `${entryType}{${this.context.cppString(first)}, ${this.context.cppString(second)}}`,
             ),
+            false,
             source,
-        )}`;
+        );
     }
 
     private compileDataViewNew(

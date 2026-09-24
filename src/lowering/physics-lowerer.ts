@@ -2360,7 +2360,7 @@ struct PhysicsWorldHandle {
 [[nodiscard]] PhysicsWorldHandle create_havok_world(
     Scene& scene,
     Vec3d gravity);
-struct PhysicsBodyInstance { PhysicsBody body; pal::PhysicsBodyHandle handle; double index; };
+struct PhysicsBodyInstance { PhysicsBody body; pal::PhysicsBodyHandle handle; double index{}; };
 ${
     thin
         ? `
@@ -3010,7 +3010,7 @@ ${
 }  // namespace
 
 PhysicsWorld::~PhysicsWorld() {
-    if (events) physics_events_dispose(*this);
+    if (events) physics_events_dispose(*this, *events);
 ${
     floatingOrigin
         ? `    if (fo) {
@@ -3295,7 +3295,7 @@ ${
     });`
         : `    pal::physics_world_remove_body(world.handle, body.handle);`
 }
-    if (!world.events || !physics_events_remove(world, body)) physics_release_native_body(world, body.handle);
+    if (!world.events || !physics_events_remove(world, *world.events, body)) physics_release_native_body(world, body.handle);
 }
 
 /**
@@ -3423,10 +3423,12 @@ void on_physics_collision(
         handle,
         [handle, callback = std::move(callback)](float) {
             PhysicsWorld& world = physics_world_record(handle);
+            if (!world.events) throw std::logic_error("A collision observer requires its world's event context.");
+            auto& events = *world.events;
             for (const pal::PhysicsCollisionEvent& event :
                  pal::physics_world_collision_events(world.handle)) {
-                const auto body_a = physics_events_resolve(world, event.collider_identity);
-                const auto body_b = physics_events_resolve(world, event.collided_against_identity);
+                const auto body_a = physics_events_resolve(world, events, event.collider_identity);
+                const auto body_b = physics_events_resolve(world, events, event.collided_against_identity);
                 if (${collisionInfo.guard}) continue;
                 const Vec3d point_a{event.point[0], event.point[1], event.point[2]};
                 const Vec3d point_b{event.point_other[0], event.point_other[1], event.point_other[2]};

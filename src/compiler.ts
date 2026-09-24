@@ -9073,8 +9073,12 @@ class Compiler implements LoweringServices {
             );
         }
         const cppName = this.bindings.cppIdentifier(identifier.text);
-        this.staticNativeDeclarations.push(`auto ${cppName} = ${value.cpp};`);
-        const stored = { ...value, cpp: cppName };
+        // A function-local static: its construction can throw, which a
+        // namespace-scope initializer would turn into termination.
+        this.staticNativeDeclarations.push(
+            `auto& ${cppName}() {\n    static auto value = ${value.cpp};\n    return value;\n}`,
+        );
+        const stored = { ...value, cpp: `${cppName}()` };
         this.bindings.variableScopes[0]!.set(symbol, {
             name: identifier.text,
             value: stored,

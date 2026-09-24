@@ -2606,10 +2606,14 @@ struct FlowGraphAssetGraphs {
     std::vector<FlowGraphFactory> factories;
 };
 
-// The graphs generation parsed, by the packaged asset the loader reads.
-const FlowGraphAssetGraphs flow_graph_assets[] = {
+// The graphs generation parsed, by the packaged asset the loader reads,
+// built on first use: the factory lists allocate.
+const auto& flow_graph_assets() {
+    static const FlowGraphAssetGraphs graphs[] = {
 ${table.join("\n")}
-};
+    };
+    return graphs;
+}
 
 struct FlowGraphPress {
     double x;
@@ -2777,7 +2781,7 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
     if (!scene.engine) {
         throw std::runtime_error("KHR_interactivity graphs attach to a scene bound to an engine.");
     }
-    for (const FlowGraphAssetGraphs& entry : flow_graph_assets) {
+    for (const FlowGraphAssetGraphs& entry : flow_graph_assets()) {
         if (asset_name != entry.asset) continue;
         setup_flow_graphs(scene, asset, entry.factories);
         if (flow_graph_trace_enabled()) {

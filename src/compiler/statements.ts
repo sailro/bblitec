@@ -1321,24 +1321,30 @@ export class StatementLowerer {
                 )
                     ? context.allocateTemporaryCppName("pending_exception")
                     : undefined;
+            const protectedLines = context.captureEmittedLines(() => {
+                context.bindings.pushScope(context.allocateBlockPrefix());
+                try {
+                    for (const child of statement.tryBlock.statements) {
+                        this.emit(context, child);
+                        if (
+                            this.terminatesAfterLowering(child) ||
+                            this.staticIterationCompleted()
+                        )
+                            break;
+                    }
+                } finally {
+                    context.bindings.popScope();
+                }
+            });
+            // A protected block that lowers to nothing cannot throw, so its
+            // handler is unreachable.
+            if (protectedLines.length === 0) return;
             if (suspendedCatch)
                 context.emit(`std::exception_ptr ${suspendedCatch};`);
             context.emit("try {");
             context.increaseIndent();
-            context.bindings.pushScope(context.allocateBlockPrefix());
-            try {
-                for (const child of statement.tryBlock.statements) {
-                    this.emit(context, child);
-                    if (
-                        this.terminatesAfterLowering(child) ||
-                        this.staticIterationCompleted()
-                    )
-                        break;
-                }
-            } finally {
-                context.bindings.popScope();
-                context.decreaseIndent();
-            }
+            for (const line of protectedLines) context.emit(line);
+            context.decreaseIndent();
             const catchCpp =
                 catchDeclaration && !erasedCatchBinding
                     ? context.allocateTemporaryCppName("caught_error")
@@ -1382,14 +1388,21 @@ export class StatementLowerer {
                             : caughtErrorValue(context, catchCpp),
                     );
                 }
-                for (const child of statement.catchClause.block.statements) {
-                    this.emit(context, child);
-                    if (
-                        this.terminatesAfterLowering(child) ||
-                        this.staticIterationCompleted()
-                    )
-                        break;
-                }
+                const handlerLines = context.captureEmittedLines(() => {
+                    for (const child of statement.catchClause!.block
+                        .statements) {
+                        this.emit(context, child);
+                        if (
+                            this.terminatesAfterLowering(child) ||
+                            this.staticIterationCompleted()
+                        )
+                            break;
+                    }
+                });
+                for (const line of handlerLines) context.emit(line);
+                // A source handler that ignores its exception says so.
+                if (handlerLines.length === 0 && !suspendedCatch)
+                    context.emit("bbl::discard_exception();");
             } finally {
                 context.bindings.popScope();
                 context.decreaseIndent();

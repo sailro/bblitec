@@ -1906,19 +1906,15 @@ RenderFeatures build_render_features(
     return result;
 }
 
-namespace {
-
-const std::array<ShaderVariantInfo, ${shaderVariantTable.length}> shader_variants{{
-${shaderVariantEntries}
-}};
-
-} // namespace
-
 std::uint32_t shader_variant_count() {
     return ${shaderVariantTable.length}u;
 }
 
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
+    // Built on first use: its names and layouts allocate.
+    static const std::array<ShaderVariantInfo, ${shaderVariantTable.length}> shader_variants{{
+${shaderVariantEntries}
+}};
     if (variant >= shader_variants.size()) {
         throw std::runtime_error("Unknown shader variant id.");
     }

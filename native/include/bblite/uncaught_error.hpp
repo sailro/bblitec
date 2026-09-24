@@ -22,6 +22,9 @@ inline constexpr const char* unknown_exception_message = "Unknown native excepti
     }
 }
 
+/** The body of a source `catch` that ignores its exception, as JavaScript discards it. */
+inline void discard_exception() noexcept {}
+
 namespace detail {
 /**
  * Writes one line through std::cerr's buffer, which a platform entry may

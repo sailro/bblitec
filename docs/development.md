@@ -219,10 +219,9 @@ bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags
 on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
 
-`.clang-tidy` enables only checks that pass on maintained and generated code; its header names the checks
-still off and the generated output that reports them. By default, native lint checks handwritten
-translation units and headers. `--generated` includes the
-build's emitted C++ and cached generated headers without changing their bytes:
+`.clang-tidy` enables only checks that pass on maintained and generated code. By default, native lint
+checks handwritten translation units and headers. `--generated` includes the build's emitted C++ and
+cached generated headers without changing their bytes:
 
 ```powershell
 npm run lint:cpp -- all --generated --backend both
