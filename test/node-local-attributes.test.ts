@@ -20,7 +20,7 @@ test("the glTF loader stores each primitive's source lanes untransformed", () =>
     const source = lowerer.lowerLoaderAdapter().source;
     assert.match(
         source,
-        /if \(normals\) \{\s*vertex\.normal = Vec3\{\s*read_component\(buffer, container, views, \*normals, index, 0\),/,
+        /vertex\.normal = Vec3\{\s*read_component\(buffer, container, views, normals, index, 0\),/,
     );
     assert.match(
         source,
@@ -107,7 +107,7 @@ test(
         );
         const expected = [...new Uint32Array(mesh._gpu.normalBuffer.bytes)];
         const source = lowerer.lowerLoaderAdapter().source;
-        const begin = source.indexOf("                if (normals) {");
+        const begin = source.indexOf("                vertex.normal = Vec3{");
         const end = source.indexOf("                if (tangents) {", begin);
         assert.ok(begin >= 0 && end > begin);
         // Execute the production accessor/store block over the pin's bytes.
@@ -126,7 +126,7 @@ using namespace bbl;
 void read_normals(ModelGeometry& geometry, const std::vector<float>& source) {
     const auto& buffer = source;
     const int container = 0, views = 0, accessor = 0;
-    const int* normals = &accessor;
+    const int& normals = accessor;
     const auto read_component = [&](const auto&, int, int, int, std::size_t i, std::size_t c) {
         return source[i * 3 + c];
     };

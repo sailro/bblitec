@@ -308,10 +308,12 @@ existing geometry. Imported geometry resizing refuses.
 Local/world transforms, visibility, parenting and bounded imported walks/cloning are represented.
 Meshes may parent to meshes or transform nodes; transform nodes require transform-node parents.
 Parent assignment and child insertion are separate. Synthetic glTF roots expose position, scaling,
-Euler/quaternion rotation and copied world matrices. When scene code writes node transforms, a static
-glTF primitive's record carries its node's TRS under the node's loaded parent world; matrix nodes and
-deformed or instanced primitives keep their loaded world. Broader imported hierarchy cloning refuses;
-descendant/child-mesh queries remain limited.
+Euler/quaternion rotation and copied world matrices. When scene code writes node transforms or looks up
+an imported node, a glTF asset loads with the pin's node hierarchy: `__root__` and one transform node per
+glTF node (a `matrix` node keeps its raw local, locked against TRS writes until setParent), each
+primitive an identity-TRS child of its node; animated, skinned or morphed assets and punctual lights or
+cameras then refuse. `findNode` over an imported root resolves the pin's DFS to a node or a uniquely named
+mesh. Broader imported hierarchy cloning refuses; child-mesh queries remain limited.
 Detached imported leaves share geometry.
 Opaque cached lists require visibility invalidation; transparent/transmissive visibility is live.
 
@@ -496,6 +498,7 @@ opacity/gamma/visibility/order; data replacement and mixed renderer families ref
 ## Runtime scene mutation
 
 Supported removal, material append and instance updates refresh plans/resources. Removing a mesh from its
-last scene retires it, as the pin does: its geometry is reclaimed and later meshes reuse its record slots
-(loader meshes and meshes a hierarchy still lists keep theirs); re-adding or cloning it refuses. Shadow
+last scene retires it, as the pin does: its geometry is reclaimed and later meshes reuse its record slot once
+no mesh is parented under it and no shadow caster array, physics body or edit gizmo names it; re-adding or
+cloning it refuses. Shadow
 resources remain engine-owned.

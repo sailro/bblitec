@@ -1274,10 +1274,11 @@ export class UserFunctionLowerer {
         value: Value;
         returnMetadata: Value | undefined;
     }>();
+    /** @unjournaled An identity token; never written. */
     private readonly sharedBodyScope = {};
     /**
-     * Specializations whose shared body declined. A plain map on purpose:
-     * the decline outlives the rolled-back probe that discovered it.
+     * Specializations whose shared body declined.
+     * @unjournaled The decline outlives the rolled-back probe that discovered it.
      */
     private readonly declinedSharedBodies = new Map<ts.Node, Set<string>>();
     private readonly readsReceiverCache = new EmissionMap<
@@ -3019,7 +3020,7 @@ export class UserFunctionLowerer {
                     `${returnCpp}(${parametersCpp.join(", ")})`,
                     escapes,
                 );
-                Object.assign(entry.value, storage);
+                Object.assign(writable(entry.value), storage);
                 entry.cppName = storage.cpp;
             }
 

@@ -55,7 +55,7 @@ import {
     type BackendSelection,
     type NativeBackend,
 } from "./tooling/backends.js";
-import { readMemoryTape } from "./tooling/check-spec.js";
+import { memoryTapeEntries, readMemoryTape } from "./tooling/check-spec.js";
 import {
     readCompiledSceneManifest,
     type CompiledSceneManifest,
@@ -319,6 +319,9 @@ export function parityArgumentsFrom(parsed: ParsedFlags): ParityArguments {
 /** The frame loops print one `[mem][frame]` line every this many frames. */
 const memoryProfileFrames = 30;
 
+/** A memory run's length when neither `--frames` nor the demo's tape names one. */
+const defaultMemoryFrames = 6000;
+
 /** The memory flags, shared with the dispatcher's usage text. */
 export const MEMORY_FLAGS: FlagSpec = {
     value: [
@@ -331,8 +334,8 @@ export const MEMORY_FLAGS: FlagSpec = {
 };
 
 export interface MemoryArguments {
-    /** Frames to run; at least three samples, so the warm-up third has one. */
-    frames: number;
+    /** `--frames`: the run length, over the tape's own (`MemoryTape.frames`). */
+    frames?: number;
     /** Working-set trend after warm-up that fails the run, in MB per
      *  1,000 frames. */
     maxSlopeMb: number;
@@ -346,14 +349,26 @@ export function parseMemoryArguments(rest: readonly string[]): MemoryArguments {
     return memoryArgumentsFrom(parseFlags(rest, MEMORY_FLAGS, "memory"));
 }
 
-export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
-    const frames = flagNumber(parsed, "--frames", "memory") ?? 6000;
+/**
+ * Refuses a run too short to judge: at least a warm-up third and two
+ * samples per later third at one every `memoryProfileFrames` frames.
+ */
+function requireMemoryFrames(frames: number, source: string): number {
     const minimumFrames = 9 * memoryProfileFrames;
     if (!Number.isInteger(frames) || frames < minimumFrames) {
         throw new Error(
-            `memory: --frames must be an integer >= ${minimumFrames} (a warm-up third and two samples per later third at one every ${memoryProfileFrames} frames; got '${parsed.values.get("--frames")}').`,
+            `memory: ${source} must be an integer >= ${minimumFrames} (a warm-up third and two samples per later third at one every ${memoryProfileFrames} frames; got '${frames}').`,
         );
     }
+    return frames;
+}
+
+export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
+    const requested = flagNumber(parsed, "--frames", "memory");
+    const frames =
+        requested === undefined
+            ? undefined
+            : requireMemoryFrames(requested, "--frames");
     const maxSlopeMb = flagNumber(parsed, "--max-slope-mb", "memory") ?? 2;
     if (maxSlopeMb < 0) {
         throw new Error("memory: --max-slope-mb must be nonnegative.");
@@ -370,7 +385,7 @@ export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
             ? readFileSync(replayFile, "utf8").trim()
             : parsed.values.get("--replay");
     return {
-        frames,
+        ...(frames !== undefined ? { frames } : {}),
         maxSlopeMb,
         ...(backend !== undefined ? { backend } : {}),
         ...(replay !== undefined ? { replay } : {}),
@@ -731,15 +746,27 @@ export function runMemoryReport(
         rmSync(stampPath, { force: true });
         const defaultTape =
             memoryArguments.replay === undefined
-                ? readMemoryTape(scene.id, memoryArguments.frames)
+                ? readMemoryTape(scene.id)
                 : undefined;
-        const replay = memoryArguments.replay ?? defaultTape?.tape.join(",");
+        const frames =
+            memoryArguments.frames ??
+            (defaultTape?.frames !== undefined
+                ? requireMemoryFrames(
+                      defaultTape.frames,
+                      `${defaultTape.path} 'frames'`,
+                  )
+                : defaultMemoryFrames);
+        const replay =
+            memoryArguments.replay ??
+            (defaultTape
+                ? memoryTapeEntries(defaultTape, frames).join(",")
+                : undefined);
         const stderr = spawnNativeMeasured(
             executable,
             {
                 ...fixedCaptureEnvironment(),
                 ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
-                BBLITE_BENCHMARK_FRAMES: String(memoryArguments.frames),
+                BBLITE_BENCHMARK_FRAMES: String(frames),
                 BBLITE_MEM_PROFILE: "1",
                 BBLITE_BUILD_STAMP_OUT: stampPath,
                 ...(replay !== undefined
@@ -757,7 +784,7 @@ export function runMemoryReport(
             summary: summarizeMemoryProfile(
                 stream.samples,
                 memoryArguments.maxSlopeMb,
-                memoryArguments.frames,
+                frames,
             ),
         }));
         const status =
@@ -778,7 +805,7 @@ export function runMemoryReport(
             },
             {
                 scene: scene.id,
-                requestedFrames: memoryArguments.frames,
+                requestedFrames: frames,
                 maxSlopeMb: memoryArguments.maxSlopeMb,
                 ...(memoryArguments.replay !== undefined
                     ? { replay: memoryArguments.replay }

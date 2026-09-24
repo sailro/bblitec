@@ -22,6 +22,7 @@ import {
 } from "./native-fixture.js";
 import ts from "typescript";
 import {
+    absentBinding,
     PinnedNumericLowerer,
     type PinnedBinding,
     type PinnedNumericScope,
@@ -429,6 +430,99 @@ test("optional scalar aliases retain absence in strict equality in either order"
     assert.match(cpp, /if \(!\(missing\)\)/);
     assert.match(cpp, /!\(missing\).*value == false/);
     assert.doesNotMatch(cpp, /double copy/);
+});
+
+test("a comparison against a statically absent value folds as JavaScript's", () => {
+    const cpp = lower(
+        "let result = 0; if (flags !== undefined) { result = flags; } if (flags == null) { result = 2; } const none = null; if (none === undefined) { result = none; } if (none === null) { result = 3; }",
+        [["flags", absentBinding("undefined")]],
+    );
+    // `!== undefined` is false over an undefined; `== null` is true over
+    // either; a null is not strictly undefined but is strictly null.
+    assert.doesNotMatch(cpp, /result = flags|result = none/);
+    assert.match(cpp, /result = 2\.0;/);
+    assert.match(cpp, /result = 3\.0;/);
+    // Strictly, an absence of unknown value is not decided.
+    assert.throws(
+        () =>
+            lower("let result = 0; if (hook === null) { result = 1; }", [
+                ["hook", absentBinding()],
+            ]),
+        /null|Unsupported/,
+    );
+});
+
+test("typeof a statically absent value is its absence's, not its stand-in's", () => {
+    const cpp = lower(
+        'let result = 0; if (typeof flags === "undefined") { result = 1; } if (typeof flags === "boolean") { result = flags; } const none = null; if (typeof none === "object") { result = 2; } if (typeof none !== "undefined") { result = 3; } if (typeof hook === "function") { result = hook; }',
+        [
+            ["flags", absentBinding("undefined")],
+            ["hook", absentBinding()],
+        ],
+    );
+    // `undefined` is "undefined", `null` is "object", and an absence of
+    // either kind is never "function", whatever the stand-in's type.
+    assert.match(cpp, /result = 1\.0;/);
+    assert.match(cpp, /result = 2\.0;/);
+    assert.match(cpp, /result = 3\.0;/);
+    assert.doesNotMatch(cpp, /result = flags|result = hook/);
+    // Which absence it is decides "undefined"; unsaid, it is not decided.
+    assert.throws(
+        () =>
+            lower(
+                'let result = 0; if (typeof hook === "undefined") { result = 1; }',
+                [["hook", absentBinding()]],
+            ),
+        /Unsupported pinned typeof test: typeof hook === "undefined"/,
+    );
+});
+
+test("typeof a value absent at run time tests its presence", () => {
+    const cpp = lower(
+        'let result = 0; if (typeof positions === "object") { result = 1; } if (typeof positions === "undefined") { result = 2; } if (typeof positions === "number") { result = 3; } if (typeof weight !== "number") { result = 4; } if (typeof root === "object") { result = 5; } if (typeof option === "boolean") { result = 6; }',
+        [
+            [
+                "positions",
+                { cpp: "positions", type: "f32", absentCpp: "!has_positions" },
+            ],
+            ["weight", { cpp: "*weight", type: "scalar", nullish: "!weight" }],
+            [
+                "root",
+                {
+                    cpp: "root",
+                    type: "f32",
+                    absentCpp: "!root",
+                    absentValue: "null",
+                },
+            ],
+            ["option", { cpp: "option", type: "bool" }],
+        ],
+    );
+    // An `absentCpp` array is "object" when present and "undefined" when
+    // absent; a number is never "object"'s absence test.
+    assert.match(cpp, /if \(!\(!has_positions\)\) \{\s*result = 1\.0;/);
+    assert.match(cpp, /if \(!has_positions\) \{\s*result = 2\.0;/);
+    assert.doesNotMatch(cpp, /result = 3\.0/);
+    assert.match(cpp, /if \(!weight\) \{\s*result = 4\.0;/);
+    // A null absence is an "object" too, and a value never absent keeps
+    // its own type's name.
+    assert.match(cpp, /result = 5\.0;/);
+    assert.doesNotMatch(cpp, /if \([^)]*root/);
+    assert.match(cpp, /result = 6\.0;/);
+    // A `nullish` value's absence may be either, so "undefined" is open.
+    assert.throws(
+        () =>
+            lower(
+                'let result = 0; if (typeof weight === "undefined") { result = 1; }',
+                [
+                    [
+                        "weight",
+                        { cpp: "*weight", type: "scalar", nullish: "!weight" },
+                    ],
+                ],
+            ),
+        /Unsupported pinned typeof test: typeof weight === "undefined"/,
+    );
 });
 
 test("initialized Vec3 locals retain vector members through assignment", () => {

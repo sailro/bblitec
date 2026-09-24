@@ -46,6 +46,32 @@ test("help prints the usage generated from the command table and exits 0", () =>
     }
 });
 
+test("one command's help is its own entry: process builds, validate measures", () => {
+    const processEntry = [
+        "  process <id|source.ts|all> [--backend <value>] [--compiler <value>] [--shader <value>] [--cold]",
+        "      compile, compile shaders (--shader d3d12|vulkan|metal|all) and build",
+        "",
+    ].join("\n");
+    for (const invocation of [
+        ["help", "process"],
+        ["process", "--help"],
+        ["process", "-h"],
+    ]) {
+        const result = sceneCommand(...invocation);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.replaceAll("\r\n", "\n"), processEntry);
+    }
+    const missing = sceneCommand("process");
+    assert.equal(missing.status, 1);
+    assert.ok(missing.stderr.includes(processEntry), missing.stderr);
+    const validate = sceneCommand("help", "validate");
+    assert.equal(validate.status, 0, validate.stderr);
+    assert.match(validate.stdout, /parity on every compiled backend/);
+    const unknown = sceneCommand("help", "bogus");
+    assert.equal(unknown.status, 1);
+    assert.match(unknown.stderr, /Unknown command 'bogus'/);
+});
+
 test("offers one command per question: the consolidated set, nothing else", () => {
     const help = sceneCommand("help");
     assert.equal(help.status, 0, help.stderr);

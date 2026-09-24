@@ -10,7 +10,10 @@ import {
     parseMemoryProfile,
     summarizeMemoryProfile,
 } from "../src/parity-scene.js";
-import { readMemoryTape } from "../src/tooling/check-spec.js";
+import {
+    memoryTapeEntries,
+    readMemoryTape,
+} from "../src/tooling/check-spec.js";
 import { applicationScenes } from "../src/scene-registry.js";
 
 interface Line {
@@ -292,10 +295,8 @@ test("judges each engine of a multi-engine run on its own stream", () => {
 });
 
 test("parses the memory command's flags, defaults and a tape file", (t) => {
-    assert.deepEqual(parseMemoryArguments([]), {
-        frames: 6000,
-        maxSlopeMb: 2,
-    });
+    // Without --frames the run takes the demo tape's length or the default.
+    assert.deepEqual(parseMemoryArguments([]), { maxSlopeMb: 2 });
     assert.deepEqual(
         parseMemoryArguments([
             "--frames",
@@ -345,14 +346,19 @@ test("every default memory tape belongs to an application demo and fills a run",
     assert.ok(tapes.includes("doom"), "doom plays a tape");
     for (const id of tapes) {
         assert.ok(applications.has(id), `${id} is an application demo`);
-        const tape = readMemoryTape(id, 6000);
+        const tape = readMemoryTape(id);
         assert.ok(tape, id);
         assert.equal(tape.path, `checks/memory/${id}.json`);
-        assert.equal(tape.tape.length, 6000);
+        const frames = tape.frames ?? 6000;
+        const entries = memoryTapeEntries(tape, frames);
+        assert.equal(entries.length, frames);
         assert.ok(
-            tape.tape.some((entry) => entry !== "-"),
+            entries.some((entry) => entry !== "-"),
             `${id} plays input`,
         );
     }
-    assert.equal(readMemoryTape("scene1", 6000), undefined);
+    // Minecraft's streamed world grows for ~4,000 frames; its warm-up
+    // third has to cover that climb.
+    assert.ok((readMemoryTape("minecraft")?.frames ?? 0) / 3 >= 4000);
+    assert.equal(readMemoryTape("scene1"), undefined);
 });

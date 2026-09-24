@@ -318,7 +318,7 @@ ${normal.declaration
     .flatMap((statement) => normalLowerer.statement(statement, "    "))
     .join("\n")}
 }
-struct DragStep { Vec3d delta; double distance; };
+struct DragStep { Vec3d delta; double distance = 0.0; };
 // ${context.provenance(POINTER, "handlePointerMove")}
 DragStep drag_step(const Vec3d& hit, const Vec3d& last, const Vec3d& start,
     const Vec3d& axis, bool axis_mode) {

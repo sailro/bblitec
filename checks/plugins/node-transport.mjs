@@ -1,15 +1,13 @@
 // Node-geometry GPU transport: the raw attribute bytes, index sequences,
 // texture sharing, per-view bindings and world uploads the native PAL
 // binds, joined against the browser's receipts and the source asset.
-// Two controls share the decoders: the PowerPlant scene (149), whose
-// browser side is the check's observation (checks/plugins/
-// scene149-identity.init.js), and the node-local-attributes fixture,
-// whose browser side is an instrumented capture of a scene loading it.
+// Two controls share the decoders: the PowerPlant scene (149) and the
+// node-local-attributes regression scene. Each browser side is its check's
+// observation through checks/plugins/webgpu-recorder.init.js.
 // Native receipts are the check's own captures taken with
 // BBLITE_NODE_GPU_CAPTURE=1 (`capture.nodeGpu`).
 //
-// options: { control: "scene149", allowStale? }
-//       or { control: "node-local", browserCapture: <directory> }
+// options: { control: "scene149", allowStale? } or { control: "node-local" }
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -34,6 +32,7 @@ import {
  * @import { CompileManifest } from "../../dist/src/compiler/types.js"
  * @import { JsonRecord } from "../../dist/src/gltf-document.js"
  * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ * @import { RecordedBufferState, RecordedMesh, RecordedObservation, RecordedPipeline } from "./webgpu-records.js"
  */
 
 /**
@@ -89,53 +88,8 @@ import {
  */
 
 /**
- * The browser side: the instrumented buffer capture and the identity observation.
- * @typedef {{ offset: number, data?: string, skipped?: number }} BrowserWrite a recorded write; `skipped` replaces `data` past the recorder's size cap
- * @typedef {{
- *     id: number,
- *     label: string,
- *     size: number,
- *     usage: number,
- *     mappedWrites: BrowserWrite[],
- *     writes: BrowserWrite[],
- * }} BrowserBuffer an instrumented capture's `buffers.json` row
- * @typedef {{
- *     id: number,
- *     label: string,
- *     size: number,
- *     usage: number,
- *     data: string,
- *     written: Array<[number, number]>,
- * }} ObservedBuffer a buffer's bytes (base64) and the [start, end) ranges the page wrote
- * @typedef {{ id: number, entries: Array<{ binding: number, resource: number }> }} BrowserGroup
- * @typedef {{ format: string, offset: number }} BrowserVertexAttribute
- * @typedef {{ arrayStride: number, attributes: BrowserVertexAttribute[] }} BrowserVertexLayout
- * @typedef {{ buffer: number, offset?: number }} BrowserVertexBinding
- * @typedef {{
- *     id: number,
- *     vertex: { buffers: Array<BrowserVertexLayout | null> },
- *     fragment: { targets: unknown[] },
- * }} BrowserPipeline
- * @typedef {{
- *     method: "drawIndexed",
- *     args: number[],
- *     pipeline: number | null,
- *     groups: Record<string, { group: number }>,
- *     vertices: Record<string, BrowserVertexBinding>,
- *     index: { buffer: number, format: string, offset?: number } | null,
- * }} BrowserIndexedDraw
- * @typedef {BrowserIndexedDraw | { method: "draw" }} BrowserDraw
- * @typedef {{
- *     name: string,
- *     worldType: string,
- *     worldBytes: number[],
- *     gpuBuffers: {
- *         positionBuffer: number,
- *         normalBuffer: number,
- *         uvBuffer: number,
- *         indexBuffer: number,
- *     },
- * }} IdentityMesh
+ * The browser side: the recorder's observation, and scene149's material groups.
+ * @typedef {RecordedMesh} IdentityMesh
  * @typedef {{
  *     original: number,
  *     material: number,
@@ -145,16 +99,8 @@ import {
  *     sameSourceTexture: boolean,
  *     sameOwner: boolean,
  *     meshes: IdentityMesh[],
- * }} IdentityGroup
- * @typedef {{
- *     materials: IdentityGroup[],
- *     observation: {
- *         buffers: ObservedBuffer[],
- *         groups: BrowserGroup[],
- *         pipelines: BrowserPipeline[],
- *         submissions: BrowserDraw[][],
- *     },
- * }} Identity the observation's `identity` step record
+ * }} IdentityGroup a node material with its albedo texture, view and sampler
+ * @typedef {{ materials: IdentityGroup[], observation: RecordedObservation }} Identity the observation's `identity` step record
  * @typedef {{ index: number, group: IdentityGroup, mesh: IdentityMesh }} SourceOwner
  * @typedef {SourceOwner & {
  *     attributes: Record<string, Buffer>,
@@ -181,7 +127,6 @@ import {
  *     geometryVariant: number,
  *     colorTargetCount: number,
  *     samples: number,
- *     usesLocalAttributes: boolean,
  *     topology: string,
  *     cullMode: string,
  *     frontFace: string,
@@ -355,30 +300,6 @@ function selectedIndices(bytes, format, offset, count, first = 0) {
 }
 
 /**
- * The bytes an instrumented browser buffer holds after its mapped and queued writes.
- * @param {BrowserBuffer} buffer
- */
-export function browserUpload(buffer) {
-    const bytes = Buffer.alloc(buffer.size);
-    const covered = Buffer.alloc(buffer.size);
-    for (const write of [...buffer.mappedWrites, ...buffer.writes]) {
-        assert(
-            !write.skipped,
-            `browser upload ${buffer.id} was too large to record`,
-        );
-        assert(
-            write.data !== undefined,
-            `browser upload ${buffer.id} recorded a write without data`,
-        );
-        const data = Buffer.from(write.data, "base64");
-        assert(write.offset >= 0 && write.offset + data.length <= bytes.length);
-        data.copy(bytes, write.offset);
-        covered.fill(1, write.offset, write.offset + data.length);
-    }
-    return { bytes, covered };
-}
-
-/**
  * A native nodeGpu resource's uploaded bytes, whole.
  * @param {Map<number, NativeResource>} resources
  * @param {Map<number, Buffer>} decoded
@@ -441,7 +362,7 @@ function countDraw(views, targets, mesh, material) {
 
 /**
  * The bytes an observed buffer holds, and which of them the page wrote.
- * @param {ObservedBuffer} buffer
+ * @param {RecordedBufferState} buffer
  */
 function observedUpload(buffer) {
     const bytes = Buffer.from(buffer.data, "base64");
@@ -638,9 +559,11 @@ async function readScene149Observation(context, generatedDirectory) {
                 index && draw.pipeline !== null,
                 "A browser drawIndexed binds no pipeline or index buffer",
             );
-            const matching = Object.values(draw.vertices)
+            const matching = draw.vertices
                 .map((vertex) =>
-                    bufferOwners.get(`${vertex.buffer}/${index.buffer}`),
+                    vertex === null
+                        ? undefined
+                        : bufferOwners.get(`${vertex.buffer}/${index.buffer}`),
                 )
                 .filter(Boolean);
             assert.equal(
@@ -652,6 +575,10 @@ async function readScene149Observation(context, generatedDirectory) {
             assert(owner);
             const pipeline = pipelines.get(draw.pipeline);
             assert(pipeline, `Unobserved browser pipeline ${draw.pipeline}`);
+            assert(
+                pipeline.fragment,
+                `Browser pipeline ${pipeline.id} has no fragment stage`,
+            );
             const targets = pipeline.fragment.targets.length;
             countDraw(views, targets, owner.index, owner.group.material);
             assert.deepEqual(
@@ -673,7 +600,10 @@ async function readScene149Observation(context, generatedDirectory) {
                 ).equals(owner.indices),
             );
             const meshGroup = draw.groups[1];
-            const entries = meshGroup && groups.get(meshGroup.group)?.entries;
+            const entries =
+                meshGroup === null || meshGroup === undefined
+                    ? undefined
+                    : groups.get(meshGroup)?.entries;
             assert(entries, "The browser draw binds no observed group 1");
             assert(
                 entries.some(
@@ -699,23 +629,25 @@ async function readScene149Observation(context, generatedDirectory) {
             worldBuffers.add(ubo);
             if (targets === 1) continue;
             for (const [name, key] of Object.entries(bufferKeys)) {
-                /** @type {Array<[string, BrowserVertexBinding]>} */
-                const selected = Object.entries(draw.vertices).filter(
-                    ([, vertex]) =>
-                        vertex.buffer === owner.mesh.gpuBuffers[key],
+                /** @type {Array<{ slot: number, vertex: { buffer: number, offset: number } }>} */
+                const selected = draw.vertices.flatMap((vertex, slot) =>
+                    vertex !== null &&
+                    vertex.buffer === owner.mesh.gpuBuffers[key]
+                        ? [{ slot, vertex }]
+                        : [],
                 );
                 assert.equal(selected.length, 1);
                 const [vertexBinding] = selected;
                 assert(vertexBinding);
-                const [slot, vertex] = vertexBinding;
-                /** @type {BrowserVertexLayout | null | undefined} */
-                const layout = pipeline.vertex.buffers[Number(slot)];
+                const { slot, vertex } = vertexBinding;
+                /** @type {RecordedPipeline["vertex"]["buffers"][number] | undefined} */
+                const layout = pipeline.vertex.buffers[slot];
                 assert(
                     layout,
                     `Browser pipeline ${pipeline.id} declares no vertex buffer ${slot}`,
                 );
                 assert.equal(layout.attributes.length, 1);
-                /** @type {BrowserVertexAttribute | undefined} */
+                /** @type {{ format: string, offset: number } | undefined} */
                 const attribute = layout.attributes[0];
                 const width = name === "uv" ? 8 : 12;
                 assert(attribute);
@@ -907,11 +839,10 @@ function checkScene149Native(capture, reference, { allowStale = false } = {}) {
             );
             ubos.add(draw.meshUniform);
         } else assert.equal(draw.group, 0);
-        assert.equal(
-            pipeline.usesLocalAttributes,
-            pipeline.colorTargetCount !== 1,
-        );
-        if (!pipeline.usesLocalAttributes) continue;
+        // A geometry view (-1 is the colour view) writes the MRT targets.
+        const geometryView = pipeline.geometryVariant !== -1;
+        assert.equal(geometryView, pipeline.colorTargetCount !== 1);
+        if (!geometryView) continue;
         ++geometryDraws;
         assert.deepEqual(
             pipeline.attributes.map((attribute) => attribute.name).sort(),
@@ -1022,10 +953,10 @@ function checkScene149Native(capture, reference, { allowStale = false } = {}) {
 }
 
 /**
- * @param {string} browserCapture
+ * @param {RecordedObservation} observation
  * @param {NativeCapture[]} captures
  */
-async function checkNodeLocal(browserCapture, captures) {
+async function checkNodeLocal(observation, captures) {
     const asset = /** @type {NodeLocalAsset} */ (
         readJson(
             resolve("examples/assets/regression/node-local-attributes.gltf"),
@@ -1103,12 +1034,10 @@ async function checkNodeLocal(browserCapture, captures) {
         uv: f32([0, 1, 1, 1, 1, 0, 0, 0]),
         world: bytes(local.worldMatrix),
     });
-    const browser = /** @type {BrowserBuffer[]} */ (
-        readJson(resolve(browserCapture, "buffers.json"))
-    );
-    /** @param {BrowserBuffer} buffer */
+    const browser = observation.buffers;
+    /** @param {RecordedBufferState} buffer */
     const uploaded = (buffer) => {
-        const { bytes: data, covered } = browserUpload(buffer);
+        const { bytes: data, covered } = observedUpload(buffer);
         assert(
             covered.every((value) => value === 1),
             `Incomplete browser upload ${buffer.id}`,
@@ -1181,7 +1110,7 @@ async function checkNodeLocal(browserCapture, captures) {
             return pipeline;
         };
         const geometry = gpu.draws.filter(
-            (draw) => drawPipeline(draw).usesLocalAttributes,
+            (draw) => drawPipeline(draw).geometryVariant !== -1,
         );
         assert.equal(geometry.length, 6);
         /** @type {Set<number>} */
@@ -1228,7 +1157,7 @@ async function checkNodeLocal(browserCapture, captures) {
                 assert(draw.group && draw.meshUniform);
                 meshUbos.add(draw.meshUniform);
             } else assert.equal(draw.group, 0);
-            if (!pipeline.usesLocalAttributes) continue;
+            if (pipeline.geometryVariant === -1) continue;
             views.add(pipeline.geometryVariant);
             assert.equal(pipeline.colorTargetCount, 2);
             const object = expected[draw.mesh];
@@ -1347,13 +1276,14 @@ export async function check(context) {
         return /** @type {NativeCapture} */ (phase.capture);
     });
     if (context.options.control === "node-local") {
-        assert(
-            typeof context.options.browserCapture === "string",
-            "options.browserCapture names the instrumented browser capture directory",
-        );
+        const observations = requireObservations(context);
+        assertObservationProvenance(context, observations);
+        const recorded = observedStep(observations, "recorded").extras
+            ?.observation;
+        assert(recorded, "the recorded step recorded no observation");
         return {
             details: await checkNodeLocal(
-                resolve(context.options.browserCapture),
+                /** @type {RecordedObservation} */ (recorded),
                 captures,
             ),
         };

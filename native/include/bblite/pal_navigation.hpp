@@ -17,12 +17,13 @@
  * The functions below carry the wrapper's semantics exactly where they
  * add any: each build is the generator's Recast sequence over a plan of
  * every number it computes, generated from the installed packages and
- * handed in (`NavSoloBuild`, `NavTileCacheBuild`); the debug geometry is the wrapper's
- * detached-triangle flat-normal build with its reversed stored winding;
- * the raycast is `findNearestPoly` (±1 half-extents, include-all filter)
- * then `dtNavMeshQuery::raycast`, hit exactly when `0 < t < 1`. Nothing
- * generated names Recast — swapping the toolset is dropping in a different
- * translation unit.
+ * handed in (`NavSoloBuild`, `NavTileCacheBuild`); the wrapper JavaScript
+ * that runs over library objects (the detail-mesh walk, the poly
+ * normalization, the tile mesh process) is generated as templates the
+ * implementation instantiates; the raycast is `findNearestPoly` (±1
+ * half-extents, include-all filter) then `dtNavMeshQuery::raycast`, hit
+ * exactly when `0 < t < 1`. Nothing generated names Recast — swapping the
+ * toolset is dropping in a different translation unit.
  */
 
 #include <bblite/features/has_nav_tile_cache.hpp>
@@ -168,17 +169,34 @@ struct NavTileGrid {
 };
 
 /**
- * The `dtNavMeshCreateParams` scalars the solo generator sets through the
- * wrapper's `NavMeshCreateParams` setters, at Detour's own width. The mesh
- * data itself is the library's, copied in by the build.
+ * Core's `NavMeshCreateParams.setOffMeshConnections` packing, in the
+ * argument order of the glue's `DetourNavMeshBuilder.setOffMeshConnections`
+ * it ends with: the count and six lists of JavaScript numbers. The build
+ * copies each list into the typed array the glue does.
  */
-struct NavMeshCreateScalars {
+struct NavOffMeshPacking {
+    double count = 0.0;
+    std::vector<double> verts;
+    std::vector<double> rads;
+    std::vector<double> dirs;
+    std::vector<double> areas;
+    std::vector<double> flags;
+    std::vector<double> userIds;
+};
+
+/**
+ * What the solo generator sets through the wrapper's `NavMeshCreateParams`
+ * setters: the scalars at Detour's own width, and the off-mesh connections'
+ * packing. The mesh data itself is the library's, copied in by the build.
+ */
+struct NavMeshCreateValues {
     float walkableHeight = 0.0f;
     float walkableRadius = 0.0f;
     float walkableClimb = 0.0f;
     float cs = 0.0f;
     float ch = 0.0f;
     bool buildBvTree = false;
+    NavOffMeshPacking offMeshConnections;
 };
 
 /** `dtTileCacheParams`, field for field, as `DetourTileCacheParams.create` fills it. */
@@ -213,7 +231,7 @@ struct NavTiledMeshParams {
 struct NavSoloBuild {
     NavBounds bounds;
     NavRcConfig config;
-    NavMeshCreateScalars create;
+    NavMeshCreateValues create;
 };
 
 /** One tile's config and bounds, generated from `rasterizeTileLayers`. */
@@ -241,11 +259,18 @@ struct NavMeshGeometry {
     std::vector<std::uint32_t> indices;
 };
 
-/** `createDebugNavMeshGeometry`'s detached-triangle result. */
+/** `getNavMeshPositionsAndIndices`' two arrays of JavaScript numbers. */
+struct NavMeshPositionsAndIndices {
+    std::vector<double> positions;
+    std::vector<double> indices;
+};
+
+/** `createDebugNavMeshGeometry`'s detached-triangle result and positions hash. */
 struct NavDebugGeometry {
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<std::uint32_t> indices;
+    double positions_hash = 0.0;
 };
 
 /**
@@ -267,15 +292,13 @@ NavGridSize navigation_grid_size(const NavBounds& bounds, float cs);
 
 /**
  * The solo-navmesh build (`generateSoloNavMeshData` semantics): the Recast
- * sequence over the plan's config and bounds, area/flag normalization,
- * the plan's create params with the off-mesh connections packed beside
- * them, and the wrapper's default query. Throws with the wrapper's own
- * failure spelling when a stage fails.
+ * sequence over the plan's config and bounds, the generator's generated
+ * area/flag normalization, the plan's create params, and the wrapper's
+ * default query. Throws with the wrapper's own failure spelling when a
+ * stage fails.
  */
 void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeometry& geometry,
-                                     const NavSoloBuild& build,
-                                     const std::vector<NavOffMeshConnection>& off_mesh_connections,
-                                     const NavQueryDefaults& defaults);
+                                     const NavSoloBuild& build, const NavQueryDefaults& defaults);
 
 #if BBLITE_HAS_NAV_TILE_CACHE
 /**
@@ -336,8 +359,11 @@ void navigation_update_obstacles(NavigationHandle plugin);
 
 #endif
 
-/** The wrapper's detail-mesh walk + detached-triangle rebuild. */
-NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin);
+/** Whether the plugin holds a navmesh: the pinned `plugin._navMesh` test. */
+bool navigation_has_nav_mesh(NavigationHandle plugin);
+
+/** `getNavMeshPositionsAndIndices` over the plugin's navmesh, as generated. */
+NavMeshPositionsAndIndices navigation_positions_and_indices(NavigationHandle plugin);
 
 /** `raycast(plugin, start, end)`: hit iff `0 < t < 1`, point lerped. */
 NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float start_y,

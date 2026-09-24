@@ -1576,9 +1576,7 @@ export function wgslAttributeInteger(
 }
 
 /** Every function body's statements, entry points and helpers alike. */
-export function wgslFunctionStatements(
-    module: WgslModuleSyntax,
-): ShaderStatement[][] {
+function wgslFunctionStatements(module: WgslModuleSyntax): ShaderStatement[][] {
     return module.declarations.flatMap((declaration) =>
         declaration.kind === "fn" ? [declaration.statements] : [],
     );
@@ -2281,7 +2279,7 @@ function expressionSome(
 }
 
 /** Every statement, nested bodies included, in source order. */
-export function forEachShaderStatement(
+function forEachShaderStatement(
     statements: readonly ShaderStatement[],
     visit: (statement: ShaderStatement) => void,
 ): void {
@@ -2731,11 +2729,10 @@ export function lowerWgslShaderProgram(
     };
 }
 
-// Native attribute locations follow the GpuVertex layout shared by both
-// render backends (position, normal, tangent, uv, local_position, uv2,
-// color, local_normal); the browser-composed twin assigns locations by
-// declaration order against its own buffers, so only the native map has
-// to match the native vertex table.
+// Native attribute locations follow the shared material stage's
+// `VertexInput`, which both render backends bind from GpuVertex; the
+// browser-composed twin assigns locations by declaration order against its
+// own buffers, so only the native map has to match the native vertex table.
 const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
     position: { location: 0, type: "vec3<f32>" },
     normal: { location: 1, type: "vec3<f32>" },

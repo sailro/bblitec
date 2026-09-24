@@ -192,7 +192,11 @@ test("lowers a file input's onchange handler property and FileReader handlers", 
     assert.match(result.cpp, /\.set_onload\(/);
     assert.match(result.cpp, /\.set_onerror\(/);
     assert.match(result.cpp, /\.read_as_text\(v_engine, /);
-    assert.match(result.cpp, /\.result\(\)/);
+    // The reader's null result is typeof "object", as the browser's is.
+    assert.match(
+        result.cpp,
+        /\.result\(\)\.has_value\(\) \? "string" : "object"/,
+    );
 
     const refusal = (source: string, pattern: RegExp): void =>
         assert.throws(

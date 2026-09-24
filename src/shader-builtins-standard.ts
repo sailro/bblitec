@@ -59,7 +59,6 @@ struct VertexInput {
     @location(1) normal: vec3<f32>,
     @location(2) tangent: vec4<f32>,
     @location(3) uv: vec2<f32>,
-    @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
     @location(6) color: vec4<f32>,
 ${

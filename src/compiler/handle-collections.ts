@@ -384,6 +384,7 @@ interface HandleCollectionsContext
             | "expectKind"
             | "expectSameEngine"
             | "expectArgumentCount"
+            | "reachFeature"
         > {}
 
 /**
@@ -1839,10 +1840,13 @@ export class HandleCollections {
 
     /**
      * The reached recursive `findNode(root, name)` walk over an imported
-     * synthetic root. Native glTF loading has already flattened that root's
-     * renderable descendants into AssetRecord::meshes, in traversal order,
-     * so the DFS result is the first record whose flattened node wrapper or
-     * renderable child has the requested name.
+     * synthetic root. The walk is the pin's DFS over the hierarchy
+     * buildNodeHierarchy builds -- the root, then each node before its child
+     * nodes and then its meshes -- and the document fixes that hierarchy, so
+     * the hit is decided here: a node resolves to the transform node the
+     * loader builds for it, and a mesh to its record. A scene holding an
+     * imported node can move it, so the search reaches the node-carrying
+     * load.
      */
     public compileAssetDescendantNameSearch(
         call: ts.CallExpression,
@@ -1871,14 +1875,38 @@ export class HandleCollections {
                 "Asset descendant name search requires a materialized glTF root.",
             );
         }
-        this.requireUniqueAssetDescendantMatch(root.asset, name, call);
+        const hit = this.assetDescendantHit(root.asset, name, call);
+        this.context.reachFeature("scene:node-transforms", call);
         const engine = this.context.requireEngine(root, call);
+        const asset = recordAt(`${engine}.assets`, root.cpp);
         const result = this.context.allocateTemporaryCppName(
             "asset_descendant_match",
         );
         const found = this.context.allocateTemporaryCppName(
             "asset_descendant_found",
         );
+        if (hit?.kind !== "mesh") {
+            this.context.emit(
+                hit
+                    ? `const ${handleCppType("transform-node")} ${result} = ${asset}.nodes.at(${hit.node});`
+                    : `const ${handleCppType("transform-node")} ${result}{};`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: found,
+                initializer: hit ? "true" : "false",
+                attributes: "[[maybe_unused]] ",
+            });
+            return {
+                kind: "transform-node",
+                cpp: result,
+                engineCpp: engine,
+                optionalFoundCpp: found,
+            };
+        }
+        // The mesh name is proven unique among the asset's primitives, so
+        // the record carrying it is the DFS hit whatever the table's order.
         const item = this.context.allocateTemporaryCppName(
             "asset_descendant_mesh",
         );
@@ -1891,15 +1919,11 @@ export class HandleCollections {
             attributes: "[[maybe_unused]] ",
         });
         this.context.emit(
-            `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
+            `for (const ${handleCppType("mesh")} ${item} : ${asset}.meshes) {`,
         );
         this.context.increaseIndent();
         this.context.emit(
-            `if (` +
-                `${recordAt(`${engine}.meshes`, item)}.scene_node_name == ` +
-                `${this.context.cppString(name)} || ` +
-                `${recordAt(`${engine}.meshes`, item)}.name == ` +
+            `if (${recordAt(`${engine}.meshes`, item)}.name == ` +
                 `${this.context.cppString(name)}) {`,
         );
         this.context.increaseIndent();
@@ -2031,87 +2055,101 @@ export class HandleCollections {
     }
 
     /**
-     * Proves that the flattened native mesh table can stand for the DFS hit.
-     * A transform-only node has no mesh handle, a multi-primitive node has
-     * several, and two matching records do not prove which hierarchy branch
-     * the source walk reaches first. All three therefore refuse before the
-     * runtime loop is emitted.
+     * The pin's findNode DFS over the hierarchy buildNodeHierarchy builds
+     * from the document: `__root__`, then the scene's root nodes, each node
+     * named `node.name ?? node_<index>` before its child nodes and then its
+     * meshes, each primitive's mesh named `mesh.name || gltf_mesh_<index>` in
+     * extraction order. Undefined when nothing matches. A mesh hit must carry
+     * a name no other primitive does, since its record is found by name.
      */
-    private requireUniqueAssetDescendantMatch(
+    private assetDescendantHit(
         asset: CompileAsset,
         name: string,
         node: ts.Node,
-    ): void {
+    ): { kind: "node"; node: number } | { kind: "mesh" } | undefined {
         const document = this.readAssetDocument(asset, node);
         const nodes = asRecords(document.nodes);
         const meshes = asRecords(document.meshes);
-        let primitiveOrdinal = 0;
-        let matches = 0;
-
-        for (const [nodeIndex, gltfNode] of nodes.entries()) {
-            const authoredNodeName = asString(gltfNode.name);
-            const nodeName = authoredNodeName || `gltf_node_${nodeIndex}`;
-            const meshIndex = asIndex(gltfNode.mesh);
-            if (meshIndex === undefined) {
-                if (nodeName === name) {
-                    this.context.fail(
-                        node,
-                        `Asset '${asset.output}' has a geometry-less node named '${name}'; the flattened native mesh search cannot represent that DFS result.`,
-                    );
-                }
-                continue;
-            }
-
-            const mesh = meshes[meshIndex];
-            if (!mesh) {
-                if (nodeName === name) {
-                    this.context.fail(
-                        node,
-                        `Asset '${asset.output}' names '${name}' on node ${nodeIndex}, whose glTF mesh index ${meshIndex} is invalid.`,
-                    );
-                }
-                continue;
-            }
-            const primitives = asRecords(mesh.primitives);
-            const authoredMeshName = asString(mesh.name);
-            const nodeMatches = nodeName === name;
-            let thisNodeMatches = 0;
-            for (
-                let primitive = 0;
-                primitive < primitives.length;
-                primitive++
-            ) {
-                const meshName =
-                    authoredMeshName || `gltf_mesh_${primitiveOrdinal}`;
-                if (nodeMatches || meshName === name) {
-                    thisNodeMatches++;
-                }
-                primitiveOrdinal++;
-            }
-            if (
-                (nodeMatches || authoredMeshName === name) &&
-                primitives.length === 0
-            ) {
-                this.context.fail(
-                    node,
-                    `Asset '${asset.output}' names '${name}' on a node or mesh with no primitives; the flattened native mesh search cannot represent that DFS result.`,
-                );
-            }
-            if (thisNodeMatches > 1) {
-                this.context.fail(
-                    node,
-                    `Asset '${asset.output}' names '${name}' on a glTF node or mesh with ${thisNodeMatches} primitives; one SceneNode DFS result cannot be represented by several native mesh handles.`,
-                );
-            }
-            matches += thisNodeMatches;
-        }
-
-        if (matches > 1) {
+        if (name === "__root__") {
             this.context.fail(
                 node,
-                `Asset '${asset.output}' resolves '${name}' to ${matches} flattened mesh records; the source DFS's first hierarchy hit is not proven by the flat native table.`,
+                `Asset '${asset.output}': findNode resolving the synthetic root by its own name is not lowered.`,
             );
         }
+        const meshNames = new Map<number, string[]>();
+        const primitiveNames: string[] = [];
+        for (const [nodeIndex, gltfNode] of nodes.entries()) {
+            const meshIndex = asIndex(gltfNode.mesh);
+            if (meshIndex === undefined) continue;
+            const mesh = meshes[meshIndex];
+            if (!mesh) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' node ${nodeIndex} names an invalid glTF mesh ${meshIndex}.`,
+                );
+            }
+            const authored = asString(mesh.name);
+            // One ordinal per primitive, in node order: extractAllMeshes'.
+            const names: string[] = [];
+            for (const _primitive of asRecords(mesh.primitives)) {
+                const primitiveName =
+                    authored || `gltf_mesh_${primitiveNames.length}`;
+                names.push(primitiveName);
+                primitiveNames.push(primitiveName);
+            }
+            meshNames.set(nodeIndex, names);
+        }
+        // load-gltf.ts: `json.scenes?.[json.scene ?? 0]?.nodes ?? []`.
+        const sceneRoots = asRecords(document.scenes)[
+            asIndex(document.scene) ?? 0
+        ]?.nodes;
+        const roots: unknown[] = Array.isArray(sceneRoots) ? sceneRoots : [];
+        const visit = (
+            index: number,
+            depth: number,
+        ): { kind: "node"; node: number } | { kind: "mesh" } | undefined => {
+            const gltfNode = nodes[index];
+            if (!gltfNode || depth > nodes.length) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' has an invalid or cyclic node hierarchy.`,
+                );
+            }
+            const authored = gltfNode.name;
+            const nodeName =
+                authored === undefined || authored === null
+                    ? `node_${index}`
+                    : asString(authored);
+            if (nodeName === name) return { kind: "node", node: index };
+            for (const child of Array.isArray(gltfNode.children)
+                ? gltfNode.children
+                : []) {
+                const childIndex = asIndex(child);
+                if (childIndex === undefined) continue;
+                const hit = visit(childIndex, depth + 1);
+                if (hit) return hit;
+            }
+            if ((meshNames.get(index) ?? []).includes(name)) {
+                if (
+                    primitiveNames.filter((primitive) => primitive === name)
+                        .length > 1
+                ) {
+                    this.context.fail(
+                        node,
+                        `Asset '${asset.output}' names several primitives '${name}'; findNode's first one is not found by its name.`,
+                    );
+                }
+                return { kind: "mesh" };
+            }
+            return undefined;
+        };
+        for (const rootNode of roots) {
+            const index = asIndex(rootNode);
+            if (index === undefined) continue;
+            const hit = visit(index, 0);
+            if (hit) return hit;
+        }
+        return undefined;
     }
 
     /** The emitted search loop — the pre-concept lowering, byte for byte. */

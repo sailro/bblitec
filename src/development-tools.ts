@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { developmentTriplet } from "./build-options.js";
+import { findTintTool } from "./tint-tool.js";
 import {
     artifactPatchState,
     type ArtifactPatchState,
@@ -36,7 +37,8 @@ export interface DependencyPatchRecord {
 
 export interface DevelopmentTools {
     /** bblite-tint, the pinned Tint the offline shader compiler drives
-     *  (tools/tint-sdl, built by tools/build-tint.ps1). */
+     *  (tools/tint-sdl, built by tools/build-tint.ps1): `BBLITE_TINT_PATH`,
+     *  or the build that records this checkout's sources (src/tint-tool.ts). */
     bbliteTint: string | undefined;
     ccache: string | undefined;
     cmake: string | undefined;
@@ -352,13 +354,6 @@ export function discoverDevelopmentTools(
         cwd,
         environment.BBLITE_RMLUI_DIR ?? join("artifacts", "tools", "rmlui"),
     );
-    const localBbliteTint = resolve(
-        cwd,
-        "artifacts",
-        "tools",
-        "tint",
-        platform === "win32" ? "bblite-tint.exe" : "bblite-tint",
-    );
     const localDxc = resolve(
         cwd,
         "tools",
@@ -423,9 +418,7 @@ export function discoverDevelopmentTools(
         bbliteTint:
             environment.BBLITE_TINT_PATH !== undefined
                 ? findExecutable(environment.BBLITE_TINT_PATH, options)
-                : existsSync(localBbliteTint)
-                  ? localBbliteTint
-                  : undefined,
+                : findTintTool(resolve(cwd), platform),
         ccache:
             environment.CCACHE_PATH !== undefined
                 ? findExecutable(environment.CCACHE_PATH, options)

@@ -2893,11 +2893,11 @@ function emitOptionRows(
             emit.plainSpriteLayer
                 ? "a scene-code layer draws the stock sprite program"
                 : "every scene-code layer opts into a custom shader, so " +
-                      "the stock fragment deploys only if a node-particle " +
+                      "the stock program deploys only if a node-particle " +
                       "bridge needs it (the bridges answer for their own " +
                       "layers from the pin's pass table)",
             "src/sprite/sprite-pipeline.ts makeSpriteWgsl: the stock " +
-                "fragment deploys only where a plain layer draws with it; " +
+                "program deploys only where a plain layer draws with it; " +
                 "upstream-lower.ts ORs this option with the " +
                 "node-particle-derived plain half",
             ["deployed shaders"],
@@ -2909,11 +2909,11 @@ function emitOptionRows(
             emit.plainBillboardSystem
                 ? "a scene-code system draws the stock billboard program"
                 : "every scene-code system opts into a custom shader, so " +
-                      "the stock pair deploys only if a node-particle " +
+                      "the stock program deploys only if a node-particle " +
                       "system needs it (mode 4's second pass draws the " +
                       "stock program over the same instances)",
             "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
-                "stock pair deploys only where a plain system draws with " +
+                "stock program deploys only where a plain system draws with " +
                 "it; upstream-lower.ts ORs this option with the " +
                 "node-particle-derived plain half",
             ["deployed shaders"],
@@ -3104,16 +3104,17 @@ function compositionRows(
             "composition",
             spriteFamilies.length > 0,
             spriteFamilies.length > 0
-                ? "the pinned sprite-family builders' text reconstructed " +
-                      `for the reached permutations (${spriteFamilies.join(
+                ? "the pinned sprite-family builders' modules, deployed " +
+                      `whole for the reached permutations (${spriteFamilies.join(
                           ", ",
                       )})`
                 : "no sprite or billboard renderer",
             "src/sprite/sprite-pipeline.ts makeSpriteWgsl + " +
                 "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
-                "pin's own builders, reconstructed per reached " +
+                "pin's own builders, evaluated per reached " +
                 "permutation (stock, custom, uv-scroll, cutout, " +
-                "axis-locked, particle Multiply)",
+                "axis-locked, particle Multiply) and deployed whole; " +
+                "the compaction re-homes their groups for SDL_GPU",
             ["deployed shaders"],
         ),
         row(

@@ -317,5 +317,6 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF UV Sets |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Primitive Topology |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
+| node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Timer Callback Cells |

@@ -3349,6 +3349,7 @@ export class DataTypeRegistry {
         return dataTypeCppType(dataType, this.cppContext);
     }
 
+    /** @unjournaled Closures over this registry; never written. */
     private readonly cppContext: DataTypeCppContext = {
         cppType: (type) => this.cppType(type),
         namedType: (name) => {

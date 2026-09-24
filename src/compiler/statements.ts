@@ -71,6 +71,7 @@ export interface StatementLoweringContext extends Pick<
     | "workerAbortCpp"
     | "options"
     | "emitActivationBoundary"
+    | "refusePendingActivationUse"
     | "speculating"
     | "transaction"
     | "checker"
@@ -297,8 +298,8 @@ export class StatementLowerer {
         emissionArray([]);
     /** Source loops whose current iteration is being emitted statically. */
     private readonly staticIterationCompletions: Array<{
-        iteration: ts.IterationStatement;
-        completion: "normal" | "break" | "continue";
+        readonly iteration: ts.IterationStatement;
+        readonly completion: "normal" | "break" | "continue";
     }> = emissionArray([]);
 
     private preferNativeDataIteration(
@@ -470,6 +471,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        context.refusePendingActivationUse(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts

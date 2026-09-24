@@ -40,7 +40,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
-| `emission-transaction.ts` | Undo journal of compiler state (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a declined or failed lowering replays it |
+| `emission-transaction.ts` | Compiler state's originals per transaction, one per written slot (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a commit folds them into the enclosing transaction, a declined or failed lowering restores them. Fields outside the journal are declared `@unjournaled` with a reason |
 | `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
 | `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
 | `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |

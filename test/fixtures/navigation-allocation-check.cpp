@@ -311,16 +311,14 @@ int main(int argc, char** argv) try {
     unsigned build_allocations = 0;
     {
         auto plugin = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(plugin, ground, solo, params.off_mesh_connections,
-                                        defaults);
+        navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
         allocation_count = 0;
-        navigation_create_solo_nav_mesh(plugin, ground, solo, params.off_mesh_connections,
-                                        defaults);
+        navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
         build_allocations = allocation_count;
         require(build_allocations == 498, "pinned solo-floor allocation sequence changed");
         if (selection.empty() || selection == "queries")
             check_query_reinitialization(plugin.ownership->mesh->nav_mesh.get());
-        const auto expected = navigation_debug_geometry(plugin);
+        const auto expected = navigation_positions_and_indices(plugin);
         std::fprintf(stderr, "solo build: %u allocations\n", build_allocations);
         const unsigned first = selection.empty() || selection == "queries"
                                    ? 1
@@ -339,8 +337,7 @@ int main(int argc, char** argv) try {
             std::fprintf(stderr, "failure %u\n", failure);
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(plugin, ground, solo, params.off_mesh_connections,
-                                                defaults);
+                navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
             } catch (const std::bad_alloc&) {
                 failed = true;
             } catch (const std::runtime_error& error) {
@@ -358,9 +355,8 @@ int main(int argc, char** argv) try {
                     "required allocation failure was not rejected");
             if (failed)
                 require(original == plugin.ownership->mesh, "failed build replaced a valid mesh");
-            const auto actual = navigation_debug_geometry(plugin);
-            require(actual.positions == expected.positions && actual.normals == expected.normals &&
-                        actual.indices == expected.indices,
+            const auto actual = navigation_positions_and_indices(plugin);
+            require(actual.positions == expected.positions && actual.indices == expected.indices,
                     "allocation failure produced incomplete navigation geometry");
             // A failed reserve is only a capacity hint; a later growth can
             // recover. Release a successful replacement before counting.

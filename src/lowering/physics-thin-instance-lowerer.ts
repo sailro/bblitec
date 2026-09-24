@@ -404,7 +404,7 @@ export function lowerPhysicsThinInstances(
                     ],
                     body: [
                         "{ _hkBody: handles[0], _shape: null, _preStep: false, _prestepType: PhysicsPrestepType.TELEPORT, _world: world, node, motionType }",
-                        "state.body = PhysicsBody{}; state.body.handle = state.handles.at(0); state.body.owner = owner; state.body.node = node; state.body.motion_type = motion_type;",
+                        "state.body = PhysicsBody{}; state.body.handle = state.handles.at(0); state.body.owner = owner; state.body.node = node; state.body.node_name = physics_node_name(*world.engine, node); state.body.motion_type = motion_type;",
                     ],
                 };
                 const entry = storage[local.name.text];
