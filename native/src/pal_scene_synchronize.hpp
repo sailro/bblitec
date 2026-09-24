@@ -198,6 +198,8 @@ template <class Mesh> struct SceneSyncState {
     std::uint64_t& synced_draw_list_epoch;
     std::uint32_t& synced_material_family_mask;
     CameraTraceState& camera_trace_state;
+    /** Each pass's retained blocks; the scene pass keeps its view-projection here. */
+    RetainedSceneBlocks& pass_blocks;
 };
 
 /** What synchronization settled for the frame's encode. */
@@ -300,10 +302,12 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     upstream::sort_transparent_draws(sync.render_plan.draw_lists.transparent, engine, camera);
     // The frame's product and its two factors, built once: a shader
     // material may declare either factor beside the product, the splat UBO
-    // stores them separately, and the billboard sort reads the view.
+    // stores them separately, and the billboard sort reads the view. The
+    // product is the one the scene pass's block keeps (`keep_view_projection`).
     outcome.surface_extent = scene_surface_extent(engine, scene, sync.width, sync.height);
-    outcome.pass = build_pass_camera(scene, engine, camera, outcome.surface_extent.width,
-                                     outcome.surface_extent.height);
+    outcome.pass =
+        build_kept_pass_camera(scene, engine, camera, outcome.surface_extent.width,
+                               outcome.surface_extent.height, sync.pass_blocks.scene(scene));
     backend.settle_pass(outcome);
     backend.stream_bone_palettes();
     backend.mark_capture(outcome.topology_updated);

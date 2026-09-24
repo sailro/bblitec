@@ -8703,10 +8703,9 @@ class DawnSceneRun {
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
-#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
-        // Each pass's scene blocks, which a camera-less pass keeps.
+        // Each pass's view-projection and scene blocks, which a camera-less
+        // pass keeps.
         RetainedSceneBlocks pass_blocks;
-#endif
         std::vector<float> shader_block_scratch;
 #if BBLITE_OFFSCREEN_SURFACES
         OffscreenRun* offscreen = nullptr;
@@ -9857,9 +9856,10 @@ public:
             // at two ratios.
             const PixelViewport overlay_surface_extent =
                 scene_surface_extent(engine, *overlay_scene, width, height);
-            const PassCamera overlay_pass =
-                build_pass_camera(*overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
-                                  overlay_surface_extent.width, overlay_surface_extent.height);
+            const PassCamera overlay_pass = build_kept_pass_camera(
+                *overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
+                overlay_surface_extent.width, overlay_surface_extent.height,
+                data_.pass_blocks.scene(*overlay_scene));
             const upstream::SceneUniforms& overlay_scene_block = write_pass_scene_block(
                 data_.pass_blocks.scene(*overlay_scene), *overlay_scene, engine, overlay_pass);
             wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
@@ -9929,9 +9929,10 @@ public:
             // not the target's.
             const PixelViewport overlay_surface_extent =
                 scene_surface_extent(engine, *overlay_scene, width, height);
-            const PassCamera overlay_pass =
-                build_pass_camera(*overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
-                                  overlay_surface_extent.width, overlay_surface_extent.height);
+            const PassCamera overlay_pass = build_kept_pass_camera(
+                *overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
+                overlay_surface_extent.width, overlay_surface_extent.height,
+                data_.pass_blocks.scene(*overlay_scene));
             const ShaderPassMatrices overlay_pass_matrices = overlay_pass.pass();
             pass_scene = overlay_scene;
             pass_meshes = &state.overlay_meshes[layer];
@@ -10037,6 +10038,8 @@ public:
                         graph_scene, engine, task_camera,
                         canvas_extent ? graph_extent.width : static_cast<double>(target.width),
                         canvas_extent ? graph_extent.height : static_cast<double>(target.height));
+                    keep_view_projection(task_camera_pass, task_camera,
+                                         data_.pass_blocks.task(handle));
                     // A shadow task renders from the light, not from a
                     // camera: the generator's own matrices replace the product
                     // below, which stays the zero matrix and is never uploaded.
@@ -10175,7 +10178,8 @@ public:
                                       data.synced_render_topology_version,
                                       data.synced_draw_list_epoch,
                                       data.synced_material_family_mask,
-                                      data.camera_trace_state};
+                                      data.camera_trace_state,
+                                      data.pass_blocks};
         static_cast<void>(synchronize_scene(sync, hooks));
         frame.written = data.cpu_profile ? monotonic_milliseconds() : 0.0;
     }

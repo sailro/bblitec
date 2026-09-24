@@ -6672,10 +6672,9 @@ class SdlSceneRun {
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
-#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
-        // Each pass's scene blocks, which a camera-less pass keeps.
+        // Each pass's view-projection and scene blocks, which a camera-less
+        // pass keeps.
         RetainedSceneBlocks pass_blocks;
-#endif
         std::vector<float> shader_block_scratch;
 #if BBLITE_HAS_PICKING
 #if BBLITE_HAS_BILLBOARDS
@@ -8128,7 +8127,8 @@ public:
                                      data.synced_render_topology_version,
                                      data.synced_draw_list_epoch,
                                      data.synced_material_family_mask,
-                                     data.camera_trace_state};
+                                     data.camera_trace_state,
+                                     data.pass_blocks};
         static_cast<void>(synchronize_scene(sync, hooks));
     }
 
@@ -8144,9 +8144,7 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] const bool transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
         [[maybe_unused]] auto& pass_blocks = data_.pass_blocks;
-#endif
 #if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
@@ -8222,9 +8220,9 @@ public:
                         scene_surface_extent(engine, graph_scene, width, height);
                     // The layer's own scene pass, whose matrix the slot-zero
                     // push carries between tasks.
-                    const PassCamera graph_pass = build_pass_camera(
+                    const PassCamera graph_pass = build_kept_pass_camera(
                         graph_scene, engine, scene_pass_camera(engine, graph_scene),
-                        graph_extent.width, graph_extent.height);
+                        graph_extent.width, graph_extent.height, pass_blocks.scene(graph_scene));
                     const std::array<float, 16>& graph_matrix = graph_pass.matrices.view_projection;
                     // A geometry task renders through its scene's camera.
                     const PassCamera geometry_pass = build_pass_camera(
@@ -8851,6 +8849,8 @@ public:
                                                       ? graph_extent.height
                                                       : static_cast<double>(target.height))
                                     .matrices;
+                            keep_view_projection(task_camera_pass, task_camera,
+                                                 pass_blocks.task(handle));
                             // A shadow task renders from the light, not from
                             // a camera: the generator's own matrices replace
                             // the product below, which stays the zero matrix
@@ -9200,9 +9200,9 @@ public:
                                         continue;
                                     // The layer's own scene pass: its camera,
                                     // with no fallback to the base scene's.
-                                    const PassCamera utility_pass_camera = build_pass_camera(
+                                    const PassCamera utility_pass_camera = build_kept_pass_camera(
                                         utility, engine, scene_pass_camera(engine, utility),
-                                        target.width, target.height);
+                                        target.width, target.height, pass_blocks.scene(utility));
                                     const std::array<float, 16>& utility_matrix =
                                         utility_pass_camera.matrices.view_projection;
                                     target_info.load_op = SDL_GPU_LOADOP_LOAD;
@@ -10118,9 +10118,10 @@ public:
                 // layer without a camera draws through the zero block.
                 const PixelViewport overlay_surface_extent =
                     scene_surface_extent(engine, *overlay_scene, width, height);
-                const PassCamera overlay_pass = build_pass_camera(
+                const PassCamera overlay_pass = build_kept_pass_camera(
                     *overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
-                    overlay_surface_extent.width, overlay_surface_extent.height);
+                    overlay_surface_extent.width, overlay_surface_extent.height,
+                    pass_blocks.scene(*overlay_scene));
                 const std::array<float, 16>& overlay_matrix = overlay_pass.matrices.view_projection;
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
