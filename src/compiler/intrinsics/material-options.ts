@@ -679,9 +679,6 @@ export function compilePbrMaterialOptions(
                 : { metallicF0Factor: staticMetallicF0Factor }),
             ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
             doubleSided: doubleSidedCpp === "true",
-            transmission: transmission.value,
-            ior: ior.value,
-            thickness: thickness.value,
             ...(staticPhysicalLightFalloff
                 ? {}
                 : { usePhysicalLightFalloff: false }),

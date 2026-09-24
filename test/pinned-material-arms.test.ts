@@ -181,9 +181,6 @@ test("scene-code occlusion strength controls the pin's ORM arm", async () => {
         alpha: 1,
         reflectance: 0.04,
         doubleSided: false,
-        transmission: 0,
-        ior: 1.5,
-        thickness: 0,
     };
     const arms = await pinnedSceneArms({
         lightKinds: [],
@@ -219,9 +216,6 @@ test("scene-code specular AA controls the pin's derivative roughness arm", async
         alpha: 1,
         reflectance: 0.04,
         doubleSided: false,
-        transmission: 0,
-        ior: 1.5,
-        thickness: 0,
     };
     const arms = await pinnedSceneArms({
         lightKinds: [],
@@ -265,9 +259,6 @@ test("Scene 26 composes the pin's subsurface thickness arm", async () => {
                 reflectance: 0.04,
                 doubleSided: false,
                 enableSpecularAA: true,
-                transmission: 0,
-                ior: 1.5,
-                thickness: 0,
                 subsurface: {
                     intensity: 1,
                     color: [1, 1, 1],
@@ -316,9 +307,6 @@ test("creation-only metallic F0 does not register the reflectance arm", async ()
                 occlusionStrength: 0,
                 metallicF0Factor: 0.95,
                 doubleSided: false,
-                transmission: 0,
-                ior: 1.5,
-                thickness: 0,
             },
         ],
         arms,
@@ -349,9 +337,6 @@ test("a metallic-reflectance setter globally registers dormant F0", async () => 
         reflectance: 0.04,
         occlusionStrength: 0,
         doubleSided: false,
-        transmission: 0,
-        ior: 1.5,
-        thickness: 0,
     };
     const variants = await composeScenePbrVariants(
         [
@@ -421,9 +406,6 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
                 occlusionStrength: 0,
                 metallicF0Factor: 0.95,
                 doubleSided: false,
-                transmission: 0,
-                ior: 1.5,
-                thickness: 0,
             },
         ],
         arms,
@@ -464,9 +446,6 @@ test("scene metallic-reflectance maps compose both linear bindings", async () =>
                 occlusionStrength: 0,
                 metallicF0Factor: 0.95,
                 doubleSided: false,
-                transmission: 0,
-                ior: 1.5,
-                thickness: 0,
                 metallicReflectance: {
                     hasColor: true,
                     hasMetallicTexture: true,

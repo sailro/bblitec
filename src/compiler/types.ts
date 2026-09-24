@@ -705,9 +705,6 @@ export interface ScenePbrMaterialManifest {
         falloff: number;
     };
     doubleSided: boolean;
-    transmission: number;
-    ior: number;
-    thickness: number;
 }
 
 /**
