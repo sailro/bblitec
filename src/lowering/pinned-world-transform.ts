@@ -3,15 +3,13 @@
  * composes at, for every record and consumer that needs a local matrix: the
  * render plan's meshes and transform nodes, an imported clone root's outer
  * transform, the default camera's framing and the .babylon node. Beside it
- * sit the mirrored-basis determinant from the shared pinned mat4Determinant3
- * lowerer and the pinned shader normalize a loader's flat-normal stand-in
- * takes.
+ * sits the mirrored-basis determinant from the shared pinned mat4Determinant3
+ * lowerer.
  */
 import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
-import { pinnedVertexNormalization } from "./pinned-vertex-normalization.js";
 
 /**
  * The always-emitted header carrying the pinned TRS composition, the pinned
@@ -137,8 +135,6 @@ inline std::array<double, 16> outer_transform_product(
 }
 
 ${determinant}
-
-${pinnedVertexNormalization(context)}
 
 } // namespace bbl::upstream
 `;

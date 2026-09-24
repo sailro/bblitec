@@ -1,3 +1,57 @@
+/**
+ * The retained-UI recorder's draw module on Dawn: one vertex stage and the
+ * colour and textured fragments, over the screen block (group 0) and the
+ * texture pair (group 1). SDL_GPU draws the same geometry through RmlUi's
+ * own compiled shaders; deploying this module gives Dawn its `.slots`
+ * sidecars, from which it lays the two groups out.
+ */
+export function uiDrawWgsl(): string {
+    return `struct Screen {
+    size: vec2<f32>,
+    padding: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> screen: Screen;
+@group(1) @binding(0) var ui_texture: texture_2d<f32>;
+@group(1) @binding(1) var ui_sampler: sampler;
+
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4<f32>(
+        input.position.x * 2.0 / screen.size.x - 1.0,
+        1.0 - input.position.y * 2.0 / screen.size.y,
+        0.0,
+        1.0);
+    output.color = input.color;
+    output.uv = input.uv;
+    return output;
+}
+
+@fragment
+fn fs_color(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color;
+}
+
+@fragment
+fn fs_texture(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color * textureSample(ui_texture, ui_sampler, input.uv);
+}
+`;
+}
+
 /** Native retained-UI image operations. One WGSL module serves both GPU backends. */
 export function uiFilterFragmentWgsl(): string {
     return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;

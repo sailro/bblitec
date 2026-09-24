@@ -27,12 +27,12 @@ export type LocalCubemapJson =
     | LocalCubemapJson[]
     | { [key: string]: LocalCubemapJson };
 export interface LocalCubemapPlan {
-    kind: "environment" | "single" | "probes";
-    maxCandidates: number;
-    entryFileName: string;
-    environments: string[];
-    options: { [key: string]: LocalCubemapJson };
-    debug?: boolean;
+    readonly kind: "environment" | "single" | "probes";
+    readonly maxCandidates: number;
+    readonly entryFileName: string;
+    readonly environments: readonly string[];
+    readonly options: { [key: string]: LocalCubemapJson };
+    readonly debug?: boolean;
 }
 export interface LocalCubemapPacket {
     overridesEnvironment: boolean;

@@ -52,7 +52,11 @@ struct WGPUBindGroupEntry {
     unsigned binding = 0;
     Buffer* buffer = nullptr;
     std::size_t size = 0;
+    Resource* textureView = nullptr;
+    Resource* sampler = nullptr;
 };
+using WGPUShaderStage = int;
+constexpr WGPUShaderStage WGPUShaderStage_Vertex = 1, WGPUShaderStage_Fragment = 2;
 struct WGPUBindGroupDescriptor {
     Resource* layout;
     unsigned entryCount;
@@ -199,6 +203,10 @@ void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder, Uint32 indices, Uin
 
 namespace bbl::upstream {
 constexpr unsigned sprite_fx_ubo_bytes = 16, billboard_system_ubo_bytes = 16;
+struct SceneUniforms {
+    std::array<float, 16> viewProjection{};
+    std::array<float, 16> view{};
+};
 constexpr std::array<std::uint16_t, 6> billboard_index_data{};
 template <class Params>
 void build_sprite_fx_ubo(float seconds, const Params&, std::array<float, 4>& output) {
@@ -245,14 +253,55 @@ struct DawnSampledTexture {
 };
 struct PinnedStageSlots {
     std::vector<std::string> textures;
+    std::vector<std::string> uniforms;
 };
+struct PinnedStageBlock {
+    const void* data = nullptr;
+    std::size_t bytes = 0;
+};
+template <typename Resolve>
+void push_stage_uniforms(Resource*, const PinnedStageSlots& slots, bool, const char*,
+                         Resolve resolve) {
+    for (std::size_t slot = 0; slot < slots.uniforms.size(); ++slot)
+        assert(resolve(slots.uniforms[slot], slot).data);
+}
+struct DawnLayoutStage {
+    std::string_view stem;
+    WGPUShaderStage stage;
+};
+struct DawnReflectedLayoutEntry {
+    int entry = 0;
+    std::string name;
+};
+/** The fixture's programs declare their one group last, as the pin's modules do. */
+template <std::size_t Count>
+std::vector<DawnReflectedLayoutEntry>
+dawn_reflected_layout(const std::array<DawnLayoutStage, Count>&, Uint32 group) {
+    return group == 0 ? std::vector<DawnReflectedLayoutEntry>{{0, "L"}}
+                      : std::vector<DawnReflectedLayoutEntry>{};
+}
+template <std::size_t Count, typename Serve>
+Resource* create_dawn_reflected_group(Resource*, Resource* layout,
+                                      const std::array<DawnLayoutStage, Count>&, Uint32,
+                                      Serve&& serve) {
+    for (const char* name : {"L", "atlasTex", "atlasSamp"}) {
+        WGPUBindGroupEntry entry{};
+        assert(serve(std::string_view(name), entry));
+    }
+    const WGPUBindGroupDescriptor descriptor{layout, 0, nullptr};
+    return wgpuDeviceCreateBindGroup(nullptr, &descriptor);
+}
+bool serve_dawn_extra_texture(std::string_view, const std::vector<std::string>&,
+                              const std::vector<DawnSampledTexture>&, WGPUBindGroupEntry&) {
+    return false;
+}
 struct GpuBufferUploadBatch {
     void update(Buffer* buffer, std::size_t offset, const void* data, std::size_t bytes) {
         capture::write(buffer, offset, data, bytes);
     }
 };
 [[noreturn]] void gpu_error(const char* message) { throw std::runtime_error(message); }
-[[noreturn]] void dawn_error(const char* message) { throw std::runtime_error(message); }
+[[noreturn]] void dawn_error(const std::string& message) { throw std::runtime_error(message); }
 void upload_2d_texture_into(Resource*, Resource*, const std::uint8_t*, std::size_t, Uint32, Uint32,
                             const char*) {
     ++capture::texture_uploads;
@@ -262,27 +311,27 @@ void update_dawn_extra_texture(Resource*, DawnSampledTexture& gpu, const PixelsT
     gpu.uploaded_version = texture.version;
 }
 void push_stage_uniform(Resource*, int, const void*, std::size_t) {}
+void push_vertex_stage_uniform(Resource*, int, const void*, std::size_t) {}
 void update_buffer(Resource*, Buffer* buffer, const void* data, std::size_t bytes) {
     capture::write(buffer, 0, data, bytes);
 }
 #include "records.hpp"
 struct DawnMipGenerator {};
 PinnedStageSlots fragment_slots{{"atlasTex"}};
-std::string sprite_fragment_shader_name(Uint32) { return "fixture"; }
 PinnedStageSlots read_pinned_stage_slots(const std::string&) { return fragment_slots; }
 int stage_uniform_slot(const PinnedStageSlots&, const char* name) {
     return std::string_view(name) == "fx" ? 1 : 0;
 }
-OwnedSdlPipeline create_sprite_layer_pipeline(Resource*, const Sprite2DLayerRecord&,
-                                              const PinnedStageSlots&, int, int, int) {
+OwnedSdlPipeline create_sprite_layer_pipeline(Resource*, const Sprite2DLayerRecord&, int, int,
+                                              int) {
     ++capture::pipelines;
     return {capture::resource()};
 }
-std::array<Resource*, 4> create_dawn_sprite_layer_layouts(Resource*, const SpriteLayerPipelinePlan&,
-                                                          Uint32) {
-    return {capture::resource(), capture::resource(), capture::resource(), capture::resource()};
+std::vector<Resource*> create_dawn_sprite_layer_layouts(Resource*, const SpriteLayerPipelinePlan&,
+                                                        Uint32) {
+    return {capture::resource()};
 }
-Resource* create_dawn_sprite_layer_pipeline(Resource*, const std::array<Resource*, 4>&,
+Resource* create_dawn_sprite_layer_pipeline(Resource*, const std::vector<Resource*>&,
                                             const SpriteBlendDescriptor&,
                                             const SpriteLayerPipelinePlan&, Uint32, int, int,
                                             Uint32) {
@@ -294,12 +343,6 @@ Buffer* dawn_sprite_uniform_buffer(Resource*, std::uint64_t size = 64) {
 }
 Buffer* upload_buffer(Resource*, int, const void*, std::size_t bytes) {
     return capture::allocate(bytes);
-}
-void append_dawn_texture_pair(std::vector<WGPUBindGroupEntry>& entries, Resource*, Resource*) {
-    entries.resize(entries.size() + 2);
-}
-void append_dawn_texture_pair(std::vector<WGPUBindGroupEntry>& entries, const DawnSampledTexture&) {
-    entries.resize(entries.size() + 2);
 }
 DawnSampledTexture upload_dawn_extra_texture(Resource*, Resource*, const PixelsTexture& texture) {
     return {texture.version};
@@ -662,27 +705,28 @@ int main() {
     BillboardPass billboard;
     billboard.system = {0};
     billboard.instances = capture::allocate(16);
-    billboard.fx_block_slot = 1;
+    billboard.fragment_slots.uniforms = {"billboards", "fx"};
     billboard.elapsed_ms = 4294967296.0;
     billboard.bound_textures = sdl.bound_textures;
     DawnBillboardPass dawn_billboard;
     dawn_billboard.system = {0};
     dawn_billboard.instances = capture::allocate(16);
-    dawn_billboard.vertex_uniforms = capture::allocate(128);
-    dawn_billboard.fragment_uniforms = capture::allocate(16);
+    dawn_billboard.frame_scene.uniforms = capture::allocate(sizeof(bbl::upstream::SceneUniforms));
+    dawn_billboard.system_uniforms = capture::allocate(16);
     dawn_billboard.fx_uniforms = capture::allocate(16);
     dawn_billboard.elapsed_ms = 4294967296.0;
     const std::array<float, 16> view{};
+    const bbl::upstream::SceneUniforms scene_block{};
     for (unsigned frame = 1; frame <= 4; ++frame) {
         capture::reset();
         upload_billboard_pass(nullptr, scene, engine, billboard, view, .25);
-        record_billboard_pass(nullptr, nullptr, engine, billboard, view, view);
+        record_billboard_pass(nullptr, nullptr, engine, billboard, scene_block);
         assert(billboard.elapsed_ms == 4294967296.0 + frame * .25);
         assert(capture::fx_seconds == static_cast<float>(billboard.elapsed_ms / 1000.0));
         assert(capture::writes.size() == (frame == 1 ? 1u : 0u));
         assert((capture::textures == std::vector<Resource*>{&mask, &atlas}));
         capture::reset();
-        upload_dawn_billboard_pass(nullptr, scene, engine, dawn_billboard, view, view, .25);
+        upload_dawn_billboard_pass(nullptr, scene, engine, dawn_billboard, scene_block, .25);
         assert(dawn_billboard.elapsed_ms == billboard.elapsed_ms);
         assert(capture::fx_seconds == static_cast<float>(dawn_billboard.elapsed_ms / 1000.0));
         assert(capture::writes.size() == (frame == 1 ? 4u : 3u));

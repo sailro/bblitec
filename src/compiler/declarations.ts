@@ -59,6 +59,7 @@ import {
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
+    engineCallMutatesArgument,
     isSupportedFunction,
     parameterIsMutated,
     parameterIsReadOnly,
@@ -2790,7 +2791,16 @@ export class DeclarationLowerer {
                             this.context.checker.getResolvedSignature(
                                 node,
                             )?.declaration;
-                        if (!isSupportedFunction(called)) return false;
+                        if (!isSupportedFunction(called) || !called.body)
+                            return node.arguments.some(
+                                (argument, index) =>
+                                    scan.containsAlias(argument) &&
+                                    engineCallMutatesArgument(
+                                        this.context.checker,
+                                        node,
+                                        index,
+                                    ),
+                            );
                         for (const [
                             index,
                             argument,

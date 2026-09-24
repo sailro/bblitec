@@ -391,6 +391,7 @@ export function staticClassMember(
  * classes from here.
  */
 export class ClassHierarchy {
+    /** @unjournaled Derived from the program alone, on first use. */
     private subclassesByClass:
         Map<ts.ClassDeclaration, ts.ClassDeclaration[]> | undefined;
 

@@ -1211,7 +1211,10 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "bblite-tint",
             ...(tools.bbliteTint
                 ? { path: tools.bbliteTint }
-                : { problem: "pinned Tint was not built" }),
+                : {
+                      problem:
+                          "not built from this checkout's tools/tint-sdl; run pwsh -File tools/build-tint.ps1",
+                  }),
         });
     }
     if (scope.labSound) {
@@ -2786,7 +2789,10 @@ function worktreeNativeRoots(): string[] {
     return roots.filter((root) => existsSync(root));
 }
 
-const isPchFile = (name: string): boolean => /^cmake_pch\..*\.pch$/.test(name);
+// CMake's own precompiled headers, and the object clang-cl's shared one is
+// (bblite_shared_pch, native/native-header-cache.cmake).
+const isPchFile = (name: string): boolean =>
+    /^cmake_pch\..*\.pch$|^bblite_pch-[0-9a-f]{16}\.cxx\.obj$/.test(name);
 const isDllFile = (name: string): boolean =>
     name.toLowerCase().endsWith(".dll");
 

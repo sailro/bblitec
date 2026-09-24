@@ -228,9 +228,14 @@ export class UpstreamSourceStore {
         return [...this.sources.keys()].sort();
     }
 
-    public resolvePublicExport(name: string): PublicExport {
+    /** The public export `name`, or undefined when the package exports no such name. */
+    public findPublicExport(name: string): PublicExport | undefined {
         if (this.publicExports.size === 0) this.loadPublicExports();
-        const entry = this.publicExports.get(name);
+        return this.publicExports.get(name);
+    }
+
+    public resolvePublicExport(name: string): PublicExport {
+        const entry = this.findPublicExport(name);
         if (!entry)
             throw new Error(
                 `Babylon Lite public export '${name}' was not found.`,

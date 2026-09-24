@@ -252,11 +252,14 @@ function declaredNames(statement: ts.Statement): string[] {
 /** The analysis of one execution: what runs, and the text that runs it. */
 class ExecutedClosure {
     private readonly symbols: CompilerSymbols;
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly parts = new Map<ts.SourceFile, FilePart>();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly enclosing = new Map<
         string,
         { declaration: ts.Declaration; value: ExecutedScalar }
     >();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
 
     public constructor(

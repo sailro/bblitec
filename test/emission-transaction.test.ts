@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -15,6 +16,7 @@ import {
     journaled,
     writable,
 } from "../src/compiler/emission-transaction.js";
+import { sourcePaths } from "./source-facts.js";
 
 class Counter {
     @journaled public accessor next = 0;
@@ -70,7 +72,7 @@ test("opening a transaction copies nothing and a rollback replays only the probe
     const before = emissionTransactionStatistics();
     new EmissionTransaction().run(() => false, Boolean);
     const idle = emissionTransactionStatistics();
-    assert.equal(idle.journaledWrites, before.journaledWrites);
+    assert.equal(idle.journaledSlots, before.journaledSlots);
     decline(() => {
         counter.next = 1;
         counter.next = 1;
@@ -82,10 +84,16 @@ test("opening a transaction copies nothing and a rollback replays only the probe
         {
             transactions: after.transactions - before.transactions,
             rollbacks: after.rollbacks - before.rollbacks,
-            journaledWrites: after.journaledWrites - before.journaledWrites,
-            undoneWrites: after.undoneWrites - before.undoneWrites,
+            journaledSlots: after.journaledSlots - before.journaledSlots,
+            restoredContainers:
+                after.restoredContainers - before.restoredContainers,
         },
-        { transactions: 2, rollbacks: 2, journaledWrites: 2, undoneWrites: 2 },
+        {
+            transactions: 2,
+            rollbacks: 2,
+            journaledSlots: 2,
+            restoredContainers: 2,
+        },
     );
     assert.equal(counter.next, 0);
     assert.deepEqual([...map], [["kept", 1]]);
@@ -249,12 +257,12 @@ test("records restore a deleted key to its place in the key order", () => {
 });
 
 test("containers created inside a probe journal only writes of transactions they predate", () => {
-    const before = emissionTransactionStatistics().journaledWrites;
+    const before = emissionTransactionStatistics().journaledSlots;
     let born: EmissionMap<string, number> | undefined;
     new EmissionTransaction().run(() => {
         born = new EmissionMap();
         born.set("inside", 1);
-        assert.equal(emissionTransactionStatistics().journaledWrites, before);
+        assert.equal(emissionTransactionStatistics().journaledSlots, before);
         new EmissionTransaction().run(() => {
             born!.set("nested", 2);
             return false;
@@ -262,9 +270,214 @@ test("containers created inside a probe journal only writes of transactions they
         assert.deepEqual([...born], [["inside", 1]]);
         return true;
     }, Boolean);
-    assert.equal(emissionTransactionStatistics().journaledWrites, before + 1);
+    assert.equal(emissionTransactionStatistics().journaledSlots, before + 1);
     decline(() => born!.delete("inside"));
     assert.deepEqual([...born!], [["inside", 1]]);
+});
+
+test("a transaction saves each slot's original once, and nothing for slots past an array's starting length", () => {
+    const counter = new Counter();
+    const map = new EmissionMap<string, number>([["kept", 0]]);
+    const set = new EmissionSet<number>();
+    const stack = emissionArray<number>([0]);
+    const before = emissionTransactionStatistics().journaledSlots;
+    decline(() => {
+        for (let index = 1; index <= 100; ++index) {
+            counter.next = index;
+            map.set("kept", index);
+            set.add(1);
+            stack.push(index);
+            stack.pop();
+            stack[0] = index;
+        }
+        assert.equal(
+            emissionTransactionStatistics().journaledSlots - before,
+            4,
+        );
+    });
+    assert.equal(counter.next, 0);
+    assert.deepEqual([...map], [["kept", 0]]);
+    assert.deepEqual([...set], []);
+    assert.deepEqual([...stack], [0]);
+});
+
+test("a commit keeps the enclosing transaction's older originals", () => {
+    const counter = new Counter();
+    const map = new EmissionMap<string, number>([
+        ["a", 0],
+        ["b", 0],
+    ]);
+    const stack = emissionArray<number>([0, 1, 2]);
+    decline(() => {
+        counter.next = 1;
+        map.set("a", 1);
+        stack.push(3);
+        new EmissionTransaction().run(() => {
+            counter.next = 2;
+            map.set("a", 2);
+            map.set("b", 2);
+            stack.length = 1;
+            return true;
+        }, Boolean);
+        counter.next = 3;
+        map.set("b", 3);
+        map.delete("a");
+        stack.push(9);
+    });
+    assert.equal(counter.next, 0);
+    assert.deepEqual(
+        [...map],
+        [
+            ["a", 0],
+            ["b", 0],
+        ],
+    );
+    assert.deepEqual([...stack], [0, 1, 2]);
+});
+
+test("writable() refuses a journaled container", () => {
+    decline(() => {
+        assert.throws(
+            () => writable(emissionArray([1])),
+            /journaled container/,
+        );
+        assert.throws(() => writable(new EmissionMap()), /journaled container/);
+    });
+});
+
+/** A container a field can hold whose writes nothing journals. */
+function plainContainer(initializer: ts.Expression | undefined): boolean {
+    if (!initializer) return false;
+    if (
+        ts.isArrayLiteralExpression(initializer) ||
+        ts.isObjectLiteralExpression(initializer)
+    )
+        return true;
+    return (
+        ts.isNewExpression(initializer) &&
+        ts.isIdentifier(initializer.expression) &&
+        ["Array", "Map", "Set", "WeakMap", "WeakSet"].includes(
+            initializer.expression.text,
+        )
+    );
+}
+
+/** The reason a declaration gives in its `@unjournaled` tag, if it has one. */
+function unjournaledReason(node: ts.Node): string | undefined {
+    for (const tag of ts.getJSDocTags(node))
+        if (tag.tagName.text === "unjournaled")
+            return ts.getTextOfJSDocComment(tag.comment)?.trim() ?? "";
+    return undefined;
+}
+
+/** Whether `Object.assign`'s target is a writable() record or a fresh local. */
+function journaledAssignTarget(target: ts.Expression): boolean {
+    if (
+        ts.isCallExpression(target) &&
+        ts.isIdentifier(target.expression) &&
+        target.expression.text === "writable"
+    )
+        return true;
+    if (ts.isObjectLiteralExpression(target)) return true;
+    if (!ts.isIdentifier(target)) return false;
+    for (let scope: ts.Node = target; scope.parent; scope = scope.parent) {
+        if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+        for (const statement of scope.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations)
+                if (
+                    ts.isIdentifier(declaration.name) &&
+                    declaration.name.text === target.text
+                ) {
+                    const initializer = declaration.initializer;
+                    return (
+                        initializer !== undefined &&
+                        (ts.isObjectLiteralExpression(initializer) ||
+                            (ts.isCallExpression(initializer) &&
+                                initializer.expression.getText() ===
+                                    "Object.create"))
+                    );
+                }
+        }
+    }
+    return false;
+}
+
+test("compiler state escapes the journal only where it is declared @unjournaled", () => {
+    const violations: string[] = [];
+    const compilerSources = sourcePaths.filter(
+        (path) =>
+            (path === "src/compiler.ts" || path.startsWith("src/compiler/")) &&
+            path !== "src/compiler/emission-transaction.ts",
+    );
+    for (const path of compilerSources) {
+        const file = ts.createSourceFile(
+            path,
+            readFileSync(path, "utf8"),
+            ts.ScriptTarget.Latest,
+            true,
+        );
+        const site = (node: ts.Node, what: string): void => {
+            const { line } = file.getLineAndCharacterOfPosition(
+                node.getStart(file),
+            );
+            violations.push(`${path}:${line + 1} ${what}`);
+        };
+        const visit = (node: ts.Node): void => {
+            const modifiers = ts.canHaveModifiers(node)
+                ? (ts.getModifiers(node) ?? [])
+                : [];
+            const has = (kind: ts.SyntaxKind): boolean =>
+                modifiers.some((modifier) => modifier.kind === kind);
+            const reason = unjournaledReason(node);
+            if (reason === "") site(node, "@unjournaled without a reason");
+            if (
+                ts.isPropertyDeclaration(node) &&
+                !has(ts.SyntaxKind.StaticKeyword) &&
+                reason === undefined
+            ) {
+                const journaledField =
+                    has(ts.SyntaxKind.AccessorKeyword) &&
+                    (ts.getDecorators(node) ?? []).some(
+                        (decorator) =>
+                            ts.isIdentifier(decorator.expression) &&
+                            decorator.expression.text === "journaled",
+                    );
+                if (
+                    !journaledField &&
+                    (!has(ts.SyntaxKind.ReadonlyKeyword) ||
+                        plainContainer(node.initializer))
+                )
+                    site(node, node.name.getText(file));
+            }
+            if (
+                ts.isParameter(node) &&
+                ts.isConstructorDeclaration(node.parent) &&
+                (has(ts.SyntaxKind.PrivateKeyword) ||
+                    has(ts.SyntaxKind.ProtectedKeyword) ||
+                    has(ts.SyntaxKind.PublicKeyword)) &&
+                !has(ts.SyntaxKind.ReadonlyKeyword) &&
+                reason === undefined
+            )
+                site(node, node.name.getText(file));
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.getText(file) === "Object.assign" &&
+                node.arguments[0] !== undefined &&
+                !journaledAssignTarget(node.arguments[0])
+            )
+                site(node, "Object.assign into an unjournaled target");
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+    }
+    assert.deepEqual(
+        violations,
+        [],
+        "A compiler class field is a @journaled accessor, a readonly journaled " +
+            "container, or declares @unjournaled with a reason; Object.assign " +
+            "writes a writable() record or a fresh local.",
+    );
 });
 
 test("a plain object written without writable() is not rolled back", () => {

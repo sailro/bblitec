@@ -42,11 +42,12 @@ namespace bbl::pal {
 struct BillboardResources {
     OwnedSdlPipeline pipeline;
     // The mode-4 wrapper's second pipeline: a stock Add pass over the same
-    // instances, built only when the descriptor carries two passes. Its
-    // fragment is the stock one, so it binds the same textures and the same
-    // system block at that stage's own slots.
+    // instances, built only when the descriptor carries two passes. It is
+    // the stock program, so it binds the same textures and blocks at its
+    // own stages' slots.
     OwnedSdlPipeline add_pipeline;
-    int add_system_block_slot = -1;
+    PinnedStageSlots add_vertex_slots;
+    PinnedStageSlots add_fragment_slots;
     SDL_GPUBuffer* index_buffer = nullptr;
     SDL_GPUBuffer* instances = nullptr;
     // Owners stay atlas-then-extras; the bound list follows the compacted
@@ -59,11 +60,11 @@ struct BillboardResources {
     // What the buffer holds — its source instance version and the view it was
     // sorted for — so `billboard_needs_upload` can gate the re-upload.
     BillboardUploadStamp upload_stamp;
-    // Where this system's fragment stage kept its two uniform blocks, from
-    // the sidecar the shader step wrote beside it. A custom body that reads
-    // neither leaves both at -1.
-    int system_block_slot = 0;
-    int fx_block_slot = -1;
+    // The program's two stages' sidecars: which of the pin's blocks --
+    // the scene block, the system block, the fx block -- each stage kept,
+    // and at which slot.
+    PinnedStageSlots vertex_slots;
+    PinnedStageSlots fragment_slots;
     // The custom shader's own clock: seconds since this system's first
     // frame, which the pin accumulates inside its fx attachment.
     // Mirrors the JavaScript `number` accumulator until the f32 UBO write.
@@ -73,12 +74,6 @@ struct BillboardResources {
 inline void release_billboard_resources(SDL_GPUDevice*, BillboardResources&) noexcept;
 using BillboardPass = OwnedGpuRecord<BillboardResources, std::remove_pointer_t<SDL_GPUDevice*>,
                                      release_billboard_resources>;
-
-/** The vertex block the reconstructed billboard stage declares. */
-struct BillboardSceneUniforms {
-    std::array<float, 16> view_projection{};
-    std::array<float, 16> view{};
-};
 
 inline SDL_GPUVertexElementFormat billboard_attribute_format(std::uint32_t float_count) {
     switch (float_count) {
@@ -114,17 +109,20 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
     // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
     // keeps only its API mechanics.
     const BillboardDrawPlan plan = billboard_draw_plan(system);
-    auto vertex_shader =
-        load_shader(device, plan.vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                    // The axis-locked basis reads the system block for its lock axis.
-                    plan.vertex_reads_system_block ? 2u : 1u, "mainVertex");
-    const PinnedStageSlots slots = read_pinned_stage_slots(plan.fragment_stem);
-    pass.system_block_slot = stage_uniform_slot(slots, "billboards");
-    pass.fx_block_slot = stage_uniform_slot(slots, "fx");
-    auto fragment_shader =
-        load_shader(device, plan.fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<std::uint32_t>(slots.textures.size()),
-                    static_cast<std::uint32_t>(slots.uniforms.size()), "mainFragment");
+    // The program's one module, both stages compiled from it and each
+    // created from its own sidecar. Which blocks a stage kept is the
+    // module's to say: the axis-locked basis reads the system block in the
+    // vertex stage, and a custom body may read the scene block.
+    const std::string stem = plan.program_stem;
+    PinnedStage vertex_stage =
+        load_pinned_stage(device, stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX);
+    PinnedStage fragment_stage =
+        load_pinned_stage(device, stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+    auto& vertex_shader = vertex_stage.shader;
+    auto& fragment_shader = fragment_stage.shader;
+    pass.vertex_slots = vertex_stage.slots;
+    pass.fragment_slots = fragment_stage.slots;
+    const PinnedStageSlots& slots = pass.fragment_slots;
 
     std::array<SDL_GPUVertexAttribute, upstream::billboard_instance_attributes.size()> attributes{};
     for (std::size_t index = 0; index < upstream::billboard_instance_attributes.size(); ++index) {
@@ -200,17 +198,15 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
         add_target.blend_state.dst_color_blendfactor = sprite_blend_factor(add.color.dst);
         add_target.blend_state.src_alpha_blendfactor = sprite_blend_factor(add.alpha.src);
         add_target.blend_state.dst_alpha_blendfactor = sprite_blend_factor(add.alpha.dst);
-        const PinnedStageSlots add_slots = read_pinned_stage_slots("billboard.frag");
-        pass.add_system_block_slot = stage_uniform_slot(add_slots, "billboards");
-        auto add_vertex =
-            load_shader(device, "billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1u, "mainVertex");
-        auto add_fragment =
-            load_shader(device, "billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
-                        static_cast<std::uint32_t>(add_slots.textures.size()),
-                        static_cast<std::uint32_t>(add_slots.uniforms.size()), "mainFragment");
+        PinnedStage add_vertex =
+            load_pinned_stage(device, "billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+        PinnedStage add_fragment =
+            load_pinned_stage(device, "billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+        pass.add_vertex_slots = add_vertex.slots;
+        pass.add_fragment_slots = add_fragment.slots;
         SDL_GPUGraphicsPipelineCreateInfo add_info = info;
-        add_info.vertex_shader = add_vertex.get();
-        add_info.fragment_shader = add_fragment.get();
+        add_info.vertex_shader = add_vertex.shader.get();
+        add_info.fragment_shader = add_fragment.shader.get();
         add_info.target_info.color_target_descriptions = &add_target;
         pass.add_pipeline =
             OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &add_info), {device}};
@@ -275,43 +271,41 @@ inline void upload_billboard_pass(SDL_GPUDevice* device, const Scene& scene, Eng
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 
-/** Records the billboard draw into a pass the scene renderer already began. */
+/**
+ * Records the billboard draw into a pass the scene renderer already began.
+ *
+ * `scene_block` is the pass's scene block, which the pin binds at the
+ * program's group 0; each stage takes the blocks its own sidecar kept, at
+ * their slots, and a block the program declares that none of the three
+ * is refuses.
+ */
 inline void record_billboard_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
                                   Engine& engine, const BillboardPass& pass,
-                                  const std::array<float, 16>& view_projection,
-                                  const std::array<float, 16>& view) {
+                                  const upstream::SceneUniforms& scene_block) {
     const BillboardSystemRecord& system = handle_at(engine.billboard_systems, pass.system);
     if (!system.visible || system.count == 0) {
         return;
     }
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
 
-    BillboardSceneUniforms scene_uniforms{};
-    scene_uniforms.view_projection = view_projection;
-    scene_uniforms.view = view;
-    SDL_PushGPUVertexUniformData(command, 0, &scene_uniforms, sizeof(scene_uniforms));
-
-    // Each block at the slot its own stage kept it in, which a custom body
-    // decides by reading it or not. The axis-locked vertex stage reads the
-    // system block too, so it is built whenever either stage wants it.
-    const bool axis_locked = billboard_draw_plan(system).vertex_reads_system_block;
     std::array<float, upstream::billboard_system_ubo_bytes / 4> system_ubo{};
-    if (pass.system_block_slot >= 0 || axis_locked) {
-        upstream::build_billboard_system_ubo(system, system_ubo);
-    }
-    push_stage_uniform(command, pass.system_block_slot, system_ubo.data(),
-                       system_ubo.size() * sizeof(float));
-    if (pass.fx_block_slot >= 0) {
-        std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+    upstream::build_billboard_system_ubo(system, system_ubo);
+    std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
+    if (system.custom_shader) {
         upstream::build_sprite_fx_ubo(static_cast<float>(pass.elapsed_ms / 1000.0),
                                       system.shader_params, fx);
-        push_stage_uniform(command, pass.fx_block_slot, fx.data(), fx.size() * sizeof(float));
     }
-    if (axis_locked) {
-        // The same block, in the vertex stage that reads the lock axis.
-        SDL_PushGPUVertexUniformData(command, 1, system_ubo.data(),
-                                     static_cast<Uint32>(system_ubo.size() * sizeof(float)));
-    }
+    const auto blocks = [&](const std::string& name, std::size_t) -> PinnedStageBlock {
+        if (name == "scene")
+            return {&scene_block, sizeof(scene_block)};
+        if (name == "billboards")
+            return {system_ubo.data(), system_ubo.size() * sizeof(float)};
+        if (name == "fx" && system.custom_shader)
+            return {fx.data(), fx.size() * sizeof(float)};
+        return {};
+    };
+    push_stage_uniforms(command, pass.vertex_slots, false, "billboard vertex stage", blocks);
+    push_stage_uniforms(command, pass.fragment_slots, true, "billboard fragment stage", blocks);
 
     SDL_GPUBufferBinding instance_binding{};
     instance_binding.buffer = pass.instances;
@@ -340,14 +334,12 @@ inline void record_billboard_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPa
         // caller caching the bound pipeline stays correct.
         SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline.get());
         SDL_BindGPUFragmentSamplers(render_pass, 0, pass.textures.data(), 1);
-        // The stock fragment keeps the block at the same slot the Multiply
-        // one did for every pairing that can occur, so the push is normally
-        // redundant -- but the slot is read from each stage's own sidecar
-        // rather than assumed, so a stage that moved it still gets one.
-        if (pass.add_system_block_slot != pass.system_block_slot) {
-            push_stage_uniform(command, pass.add_system_block_slot, system_ubo.data(),
-                               system_ubo.size() * sizeof(float));
-        }
+        // The stock program's own stages, each at the slots its sidecar
+        // kept rather than the Multiply program's.
+        push_stage_uniforms(command, pass.add_vertex_slots, false,
+                            "billboard add-pass vertex stage", blocks);
+        push_stage_uniforms(command, pass.add_fragment_slots, true,
+                            "billboard add-pass fragment stage", blocks);
         SDL_DrawGPUIndexedPrimitives(render_pass,
                                      static_cast<Uint32>(upstream::billboard_index_data.size()),
                                      system.count, 0, 0, 0);

@@ -438,6 +438,15 @@ inline void push_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const vo
                                    static_cast<Uint32>(bytes));
 }
 
+/** The vertex-stage twin of `push_stage_uniform`. */
+inline void push_vertex_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const void* data,
+                                      std::size_t bytes) {
+    if (slot < 0)
+        return;
+    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), data,
+                                 static_cast<Uint32>(bytes));
+}
+
 /** A device for the offline compiler's DXIL, SPIR-V or MSL stages. Its SPIR-V
  *  is version 1.3, Tint's minimum, which a Vulkan 1.1 instance consumes; SDL's
  *  default instance requests 1.0. The other backends ignore the Vulkan options. */

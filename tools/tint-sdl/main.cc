@@ -682,9 +682,10 @@ std::string LayoutResource(const tint::sem::GlobalVariable* variable, const Bind
 }
 
 /// The bind-group layout of every binding a module declares, read or not, one
-/// `@binding <group> <binding> <resource>` line each in group and binding order. SDL_GPU binds by
-/// the compacted slots; WebGPU binds by the module's own group and binding numbers, so the Dawn
-/// PAL lays each group out from these lines. The resource is `uniform`, `storage
+/// `@binding <group> <binding> <name> <resource>` line each in group and binding order. SDL_GPU
+/// binds by the compacted slots; WebGPU binds by the module's own group and binding numbers, so
+/// the Dawn PAL lays each group out from these lines and serves each binding by the name the
+/// module declares it under. The resource is `uniform`, `storage
 /// read|read_write`, `sampler filtering|comparison`, `texture <sample type> <view dimension>
 /// single|multisampled`, or `storage-texture <access> <format> <view dimension>`; an f32 texture
 /// is `float` when the module samples it and `unfilterable-float` otherwise.
@@ -697,10 +698,10 @@ std::vector<std::string> LayoutLines(const tint::Program& program) {
             continue;
         }
         const BindingPoint point = *variable->Attributes().binding_point;
-        lines.emplace_back(
-            point, "@binding " + std::to_string(point.group) + " " + std::to_string(point.binding) +
-                       " " +
-                       LayoutResource(variable, point, declaration->name->symbol.Name(), sampled));
+        const std::string name = declaration->name->symbol.Name();
+        lines.emplace_back(point, "@binding " + std::to_string(point.group) + " " +
+                                      std::to_string(point.binding) + " " + name + " " +
+                                      LayoutResource(variable, point, name, sampled));
     }
     std::stable_sort(lines.begin(), lines.end(), [](const auto& left, const auto& right) {
         return std::make_pair(left.first.group, left.first.binding) <

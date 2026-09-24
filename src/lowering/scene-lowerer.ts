@@ -15,6 +15,70 @@ const fogName = "setFog";
 const clipPlaneModulePath = fogModulePath;
 const clipPlaneName = "setClipPlane";
 
+/**
+ * cloneTransformNode's recursive copy over an import that carries its node
+ * hierarchy: every node, the synthetic root included, is copied with its TRS
+ * and raw matrix, linked and listed in the source's order, and each wrapper
+ * copy hangs under its node's copy.
+ */
+function assetHierarchyCloneCpp(): string {
+    return `
+    const TransformNodeHandle source_root_node = source.root_node;
+    const std::vector<TransformNodeHandle> source_nodes = source.nodes;
+    if (source_root_node.value != invalid_handle) {
+        std::unordered_map<std::uint32_t, TransformNodeHandle> copies;
+        const auto copy_node = [&](const TransformNodeHandle& from) {
+            // A copy, not a reference: the factory may grow the node table.
+            const TransformNodeRecord original = ${recordAt("engine.transform_nodes", "from")};
+            TransformNodeHandle made = create_transform_node(
+                engine, original.name, original.position, original.rotation_quaternion,
+                original.scaling);
+            TransformNodeRecord& copy = ${recordAt("engine.transform_nodes", "made")};
+            copy.rotation = original.rotation;
+            copy.has_rotation_quaternion = original.has_rotation_quaternion;
+            copy.local_matrix = original.local_matrix;
+            copy.local_matrix_locked = original.local_matrix_locked;
+            copies.emplace(from.value, made);
+            return made;
+        };
+        const auto copied = [&](const TransformNodeHandle& from) {
+            const auto found = copies.find(from.value);
+            if (found == copies.end())
+                throw std::runtime_error("Imported node hierarchy left its asset.");
+            return found->second;
+        };
+        clone.root_node = copy_node(source_root_node);
+        clone.nodes.resize(source_nodes.size());
+        for (std::size_t index = 0; index < source_nodes.size(); ++index) {
+            if (source_nodes[index].value != invalid_handle)
+                clone.nodes[index] = copy_node(source_nodes[index]);
+        }
+        std::vector<TransformNodeHandle> originals{source_root_node};
+        for (const TransformNodeHandle& node : source_nodes) {
+            if (node.value != invalid_handle) originals.push_back(node);
+        }
+        for (const TransformNodeHandle& from : originals) {
+            const TransformNodeRecord original = ${recordAt("engine.transform_nodes", "from")};
+            const TransformNodeHandle made = copied(from);
+            if (original.parent.value != invalid_handle)
+                set_transform_node_parent(engine, made, copied(original.parent));
+            for (const TransformNodeChild& child : original.children) {
+                if (const auto* mesh = std::get_if<MeshHandle>(&child))
+                    push_transform_node_child(engine, made, cloned_handle(*mesh));
+                else
+                    push_transform_node_child(
+                        engine, made, copied(std::get<TransformNodeHandle>(child)));
+            }
+        }
+        for (const MeshHandle cloned_mesh : clone.meshes) {
+            const TransformNodeHandle node =
+                ${recordAt("engine.meshes", "cloned_mesh")}.transform_parent;
+            if (node.value != invalid_handle)
+                set_mesh_transform_parent(engine, cloned_mesh, copied(node));
+        }
+    }`;
+}
+
 /** The arms of the scene core a scene reaches, each gating an emitted unit. */
 interface SceneCoreOptions {
     fog?: boolean;
@@ -294,6 +358,12 @@ export class SceneLowerer {
             );
         }
         const cloneSuffix = cloneSuffixes[0]!;
+        // A scene that writes SceneNode transforms loads glTF assets with
+        // their node hierarchy, which the root edit, setParent and cloning
+        // then address.
+        const nodeHierarchy =
+            options.sceneNodeTransforms === true &&
+            options.transformNodes === true;
         for (const property of ["entities", "_gpu", "material", "lightType"]) {
             if (
                 !this.context.hasNode(
@@ -723,7 +793,7 @@ std::uint32_t scene_material_families(const Scene& scene) {
 } // namespace
 
 ${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix)}${this.assetRootSource()}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -840,12 +910,27 @@ TransformNodeHandle create_transform_node(
         slot, generation, js::make_gc_shared<TransformNodeLease>(engine, slot, generation)};
 }
 
+namespace {
+// scene-node.ts onWmDirty, which every TRS lane write runs: the write hands
+// a raw local matrix back to the TRS lanes -- unless the node is locked, as
+// a loaded glTF \`matrix\` node is until setParent releases it, when the
+// write changes nothing the node composes.
+void transform_node_trs_written(
+    Engine& engine,
+    TransformNodeHandle node) {
+    TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
+    if (record.local_matrix_locked) return;
+    record.local_matrix.reset();
+    mark_transform_node_dirty(engine, node);
+}
+} // namespace
+
 void set_transform_node_position(
     Engine& engine,
     TransformNodeHandle node,
     Vec3d position) {
     ${recordAt("engine.transform_nodes", "node")}.position = position;
-    mark_transform_node_dirty(engine, node);
+    transform_node_trs_written(engine, node);
 }
 
 void set_transform_node_scaling(
@@ -853,7 +938,7 @@ void set_transform_node_scaling(
     TransformNodeHandle node,
     Vec3 scaling) {
     ${recordAt("engine.transform_nodes", "node")}.scaling = scaling;
-    mark_transform_node_dirty(engine, node);
+    transform_node_trs_written(engine, node);
 }
 
 void set_transform_node_rotation(
@@ -867,7 +952,7 @@ void set_transform_node_rotation(
     // this flag is false; pinnedTrsComposition performs eulerXYZToQuatTuple from the
     // upstream function before the matrix write.
     record.has_rotation_quaternion = false;
-    mark_transform_node_dirty(engine, node);
+    transform_node_trs_written(engine, node);
 }
 
 void set_transform_node_rotation_quaternion(
@@ -877,7 +962,7 @@ void set_transform_node_rotation_quaternion(
     TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
     record.rotation_quaternion = rotation;
     record.has_rotation_quaternion = true;
-    mark_transform_node_dirty(engine, node);
+    transform_node_trs_written(engine, node);
 }
 
 // The parent SETTER is the pin's own _addChild trigger: it registers the
@@ -1093,6 +1178,120 @@ void enable_mirrored_meshes(Scene& scene) {
 }
 `
             : "";
+    }
+
+    /**
+     * set-parent.ts setParent over a transform-node child, the node's world
+     * preserved exactly: the child's local becomes inverse(parentWorld) *
+     * childWorld through applyLocal, which writes the decomposed TRS, keeps
+     * the exact affine local as the node's raw matrix and releases a
+     * loaded glTF \`matrix\` node's lock. A transform node hangs only under
+     * another transform node here, so the parent is one or none.
+     */
+    private transformNodeReparentSource(): string {
+        return `
+namespace {
+// set-parent.ts applyLocal.
+void apply_transform_node_local(
+    Engine& engine,
+    TransformNodeHandle node,
+    const std::array<float, 16>& local,
+    bool preserve_matrix) {
+    const PinnedParentDecomposed decomposed = pinned_parent_mat4_decompose(local);
+    TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
+    record.local_matrix.reset();
+    record.local_matrix_locked = false;
+    record.position = Vec3d{
+        decomposed.translation.x, decomposed.translation.y, decomposed.translation.z};
+    record.rotation_quaternion = Vec4{
+        static_cast<float>(decomposed.rotation.x),
+        static_cast<float>(decomposed.rotation.y),
+        static_cast<float>(decomposed.rotation.z),
+        static_cast<float>(decomposed.rotation.w)};
+    record.has_rotation_quaternion = true;
+    record.scaling = Vec3{
+        static_cast<float>(decomposed.scale.x),
+        static_cast<float>(decomposed.scale.y),
+        static_cast<float>(decomposed.scale.z)};
+    if (preserve_matrix) record.local_matrix = local;
+    mark_transform_node_dirty(engine, node);
+}
+
+bool is_transform_node_child(
+    const TransformNodeChild& candidate,
+    const TransformNodeHandle& child) {
+    const auto* node = std::get_if<TransformNodeHandle>(&candidate);
+    return node && *node == child;
+}
+} // namespace
+
+// ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
+void reparent_transform_node(
+    Engine& engine,
+    TransformNodeHandle child,
+    TransformNodeHandle parent) {
+    // 1. The child's world, before either parent link moves.
+    const std::array<float, 16> child_world =
+        upstream::transform_node_world(engine, child);
+    // 2. The link, and the traversal lists kept in step with it.
+    const TransformNodeHandle old_parent =
+        ${recordAt("engine.transform_nodes", "child")}.parent;
+    if (!(old_parent == parent)) {
+        if (old_parent.value < engine.transform_nodes.size()) {
+            auto& old_children = ${recordAt("engine.transform_nodes", "old_parent")}.children;
+            const auto found = std::find_if(
+                old_children.begin(), old_children.end(),
+                [&child](const TransformNodeChild& candidate) {
+                    return is_transform_node_child(candidate, child);
+                });
+            if (found != old_children.end()) old_children.erase(found);
+        }
+        if (parent.value < engine.transform_nodes.size()) {
+            auto& new_children = ${recordAt("engine.transform_nodes", "parent")}.children;
+            if (std::none_of(
+                    new_children.begin(), new_children.end(),
+                    [&child](const TransformNodeChild& candidate) {
+                        return is_transform_node_child(candidate, child);
+                    })) {
+                new_children.emplace_back(child);
+            }
+        }
+    }
+    // 3. No parent: the local is the old world.
+    if (parent.value >= engine.transform_nodes.size()) {
+        TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "child")};
+        if (record.parent.value < engine.transform_nodes.size()) {
+            auto& registered =
+                ${recordAt("engine.transform_nodes", "record.parent")}.parented_nodes;
+            registered.erase(
+                std::remove(registered.begin(), registered.end(), child),
+                registered.end());
+        }
+        record.parent = TransformNodeHandle{};
+        apply_transform_node_local(engine, child, child_world, true);
+        return;
+    }
+    set_transform_node_parent(engine, child, parent);
+    // 4. inverse(parentWorld) * childWorld, or, under a singular parent,
+    // the old world position over the TRS the node already had.
+    const std::optional<std::array<float, 16>> inverse_parent =
+        mat4_invert(upstream::transform_node_world(engine, parent));
+    if (!inverse_parent) {
+        const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "child")};
+        if (record.local_matrix) {
+            const std::array<float, 16> raw = *record.local_matrix;
+            apply_transform_node_local(engine, child, raw, false);
+        }
+        set_transform_node_position(
+            engine, child, Vec3d{child_world[12], child_world[13], child_world[14]});
+        return;
+    }
+    // 5. The exact affine local.
+    std::array<float, 16> local{};
+    mat4_multiply_into(local, 0, *inverse_parent, 0, child_world, 0);
+    apply_transform_node_local(engine, child, local, true);
+}
+`;
     }
 
     private parentingSource(
@@ -1395,17 +1594,36 @@ void set_mesh_parent(
     apply_preserved_parent_local(
         engine, child, child_world, parent_world);
 }
-
+${options.transformNodes ? this.transformNodeReparentSource() : ""}
 void set_asset_root_parent(
     Engine& engine,
     AssetHandle child,
     TransformNodeHandle parent) {
     if (child.value >= engine.assets.size()) {
         throw std::runtime_error("Invalid imported root handle.");
+    }${
+        options.transformNodes
+            ? `
+    AssetRecord& asset = ${recordAt("engine.assets", "child")};
+    if (asset.root_node.value != invalid_handle) {
+        // A node-carrying import: the synthetic root is the node setParent
+        // moves, and the root edit reads its TRS back.
+        reparent_transform_node(engine, asset.root_node, parent);
+        const TransformNodeRecord& root =
+            ${recordAt("engine.transform_nodes", "asset.root_node")};
+        asset.root_position = root.position;
+        asset.root_rotation_quaternion = Vec4d{
+            root.rotation_quaternion.x, root.rotation_quaternion.y,
+            root.rotation_quaternion.z, root.rotation_quaternion.w};
+        asset.root_scaling = Vec3d{root.scaling.x, root.scaling.y, root.scaling.z};
+        ++asset.root_quaternion_version;
+        return;
+    }`
+            : ""
     }
-    // The loader intentionally flattens imported hierarchy nodes. Reparent
-    // every rendered leaf as one operation; each leaf snapshots its own
-    // current world, so their relative arrangement is preserved exactly.
+    // The loader flattened the imported hierarchy nodes. Reparent every
+    // rendered leaf as one operation; each leaf snapshots its own current
+    // world, so their relative arrangement is preserved exactly.
     for (const MeshHandle mesh : ${recordAt("engine.assets", "child")}.meshes) {
         set_mesh_parent(engine, mesh, parent);
     }
@@ -1984,7 +2202,10 @@ namespace {
 `;
     }
 
-    private assetCloneSource(cloneSuffix: string): string {
+    private assetCloneSource(
+        cloneSuffix: string,
+        nodeHierarchy: boolean,
+    ): string {
         return `AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
     if (asset >= engine.assets.size()) {
         throw std::runtime_error("Invalid asset handle.");
@@ -1996,11 +2217,12 @@ namespace {
 
 /**
  * src/scene/transform-node.ts cloneTransformNode/cloneMeshNode over the
- * imported synthetic root. Native loading has flattened the hierarchy, so
- * the clone is a mesh-only AssetRecord: distinct mesh wrappers sharing the
- * source geometry/material state, without the container's animation groups,
- * tick, camera, lights or scene setup. The source runtime callback mirrors
- * the retained skeleton resource by registering each skinned wrapper against
+ * imported synthetic root. The clone is an AssetRecord of distinct mesh
+ * wrappers sharing the source geometry/material state -- and, for an import
+ * that carries its node hierarchy, copies of every node with each wrapper
+ * under its node's copy -- without the container's animation groups, tick,
+ * camera, lights or scene setup. The source runtime callback mirrors the
+ * retained skeleton resource by registering each skinned wrapper against
  * the same pose evaluator.
  */
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
@@ -2043,8 +2265,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
             clone_animation(source_mesh, cloned_mesh);
         }
     }
-    // A node-transform import links records of primitive-bearing nodes as
-    // mesh parents; the clone's hierarchy links its own copies.
+    // Mesh links among the source's records map to the clone's copies.
     const auto cloned_handle = [&](MeshHandle source_mesh) {
         const auto found = std::find(source_meshes.begin(), source_meshes.end(), source_mesh);
         return found == source_meshes.end()
@@ -2056,7 +2277,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
         record.parent = cloned_handle(record.parent);
         for (MeshHandle& child : record.children) child = cloned_handle(child);
         for (MeshHandle& child : record.parented_meshes) child = cloned_handle(child);
-    }
+    }${nodeHierarchy ? assetHierarchyCloneCpp() : ""}
     const AssetHandle cloned_asset{
         static_cast<std::uint32_t>(engine.assets.size())};
     engine.assets.push_back(std::move(clone));
@@ -2121,8 +2342,8 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
 `;
     }
 
-    private assetRootSource(): string {
-        return `${assetRootTransformSource(this.context)}
+    private assetRootSource(nodeHierarchy: boolean): string {
+        return `${assetRootTransformSource(this.context, nodeHierarchy)}
 void add_asset_meshes(Scene& scene, const AssetRecord& record) {
     if (record.source_mesh_walks && record.source_mesh_walks->scene) {
         for (const auto index : *record.source_mesh_walks->scene) {

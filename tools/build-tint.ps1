@@ -14,21 +14,46 @@ $workspacePath = Resolve-RepositoryPath $Workspace
 # sets) is Tint's alone, so tools/build-dawn.ps1's checkout beside it, and the
 # Dawn it builds, never carry it and neither builder resets the other's tree.
 $source = Join-Path $workspacePath "tint-source"
-$build = Join-Path $workspacePath "build-tint"
-$output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 $variants = @("tint")
+$series = @(Get-MaintainedPatches dawn $variants $CMake)
+
+# Every source a build reads, by repository-relative path and SHA-256: this
+# script, the pin, the wrapper and the series (src/tint-tool.ts reads the same
+# set from a checkout and uses only a tool recording exactly it). Each set
+# builds in its own workspace directories into its own output directory, both
+# named by its digest, so checkouts with other tool sources never overwrite
+# this one's build or tool, and one checkout's build serves every checkout
+# with the same sources.
+$sourceFiles = @(
+    (Join-Path $PSScriptRoot "build-tint.ps1"),
+    (Join-Path $root "upstream/tint.json")
+) + @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot "tint-sdl") -Recurse -File | ForEach-Object FullName) +
+    @($series | ForEach-Object Path)
+$digests = @{}
+foreach ($file in $sourceFiles) {
+    $relative = [IO.Path]::GetRelativePath($root, [IO.Path]::GetFullPath($file)).Replace('\', '/')
+    $digests[$relative] = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$names = [string[]]@($digests.Keys)
+[Array]::Sort($names, [StringComparer]::Ordinal)
+$sources = [ordered]@{}
+foreach ($name in $names) { $sources[$name] = $digests[$name] }
+$identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(
+    (@($names | ForEach-Object { "$($_):$($sources[$_])" }) -join "`n")))).Substring(0, 16).ToLowerInvariant()
+$build = Join-Path $workspacePath "build-tint-$identity"
+$output = Join-Path (Resolve-RepositoryPath $OutputDirectory) $identity
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
-$patches = @(Sync-PatchedCheckout $source $pin.repository $pin.commit "Tint" dawn $variants $CMake)
+Sync-PatchedCheckout $source $pin.repository $pin.commit "Tint" dawn $variants $CMake | Out-Null
 
 # tools/tint-sdl wraps the checkout: it builds the pinned `tint` command and
 # bblite-tint, the offline compiler's SDL_GPU writer driver. A configured build
 # records its source directory, so the wrapper is staged in the workspace, which
-# every worktree sharing it names alike: one checkout's build serves the next,
-# and only changed bytes are rewritten, so an unchanged wrapper rebuilds nothing.
-$wrapper = Join-Path $workspacePath "tint-sdl"
+# every worktree sharing it names alike; only changed bytes are rewritten, so a
+# finished build rebuilds nothing.
+$wrapper = Join-Path $workspacePath "tint-sdl-$identity"
 Copy-ArtifactItem (Join-Path $PSScriptRoot "tint-sdl") $wrapper
 $compilerArguments = Get-PosixCompilerArguments
 & $CMake -S $wrapper -B $build @compilerArguments `
@@ -92,12 +117,14 @@ function Find-BuiltExecutable([string]$Directory, [string]$Name) {
 $tint = Find-BuiltExecutable (Join-Path $build "dawn") "tint"
 $bbliteTint = Find-BuiltExecutable $build "bblite-tint"
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
-@{
+[ordered]@{
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
-    patches = @($patches | ForEach-Object { $_.Name })
+    identity = $identity
+    sources = $sources
+    patches = @($series | ForEach-Object { $_.Name })
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
-} | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
+} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $output "provenance.json")
 
 Write-Output "Built Tint $($pin.commit) at $tint and $bbliteTint."

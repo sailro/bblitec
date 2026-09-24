@@ -68,14 +68,14 @@ export interface BakedText {
 
 export interface CompiledTextData {
     /** Construction identity; identical payloads never merge source objects. */
-    id: number;
-    font: TextFontSource;
-    layout: StaticTextLayout;
-    provenance: TextProvenance;
-    data?: TransportedGraph;
-    repertoire?: { curveSetId: string; storage: TransportedGraph };
+    readonly id: number;
+    readonly font: TextFontSource;
+    readonly layout: StaticTextLayout;
+    readonly provenance: TextProvenance;
+    readonly data?: TransportedGraph;
+    readonly repertoire?: { curveSetId: string; storage: TransportedGraph };
     /** The transported buffers of `data` or `repertoire.storage`, packaged. */
-    buffers: TextBlob[];
+    readonly buffers: readonly TextBlob[];
 }
 
 export function textSha256(bytes: string | Uint8Array): string {

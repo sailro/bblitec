@@ -2821,6 +2821,100 @@ check(
 `,
 );
 
+check(
+    "record-and-tuple-members-hold-their-built-values",
+    `
+    let count = 0;
+    const holder = { value: 1 };
+    const record = { seen: count, field: holder.value, draw: Math.random() };
+    count = 5;
+    holder.value = 9;
+    if (record.seen !== 0) throw new Error("variable member " + record.seen);
+    if (record.field !== 1) throw new Error("property member " + record.field);
+    if (record.draw !== record.draw) throw new Error("draw member read twice");
+    function bump(): void { count += 1; }
+    const later = { seen: count };
+    bump();
+    if (later.seen !== 5) throw new Error("member across a call " + later.seen);
+    function inside(): void {
+        const snapshot = { seen: count };
+        count = 7;
+        if (snapshot.seen !== 6) throw new Error("function record " + snapshot.seen);
+    }
+    inside();
+    const nested = { inner: { seen: count } };
+    count = 8;
+    if (nested.inner.seen !== 7) throw new Error("nested member " + nested.inner.seen);
+    const list = [{ seen: count }];
+    count = 9;
+    if (list[0]!.seen !== 8) throw new Error("array element member " + list[0]!.seen);
+    const lanes = [count, Math.random()];
+    count = 10;
+    if (lanes[0] !== 9) throw new Error("tuple lane " + lanes[0]);
+    if (lanes[1] !== lanes[1]) throw new Error("tuple draw lane read twice");
+    let label = "a";
+    function tag(name: string): { name: string } { return { name }; }
+    const tagged = tag(label);
+    label = "b";
+    if (tagged.name !== "a") throw new Error("parameter member " + tagged.name);
+    function readAfterWrite(options: { seen: number }): number {
+        const first = options.seen;
+        count = 99;
+        return first + options.seen;
+    }
+    if (readAfterWrite({ seen: count }) !== 20) throw new Error("argument member read after the callee writes");
+    let title = "first";
+    const titled = { title };
+    const copied = title;
+    title = "second";
+    if (copied !== "first" || titled.title !== "first")
+        throw new Error("a record read does not make its source constant " + copied);
+`,
+);
+
+check(
+    "array-literal-receivers-take-mutating-methods",
+    `
+    const last = [7, 8].pop();
+    if (last !== 8) throw new Error("literal pop");
+    const first = [7, 8].shift();
+    if (first !== 7) throw new Error("literal shift");
+    const none = ([] as number[]).pop();
+    if (none !== undefined) throw new Error("empty literal pop");
+    let count = 1;
+    const drawn = [count, 5].pop()!;
+    if (drawn !== 5) throw new Error("asserted literal pop " + drawn);
+    count = 2;
+    const pushed = [1, 2].push(3);
+    if (pushed !== 3) throw new Error("literal push");
+    const removed = [1, 2, 3].splice(1, 1);
+    if (removed.length !== 1 || removed[0] !== 2) throw new Error("literal splice");
+    const reversed = [1, 2, 3].reverse();
+    if (reversed[0] !== 3) throw new Error("literal reverse");
+`,
+);
+
+test("engine calls that write their arguments keep operand order and object storage", async (t) => {
+    // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
+    // expected values follow their bodies (`v.x * (1 / len)`).
+    const result = compileSource(
+        `import { normalizeVec3ToRef, scaleVec3ToRef } from "@babylonjs/lite";
+        function show(a: number, b: number): string { return a + ":" + b; }
+        const v = { x: 3, y: 0, z: 4 };
+        const normalized = show(v.x, normalizeVec3ToRef(v, v).x);
+        if (normalized !== "3:" + 3 * (1 / 5)) throw new Error("engine argument write " + normalized);
+        const w = { x: 1, y: 2, z: 3 };
+        function grow(target: { x: number; y: number; z: number }): number {
+            scaleVec3ToRef(target, 2, target);
+            return target.z;
+        }
+        const grown = show(w.x, grow(w));
+        if (grown !== "1:6" || w.x !== 2) throw new Error("engine write through a function " + grown);`,
+        { fileName: "engine-argument-writes.ts" },
+    );
+    await executeGeneratedAssertions(t, "engine-argument-writes", result.cpp);
+});
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });

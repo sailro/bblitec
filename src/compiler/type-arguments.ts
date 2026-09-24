@@ -113,7 +113,10 @@ export function mentionsTypeParameter(
 
 /** Structural matching of a declared (parameterized) type against an instantiated one. */
 class TypeUnifier {
-    /** The (pattern, actual) pairs already matched, by type identity. */
+    /**
+     * The (pattern, actual) pairs already matched, by type identity.
+     * @unjournaled Scratch of one unification, discarded with it.
+     */
     private readonly visited = new Map<ts.Type, Set<ts.Type>>();
 
     public constructor(

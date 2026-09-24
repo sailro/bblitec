@@ -48,10 +48,10 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
         "using DawnSpriteLayer = FixtureRecord<DawnSpriteLayerResources>;",
         cppRecord(sdlBillboard, "struct BillboardResources {"),
         "using BillboardPass = BillboardResources;",
+        cppRecord(dawnBillboard, "struct DawnBillboardScene {"),
         cppRecord(dawnBillboard, "struct DawnBillboardResources {"),
         "using DawnBillboardPass = DawnBillboardResources;",
-        cppRecord(sdlBillboard, "struct BillboardSceneUniforms {"),
-        cppRecord(dawnBillboard, "struct DawnBillboardSceneUniforms {"),
+
         cppRecord(sdl, "struct SpriteAtlasGpuResources {"),
         "using SpriteAtlasGpu = FixtureRecord<SpriteAtlasGpuResources>;",
         cppRecord(dawn, "struct DawnSpriteAtlasBindingResources {"),
@@ -72,12 +72,15 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
             "inline BillboardDrawPlan billboard_draw_plan(",
             "inline bool billboard_needs_upload(",
             "inline void stamp_billboard_upload(",
+            "inline std::string sprite_program_stem(",
         ].map((signature) => cppFunction(shared, signature)),
+        cppRecord(dawn, "struct DawnSpriteProgram {"),
         cppFunction(
             read("pal_sdl_gpu_shared"),
             "inline std::vector<SDL_GPUTextureSamplerBinding>\nselect_sprite_fragment_textures(",
         ),
         ...[
+            "inline PinnedStageSlots read_sprite_layer_slots(",
             "inline SpriteLayerGpu build_sprite_layer_gpu(",
             "inline void release_sprite_layer_resources([[maybe_unused]]",
             "inline void rebuild_sprite_layer_pipeline(",
