@@ -1093,16 +1093,13 @@ function boundsValue(
 ): string {
     let literal = context.unwrapExpression(expression);
     if (ts.isIdentifier(literal)) {
-        const initializer = context.moduleScopeConstant(
-            context.sourceFile(BOUNDS),
-            literal.text,
-        );
-        if (!initializer)
+        const constant = context.constantOf(literal);
+        if (!constant)
             context.contractError(
                 literal,
                 "Expected a pinned bounds constant.",
             );
-        literal = context.unwrapExpression(initializer);
+        literal = context.unwrapExpression(constant.initializer);
     }
     if (
         !ts.isObjectLiteralExpression(literal) ||

@@ -42,7 +42,7 @@ import {
     type RenderedCpp,
 } from "./pinned-numeric-expression.js";
 import { cppCondition } from "../cpp-expressions.js";
-import { moduleScopeConstant, unwrapExpression } from "./context.js";
+import { constantOf, unwrapExpression } from "./context.js";
 import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
@@ -428,6 +428,12 @@ export interface PinnedNumericScope {
     /** Native option specialization may make a pinned fallback local dead. */
     maybeUnusedConst?: boolean;
     /**
+     * What every local the body declares is spelled with, for a body lowered
+     * as a member of a native class, where a local named like a member
+     * would hide it.
+     */
+    localPrefix?: string;
+    /**
      * How a `for (const x of xs)` spells its range, and what `x` binds to.
      *
      * The translator has no types, so it cannot know what a pinned
@@ -524,9 +530,9 @@ export class PinnedNumericLowerer {
         this.callerBindings = new Set(scope.bindings.keys());
     }
 
-    /** Module-scope constants resolved so far, undefined while resolving. */
+    /** Module-scope constants resolved so far, by initializer; undefined while resolving. */
     private readonly moduleConstants = new Map<
-        string,
+        ts.Expression,
         PinnedBinding | undefined
     >();
 
@@ -546,7 +552,7 @@ export class PinnedNumericLowerer {
     /** How many helper bodies are being written out right now. */
     private inlining = 0;
 
-    private localName(name: string): string {
+    protected localName(name: string): string {
         // Caller aliases can name locals declared later (options.offset ->
         // defaultOffset); reserve declarations, not those substitutions.
         const occupied = new Set([
@@ -559,7 +565,7 @@ export class PinnedNumericLowerer {
                 )
                 .map(([, binding]) => binding.cpp),
         ]);
-        const base = cppIdentifier(name);
+        const base = `${this.scope.localPrefix ?? ""}${cppIdentifier(name)}`;
         let cpp = base;
         for (let suffix = 1; occupied.has(cpp); suffix++)
             cpp = `${base}_${suffix}`;
@@ -955,7 +961,13 @@ export class PinnedNumericLowerer {
 
     /** Whether control never continues past `statement`. */
     private terminates(statement: ts.Statement): boolean {
-        if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) {
+        if (
+            ts.isReturnStatement(statement) ||
+            ts.isThrowStatement(statement) ||
+            ((ts.isContinueStatement(statement) ||
+                ts.isBreakStatement(statement)) &&
+                !statement.label)
+        ) {
             return true;
         }
         if (ts.isBlock(statement)) {
@@ -2233,8 +2245,18 @@ export class PinnedNumericLowerer {
             : undefined;
     }
 
+    /**
+     * A store target a subclass owns the representation of, or undefined
+     * for the targets this translator resolves itself.
+     */
+    protected assignmentDomain(_target: ts.Expression): string | undefined {
+        return undefined;
+    }
+
     private assignmentTarget(expression: ts.Expression): string {
         const unwrapped = unwrapExpression(expression);
+        const adapted = this.assignmentDomain(unwrapped);
+        if (adapted !== undefined) return adapted;
         if (ts.isIdentifier(unwrapped)) {
             const binding = this.scope.bindings.get(unwrapped.text);
             if (!binding) this.fail(unwrapped, "assignment target");
@@ -2322,14 +2344,18 @@ export class PinnedNumericLowerer {
      * stays the pin's; one this translator cannot lower fails by the name
      * that reads it, naming the constant rather than the reader.
      */
-    private moduleConstant(name: string): PinnedBinding | undefined {
-        const cached = this.moduleConstants.get(name);
-        if (cached !== undefined) return cached;
-        const initializer = moduleScopeConstant(this.file, name);
+    private moduleConstant(
+        identifier: ts.Identifier,
+    ): PinnedBinding | undefined {
+        const initializer = constantOf(identifier, {
+            sameFile: true,
+        })?.initializer;
         if (!initializer) return undefined;
+        const cached = this.moduleConstants.get(initializer);
+        if (cached !== undefined) return cached;
         // A binding under its own name first, so a constant that names
         // itself recurses no further than one step and fails there.
-        this.moduleConstants.set(name, undefined);
+        this.moduleConstants.set(initializer, undefined);
         // A literal constant is also a value generation knows, which is
         // what lets a serialized enumerator compare against it at
         // generation (`lockMode === LOCK_PER_PARTICLE`).
@@ -2341,7 +2367,7 @@ export class PinnedNumericLowerer {
                 ? { staticNumber: Number(literal.text) }
                 : {}),
         };
-        this.moduleConstants.set(name, binding);
+        this.moduleConstants.set(initializer, binding);
         return binding;
     }
 
@@ -2391,8 +2417,7 @@ export class PinnedNumericLowerer {
                 return "std::numeric_limits<double>::infinity()";
             }
             const binding =
-                this.scope.bindings.get(node.text) ??
-                this.moduleConstant(node.text);
+                this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
             // A view is a pointer; naming it bare would be an address.
             return binding.cpp;
@@ -2716,8 +2741,7 @@ export class PinnedNumericLowerer {
         }
         if (!ts.isIdentifier(node)) return undefined;
         const bound =
-            this.scope.bindings.get(node.text) ??
-            this.moduleConstant(node.text);
+            this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
         return bound?.staticNumber;
     }
 

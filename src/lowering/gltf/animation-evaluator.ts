@@ -74,10 +74,7 @@ export function lowerGltfAnimationEvaluator(
             for (const name of ["INTERP_STEP", "INTERP_CUBICSPLINE"])
                 bindings.set(name, {
                     cpp: context.doubleLiteral(
-                        context.numericValue(
-                            ts.factory.createIdentifier(name),
-                            types,
-                        ),
+                        context.pinnedNumber(types, name),
                     ),
                     type: "scalar",
                 });

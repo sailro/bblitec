@@ -66,7 +66,7 @@ export function pinnedDefaultValue(
     // any other member read, or a name no pinned `const` declares, is a value.
     const readsValue = ts.isPropertyAccessExpression(node)
         ? context.propertyPath(node)?.[0] !== "Math"
-        : ts.isIdentifier(node) && !context.pinnedConstant(file, node.text);
+        : ts.isIdentifier(node) && !context.constantOf(node);
     return readsValue ? undefined : context.numericValue(node, file);
 }
 

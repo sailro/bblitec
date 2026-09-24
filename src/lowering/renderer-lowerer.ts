@@ -801,10 +801,7 @@ export class RendererLowerer {
                 "Expected the pinned sort to name its comparator.",
             );
         }
-        const { declaration } = this.context.functionDeclaration(
-            renderTaskModule,
-            comparator.text,
-        );
+        const { declaration } = this.context.functionOf(comparator);
         const statement = declaration.body?.statements[0];
         if (
             declaration.body?.statements.length !== 1 ||

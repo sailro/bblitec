@@ -17,6 +17,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 // Real pinned function bodies with only device resources and pipeline resolution
 // replaced by recorders. No fixture reimplementation of resource state decisions.
@@ -610,27 +611,6 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         () => statementProbe("unknownOperation(1);"),
         /Unsupported pinned call 'unknownOperation'/,
     );
-    class ChangedContext extends LoweringContext {
-        private changed: ts.SourceFile | undefined;
-        constructor(
-            private readonly path: string,
-            private readonly before: string,
-            private readonly after: string,
-        ) {
-            super();
-        }
-        override sourceFile(path: string): ts.SourceFile {
-            const source = super.sourceFile(path);
-            if (path !== this.path) return source;
-            assert.ok(source.text.includes(this.before), this.before);
-            return (this.changed ??= ts.createSourceFile(
-                path,
-                source.text.replace(this.before, this.after),
-                ts.ScriptTarget.Latest,
-                true,
-            ));
-        }
-    }
     const module = "src/text/text-renderable.ts";
     for (const [path, before, after, reason] of [
         [
@@ -667,14 +647,14 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         assert.throws(
             () =>
                 new TextGpuLowerer(
-                    new ChangedContext(path, before, after),
+                    doctoredContext(path, before, after),
                 ).header(),
             reason,
         );
     assert.throws(
         () =>
             new TextLowerer(
-                new ChangedContext(
+                doctoredContext(
                     "src/render/alpha-to-coverage.ts",
                     "_enabledTargets.add(target)",
                     "_enabledTargets.delete(target)",
@@ -683,7 +663,7 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         /enabled membership/,
     );
     const changed = new TextGpuLowerer(
-        new ChangedContext(module, "cap *= 2;", "cap *= 3;"),
+        doctoredContext(module, "cap *= 2;", "cap *= 3;"),
     ).header();
     assert.match(
         changed,

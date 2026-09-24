@@ -9,6 +9,12 @@ import {
     UpstreamSourceStore,
 } from "../upstream-source.js";
 import {
+    moduleScopeVariable,
+    pinnedNamesOf,
+    registerPinnedSource,
+    type PinnedProgram,
+} from "../pinned-program.js";
+import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
@@ -263,26 +269,73 @@ export function nullishDefault(
     return { left: node.left, right: node.right };
 }
 
+/** A pinned constant's initializer, with the module declaring it. */
+export interface PinnedConstant {
+    initializer: ts.Expression;
+    file: ts.SourceFile;
+}
+
 /** How `numericValue` reaches past the expression it is handed. */
 export interface NumericValueOptions {
     /**
-     * A name's constant initializer. The default reads the file's own
-     * module-scope `const`s; a caller with a store follows imports too.
+     * The constant an identifier names. The default reads a module-scope
+     * `const` its own file declares; a caller with a store follows imports
+     * too.
      */
-    constant?: (
-        name: string,
-        file: ts.SourceFile,
-    ) => { initializer: ts.Expression; file: ts.SourceFile } | undefined;
+    constant?: (identifier: ts.Identifier) => PinnedConstant | undefined;
     /** The refusal, in the caller's own voice. */
     refuse?: (node: ts.Node, file: ts.SourceFile) => never;
 }
 
+/**
+ * The declaration an identifier in pinned source names, resolved by the
+ * checker of the program that parsed its file rather than by its spelling:
+ * a local that shadows a module constant is the local, and an import is
+ * followed through its rename and re-exports.
+ */
+export function declarationOf(
+    identifier: ts.Identifier,
+): ts.Declaration | undefined {
+    const file = ts.getOriginalNode(identifier).getSourceFile() as
+        ts.SourceFile | undefined;
+    if (!file) {
+        throw new Error(
+            `The synthesized name '${identifier.text}' has no declaration; ` +
+                "a constant named by a string reads through pinnedNumber.",
+        );
+    }
+    return pinnedNamesOf(file).declarationOf(identifier);
+}
+
+/**
+ * The module-scope constant a pinned identifier names: a `const` (or, with
+ * `frozen`, a `let`) declared at a module's top level with an initializer.
+ * `sameFile` keeps the reader to the identifier's own module.
+ */
+export function constantOf(
+    identifier: ts.Identifier,
+    options: { frozen?: boolean; sameFile?: boolean } = {},
+): PinnedConstant | undefined {
+    const declaration = moduleScopeVariable(declarationOf(identifier));
+    if (!declaration?.initializer) return undefined;
+    const admitted = options.frozen
+        ? ts.NodeFlags.Const | ts.NodeFlags.Let
+        : ts.NodeFlags.Const;
+    if ((declaration.parent.flags & admitted) === 0) return undefined;
+    const file = declaration.getSourceFile();
+    if (
+        options.sameFile &&
+        file !== ts.getOriginalNode(identifier).getSourceFile()
+    ) {
+        return undefined;
+    }
+    return { initializer: declaration.initializer, file };
+}
+
 function sameFileConstant(
-    name: string,
-    file: ts.SourceFile,
-): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
-    const initializer = moduleScopeConstant(file, name);
-    return initializer ? { initializer, file } : undefined;
+    identifier: ts.Identifier,
+): PinnedConstant | undefined {
+    return constantOf(identifier, { sameFile: true });
 }
 
 /**
@@ -327,10 +380,7 @@ export function numericValue(
         if (folded !== undefined) return folded;
     }
     if (ts.isIdentifier(unwrapped)) {
-        const bound = (options.constant ?? sameFileConstant)(
-            unwrapped.text,
-            file,
-        );
+        const bound = (options.constant ?? sameFileConstant)(unwrapped);
         if (bound) return numericValue(bound.initializer, bound.file, options);
     }
     if (options.refuse) return options.refuse(unwrapped, file);
@@ -341,7 +391,69 @@ export function numericValue(
 }
 
 export class LoweringContext {
-    public constructor(public readonly store = new UpstreamSourceStore()) {}
+    public constructor(
+        public readonly store: UpstreamSourceStore = sharedUpstreamStore(),
+    ) {}
+
+    /** The typed program over the store's sources: symbols and types of pinned nodes. */
+    public get program(): PinnedProgram {
+        return this.store.program;
+    }
+
+    /** `declarationOf`: what a pinned identifier names, by the checker. */
+    public declarationOf(
+        identifier: ts.Identifier,
+    ): ts.Declaration | undefined {
+        return declarationOf(identifier);
+    }
+
+    /** `constantOf`: the module-scope constant a pinned identifier names, wherever declared. */
+    public constantOf(
+        identifier: ts.Identifier,
+        options: { frozen?: boolean } = {},
+    ): PinnedConstant | undefined {
+        return constantOf(identifier, options);
+    }
+
+    /** The initializer of the variable a pinned identifier names, wherever declared. */
+    public initializerOf(identifier: ts.Identifier): ts.Expression {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a variable with an initializer.`,
+            );
+        }
+        return declaration.initializer;
+    }
+
+    /** The function with a body a pinned identifier names, wherever declared. */
+    public functionOf(identifier: ts.Identifier): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration & { body: ts.Block };
+    } {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !declaration.body
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a function with a body.`,
+            );
+        }
+        return {
+            file: declaration.getSourceFile(),
+            declaration: declaration as ts.FunctionDeclaration & {
+                body: ts.Block;
+            },
+        };
+    }
 
     public provenance(
         modulePath: string,
@@ -354,8 +466,15 @@ export class LoweringContext {
         return `${base}${extra ? ` and ${extra}` : ""}.`;
     }
 
+    /**
+     * A pinned module as this context's store serves it, owned by that
+     * store's typed program: a store that serves an edited module resolves
+     * that module's names through its own program.
+     */
     public sourceFile(modulePath: string): ts.SourceFile {
-        return this.store.getSourceFile(modulePath);
+        const file = this.store.getSourceFile(modulePath);
+        registerPinnedSource(file, () => this.store.program);
+        return file;
     }
 
     public contractError(node: ts.Node, message: string): never {
@@ -1211,13 +1330,13 @@ export class LoweringContext {
         file: ts.SourceFile,
     ): number {
         return numericValue(expression, file, {
-            constant: (name, at) => this.pinnedConstant(at, name),
+            constant: (identifier) => constantOf(identifier),
         });
     }
 
     /**
      * The module-scope `const` a pinned module declares under a name, or the
-     * one it imports that name from.
+     * one it imports under that name.
      *
      * The pin names a value the moment a second module needs it — the HDR
      * loader's LOD generation scale became `HDR_LOD_GENERATION_SCALE` in the
@@ -1226,35 +1345,51 @@ export class LoweringContext {
      * the value the pin's; refusing the name instead would have to be
      * answered by restating the number here, which is the copy that drifts.
      *
-     * An aliased import resolves to nothing rather than to a guess.
+     * The name is the one the module's own scope binds; an import is
+     * followed by the typed program, through a rename and re-exports.
      * `frozen` is `moduleScopeConstant`'s.
      */
     public pinnedConstant(
         module: ts.SourceFile | string,
         name: string,
         options: { frozen?: boolean } = {},
-    ): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
+    ): PinnedConstant | undefined {
         const file =
             typeof module === "string" ? this.sourceFile(module) : module;
         const local = moduleScopeConstant(file, name, options);
         if (local) return { initializer: local, file };
-        const declaringPath = this.moduleOfImport(file.fileName, name);
-        if (!declaringPath) return undefined;
-        const declaring = this.sourceFile(declaringPath);
-        const initializer = moduleScopeConstant(declaring, name, options);
-        return initializer ? { initializer, file: declaring } : undefined;
+        const imported = this.importedName(file, name);
+        return imported ? constantOf(imported, options) : undefined;
+    }
+
+    /** The binding a module's named import introduces under `localName`. */
+    private importedName(
+        file: ts.SourceFile,
+        localName: string,
+    ): ts.Identifier | undefined {
+        for (const statement of file.statements) {
+            const bindings = ts.isImportDeclaration(statement)
+                ? statement.importClause?.namedBindings
+                : undefined;
+            if (!bindings || !ts.isNamedImports(bindings)) continue;
+            const element = bindings.elements.find(
+                (candidate) => candidate.name.text === localName,
+            );
+            if (element) return element.name;
+        }
+        return undefined;
     }
 
     /** `pinnedConstant`, refusing when the module names no such constant. */
     private requiredConstant(
-        modulePath: string,
+        module: ts.SourceFile | string,
         name: string,
         options: { frozen?: boolean },
-    ): { initializer: ts.Expression; file: ts.SourceFile } {
-        const constant = this.pinnedConstant(modulePath, name, options);
+    ): PinnedConstant {
+        const constant = this.pinnedConstant(module, name, options);
         if (!constant) {
             this.contractError(
-                this.sourceFile(modulePath),
+                typeof module === "string" ? this.sourceFile(module) : module,
                 `Expected module-scope const '${name}'.`,
             );
         }
@@ -1263,12 +1398,12 @@ export class LoweringContext {
 
     /** The number a pinned module-scope `const` states, folded. */
     public pinnedNumber(
-        modulePath: string,
+        module: ts.SourceFile | string,
         name: string,
         options: { frozen?: boolean } = {},
     ): number {
         const { initializer, file } = this.requiredConstant(
-            modulePath,
+            module,
             name,
             options,
         );

@@ -530,8 +530,23 @@ ${body}\n}`;
                     {offset:cpuData.byteOffset,bytesPerRow:BYTES_PER_ROW,rowsPerImage:rows},{width:TEX_WIDTH,height:rows,depthOrArrayLayers:1})`,
                     "Text atlas row upload",
                 );
+                // The asserted shape's own layout and extent literals name
+                // the row pitch and width constants.
+                const [, , layout, extent] = statement.expression.arguments;
+                const member = (
+                    literal: ts.Expression | undefined,
+                    name: string,
+                ): string =>
+                    literal && ts.isObjectLiteralExpression(literal)
+                        ? lowerer.expression(
+                              this.context.propertyInitializer(literal, name),
+                          )
+                        : this.context.contractError(
+                              statement,
+                              `Text atlas upload requires its '${name}' literal.`,
+                          );
                 return [
-                    `${indent}ops.write_atlas_texture(gpu, kind, bytes, text_resource_size(${lowerer.expression(ts.factory.createIdentifier("BYTES_PER_ROW"))}), text_resource_size(${lowerer.expression(ts.factory.createIdentifier("TEX_WIDTH"))}), text_resource_size(rows));`,
+                    `${indent}ops.write_atlas_texture(gpu, kind, bytes, text_resource_size(${member(layout, "bytesPerRow")}), text_resource_size(${member(extent, "width")}), text_resource_size(rows));`,
                 ];
             },
         );

@@ -1491,8 +1491,8 @@ function pluginShaderTextContext(
         functionDeclaration: (_modulePath, symbolName) =>
             refuse(file, `calls '${symbolName}'`),
         propertyPath: () => undefined,
-        moduleOfImport: () => undefined,
-        moduleScopeConstant: () => undefined,
+        declarationOf: (identifier) =>
+            refuse(identifier, `reads '${identifier.text}'`),
         unwrapExpression: (expression) => context.unwrap(expression),
     };
 }

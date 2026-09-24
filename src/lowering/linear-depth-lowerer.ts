@@ -142,9 +142,10 @@ export class LinearDepthLowerer {
                     "constant.",
             );
         }
+        const initializer = this.context.initializerOf(reference);
         return this.context.stringValue(
-            this.context.variableInitializer(this.file, reference.text),
-            this.file,
+            initializer,
+            initializer.getSourceFile(),
         );
     }
 

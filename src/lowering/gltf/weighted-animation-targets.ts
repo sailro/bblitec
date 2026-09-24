@@ -13,10 +13,7 @@ export function lowerGltfWeightedAnimationTargets(
         ["GLTF_NODES", 1],
         ["GLTF_SKELETONS", 2],
     ] as const)
-        if (
-            context.numericValue(ts.factory.createIdentifier(name), file) !==
-            expected
-        )
+        if (context.pinnedNumber(file, name) !== expected)
             context.contractError(
                 file,
                 "Weighted target tuple identity changed.",
@@ -41,10 +38,7 @@ export function lowerGltfWeightedAnimationTargets(
             "TRS_STRIDE",
             {
                 cpp: context.doubleLiteral(
-                    context.numericValue(
-                        ts.factory.createIdentifier("TRS_STRIDE"),
-                        file,
-                    ),
+                    context.pinnedNumber(file, "TRS_STRIDE"),
                 ),
                 type: "scalar",
             },

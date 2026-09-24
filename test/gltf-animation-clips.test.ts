@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import type { JsonObject } from "../src/gltf-document.js";
 import {
@@ -177,7 +176,7 @@ test("packaged clips retain source filtering, order, unused-sampler duration and
         assert.equal(first.duration, row.duration);
         const types = row.context.sourceFile("src/animation/types.ts");
         const constant = (name: string) =>
-            row.context.numericValue(ts.factory.createIdentifier(name), types);
+            row.context.pinnedNumber(types, name);
         assert.deepEqual(first.channels, [
             { samplerIdx: 0, nodeIdx: 0, path: constant("PATH_TRANSLATION") },
         ]);

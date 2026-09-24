@@ -24,9 +24,6 @@ interface PinnedBlendRow {
     premultipliedOpacity: boolean;
 }
 
-/** The blend states the two families share, by the pin's own module. */
-const sharedStateModule = "src/sprite/blend-descriptors.ts";
-
 /**
  * Reads a pinned blend module as the pure data it is.
  *
@@ -116,10 +113,7 @@ function blendState(
     if (ts.isIdentifier(unwrapped)) {
         return objectLiteral(
             context,
-            context.variableInitializer(
-                context.sourceFile(sharedStateModule),
-                unwrapped.text,
-            ),
+            context.initializerOf(unwrapped),
             `shared blend state '${unwrapped.text}'`,
         );
     }
