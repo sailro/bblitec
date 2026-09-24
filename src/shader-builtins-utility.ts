@@ -1,19 +1,16 @@
 /**
- * Utility WGSL. The image-processing function, its per-sample MSAA loop, and
- * the fog falloff are lifted from the pinned package's own string literals —
- * the same discipline as the background fragments. The blit stages, the
- * depth-only fragment, and the diagnostic id/cluster fragments are
- * project-owned tooling with no pinned counterpart and stay written here.
+ * Utility WGSL. The fog falloff is lifted from the pinned package's own
+ * string literal -- the same discipline as the background fragments. The
+ * blit stages, the depth-only fragment, and the diagnostic id/cluster
+ * fragments are project-owned tooling with no pinned counterpart and stay
+ * written here; the pin's own utility passes are deployed whole by
+ * `pinned-utility-passes.ts`.
  */
 import {
     extractPackagedTemplateLiteral,
-    extractWgslFunction,
     readPinnedLibraryModule,
     splitWgslStatements,
 } from "./pinned-shader-composer.js";
-import { packagedWgsl } from "./pinned-wgsl-build.js";
-import ts from "typescript";
-import { reflectWgslModule, wgslEntryPoints } from "./shader-ir.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -117,206 +114,6 @@ function rehome(
     return rehomeText(source, replacements, (from) =>
         utilityLiftError(`${what} ('${from}' is gone)`),
     );
-}
-
-interface PinnedImageProcessing {
-    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
-    uniformStruct: string;
-    /** The pin's uniform declaration, re-addressed to fragment space 3. */
-    uniformBinding: string;
-    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
-    ip: string;
-    /** The pin's per-sample fragment body, re-homed onto our bindings. */
-    multisampledBody: string;
-}
-
-/**
- * Lifts `frame-graph/image-processing-task.ts`'s shader text out of the
- * packaged module. `common` and the two fragments are function-local template
- * literals there, so they are read from the module text; `ip()` and the
- * parameter block are then the pin's own bytes. The PAL pushes the same 16
- * bytes upstream writes (`[exposure, contrast, toneMappingEnabled, 0]`), so
- * the pin's scalar struct lays out identically to the vec4 it replaces.
- */
-/** The pin's image-processing module, read once for both backends' lifts. */
-export interface PinnedImageProcessingSource {
-    /** The packaged module text, for the per-arm fragments beside `common`. */
-    module: string;
-    /** The shared `common` template: the parameter block, its binding, `ip()`. */
-    common: string;
-    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
-    uniformStruct: string;
-    /** The pin's group-0 declaration of that block, as packaged. */
-    binding: string;
-    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
-    ip: string;
-}
-
-export function pinnedImageProcessingSource(): PinnedImageProcessingSource {
-    const module = readPinnedLibraryModule(
-        "frame-graph/image-processing-task.js",
-    );
-    const common = extractPackagedTemplateLiteral(module, "common");
-    const uniformStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
-    if (!common.includes(uniformStruct)) {
-        utilityLiftError("image-processing parameter block");
-    }
-    const binding = packagedWgsl`@group(0)@binding(0)var<uniform> p:P;`;
-    if (!common.includes(binding)) {
-        utilityLiftError("image-processing parameter binding");
-    }
-    const ip = extractWgslFunction(common, "ip");
-    if (!ip.includes("1.590579")) {
-        utilityLiftError("image-processing tone-mapping calibration");
-    }
-    return { module, common, uniformStruct, binding, ip };
-}
-
-/**
- * The pin's two image-processing fragment arms, as its task writes them:
- * `const fragment = multisampled ? \`...\` : \`...\`` inside the task
- * factory. Read off the packaged module's syntax tree, so the arm each
- * backend deploys is chosen by the pin's own `multisampled` condition.
- */
-export function pinnedImageProcessingFragments(module: string): {
-    multisampled: string;
-    single: string;
-} {
-    const file = ts.createSourceFile(
-        "image-processing-task.js",
-        module,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.JS,
-    );
-    const arms: Array<{ multisampled: string; single: string }> = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === "fragment" &&
-            node.initializer &&
-            ts.isConditionalExpression(node.initializer) &&
-            ts.isIdentifier(node.initializer.condition) &&
-            node.initializer.condition.text === "multisampled" &&
-            ts.isNoSubstitutionTemplateLiteral(node.initializer.whenTrue) &&
-            ts.isNoSubstitutionTemplateLiteral(node.initializer.whenFalse)
-        ) {
-            const raw = (literal: ts.NoSubstitutionTemplateLiteral): string =>
-                literal.getText(file).slice(1, -1);
-            arms.push({
-                multisampled: raw(node.initializer.whenTrue),
-                single: raw(node.initializer.whenFalse),
-            });
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    if (arms.length !== 1) {
-        utilityLiftError(
-            "image-processing fragment arms (`const fragment = multisampled ? ... : ...`)",
-        );
-    }
-    return arms[0]!;
-}
-
-function pinnedImageProcessing(): PinnedImageProcessing {
-    const { module, uniformStruct, ip } = pinnedImageProcessingSource();
-    const multisampled = pinnedImageProcessingFragments(module).multisampled;
-    const entry = wgslEntryPoints(
-        reflectWgslModule(multisampled),
-        "fragment",
-    ).find(({ name }) => name === "fs");
-    if (!entry) {
-        utilityLiftError("image-processing multisampled entry point");
-    }
-    const multisampledBody = rehome(
-        multisampled.slice(entry.body.start, entry.body.end),
-        [
-            // The pin binds its source as `s` and reads its own position
-            // builtin `q`; natively the texture arrives through the storage
-            // slot declared below and the position through the shared blit
-            // varying block.
-            ["textureDimensions(s)", "textureDimensions(sourceTexture)"],
-            ["textureNumSamples(s)", "textureNumSamples(sourceTexture)"],
-            ["textureLoad(s,", "textureLoad(sourceTexture,"],
-            ["q.xy", "input.position.xy"],
-        ],
-        "image-processing multisampled fragment",
-    );
-    return {
-        uniformStruct,
-        uniformBinding: "@group(3)@binding(0)var<uniform> p:P;",
-        ip,
-        multisampledBody,
-    };
-}
-
-/** The blit varying block both image-processing entry points consume. */
-function imageProcessingFragmentInput(): string {
-    return `struct FragmentInput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};`;
-}
-
-/**
- * The single-sample image-processing pass. The pin's non-multisampled
- * fragment `textureLoad`s an unfilterable source; SDL_GPU presents the
- * resolved frame through a texture-sampler pair instead, so the wrapper
- * samples the blit uv — which lands on exact texel centres — and everything
- * inside `ip()` is the pin's bytes.
- */
-export function imageProcessingFragmentWgsl(): string {
-    const pinned = pinnedImageProcessing();
-    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(2) @binding(1) var sourceSampler: sampler;
-
-${pinned.uniformStruct}
-${pinned.uniformBinding}
-
-${imageProcessingFragmentInput()}
-
-${pinned.ip}
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    return ip(textureSampleLevel(
-        sourceTexture,
-        sourceSampler,
-        input.uv,
-        0.0,
-    ));
-}
-`;
-}
-
-/**
- * The pinned `image-processing-task.ts` shape: `ip()` per MSAA sample,
- * averaged after the loop rather than before it. Because tone mapping and
- * gamma are concave, processing the resolved pixel once is brighter than
- * this exactly on raster edges. The loop body is the pin's own text.
- *
- * The source is bound as a fragment *storage* texture, not a sampler pair:
- * a `Texture2DMS` is `Load()`-ed and has no sampler, so SDL_GPU takes it
- * through `SDL_BindGPUFragmentStorageTextures`.
- */
-export function imageProcessingMultisampledFragmentWgsl(): string {
-    const pinned = pinnedImageProcessing();
-    return `@group(2) @binding(0) var sourceTexture: texture_multisampled_2d<f32>;
-
-${pinned.uniformStruct}
-${pinned.uniformBinding}
-
-${imageProcessingFragmentInput()}
-
-${pinned.ip}
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-${formatStatements(pinned.multisampledBody)}
-}
-`;
 }
 
 export function depthOnlyFragmentWgsl(): string {

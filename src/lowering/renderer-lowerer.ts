@@ -40,8 +40,6 @@ import {
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
     fogFactorWgsl,
-    imageProcessingFragmentWgsl,
-    imageProcessingMultisampledFragmentWgsl,
 } from "../shader-builtins-utility.js";
 import {
     backgroundDdsSkyboxVertexWgsl,
@@ -3117,22 +3115,6 @@ ${pinnedFogInfosPacking()}    };
                     data:
                         `// ${imageSkyboxProvenance}\n` +
                         emitWgslModule(lifted.fragment, fogFactorWgsl()),
-                },
-            );
-        }
-        if (options.transmission) {
-            result.push(
-                {
-                    output: "upstream/shaders/image-processing.vert.native.wgsl",
-                    data: blitVertexWgsl(),
-                },
-                {
-                    output: "upstream/shaders/image-processing.frag.native.wgsl",
-                    data: imageProcessingFragmentWgsl(),
-                },
-                {
-                    output: "upstream/shaders/image-processing-ms.frag.native.wgsl",
-                    data: imageProcessingMultisampledFragmentWgsl(),
                 },
             );
         }

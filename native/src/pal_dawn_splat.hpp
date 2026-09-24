@@ -210,8 +210,9 @@ inline WGPURenderPipeline
 create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
                            WGPUBindGroupLayout splat_layout, WGPUTextureFormat color_format,
                            WGPUTextureFormat depth_format, std::uint32_t samples) {
-    DawnShaderModule vertex{load_wgsl_module(device, "splat.vert")};
-    DawnShaderModule fragment{load_wgsl_module(device, "splat.frag")};
+    // The pin's one module, deployed whole: both stages enter where the
+    // module declares its vertex and fragment entry points.
+    DawnShaderModule module{load_wgsl_module(device, "splat.frag")};
 
     const std::array<WGPUBindGroupLayout, 2> groups{frame_layout, splat_layout};
     WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
@@ -255,8 +256,7 @@ create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
     target.writeMask = WGPUColorWriteMask_All;
 
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = fragment;
-    fragment_state.entryPoint = string_view("fs");
+    fragment_state.module = module;
     fragment_state.targetCount = 1;
     fragment_state.targets = &target;
 
@@ -269,8 +269,7 @@ create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
 
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = vertex;
-    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.vertex.module = module;
     descriptor.vertex.bufferCount = buffers.size();
     descriptor.vertex.buffers = buffers.data();
     descriptor.fragment = &fragment_state;

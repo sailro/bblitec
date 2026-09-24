@@ -500,9 +500,12 @@ export function compileOfflineShaders(
                             : normalizeTintHlslBindings(hlsl);
                     const slots = shaderStageSlots(normalized);
                     tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
+                    // A render stage's sidecar opens with the entry point
+                    // its module declared, so a backend creates the stage
+                    // from what the module says rather than restating it.
                     tree.write(
                         `${stage.stem}.slots`,
-                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`)).join(EOL)}${EOL}`,
+                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : [`@entry ${stage.entryPoint}`, ...slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`)]).join(EOL)}${EOL}`,
                     );
                     tree.write(
                         `${stage.stem}.tint-reflection.txt`,

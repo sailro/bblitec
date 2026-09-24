@@ -3067,8 +3067,8 @@ function compositionRows(
             "composition",
             features.includes("loader:splat"),
             features.includes("loader:splat")
-                ? "the pin's own Gaussian-splat module, split at its two " +
-                      "entry points (splat.vert/splat.frag)"
+                ? "the pin's own Gaussian-splat module, deployed whole and " +
+                      "compiled at its two entry points (splat.vert/splat.frag)"
                 : "no splat assets",
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts " +
                 "WGSL: the pin ships the module text itself; nothing " +

@@ -862,11 +862,12 @@ struct DawnState : DawnDevice {
     WGPUTexture transmission_color = nullptr;
     WGPUTextureView transmission_color_view = nullptr;
     std::uint32_t transmission_mip_count = 1;
-    WGPUShaderModule transmission_grab_vertex_module = nullptr;
-    WGPUShaderModule transmission_grab_fragment_module = nullptr;
+    WGPUShaderModule transmission_grab_module = nullptr;
+    // The single-sample grab arm's bilinear sampler; the multisampled arm
+    // loads its texels and binds none.
+    WGPUSampler transmission_grab_sampler = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
-    WGPUShaderModule image_processing_vertex_module = nullptr;
-    WGPUShaderModule image_processing_fragment_module = nullptr;
+    WGPUShaderModule image_processing_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
     WGPUBuffer image_processing_params = nullptr;
     WGPUBindGroup image_processing_group = nullptr;
@@ -1721,20 +1722,17 @@ struct DawnState : DawnDevice {
         if (image_processing_pipeline) {
             wgpuRenderPipelineRelease(image_processing_pipeline);
         }
-        if (image_processing_fragment_module) {
-            wgpuShaderModuleRelease(image_processing_fragment_module);
-        }
-        if (image_processing_vertex_module) {
-            wgpuShaderModuleRelease(image_processing_vertex_module);
+        if (image_processing_module) {
+            wgpuShaderModuleRelease(image_processing_module);
         }
         if (transmission_grab_pipeline) {
             wgpuRenderPipelineRelease(transmission_grab_pipeline);
         }
-        if (transmission_grab_fragment_module) {
-            wgpuShaderModuleRelease(transmission_grab_fragment_module);
+        if (transmission_grab_sampler) {
+            wgpuSamplerRelease(transmission_grab_sampler);
         }
-        if (transmission_grab_vertex_module) {
-            wgpuShaderModuleRelease(transmission_grab_vertex_module);
+        if (transmission_grab_module) {
+            wgpuShaderModuleRelease(transmission_grab_module);
         }
         if (transmission_color_view) {
             wgpuTextureViewRelease(transmission_color_view);
@@ -2201,8 +2199,8 @@ WGPUTexture create_solid_texture(DawnState& state, const std::vector<std::uint8_
 
 // The pinned mip generator's fullscreen-triangle bilinear blit
 // (src/texture/generate-mipmaps.ts BLIT_SHADER) is deployed from
-// generation like every other pinned shader — mip-blit.vert/.frag —
-// instead of living here as a C++ string invisible to shader provenance.
+// generation like every other pinned shader -- the whole `mip-blit` module
+// -- instead of living here as a C++ string invisible to shader provenance.
 // The generator itself lives in pal_dawn_shared.hpp (`DawnMipGenerator`),
 // shared with the pure-2D sprite driver; these are the scene driver's
 // spellings over its own state.
@@ -6336,36 +6334,33 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
 // attachment plus the optional output target, LESS depth (writes off
 // for the transparent variants, which also blend on every target).
 
-// The pinned transmission scene-color grab
-// (frame-graph/transmission.ts BLIT_MSAA_SHADER: per-texel sample
-// average with manual bilinear filtering, read straight from the
-// multisampled attachment) and the pinned per-sample image processing
-// (frame-graph/image-processing-task.ts: exposure, optional tonemap,
-// gamma, contrast applied per MSAA sample, then averaged) are deployed
-// from generation like every other pinned shader instead of living here
-// as C++ strings invisible to shader provenance. Under `BBLITE_MSAA=1`
-// there is one sample and nothing to average, so each pass loads its
-// `-single` sibling: an ordinary texture binding and a plain load around
-// the same pinned text.
+// The pinned transmission scene-color grab and the pinned trailing image
+// processing are deployed from generation like every other pinned shader,
+// each in both of the pin's arms and each module whole: the grab is
+// frame-graph/transmission.ts BLIT_MSAA_SHADER (per-texel sample average
+// with manual bilinear filtering, read straight from the multisampled
+// attachment) or, for a single-sample source, that module's own BLIT_SHADER
+// over the bilinear sampler; the image processing is the module
+// frame-graph/image-processing-task.ts composes for the source's sample
+// count (exposure, optional tonemap, gamma, contrast applied per sample,
+// then averaged).
 
-// Encodes the pinned mid-pass scene-color grab: the fullscreen
-// sample-averaging blit into transmission mip 0 followed by the
-// standard blit mip chain.
+// Encodes the pinned mid-pass scene-color grab: the fullscreen blit into
+// transmission mip 0 followed by the standard blit mip chain.
 void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
     if (!state.transmission_grab_pipeline) {
-        state.transmission_grab_vertex_module = load_wgsl_module(state, "transmission-grab.vert");
-        state.transmission_grab_fragment_module =
+        state.transmission_grab_module =
             load_wgsl_module(state, state.multisampled() ? "transmission-grab.frag"
                                                          : "transmission-grab-single.frag");
+        if (!state.multisampled())
+            state.transmission_grab_sampler = create_dawn_bilinear_sampler(state.device);
         WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.transmission_grab_vertex_module;
-        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.module = state.transmission_grab_module;
         descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
         WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
         color_target.format = WGPUTextureFormat_RGBA16Float;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = state.transmission_grab_fragment_module;
-        fragment.entryPoint = string_view("mainFragment");
+        fragment.module = state.transmission_grab_module;
         fragment.targetCount = 1;
         fragment.targets = &color_target;
         descriptor.fragment = &fragment;
@@ -6377,13 +6372,17 @@ void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
     }
     DawnBindGroupLayout layout{
         wgpuRenderPipelineGetBindGroupLayout(state.transmission_grab_pipeline, 0)};
-    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    entry.binding = 0;
-    entry.textureView = state.msaa_color_view;
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].textureView = state.msaa_color_view;
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].sampler = state.transmission_grab_sampler;
     WGPUBindGroupDescriptor bind_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     bind_descriptor.layout = layout;
-    bind_descriptor.entryCount = 1;
-    bind_descriptor.entries = &entry;
+    bind_descriptor.entryCount = state.transmission_grab_sampler ? 2u : 1u;
+    bind_descriptor.entries = entries.data();
     DawnBindGroup bind_group{wgpuDeviceCreateBindGroup(state.device, &bind_descriptor)};
     layout.reset();
     WGPUTextureViewDescriptor level_descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
@@ -6416,20 +6415,15 @@ void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
 void encode_image_processing(DawnState& state, WGPUCommandEncoder encoder,
                              WGPUTextureView surface_view, const Scene& scene) {
     if (!state.image_processing_pipeline) {
-        state.image_processing_vertex_module =
-            load_wgsl_module(state, "image-processing-samples.vert");
-        state.image_processing_fragment_module =
-            load_wgsl_module(state, state.multisampled() ? "image-processing-samples.frag"
-                                                         : "image-processing-samples-single.frag");
+        state.image_processing_module = load_wgsl_module(
+            state, state.multisampled() ? "image-processing.frag" : "image-processing-single.frag");
         WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.image_processing_vertex_module;
-        descriptor.vertex.entryPoint = string_view("mainVertex");
+        descriptor.vertex.module = state.image_processing_module;
         descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
         WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
         color_target.format = state.surface_format;
         WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = state.image_processing_fragment_module;
-        fragment.entryPoint = string_view("mainFragment");
+        fragment.module = state.image_processing_module;
         fragment.targetCount = 1;
         fragment.targets = &color_target;
         descriptor.fragment = &fragment;

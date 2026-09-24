@@ -967,6 +967,8 @@ struct GpuState : SdlGpuDevice {
     // same gate the Dawn backend compiles them behind.
     SDL_GPUGraphicsPipeline* image_processing_pipeline = nullptr;
     bool per_sample_image_processing = false;
+    // Where the compaction left the pin's parameter block `p`.
+    int image_processing_params_slot = -1;
     SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUTexture* transmission_color = nullptr;
     std::uint32_t transmission_width = 0;
@@ -6928,25 +6930,28 @@ public:
                                          0);
 #endif
 #if BBLITE_RENDERER_TRANSMISSION
-        auto image_processing_vertex_shader =
-            transmission_enabled ? load_shader(state.device, "image-processing.vert",
-                                               SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, "mainVertex")
-                                 : nullptr;
-        // The pinned image-processing task samples the multisampled
-        // attachment and averages after `ip()`. That needs a texture SDL
-        // refuses to create with a read usage until libsdl-org/SDL#15838
-        // lands, so the single-sample fragment stays as the fallback for
-        // BBLITE_MSAA=1 and for a build against stock SDL.
+        // The module the pinned image-processing task composes for this
+        // frame's source: per-sample over the multisampled attachment,
+        // averaged after `ip()`, or over the single-sample one. Reading the
+        // multisampled attachment needs a texture SDL refuses to create with
+        // a read usage until libsdl-org/SDL#15838 lands, so a single-sample
+        // run takes the pin's single-sample arm.
         const bool per_sample_image_processing =
             transmission_enabled && state.sample_count != SDL_GPU_SAMPLECOUNT_1;
-        auto image_processing_fragment_shader =
-            transmission_enabled
-                ? (per_sample_image_processing
-                       ? load_shader(state.device, "image-processing-ms.frag",
-                                     SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1, "mainFragment", 0, 1)
-                       : load_shader(state.device, "image-processing.frag",
-                                     SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1, "mainFragment"))
-                : nullptr;
+        const std::string image_processing_stem =
+            per_sample_image_processing ? "image-processing" : "image-processing-single";
+        PinnedStage image_processing_vertex =
+            transmission_enabled ? load_pinned_stage(state.device, image_processing_stem + ".vert",
+                                                     SDL_GPU_SHADERSTAGE_VERTEX)
+                                 : PinnedStage{};
+        PinnedStage image_processing_fragment =
+            transmission_enabled ? load_pinned_stage(state.device, image_processing_stem + ".frag",
+                                                     SDL_GPU_SHADERSTAGE_FRAGMENT)
+                                 : PinnedStage{};
+        auto& image_processing_vertex_shader = image_processing_vertex.shader;
+        auto& image_processing_fragment_shader = image_processing_fragment.shader;
+        state.image_processing_params_slot =
+            stage_uniform_slot(image_processing_fragment.slots, "p");
 #endif
         const upstream::RenderFeatures render_features =
             upstream::build_render_features(scene, engine);
@@ -11159,8 +11164,8 @@ public:
                     scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
                     0.0f,
                 }};
-                SDL_PushGPUFragmentUniformData(command, 0, &image_processing,
-                                               sizeof(image_processing));
+                push_stage_uniform(command, state.image_processing_params_slot, &image_processing,
+                                   sizeof(image_processing));
                 if (state.per_sample_image_processing) {
                     // A Texture2DMS is Load()-ed and carries no sampler,
                     // so it binds as a storage texture rather than as a

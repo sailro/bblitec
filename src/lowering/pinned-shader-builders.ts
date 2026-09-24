@@ -110,9 +110,10 @@ const loadedExports = new Map<string, unknown>();
 
 /**
  * One module-local symbol of a pinned source module, from the packaged
- * module that carries it.
+ * module that carries it, loaded synchronously: a builder, or a factory a
+ * producer runs against the recording device.
  */
-function pinnedModuleExport(
+export function pinnedModuleExport(
     modulePath: string,
     symbolName: string,
 ): (...parameters: unknown[]) => unknown {

@@ -20,11 +20,7 @@ import {
     gridFragmentWgsl,
     gridVertexWgsl,
 } from "../src/shader-builtins-grid.js";
-import {
-    fogFactorWgsl,
-    imageProcessingFragmentWgsl,
-    imageProcessingMultisampledFragmentWgsl,
-} from "../src/shader-builtins-utility.js";
+import { fogFactorWgsl } from "../src/shader-builtins-utility.js";
 import {
     UpstreamSourceStore,
     findRepositoryRoot,
@@ -207,55 +203,8 @@ test("the dither pair is read from the pin's own helpers module", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Utility: image processing and fog
+// Utility: fog
 // ---------------------------------------------------------------------------
-
-test("lifts the pinned ip() and per-sample loop for image processing", () => {
-    const single = imageProcessingFragmentWgsl();
-    const multi = imageProcessingMultisampledFragmentWgsl();
-
-    // The pin's parameter block, byte for byte, re-addressed to space 3 —
-    // it lays out exactly like the 16 bytes the PAL pushes.
-    for (const fragment of [single, multi]) {
-        assert.ok(fragment.includes("struct P{e:f32,c:f32,t:f32,p:f32}"));
-        assert.ok(fragment.includes("@group(3)@binding(0)var<uniform> p:P;"));
-        assert.ok(fragment.includes("fn ip(r:vec4f)->vec4f{"));
-        assert.ok(fragment.includes("if(p.t>0.5){c=1.0-exp2(-1.590579*c);}"));
-        assert.ok(
-            fragment.includes(
-                "if(p.c<1.0){c=mix(vec3f(0.5),c,p.c);}else{c=mix(c,h,p.c-1.0);}",
-            ),
-        );
-        assert.match(fragment, /fn mainFragment\(input: FragmentInput\)/);
-    }
-
-    // Single-sample keeps the sampler-pair wrapper the PAL binds.
-    assert.ok(
-        single.includes(
-            "@group(2) @binding(0) var sourceTexture: texture_2d<f32>;",
-        ),
-    );
-    assert.ok(single.includes("return ip(textureSampleLevel("));
-
-    // The multisampled arm is the pin's loop: ip() per sample, averaged
-    // after the loop — the order is the semantics.
-    assert.ok(
-        multi.includes(
-            "@group(2) @binding(0) var sourceTexture: texture_multisampled_2d<f32>;",
-        ),
-    );
-    assert.ok(multi.includes("let n=textureNumSamples(sourceTexture);"));
-    assert.ok(
-        multi.includes(
-            "for(var i=0u;i<n;i++){c+=ip(textureLoad(sourceTexture,px,i));}",
-        ),
-    );
-    assert.ok(
-        multi.indexOf("ip(textureLoad(") < multi.indexOf("return c/f32(n);"),
-        "samples are processed before the average",
-    );
-    assert.doesNotMatch(multi, /\bq\.xy\b/);
-});
 
 test("lifts the pinned WGSL_FOG with the documented renames", () => {
     const fog = fogFactorWgsl();

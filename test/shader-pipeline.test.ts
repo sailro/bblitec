@@ -13,7 +13,6 @@ import {
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
-    imageProcessingFragmentWgsl,
 } from "../src/shader-builtins-utility.js";
 import {
     backgroundGroundFragmentWgsl,
@@ -165,14 +164,6 @@ test("generates Tint utility WGSL entry points and bindings", () => {
         /@group\(2\) @binding\(1\) var sourceSampler/,
     );
     assert.match(blitFragmentWgsl(), /textureSampleLevel/);
-    // The lifted pinned `ip()`: the pin's own parameter block and exposure
-    // multiply, under the native fragment uniform space.
-    assert.match(imageProcessingFragmentWgsl(), /var c=r\.rgb\*p\.e;/);
-    assert.match(
-        imageProcessingFragmentWgsl(),
-        /@group\(3\)@binding\(0\)var<uniform> p:P;/,
-    );
-    assert.match(imageProcessingFragmentWgsl(), /1\.590579/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);

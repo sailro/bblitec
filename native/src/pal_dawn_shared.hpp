@@ -878,7 +878,7 @@ inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& b
 
 /**
  * The pinned mip generator (`src/texture/generate-mipmaps.ts`): one blit
- * pipeline per format over the deployed `mip-blit` stages, sampling each
+ * pipeline per format over the deployed `mip-blit` module, sampling each
  * level from the one above with the bilinear sampler.
  *
  * It lives at the device level rather than on the scene driver's state
@@ -887,8 +887,7 @@ inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& b
  * driver's layers over a node-particle texture.
  */
 struct DawnMipGenerator {
-    DawnShaderModule vertex_module;
-    DawnShaderModule fragment_module;
+    DawnShaderModule module;
     DawnSampler sampler;
     std::map<WGPUTextureFormat, DawnRenderPipeline> pipelines;
 };
@@ -896,8 +895,20 @@ struct DawnMipGenerator {
 inline void release_dawn_mip_generator(DawnMipGenerator& mips) {
     mips.pipelines.clear();
     mips.sampler.reset();
-    mips.fragment_module.reset();
-    mips.vertex_module.reset();
+    mips.module.reset();
+}
+
+/**
+ * The pin's bilinear sampler (`resource/samplers.ts` getBilinearSampler):
+ * linear filters and WebGPU-default clamp addressing. The mip generator and
+ * the transmission grab's single-sample arm both sample through it.
+ */
+inline WGPUSampler create_dawn_bilinear_sampler(WGPUDevice device) {
+    WGPUSamplerDescriptor sampler_descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    sampler_descriptor.magFilter = WGPUFilterMode_Linear;
+    sampler_descriptor.minFilter = WGPUFilterMode_Linear;
+    return require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler_descriptor),
+                                 "bilinear sampler");
 }
 
 inline WGPURenderPipeline mip_pipeline_for(WGPUDevice device, DawnMipGenerator& mips,
@@ -905,26 +916,19 @@ inline WGPURenderPipeline mip_pipeline_for(WGPUDevice device, DawnMipGenerator& 
     const auto existing = mips.pipelines.find(format);
     if (existing != mips.pipelines.end())
         return existing->second;
-    if (!mips.vertex_module) {
-        mips.vertex_module = load_wgsl_module(device, "mip-blit.vert");
-        mips.fragment_module = load_wgsl_module(device, "mip-blit.frag");
-        // The pinned generator samples with the bilinear sampler:
-        // linear filters and WebGPU-default clamp addressing.
-        WGPUSamplerDescriptor sampler_descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
-        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
-        mips.sampler = require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler_descriptor),
-                                             "mip sampler");
+    if (!mips.module) {
+        // The pin's module, deployed whole: both stages enter where the
+        // module declares its entry points.
+        mips.module = load_wgsl_module(device, "mip-blit.frag");
+        mips.sampler = create_dawn_bilinear_sampler(device);
     }
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = mips.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.module = mips.module;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = mips.fragment_module;
-    fragment.entryPoint = string_view("mainFragment");
+    fragment.module = mips.module;
     fragment.targetCount = 1;
     fragment.targets = &color_target;
     descriptor.fragment = &fragment;

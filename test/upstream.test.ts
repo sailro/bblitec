@@ -36,18 +36,19 @@ import {
     shaderMaterialPrograms,
 } from "../src/shader-material-programs.js";
 import {
-    dawnUtilityShaders,
     spriteCoreAdditionalProvenance,
     spriteVertexPermutations,
 } from "../src/upstream-lower.js";
+import {
+    pinnedMipBlitModule,
+    pinnedTransmissionModules,
+} from "../src/pinned-utility-passes.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { composeBillboardPickingShader } from "../src/pinned-picking-shaders.js";
 import { composeSplatShModule } from "../src/pinned-splat-fragments.js";
 import {
     pinnedSplatShShader,
     pinnedSplatShader,
-    splatFragmentWgsl,
-    splatVertexWgsl,
 } from "../src/shader-builtins-splat.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
 import {
@@ -138,7 +139,7 @@ test("generates the Babylon environment parser from upstream constants", () => {
         lowered.source,
         /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/,
     );
-    assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
+    assert.match(lowered.source, /constexpr double c1 = 1\.4999984284682104;/);
     assert.match(lowered.source, /face\.bytes\.assign/);
     assert.match(adapter.source, /scene\.environment\.exposure = 0\.8f/);
     assert.match(adapter.source, /scene\.environment\.contrast = 1\.2f/);
@@ -2189,48 +2190,53 @@ test("emits only reached custom shader variants", () => {
     );
 });
 
-test("lifts the Dawn utility WGSL from the pinned literals", () => {
-    const shaders = dawnUtilityShaders(true);
-    // The mip generator's blit (generate-mipmaps.ts BLIT_SHADER), split
-    // per stage: the vertex file carries no bindings — the compile
-    // script cross-checks declared bindings against Tint's reflection —
-    // and both stages take the native entry-point names.
-    assert.match(shaders.mipBlitVertex, /@vertex fn mainVertex\(/);
-    assert.match(shaders.mipBlitVertex, /p\*vec2f\(\.5,-\.5\)\+\.5/);
-    assert.doesNotMatch(shaders.mipBlitVertex, /@group/);
+test("deploys the pin's utility passes whole, as the pin composes them", () => {
+    // The mip generator's blit (generate-mipmaps.ts BLIT_SHADER): one
+    // module, both stages, the pin's own names and bindings.
+    const mip = pinnedMipBlitModule();
+    assert.equal(mip.stem, "mip-blit");
+    assert.match(mip.wgsl, /@vertex fn vs\(/);
+    assert.match(mip.wgsl, /p\*vec2f\(\.5,-\.5\)\+\.5/);
     assert.match(
-        shaders.mipBlitFragment,
-        /@fragment fn mainFragment\(v:V\)->@location\(0\)vec4f\{return textureSample\(t,s,v\.u\);\}/,
+        mip.wgsl,
+        /@fragment fn fs\(v:V\)->@location\(0\)vec4f\{return textureSample\(t,s,v\.u\);\}/,
     );
-    // The transmission grab: the MSAA arm is the pin's BLIT_MSAA_SHADER
-    // text, the single-sample arm substitutes the plain binding and load
-    // around the same manual-bilinear body.
-    assert.match(shaders.grabFragment, /var t:texture_multisampled_2d<f32>;/);
-    assert.match(shaders.grabFragment, /textureNumSamples\(t\)/);
-    assert.match(shaders.grabFragmentSingle, /var t:texture_2d<f32>;/);
-    assert.match(
-        shaders.grabFragmentSingle,
-        /fn l\(p:vec2i\)->vec4f\{return textureLoad\(t,p,0\);\}/,
+    const modules = new Map(
+        pinnedTransmissionModules().map((module) => [module.stem, module]),
     );
-    for (const arm of [shaders.grabFragment, shaders.grabFragmentSingle]) {
-        assert.match(arm, /mix\(mix\(l\(p\),l\(vec2i\(p1\.x,p\.y\)\),f\.x\)/);
-    }
-    // Per-sample image processing: the pin's ip() with its tone-mapping
-    // calibration, and the pin's own two fragment arms.
-    assert.match(shaders.imageProcessingFragment, /1\.590579/);
-    assert.match(shaders.imageProcessingFragment, /textureNumSamples\(s\)/);
-    assert.match(shaders.imageProcessingFragmentSingle, /1\.590579/);
+    // The transmission grab in both of the pin's arms: BLIT_MSAA_SHADER for
+    // a multisampled source, the module's own BLIT_SHADER otherwise.
+    const grab = modules.get("transmission-grab")!.wgsl;
+    assert.match(grab, /var t:texture_multisampled_2d<f32>;/);
+    assert.match(grab, /textureNumSamples\(t\)/);
+    assert.match(grab, /mix\(mix\(l\(p\),l\(vec2i\(p1\.x,p\.y\)\),f\.x\)/);
+    const single = modules.get("transmission-grab-single")!.wgsl;
     assert.match(
-        shaders.imageProcessingFragmentSingle,
+        single,
+        /var t:texture_2d<f32>;@group\(0\)@binding\(1\)var s:sampler;/,
+    );
+    assert.match(single, /return textureSample\(t,s,v\.u\);/);
+    // Image processing, composed by the pin's own createImageProcessingState
+    // for each source kind: `common`, the arm's texture declaration and the
+    // arm's fragment, in the pin's order.
+    const processing = modules.get("image-processing")!.wgsl;
+    assert.match(processing, /struct P\{e:f32,c:f32,t:f32,p:f32\}/);
+    assert.match(processing, /1\.590579/);
+    assert.match(processing, /var s:texture_multisampled_2d<f32>;/);
+    assert.match(processing, /textureNumSamples\(s\)/);
+    assert.ok(
+        processing.indexOf("fn ip(") < processing.indexOf("@fragment fn fs("),
+    );
+    const processingSingle = modules.get("image-processing-single")!.wgsl;
+    assert.match(processingSingle, /var s:texture_2d<f32>;/);
+    assert.match(
+        processingSingle,
         /return ip\(textureLoad\(s,clamp\(vec2i\(q\.xy\),vec2i\(0\),vec2i\(d\)-1\),0\)\);/,
     );
-    assert.match(shaders.imageProcessingVertex, /@vertex fn mainVertex\(/);
-    assert.doesNotMatch(shaders.imageProcessingVertex, /@group/);
-    // A scene without transmission ships only the mip blit.
-    const mipOnly = dawnUtilityShaders(false);
-    assert.notEqual(mipOnly.mipBlitFragment, "");
-    assert.equal(mipOnly.grabFragment, "");
-    assert.equal(mipOnly.imageProcessingFragment, "");
+    for (const module of [mip, ...modules.values()]) {
+        assert.match(module.wgsl, /@vertex fn vs\(/);
+        assert.match(module.wgsl, /@fragment fn fs\(/);
+    }
 });
 
 test("generates the sprite instance layout table from the pinned pipeline", () => {
@@ -3069,31 +3075,33 @@ test("preserves float32 values in literals and baked mesh transport", () => {
     assert.deepEqual(unpackBakedCsgMesh(packBakedCsgMesh(mesh)), mesh);
 });
 
-test("reads the stock splat module's dialect off the packaged text", () => {
-    // The SH test below covers `SH_DIALECT`, which is spelled here. This
-    // one covers `stockDialect`, which is READ from the packaged module --
-    // the half a pin bump can move under us, and the half that had no test
-    // when 1.27.0's minifier packed the vertex stage onto one line and its
-    // `@location(0)` attribute swallowed the parameter-list scan. Seven
-    // registered scenes then refused generation while `test:upstream` and
-    // the contract report both stayed green, because neither reached this
-    // function.
-    const split = pinnedSplatShader();
-    assert.equal(split.spliced, false);
-    const vertex = splatVertexWgsl("provenance", split);
-    // The varying struct is the value the scan returns, so a stage that
-    // carries it proves the whole dialect resolved rather than throwing.
-    assert.match(vertex, /@vertex fn vs\(/);
-    assert.match(vertex, /struct \w+\{/);
+test("deploys the stock splat module whole, its bindings read off its declarations", () => {
+    // The module is the packaged text itself: no split, no rename. What is
+    // asserted is what the backends bind, read off the module's own
+    // declarations rather than its spelling -- the half a pin bump moves.
+    const module = pinnedSplatShader();
+    assert.match(module, /@vertex fn vs\(/);
+    assert.match(module, /@fragment fn fs\(/);
     for (const binding of [2, 3, 4, 5]) {
         assert.ok(
-            vertex.includes(`@binding(${binding})`),
-            `the vertex stage carries its data texture at binding ${binding}`,
+            module.includes(`@binding(${binding})`),
+            `the module declares its data texture at binding ${binding}`,
         );
     }
+    // A module that moved a data texture refuses rather than deploying.
+    assert.throws(
+        () =>
+            pinnedSplatShader(
+                module.replace(
+                    "@group(1) @binding(5)",
+                    "@group(1) @binding(9)",
+                ),
+            ),
+        /float data texture at group 1 binding 5/,
+    );
 });
 
-test("splits the pin's own spherical-harmonic splat module", async () => {
+test("deploys the pin's own spherical-harmonic splat module whole", async () => {
     // Executed rather than lifted: this module's WGSL is BUILT per degree,
     // so there is no packaged literal to extract and the only way to get
     // the text the browser compiles is to run the pin's builder.
@@ -3102,33 +3110,10 @@ test("splits the pin's own spherical-harmonic splat module", async () => {
     // The pin's own SH_TEXTURE_COUNT table, not a ceiling division here.
     assert.equal(module.textureCount, 3);
     assert.equal(module.wgsl, module.base);
-
-    const split = pinnedSplatShShader(module);
-    assert.equal(split.spliced, false);
-    // The split is the ONLY edit: every byte of both stages is the pin's,
-    // and together they carry the whole module.
-    assert.ok(
-        module.wgsl.includes(split.vertexStage),
-        "the vertex stage is a verbatim span of the pinned module",
-    );
-    // The fragment stage is the same span with the plugin slot comments
-    // removed -- the one edit the split makes -- so it is checked against
-    // the module with every comment dropped and whitespace collapsed on
-    // both sides, which is what a comment removal leaves behind.
-    const withoutComments = (text: string): string =>
-        text
-            .replace(/\/\*[\s\S]*?\*\//g, "")
-            .replace(/\s+/g, " ")
-            .trim();
-    assert.ok(
-        withoutComments(module.wgsl).includes(
-            withoutComments(split.fragmentStage),
-        ),
-        "the fragment stage is the pinned module's own span minus its slot comments",
-    );
-    // What separates this arm from the stock one: the uint payload textures
-    // the vertex stage loads, and the eye the view direction is built from.
-    const vertex = splatVertexWgsl("provenance", split);
+    // Deployed byte for byte: the uint payload textures the vertex entry
+    // loads, and the eye the view direction is built from, stay the pin's.
+    const deployed = pinnedSplatShShader(module);
+    assert.equal(deployed, module.wgsl);
     for (const declaration of [
         "@group(1)@binding(6)var shTexture0:texture_2d<u32>;",
         "@group(1)@binding(7)var shTexture1:texture_2d<u32>;",
@@ -3137,15 +3122,15 @@ test("splits the pin's own spherical-harmonic splat module", async () => {
         "fn computeSH(",
     ]) {
         assert.ok(
-            vertex.includes(declaration),
-            `the SH vertex stage declares ${declaration}`,
+            deployed.includes(declaration),
+            `the SH module declares ${declaration}`,
         );
     }
-    // The fragment stage still reads varyings alone, which is what lets
-    // both PALs keep binding nothing to it.
-    const fragment = splatFragmentWgsl("provenance", split);
-    assert.ok(!fragment.includes("@group("), "the SH fragment binds nothing");
-    assert.ok(fragment.includes("struct VOut{"));
+    // One fewer payload texture than the table's row refuses.
+    assert.throws(
+        () => pinnedSplatShShader({ ...module, textureCount: 4 }),
+        /harmonic payload texture at group 1 binding 9/,
+    );
 
     // A degree the pin's table does not cover refuses instead of guessing.
     await assert.rejects(
