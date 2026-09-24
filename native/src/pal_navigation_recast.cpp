@@ -46,7 +46,6 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -271,8 +270,7 @@ int pick_int(const std::optional<double>& given, double fallback) {
  * spread; what differs is only what each does with `tileSize` afterwards.
  */
 rcConfig resolved_rc_config(const NavMeshBuildParams& params, const NavBuildDefaults& defaults) {
-    rcConfig config;
-    std::memset(&config, 0, sizeof(config));
+    rcConfig config{};
     config.cs = pick_float(params.cs, defaults.cs);
     config.ch = pick_float(params.ch, defaults.ch);
     config.walkableSlopeAngle =
@@ -445,8 +443,7 @@ void navigation_create_solo_nav_mesh(NavigationHandle plugin, const NavMeshGeome
         }
     }
 
-    dtNavMeshCreateParams create_params;
-    std::memset(&create_params, 0, sizeof(create_params));
+    dtNavMeshCreateParams create_params{};
     create_params.verts = poly_mesh->verts;
     create_params.vertCount = poly_mesh->nverts;
     create_params.polys = poly_mesh->polys;
@@ -618,8 +615,7 @@ std::vector<TileCacheLayer> rasterize_tile_layers(rcContext* context, const rcCo
     std::vector<TileCacheLayer> tiles;
     for (int index = 0; index < layers->nlayers; ++index) {
         const rcHeightfieldLayer& layer = layers->layers[index];
-        dtTileCacheLayerHeader header;
-        std::memset(&header, 0, sizeof(header));
+        dtTileCacheLayerHeader header{};
         header.magic = DT_TILECACHE_MAGIC;
         header.version = DT_TILECACHE_VERSION;
         header.tx = tile_x;
@@ -709,8 +705,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
         throw std::runtime_error("createNavMesh (tile cache) failed: " + message);
     };
 
-    dtTileCacheParams cache_params;
-    std::memset(&cache_params, 0, sizeof(cache_params));
+    dtTileCacheParams cache_params{};
     dtVcopy(cache_params.orig, bounds_min);
     cache_params.cs = config.cs;
     cache_params.ch = config.ch;
@@ -746,8 +741,7 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
                                    14);
     const int poly_bits = 22 - tile_bits;
 
-    dtNavMeshParams nav_params;
-    std::memset(&nav_params, 0, sizeof(nav_params));
+    dtNavMeshParams nav_params{};
     dtVcopy(nav_params.orig, bounds_min);
     nav_params.tileWidth = static_cast<float>(config.tileSize) * config.cs;
     nav_params.tileHeight = nav_params.tileWidth;
@@ -972,8 +966,7 @@ NavRaycastHit navigation_raycast(NavigationHandle plugin, float start_x, float s
 
     // Zeroed wholesale: a null path buffer with maxPath 0 asks Detour
     // for the t and normal only, the way the wrapper's raycast does.
-    dtRaycastHit ray_hit;
-    std::memset(&ray_hit, 0, sizeof(ray_hit));
+    dtRaycastHit ray_hit{};
     state.query->raycast(nearest_ref, start, end, &state.filter, 0, &ray_hit, 0);
     const float t = ray_hit.t;
     if (!(t > 0.0f && t < 1.0f)) {

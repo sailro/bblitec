@@ -756,7 +756,10 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
 #endif
             } catch (const pal::WorkerTerminated&) {
                 throw;
-            } catch (const std::exception&) { /* A broken request has zero natural dimensions. */
+            } catch (const std::exception&) {
+                // A broken image completes with zero natural dimensions.
+                request->width = 0;
+                request->height = 0;
             }
             request->complete = true;
         });
