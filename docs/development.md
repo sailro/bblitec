@@ -215,7 +215,9 @@ bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags
 on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
 
-By default, native lint checks handwritten translation units and headers. `--generated` includes the
+`.clang-tidy` enables only checks that pass on maintained and generated code; its header names the checks
+still off and the generated output that reports them. By default, native lint checks handwritten
+translation units and headers. `--generated` includes the
 build's emitted C++ and cached generated headers without changing their bytes:
 
 ```powershell
@@ -303,7 +305,8 @@ Shader checkpoints include input/output bytes and compiler identity.
 
 ## Build identity
 
-Measured runs verify generated/native digests, deployed payload and CMake configuration. Generation and
+Measured runs verify generated/native digests, the deployed payload (the compiled backends' shader files
+and assets) and CMake configuration. Generation and
 shaders use content identity; native outputs also use size/mtime. Native edits refresh build stamps.
 CMakeLists edits require process before parity. Explicit payload overrides are diagnostic.
 

@@ -82,6 +82,8 @@ belong to scene identity. Property and glTF animation retain separate playback c
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
+- Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
+  terminate.
 
 ## Renderer
 
