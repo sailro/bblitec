@@ -73,7 +73,7 @@ int main() {
     vertex.position = {-1,2,3}; vertex.normal = {-1,0,0}; vertex.tangent = {-1,0,0,-1};
     geometry.bind_vertices.push_back(vertex);
     engine.geometries.push_back(std::move(geometry));
-    bbl::MeshRecord mesh; mesh.primitive = bbl::PrimitiveKind::gltf; mesh.geometry = 0;
+    bbl::MeshRecord mesh; mesh.geometry = 0;
     mesh.name = "source"; mesh.parent = bbl::MeshHandle{12}; mesh.transform_parent = bbl::TransformNodeHandle{13};
     mesh.outer_position = {4,5,6}; mesh.outer_rotation = {1,2,3};
     engine.meshes.push_back(mesh);
@@ -85,22 +85,26 @@ int main() {
     assert(result.geometry == 0 && engine.geometries[0].owners == 3);
     assert(!engine.meshes[0].detached_imported_mesh && engine.meshes[0].parent.value == 12);
     assert(engine.geometries[0].vertices[0].position.x == 100);
-    const auto local = bbl::detached_imported_vertex(result, engine.geometries[0], 0);
+    const auto local = bbl::detached_imported_vertex(engine.geometries[0], 0);
     assert(local.position.x == 1 && local.position.y == 2 && local.position.z == 3);
     assert(local.normal.x == 1 && local.tangent.x == 1 && local.tangent.w == 1);
     bbl::Vec3 low{}, high{};
     bbl::apply_mesh_bound_overrides(result, low, high);
     assert(low.x == 1 && high.z == 3);
+    // A .babylon mesh keeps its loader's local vertices, which went through
+    // no mirror.
+    bbl::ModelGeometry babylon_geometry = engine.geometries[0];
+    babylon_geometry.vertex_space = bbl::VertexSpace::local;
+    engine.geometries.push_back(std::move(babylon_geometry));
     bbl::MeshRecord babylon;
-    babylon.primitive = bbl::PrimitiveKind::babylon;
-    babylon.geometry = 0;
+    babylon.geometry = 1;
     babylon.imported_clone_trs = bbl::ImportedMeshTrs{{9,8,7}, {0,.5f,0}, {2,3,4}};
     const bbl::MeshHandle babylon_source{static_cast<std::uint32_t>(engine.meshes.size())};
     engine.meshes.push_back(babylon);
     const auto babylon_clone = bbl::clone_mesh_node(engine, babylon_source);
     auto& cloned_babylon = engine.meshes.at(babylon_clone.value);
     assert(cloned_babylon.position.x == 9 && cloned_babylon.rotation.y == .5f && cloned_babylon.scaling.z == 4);
-    assert(bbl::detached_imported_vertex(cloned_babylon, engine.geometries[0], 0).normal.x == -1);
+    assert(bbl::detached_imported_vertex(engine.geometries[1], 0).normal.x == -1);
     cloned_babylon.position = {1,1,1};
     cloned_babylon.transform_version = 1;
     const auto recloned_babylon = bbl::clone_mesh_node(engine, babylon_clone);
@@ -151,6 +155,9 @@ test(
             "std::uint32_t material_family_bit(",
             "MeshHandle clone_mesh_node(",
             "void add_to_scene(Scene& scene, MeshHandle",
+            "void mark_mesh_dirty(",
+            "void erase_first_mesh(",
+            "void clear_mesh_parent(",
             "void remove_from_scene(Scene& scene, MeshHandle",
         ]
             .map((signature) => cppFunction(lowerer, signature))
@@ -158,6 +165,7 @@ test(
         writeFileSync(
             file,
             `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <cassert>
 #include <tuple>
 namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} ${functions} }
@@ -210,23 +218,20 @@ int main() {
     bbl::remove_from_scene(scene, empty);
     assert(scene.meshes.empty());
     // Retired records dropped their geometry link, and the unowned
-    // geometry's slot is offered at once. Once the renderer has fixed its
-    // composition rows, a new record takes the last retired slot under the
-    // next generation; the retired handle then names nothing.
+    // geometry's slot is offered at once. Every retired record's slot is
+    // offered too, so the next record takes the last one under the next
+    // generation; the retired handle then names nothing.
     assert(engine.meshes[third.value].geometry == bbl::invalid_handle);
     assert(engine.free_geometry_slots.size() == 1 && engine.free_geometry_slots[0] == 0);
-    assert(engine.free_mesh_slots.size() == 3);
-    engine.composition_feature_rows_initialized = true;
-    // Every record a scene can create names its geometry, so the slot
-    // reuse is driven through the store every creator ends in.
+    assert(engine.free_mesh_slots.size() == 4);
     const auto reused = bbl::store_mesh_record(engine, bbl::MeshRecord{});
-    assert(reused.value == third.value && reused.generation == 1 && engine.meshes.size() == 4);
-    assert(!bbl::mesh_handle_current(engine, third) && bbl::mesh_handle_current(engine, reused));
-    assert(engine.meshes[reused.value].creation_ordinal == 2);
+    assert(reused.value == empty.value && reused.generation == 1 && engine.meshes.size() == 4);
+    assert(!bbl::mesh_handle_current(engine, empty) && bbl::mesh_handle_current(engine, reused));
     bool stale_refused = false;
-    try { bbl::add_to_scene(scene, third); } catch (const std::runtime_error&) { stale_refused = true; }
+    try { bbl::add_to_scene(scene, empty); } catch (const std::runtime_error&) { stale_refused = true; }
     assert(stale_refused && scene.meshes.empty());
-    bbl::remove_from_scene(scene, third);
+    bbl::remove_from_scene(scene, empty);
+    std::ignore = bbl::store_mesh_record(engine, bbl::MeshRecord{});
     std::ignore = bbl::store_mesh_record(engine, bbl::MeshRecord{});
     std::ignore = bbl::store_mesh_record(engine, bbl::MeshRecord{});
     assert(engine.meshes.size() == 4 && engine.free_mesh_slots.empty());

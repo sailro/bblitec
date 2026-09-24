@@ -494,7 +494,7 @@ ${checks.join("\n")}
     for (const bool live_world : {false, true}) {
         record.gpu_world_transform = live_world;
         const auto expected = bbl::upstream::mesh_world_matrix(engine, record);
-        const auto block = bbl::pal::node_mesh_block(scene, engine, 0);
+        const auto block = bbl::pal::node_mesh_block(scene, engine, bbl::MeshHandle{0});
         assert(block.world == expected);
         const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
         const auto deltas = bbl::upstream::pack_morph_deltas(engine.geometries[0]);
@@ -512,7 +512,7 @@ ${checks.join("\n")}
     assert(!bbl::pal::pinned_draw_conventions(0, record).mirrored_vertices);
     assert(plain[0].position[0] != vertex.position.x);
     assert(bbl::pal::pinned_draw_world(false, false, false, record, scene, engine) == bbl::pal::pinned_mesh_world());
-    assert(bbl::pal::node_mesh_block(scene, engine, 0).world == bbl::pal::pinned_identity_world());
+    assert(bbl::pal::node_mesh_block(scene, engine, bbl::MeshHandle{0}).world == bbl::pal::pinned_identity_world());
     record.skinned = false; record.gpu_deformation = false; record.morph_storage_weights.clear();
     assert(bbl::pal::pick_mesh_projection(engine, record) == -1);
     record.skinned = true;

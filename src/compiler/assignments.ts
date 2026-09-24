@@ -1719,7 +1719,7 @@ export function emitPropertyAssignment(
             `bbl::set_animation_speed_ratio(${context.requireEngine(
                 group,
                 expression,
-            )}, ${group.cpp}, ${context.compileNumber(expression.right)});`,
+            )}, ${group.cpp}, ${context.compileNumber(expression.right, "double")});`,
         );
         return;
     }
@@ -3162,7 +3162,7 @@ function emitIncludedOnlyMeshIdsAssignment(
         context.emit(
             `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
                 `.included_meshes = {` +
-                `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
+                `${meshes.join(", ")}};`,
         );
         return true;
     }

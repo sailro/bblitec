@@ -4183,7 +4183,7 @@ test("fully initializes direct property-animation targets", () => {
 
     assert.match(
         result.cpp,
-        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,]+\.value, \{\}\}/,
+        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,{}]+, 0u, \{\}\}/,
     );
 });
 
@@ -12989,11 +12989,11 @@ test("folds a light include set to the meshes its ids name", () => {
     // frame's alias of the caller's handle.
     assert.match(
         result.cpp,
-        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box\.value, v_ball\.value\};/,
+        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box, v_ball\};/,
     );
     assert.match(
         result.cpp,
-        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\.value\};/,
+        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\};/,
     );
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its
@@ -13200,7 +13200,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
         /set_asset_root_position_component\([^;]+1u, \(-3\.0\)\)/,
     );
     assert.equal(result.cpp.match(/bbl::add_asset_entities\(/g)?.length, 2);
-    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0f, false\)/);
+    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0, false\)/);
 
     assert.throws(
         () =>
@@ -15259,24 +15259,56 @@ test("compiles pinned scene 213 GridMaterial options", () => {
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene213.ts",
     });
 
-    assert.ok(result.manifest.features.includes("material:grid"));
+    // The pin's grid is a ShaderMaterial its factory builds from the
+    // options; generation ran that factory, so each grid is a reached
+    // shader program whose sources are the factory's own.
+    assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.ok(
-        result.manifest.generatedSources.includes(
-            "upstream/src/material_grid.cpp",
-        ),
+    const grids = result.manifest.customShaderPrograms.filter(({ name }) =>
+        name.startsWith("grid-material-"),
     );
-    assert.match(result.cpp, /bbl::create_grid_material/);
-    assert.match(result.cpp, /bbl::GridMaterialOptions/);
-    assert.match(result.cpp, /0\.6f, 1\.0f, true, false, false, true/);
+    // Four materials, four option sets: antialiased, max-line,
+    // transparent and hard-cutoff.
+    assert.equal(grids.length, 4);
+    for (const grid of grids) {
+        assert.match(grid.fragmentSource, /fn gridIsOnLine\(/);
+        assert.deepEqual(grid.attributes, ["position", "normal"]);
+        assert.deepEqual(grid.uniforms.slice(0, 3), [
+            "world",
+            "view",
+            "projection",
+        ]);
+    }
+    const transparent = grids.filter(
+        ({ needAlphaBlending }) => needAlphaBlending,
+    );
+    assert.equal(transparent.length, 1);
+    assert.match(
+        transparent[0]!.fragmentSource,
+        /opacity=clamp\(grid,0\.08,shaderUniforms\.gridControl\.w\*grid\);/,
+    );
+    assert.equal(transparent[0]!.depthWrite, false);
+    // The factory's own computed values: Math.round over the frequency,
+    // normalized to float32 by the material.
     assert.match(
         result.cpp,
-        /5\.0f, 0\.5f, 1\.0f, 1\.0f, true, false, true, true/,
+        /bbl::set_shader_uniform_value\([^;]*0u, 0\.5f, 4\.0f, 0\.4f, 0\.6f\);/,
     );
-    assert.ok(
-        result.manifest.adaptations.some(
-            ({ id }) => id === "grid-tint-specialization",
-        ),
+    assert.match(result.cpp, /bbl::create_shader_material\(/);
+});
+
+test("refuses a GridMaterial option generation cannot fold", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `import { createEngine, createGridMaterial } from "@babylonjs/lite";
+async function main() {
+    const engine = await createEngine(document.getElementById("c") as HTMLCanvasElement);
+    createGridMaterial({ gridRatio: Math.random() });
+}
+main();`,
+            ),
+        /GridMaterial option 'gridRatio' must be a static number/,
     );
 });
 
@@ -19027,7 +19059,7 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // setAnimationAdditive: frame zero through the pinned conversion.
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
     // The handle ternary folded per unrolled element: the additive pose
     // keeps its own time, the other group takes the seek value.
@@ -19175,11 +19207,11 @@ test("setAnimationAdditive resolves its options at generation exactly where the 
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5f\)/,
+        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
 });
 

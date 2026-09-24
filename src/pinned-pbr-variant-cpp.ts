@@ -57,6 +57,37 @@ import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-unifo
 import { stringLiteral } from "./cpp-literals.js";
 
 /**
+ * A layer writer's presence test: the record flag standing for the pin's
+ * own `!<local>?.isEnabled` guard, asserted to be the writer's.
+ */
+function layerPresence(
+    context: LoweringContext,
+    modulePath: string,
+    symbolName: string,
+    sourceLocal: string,
+    presence: string,
+): string {
+    const { declaration } = context.functionDeclaration(modulePath, symbolName);
+    const guarded = context.hasNode(
+        declaration,
+        (node) =>
+            ts.isPrefixUnaryExpression(node) &&
+            node.operator === ts.SyntaxKind.ExclamationToken &&
+            context.expressionMatchesShape(
+                node.operand,
+                `${sourceLocal}?.isEnabled`,
+            ),
+    );
+    if (!guarded) {
+        context.contractError(
+            declaration,
+            `Expected ${symbolName} to skip a layer that is not \`${sourceLocal}?.isEnabled\`.`,
+        );
+    }
+    return presence;
+}
+
+/**
  * The float lanes a scalar or vector UBO field spans, shared by the PBR and
  * Standard slot builders. Anything that is neither `f32` nor a two- or
  * three-lane float vector is the four-lane `vec4<f32>`, exactly as both
@@ -114,6 +145,12 @@ const extensionWriters: ReadonlyArray<
           propertySources: Readonly<Record<string, string | null>>;
           /** Properties that are colours rather than scalars, and their lane count. */
           vectorProperties?: Readonly<Record<string, number>>;
+          /**
+           * The record's presence flag for a layer the writer guards with
+           * `!<sourceLocal>?.isEnabled`: the lowered writer returns without
+           * writing when it is false, as the pin's does.
+           */
+          presence?: string;
           nestedWriters?: Readonly<
               Record<
                   string,
@@ -146,6 +183,7 @@ const extensionWriters: ReadonlyArray<
         symbolName: "writeClearcoatUBO",
         sourceLocal: "cc",
         baseField: "ccParams",
+        presence: "material.has_clearcoat",
         propertySources: {
             indexOfRefraction: "material.clearcoat_index_of_refraction",
             intensity: "material.clearcoat_intensity",
@@ -165,6 +203,7 @@ const extensionWriters: ReadonlyArray<
         symbolName: "writeIridescenceUBO",
         sourceLocal: "iri",
         baseField: "iridescenceParams",
+        presence: "material.has_iridescence",
         propertySources: {
             intensity: "material.iridescence_intensity",
             indexOfRefraction: "material.iridescence_index_of_refraction",
@@ -196,6 +235,7 @@ const extensionWriters: ReadonlyArray<
         symbolName: "writeSheenUBO",
         sourceLocal: "sh",
         baseField: "sheenParams",
+        presence: "material.has_sheen",
         propertySources: {
             color: "material.sheen_color",
             intensity: "material.sheen_intensity",
@@ -1688,6 +1728,9 @@ export function pinnedPbrVariantsHeader(
                 // A writer whose slots carry no UV transform never reads the
                 // parameter; the cast keeps the shared signature warning-free.
                 `    (void)transform;\n` +
+                (extension.presence
+                    ? `    if (!${layerPresence(context, extension.modulePath, extension.symbolName, extension.sourceLocal, extension.presence)}) return;\n`
+                    : "") +
                 `${lowerPinnedUboWriter(context, {
                     modulePath: extension.modulePath,
                     symbolName: extension.symbolName,
@@ -3126,7 +3169,6 @@ export function pinnedStandardVariantsHeader(
                   vectorHooks: {
                       _uvOffsetResolver: { property: "uvOffset", lanes: 2 },
                   },
-                  scalarPrecision: "double",
               }
             : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],

@@ -7,8 +7,7 @@ import { indent } from "./shader-builtins-utility.js";
  *
  * Every line of arithmetic comes out of the pinned `makeBillboardWgsl`
  * permutation the billboard lowerer reconstructs; this module only re-homes
- * the resources, the way `shader-builtins-sprite.ts` does for the 2D layer
- * and `shader-builtins-background.ts` does for the skybox.
+ * the resources, the way `shader-builtins-sprite.ts` does for the 2D layer.
  *
  * Upstream binds the per-pass scene UBO at `@group(0)` and the billboard's
  * own uniform plus atlas at `@group(1)`. SDL_GPU splits resources by stage

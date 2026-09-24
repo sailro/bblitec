@@ -135,7 +135,6 @@ import {
 import {
     compileAnisotropyOptions,
     compileClearCoatOptions,
-    compileGridMaterialOptions,
     compileIridescenceOptions,
     compileMetallicReflectanceOptions,
     compilePbrMaterialOptions,
@@ -183,6 +182,10 @@ import {
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import {
+    reachGridMaterial,
+    type ReachedGridMaterial,
+} from "./compiler/grid-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     executeApplicationFunction,
@@ -3344,8 +3347,7 @@ class Compiler implements LoweringServices {
             this.sceneManifest.recordRuntimeMeshProfile(index);
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
-            writable(value).cpp =
-                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+            writable(value).cpp = `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -3653,8 +3655,11 @@ class Compiler implements LoweringServices {
         return compileMetallicReflectanceOptions(this, expression);
     }
 
-    public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        return compileGridMaterialOptions(this, expression);
+    public reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial {
+        return reachGridMaterial(this, call, options);
     }
 
     public compileClearCoatOptions(

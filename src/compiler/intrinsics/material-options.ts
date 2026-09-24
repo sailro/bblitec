@@ -52,7 +52,6 @@ import {
 } from "../../lowering/pinned-material-defaults.js";
 import { floatLiteral } from "../../cpp-literals.js";
 import { isGlobalUndefined } from "../symbols.js";
-import { gridMaterialDefaults } from "../../lowering/pinned-factory-defaults.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(name: PinnedMaterialDefaultName): {
@@ -914,101 +913,6 @@ export function compileMetallicReflectanceOptions(
                 : {}),
         },
     };
-}
-
-export function compileGridMaterialOptions(
-    context: MaterialOptionContext,
-    expression: ts.Expression,
-): string[] {
-    const object = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        object,
-        [
-            "name",
-            "mainColor",
-            "lineColor",
-            "gridRatio",
-            "gridOffset",
-            "majorUnitFrequency",
-            "minorUnitVisibility",
-            "opacity",
-            "antialias",
-            "preMultiplyAlpha",
-            "useMaxLine",
-            "visibility",
-            "backFaceCulling",
-        ],
-        "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
-    );
-    const mainColor = context.objectProperty(object, "mainColor");
-    const lineColor = context.objectProperty(object, "lineColor");
-    const gridRatio = context.objectProperty(object, "gridRatio");
-    const gridOffset = context.objectProperty(object, "gridOffset");
-    const majorUnitFrequency = context.objectProperty(
-        object,
-        "majorUnitFrequency",
-    );
-    const minorUnitVisibility = context.objectProperty(
-        object,
-        "minorUnitVisibility",
-    );
-    const opacity = context.objectProperty(object, "opacity");
-    const visibility = context.objectProperty(object, "visibility");
-    const antialias = context.objectProperty(object, "antialias");
-    const preMultiplyAlpha = context.objectProperty(object, "preMultiplyAlpha");
-    const useMaxLine = context.objectProperty(object, "useMaxLine");
-    const backFaceCulling = context.objectProperty(object, "backFaceCulling");
-    const number = (value: ts.Expression | undefined): string | undefined =>
-        value && context.compileNumber(value);
-    const flag = (value: ts.Expression | undefined): string | undefined =>
-        value && context.compileBoolean(value);
-    return gridMaterialOptionsCpp({
-        mainColor: mainColor && context.compileColor3(mainColor),
-        lineColor: lineColor && context.compileColor3(lineColor),
-        gridRatio: number(gridRatio),
-        gridOffset: gridOffset && context.compileVec3(gridOffset),
-        majorUnitFrequency: number(majorUnitFrequency),
-        minorUnitVisibility: number(minorUnitVisibility),
-        opacity: number(opacity),
-        visibility: number(visibility),
-        antialias: flag(antialias),
-        preMultiplyAlpha: flag(preMultiplyAlpha),
-        useMaxLine: flag(useMaxLine),
-        backFaceCulling: flag(backFaceCulling),
-    });
-}
-
-/**
- * `GridMaterialOptions`' members in their native order: each the scene's
- * compiled value, or `createGridMaterial`'s own default where the scene
- * named none.
- */
-export function gridMaterialOptionsCpp(
-    named: Partial<
-        Record<
-            keyof ReturnType<typeof gridMaterialDefaults>,
-            string | undefined
-        >
-    >,
-): string[] {
-    const defaults = gridMaterialDefaults();
-    const lanes = (type: string, values: readonly number[]): string =>
-        `bbl::${type}{${values.map(floatLiteral).join(", ")}}`;
-    return [
-        named.mainColor ?? lanes("Color3", defaults.mainColor),
-        named.lineColor ?? lanes("Color3", defaults.lineColor),
-        named.gridRatio ?? floatLiteral(defaults.gridRatio),
-        named.gridOffset ?? lanes("Vec3", defaults.gridOffset),
-        named.majorUnitFrequency ?? floatLiteral(defaults.majorUnitFrequency),
-        named.minorUnitVisibility ?? floatLiteral(defaults.minorUnitVisibility),
-        named.opacity ?? floatLiteral(defaults.opacity),
-        named.visibility ?? floatLiteral(defaults.visibility),
-        named.antialias ?? String(defaults.antialias),
-        named.preMultiplyAlpha ?? String(defaults.preMultiplyAlpha),
-        named.useMaxLine ?? String(defaults.useMaxLine),
-        named.backFaceCulling ?? String(defaults.backFaceCulling),
-    ];
 }
 
 /**

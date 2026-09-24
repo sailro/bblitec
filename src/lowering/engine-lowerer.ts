@@ -3,11 +3,24 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 import { canvasDatasetSource } from "./canvas-dataset.js";
+import {
+    meshCompositionRowsCpp,
+    type MeshProfileTable,
+} from "./resource-profiles.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerCore(workers = false, frameConductor = true): LoweredSource {
+    /**
+     * `meshProfiles` is the scene's runtime composition-profile table when
+     * it has one; `create_engine` hands the engine its rows
+     * (`MeshCompositionRows`) before the program stores a mesh.
+     */
+    public lowerCore(
+        workers = false,
+        frameConductor = true,
+        meshProfiles?: MeshProfileTable,
+    ): LoweredSource {
         const modulePath = "src/engine/engine.ts";
         const create = this.context.functionDeclaration(
             modulePath,
@@ -69,7 +82,12 @@ ${workers ? "#include <bblite/pal_async_engine.hpp>" : ""}
 namespace bbl {
 
 Engine create_engine(EngineOptions options) {
-    return pal::create_engine(std::move(options));
+${
+    meshProfiles
+        ? `    Engine engine = pal::create_engine(std::move(options));
+${meshCompositionRowsCpp(meshProfiles)}    return engine;`
+        : "    return pal::create_engine(std::move(options));"
+}
 }
 
 ${

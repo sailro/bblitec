@@ -298,8 +298,7 @@ struct SkinRuntime {
 };
 
 struct AnimatedMeshBinding {
-    std::uint32_t mesh = 0;
-    std::uint32_t geometry = 0;
+    MeshHandle mesh{};
     std::size_t node = 0;
     std::size_t skin = std::numeric_limits<std::size_t>::max();
     std::vector<float> morph_default_weights;
@@ -1456,12 +1455,9 @@ ${
             geometry.world_bounds_max = world_max;
 `
         : ""
-}            // The asset's animation bindings name this geometry by index.
-            geometry.slot_reserved = true;
-            const std::uint32_t geometry_slot =
+}            const std::uint32_t geometry_slot =
                 store_geometry_record(engine, std::move(geometry));
             MeshRecord record;
-            record.asset_indexed = true;
             record.scene_node_name = string_or(node, "name");
             if (record.scene_node_name.empty()) {
                 record.scene_node_name = "gltf_node_" +
@@ -1469,6 +1465,8 @@ ${
             }
             record.name = required(planned, "name").as_string();
             record.geometry = geometry_slot;
+            // load-gltf.ts sets boundMin/boundMax on every primitive.
+            record.has_bounds = true;
             // src/material/pbr/fragments/refraction-rtt-fragment.ts,
             // makeRefractionMod/thicknessScaleLine: the refraction fragment scales its
             // thickness lanes by \`ts = max(length(mesh.world[0].xyz),
@@ -1524,7 +1522,6 @@ ${
                 record.instance_matrices.size());
             const MeshHandle mesh_handle =
                 store_mesh_record(engine, std::move(record));
-            const std::uint32_t mesh_record_index = mesh_handle.value;
             if (deformed_geometry) {
                 const std::size_t skin_index =
                     planned_skin
@@ -1596,8 +1593,7 @@ ${
                 animation_mesh_indices[gltf_mesh_counter] = animation_runtime->meshes.size();
                 animation_runtime->meshes.push_back(
                     AnimatedMeshBinding{
-                        mesh_record_index,
-                        ${recordAt("engine.meshes", "mesh_handle")}.geometry,
+                        mesh_handle,
                         node_index,
                         skin_index,
                         std::move(morph_default_weights),
@@ -1733,7 +1729,9 @@ bool gltf_visibility_cascade(Engine& engine, AssetRecord& asset, std::size_t nod
     bool changed = asset.node_visible[node] != visible;
     asset.node_visible[node] = visible;
     for (const MeshHandle mesh : asset.node_meshes[node]) {
-        ${recordAt("engine.meshes", "mesh")}.visible = visible;
+        // The pin writes a removed mesh too; once a later mesh holds its
+        // slot nothing can observe that write.
+        if (MeshRecord* record = current_mesh_record(engine, mesh)) record->visible = visible;
     }
     for (const std::size_t child : asset.node_children[node]) {
         if (gltf_visibility_cascade(engine, asset, child, visible)) changed = true;

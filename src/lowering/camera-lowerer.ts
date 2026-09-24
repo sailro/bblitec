@@ -835,13 +835,14 @@ namespace {
 
 ${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
-// The Mesh members the framing reads, off the native record. A loaded glTF
-// primitive keeps its node world baked into its vertices, so its box is
-// that world box (the live one an animated asset records) under the
-// record's own identity transform; a createMeshFromData mesh -- every
-// factory's -- keeps its local box. A .babylon mesh has neither bound
-// upstream (load-babylon.ts builds it without them), so it frames nothing
-// unless the scene assigns them. A scene may replace either public bound.
+// The Mesh members the framing reads, off the native record: the bounds
+// its producer set (\`has_bounds\`). A loaded glTF primitive keeps its node
+// world baked into its vertices, so its box is that world box (the live
+// one an animated asset records) under the record's own identity
+// transform; a createMeshFromData mesh -- every factory's -- keeps its
+// local box. A .babylon mesh has neither bound upstream (load-babylon.ts
+// builds it without them), so it frames nothing unless the scene assigns
+// them. A scene may replace either public bound.
 // The world matrix is the record's composition under its parents, with an
 // imported clone root's outer transform on the left, as the draw path
 // applies it.
@@ -852,7 +853,7 @@ WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle ha
     const auto lanes = [](const Vec3& value) {
         return std::array<float, 3>{value.x, value.y, value.z};
     };
-    if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
+    if (mesh.has_bounds && mesh.geometry < engine.geometries.size()) {
         result.bound_min = lanes(engine.geometries[mesh.geometry].${bounds}_min);
         result.bound_max = lanes(engine.geometries[mesh.geometry].${bounds}_max);
     }

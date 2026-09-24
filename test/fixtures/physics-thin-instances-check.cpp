@@ -45,12 +45,12 @@ int main() {
     carrier.instance_count = 3;
     carrier.instance_source = &matrices;
     carrier.position = {123, 456, 789};
-    const auto ordinary = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 1},
+    const auto ordinary = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{1}),
                                                  u::PhysicsMotionType::STATIC, false);
     assert(u::get_physics_body_instance_count(ordinary) == 1);
     u::enable_havok_thin_instance_physics(handle);
     u::enable_havok_thin_instance_physics(handle);
-    const auto body = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 0},
+    const auto body = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                              u::PhysicsMotionType::DYNAMIC, false);
     assert(u::get_physics_body_instance_count(body) == 3);
     auto* state = u::thin_state(world, body.handle);
@@ -99,7 +99,7 @@ int main() {
     };
     carrier.instance_count = 0;
     assert(refuses([&] {
-        static_cast<void>(u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 0},
+        static_cast<void>(u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                  u::PhysicsMotionType::DYNAMIC, false));
     }));
     assert(refuses([&] {
@@ -108,11 +108,11 @@ int main() {
     carrier.instance_count = 3;
     {
         namespace c = bbl::character;
-        const auto instances = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 0},
+        const auto instances = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                       u::PhysicsMotionType::DYNAMIC, false);
         u::set_physics_body_shape(handle, instances, shape);
         u::set_physics_body_mass(handle, instances, 2);
-        const auto control = u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 1},
+        const auto control = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{1}),
                                                     u::PhysicsMotionType::STATIC, false);
         c::PhysicsCharacterController controller(engine);
         controller._world = js::make_ref<c::PhysicsWorld>();
@@ -144,7 +144,7 @@ int main() {
     }
     u::enable_havok_floating_origin(handle, 100);
     assert(refuses([&] {
-        static_cast<void>(u::create_physics_body(handle, {u::PhysicsNodeKind::mesh, 0},
+        static_cast<void>(u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                  u::PhysicsMotionType::DYNAMIC, false));
     }));
     assert(world.bodies.size() == 1 && world.thin_states.empty());

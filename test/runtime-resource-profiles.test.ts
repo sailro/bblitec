@@ -6,8 +6,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
-import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
-import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
+import {
+    meshCompositionRowsCpp,
+    meshProfileBeginCpp,
+} from "../src/lowering/resource-profiles.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -86,7 +88,7 @@ test("native loops assign independent clone handles to one composition profile",
     );
     assert.match(
         result.cpp,
-        /bind_scene_mesh_profile\([^\n]+clone_mesh_node\(/,
+        /\(bbl::upstream::begin_scene_mesh_profile\([^\n]+clone_mesh_node\(/,
     );
     assert.equal(result.cpp.match(/clone_mesh_node\(/g)?.length, 1);
 });
@@ -172,7 +174,10 @@ test("variable native construction records call-site profiles, not singleton all
     assert.equal(result.manifest.sceneMeshes[0]?.runtimeInstances, true);
     assert.equal(result.manifest.sceneMeshes[0]?.standardMaterial, true);
     assert.deepEqual(result.manifest.runtimeMaterialProfiles, [0]);
-    assert.match(result.cpp, /bind_scene_mesh_profile\(/);
+    assert.match(
+        result.cpp,
+        /\(bbl::upstream::begin_scene_mesh_profile\(v_engine, 0u\), bbl::create_box\(/,
+    );
     assert.match(result.cpp, /continue;/);
     assert.match(result.cpp, /break;/);
 });
@@ -420,21 +425,10 @@ test("retained construction cannot hide actual ordinal creation in the registeri
 const tools = optionalNativeFixtureTools();
 
 test(
-    "native profile rows survive variable order, skipped profiles, clones and later allocation",
+    "native profile rows survive variable order, profiled sites, clones and slot reuse",
     { skip: !tools },
     () => {
         const table = { sceneRows: [1, 3], staticRows: [0, 2], rowCount: 4 };
-        const lowered = new RendererLowerer(
-            new LoweringContext(),
-        ).lowerRenderPlan({ meshProfiles: table });
-        const from = lowered.source.indexOf(
-            "void initialize_composition_feature_rows",
-        );
-        const through = lowered.source.indexOf(
-            "\nRenderPlan build_render_plan",
-            from,
-        );
-        assert.ok(from >= 0 && through > from);
         const output = resolve("artifacts", "runtime-resource-profile-check");
         mkdirSync(output, { recursive: true });
         const source = join(output, "profiles.cpp");
@@ -444,26 +438,35 @@ test(
 #include <cassert>
 #include <stdexcept>
 namespace bbl::upstream {
-${meshProfileBindingCpp(table)}
-${lowered.source.slice(from, through)}
+${meshProfileBeginCpp}
 }
 int main() {
     bbl::Engine engine;
-    engine.meshes.resize(5);
-    bbl::upstream::bind_scene_mesh_profile(engine, {1}, 1);
-    bbl::upstream::bind_scene_mesh_profile(engine, {2}, 1);
-    engine.meshes[4].feature_source_mesh = 2;
-    bbl::upstream::initialize_composition_feature_rows(engine);
-    const std::array<std::uint32_t, 5> expected{0, 3, 3, 2, 3};
-    for (std::size_t i = 0; i < expected.size(); ++i) {
-        assert(engine.meshes[i].composition_feature_row == expected[i]);
-    }
-    engine.meshes.emplace_back();
-    bbl::upstream::bind_scene_mesh_profile(engine, {5}, 0);
-    bbl::upstream::initialize_composition_feature_rows(engine);
-    assert(engine.meshes[5].composition_feature_row == 1);
+${meshCompositionRowsCpp(table)}
+    const auto row = [&](bbl::MeshHandle mesh) {
+        return bbl::handle_at(engine.meshes, mesh).composition_feature_row;
+    };
+    const auto original = bbl::store_mesh_record(engine, {});
+    bbl::upstream::begin_scene_mesh_profile(engine, 1);
+    const auto first_profiled = bbl::store_mesh_record(engine, {});
+    bbl::upstream::begin_scene_mesh_profile(engine, 1);
+    const auto second_profiled = bbl::store_mesh_record(engine, {});
+    const auto second_original = bbl::store_mesh_record(engine, {});
+    // A clone copies its source's record, row included.
+    const auto clone = bbl::store_mesh_record(engine, bbl::handle_at(engine.meshes, second_profiled));
+    assert(row(original) == 0 && row(first_profiled) == 3 && row(second_profiled) == 3);
+    assert(row(second_original) == 2 && row(clone) == 3);
+    // Past the static rows an original reads a row after the table.
+    const auto runtime_original = bbl::store_mesh_record(engine, {});
+    assert(row(runtime_original) == 4);
+    // A reused slot does not carry its old row: the row is the mesh's own.
+    bbl::retire_mesh_record(engine, original);
+    bbl::upstream::begin_scene_mesh_profile(engine, 0);
+    const auto reused = bbl::store_mesh_record(engine, {});
+    assert(reused.value == original.value && reused.generation == original.generation + 1);
+    assert(row(reused) == 1);
     bool refused = false;
-    try { bbl::upstream::bind_scene_mesh_profile(engine, {5}, 2); }
+    try { bbl::upstream::begin_scene_mesh_profile(engine, 2); }
     catch (const std::runtime_error&) { refused = true; }
     assert(refused);
 }`,
@@ -505,7 +508,7 @@ test(
             join(includes, "renderer_plan.hpp"),
             `#pragma once
 #include <bblite/runtime.hpp>
-namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle, std::uint32_t); }
+namespace bbl::upstream { void begin_scene_mesh_profile(Engine&, std::uint32_t); }
 `,
         );
         const source = join(output, "loop.cpp");
@@ -518,7 +521,10 @@ namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle
 namespace { std::size_t constructions = 0; std::size_t registrations = 0; }
 namespace bbl {
 ${lowerMeshMaterialSetter(new LoweringContext())}
-Engine create_engine(EngineOptions) { return {}; }
+Engine create_engine(EngineOptions) {
+    Engine engine;
+${meshCompositionRowsCpp({ sceneRows: [0], staticRows: [], rowCount: 1 })}    return engine;
+}
 Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
 MaterialHandle create_standard_material(Engine& engine) {
     const auto index = static_cast<std::uint32_t>(engine.materials.size());
@@ -529,9 +535,7 @@ MeshHandle create_box(Engine& engine, BoxOptions options) {
     const std::array<float, 3> widths{1, 3, 4};
     assert(constructions < widths.size() && options.width == widths[constructions]);
     ++constructions;
-    const auto index = static_cast<std::uint32_t>(engine.meshes.size());
-    engine.meshes.emplace_back();
-    return {index};
+    return store_mesh_record(engine, {});
 }
 void mark_mesh_dirty(Engine&, MeshHandle) {}
 void add_to_scene(Scene& scene, MeshHandle mesh) {
@@ -545,7 +549,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
 }
 }
 namespace bbl::upstream {
-${meshProfileBindingCpp({ sceneRows: [0], staticRows: [], rowCount: 1 })}
+${meshProfileBeginCpp}
 }
 int main() {
     assert(generated_profile_main() == 0);

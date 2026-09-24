@@ -89,7 +89,7 @@ test("lowers writeStdMaterialData from its own AST", () => {
     // `1.0 / mat.bumpLevel` — the arithmetic is the pin's, not restated.
     assert.match(
         body,
-        /out\.bs = static_cast<float>\(1\.0f \/ material\.bump_level\);/,
+        /out\.bs = static_cast<float>\(1\.0 \/ material\.bump_level\);/,
     );
     // `textureLevel` is the writer's own parameter, resolved like a capture.
     assert.match(body, /out\.tl = static_cast<float>\(texture_level\);/);
@@ -122,14 +122,14 @@ test("lowers writeStandardUvTransformData with the uninstalled resolver folded",
         absentHooks: ["_uvOffsetResolver"],
         slots: [{ name: "u", offset: 0, lanes: 4 }],
     }).join("\n");
-    // The scale lanes come off the record.
-    assert.match(body, /const float scaleX = material\.uv_scale\[0\];/);
+    // The scale lanes come off the record, into the pin's double locals.
+    assert.match(body, /const double scaleX = material\.uv_scale\[0\];/);
     // `let scaleY` is reassigned under the invert arm, so it is mutable.
-    assert.match(body, /(^|\n)\s*float scaleY = material\.uv_scale\[1\];/);
+    assert.match(body, /(^|\n)\s*double scaleY = material\.uv_scale\[1\];/);
     // `_uvOffsetResolver?.(material) ?? null` is the pin's uninstalled
     // state, so `offset?.[n] ?? 0` folds to the pin's own zero.
-    assert.match(body, /const float offsetX = 0\.0f;/);
-    assert.match(body, /(^|\n)\s*float offsetY = 0\.0f;/);
+    assert.match(body, /const double offsetX = 0\.0;/);
+    assert.match(body, /(^|\n)\s*double offsetY = 0\.0;/);
     // The invert arm is a real runtime branch on the caller's flag, with the
     // pin's own flip arithmetic.
     assert.match(body, /if \(invert_y\) \{/);

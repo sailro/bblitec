@@ -389,6 +389,8 @@ export interface MemorySample {
      *  against the meshes the scene still draws. */
     meshRecords: number;
     sceneMeshes: number;
+    /** Occupied engine transform-node records. */
+    transformNodeRecords: number;
     /** Occupied engine geometry records, against the ones still holding
      *  vertices. */
     geometryRecords: number;
@@ -427,6 +429,7 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         const workingSetMb = read("working_set_mb");
         const meshRecords = count("mesh_records");
         const sceneMeshes = count("scene_meshes");
+        const transformNodeRecords = count("transform_node_records");
         const geometryRecords = count("geometry_records");
         const liveGeometries = count("live_geometries");
         const geometryMb = read("geometry_mb");
@@ -440,6 +443,7 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
             workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
+            transformNodeRecords === undefined ||
             geometryRecords === undefined ||
             liveGeometries === undefined ||
             geometryMb === undefined ||
@@ -454,6 +458,7 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
             workingSetMb,
             meshRecords,
             sceneMeshes,
+            transformNodeRecords,
             geometryRecords,
             liveGeometries,
             geometryMb,
@@ -683,6 +688,7 @@ export function formatMemorySummary(
             `${signed(recentSlopeMbPer1000Frames, 2)} over the later half), ` +
             `geometry ${last.geometryMb.toFixed(1)} MB, ` +
             `${last.meshRecords} mesh records for ${last.sceneMeshes} scene mesh entries, ` +
+            `${last.transformNodeRecords} transform-node records, ` +
             `${last.geometryRecords} geometry records for ${last.liveGeometries} live, ` +
             `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
             `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`,
