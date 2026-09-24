@@ -230,6 +230,22 @@ int main(int argc, char** argv) {
                 "repeated replacement reuses the unshared current snapshot");
     }
 
+    {
+        const bbl::js::FileReader reader;
+        std::vector<std::string> events;
+        reader.set_onload([&] {
+            events.push_back("load:" + reader.result().value());
+            // A handler replaced while one runs takes effect on the next read.
+            reader.set_onload([&] { events.push_back("replaced"); });
+        });
+        reader.set_onerror([&] { events.push_back(reader.result() ? "error:text" : "error"); });
+        reader.read_as_text(engine, bbl::js::file_at(retained, 0u));
+        reader.read_as_text(engine, bbl::BrowserFileHandle{});
+        reader.read_as_text(engine, bbl::js::file_at(retained, 0u));
+        require(events == std::vector<std::string>({"load:" + readable, "error", "replaced"}),
+                "FileReader loads inside readAsText, and errors on an unreadable File");
+    }
+
     engine.ui_elements[input_handle.value].selected_file = {};
     require(engine.browser_file_storage->snapshot_count() == 1u &&
                 engine.browser_file_storage->retained_bytes() == readable.size(),

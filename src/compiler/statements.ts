@@ -63,6 +63,8 @@ export interface StatementLoweringContext extends Pick<
     | "noteCameraVectorSet"
     | "workerCheckpointCpp"
     | "workerAbortCpp"
+    | "options"
+    | "emitActivationBoundary"
     | "speculating"
     | "transaction"
     | "checker"
@@ -486,7 +488,11 @@ export class StatementLowerer {
         }
         if (ts.isExpressionStatement(statement)) {
             this.loweredTerminators.delete(statement);
-            if (this.emitExpression(context, statement.expression)) {
+            if (
+                context.emitActivationBoundary(statement, () =>
+                    this.emitExpression(context, statement.expression),
+                )
+            ) {
                 this.loweredTerminators.add(statement);
             }
             return;
@@ -1342,6 +1348,10 @@ export class StatementLowerer {
             if (context.workerCheckpointCpp())
                 context.emit(
                     "} catch (const bbl::pal::WorkerTerminated&) { throw;",
+                );
+            else if (context.options.pendingActivations && !catchCpp)
+                context.emit(
+                    "} catch (const bbl::js::PendingActivation&) { throw;",
                 );
             context.emit(
                 suspendedCatch

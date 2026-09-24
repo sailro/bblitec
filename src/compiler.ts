@@ -57,6 +57,7 @@ import {
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { PendingActivations } from "./compiler/pending-activations.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
     compileTextModuleValue,
@@ -81,7 +82,7 @@ import {
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
-import { AsyncLowerer } from "./compiler/async.js";
+import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
     cppIdentifierPattern,
@@ -625,6 +626,11 @@ function compileSourceApplication(
                 ) {
                     resolved.runtimeSearchParams = true;
                     if (error.location) resolved.runtimeLocationSearch = true;
+                } else if (
+                    error instanceof PendingActivationsRequired &&
+                    !resolved.pendingActivations
+                ) {
+                    resolved.pendingActivations = true;
                 } else throw error;
             }
         }
@@ -726,11 +732,11 @@ class Compiler implements LoweringServices {
     private readonly collectionCardinalities =
         new EmissionSet<CollectionCardinality>();
     @journaled public accessor jsDataReached = false;
+    @journaled public accessor fileReaderReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     @journaled public accessor imageDecodeReached = false;
     @journaled public accessor jsRandomReached = false;
     @journaled private accessor audioSessionReached = false;
-    @journaled public accessor voxelFileStorageReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -1179,18 +1185,6 @@ class Compiler implements LoweringServices {
         }
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (node) => {
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression)
-                ) {
-                    // The file adapter stores both its input and result as object
-                    // references. Fix that representation before earlier literals.
-                    const file = this.voxelFileContract(node, node.expression);
-                    if (file?.dataType)
-                        this.dataTypes.markStoredObjectReferences(
-                            file.dataType,
-                        );
-                }
                 const target = retainedNativeMutationTarget(this.symbols, node);
                 if (target) {
                     const targetType = this.checker.getTypeAtLocation(target);
@@ -2870,6 +2864,57 @@ class Compiler implements LoweringServices {
         return this.options.workers
             ? this.asyncLowerer.compileCall(declaration, arguments_, node)
             : undefined;
+    }
+
+    public compileSynchronousPromise(node: ts.NewExpression): Value {
+        return this.asyncLowerer.compileSynchronousConstructor(node);
+    }
+
+    private pendingActivationAnalysis: PendingActivations | undefined;
+
+    /** Built once a reached constructed promise sets `pendingActivations`. */
+    public pendingActivations(): PendingActivations {
+        this.pendingActivationAnalysis ??= new PendingActivations(
+            this.checker,
+            this.sourceFiles(),
+            (construction) =>
+                this.browserErasure.isFrameYield(construction) ||
+                this.browserErasure.isBoundedNestedFrameYield(construction) ||
+                this.browserErasure.frameDrainCondition(construction) !==
+                    undefined ||
+                framePollExecutor(construction, this.checker, (expression) =>
+                    this.libraryGlobal(expression),
+                ) !== undefined,
+            (node, message) => this.fail(node, message),
+        );
+        return this.pendingActivationAnalysis;
+    }
+
+    /**
+     * An expression statement that discards the promise of an activation
+     * which can end at a pending await is where that ending stops: the
+     * statements after it run, as they do after JavaScript's suspension.
+     */
+    public emitActivationBoundary(
+        statement: ts.ExpressionStatement,
+        emit: () => boolean | void,
+    ): boolean | void {
+        if (
+            !this.options.pendingActivations ||
+            !this.pendingActivations().discards(statement)
+        )
+            return emit();
+        const lines = this.captureEmittedLines(() => {
+            emit();
+        });
+        this.emit("try {");
+        this.increaseIndent();
+        for (const line of lines) this.emit(line);
+        this.decreaseIndent();
+        this.emit("} catch (const bbl::js::PendingActivation&) {");
+        this.emit("    bbl::js::end_abandoned_activation();");
+        this.emit("}");
+        return false;
     }
 
     public withEngineBootstrap<T>(
@@ -5473,9 +5518,8 @@ class Compiler implements LoweringServices {
         return this.classLowerer.resolveClass(expression) !== undefined;
     }
 
-    public reachVoxelFileStorage(site: ts.Node): void {
-        this.voxelFileStorageReached = true;
-        this.reachFeature("browser:file", site);
+    public reachFileReader(): void {
+        this.fileReaderReached = true;
     }
 
     public reachJson(): void {
@@ -5484,82 +5528,6 @@ class Compiler implements LoweringServices {
 
     public reachLocalStorage(): void {
         this.reachFeature("storage:local");
-    }
-
-    private voxelFileContract(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ):
-        | {
-              name: "saveToFile" | "loadFromFile";
-              dataType: DataType | undefined;
-          }
-        | undefined {
-        const declaration = tryResolveFunctionDeclaration(this.checker, callee);
-        const name =
-            declaration?.name && ts.isIdentifier(declaration.name)
-                ? declaration.name.text
-                : undefined;
-        if (name !== "saveToFile" && name !== "loadFromFile") {
-            return undefined;
-        }
-        if (!declaration) {
-            return undefined;
-        }
-        const fileName = declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/");
-        if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
-            return undefined;
-        }
-        const parameter = declaration.parameters[0];
-        const signature = this.checker.getResolvedSignature(call);
-        const type =
-            name === "saveToFile"
-                ? parameter && this.checker.getTypeAtLocation(parameter)
-                : signature &&
-                  this.checker.getAwaitedType(
-                      this.checker.getReturnTypeOfSignature(signature),
-                  );
-        return {
-            name,
-            dataType: type ? this.dataTypes.fromTsType(type, call) : undefined,
-        };
-    }
-
-    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
-    public compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined {
-        const contract = this.voxelFileContract(call, callee);
-        if (!contract) return undefined;
-        const { name, dataType } = contract;
-        if (!dataType) {
-            this.fail(
-                call,
-                "Voxel file calls require a SaveData record or nullable load result.",
-            );
-        }
-        const stored = this.dataTypes.markStoredObjectReferences(dataType);
-        this.reachVoxelFileStorage(call);
-        this.reachJsData();
-        if (name === "saveToFile") {
-            this.expectArgumentCount(call, 1, 1);
-            return {
-                kind: "boolean",
-                cpp:
-                    `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), stored)})`,
-                dataType: { kind: "boolean" },
-            };
-        }
-        this.expectArgumentCount(call, 0, 0);
-        return this.dataValue(
-            `bbl::js::load_voxel_world<${this.dataTypes.cppType(stored)}>` +
-                `(${this.requireDefaultEngine(call)})`,
-            stored,
-        );
     }
 
     public reachImageDecode(): void {
@@ -9716,6 +9684,16 @@ class Compiler implements LoweringServices {
                 "This intrinsic requires createEngine to run first.",
             );
         }
+        if (
+            this.returnFrames.some(
+                (frame) => frame.kind === "native" && frame.namespaceScope,
+            )
+        )
+            this.fail(
+                node,
+                "A namespace-scope function has no binding for the entry's engine.",
+                "entry-scope-required",
+            );
         this.trackRetainedCaptureName(this.defaultEngineCpp);
         return this.defaultEngineCpp;
     }
@@ -10190,6 +10168,8 @@ class Compiler implements LoweringServices {
         this.increaseIndent();
         const workerAbort = this.workerAbortCpp();
         if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        else if (this.options.pendingActivations)
+            this.emit("if (bbl::js::activation_abandoned()) return;");
         for (const line of cleanup) this.emit(line);
         this.decreaseIndent();
         this.emit("});");
@@ -10526,6 +10506,7 @@ class Compiler implements LoweringServices {
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
             continuationStorageReached: this.continuationStorageReached,
+            pendingActivations: !!this.options.pendingActivations,
             throwReached: this.throwReached,
             postProcessCompositeCount:
                 this.sceneManifest.postProcessComposites.length,
@@ -10534,7 +10515,6 @@ class Compiler implements LoweringServices {
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
-            voxelFileStorageReached: this.voxelFileStorageReached,
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),

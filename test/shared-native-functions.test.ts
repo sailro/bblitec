@@ -51,7 +51,6 @@ test("definition-only namespaces preserve deliberate whitespace inside native bo
             },
         ],
         staticNativeDeclarations: [],
-        voxelFileStorageReached: false,
         body: [],
     }).cpp;
     assert.ok(

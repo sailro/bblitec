@@ -7,6 +7,7 @@
 #include <bblite/features/has_ui.hpp>
 
 #include <bblite/js_data.hpp>
+#include <bblite/js_encoding.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
@@ -18,6 +19,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -193,6 +195,59 @@ struct FileList {
     const BrowserFileRecord& file = browser_file_record(engine, handle);
     return std::string(file.bytes.begin(), file.bytes.end());
 }
+
+/**
+ * `FileReader` over a File or Blob, reading as text. The read completes
+ * inside `readAsText`: the bytes are decoded as the Encoding Standard does
+ * without a label and `load` runs before the call returns, or `error` when
+ * the file can no longer be read. The compiler admits the handlers only
+ * when they are assigned before the read starts.
+ */
+class FileReader {
+    struct State {
+        Nullable<std::string> result;
+        Callback<void()> onload;
+        Callback<void()> onerror;
+        void gc_trace(const TraceVisitor& visitor) const {
+            visitor(onload);
+            visitor(onerror);
+        }
+    };
+
+public:
+    void set_onload(Callback<void()> handler) const { state_->onload = std::move(handler); }
+    void set_onerror(Callback<void()> handler) const { state_->onerror = std::move(handler); }
+    [[nodiscard]] Nullable<std::string> result() const { return state_->result; }
+
+    void read_as_text(const Engine& engine, const BrowserFileHandle& file) const {
+        std::optional<std::string> bytes;
+        try {
+            bytes = file_text(engine, file);
+        } catch (const std::runtime_error&) {
+            bytes.reset();
+        }
+        settle(bytes);
+    }
+    void read_as_text(const Blob& blob) const {
+        const auto& bytes = blob.bytes();
+        settle(std::string(bytes.begin(), bytes.end()));
+    }
+
+    void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
+
+private:
+    void settle(const std::optional<std::string>& bytes) const {
+        state_->result = bytes ? Nullable<std::string>(decode_text(*bytes))
+                               : Nullable<std::string>(std::nullopt);
+        // A handler may replace the reader's handlers; run the one this
+        // read selected.
+        Callback<void()> handler = bytes ? state_->onload : state_->onerror;
+        if (handler)
+            handler();
+    }
+
+    std::shared_ptr<State> state_ = make_gc_shared<State>();
+};
 
 inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
                                  pal::SelectedFileSnapshot selected) {

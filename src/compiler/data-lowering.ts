@@ -6424,6 +6424,9 @@ export class DataLowerer {
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
+            // A parsed document keeps its own members and identity; typed
+            // storage would copy it. The inline lowering keeps it dynamic.
+            isJsonValue(value) ? "dynamic-storage-required" : "unsupported",
         );
     }
 

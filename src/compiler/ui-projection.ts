@@ -153,6 +153,8 @@ interface UiProjectionContext extends Pick<
     | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
+    | "compilePlatformCallback"
+    | "hoistForwardCallbackBindings"
     | "compileStringLiteral"
     | "compileValue"
     | "compileVoidCallback"
@@ -3569,6 +3571,47 @@ export class UiProjection {
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
+    /**
+     * `input.onchange = handler` on a retained file input: the handler the
+     * change after a selection dispatches, as `addEventListener("change")`
+     * registers it. The attribute is one slot, so it is assigned once.
+     * Every other event-handler property refuses by name.
+     */
+    private emitUiEventHandlerProperty(
+        element: Value,
+        engine: string,
+        property: string,
+        assignment: ts.BinaryExpression,
+    ): void {
+        if (property !== "onchange" || !element.uiFileInput)
+            this.context.fail(
+                assignment.left,
+                `Native UI event handler property '${property}' is not lowered; register the handler with addEventListener.`,
+            );
+        if (element.uiFileChangeHandler)
+            this.context.fail(
+                assignment,
+                "A file input's onchange handler is assigned once; replacing it is not lowered.",
+            );
+        writable(element).uiFileChangeHandler = true;
+        this.context.hoistForwardCallbackBindings(
+            assignment.right,
+            assignment.pos,
+        );
+        const handler = this.context.compilePlatformCallback(
+            assignment.right,
+            undefined,
+            [],
+            undefined,
+            true,
+            false,
+        );
+        this.context.reachFeature("browser:file", assignment);
+        this.context.emit(
+            `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
+        );
+    }
+
     public compileUiBrowserFileAttribute(
         element: Value,
         engine: string,
@@ -3784,6 +3827,15 @@ export class UiProjection {
             );
             if (browserFile) {
                 this.context.emit(`${browserFile};`);
+                return true;
+            }
+            if (/^on[a-z]+$/.test(property)) {
+                this.emitUiEventHandlerProperty(
+                    directElement,
+                    engine,
+                    property,
+                    expression,
+                );
                 return true;
             }
             if (

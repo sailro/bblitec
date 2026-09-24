@@ -512,6 +512,7 @@ export interface AssignmentContext
             | "bindClassField"
             | "emitOptionalResourceAssignment"
             | "emitUiPropertyAssignment"
+            | "compilePlatformCallback"
             | "compileNumber"
             | "compileBoolean"
             | "compileColor3"
@@ -1189,6 +1190,9 @@ export function emitPropertyAssignment(
         return;
     }
     if (context.emitUiPropertyAssignment(expression)) {
+        return;
+    }
+    if (emitBrowserFileAssignment(context, expression, left)) {
         return;
     }
     // The same distinction applies to a nullable Web Audio handle stored in
@@ -2190,6 +2194,7 @@ function requireSimpleAssignment(
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
+import { emitBrowserFileAssignment } from "./browser-file.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {

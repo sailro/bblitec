@@ -78,6 +78,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "data",
     "file",
     "file-list",
+    "file-reader",
     "object-url",
     "static-fetch-response",
     "platform-keyboard-event",
@@ -91,12 +92,34 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "offscreen-canvas",
 ]);
 
-/** A browser value the fold spells as a literal: a number, string, boolean or null. */
+/** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
 export function isPrimitiveBrowserValue(
     value: NonNullable<Value["browserValue"]>,
 ): boolean {
-    return ["number", "boolean", "string", "null"].includes(value.kind);
+    return ["number", "boolean", "string", "null", "undefined"].includes(
+        value.kind,
+    );
 }
+
+/** The names the library binds the global object itself to. */
+const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
+    "globalThis",
+    "self",
+    "window",
+]);
+
+/**
+ * Members of the browser's global object the native realm does not have. A
+ * feature test reads each as a browser without that feature does, as
+ * `undefined`, so the program takes its own fallback: the File System
+ * Access pickers fall back to the download anchor and file input the
+ * browser-file bridge lowers.
+ */
+const ABSENT_GLOBAL_MEMBERS: ReadonlySet<string> = new Set([
+    "showDirectoryPicker",
+    "showOpenFilePicker",
+    "showSaveFilePicker",
+]);
 
 /**
  * A browser value with a native spelling: a primitive, or the deployment
@@ -1460,7 +1483,10 @@ export class BrowserErasure {
         if (typeof deployed === "boolean")
             return { kind: "boolean", value: deployed };
         if (deployed !== undefined) return { kind: "string", value: deployed };
+        if (this.isAbsentGlobalMember(unwrapped)) return { kind: "undefined" };
         if (ts.isTypeOfExpression(unwrapped)) {
+            if (this.isAbsentGlobalMember(unwrapped.expression))
+                return { kind: "string", value: "undefined" };
             const global = this.context.libraryGlobal(unwrapped.expression);
             // Native has no browser recording pipeline; authored capability
             // guards can select their own unavailable-recording path.
@@ -1675,14 +1701,13 @@ export class BrowserErasure {
             ) {
                 // `??` selects on NULLISHNESS, not truthiness: `"" ?? x` is
                 // the empty string and `0 ?? x` is zero, where `||` would
-                // take the right operand for both. `null` is the union's
-                // only absent kind, standing for `null` and `undefined`
-                // alike, so the test is the kind rather than
-                // `browserTruthy`. An unfoldable left stays unfoldable.
+                // take the right operand for both, so the test is the
+                // nullish kinds rather than `browserTruthy`. An unfoldable
+                // left stays unfoldable.
                 if (left === undefined) {
                     return undefined;
                 }
-                return left.kind === "null"
+                return isNullishBrowserValue(left)
                     ? this.browserValueOf(unwrapped.right)
                     : left;
             }
@@ -1716,10 +1741,12 @@ export class BrowserErasure {
                 if (
                     !left ||
                     !right ||
-                    (left.kind !== "null" && right.kind !== "null")
+                    (!isNullishBrowserValue(left) &&
+                        !isNullishBrowserValue(right))
                 )
                     return undefined;
-                const equal = left.kind === "null" && right.kind === "null";
+                const equal =
+                    isNullishBrowserValue(left) && isNullishBrowserValue(right);
                 return {
                     kind: "boolean",
                     value:
@@ -1732,8 +1759,8 @@ export class BrowserErasure {
             // A browser-derived value compared against a literal is how the
             // corpus reads an opt-out switch: `params.get("noise") !== "off"`
             // is `null !== "off"` once the query string is known empty. Only
-            // the strict forms fold, because loose equality coerces and this
-            // evaluator carries no `undefined` to coerce against.
+            // the strict forms fold here: loose equality coerces, and only its
+            // nullish case folds, above.
             if (
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -1960,6 +1987,31 @@ export class BrowserErasure {
         return undefined;
     }
 
+    /** A read of an {@link ABSENT_GLOBAL_MEMBERS} member off the global object. */
+    private isAbsentGlobalMember(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        return (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ABSENT_GLOBAL_MEMBERS.has(unwrapped.name.text) &&
+            this.isGlobalObject(unwrapped.expression)
+        );
+    }
+
+    /**
+     * The global object: the library's `window`, `self` or `globalThis`,
+     * seen through type assertions and `const` aliases, which is how a
+     * program types a member the library does not declare
+     * (`const w = window as unknown as PickerWindow`).
+     */
+    private isGlobalObject(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        const global = this.context.libraryGlobal(unwrapped);
+        if (global !== undefined) return GLOBAL_OBJECT_NAMES.has(global);
+        if (!ts.isIdentifier(unwrapped)) return false;
+        const initializer = constInitializer(this.context, unwrapped);
+        return initializer !== undefined && this.isGlobalObject(initializer);
+    }
+
     private browserTruthy(
         value: Value["browserValue"] | undefined,
     ): boolean | undefined {
@@ -1970,6 +2022,7 @@ export class BrowserErasure {
             case "boolean":
                 return value.value;
             case "null":
+            case "undefined":
                 return false;
             case "number":
                 return value.value !== 0 && !Number.isNaN(value.value);
@@ -2495,6 +2548,13 @@ function relationalOperator(
     }
 }
 
+/** `null` or `undefined`: the two values `??` and `== null` select alike. */
+function isNullishBrowserValue(
+    value: NonNullable<Value["browserValue"]>,
+): boolean {
+    return value.kind === "null" || value.kind === "undefined";
+}
+
 /**
  * `===` over two folded browser values, or undefined when either side is
  * unknown or is an object (which compares by identity).
@@ -2515,7 +2575,7 @@ function strictlyEqualBrowserValues(
     ) {
         return undefined;
     }
-    if (left.kind === "null" || right.kind === "null") return true;
+    if (isNullishBrowserValue(left)) return true;
     if (left.kind === "boolean" && right.kind === "boolean") {
         return left.value === right.value;
     }

@@ -11,7 +11,7 @@ import {
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     propertyIsReadOnly,
     type DataType,
@@ -41,8 +41,31 @@ interface AsyncContext extends Pick<
     | "bindings"
     | "libraryGlobal"
     | "browserErasure"
+    | "options"
+    | "pendingActivations"
+    | "useNativeValue"
     | "fail"
 > {}
+
+/**
+ * A reached constructed promise can leave a synchronous activation pending.
+ * Every catch and finally the program lowers must then pass that unwinding
+ * on, including ones lowered before the promise was reached, so the program
+ * replays with `pendingActivations`.
+ */
+export class PendingActivationsRequired extends Error {
+    constructor() {
+        super("A constructed promise requires pending-activation unwinding.");
+    }
+}
+
+/** Library schedulers whose callbacks never run before the call returns. */
+const DEFERRED_SCHEDULERS: ReadonlySet<string> = new Set([
+    "queueMicrotask",
+    "requestAnimationFrame",
+    "setInterval",
+    "setTimeout",
+]);
 
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
@@ -570,7 +593,127 @@ export class AsyncLowerer {
         };
     }
 
-    private compileConstructor(node: ts.NewExpression): Value {
+    /**
+     * `new Promise(executor)` outside an application realm. The executor
+     * runs as the realm's does; the promise is consumed where it is created,
+     * awaited or returned, so the settlement is read at that await (see
+     * `js_synchronous_promise.hpp`). Stored, the pending state would need a
+     * value the synchronous lowering does not have.
+     */
+    compileSynchronousConstructor(node: ts.NewExpression): Value {
+        let consumer: ts.Node = node.parent;
+        while (
+            ts.isParenthesizedExpression(consumer) ||
+            ts.isAsExpression(consumer) ||
+            ts.isSatisfiesExpression(consumer) ||
+            ts.isNonNullExpression(consumer)
+        )
+            consumer = consumer.parent;
+        if (
+            !ts.isAwaitExpression(consumer) &&
+            !ts.isReturnStatement(consumer) &&
+            !ts.isArrowFunction(consumer)
+        )
+            return this.context.fail(
+                node,
+                "A constructed promise is awaited or returned where it is created; " +
+                    "the synchronous lowering has no pending promise value to store.",
+            );
+        const deferred = this.deferredSettlement(node);
+        if (deferred)
+            return this.context.fail(
+                deferred,
+                "A constructed promise settled from a timer or frame callback resumes " +
+                    "after its executor returns, which the synchronous lowering cannot.",
+            );
+        if (!this.context.options.pendingActivations)
+            throw new PendingActivationsRequired();
+        this.context.pendingActivations();
+        return this.compileConstructor(node, true);
+    }
+
+    /**
+     * A scheduler call in the executor whose callback names a resolving
+     * function: a timer or frame callback always runs after the executor
+     * returns, so the await would find the promise pending and end an
+     * activation JavaScript resumes.
+     */
+    private deferredSettlement(
+        node: ts.NewExpression,
+    ): ts.CallExpression | undefined {
+        const context = this.context;
+        const executor = node.arguments?.[0]
+            ? context.unwrap(node.arguments[0])
+            : undefined;
+        if (
+            !executor ||
+            (!ts.isArrowFunction(executor) &&
+                !ts.isFunctionExpression(executor))
+        )
+            return undefined;
+        const resolving = new Set(
+            executor.parameters.flatMap((parameter) => {
+                const symbol = context.checker.getSymbolAtLocation(
+                    parameter.name,
+                );
+                return symbol ? [symbol] : [];
+            }),
+        );
+        // A callback names a resolving function directly or through a local
+        // function the executor declares (`const poll = () => ...`).
+        const visited = new Set<ts.Node>();
+        const namesResolving = (root: ts.Node): boolean =>
+            someAnalysisNode(root, (candidate) => {
+                if (!ts.isIdentifier(candidate)) return false;
+                const symbol = context.checker.getSymbolAtLocation(candidate);
+                if (symbol === undefined) return false;
+                if (resolving.has(symbol)) return true;
+                const declaration = symbol.valueDeclaration;
+                const local =
+                    declaration &&
+                    declaration.pos >= executor.pos &&
+                    declaration.end <= executor.end &&
+                    declaration.getSourceFile() === executor.getSourceFile()
+                        ? ts.isVariableDeclaration(declaration)
+                            ? declaration.initializer
+                            : ts.isFunctionDeclaration(declaration)
+                              ? declaration
+                              : undefined
+                        : undefined;
+                if (!local || visited.has(local)) return false;
+                visited.add(local);
+                return namesResolving(local);
+            });
+        return findAnalysisNode(
+            executor.body,
+            (candidate): candidate is ts.CallExpression =>
+                ts.isCallExpression(candidate) &&
+                DEFERRED_SCHEDULERS.has(
+                    context.libraryGlobal(candidate.expression) ?? "",
+                ) &&
+                candidate.arguments.some(namesResolving),
+        );
+    }
+
+    private synchronousPromiseType(
+        node: ts.NewExpression,
+    ): DataType | undefined {
+        const checker = this.context.checker;
+        const awaited = checker.getAwaitedType(checker.getTypeAtLocation(node));
+        if (!awaited) return undefined;
+        if (
+            (awaited.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
+            0
+        )
+            return { kind: "promise" };
+        const result = this.context.dataTypes.fromTsType(awaited, node);
+        return result ? { kind: "promise", result } : undefined;
+    }
+
+    private compileConstructor(
+        node: ts.NewExpression,
+        synchronous = false,
+    ): Value {
         const context = this.context;
         if (node.arguments?.length !== 1)
             context.fail(node, "Promise construction requires one executor.");
@@ -594,7 +737,15 @@ export class AsyncLowerer {
                 ?.some(
                     (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
                 );
-        const type = context.dataLowerer.dataTypeAt(node);
+        if (synchronous && asynchronous)
+            return context.fail(
+                callback,
+                "An async Promise executor suspends inside construction; it needs the application realm.",
+            );
+        // Outside a realm a Promise<T> is represented by T itself.
+        const type = synchronous
+            ? this.synchronousPromiseType(node)
+            : context.dataLowerer.dataTypeAt(node);
         if (type?.kind !== "promise")
             return context.fail(
                 node,
@@ -610,7 +761,9 @@ export class AsyncLowerer {
         const name = context.allocateTemporaryCppName("constructed_promise");
         context.emit({
             kind: "declaration",
-            type: `bbl::js::Promise<${cppType}>`,
+            type: synchronous
+                ? `bbl::js::SynchronousPromise<${cppType}>`
+                : `bbl::js::Promise<${cppType}>`,
             name,
             initializer: "",
             initialization: "default",
@@ -641,10 +794,30 @@ export class AsyncLowerer {
             );
         }, true);
         context.emit(`try { (${renderClosure(compiled, "")})(); }`);
-        context.emit(`catch (const bbl::pal::WorkerTerminated&) { throw; }`);
+        context.emit(
+            synchronous
+                ? "catch (const bbl::js::PendingActivation&) { throw; }"
+                : "catch (const bbl::pal::WorkerTerminated&) { throw; }",
+        );
         context.emit(
             `catch (...) { ${name}.reject(std::current_exception()); }`,
         );
+        if (synchronous) {
+            // The executor ran in place: what it captured is this statement's.
+            context.useNativeValue({
+                kind: "void",
+                cpp: "",
+                nativeCaptures: compiled.nativeCaptures,
+            });
+            const settled = `${name}.await_result()`;
+            return output.kind === "void"
+                ? { kind: "void", cpp: settled, nativeCaptures: [binding] }
+                : {
+                      ...this.resultAt(output, settled),
+                      impure: true,
+                      nativeCaptures: [binding],
+                  };
+        }
         return {
             kind: "promise",
             cpp: name,

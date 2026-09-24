@@ -1278,6 +1278,8 @@ export type ValueKind =
     | "file-list"
     /** A shared opaque handle to immutable bytes returned by the host picker. */
     | "file"
+    /** A FileReader: its handlers and the text of its last read. */
+    | "file-reader"
     /** A DOM element created by reached scene code and owned by the native UI IR. */
     | "ui-element"
     | "callback"
@@ -1946,6 +1948,10 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
+    /** The file input's `onchange` handler property has been assigned. */
+    uiFileChangeHandler?: true;
+    /** The FileReader bound here has started a read. */
+    fileReaderStarted?: true;
     /**
      * Exact members held by a native array at this point in the source walk.
      * Runtime storage preserves JavaScript array semantics while this complete
@@ -2539,6 +2545,7 @@ export interface ValueFields {
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
+        | { kind: "undefined" }
         | { kind: "dom-rect" }
         | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
         | { kind: "search-params"; search: string }
@@ -2901,6 +2908,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeSearchParams?: boolean;
     /** Reached navigation makes location.search observable across reloads. */
     runtimeLocationSearch?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     fileName: string;
     title: string;
     width: number;

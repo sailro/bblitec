@@ -12,8 +12,9 @@ export interface AdaptationContext extends Pick<
     | "erasedBrowserInstrumentation"
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
+    | "fileReaderReached"
+    | "options"
     | "jsRandomReached"
-    | "voxelFileStorageReached"
     | "browserTextureFunctions"
     | "canvasReadbackFunctions"
     | "assets"
@@ -246,23 +247,37 @@ export function compileAdaptations(
             ],
         });
     }
-    if (context.voxelFileStorageReached) {
+    if (context.options.pendingActivations) {
         adaptations.push({
-            id: "native-voxel-file-dialog",
-            category: "browser-erasure",
+            id: "synchronous-constructed-promise",
+            category: "async",
             sourceSemantics:
-                "Voxel Sandbox opens browser save/open pickers and falls back to a download or hidden file input.",
+                "A constructed promise settles whenever its escaped resolving functions run, and an await on it suspends until then, for good when nothing settles it.",
             nativeSemantics:
-                "Ctrl+S and Ctrl+O open the host save/open dialog and write or read the same JSON payload, with world.voxelsave.json as the suggested name.",
+                "The executor and the platform callbacks it starts run in place, so an await reads the settlement where it stands: a value, a rejection rethrown, or a still-pending promise that ends the awaiting activation there without running its catch or finally blocks, resuming after the statement that discarded its promise. A settlement after that throws; an activation that can end this way is only awaited, returned or discarded as a statement.",
             risk: "medium",
             validation: [
-                "voxel file-boundary compiler test",
-                "native SaveData JSON round-trip",
-                "non-interactive file-dialog path override",
+                "synchronous promise compiler and native execution fixture",
+                "pending-activation refusal tests",
             ],
         });
     }
-    if (features.includes("browser:file") && !context.voxelFileStorageReached) {
+    if (context.fileReaderReached) {
+        adaptations.push({
+            id: "synchronous-file-reader",
+            category: "platform",
+            sourceSemantics:
+                "FileReader.readAsText reads asynchronously and dispatches load or error as a later task.",
+            nativeSemantics:
+                "The read completes inside readAsText: the bytes are decoded by byte order mark (UTF-8 otherwise) and load or error runs before the call returns. Handlers assigned after the read starts refuse at generation.",
+            risk: "low",
+            validation: [
+                "native FileReader Blob-decoding fixture",
+                "native File read and error contract check",
+            ],
+        });
+    }
+    if (features.includes("browser:file")) {
         adaptations.push({
             id: "native-browser-file-bridge",
             category: "platform",

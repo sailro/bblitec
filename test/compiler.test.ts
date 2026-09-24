@@ -18013,7 +18013,7 @@ test("refuses a promise executor that does more than let resolve escape", () => 
                 ),
                 frameYieldFile,
             ),
-        /Unsupported constructor expression/,
+        /no pending promise value to store/,
     );
 });
 
@@ -18596,7 +18596,7 @@ test("does not erase a bounded wait through a shadowed RAF", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+        /Argument 1 of 'requestAnimationFrame' is \(value: void \| PromiseLike<void>\) => void/,
     );
 });
 
@@ -18609,7 +18609,7 @@ test("refuses a nested frame yield whose result is retained", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported constructor expression/,
+        /settled from a timer or frame callback/,
     );
 });
 
