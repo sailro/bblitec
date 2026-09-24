@@ -40,7 +40,7 @@ import {
     declaredIn,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
-    isDefaultLibraryIdentifier,
+    libraryGlobal,
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -2746,11 +2746,8 @@ export class DataTypeRegistry {
                 ts.isTypeAliasDeclaration(declaration) &&
                 ts.isTypeReferenceNode(declaration.type) &&
                 ts.isIdentifier(declaration.type.typeName) &&
-                declaration.type.typeName.text === "Record" &&
-                isDefaultLibraryIdentifier(
-                    this.checker,
-                    declaration.type.typeName,
-                ),
+                libraryGlobal(this.checker, declaration.type.typeName) ===
+                    "Record",
         );
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;

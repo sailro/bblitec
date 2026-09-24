@@ -45,7 +45,7 @@ import {
     writesThroughTrackedRoot,
 } from "./user-functions.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = [
@@ -124,9 +124,7 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     return containsValueNode(node, (child) => {
         if (
             ts.isNewExpression(child) &&
-            ts.isIdentifier(child.expression) &&
-            child.expression.text === "OffscreenCanvas" &&
-            isDefaultLibraryIdentifier(checker, child.expression)
+            libraryGlobal(checker, child.expression) === "OffscreenCanvas"
         ) {
             return true;
         }
@@ -137,9 +135,8 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createElement" &&
-            ts.isIdentifier(child.expression.expression) &&
-            child.expression.expression.text === "document" &&
-            isDefaultLibraryIdentifier(checker, child.expression.expression) &&
+            libraryGlobal(checker, child.expression.expression) ===
+                "document" &&
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
             firstArgument.text === "canvas"

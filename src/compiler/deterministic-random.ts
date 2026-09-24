@@ -47,7 +47,7 @@ import { transpileForBrowser } from "../typescript-transpile.js";
 
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "reachedNodeParticles"
     | "lookup"
     | "compileForDataSink"
@@ -57,14 +57,12 @@ export interface DeterministicRandomContext extends Pick<
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
-    context: Pick<DeterministicRandomContext, "isDefaultLibraryIdentifier">,
+    context: Pick<DeterministicRandomContext, "libraryGlobal">,
     expression: ts.Expression,
 ): boolean {
     return (
         ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Math" &&
-        context.isDefaultLibraryIdentifier(expression.expression) &&
+        context.libraryGlobal(expression.expression) === "Math" &&
         expression.name.text === "random"
     );
 }
@@ -203,11 +201,7 @@ function capturedDeclarations(
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (
-                node.text === "Math" &&
-                context.isDefaultLibraryIdentifier(node)
-            )
-                return;
+            if (context.libraryGlobal(node) === "Math") return;
             const symbol = checker.getSymbolAtLocation(node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;

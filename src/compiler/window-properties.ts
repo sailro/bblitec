@@ -3,7 +3,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
 
 type Context = Pick<
@@ -12,7 +11,7 @@ type Context = Pick<
     | "checker"
     | "unwrap"
     | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "dataTypes"
     | "dataLowerer"
     | "compileValue"
@@ -39,7 +38,7 @@ export class WindowProperties {
         const node = context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         const owner = context.unwrap(node.expression);
-        const global = browserGlobalNamed(context, owner)?.text;
+        const global = context.libraryGlobal(owner);
         const alias = ts.isIdentifier(owner)
             ? context.lookupOptional(owner)
             : undefined;

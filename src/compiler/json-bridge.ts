@@ -29,7 +29,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
-import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
@@ -40,7 +39,7 @@ interface JsonBridgeContext extends Pick<
     | "unwrap"
     | "fail"
     | "expectArgumentCount"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "lookupOptional"
     | "compileValue"
     | "compileNumber"
@@ -162,7 +161,7 @@ function isJsonGlobal(
     context: JsonBridgeContext,
     expression: ts.Expression,
 ): boolean {
-    return browserGlobalNamed(context, expression)?.text === "JSON";
+    return context.libraryGlobal(expression) === "JSON";
 }
 
 /**

@@ -6,7 +6,7 @@ import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "compileValue"
     | "compileCallbackWithValues"
     | "catchBindingIsErased"
@@ -58,9 +58,7 @@ export function compileImmediatePromise(
 ): Value | undefined {
     if (
         ts.isPropertyAccessExpression(call.expression) &&
-        ts.isIdentifier(call.expression.expression) &&
-        call.expression.expression.text === "Promise" &&
-        context.isDefaultLibraryIdentifier(call.expression.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
         call.expression.name.text === "resolve"
     ) {
         if (call.arguments.length !== 1) {
@@ -70,9 +68,7 @@ export function compileImmediatePromise(
     }
     if (
         ts.isPropertyAccessExpression(call.expression) &&
-        ts.isIdentifier(call.expression.expression) &&
-        call.expression.expression.text === "Promise" &&
-        context.isDefaultLibraryIdentifier(call.expression.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {

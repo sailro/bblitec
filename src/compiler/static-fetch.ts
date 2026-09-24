@@ -23,6 +23,7 @@ export interface StaticFetchContext extends Pick<
     | "staticAssetUrlCandidates"
     | "cppString"
     | "lookupOptional"
+    | "libraryGlobal"
     | "registerAsset"
     | "reachJsData"
     | "reachFeature"
@@ -36,7 +37,7 @@ export function compileStaticFetch(
     call: ts.CallExpression,
     callee: ts.Identifier,
 ): Value | undefined {
-    if (callee.text !== "fetch" || context.lookupOptional(callee)) {
+    if (context.libraryGlobal(callee) !== "fetch") {
         return undefined;
     }
     if (call.arguments.length !== 1) {

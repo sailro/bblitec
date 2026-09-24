@@ -2,18 +2,14 @@ import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
 
-type HttpContext = Pick<
-    LoweringServices,
-    "unwrap" | "lookupOptional" | "isDefaultLibraryIdentifier"
->;
+type HttpContext = Pick<LoweringServices, "unwrap" | "libraryGlobal">;
 
 export function compileHttpFunction(
     context: HttpContext,
     expression: ts.Expression,
 ): Value | undefined {
-    return browserGlobalNamed(context, expression)?.text === "fetch"
+    return context.libraryGlobal(expression) === "fetch"
         ? { kind: "callback", cpp: "", hostFunction: "fetch" }
         : undefined;
 }
@@ -26,7 +22,7 @@ export function compileHttpCall(
 ): Value | undefined {
     const context = lowerer.context;
     const callee = context.unwrap(call.expression);
-    const global = browserGlobalNamed(context, callee)?.text === "fetch";
+    const global = context.libraryGlobal(callee) === "fetch";
     if (!global && hostFunction !== "fetch") return undefined;
     if (global && call.arguments.length === 1) return undefined;
     if (!context.options.workers)

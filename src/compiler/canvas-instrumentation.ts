@@ -5,7 +5,7 @@ import { nativeHostUiStyleRules } from "../ui-style-rule.js";
 import {
     declarationInDefaultLibrary,
     declaredInDomLibrary,
-    isDefaultLibraryIdentifier,
+    libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
 import {
@@ -37,12 +37,6 @@ function hasOnlyInstrumentationEffects(
     };
     const valueDeclaration = (node: ts.Node): ts.Declaration | undefined =>
         resolvedSymbol(checker, node)?.valueDeclaration;
-    const globalThisSymbol = checker.resolveName(
-        "globalThis",
-        undefined,
-        ts.SymbolFlags.Value,
-        false,
-    );
     const isPrimitive = (expression: ts.Expression): boolean => {
         const type = checker.getTypeAtLocation(expression);
         const members = type.isUnion() ? type.types : [type];
@@ -70,23 +64,8 @@ function hasOnlyInstrumentationEffects(
                     0 || declaredInDomLibrary(member.getSymbol()),
         );
     };
-    const isFetch = (expression: ts.Expression): boolean => {
-        const value = unwrapExpression(expression);
-        if (ts.isIdentifier(value))
-            return (
-                value.text === "fetch" &&
-                isDefaultLibraryIdentifier(checker, value)
-            );
-        return (
-            ts.isPropertyAccessExpression(value) &&
-            value.name.text === "fetch" &&
-            ts.isIdentifier(value.expression) &&
-            value.expression.text === "globalThis" &&
-            resolvedSymbol(checker, value.expression) === globalThisSymbol &&
-            valueDeclaration(value) !== undefined &&
-            declarationInDefaultLibrary(valueDeclaration(value)!)
-        );
-    };
+    const isFetch = (expression: ts.Expression): boolean =>
+        libraryGlobal(checker, expression) === "fetch";
     const functions = (
         node: ts.Node | undefined,
     ): ts.FunctionLikeDeclaration | undefined => {
@@ -174,8 +153,7 @@ function hasOnlyInstrumentationEffects(
             isFetch(callee.expression) &&
             call.arguments.length === 1 &&
             ts.isIdentifier(call.arguments[0]!) &&
-            call.arguments[0].text === "globalThis" &&
-            resolvedSymbol(checker, call.arguments[0]) === globalThisSymbol
+            libraryGlobal(checker, call.arguments[0]) === "globalThis"
         );
     };
     const safeCall = (call: ts.CallExpression | ts.NewExpression): boolean => {
@@ -208,7 +186,6 @@ function hasOnlyInstrumentationEffects(
                 (call.arguments ?? []).every((argument) =>
                     confined(argument),
                 ) &&
-                isDefaultLibraryIdentifier(checker, callee) &&
                 [
                     "String",
                     "Number",
@@ -218,7 +195,7 @@ function hasOnlyInstrumentationEffects(
                     "clearTimeout",
                     "ReadableStream",
                     "Response",
-                ].includes(callee.text)
+                ].includes(libraryGlobal(checker, callee) ?? "")
             );
         if (!ts.isPropertyAccessExpression(callee)) return false;
         const receiver = unwrapExpression(callee.expression);
@@ -233,9 +210,7 @@ function hasOnlyInstrumentationEffects(
             (call.arguments ?? []).every((argument) => confined(argument)) &&
             (isPrimitive(receiver) ||
                 confined(receiver) ||
-                (ts.isIdentifier(receiver) &&
-                    receiver.text === "Math" &&
-                    isDefaultLibraryIdentifier(checker, receiver)))
+                libraryGlobal(checker, receiver) === "Math")
         );
     };
     const safeWrite = (expression: ts.Expression): boolean => {

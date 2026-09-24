@@ -359,7 +359,7 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         /sandblox|map-io-ui|createMapIoUi/i,
         "the compiler is keyed on browser globals and value kinds, not an app",
     );
-    assert.match(compiler, /isDefaultLibraryIdentifier/);
+    assert.match(compiler, /libraryGlobal/);
     assert.match(compiler, /BlobPart type/);
 
     const shim = readFileSync(

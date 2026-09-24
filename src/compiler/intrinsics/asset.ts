@@ -55,6 +55,7 @@ export interface AssetIntrinsicContext
             | "selectGltfVariant"
             | "resolveBundledAsset"
             | "unwrap"
+            | "libraryGlobal"
             | "cppString"
             | "objectProperty"
             | "compileBoolean"

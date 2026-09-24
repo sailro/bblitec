@@ -47,7 +47,7 @@ import {
 import {
     CompilerSymbols,
     declarationInDefaultLibrary,
-    isDefaultLibraryIdentifier,
+    libraryGlobal,
 } from "./symbols.js";
 import {
     assignmentTargets,
@@ -314,9 +314,7 @@ export function callArgumentIsReadOnly(
         index === 0 &&
         ts.isPropertyAccessExpression(callee) &&
         callee.name.text === "keys" &&
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Object" &&
-        isDefaultLibraryIdentifier(checker, callee.expression)
+        libraryGlobal(checker, callee.expression) === "Object"
     )
         return true;
     const called = checker.getResolvedSignature(call)?.declaration;
@@ -4560,8 +4558,7 @@ export class UserFunctionLowerer {
                     const call = unwrapExpression(initializer);
                     if (
                         ts.isCallExpression(call) &&
-                        ts.isIdentifier(call.expression) &&
-                        call.expression.text === "fetch"
+                        libraryGlobal(this.checker, call.expression) === "fetch"
                     ) {
                         const symbol = this.checker.getSymbolAtLocation(
                             declaration.name,
@@ -4634,9 +4631,7 @@ export class UserFunctionLowerer {
             expression = expression.expression;
         const isLibraryCall = (node: ts.Node, name: string): boolean =>
             ts.isCallExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            node.expression.text === name &&
-            isDefaultLibraryIdentifier(this.checker, node.expression);
+            libraryGlobal(this.checker, node.expression) === name;
         if (!isLibraryCall(expression, "createImageBitmap")) {
             return undefined;
         }

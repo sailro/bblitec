@@ -168,6 +168,7 @@ export interface DataLoweringContext
             | "sourceFile"
             | "noteCameraVectorCopy"
             | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "useNativeValue"
             | "registerNativeBinding"
             | "registerNativeBindingType"
@@ -1694,9 +1695,9 @@ export class DataLowerer {
     ): number | undefined {
         if (
             !ts.isNewExpression(source) ||
-            !ts.isIdentifier(source.expression) ||
-            !TYPED_ARRAY_KINDS.has(source.expression.text) ||
-            this.context.lookupIdentifierValue(source.expression) ||
+            !TYPED_ARRAY_KINDS.has(
+                this.context.libraryGlobal(source.expression) ?? "",
+            ) ||
             source.arguments?.length !== 1
         ) {
             return undefined;
@@ -3395,24 +3396,9 @@ export class DataLowerer {
     /** A call through the global `Math` object, pure by declaration. */
     private isGlobalMathCall(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Math"
-        ) {
-            return false;
-        }
-        const symbol = this.context.checker.getSymbolAtLocation(
-            callee.expression,
-        );
-        const declarations = symbol?.declarations ?? [];
         return (
-            declarations.length > 0 &&
-            declarations.every((declaration) =>
-                /(?:^|[\\/])lib\.[^\\/]*\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            )
+            ts.isPropertyAccessExpression(callee) &&
+            this.context.libraryGlobal(callee.expression) === "Math"
         );
     }
 
@@ -4204,10 +4190,8 @@ export class DataLowerer {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Array" ||
-            (callee.name.text !== "from" && callee.name.text !== "of") ||
-            !this.context.isDefaultLibraryIdentifier(callee.expression)
+            this.context.libraryGlobal(callee.expression) !== "Array" ||
+            (callee.name.text !== "from" && callee.name.text !== "of")
         ) {
             return undefined;
         }
@@ -4938,9 +4922,7 @@ export class DataLowerer {
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
                 const booleanConstructor =
-                    ts.isIdentifier(callback) &&
-                    callback.text === "Boolean" &&
-                    this.context.isDefaultLibraryIdentifier(callback);
+                    this.context.libraryGlobal(callback) === "Boolean";
                 const callbackArguments: Value[] = [
                     elementValue,
                     {
@@ -5206,11 +5188,8 @@ export class DataLowerer {
             !ts.isVariableDeclaration(declaration) ||
             !declaration.initializer ||
             !ts.isNewExpression(declaration.initializer) ||
-            !ts.isIdentifier(declaration.initializer.expression) ||
-            declaration.initializer.expression.text !== "Map" ||
-            !this.context.isDefaultLibraryIdentifier(
-                declaration.initializer.expression,
-            )
+            this.context.libraryGlobal(declaration.initializer.expression) !==
+                "Map"
         ) {
             return undefined;
         }
@@ -5331,11 +5310,7 @@ export class DataLowerer {
      * the expression is not a global Array construction.
      */
     private newArrayCount(expression: ts.NewExpression): string | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "Array" ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
+        if (this.context.libraryGlobal(expression.expression) !== "Array") {
             return undefined;
         }
         if (expression.arguments?.length !== 1) {
@@ -5421,9 +5396,7 @@ export class DataLowerer {
         expression: ts.NewExpression,
     ): Value | undefined {
         if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "ArrayBuffer" ||
-            !this.context.isDefaultLibraryIdentifier(expression.expression)
+            this.context.libraryGlobal(expression.expression) !== "ArrayBuffer"
         ) {
             return undefined;
         }
@@ -5447,19 +5420,15 @@ export class DataLowerer {
         expression: ts.NewExpression,
         expectedType?: DataType,
     ): Value | undefined {
+        const constructor = this.context.libraryGlobal(expression.expression);
         if (
-            !ts.isIdentifier(expression.expression) ||
-            !["Map", "Set", "WeakMap", "WeakSet"].includes(
-                expression.expression.text,
-            ) ||
-            !this.context.isDefaultLibraryIdentifier(expression.expression)
+            constructor === undefined ||
+            !["Map", "Set", "WeakMap", "WeakSet"].includes(constructor)
         ) {
             return undefined;
         }
         // A weak collection is its strong twin (see the type mapping).
-        const constructedKind = expression.expression.text.endsWith("Map")
-            ? "map"
-            : "set";
+        const constructedKind = constructor.endsWith("Map") ? "map" : "set";
         const direct = this.dataTypeAt(expression);
         const contextualType =
             this.context.checker.getContextualType(expression);
@@ -5477,13 +5446,13 @@ export class DataLowerer {
         if (!dataType) {
             this.context.fail(
                 expression,
-                `new ${expression.expression.text} requires concrete data type arguments or a contextual container type.`,
+                `new ${constructor} requires concrete data type arguments or a contextual container type.`,
             );
         }
         if (dataType.kind !== constructedKind) {
             this.context.fail(
                 expression,
-                `Constructor ${expression.expression.text} does not match its ${dataType.kind} data type.`,
+                `Constructor ${constructor} does not match its ${dataType.kind} data type.`,
             );
         }
         const arguments_ = expression.arguments ?? [];
@@ -5554,14 +5523,9 @@ export class DataLowerer {
     public compileTypedArrayNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
-            return undefined;
-        }
-        const name = expression.expression.text;
-        const kind = TYPED_ARRAY_KINDS.get(name);
+        const name = this.context.libraryGlobal(expression.expression);
+        const kind =
+            name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) {
             return undefined;
         }
@@ -5889,11 +5853,7 @@ export class DataLowerer {
     private compileDataViewNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        if (
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "DataView" ||
-            this.context.lookupIdentifierValue(expression.expression)
-        ) {
+        if (this.context.libraryGlobal(expression.expression) !== "DataView") {
             return undefined;
         }
         const arguments_ = expression.arguments ?? [];
@@ -9833,7 +9793,7 @@ export class DataLowerer {
         | undefined {
         const iterator = iteratorMethodCall(
             expression,
-            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+            (receiver) => this.context.libraryGlobal(receiver),
             (node) => this.context.unwrap(node),
         );
         if (!iterator) {

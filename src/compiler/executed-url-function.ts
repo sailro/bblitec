@@ -57,7 +57,7 @@ import {
 } from "./browser-texture-function.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 
 interface ExecutedUrlCallContext extends Pick<
     LoweringServices,
@@ -71,9 +71,7 @@ function createsObjectUrl(node: ts.Node, checker: ts.TypeChecker): boolean {
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createObjectURL" &&
-            ts.isIdentifier(child.expression.expression) &&
-            child.expression.expression.text === "URL" &&
-            isDefaultLibraryIdentifier(checker, child.expression.expression),
+            libraryGlobal(checker, child.expression.expression) === "URL",
     );
 }
 

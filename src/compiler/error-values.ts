@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { expressionMayRunCode } from "./syntax.js";
+import type { LibraryGlobal } from "./symbols.js";
 
 /**
  * The default-library Error constructors a scene throws, holds and
@@ -22,13 +23,11 @@ export const ERROR_CONSTRUCTORS: ReadonlySet<string> = new Set([
 /** The library Error constructor `expression` calls, when it calls one. */
 export function errorConstructor(
     expression: ts.NewExpression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): string | undefined {
-    const callee = expression.expression;
-    return ts.isIdentifier(callee) &&
-        ERROR_CONSTRUCTORS.has(callee.text) &&
-        isLibrary(callee)
-        ? callee.text
+    const name = libraryGlobal(expression.expression);
+    return name !== undefined && ERROR_CONSTRUCTORS.has(name)
+        ? name
         : undefined;
 }
 

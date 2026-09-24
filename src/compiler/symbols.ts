@@ -220,25 +220,66 @@ export function resolvedSymbol(
         : symbol;
 }
 
+/** The names the library binds the global object itself to. */
+const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
+    "globalThis",
+    "window",
+    "self",
+]);
+
 /**
- * Whether an identifier names a default-library global (`Math`, `fetch`,
- * `URL`, `Error`) rather than a binding of the program's own. The one
- * answer to "is this the library's `X`": a scene's own `Math`, however it
- * came to be bound, is not.
+ * The default-library global an expression names, or undefined.
+ *
+ * An identifier names one when it resolves to a declaration of
+ * TypeScript's own library (`Math`, `fetch`, `document`, the `Promise`
+ * type), and `globalThis` names the global object itself — the checker
+ * models it as an intrinsic with no declaration, so it is recognized as the
+ * checker's own global binding of that name. A member of the global object
+ * read through the library's `globalThis`, `window` or `self`
+ * (`window.innerWidth`) names that member when the member is the
+ * library's own. Grouping and type-only wrappers are seen through.
+ *
+ * The one answer to "is this the library's `X`": a program's own `Math`,
+ * `function Number() {}` or local `class Map`, however it came to be
+ * bound, is not.
  */
-export function isDefaultLibraryIdentifier(
+export function libraryGlobal(
     checker: ts.TypeChecker,
-    identifier: ts.Identifier,
-): boolean {
-    return declaredInDefaultLibrary(resolvedSymbol(checker, identifier));
+    expression: ts.Expression,
+): string | undefined {
+    const node = unwrapExpression(expression);
+    if (ts.isIdentifier(node)) {
+        return declaredInDefaultLibrary(resolvedSymbol(checker, node)) ||
+            (node.text === "globalThis" &&
+                checker.getSymbolAtLocation(node) ===
+                    checker.resolveName(
+                        node.text,
+                        undefined,
+                        ts.SymbolFlags.Value,
+                        false,
+                    ))
+            ? node.text
+            : undefined;
+    }
+    if (!ts.isPropertyAccessExpression(node)) return undefined;
+    const owner = unwrapExpression(node.expression);
+    return ts.isIdentifier(owner) &&
+        GLOBAL_OBJECT_NAMES.has(owner.text) &&
+        libraryGlobal(checker, owner) === owner.text &&
+        declaredInDefaultLibrary(resolvedSymbol(checker, node))
+        ? node.name.text
+        : undefined;
 }
+
+/** A reader's view of {@link libraryGlobal}, bound to its program. */
+export type LibraryGlobal = (expression: ts.Expression) => string | undefined;
 
 export class CompilerSymbols {
     public constructor(private readonly checker: ts.TypeChecker) {}
 
-    /** See {@link isDefaultLibraryIdentifier}. */
-    public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
-        return isDefaultLibraryIdentifier(this.checker, identifier);
+    /** See {@link libraryGlobal}. */
+    public libraryGlobal(expression: ts.Expression): string | undefined {
+        return libraryGlobal(this.checker, expression);
     }
 
     /** Resolve a generation-known enum value through its pinned declaration,

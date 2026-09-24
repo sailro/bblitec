@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -11,8 +10,7 @@ type Context = Pick<
     | "defaultEngine"
     | "checker"
     | "unwrap"
-    | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isCanvasElement"
     | "reachFeature"
     | "fail"
@@ -217,7 +215,7 @@ export function emitDomEventListener(
         );
         target = `bbl::DomEventTarget::node(${owner.cpp}.value)`;
     } else {
-        let global = browserGlobalNamed(context, callee.expression)?.text;
+        let global = context.libraryGlobal(callee.expression);
         if (!global) {
             const type = context.checker.getNonNullableType(
                 context.checker.getTypeAtLocation(callee.expression),

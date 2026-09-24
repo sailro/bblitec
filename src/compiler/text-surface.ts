@@ -57,7 +57,7 @@ interface TextSurfaceContext extends Pick<
     | "expectKind"
     | "fail"
     | "assertTextPipelineMutable"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "reachFeature"
     | "promoteTextData"
 > {}
@@ -292,9 +292,7 @@ export function compileTextMutation(
     if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(node.expression.expression) &&
+        context.libraryGlobal(node.expression.expression) === "Object" &&
         [
             "assign",
             "defineProperty",

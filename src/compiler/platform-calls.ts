@@ -10,7 +10,6 @@ import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { emitDomEventListener } from "./dom-listeners.js";
 import {
     parseUiSelectorSequence,
@@ -108,7 +107,7 @@ interface PlatformCallContext
             | "probeEmission"
             | "isBrowserOnlyExpression"
             | "isCanvasElement"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isInFrameCallback"
             | "isNativeHostUiLookup"
             | "isPrimaryCanvas2DContextCall"
@@ -225,11 +224,11 @@ export class PlatformCalls {
             const value = this.compileUiCall(call, callee);
             if (value) return value;
         }
-        if (
-            ts.isIdentifier(callee) &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
-            if (callee.text === "isFinite") {
+        const global = ts.isIdentifier(callee)
+            ? this.context.libraryGlobal(callee)
+            : undefined;
+        if (global !== undefined) {
+            if (global === "isFinite") {
                 this.context.expectArgumentCount(call, 1, 1);
                 return {
                     kind: "boolean",
@@ -238,7 +237,7 @@ export class PlatformCalls {
                         `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
-            if (callee.text === "setInterval") {
+            if (global === "setInterval") {
                 this.context.expectArgumentCount(call, 2, 2);
                 const engine = this.context.requireDefaultEngine(call);
                 const callback = this.context.compileFrameCallback(
@@ -255,7 +254,7 @@ export class PlatformCalls {
                     impure: true,
                 };
             }
-            if (callee.text === "clearInterval") {
+            if (global === "clearInterval") {
                 this.context.expectArgumentCount(call, 1, 1);
                 const engine = this.context.requireDefaultEngine(call);
                 return {
@@ -265,7 +264,7 @@ export class PlatformCalls {
                         `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
-            if (callee.text === "clearTimeout") {
+            if (global === "clearTimeout") {
                 this.context.expectArgumentCount(call, 1, 1);
                 const engine = this.context.requireDefaultEngine(call);
                 return {
@@ -306,9 +305,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "performance" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "performance"
         ) {
             return {
                 kind: "number",
@@ -319,9 +316,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "Date" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "Date"
         ) {
             return {
                 kind: "number",
@@ -395,9 +390,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "exitPointerLock" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "document"
         ) {
             return {
                 kind: "void",
@@ -444,8 +437,8 @@ export class PlatformCalls {
                     ? this.context.unwrap(node.arguments[0])
                     : undefined;
                 if (
-                    ts.isIdentifier(callee) &&
-                    callee.text === "requestAnimationFrame" &&
+                    this.context.libraryGlobal(callee) ===
+                        "requestAnimationFrame" &&
                     argument &&
                     ts.isIdentifier(argument) &&
                     this.context.symbols.valueSymbol(argument) === symbol
@@ -648,13 +641,11 @@ export class PlatformCalls {
             return true;
         }
         if (!ts.isIdentifier(callee.expression)) return false;
-        const target = this.context.isDefaultLibraryIdentifier(
-            callee.expression,
-        )
-            ? callee.expression.text
-            : this.context.isCanvasElement(callee.expression)
-              ? "canvas"
-              : undefined;
+        const target =
+            this.context.libraryGlobal(callee.expression) ??
+            (this.context.isCanvasElement(callee.expression)
+                ? "canvas"
+                : undefined);
         if (
             target !== "window" &&
             target !== "document" &&
@@ -960,9 +951,7 @@ export class PlatformCalls {
         }
         if (
             callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression)
+            this.context.libraryGlobal(callee.expression) === "document"
         ) {
             this.context.expectArgumentCount(call, 1, 1);
             const tag = this.context.compileStringLiteral(argumentAt(call, 0));
@@ -1008,8 +997,8 @@ export class PlatformCalls {
                 callee.name.text === "appendChild") &&
             ts.isPropertyAccessExpression(callee.expression) &&
             callee.expression.name.text === "body" &&
-            browserGlobalNamed(this.context, callee.expression.expression)
-                ?.text === "document";
+            this.context.libraryGlobal(callee.expression.expression) ===
+                "document";
         if (
             rootAppend &&
             callee.name.text === "append" &&
@@ -1143,11 +1132,8 @@ export class PlatformCalls {
                     const imageData = this.context.unwrap(argumentAt(call, 0));
                     if (
                         !ts.isNewExpression(imageData) ||
-                        !ts.isIdentifier(imageData.expression) ||
-                        imageData.expression.text !== "ImageData" ||
-                        !this.context.isDefaultLibraryIdentifier(
-                            imageData.expression,
-                        ) ||
+                        this.context.libraryGlobal(imageData.expression) !==
+                            "ImageData" ||
                         (imageData.arguments?.length ?? 0) !== 3
                     ) {
                         this.context.fail(

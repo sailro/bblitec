@@ -34,7 +34,7 @@ import {
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
-import { declarationInDefaultLibrary } from "./symbols.js";
+import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
@@ -113,8 +113,7 @@ function nativePlatformRead(
     const owner = unwrapExpression(node.expression);
     if (
         node.name.text === "getGamepads" &&
-        ts.isIdentifier(owner) &&
-        owner.text === "navigator"
+        libraryGlobal(context.checker, owner) === "navigator"
     )
         return true;
     const type = context.checker.getNonNullableType(
@@ -853,8 +852,7 @@ export function parameterizedResourceLoop(
     };
     const staticContext: PositiveIntegerContext = {
         resolveStaticExpression: resolve,
-        isDefaultLibraryIdentifier: (identifier) =>
-            context.isDefaultLibraryIdentifier(identifier),
+        libraryGlobal: (expression) => context.libraryGlobal(expression),
         lookup: (identifier) => context.lookup(identifier),
         lookupOptional: (identifier) =>
             indices.has(context.symbols.valueSymbol(identifier)!)

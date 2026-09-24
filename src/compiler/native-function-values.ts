@@ -41,15 +41,12 @@ export function nativeFunctionValue(
 }
 
 export function arrayFunctionValue(
-    context: Context &
-        Pick<LoweringServices, "isDefaultLibraryIdentifier" | "reachJson">,
+    context: Context & Pick<LoweringServices, "libraryGlobal" | "reachJson">,
     access: ts.PropertyAccessExpression,
 ): Value | undefined {
     if (
         access.name.text !== "isArray" ||
-        !ts.isIdentifier(access.expression) ||
-        access.expression.text !== "Array" ||
-        !context.isDefaultLibraryIdentifier(access.expression)
+        context.libraryGlobal(access.expression) !== "Array"
     )
         return undefined;
     context.reachJson();

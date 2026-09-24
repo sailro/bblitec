@@ -3,7 +3,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
-import { browserGlobalNamed } from "./browser-erasure.js";
 import type { Value } from "./types.js";
 
 /**
@@ -17,7 +16,7 @@ interface BrowserFileContext extends Pick<
     | "unwrap"
     | "resolveStaticExpression"
     | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "propertyName"
     | "compileValue"
     | "compileStringLiteral"
@@ -42,7 +41,7 @@ const knownAcceptMimeExtensions = new EmissionMap<string, readonly string[]>([
 
 type DefaultGlobalContext = Pick<
     BrowserFileContext,
-    "isDefaultLibraryIdentifier" | "lookupOptional" | "unwrap"
+    "libraryGlobal" | "lookupOptional" | "unwrap"
 >;
 
 function isDefaultGlobal(
@@ -51,7 +50,7 @@ function isDefaultGlobal(
     name: string,
 ): expression is ts.Identifier {
     return (
-        browserGlobalNamed(context, expression)?.text === name &&
+        context.libraryGlobal(expression) === name &&
         ts.isIdentifier(expression)
     );
 }
@@ -444,7 +443,7 @@ export function validateFileAccept(
 export function isNativeBrowserFileExpression(
     context: Pick<
         BrowserFileContext,
-        "isDefaultLibraryIdentifier" | "lookupOptional" | "unwrap"
+        "libraryGlobal" | "lookupOptional" | "unwrap"
     >,
     expression: ts.Expression,
 ): boolean {

@@ -16,16 +16,14 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
 function objectIdentityCallArgument(
     expression: ts.Expression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
         !ts.isPropertyAccessExpression(expression.expression) ||
-        !ts.isIdentifier(expression.expression.expression) ||
-        expression.expression.expression.text !== "Object" ||
         !OBJECT_IDENTITY_CALLS.has(expression.expression.name.text) ||
-        !isLibrary(expression.expression.expression)
+        libraryGlobal(expression.expression.expression) !== "Object"
     ) {
         return undefined;
     }
@@ -36,6 +34,7 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
+import { libraryGlobal, type LibraryGlobal } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -128,9 +127,6 @@ export class StaticEvaluator {
         private readonly compileCondition: CompileCondition,
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
-        private readonly isDefaultLibraryIdentifier: (
-            identifier: ts.Identifier,
-        ) => boolean,
         private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
         private readonly lookupOptional: LookupOptional,
@@ -142,6 +138,14 @@ export class StaticEvaluator {
             expression: ts.Expression,
         ) => ts.TemplateLiteral | undefined,
     ) {}
+
+    /** See `libraryGlobal` (symbols.ts). */
+    private readonly libraryGlobal: LibraryGlobal = (expression) =>
+        libraryGlobal(this.checker, expression);
+
+    /** The identifier form of {@link libraryGlobal} the `Math` readers take. */
+    private readonly isLibraryIdentifier = (identifier: ts.Identifier) =>
+        this.libraryGlobal(identifier) !== undefined;
 
     /**
      * `precision` selects the native vector the components land in. The
@@ -527,12 +531,10 @@ export class StaticEvaluator {
                 ? cppFloatLiteral(value)
                 : cppDoubleLiteral(value);
         }
-        if (
-            ts.isIdentifier(unwrapped) &&
-            (unwrapped.text === "Infinity" || unwrapped.text === "NaN")
-        ) {
+        const numericGlobal = this.libraryGlobal(unwrapped);
+        if (numericGlobal === "Infinity" || numericGlobal === "NaN") {
             const type = precision === "float" ? "float" : "double";
-            return unwrapped.text === "Infinity"
+            return numericGlobal === "Infinity"
                 ? `std::numeric_limits<${type}>::infinity()`
                 : `std::numeric_limits<${type}>::quiet_NaN()`;
         }
@@ -697,12 +699,9 @@ export class StaticEvaluator {
         // double width through the property arm below.
         const mathConstant = mathMemberAccess(
             unwrapped,
-            this.isDefaultLibraryIdentifier,
+            this.isLibraryIdentifier,
         );
-        const numericConstant = numberConstant(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const numericConstant = numberConstant(unwrapped, this.libraryGlobal);
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
@@ -714,10 +713,7 @@ export class StaticEvaluator {
                 ? constant.floatCpp
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const mathCall = mathMemberCall(unwrapped, this.isLibraryIdentifier);
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -900,16 +896,12 @@ export class StaticEvaluator {
         }
         const mathConstant = mathMemberAccess(
             unwrapped,
-            this.isDefaultLibraryIdentifier,
+            this.isLibraryIdentifier,
         );
-        const mathCall = mathMemberCall(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const mathCall = mathMemberCall(unwrapped, this.isLibraryIdentifier);
         return (
             ts.isNumericLiteral(unwrapped) ||
-            (ts.isIdentifier(unwrapped) &&
-                (unwrapped.text === "Infinity" || unwrapped.text === "NaN")) ||
+            ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
                     unwrapped.operator === ts.SyntaxKind.MinusToken ||
@@ -1473,7 +1465,7 @@ export class StaticEvaluator {
     public staticNumberValue(expression: ts.Expression): number | undefined {
         return staticNumberValue(
             {
-                isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
+                libraryGlobal: this.libraryGlobal,
                 resolveStaticExpression: (value: ts.Expression) =>
                     this.resolveStaticExpression(value),
                 lookup: (identifier: ts.Identifier) => this.lookup(identifier),
@@ -1613,7 +1605,7 @@ export class StaticEvaluator {
             // argument exactly as the tag above is over its template.
             const frozen = objectIdentityCallArgument(
                 current,
-                this.isDefaultLibraryIdentifier,
+                this.libraryGlobal,
             );
             if (frozen) {
                 current = frozen;

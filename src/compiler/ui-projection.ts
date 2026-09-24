@@ -57,7 +57,7 @@ import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
 import { registerUiImageAsset } from "./assets.js";
-import { browserGlobalNamed, primaryCanvasIds } from "./browser-erasure.js";
+import { primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -160,7 +160,7 @@ interface UiProjectionContext extends Pick<
     | "hasFeature"
     | "hasPresentationHost"
     | "isCanvasElement"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
     | "lookupOptional"
@@ -203,8 +203,7 @@ export class UiProjection {
         if (
             !ts.isPropertyAccessExpression(owner) ||
             !["documentElement", "head", "body"].includes(owner.name.text) ||
-            browserGlobalNamed(this.context, owner.expression)?.text !==
-                "document"
+            this.context.libraryGlobal(owner.expression) !== "document"
         )
             return undefined;
         return owner.name.text === "documentElement" ? "html" : owner.name.text;
@@ -584,9 +583,7 @@ export class UiProjection {
         if (
             ts.isPropertyAccessExpression(value) &&
             value.name.text === "activeElement" &&
-            ts.isIdentifier(value.expression) &&
-            value.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(value.expression)
+            this.context.libraryGlobal(value.expression) === "document"
         )
             return true;
         if (ts.isElementAccessExpression(value)) {
@@ -612,9 +609,7 @@ export class UiProjection {
         const createsElement =
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression) &&
+            this.context.libraryGlobal(callee.expression) === "document" &&
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
                 ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
@@ -4207,9 +4202,7 @@ export class UiProjection {
                     (callee.name.text === "querySelector" ||
                         callee.name.text === "querySelectorAll"))
             ) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "document" ||
-            !this.context.isDefaultLibraryIdentifier(callee.expression) ||
+            this.context.libraryGlobal(callee.expression) !== "document" ||
             call.arguments.length !== 1
         ) {
             return false;
@@ -4257,9 +4250,7 @@ export class UiProjection {
                 if (
                     ts.isPropertyAccessExpression(callee) &&
                     callee.name.text === "createElement" &&
-                    ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "document" &&
-                    this.context.isDefaultLibraryIdentifier(callee.expression)
+                    this.context.libraryGlobal(callee.expression) === "document"
                 ) {
                     const tag = node.arguments[0];
                     if (

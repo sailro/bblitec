@@ -51,11 +51,7 @@ export function compileSearchParams(
     node: ts.NewExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    if (
-        !ts.isIdentifier(node.expression) ||
-        node.expression.text !== "URLSearchParams" ||
-        !context.isDefaultLibraryIdentifier(node.expression)
-    )
+    if (context.libraryGlobal(node.expression) !== "URLSearchParams")
         return undefined;
     const args = node.arguments ?? [];
     if (args.length !== 1)

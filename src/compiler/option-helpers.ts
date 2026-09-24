@@ -56,7 +56,7 @@ export interface PositiveIntegerContext
             | "resolveStaticExpression"
             | "lookup"
             | "lookupOptional"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "fail"
         >,
         Partial<Pick<LoweringServices, "staticCanvasSize">> {}
@@ -367,17 +367,15 @@ export function staticNumberValue(
         const element = target.elements[index];
         return element ? staticNumberValue(context, element) : undefined;
     }
-    const constant = mathMemberAccess(node, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
-    );
+    const isLibraryIdentifier = (identifier: ts.Identifier): boolean =>
+        context.libraryGlobal(identifier) !== undefined;
+    const constant = mathMemberAccess(node, isLibraryIdentifier);
     if (constant) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
         // one of these as text; a Math CALL is folded by the arm below.
         return MATH_CONSTANTS.get(constant.name.text)?.value;
     }
-    const mathCall = mathMemberCall(node, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
-    );
+    const mathCall = mathMemberCall(node, isLibraryIdentifier);
     if (mathCall) {
         const { name, call } = mathCall;
         if (call.arguments.length === 1) {
@@ -408,10 +406,9 @@ export function staticNumberValue(
         return undefined;
     }
     if (ts.isIdentifier(node)) {
-        if (context.isDefaultLibraryIdentifier(node)) {
-            if (node.text === "Infinity") return Infinity;
-            if (node.text === "NaN") return NaN;
-        }
+        const global = context.libraryGlobal(node);
+        if (global === "Infinity") return Infinity;
+        if (global === "NaN") return NaN;
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
         const value = context.lookupOptional(node);

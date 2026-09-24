@@ -15,7 +15,7 @@ import {
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 import {
     dataTypesEqual,
     isTypedArrayType,
@@ -936,8 +936,11 @@ export class NativeFunctionLowerer {
         active: Set<SupportedFunction>,
     ): boolean {
         if (allowPureMath) {
-            const math = mathMemberCall(call, (identifier) =>
-                isDefaultLibraryIdentifier(this.context.checker, identifier),
+            const math = mathMemberCall(
+                call,
+                (identifier) =>
+                    libraryGlobal(this.context.checker, identifier) !==
+                    undefined,
             );
             const member =
                 math === undefined ? undefined : MATH_MEMBERS.get(math.name);
@@ -1804,12 +1807,8 @@ export class NativeFunctionLowerer {
             (node) => {
                 if (ts.isCallExpression(node)) {
                     if (
-                        ts.isIdentifier(node.expression) &&
-                        node.expression.text === "fetch" &&
-                        isDefaultLibraryIdentifier(
-                            this.context.checker,
-                            node.expression,
-                        )
+                        libraryGlobal(this.context.checker, node.expression) ===
+                        "fetch"
                     ) {
                         return true;
                     }

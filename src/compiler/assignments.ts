@@ -489,7 +489,7 @@ export interface AssignmentContext
         DeterministicRandomContext,
         Pick<
             LoweringServices,
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "noteNodeInputAdmissionFailure"
             | "noteTextSceneCameraAssignment"
             | "noteTemporalRecordBoundary"
@@ -2077,9 +2077,7 @@ function staticMeshIdSet(
     );
     if (
         !ts.isNewExpression(unwrapped) ||
-        !ts.isIdentifier(unwrapped.expression) ||
-        unwrapped.expression.text !== "Set" ||
-        !context.isDefaultLibraryIdentifier(unwrapped.expression) ||
+        context.libraryGlobal(unwrapped.expression) !== "Set" ||
         unwrapped.arguments?.length !== 1
     ) {
         context.fail(

@@ -128,7 +128,7 @@ export interface StatementLoweringContext extends Pick<
     | "compileCondition"
     | "isBrowserOnlyExpression"
     | "isDeferredCallbackCall"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "compileNumber"
     | "compileEnumSwitchLabel"
     | "expectStaticArrayLiteral"
@@ -1177,11 +1177,9 @@ export class StatementLowerer {
             }
             return (
                 ts.isCallExpression(value) &&
-                ts.isIdentifier(value.expression) &&
                 ["Boolean", "Number", "String"].includes(
-                    value.expression.text,
+                    context.libraryGlobal(value.expression) ?? "",
                 ) &&
-                context.isDefaultLibraryIdentifier(value.expression) &&
                 value.arguments.every(pure)
             );
         };
@@ -1531,8 +1529,8 @@ export class StatementLowerer {
         // consumer, so its message stays an expression; a held Error value
         // or a string carries its message as a value.
         const errorName = ts.isNewExpression(thrown)
-            ? errorConstructor(thrown, (identifier) =>
-                  context.isDefaultLibraryIdentifier(identifier),
+            ? errorConstructor(thrown, (callee) =>
+                  context.libraryGlobal(callee),
               )
             : undefined;
         const error =
@@ -2382,7 +2380,7 @@ export class StatementLowerer {
     ): boolean {
         const iterator = iteratorMethodCall(
             statement.expression,
-            (identifier) => context.isDefaultLibraryIdentifier(identifier),
+            (receiver) => context.libraryGlobal(receiver),
             (node) => context.unwrap(node),
         );
         if (!iterator) {

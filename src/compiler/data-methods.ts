@@ -34,7 +34,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { declarationInDefaultLibrary } from "./symbols.js";
+import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -51,11 +51,7 @@ export function compileIsArrayOverData(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "isArray" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Array" ||
-        !lowerer.context.isDefaultLibraryIdentifier(callee.expression) ||
-        lowerer.context.lookupIdentifierValue(callee.expression) !==
-            undefined ||
+        lowerer.context.libraryGlobal(callee.expression) !== "Array" ||
         call.arguments.length !== 1
     ) {
         return undefined;
@@ -262,8 +258,9 @@ export function isStoringDataCall(
             ts.isPropertyAccessExpression(node.expression) &&
             storingDataMethods.has(node.expression.name.text)) ||
         (ts.isNewExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            (node.expression.text === "Map" || node.expression.text === "Set"))
+            ["Map", "Set"].includes(
+                libraryGlobal(checker, node.expression) ?? "",
+            ))
     );
 }
 
@@ -1765,9 +1762,7 @@ function compileArrayMap(
         method === "map" &&
         call.arguments.length === 1 &&
         callback &&
-        ts.isIdentifier(callback) &&
-        callback.text === "Number" &&
-        !lowerer.context.lookupIdentifierValue(callback) &&
+        lowerer.context.libraryGlobal(callback) === "Number" &&
         mappedType.element.kind === "number" &&
         (dataType.element.kind === "string" ||
             dataType.element.kind === "number")

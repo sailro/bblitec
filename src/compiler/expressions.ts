@@ -218,6 +218,7 @@ export interface ExpressionContext
             | "isBrowserOnlyExpression"
             | "isBrowserOnlyHandler"
             | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isDeferredCallbackCall"
             | "compileFrameCallback"
             | "requireDefaultEngine"
@@ -597,10 +598,7 @@ export class ExpressionLowerer {
                     `Private name '${unwrapped.text}' is a member, not a value.`,
                 );
             }
-            if (
-                unwrapped.text === "devicePixelRatio" &&
-                this.context.isDefaultLibraryIdentifier(unwrapped)
-            ) {
+            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
                 return {
                     kind: "number",
                     cpp: "1.0",
@@ -611,7 +609,8 @@ export class ExpressionLowerer {
             if (unwrapped.text === "undefined") {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
-            if (unwrapped.text === "Infinity" || unwrapped.text === "NaN") {
+            const numeric = this.context.libraryGlobal(unwrapped);
+            if (numeric === "Infinity" || numeric === "NaN") {
                 return {
                     kind: "number",
                     cpp: this.context.compileNumber(unwrapped, "double"),
@@ -689,8 +688,8 @@ export class ExpressionLowerer {
                 );
             if (typeof constant === "number")
                 return numberConstantValue(constant);
-            const numericConstant = numberConstant(unwrapped, (identifier) =>
-                this.context.isDefaultLibraryIdentifier(identifier),
+            const numericConstant = numberConstant(unwrapped, (owner) =>
+                this.context.libraryGlobal(owner),
             );
             if (numericConstant !== undefined)
                 return numberConstantValue(numericConstant);
@@ -768,11 +767,7 @@ export class ExpressionLowerer {
             if (browserFile) {
                 return browserFile;
             }
-            if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "RegExp" &&
-                !this.context.lookupOptional(unwrapped.expression)
-            ) {
+            if (this.context.libraryGlobal(unwrapped.expression) === "RegExp") {
                 const arguments_ = unwrapped.arguments ?? [];
                 if (arguments_.length < 1 || arguments_.length > 2) {
                     this.context.fail(
@@ -820,8 +815,8 @@ export class ExpressionLowerer {
                         `${flags.includes("i") ? "true" : "false"})`,
                 };
             }
-            const errorName = errorConstructor(unwrapped, (identifier) =>
-                this.context.isDefaultLibraryIdentifier(identifier),
+            const errorName = errorConstructor(unwrapped, (callee) =>
+                this.context.libraryGlobal(callee),
             );
             if (errorName) {
                 return compileErrorConstruction(
@@ -2249,8 +2244,7 @@ export class ExpressionLowerer {
         return (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "getGamepads" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "navigator"
+            this.context.libraryGlobal(callee.expression) === "navigator"
         );
     }
 
@@ -2381,8 +2375,7 @@ export class ExpressionLowerer {
         const callee = this.context.unwrap(call.expression);
         if (
             ts.isIdentifier(callee) &&
-            callee.text === "createImageBitmap" &&
-            !this.context.lookupOptional(callee)
+            this.context.libraryGlobal(callee) === "createImageBitmap"
         ) {
             this.context.expectArgumentCount(call, 1, 2);
             return {
@@ -2398,8 +2391,7 @@ export class ExpressionLowerer {
         }
         if (
             ts.isIdentifier(callee) &&
-            callee.text === "requestAnimationFrame" &&
-            !this.context.lookupOptional(callee)
+            this.context.libraryGlobal(callee) === "requestAnimationFrame"
         ) {
             const animationFrame = this.context.compileAnimationFrameCall(call);
             if (animationFrame) return animationFrame;
@@ -2682,7 +2674,7 @@ export class ExpressionLowerer {
             );
         }
 
-        if (callee.text === "String" && !this.context.lookupOptional(callee)) {
+        if (this.context.libraryGlobal(callee) === "String") {
             this.context.expectArgumentCount(call, 1, 1);
             const argument = this.context.unwrap(argumentAt(call, 0));
             if (argument.kind === ts.SyntaxKind.NullKeyword) {
@@ -2753,14 +2745,11 @@ export class ExpressionLowerer {
             );
         }
 
-        if (callee.text === "Number" && !this.context.lookupOptional(callee)) {
+        if (this.context.libraryGlobal(callee) === "Number") {
             this.context.expectArgumentCount(call, 1, 1);
             return this.compileNumberConversion(argumentAt(call, 0));
         }
-        if (
-            callee.text === "Boolean" &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
+        if (this.context.libraryGlobal(callee) === "Boolean") {
             // `Boolean(x)` is x's truthiness, which the condition lowering
             // already spells for every kind.
             this.context.expectArgumentCount(call, 1, 1);
@@ -4506,32 +4495,21 @@ export class ExpressionLowerer {
                     : { kind: "void", cpp };
             }
         }
+        const staticOwner = this.context.libraryGlobal(callee.expression);
         if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object" &&
-            (callee.name.text === "keys" || callee.name.text === "values") &&
-            !this.context.lookupOptional(callee.expression)
+            staticOwner === "Object" &&
+            (callee.name.text === "keys" || callee.name.text === "values")
         ) {
             return this.compileObjectProjection(call, callee.name.text);
         }
-        if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object"
-        ) {
-            const objectStatic = OBJECT_STATIC_HANDLERS.get(callee.name.text);
-            if (
-                objectStatic &&
-                this.context.isDefaultLibraryIdentifier(callee.expression)
-            ) {
-                return objectStatic(this.context, call);
-            }
+        const objectStatic =
+            staticOwner === "Object"
+                ? OBJECT_STATIC_HANDLERS.get(callee.name.text)
+                : undefined;
+        if (objectStatic) {
+            return objectStatic(this.context, call);
         }
-        if (
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "String" &&
-            callee.name.text === "fromCharCode" &&
-            !this.context.lookupOptional(callee.expression)
-        ) {
+        if (staticOwner === "String" && callee.name.text === "fromCharCode") {
             this.context.reachJsData();
             return {
                 kind: "data",
