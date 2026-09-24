@@ -4,11 +4,10 @@ import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 
 import { LoweringContext } from "../src/lowering/context.js";
-import { PinnedShaderBuilders } from "../src/lowering/pinned-shader-builders.js";
 import {
-    PinnedShaderText,
+    PinnedShaderBuilders,
     type ShaderTextBinding,
-} from "../src/lowering/pinned-shader-text.js";
+} from "../src/lowering/pinned-shader-builders.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
 import { spriteFragmentWgsl } from "../src/shader-builtins-sprite.js";
@@ -22,9 +21,9 @@ function billboards(): BillboardLowerer {
     return new BillboardLowerer(new LoweringContext());
 }
 
-test("folds the pinned extra-binding loop over a bound list", () => {
-    const text = new PinnedShaderText(new LoweringContext());
-    // One pair per extra texture, stepping the binding by two. Folding the
+test("runs the pinned extra-binding loop over a bound list", () => {
+    const text = new PinnedShaderBuilders(new LoweringContext());
+    // One pair per extra texture, stepping the binding by two. Running the
     // pin's own loop rather than emitting the lines here is what keeps a
     // changed binding rule the pin's.
     assert.equal(
@@ -58,45 +57,8 @@ test("folds the pinned extra-binding loop over a bound list", () => {
     );
 });
 
-test("executed pinned builders return the text their declarations fold to", () => {
-    const context = new LoweringContext();
-    const folded = new PinnedShaderText(context);
-    const executed = new PinnedShaderBuilders(context);
-    const calls: Array<[string, string, Map<string, ShaderTextBinding>]> = [
-        [
-            "src/sprite/custom-shader-core.ts",
-            "makeExtraBindingsWgsl",
-            new Map<string, ShaderTextBinding>([
-                ["group", "2"],
-                ["startBinding", 2],
-                ["extras", [{ name: "palette" }, { name: "noise" }]],
-            ]),
-        ],
-        [
-            "src/sprite/sprite-pipeline.ts",
-            "makeSpriteWgsl",
-            new Map<string, ShaderTextBinding>([
-                ["hasDepth", true],
-                ["spriteGroupIndex", "1"],
-                ["uvScroll", true],
-            ]),
-        ],
-        [
-            "src/material/line/line-material.ts",
-            "vertexSource",
-            new Map<string, ShaderTextBinding>([
-                ["useVertexColor", true],
-                ["useThinInstances", true],
-                ["useThinInstanceColors", false],
-            ]),
-        ],
-    ];
-    for (const [module, symbol, parameters] of calls) {
-        assert.equal(
-            executed.evaluate(module, symbol, parameters),
-            folded.evaluate(module, symbol, parameters),
-        );
-    }
+test("executed pinned builders bind by the pin's own parameter names", () => {
+    const executed = new PinnedShaderBuilders(new LoweringContext());
     assert.throws(
         () =>
             executed.evaluate(

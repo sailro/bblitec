@@ -12,10 +12,7 @@ import { argumentAt } from "./syntax.js";
 import { LoweringContext } from "../lowering/context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import {
-    PinnedShaderText,
-    type ShaderTextContext,
-} from "../lowering/pinned-shader-text.js";
+import { executeApplicationFunction } from "./executed-application-function.js";
 import type {
     MaterialPluginManifest,
     MaterialPluginSamplerManifest,
@@ -1435,14 +1432,13 @@ function foldSingleReturn(
 }
 
 /**
- * `getCustomCode(shaderType)` evaluated at one argument.
+ * `getCustomCode(shaderType)` run at one argument.
  *
- * The pin calls it once per shader type at composition, so the body is
- * folded at each argument value by the shared shader-text evaluator: its
- * branch folding picks the `return` the argument reaches -- a guarded
- * block or an arrow whose whole body is the conditional choice -- and the
- * record that return hands back is read here. Nothing in it reaches a run
- * time.
+ * The pin calls it once per shader type at composition, so it is executed
+ * at each argument value (`executeApplicationFunction`), closing over the
+ * module constants and the enclosing bindings the compiler folds. What it
+ * returns is `null` or the point-to-WGSL record read here; nothing in it
+ * reaches a run time.
  */
 function foldCustomCode(
     context: MaterialPluginContext,
@@ -1450,94 +1446,49 @@ function foldCustomCode(
     shaderType: "fragment" | "vertex",
     accepted: ReadonlySet<string>,
 ): Readonly<Record<string, string>> | undefined {
-    const parameter = declaration.parameters[0];
-    const file = declaration.getSourceFile();
-    const returned = new PinnedShaderText(
-        pluginShaderTextContext(context, file),
-    ).returnedExpression(
-        file.fileName,
+    const value = executeApplicationFunction(
+        {
+            checker: context.checker,
+            fail: (node, message) => context.fail(node, message),
+            foldEnclosing: (identifier) => {
+                const folded = context.compileValue(identifier);
+                return (
+                    folded.staticString ??
+                    folded.staticBoolean ??
+                    folded.staticNumber
+                );
+            },
+        },
         declaration,
-        new Map(
-            parameter && ts.isIdentifier(parameter.name)
-                ? [[parameter.name.text, shaderType]]
-                : [],
-        ),
+        [shaderType],
+        "getCustomCode",
     );
-    return foldCustomCodeValue(context, returned, accepted);
-}
-
-/**
- * What the shared evaluator may read while folding `getCustomCode`: its own
- * module, and nothing it would have to call -- the pin reads the member once
- * for a record, so a body reaching another function or module refuses.
- */
-function pluginShaderTextContext(
-    context: MaterialPluginContext,
-    file: ts.SourceFile,
-): ShaderTextContext {
-    const refuse = (node: ts.Node, what: string): never =>
-        context.fail(
-            node,
-            `getCustomCode ${what}; the pin reads it once at composition, so ` +
-                "its body folds to a guarded record without calls.",
-        );
-    return {
-        sourceFile: (modulePath) =>
-            modulePath === file.fileName
-                ? file
-                : refuse(file, `reads module '${modulePath}'`),
-        contractError: (node, message) => context.fail(node, message),
-        hasNode: (root) => refuse(root, "loops"),
-        functionDeclaration: (_modulePath, symbolName) =>
-            refuse(file, `calls '${symbolName}'`),
-        propertyPath: () => undefined,
-        moduleOfImport: () => undefined,
-        moduleScopeConstant: () => undefined,
-        unwrapExpression: (expression) => context.unwrap(expression),
-    };
-}
-
-/** `null`, or the point-to-WGSL record a `return` hands back. */
-function foldCustomCodeValue(
-    context: MaterialPluginContext,
-    expression: ts.Expression,
-    accepted: ReadonlySet<string>,
-): Readonly<Record<string, string>> | undefined {
-    const value = context.unwrap(context.resolveStaticExpression(expression));
-    if (value.kind === ts.SyntaxKind.NullKeyword) return undefined;
-    if (!ts.isObjectLiteralExpression(value)) {
-        context.fail(
-            expression,
-            "getCustomCode returns null or an object literal keyed by the " +
-                "pin's injection points.",
+    if (value === null) return undefined;
+    if (typeof value !== "object" || Array.isArray(value)) {
+        return context.fail(
+            declaration,
+            "getCustomCode returns null or a record keyed by the pin's " +
+                "injection points.",
         );
     }
     const code: Record<string, string> = {};
-    for (const property of value.properties) {
-        if (!ts.isPropertyAssignment(property)) {
-            context.fail(
-                property,
-                "An injection point maps to its WGSL by a plain property.",
-            );
-        }
-        const point = context.propertyName(property.name);
-        if (point === undefined) {
-            context.fail(property.name, "An injection point has a name.");
-        }
+    for (const [point, text] of Object.entries(value)) {
         if (!accepted.has(point)) {
             context.fail(
-                property.name,
+                declaration,
                 `${point} is not an injection point the pin maps onto a ` +
                     `template slot; it accepts ${[...accepted]
                         .sort()
                         .join(", ")}.`,
             );
         }
-        // The pin splices this text into the composed fragment at
-        // generation, so a value assembled from state would need a shader
-        // this port never composed -- `compileStaticString` accepts exactly
-        // the compile-time forms.
-        code[point] = context.compileStaticString(property.initializer);
+        if (typeof text !== "string") {
+            context.fail(
+                declaration,
+                `getCustomCode maps ${point} to ${typeof text}, not WGSL text.`,
+            );
+        }
+        code[point] = text;
     }
     return Object.keys(code).length > 0 ? code : undefined;
 }

@@ -180,10 +180,9 @@ import {
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
-    PinnedShaderText,
-    type ShaderTextBinding,
-    type ShaderTextContext,
-} from "./lowering/pinned-shader-text.js";
+    executeApplicationFunction,
+    type ExecutedScalar,
+} from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
 import {
     compileShaderMaterialOptions,
@@ -234,7 +233,6 @@ import {
     CompilerSymbols,
     declaredIn,
     declaredInDomLibrary,
-    resolvedSymbol,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import { isNullable, presentMembers } from "./compiler/type-facts.js";
@@ -5162,41 +5160,9 @@ class Compiler implements LoweringServices {
             body &&
             ts.isBlock(body)
         ) {
-            const parameters = new EmissionMap<string, ShaderTextBinding>();
-            // Application shader builders may splice a generation-known
-            // constant imported from a sibling module (Antigravity Racer's
-            // RING_COUNT/SHADOW_CASCADES are the reached case). The whole
-            // application module graph is already pinned input here, so
-            // carry those immutable bindings into the text evaluator just
-            // like literal call arguments. Imported functions remain owned
-            // by the evaluator's module traversal below.
-            for (const statement of declaration.getSourceFile().statements) {
-                if (
-                    !ts.isImportDeclaration(statement) ||
-                    !statement.importClause?.namedBindings ||
-                    !ts.isNamedImports(statement.importClause.namedBindings)
-                ) {
-                    continue;
-                }
-                for (const imported of statement.importClause.namedBindings
-                    .elements) {
-                    const target = resolvedSymbol(this.checker, imported.name);
-                    const variable = target?.declarations?.find(
-                        (candidate): candidate is ts.VariableDeclaration =>
-                            ts.isVariableDeclaration(candidate) &&
-                            candidate.initializer !== undefined,
-                    );
-                    if (!variable?.initializer) continue;
-                    const value = this.compileValue(variable.initializer);
-                    const binding: ShaderTextBinding | undefined =
-                        value.staticString ??
-                        value.staticBoolean ??
-                        value.staticNumber;
-                    if (binding !== undefined) {
-                        parameters.set(imported.name.text, binding);
-                    }
-                }
-            }
+            // A builder called with generation-known arguments is run: its
+            // text is what the browser compiles.
+            const args: Array<ExecutedScalar | undefined> = [];
             let allStatic = true;
             declaration.parameters.forEach((parameter, index) => {
                 if (!ts.isIdentifier(parameter.name)) {
@@ -5206,29 +5172,36 @@ class Compiler implements LoweringServices {
                 const argument =
                     resolved.arguments[index] ?? parameter.initializer;
                 if (!argument) {
+                    args.push(undefined);
                     return;
                 }
-                const value = this.compileValue(
+                const value = this.staticScalar(
                     this.alwaysUsedParameterDefault(argument) ?? argument,
                 );
-                const binding: ShaderTextBinding | undefined =
-                    value.staticString ??
-                    value.staticBoolean ??
-                    value.staticNumber;
-                if (binding === undefined) {
+                if (value === undefined) {
                     allStatic = false;
                     return;
                 }
-                parameters.set(parameter.name.text, binding);
+                args.push(value);
             });
             if (allStatic) {
-                const source = new PinnedShaderText(
-                    this.applicationShaderTextContext(),
-                ).evaluateDeclaration(
-                    declaration.getSourceFile().fileName,
+                const source = executeApplicationFunction(
+                    {
+                        checker: this.checker,
+                        fail: (node, message) => this.fail(node, message),
+                        foldEnclosing: (identifier) =>
+                            this.staticScalar(identifier),
+                    },
                     declaration,
-                    parameters,
+                    args,
+                    `Shader builder '${callee.text}'`,
                 );
+                if (typeof source !== "string") {
+                    this.fail(
+                        resolved,
+                        `Shader builder '${callee.text}' returned ${typeof source}, not WGSL text.`,
+                    );
+                }
                 return { source, dynamicUniforms: [] };
             }
         }
@@ -5304,115 +5277,12 @@ class Compiler implements LoweringServices {
         };
     }
 
-    /** Source navigation for bounded shader builders declared by the app. */
-    private applicationShaderTextContext(): ShaderTextContext {
-        const sourceFile = (modulePath: string): ts.SourceFile => {
-            const file =
-                this.program.getSourceFile(modulePath) ??
-                this.sourceFiles().find(
-                    (candidate) => candidate.fileName === modulePath,
-                );
-            if (!file) {
-                this.fail(
-                    this.sourceFile,
-                    `Shader builder module '${modulePath}' is not in the compilation program.`,
-                );
-            }
-            return file;
-        };
-        const unwrapExpression = (expression: ts.Expression): ts.Expression =>
-            this.unwrap(expression);
-        const propertyPath = (
-            expression: ts.Expression,
-        ): string[] | undefined => {
-            const node = unwrapExpression(expression);
-            if (ts.isIdentifier(node)) return [node.text];
-            if (!ts.isPropertyAccessExpression(node)) return undefined;
-            const owner = propertyPath(node.expression);
-            return owner ? [...owner, node.name.text] : undefined;
-        };
-        const moduleScopeConstant = (
-            file: ts.SourceFile,
-            name: string,
-        ): ts.Expression | undefined => {
-            for (const statement of file.statements) {
-                if (
-                    !ts.isVariableStatement(statement) ||
-                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-                ) {
-                    continue;
-                }
-                for (const declaration of statement.declarationList
-                    .declarations) {
-                    if (
-                        ts.isIdentifier(declaration.name) &&
-                        declaration.name.text === name &&
-                        declaration.initializer
-                    ) {
-                        return declaration.initializer;
-                    }
-                }
-            }
-            return undefined;
-        };
-        return {
-            sourceFile,
-            contractError: (node, message) => this.fail(node, message),
-            hasNode: (root, predicate) => {
-                let found = false;
-                const visit = (root: ts.Node): void =>
-                    forEachAnalysisNode(root, (node) => {
-                        if (found) return "skip";
-                        if (predicate(node)) {
-                            found = true;
-                            return "skip";
-                        }
-                    });
-                visit(root);
-                return found;
-            },
-            functionDeclaration: (modulePath, symbolName) => {
-                const file = sourceFile(modulePath);
-                const declaration = file.statements.find(
-                    (statement): statement is ts.FunctionDeclaration =>
-                        ts.isFunctionDeclaration(statement) &&
-                        statement.name?.text === symbolName &&
-                        statement.body !== undefined,
-                );
-                if (!declaration) {
-                    this.fail(
-                        file,
-                        `Expected shader builder function '${symbolName}' with a body.`,
-                    );
-                }
-                return { file, declaration };
-            },
-            propertyPath,
-            moduleOfImport: (modulePath, importedName) => {
-                const file = sourceFile(modulePath);
-                for (const statement of file.statements) {
-                    if (
-                        !ts.isImportDeclaration(statement) ||
-                        !statement.importClause?.namedBindings ||
-                        !ts.isNamedImports(statement.importClause.namedBindings)
-                    ) {
-                        continue;
-                    }
-                    const imported =
-                        statement.importClause.namedBindings.elements.find(
-                            (element) => element.name.text === importedName,
-                        );
-                    if (!imported) continue;
-                    return resolvedSymbol(
-                        this.checker,
-                        imported.name,
-                    )?.declarations?.[0]?.getSourceFile().fileName;
-                }
-                return undefined;
-            },
-            moduleScopeConstant,
-            unwrapExpression,
-        };
+    /** The generation-known scalar an expression folds to, if any. */
+    private staticScalar(
+        expression: ts.Expression,
+    ): ExecutedScalar | undefined {
+        const value = this.compileValue(expression);
+        return value.staticString ?? value.staticBoolean ?? value.staticNumber;
     }
 
     public resolveStaticExpression(
