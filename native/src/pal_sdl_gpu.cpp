@@ -1325,8 +1325,10 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
         if (generator.value == invalid_handle)
             continue;
 #if BBLITE_SHADOW_RECEIVERS
-        if (generator.value >= state.shadow_generators.size() ||
-            !handle_at(state.shadow_generators, generator).map ||
+        if (generator.value >= state.shadow_generators.size()) {
+            pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
+        }
+        if (!handle_at(state.shadow_generators, generator).map ||
             !state.shadow_comparison_sampler) {
             gpu_error("Shader CSM receiver texture is not ready.");
         }
@@ -8260,7 +8262,7 @@ public:
                     const auto target_texture = [&](RenderTargetHandle handle, bool sampled,
                                                     bool depth_only = false) {
                         if (handle.value >= state.render_targets.size()) {
-                            throw std::runtime_error(
+                            pal::refuse_invalid_frame_handle(
                                 "Frame graph render target handle is invalid.");
                         }
                         const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
@@ -8666,7 +8668,7 @@ public:
                                     draw_item.material_kind == upstream::RenderMaterialKind::shader;
                                 if (shader_bucket) {
                                     if (!material) {
-                                        throw std::runtime_error(
+                                        pal::refuse_invalid_frame_handle(
                                             "Shader draw has an invalid material.");
                                     }
                                     const ShaderDrawMatrices shader_matrices(
@@ -9942,7 +9944,7 @@ public:
                     }
                     if (item.material_kind == upstream::RenderMaterialKind::shader) {
                         if (!material) {
-                            throw std::runtime_error("Shader draw has an invalid material.");
+                            pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
                         }
                         const ShaderDrawMatrices shader_matrices(
                             *pass_scene, engine, handle_at(engine.meshes, item.mesh),

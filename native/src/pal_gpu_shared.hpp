@@ -742,6 +742,16 @@ inline bool render_target_samples_depth(const RenderTargetRecord& record) {
 }
 
 /**
+ * The refusal both backends owe a frame record naming a handle outside its
+ * table: a generation defect, classified as `handle_at` classifies its own
+ * refusal. Never a `GpuTransportError`, which would reach the
+ * device-recovery listeners as a lost device.
+ */
+[[noreturn]] inline void refuse_invalid_frame_handle(const char* message) {
+    throw std::out_of_range(message);
+}
+
+/**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
  * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
  * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):

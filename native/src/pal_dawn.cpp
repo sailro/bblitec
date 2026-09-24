@@ -3772,7 +3772,7 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& st
                                                                    RenderTargetHandle target_handle,
                                                                    bool depth_only = false) {
     if (target_handle.value >= state.render_targets.size()) {
-        dawn_error("Frame graph render target handle is invalid.");
+        pal::refuse_invalid_frame_handle("Frame graph render target handle is invalid.");
     }
     const RenderTargetRecord& record = handle_at(engine.render_targets, target_handle);
     DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
@@ -6561,7 +6561,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                                         MaterialHandle material_handle, std::uint32_t variant,
                                         WGPUBuffer pass_uniforms) {
     if (material_handle.value >= engine.materials.size()) {
-        dawn_error("Shader draw has an invalid material.");
+        pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
     }
     const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
@@ -6653,7 +6653,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #if BBLITE_SHADOW_RECEIVERS
             const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
             if (generator.value >= engine.shadow_generators.size()) {
-                dawn_error("Shader CSM receiver has an invalid generator.");
+                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
             }
             ensure_shadow_samplers(state);
             view = shadow_map_view(state, engine, generator);
@@ -9109,7 +9109,7 @@ class DawnSceneRun {
                     // The SDL backend's named refusal: encoding
                     // the draw with stale or zero uniforms is
                     // the silent alternative.
-                    dawn_error("Shader draw has an invalid material.");
+                    pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
                 }
             } else {
 #if BBLITE_PBR_VARIANTS > 0
