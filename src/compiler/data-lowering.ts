@@ -42,7 +42,10 @@ import {
     mathMemberAccess,
     mathUnaryFold,
 } from "./math-intrinsics.js";
-import { mathExtremeCpp } from "../lowering/pinned-operators.js";
+import {
+    mathExtremeCall,
+    mathExtremeCpp,
+} from "../lowering/pinned-operators.js";
 import {
     dataTypesEqual,
     doubleLiteral,
@@ -4565,13 +4568,9 @@ export class DataLowerer {
             // stored and direct calls share NaN and signed-zero behavior.
             const parts = numbers();
             this.context.reachJsData();
-            const cpp = mathExtremeCpp(
-                method,
-                `std::initializer_list<double>{${parts.join(", ")}}`,
-            );
             return {
                 kind: "number",
-                cpp,
+                cpp: mathExtremeCall(method, parts),
                 dataType: { kind: "number" },
             };
         }

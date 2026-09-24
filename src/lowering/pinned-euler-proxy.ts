@@ -15,7 +15,7 @@ import { pinnedHeader } from "./pinned-header.js";
 
 export function pinnedQuaternionHeader(context: LoweringContext): string {
     return pinnedHeader(
-        ["<array>", "<cmath>", "<algorithm>"],
+        ["<array>", "<cmath>", "<bblite/js_data.hpp>"],
         pinnedQuaternionMath(context),
     );
 }

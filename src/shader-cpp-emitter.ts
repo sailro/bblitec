@@ -1,5 +1,4 @@
 import { floatLiteral } from "./cpp-literals.js";
-import { pinnedMathSpelling } from "./lowering/pinned-operators.js";
 import { typeComponents, type ShaderExpression } from "./shader-ir.js";
 
 export interface ShaderCppScalar {
@@ -234,8 +233,11 @@ export function emitShaderCppExpression(
                         }
                     }
                     args = args.map(materialize);
+                    // WGSL's own builtins over f32: the `<cmath>` and
+                    // `<algorithm>` overloads of the same name, not
+                    // JavaScript's `Math` (whose max/min differ on NaN).
                     const call = (values: readonly string[]): string =>
-                        `${pinnedMathSpelling(node.name)}(${values.join(", ")})`;
+                        `std::${node.name}(${values.join(", ")})`;
                     let cpp = call(args.map((a) => a.cpp));
                     // Hoist expensive unary byte-domain work, preserving C++ f32
                     // evaluation. Tables are deduplicated across vector lanes.

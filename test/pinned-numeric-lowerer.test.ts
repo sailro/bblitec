@@ -170,15 +170,18 @@ test("native typed-array chains capture indices before writes and preserve unrou
     const bindings: [string, PinnedBinding][] = [
         ["values", { cpp: "values", type: "f32" }],
         ["bytes", { cpp: "bytes", type: "u8" }],
+        ["words", { cpp: "words", type: "u32" }],
     ];
     const body = lower(
-        "values[values[0]] = values[0] = 1; values[2] = bytes[0] = 257.25;",
+        "values[values[0]] = values[0] = 1; values[2] = bytes[0] = 257.25; words[0] = words[1] = -1;",
         bindings,
     );
     const values = new Float32Array([3, 0, 0, 0]),
-        bytes = new Uint8Array(1);
+        bytes = new Uint8Array(1),
+        words = new Uint32Array(2);
     values[values[0]!] = values[0] = 1;
     values[2] = bytes[0] = 257.25;
+    words[0] = words[1] = -1;
     const output = resolve("artifacts/pinned-numeric-chains");
     mkdirSync(output, { recursive: true });
     const file = join(output, "check.cpp"),
@@ -189,9 +192,11 @@ test("native typed-array chains capture indices before writes and preserve unrou
         #include <cassert>
         int main() {
             std::vector<float> values{3, 0, 0, 0}; std::vector<std::uint8_t> bytes(1);
+            std::vector<std::uint32_t> words(2);
             ${body}
             assert((values == std::vector<float>{${[...values].join(",")}}));
             assert(bytes[0] == ${bytes[0]});
+            assert((words == std::vector<std::uint32_t>{${[...words].map((word) => `${word}u`).join(",")}}));
         }`,
     );
     runNativeFixtureCompiler(tools, [
@@ -218,13 +223,6 @@ test("native typed-array chains capture indices before writes and preserve unrou
             () => lower(source, bindings),
             /scalar chained assignment targets/,
         );
-    assert.throws(
-        () =>
-            lower("values[0] = values[1] = -1;", [
-                ["values", { cpp: "values", type: "u32" }],
-            ]),
-        /scalar chained assignment targets/,
-    );
 });
 
 test("caller substitutions can name later local declarations", () => {

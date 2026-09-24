@@ -31,9 +31,11 @@ export class CppDefinitions {
     }
 
     finish(header: string): CppModule {
+        // The definitions carry lowered pinned writers, whose JavaScript
+        // spellings (`Math.max`, typed-array stores) live in js_data.hpp.
         return {
             header: `#include <bblite/table_view.hpp>\n${header}`,
-            definitions: `#include <array>\nnamespace bbl::upstream {\n${this.definitions.join("\n\n")}\n}\n`,
+            definitions: `#include <array>\n#include <bblite/js_data.hpp>\nnamespace bbl::upstream {\n${this.definitions.join("\n\n")}\n}\n`,
         };
     }
 }

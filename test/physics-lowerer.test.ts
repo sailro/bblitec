@@ -254,7 +254,7 @@ test("shape parameters are translated from _buildShapeParams", () => {
     );
     assert.match(
         lowered.source,
-        /double sphere_radius[\s\S]*?return \(std::max<double>\(\{shape\.extents\.x, shape\.extents\.y, shape\.extents\.z\}\) \* 0\.5\);/,
+        /double sphere_radius[\s\S]*?return \(bbl::js::math_extreme<true>\(\{shape\.extents\.x, shape\.extents\.y, shape\.extents\.z\}\) \* 0\.5\);/,
     );
     assert.match(
         lowered.source,

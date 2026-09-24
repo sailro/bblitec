@@ -673,7 +673,7 @@ export class SceneLowerer {
 ${options.text ? "#include <bblite/text.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
-${options.geometryAccess || options.parenting || options.pbrSceneHooks ? "#include <bblite/js_data.hpp>" : ""}
+#include <bblite/js_data.hpp>
 ${
     options.mirroredMeshes || options.geometryAccess || options.parenting
         ? `// The mirrored-mesh watcher this scene installs calls the render

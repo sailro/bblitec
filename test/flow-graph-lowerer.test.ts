@@ -131,7 +131,7 @@ test("lowers the Calculator's graph to the asset's own arithmetic", async () => 
     // The display value is the variable through clamp(-99, 99).
     assert.match(
         source,
-        /std::min<double>\(std::max<double>\(state\.slot_node_0_value, -99\.0\), 99\.0\)/,
+        /bbl::js::math_extreme<false>\(\{bbl::js::math_extreme<true>\(\{state\.slot_node_0_value, -99\.0\}\), 99\.0\}\)/,
     );
     // A digit key stores itself.
     for (let digit = 0; digit <= 9; digit++) {

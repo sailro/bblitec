@@ -343,20 +343,7 @@ export class PhysicsLowerer {
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            // The one-to-one names come from `pinnedNumericMathCalls`, so a
-            // member one lowerer learns is a member all of them know. Only
-            // `Math.max` is stated here, and only because the pin calls it
-            // with THREE arguments: the shared spelling is the two-argument
-            // `std::max<double>(a, b)`, where a three-way maximum needs the
-            // initializer-list overload.
-            calls: new Map<string, (args: readonly string[]) => string>([
-                ...pinnedNumericMathCalls(),
-                [
-                    "Math.max",
-                    (args: readonly string[]) =>
-                        `std::max<double>({${args.join(", ")}})`,
-                ],
-            ]),
+            calls: pinnedNumericMathCalls(),
         });
         const vector = (expression: ts.Expression): string => {
             const unwrapped = this.context.unwrapExpression(expression);

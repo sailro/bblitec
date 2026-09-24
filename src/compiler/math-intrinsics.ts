@@ -14,7 +14,9 @@
  * `Math.max`/`Math.min` are deliberately absent: they are n-ary, fold only
  * when every operand is a finite static number, and lower a spread over a
  * numeric container as a loop, so `DataLowerer.compileMathCall` owns them
- * as one arm rather than this table pretending they are one call.
+ * as one arm rather than this table pretending they are one call. That arm
+ * spells an argument list through `mathExtremeCall`, the spelling pinned
+ * bodies lower `Math.max`/`Math.min` through too.
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";

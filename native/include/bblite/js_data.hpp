@@ -3757,17 +3757,6 @@ inline void typed_array_set(TypedArray<T>& target, const TypedArray<T>& source, 
 }
 
 /**
- * `Math.round`, at ECMA-262's own rule rather than C's.
- *
- * The two differ on a negative tie: JavaScript rounds halves toward
- * +Infinity (`Math.round(-0.5)` is `-0`), while `std::round` rounds halves
- * away from zero (`-1`). The spec's rule is "the integer closest to x, ties
- * toward +Infinity", which is `floor(x) + (x - floor(x) >= 0.5)` -- written
- * that way rather than as `floor(x + 0.5)` because the addition is not
- * exact for large magnitudes, where `floor(x) == x` makes this branch return
- * `x` unchanged, as the spec requires.
- */
-/**
  * `Math.hypot`, as the plain root of the sum of squares.
  *
  * The ECMAScript spec leaves `Math.hypot` implementation-approximated, so
@@ -3789,21 +3778,80 @@ template <typename Range> [[nodiscard]] inline double hypot_js(const Range& valu
     return hypot_js<std::initializer_list<double>>(values);
 }
 
-template <bool Maximum, typename Range>
-[[nodiscard]] inline double math_extreme(const Range& values) {
-    double result = Maximum ? -std::numeric_limits<double>::infinity()
-                            : std::numeric_limits<double>::infinity();
-    for (const double value : values) {
+/**
+ * `Math.max` (`Maximum`) or `Math.min` over `values`, at ECMA-262's rules: a
+ * NaN operand makes the result NaN, `-0` orders below `+0`, and an empty
+ * list is -Infinity for the maximum and +Infinity for the minimum. None of
+ * that is `std::max`/`std::min`'s, and a third argument to either is its
+ * comparator. The result is one of the operands or that infinity, so it is
+ * exact at the width it is computed in.
+ */
+template <bool Maximum, typename Number, typename Range>
+[[nodiscard]] inline Number math_extreme_in(const Range& values) {
+    Number result = Maximum ? -std::numeric_limits<Number>::infinity()
+                            : std::numeric_limits<Number>::infinity();
+    for (const Number value : values) {
         if (std::isnan(value))
             return value;
         if ((Maximum ? value > result : value < result) ||
-            (value == 0.0 && result == 0.0 &&
-             (Maximum ? !std::signbit(value) : std::signbit(value))))
+            (value == 0 && result == 0 && (Maximum ? !std::signbit(value) : std::signbit(value))))
             result = value;
     }
     return result;
 }
 
+/** Over a range of JavaScript numbers: a rest array or a spread source. */
+template <bool Maximum, typename Range>
+[[nodiscard]] inline double math_extreme(const Range& values) {
+    return math_extreme_in<Maximum, double>(values);
+}
+
+/**
+ * One operand of a `Math.max`/`Math.min` argument list: any native number,
+ * as the JavaScript Number it denotes. A braced list of `double` would
+ * refuse an integer lane or a `std::uint32_t` option field as narrowing;
+ * this converts each one exactly as an arithmetic operand would.
+ */
+struct MathOperand {
+    template <typename Value>
+        requires std::convertible_to<Value, double>
+    MathOperand(Value value) : number(static_cast<double>(value)) {}
+    [[nodiscard]] operator double() const { return number; }
+    double number;
+};
+
+/**
+ * Over a call's own argument list, at JavaScript's width. The braced list
+ * evaluates its operands left to right, as JavaScript's argument list does.
+ */
+template <bool Maximum>
+[[nodiscard]] inline double math_extreme(std::initializer_list<MathOperand> operands) {
+    return math_extreme_in<Maximum, double>(operands);
+}
+
+/**
+ * Over a call's own argument list whose operands share one floating type,
+ * computed and returned at that type. A pinned float writer lane computes
+ * the arithmetic around the call in `float`; the extreme is one of its
+ * operands either way, so keeping the type keeps that arithmetic, and what
+ * it stores, while NaN and signed zero follow JavaScript.
+ */
+template <bool Maximum, std::floating_point Number>
+[[nodiscard]] inline Number math_extreme_lane(std::initializer_list<Number> operands) {
+    return math_extreme_in<Maximum, Number>(operands);
+}
+
+/**
+ * `Math.round`, at ECMA-262's own rule rather than C's.
+ *
+ * The two differ on a negative tie: JavaScript rounds halves toward
+ * +Infinity (`Math.round(-0.5)` is `-0`), while `std::round` rounds halves
+ * away from zero (`-1`). The spec's rule is "the integer closest to x, ties
+ * toward +Infinity", which is `floor(x) + (x - floor(x) >= 0.5)` -- written
+ * that way rather than as `floor(x + 0.5)` because the addition is not
+ * exact for large magnitudes, where `floor(x) == x` makes this branch return
+ * `x` unchanged, as the spec requires.
+ */
 [[nodiscard]] inline double round_js(double value) {
     if (!std::isfinite(value) || value == 0.0) {
         return value;
