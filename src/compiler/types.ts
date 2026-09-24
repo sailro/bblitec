@@ -2316,6 +2316,13 @@ export interface ValueFields {
      * not-found guard away.
      */
     optionalFoundCpp?: string;
+    /**
+     * A `Map.get` whose stored values may be `null`: whether the key was
+     * there when the lookup ran. The value's own absence is one native
+     * state for a stored `null` and a miss alike; this flag is what tells
+     * `=== undefined` (a miss) from `=== null` (a stored null).
+     */
+    keyFoundCpp?: string;
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */

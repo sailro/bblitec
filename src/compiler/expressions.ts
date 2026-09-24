@@ -358,7 +358,11 @@ export function stringConcatPart(
             },
             node,
         );
-        const absent = context.cppString(absentSpelling(context, value, node));
+        // A lookup that knows whether its key was there spells a stored
+        // `null` and a miss apart.
+        const absent = value.keyFoundCpp
+            ? `(${value.keyFoundCpp} ? "null" : "undefined")`
+            : context.cppString(absentSpelling(context, value, node));
         // A present string is already text; any other part is joined into one.
         const text =
             inner.kind === "string" ? present : `bbl::js::concat(${present})`;

@@ -1392,7 +1392,8 @@ check(
     const key = Math.random() > .5 ? "b" : "b";
     const match = find(key);
     if (!match || !match.attachment || match.attachment.position[1] !== 2) throw new Error("runtime lookup");
-    if (find("a")?.attachment !== null || find("missing") !== undefined) throw new Error("nullable lookup");
+    const plain = find("a");
+    if (!plain || plain.attachment !== null || find("missing") !== undefined) throw new Error("nullable lookup");
 `,
 );
 
@@ -2588,7 +2589,7 @@ check(
     const word = words.pop();
     if (word !== "a" || words.pop() !== undefined) throw new Error("string pop");
     const maybe: (number | null)[] = [null];
-    if (maybe.pop() !== null || maybe.pop() !== undefined) throw new Error("nullable pop");
+    if (maybe.pop() != null || maybe.pop() != undefined) throw new Error("nullable pop");
     class Node { constructor(readonly id: number) {} }
     const nodes: Node[] = [new Node(1)];
     const node = nodes.pop();
@@ -2965,6 +2966,76 @@ test("text refuses a value that may be either null or undefined", () => {
         const spelled = "value " + values[0];
     `),
         /may be null or undefined is spelled only once one of them is ruled out/,
+    );
+});
+
+check(
+    "strict null and undefined equality follows the operand's type",
+    `
+    interface Options {
+        label?: string;
+        size?: number | null;
+        onPick?: () => void;
+    }
+    function flags(options: Options): string {
+        const parts: string[] = [];
+        parts.push(options.label === null ? "n" : "-");
+        parts.push(options.label === undefined ? "u" : "-");
+        parts.push(options.label !== null ? "N" : "-");
+        parts.push(options.label !== undefined ? "U" : "-");
+        parts.push(options.label == null ? "nn" : "--");
+        parts.push(options.label != undefined ? "UU" : "--");
+        parts.push(options.onPick === null ? "fn" : "-");
+        parts.push(options.onPick === undefined ? "fu" : "-");
+        return parts.join("");
+    }
+    function main(): void {
+        const absent = flags({});
+        if (absent !== "-uN-nn---fu") throw new Error("absent field " + absent);
+        const present = flags({ label: "x", onPick: () => {} });
+        if (present !== "--NU--UU--") throw new Error("present field " + present);
+        const sizes: Array<number | null> = [];
+        sizes.push(null);
+        const first = sizes[0];
+        if (first !== null) throw new Error("stored null");
+        const lookup = new Map<string, number>();
+        const miss = lookup.get("a");
+        if (miss === null || miss !== undefined) throw new Error("map miss is undefined");
+        const items: number[] = [];
+        const popped = items.pop();
+        if (popped === null || popped !== undefined) throw new Error("pop of an empty array is undefined");
+        const omitted: Options = {};
+        if (omitted.label === null || omitted.label !== undefined) throw new Error("omitted field is undefined");
+        const walls = new Map<string, { w: number } | null>();
+        let built = 0;
+        function wall(name: string): { w: number } | null {
+            const cached = walls.get(name);
+            if (cached !== undefined) return cached;
+            built++;
+            const result = name === "missing" ? null : { w: name.length };
+            walls.set(name, result);
+            return result;
+        }
+        if (wall("missing") !== null || wall("missing") !== null || built !== 1) throw new Error("a stored null is found " + built);
+        const nullableSizes = new Map<string, number | null>([["none", null]]);
+        const none = nullableSizes.get("none");
+        const gone = nullableSizes.get("gone");
+        if (none !== null || none === undefined || gone !== undefined || gone === null) throw new Error("stored null and miss");
+        if ("a" + nullableSizes.get("none") + nullableSizes.get("gone") !== "anullundefined") throw new Error("lookup spelling");
+    }
+    main();
+`,
+);
+
+test("strict equality refuses a value that may be either null or undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const isNull = values[0] === null;
+    `),
+        /may be null or undefined is compared strictly with null only once one of them is ruled out/,
     );
 });
 

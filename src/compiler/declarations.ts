@@ -957,6 +957,26 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 initializerCpp = `bbl::js::snapshot_value(${selectedCpp})`;
             }
+            // A local keeps whether its lookup found the key as of its
+            // own initialization (`Value.keyFoundCpp`).
+            const keyFoundCpp =
+                narrowed.keyFoundCpp === undefined ||
+                cppIdentifierPattern.test(narrowed.keyFoundCpp)
+                    ? narrowed.keyFoundCpp
+                    : (() => {
+                          const name =
+                              this.context.allocateTemporaryCppName(
+                                  "key_found",
+                              );
+                          this.context.emit({
+                              kind: "declaration",
+                              type: "const bool",
+                              name,
+                              initializer: narrowed.keyFoundCpp,
+                              attributes: "[[maybe_unused]] ",
+                          });
+                          return name;
+                      })();
             this.context.emit({
                 kind: "declaration",
                 name: cppName,
@@ -1059,6 +1079,7 @@ export class DeclarationLowerer {
                     ...(narrowed.preserveUncheckedLookup
                         ? { preserveUncheckedLookup: true as const }
                         : {}),
+                    ...(keyFoundCpp ? { keyFoundCpp } : {}),
                     ...(optionalHandle
                         ? {
                               optionalStorageCpp: boundCpp,
