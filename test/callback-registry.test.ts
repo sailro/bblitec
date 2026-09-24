@@ -142,7 +142,7 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", ()
 
     assert.match(
         result.cpp,
-        /bbl::js::Borrowed<const bbl::PlatformMouseEvent> domEvent;/,
+        /bbl::js::Borrowed<const bbl::PlatformMouseEvent> domEvent\{\};/,
     );
     assert.match(
         result.cpp,
@@ -464,7 +464,7 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
     `);
     assert.match(
         keyboard.cpp,
-        /bbl::js::Borrowed<const bbl::PlatformKeyboardEvent> event;/,
+        /bbl::js::Borrowed<const bbl::PlatformKeyboardEvent> event\{\};/,
     );
     assert.match(keyboard.cpp, /->event\.get\(\)\.code/);
     assert.match(keyboard.cpp, /->event\.get\(\)\.prevent_default\(\)/);
@@ -481,7 +481,7 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
             payload.consumed = true;
         });
     `);
-    assert.match(base.cpp, /bbl::js::BorrowedEvent event;/);
+    assert.match(base.cpp, /bbl::js::BorrowedEvent event\{\};/);
     assert.match(base.cpp, /->event\.get\(\)\.prevent_default\(\)/);
 });
 
