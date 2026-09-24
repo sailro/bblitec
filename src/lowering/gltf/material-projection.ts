@@ -305,7 +305,8 @@ interface GltfMaterialPropertyField {
     readonly path: readonly string[];
     readonly key: string;
     readonly field: string;
-    readonly absent: PinnedMaterialDefaultName | { readonly field: string } | null;
+    readonly absent:
+        PinnedMaterialDefaultName | { readonly field: string } | null;
 }
 
 /** The C++ value a missing key projects, or undefined where it keeps the field. */
