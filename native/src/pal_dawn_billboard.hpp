@@ -421,12 +421,10 @@ inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engi
     if (!billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
-    upstream::billboard_upload_instances(system, view, pass.sorted
-#if BBLITE_FLOATING_ORIGIN
-                                         ,
-                                         fo_offset
-#endif
-    );
+    // `context._camera`: the pass that draws a system renders through its
+    // scene's camera.
+    upstream::billboard_upload_instances(system, scene_camera(engine, scene) != nullptr, view,
+                                         pass.sorted, fo_offset);
     wgpuQueueWriteBuffer(queue, pass.instances, 0, pass.sorted.data(),
                          pass.sorted.size() * sizeof(float));
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);

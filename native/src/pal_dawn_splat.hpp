@@ -411,14 +411,16 @@ inline void sync_dawn_splat_data(WGPUQueue queue, const SplatMeshRecord& record,
  * epsilon; the first frame always sorts, because the pin's stored transform
  * starts at zero and a cloud in front of the camera cannot be.
  */
-inline void
-upload_dawn_splat_pass(WGPUQueue queue, const Engine& engine, DawnSplatPass& pass,
-                       const std::array<float, 16>& view, const std::array<float, 16>& projection,
-                       // `getCameraPosition` is the camera world matrix's own translation, in
-                       // absolute space -- which is what the shared helper returns, because a
-                       // floating-origin scene reaching a splat refuses at generation.
-                       [[maybe_unused]] const std::array<float, 4>& camera_position, double width,
-                       double height) {
+inline void upload_dawn_splat_pass(
+    WGPUQueue queue, const Engine& engine, DawnSplatPass& pass, const CameraRecord* camera,
+    const std::array<float, 16>& view, const std::array<float, 16>& projection,
+    // `getCameraPosition` is the camera world matrix's own translation, in
+    // absolute space -- which is what the shared helper returns, because a
+    // floating-origin scene reaching a splat refuses at generation.
+    [[maybe_unused]] const std::array<float, 4>& camera_position, double width, double height) {
+    // The renderable's own update returns before its work without a camera.
+    if (upstream::splat_update_returns(camera))
+        return;
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_dawn_splat_data(queue, record, pass);
     const std::array<float, 16> world = upstream::build_splat_world(record);

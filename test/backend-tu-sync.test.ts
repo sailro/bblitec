@@ -204,16 +204,18 @@ test("auxiliary surface scenes render in independent panes", () => {
     assert.match(shared, /scene_surface_pane\(/);
     assert.match(shared, /scene_surface_extent\(/);
     assert.match(shared, /scene_camera_viewport\(/);
+    // Both backends settle the primary projection in the one shared
+    // synchronization.
+    assert.match(
+        readFileSync("native/src/pal_scene_synchronize.hpp", "utf8"),
+        /scene_surface_extent\(\s*engine, scene, sync\.width, sync\.height\)/,
+        "the scene synchronization builds the primary projection at the full target aspect",
+    );
     for (const file of [
         "native/src/pal_sdl_gpu.cpp",
         "native/src/pal_dawn.cpp",
     ]) {
         const backend = readFileSync(file, "utf8");
-        assert.match(
-            backend,
-            /scene_surface_extent\(\s*engine, scene, width, height\)/,
-            `${file} builds the primary projection at the full target aspect`,
-        );
         assert.match(
             backend,
             /scene_surface_extent\(\s*engine, \*overlay_scene, width, height\)/,
@@ -241,7 +243,7 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
     );
     assert.match(
         dawn,
-        /dawn_mesh\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(dawn_mesh\.instances\)/,
+        /gpu\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(gpu\.instances\)/,
     );
     const releaseMesh = dawn.slice(
         dawn.indexOf("void release_gpu_resources(DawnMeshResources&"),

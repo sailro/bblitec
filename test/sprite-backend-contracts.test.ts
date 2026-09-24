@@ -26,7 +26,15 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
         dawnBillboard = read("pal_dawn_billboard");
     const directory = resolve("artifacts/sprite-backend-contracts");
     mkdirSync(directory, { recursive: true });
-    const core = new SpriteLowerer(new LoweringContext()).lowerCore().source;
+    const lowered = new SpriteLowerer(new LoweringContext()).lowerCore();
+    const core = lowered.source;
+    // The pin's in-place layer sort and the comparator it calls, from the
+    // generated header both backends and the capture read.
+    writeFileSync(
+        join(directory, "layer-sort.hpp"),
+        `namespace bbl::upstream {\n${cppFunction(lowered.header, "inline double compare_sprite_layers(")}\n}\n` +
+            `namespace bbl {\n${cppFunction(lowered.header, "inline void sort_sprite_renderer_layers(")}\n}\n`,
+    );
     writeFileSync(
         join(directory, "mutations.hpp"),
         [
@@ -69,6 +77,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
             "inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
             "inline bool sprite_scene_pipeline_compatible(",
             "inline Vec3d frame_floating_origin_offset(",
+            "inline CameraRecord* scene_camera(",
             "inline BillboardDrawPlan billboard_draw_plan(",
             "inline bool billboard_needs_upload(",
             "inline void stamp_billboard_upload(",

@@ -3037,6 +3037,13 @@ struct CameraRecord {
     std::optional<double> lower_radius_limit;
     std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
+    /**
+     * The scene `attachControl` pushed the control hook onto: its `_update`
+     * hands the hook `fixedDeltaMs > 0 ? fixedDeltaMs : _currentDelta`, so
+     * the camera advances by that scene's delta. Empty for a control
+     * installed without one, which the pin runs no per-frame hook for.
+     */
+    std::weak_ptr<SceneState> controls_scene;
     std::function<void(CameraRecord&, double, double)> configurable_free_pointer;
     std::function<void(CameraRecord&, double, const std::function<bool(std::string_view)>&)>
         configurable_free_update;
@@ -3996,6 +4003,12 @@ struct Engine {
     bool post_render_animation_frame_callbacks_armed = false;
     /** One double-precision DOMHighResTimeStamp shared by this RAF turn. */
     double animation_frame_timestamp_ms = 0.0;
+    /**
+     * The pin's `eng._currentDelta`: this frame's delta before a scene's own
+     * `fixedDeltaMs` replaces it for that scene's hooks
+     * (`scene_callback_delta`).
+     */
+    double current_delta_ms = 0.0;
     /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
@@ -6251,21 +6264,21 @@ void set_animation_current_time(Engine& engine, AnimationGroupHandle group, doub
 void set_animation_additive(Engine& engine, AnimationGroupHandle group, double reference_time);
 void set_animation_additive_from_frame(Engine& engine, AnimationGroupHandle group,
                                        double reference_frame);
-void attach_control(Engine& engine, CameraHandle camera);
+void attach_control(Engine& engine, CameraHandle camera, const Scene& scene);
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, double value);
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
 void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                        const std::array<double, 6>& limits);
-void attach_free_control(Engine& engine, CameraHandle camera);
+void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;
     std::optional<std::vector<std::string>> downKeys;
     std::optional<std::vector<std::string>> fastKeys;
     std::optional<double> fastMultiplier;
 };
-void attach_configurable_free_control(Engine& engine, CameraHandle camera,
+void attach_configurable_free_control(Engine& engine, CameraHandle camera, const Scene& scene,
                                       ConfigurableFreeControlOptions options);
 #if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>

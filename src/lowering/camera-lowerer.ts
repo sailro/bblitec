@@ -950,18 +950,21 @@ void set_camera_limits(
 // listeners and push an inertia hook onto scene._beforeRender, and neither
 // makes their camera the scene's. A scene that attaches controls to a
 // second camera -- an anaglyph's left eye -- renders through the camera it
-// assigned, which is what the pin does.
-void attach_control(Engine& engine, CameraHandle camera) {
+// assigned, which is what the pin does. The scene is the one whose
+// \`_update\` hands the hook its delta.
+void attach_control(Engine& engine, CameraHandle camera, const Scene& scene) {
     if (camera.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    ${recordAt("engine.cameras", "camera")}.controls_enabled = true;
+    CameraRecord& record = ${recordAt("engine.cameras", "camera")};
+    record.controls_enabled = true;
+    record.controls_scene = scene.state;
 }
 
 // The free-camera entry point is a separate pinned symbol reaching a separate
-// input handler, and the same one line of runtime state.
-void attach_free_control(Engine& engine, CameraHandle camera) {
-    attach_control(engine, camera);
+// input handler, and the same runtime state.
+void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene) {
+    attach_control(engine, camera, scene);
 }
 
 } // namespace bbl

@@ -22,7 +22,11 @@ import {
     numberField,
     type HitRecordContext,
 } from "./hit-record.js";
-import { floatLiteral, stringLiteral } from "../../cpp-literals.js";
+import {
+    doubleLiteral,
+    floatLiteral,
+    stringLiteral,
+} from "../../cpp-literals.js";
 import {
     billboardSystemDefaults,
     loadSpriteAtlasDefaults,
@@ -394,8 +398,9 @@ function sprite2DPropsCpp(
 }
 
 /**
- * The `arity` components of a tuple-valued option, as native float
- * expressions.
+ * The `arity` components of a tuple-valued option, as native expressions at
+ * `precision` -- float for a lane the pin stores into an F32 buffer, double
+ * for one it keeps as a number.
  *
  * A tuple written in place is already a list of compiled values. One that
  * arrives from the plain-data model — `color: getGridTint(index)` returns a
@@ -408,6 +413,7 @@ function tupleOption(
     name: string,
     node: ts.Node,
     arity: number,
+    precision: "float" | "double" = "float",
 ): string[] | undefined {
     const value = property(options, name);
     if (!value) {
@@ -421,7 +427,9 @@ function tupleOption(
                 `Sprite option '${name}' expects a ${arity}-element tuple.`,
             );
         }
-        return elements.map((element) => `static_cast<float>(${element.cpp})`);
+        return elements.map(
+            (element) => `static_cast<${precision}>(${element.cpp})`,
+        );
     }
     if (isDataTuple(value, arity)) {
         // Bound before its lanes are read, because `tupleComponents` reads
@@ -429,6 +437,7 @@ function tupleOption(
         return tupleComponents(
             context.bindings.bindDataTuple(value, arity, `sprite_${name}`),
             arity,
+            precision,
         );
     }
     return context.fail(
@@ -476,7 +485,7 @@ function billboardPropsCpp(
             );
         }
     }
-    const position = tupleOption(context, props, "position", call, 3);
+    const position = tupleOption(context, props, "position", call, 3, "double");
     if (!update && !position) {
         context.fail(call, `${importedName}: position required.`);
     }
@@ -490,7 +499,7 @@ function billboardPropsCpp(
     const visible = property(props, "visible");
     return (
         `bbl::BillboardSpriteProps{` +
-        `bbl::Vec3{${position ? position.join(", ") : "0.0f, 0.0f, 0.0f"}}, ` +
+        `bbl::Vec3d{${position ? position.join(", ") : "0.0, 0.0, 0.0"}}, ` +
         `bbl::Vec2{${sizeWorld ? sizeWorld.join(", ") : "0.0f, 0.0f"}}, ` +
         `${sizeWorld ? "true" : "false"}, ` +
         `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ${frame ? "true" : "false"}, ` +
@@ -1008,7 +1017,7 @@ function compileCreateSprite2DLayer(
         call.arguments[1] ?? call,
         defaults.blendMode,
     );
-    const pivot = tupleOption(context, options, "pivot", call, 2);
+    const pivot = tupleOption(context, options, "pivot", call, 2, "double");
     const custom = customShaderOption(
         context,
         options,
@@ -1042,10 +1051,10 @@ function compileCreateSprite2DLayer(
                 depthMode === "test-write" ? "test_write" : depthMode
             }, ` +
             `${numberOption(options, "layerZ", floatLiteral(defaults.layerZ))}, ` +
-            `bbl::Vec2{${
+            `bbl::Vec2d{${
                 pivot
                     ? `${pivot[0]!}, ${pivot[1]!}`
-                    : defaults.pivot.map(floatLiteral).join(", ")
+                    : defaults.pivot.map(doubleLiteral).join(", ")
             }}, ` +
             `${custom.program}, ${custom.textures}, ` +
             `${custom.textureNames}})`,

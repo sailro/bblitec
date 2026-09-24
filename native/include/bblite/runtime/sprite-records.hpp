@@ -10,7 +10,7 @@ struct Sprite2DLayerRecord {
     Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
     float layer_z = 0.5f;
     Sprite2DView view{};
-    Vec2 pivot{0.5f, 0.5f};
+    Vec2d pivot{0.5, 0.5};
     std::uint32_t count = 0;
     std::uint32_t capacity = 0;
     // 13 for pure 2D, 14 when the layer carries the depth slot.
@@ -149,6 +149,10 @@ struct BillboardSystemRecord {
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
+    // The pin's F64 `_anchor`, three per sprite: each position at the width
+    // it was written, which the floating-origin upload makes eye-relative
+    // before its single float store.
+    std::vector<double> anchor;
     // billboard-sprite-handle.ts: stable ids survive packed-index removal.
     std::uint32_t next_handle_id = 1u;
     std::unordered_map<std::uint32_t, std::uint32_t> handle_id_to_index;
