@@ -645,6 +645,7 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
                 [
                     "<bblite/js_data.hpp>",
                     "<bblite/pal_navigation.hpp>",
+                    "<bblite/pinned_records.hpp>",
                     "<bblite/runtime.hpp>",
                     "",
                     "<cmath>",

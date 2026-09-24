@@ -26,6 +26,7 @@ function runNavigationFixture(name: string): string {
             [
                 "<bblite/js_data.hpp>",
                 "<bblite/pal_navigation.hpp>",
+                "<bblite/pinned_records.hpp>",
                 "<bblite/runtime.hpp>",
                 "",
                 "<cmath>",
@@ -151,7 +152,7 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     // The tile-cache arm's cfg always sets its own three, the pin's `?? N`
     // included.
     assert.match(tile, /params\.expected_layers_per_tile\.value_or\(1\.0\)/);
-    assert.match(tile, /params\.max_obstacles\.value\(\)/);
+    assert.match(tile, /bbl::pinned::present\(params\.max_obstacles\)/);
     // The package's own tile/poly bit split, over its own dtIlog2.
     assert.match(tile, /inline double dt_ilog2\(\s*double v\)/);
     assert.match(tile, /dt_ilog2\(dt_next_pow2\(/);

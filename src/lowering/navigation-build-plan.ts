@@ -575,7 +575,8 @@ function cfgValue(
             continue;
         }
         // Always present: `params.K ?? N`, or `params.K` itself, which a
-        // scene that selected this arm has given.
+        // scene that selected this arm has given -- read as the pin's proven
+        // presence.
         const nullish = nullishDefault(assignment.value);
         const path = propertyPath(nullish ? nullish.left : assignment.value);
         if (path?.length !== 2 || path[0] !== "params") {
@@ -593,7 +594,7 @@ function cfgValue(
                           assignment.value.getSourceFile(),
                       ),
                   )})`
-                : `${field}.value()`,
+                : `bbl::pinned::present(${field})`,
             type: "scalar",
             readsParams: true,
         };
