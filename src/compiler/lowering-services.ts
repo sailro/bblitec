@@ -840,7 +840,6 @@ export interface LoweringServices {
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
-    expectShaderVariant(value: Value, variant: string, node: ts.Node): void;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     requireEngine(value: Value, node: ts.Node): string;
     engineFor(value: Value, node: ts.Node): string;

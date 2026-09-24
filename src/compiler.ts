@@ -340,7 +340,6 @@ export type {
     GeometryTextureTypeName,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
-    ShaderMaterialVariantName,
 } from "./compiler/types.js";
 
 /**
@@ -9677,19 +9676,6 @@ class Compiler implements LoweringServices {
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (value.kind !== kind) {
             this.fail(node, `Expected ${kind}, received ${value.kind}.`);
-        }
-    }
-
-    public expectShaderVariant(
-        value: Value,
-        variant: string,
-        node: ts.Node,
-    ): void {
-        if (value.shaderVariant !== variant) {
-            this.fail(
-                node,
-                `Shader operation requires the '${variant}' reached variant.`,
-            );
         }
     }
 

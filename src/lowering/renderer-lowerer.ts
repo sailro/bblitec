@@ -27,11 +27,7 @@ import type {
     ShaderProgramReflection,
     ShaderSystemMatrix,
 } from "../shader-ir.js";
-import {
-    composeStandaloneWgsl,
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "../shader-material-programs.js";
+import { composeStandaloneWgsl } from "../shader-material-programs.js";
 import { gridFragmentWgsl, gridVertexWgsl } from "../shader-builtins-grid.js";
 import {
     blitFragmentWgsl,
@@ -2943,9 +2939,7 @@ ${pinnedFogInfosPacking()}    };
             ground: true,
             skybox: true,
             transmission: true,
-            shaderPrograms: shaderMaterialPrograms.map(
-                predeclaredShaderProgram,
-            ),
+            shaderPrograms: [],
             gridMaterial: false,
             idDiagnostics: true,
             geometryOutputTasks: [],
@@ -3124,7 +3118,7 @@ ${pinnedFogInfosPacking()}    };
             result.push(
                 {
                     output: "upstream/shaders/image-processing.vert.native.wgsl",
-                    data: blitVertexWgsl(),
+                    data: blitVertexWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/image-processing.frag.native.wgsl",
@@ -3169,11 +3163,11 @@ ${pinnedFogInfosPacking()}    };
             result.push(
                 {
                     output: "upstream/shaders/blit.vert.native.wgsl",
-                    data: blitVertexWgsl(),
+                    data: blitVertexWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/blit.frag.native.wgsl",
-                    data: blitFragmentWgsl(),
+                    data: blitFragmentWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/depth-only.frag.native.wgsl",

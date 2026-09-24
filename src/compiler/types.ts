@@ -709,19 +709,17 @@ export interface ScenePbrMaterialManifest {
     doubleSided: boolean;
 }
 
-/**
- * A scene-local shader-material program compiled from the entry file's
- * own WGSL sources through the typed shader IR. Predeclared variants
- * (the ShaderMaterialVariantName registry) keep their pinned records;
- * scene-local programs carry the equivalent fields plus the typed
- * uniform defaults the pinned createShaderMaterial applies at creation.
- */
 export interface CompiledComputeProgram {
     name: string;
     source: string;
     entryPoint: string;
 }
 
+/**
+ * A reached shader-material program, compiled from the scene's own WGSL
+ * through the typed shader IR, with the typed uniform defaults the pinned
+ * `createShaderMaterial` applies at creation.
+ */
 export interface CompiledShaderProgram {
     name: string;
     vertexSource: string;
@@ -1070,8 +1068,6 @@ export type GeometryTextureTypeName =
     | "WORLD_NORMAL"
     | "ALBEDO"
     | "LINEAR_VELOCITY";
-
-export type ShaderMaterialVariantName = "alpha-card" | "circular-cutout";
 
 export type LightKind = "directional" | "hemispheric" | "point" | "spot";
 

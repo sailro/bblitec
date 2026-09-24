@@ -1,9 +1,10 @@
 /**
- * Utility WGSL. The image-processing function, its per-sample MSAA loop, and
- * the fog falloff are lifted from the pinned package's own string literals —
- * the same discipline as the background fragments. The blit stages, the
- * depth-only fragment, and the diagnostic id/cluster fragments are
- * project-owned tooling with no pinned counterpart and stay written here.
+ * Utility WGSL. The copy blit is the pin's copy-task shader, executed; the
+ * image-processing function, its per-sample MSAA loop, and the fog falloff
+ * are lifted from the pinned package's own string literals — the same
+ * discipline as the background fragments. The depth-only fragment and the
+ * diagnostic id/cluster fragments are project-owned tooling with no pinned
+ * counterpart and stay written here.
  */
 import {
     extractPackagedTemplateLiteral,
@@ -13,7 +14,16 @@ import {
 } from "./pinned-shader-composer.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
 import ts from "typescript";
-import { reflectWgslModule, wgslEntryPoints } from "./shader-ir.js";
+import { LoweringContext } from "./lowering/context.js";
+import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
+import {
+    parseWgslStages,
+    reflectWgslModule,
+    wgslEntryPoints,
+    type ShaderModule,
+} from "./shader-ir.js";
+import { emitWgslModule } from "./shader-wgsl-emitter.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -55,53 +65,105 @@ export function rehomeText(
     return text;
 }
 
-export function blitVertexWgsl(): string {
-    return `struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
+const copyTaskModule = "src/frame-graph/copy-to-texture-task.ts";
 
-@vertex
-fn mainVertex(
-    @builtin(vertex_index) vertexIndex: u32,
-) -> VertexOutput {
-    let positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
+/**
+ * The pin's copy-task blit, executed: `copy-to-texture-task.ts`'s
+ * `VERTEX_WGSL` and the single-sample fragment `fragmentForSingle(lod)`
+ * builds at the task's default mip level, the level every reached copy
+ * samples (`lodLevel` is refused at the call). The pin compiles the two as
+ * one module; each native stage is that module's typed IR for the stage,
+ * the entry points renamed to the native `mainVertex`/`mainFragment`, the
+ * vertex stage declaring no binding it does not read, and the fragment's
+ * texture pair re-homed from the pin's group 0 to the fragment-resource
+ * group both backends bind it at (2).
+ */
+function pinnedCopyBlit(context: LoweringContext): {
+    vertex: ShaderModule;
+    fragment: ShaderModule;
+} {
+    const { file, declaration } = context.functionDeclaration(
+        copyTaskModule,
+        "createCopyToTextureTask",
     );
-    let uvs = array<vec2<f32>, 3>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(2.0, 1.0),
-        vec2<f32>(0.0, -1.0),
+    // `lodLevel: config.lodLevel ?? <default>` on the task record.
+    const lodDefaults = context.findNodes(
+        declaration,
+        (node): node is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(node) &&
+            context.propertyName(node.name) === "lodLevel",
     );
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-    output.uv = uvs[vertexIndex];
-    return output;
-}
-`;
-}
-
-export function blitFragmentWgsl(): string {
-    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(2) @binding(1) var sourceSampler: sampler;
-
-struct FragmentInput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    return textureSampleLevel(
-        sourceTexture,
-        sourceSampler,
-        input.uv,
-        0.0,
+    const fallback = lodDefaults[0]?.initializer;
+    if (
+        lodDefaults.length !== 1 ||
+        !fallback ||
+        !ts.isBinaryExpression(fallback) ||
+        fallback.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        return context.contractError(
+            declaration,
+            "Pinned copy task no longer defaults lodLevel as `config.lodLevel ?? <level>`.",
+        );
+    }
+    const builders = new PinnedShaderBuilders(context);
+    const vertexText = builders.value(copyTaskModule, "VERTEX_WGSL");
+    if (typeof vertexText !== "string") {
+        return context.contractError(
+            declaration,
+            "Pinned copy task no longer declares its VERTEX_WGSL text.",
+        );
+    }
+    const fragmentText = builders.evaluate(
+        copyTaskModule,
+        "fragmentForSingle",
+        new Map([["lod", context.numericValue(fallback.right, file)]]),
     );
+    const stages = parseWgslStages(`${vertexText}${fragmentText}`);
+    const vertex = stages.find(
+        ({ entryPoint }) => entryPoint.stage === "vertex",
+    );
+    const fragment = stages.find(
+        ({ entryPoint }) => entryPoint.stage === "fragment",
+    );
+    if (!vertex || !fragment) {
+        return context.contractError(
+            declaration,
+            "Pinned copy blit no longer declares one vertex and one fragment stage.",
+        );
+    }
+    const { bindings, ...vertexStage } = vertex;
+    if ((bindings ?? []).some(({ group }) => group !== 0)) {
+        return context.contractError(
+            declaration,
+            "Pinned copy blit binds outside group 0.",
+        );
+    }
+    return {
+        vertex: {
+            ...vertexStage,
+            entryPoint: { ...vertex.entryPoint, name: "mainVertex" },
+        },
+        fragment: {
+            ...fragment,
+            bindings: (fragment.bindings ?? []).map((binding) => ({
+                ...binding,
+                group: 2,
+            })),
+            entryPoint: { ...fragment.entryPoint, name: "mainFragment" },
+        },
+    };
 }
-`;
+
+export function blitVertexWgsl(
+    context = new LoweringContext(sharedUpstreamStore()),
+): string {
+    return `// ${context.provenance(copyTaskModule, "VERTEX_WGSL")}\n${emitWgslModule(pinnedCopyBlit(context).vertex)}`;
+}
+
+export function blitFragmentWgsl(
+    context = new LoweringContext(sharedUpstreamStore()),
+): string {
+    return `// ${context.provenance(copyTaskModule, "fragmentForSingle")}\n${emitWgslModule(pinnedCopyBlit(context).fragment)}`;
 }
 
 function utilityLiftError(what: string): never {
