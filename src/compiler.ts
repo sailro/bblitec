@@ -10658,6 +10658,7 @@ class Compiler implements LoweringServices {
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
+            bindingType: (name) => this.nativeBindingCaptureType(name),
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),
