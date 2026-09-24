@@ -1,4 +1,21 @@
-/** Shared source-property to native-field transport for load and animation. */
+import { floatLiteral } from "../../cpp-literals.js";
+import {
+    pinnedDefaultColor3Cpp,
+    pinnedDefaultNumber,
+    pinnedDefaultVec2Cpp,
+    type PinnedMaterialDefaultName,
+} from "../pinned-material-defaults.js";
+
+/**
+ * Shared source-property to native-field transport for load and animation.
+ *
+ * `absent` is what the pin reads when the key is missing from a layer the
+ * material has: the reading writer's own `?? <default>` (a
+ * `pinned-material-defaults.ts` entry), another field where the pin's
+ * fallback reads one, or null where the projection keeps what it wrote
+ * before (the core emissive factor) or the pin's absent arm is not a
+ * nullish default (`writeReflectanceUBO`'s `mrc ? mrc[i] : 1.0`).
+ */
 export const gltfMaterialPropertyFields = [
     {
         kind: "number",
@@ -6,6 +23,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "metallicFactor",
         field: "metallic_factor",
+        absent: "pbrMetallicFactor",
     },
     {
         kind: "number",
@@ -13,6 +31,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "roughnessFactor",
         field: "roughness_factor",
+        absent: "pbrRoughnessFactor",
     },
     {
         kind: "number",
@@ -20,6 +39,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "reflectance",
         field: "reflectance",
+        absent: "pbrReflectance",
     },
     {
         kind: "number",
@@ -27,6 +47,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "normalTextureScale",
         field: "normal_texture_scale",
+        absent: "pbrNormalTextureScale",
     },
     {
         kind: "number",
@@ -34,6 +55,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "occlusionStrength",
         field: "occlusion_strength",
+        absent: "occlusionStrength",
     },
     {
         kind: "number",
@@ -41,14 +63,23 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "_alphaCutOff",
         field: "alpha_cutoff",
+        absent: "alphaCutOff",
     },
-    { kind: "number", owner: "props", path: [], key: "alpha", field: "alpha" },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "alpha",
+        field: "alpha",
+        absent: "pbrAlpha",
+    },
     {
         kind: "number",
         owner: "props",
         path: [],
         key: "_metallicF0Factor",
         field: "metallic_f0_factor",
+        absent: "metallicF0Factor",
     },
     {
         kind: "number",
@@ -56,6 +87,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "_specularWeight",
         field: "specular_weight",
+        absent: { field: "metallic_f0_factor" },
     },
     {
         kind: "number",
@@ -63,6 +95,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "refraction"],
         key: "indexOfRefraction",
         field: "index_of_refraction",
+        absent: "transmissionIndexOfRefraction",
     },
     {
         kind: "number",
@@ -70,6 +103,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "refraction"],
         key: "intensity",
         field: "transmission_factor",
+        absent: "transmissionIntensity",
     },
     {
         kind: "number",
@@ -77,6 +111,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "refraction"],
         key: "dispersion",
         field: "dispersion",
+        absent: "dispersion",
     },
     {
         kind: "number",
@@ -84,6 +119,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "thickness"],
         key: "max",
         field: "thickness",
+        absent: "transmissionThicknessMax",
     },
     {
         kind: "number",
@@ -91,6 +127,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "tint"],
         key: "atDistance",
         field: "attenuation_distance",
+        absent: "attenuationDistance",
     },
     {
         kind: "number",
@@ -98,6 +135,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "translucency"],
         key: "intensity",
         field: "subsurface_intensity",
+        absent: "subsurfaceIntensity",
     },
     {
         kind: "number",
@@ -105,6 +143,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "thickness"],
         key: "min",
         field: "subsurface_minimum_thickness",
+        absent: "subsurfaceMinimumThickness",
     },
     {
         kind: "number",
@@ -112,6 +151,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "thickness"],
         key: "max",
         field: "subsurface_maximum_thickness",
+        absent: "subsurfaceMaximumThickness",
     },
     {
         kind: "number",
@@ -119,6 +159,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_clearCoat"],
         key: "intensity",
         field: "clearcoat_intensity",
+        absent: "clearcoatIntensity",
     },
     {
         kind: "number",
@@ -126,6 +167,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_clearCoat"],
         key: "roughness",
         field: "clearcoat_roughness",
+        absent: "clearcoatRoughness",
     },
     {
         kind: "number",
@@ -133,6 +175,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_clearCoat"],
         key: "indexOfRefraction",
         field: "clearcoat_index_of_refraction",
+        absent: "clearcoatIndexOfRefraction",
     },
     {
         kind: "number",
@@ -140,6 +183,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_clearCoat"],
         key: "bumpTextureScale",
         field: "clearcoat_normal_scale",
+        absent: "clearcoatBumpTextureScale",
     },
     {
         kind: "number",
@@ -147,6 +191,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_sheen"],
         key: "intensity",
         field: "sheen_intensity",
+        absent: "sheenIntensity",
     },
     {
         kind: "number",
@@ -154,6 +199,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_sheen"],
         key: "roughness",
         field: "sheen_roughness",
+        absent: "sheenRoughness",
     },
     {
         kind: "number",
@@ -161,6 +207,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_iridescence"],
         key: "intensity",
         field: "iridescence_intensity",
+        absent: "iridescenceIntensity",
     },
     {
         kind: "number",
@@ -168,6 +215,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_iridescence"],
         key: "indexOfRefraction",
         field: "iridescence_index_of_refraction",
+        absent: "iridescenceIndexOfRefraction",
     },
     {
         kind: "number",
@@ -175,6 +223,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_iridescence"],
         key: "minimumThickness",
         field: "iridescence_minimum_thickness",
+        absent: "iridescenceMinimumThickness",
     },
     {
         kind: "number",
@@ -182,6 +231,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_iridescence"],
         key: "maximumThickness",
         field: "iridescence_maximum_thickness",
+        absent: "iridescenceMaximumThickness",
     },
     {
         kind: "number",
@@ -189,6 +239,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_anisotropy"],
         key: "intensity",
         field: "anisotropy_intensity",
+        absent: "anisotropyIntensity",
     },
     {
         kind: "color",
@@ -196,6 +247,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "_unlitColor",
         field: "unlit_color",
+        absent: "unlitColor",
     },
     {
         kind: "color",
@@ -203,6 +255,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "_emissiveColor",
         field: "emissive_factor",
+        absent: null,
     },
     {
         kind: "color",
@@ -210,6 +263,7 @@ export const gltfMaterialPropertyFields = [
         path: [],
         key: "_metallicReflectanceColor",
         field: "metallic_reflectance_color",
+        absent: null,
     },
     {
         kind: "color",
@@ -217,6 +271,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "tint"],
         key: "color",
         field: "attenuation_color",
+        absent: "attenuationColor",
     },
     {
         kind: "color",
@@ -224,6 +279,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "translucency"],
         key: "color",
         field: "subsurface_color",
+        absent: "subsurfaceColor",
     },
     {
         kind: "color",
@@ -231,6 +287,7 @@ export const gltfMaterialPropertyFields = [
         path: ["_subsurface", "translucency"],
         key: "diffusionDistance",
         field: "subsurface_diffusion_distance",
+        absent: "subsurfaceDiffusionDistance",
     },
     {
         kind: "color",
@@ -238,15 +295,35 @@ export const gltfMaterialPropertyFields = [
         path: ["_sheen"],
         key: "color",
         field: "sheen_color",
+        absent: "sheenColor",
     },
-] as const;
+] as const satisfies readonly GltfMaterialPropertyField[];
+
+interface GltfMaterialPropertyField {
+    readonly kind: "number" | "color";
+    readonly owner: string;
+    readonly path: readonly string[];
+    readonly key: string;
+    readonly field: string;
+    readonly absent: PinnedMaterialDefaultName | { readonly field: string } | null;
+}
+
+/** The C++ value a missing key projects, or undefined where it keeps the field. */
+function absentArm(value: GltfMaterialPropertyField): string | undefined {
+    const absent = value.absent;
+    if (absent === null) return undefined;
+    if (typeof absent === "object") return `material.${absent.field}`;
+    return value.kind === "number"
+        ? floatLiteral(pinnedDefaultNumber(absent))
+        : pinnedDefaultColor3Cpp(absent);
+}
 
 function materialProperty(field: string): string {
-    const value = gltfMaterialPropertyFields.find(
-        (value) => value.field === field,
-    );
+    const value: GltfMaterialPropertyField | undefined =
+        gltfMaterialPropertyFields.find((value) => value.field === field);
     if (!value) throw new Error(`Unknown glTF material field ${field}.`);
-    return `gltf_pbr_${value.kind}(${value.owner}, "${value.key}", material.${value.field});`;
+    const absent = absentArm(value);
+    return `gltf_pbr_${value.kind}(${value.owner}, "${value.key}", material.${value.field}${absent ? `, ${absent}` : ""});`;
 }
 
 export const gltfMaterialTextureFields = [
@@ -425,6 +502,19 @@ void gltf_pbr_color(const GltfPbrValue& object, const char* key, Color3& field) 
     if (value.nullish()) return;
     if (!value.is_array() || value.size() != 3) throw std::runtime_error("Invalid glTF material color width.");
     field = Color3{static_cast<float>(value.at(0).number()), static_cast<float>(value.at(1).number()), static_cast<float>(value.at(2).number())};
+}
+// A key the material's layer omits reads the pin's own absent arm. A layer
+// the material does not have is never read upstream, so its fields keep
+// the record's no-layer state.
+void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field, float absent) {
+    if (object.nullish()) return;
+    field = absent;
+    gltf_pbr_number(object, key, field);
+}
+void gltf_pbr_color(const GltfPbrValue& object, const char* key, Color3& field, Color3 absent) {
+    if (object.nullish()) return;
+    field = absent;
+    gltf_pbr_color(object, key, field);
 }
 void gltf_pbr_transform(TextureTransform& transform, const GltfPbrValue& texture) {
     gltf_pbr_number(texture, "uScale", transform.u_scale);
@@ -661,9 +751,14 @@ ${
     const auto anisotropy = props.get("_anisotropy");
     material.has_anisotropy = anisotropy.get("isEnabled", true).truthy();
     ${materialProperty("anisotropy_intensity")}
-    if (const auto direction = anisotropy.get("direction", true); !direction.nullish()) {
-        if (!direction.is_array() || direction.size() != 2) throw std::runtime_error("Invalid glTF anisotropy direction.");
-        material.anisotropy_direction = Vec2{static_cast<float>(direction.at(0).number()), static_cast<float>(direction.at(1).number())};
+    if (!anisotropy.nullish()) {
+        const auto direction = anisotropy.get("direction", true);
+        if (direction.nullish()) {
+            material.anisotropy_direction = ${pinnedDefaultVec2Cpp("anisotropyDirection")};
+        } else {
+            if (!direction.is_array() || direction.size() != 2) throw std::runtime_error("Invalid glTF anisotropy direction.");
+            material.anisotropy_direction = Vec2{static_cast<float>(direction.at(0).number()), static_cast<float>(direction.at(1).number())};
+        }
     }
     ${materialTexture("anisotropy_transform")}
     if (source_properties) *source_properties = props;
