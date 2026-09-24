@@ -43,7 +43,7 @@ Exercise percentages separate signatures, fields/accessors, constants and callba
 excluded) and qualify exercised forms only; failed compilations, discarded probes and stale receipts earn
 no credit. Unassessed declarations and type-dependent probe fallthrough are unknown; `partial` combines
 positive and refusal evidence. The adapter boundary is unclassified, so there is no overall PAL completion
-percentage. A project report credits one external entry's referenced declarations by the same evidence
+percentage. `scene -- survey` credits one external entry's referenced declarations by the same evidence
 and lists its unrouted functions and pin gaps. See [collection commands](development.md#api-coverage).
 
 ## Program compilation
@@ -53,7 +53,7 @@ and lists its unrouted functions and pin gaps. See [collection commands](develop
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
-| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C | null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C | undefined`; unsupported field storage |
+| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations | Custom thenables; general async iteration |
