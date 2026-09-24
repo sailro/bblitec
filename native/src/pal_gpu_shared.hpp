@@ -1172,11 +1172,6 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
 }
 #endif
 
-// `transform_position`/`transform_direction` — the pin's own vertex-stage
-// world multiplies — moved to the always-emitted
-// `upstream/pinned_world_transform.hpp`, where both geometry loaders share
-// the same single emission.
-
 #if BBLITE_HAS_PICKING
 // GPU picking's backend-independent half. The arithmetic -- the pointer
 // mapping, the two shears, the id encoding and decoding -- is lowered from
