@@ -419,16 +419,6 @@ inline void write_float_block(JsonWriter& json, const char* stage, std::uint32_t
 // that registers one).
 #if BBLITE_HAS_PBR_RENDERER
 
-inline const char* primitive_name(PrimitiveKind kind) {
-    switch (kind) {
-    case PrimitiveKind::babylon:
-        return "babylon";
-    case PrimitiveKind::gltf:
-        return "gltf";
-    }
-    return "unknown";
-}
-
 inline const char* camera_kind_name(CameraKind kind) {
     switch (kind) {
     case CameraKind::arc_rotate:
@@ -799,7 +789,7 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
                        const Engine& engine) {
     json.begin_object();
     json.field("index", index);
-    json.field("primitive", primitive_name(mesh.primitive));
+    json.field("hasBounds", mesh.has_bounds);
     json.field("position", mesh.position);
     json.field("rotation", mesh.rotation);
     json.field("rotationQuaternion", mesh.rotation_quaternion);

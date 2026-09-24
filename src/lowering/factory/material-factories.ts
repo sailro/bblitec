@@ -9,6 +9,7 @@ import { assertAsyncSceneBuilder } from "../scene-deferred.js";
 import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -1213,14 +1214,11 @@ void set_pbr_occlusion_solid_texture(
     ++record.occlusion_texture_generation;
 }
 
-// src/material/pbr/fragments/clearcoat-fragment.ts#writeClearcoatUBO leaves
-// the whole clearcoat slice at zero unless isEnabled is set, so a disabled
-// coat keeps the record's zero intensity and shades as no coat at all.
-// The pinned defaults live in the same writer: intensity 1, roughness 0,
-// index of refraction 1.5, normal scale 1.
-// src/material/pbr/fragments/sheen-fragment.ts#writeSheenUBO: a disabled
-// sheen writes no slice, and the record's zero sheen color shades as none.
-// The pinned defaults are colour [1,1,1], roughness 0, intensity 1.
+// src/material/pbr/set-sheen.ts, set-clearcoat.ts and set-iridescence.ts
+// store the layer's props whole, and each fragment's writer skips a layer
+// that is not \`isEnabled\` (\`has_sheen\`, \`has_clearcoat\`,
+// \`has_iridescence\`). The compiler resolved the writers' own defaults at
+// the call site, so the values arrive already defaulted.
 void set_pbr_sheen(
     Engine& engine,
     MaterialHandle material,
@@ -1228,10 +1226,8 @@ void set_pbr_sheen(
     Color3 color,
     float roughness,
     float intensity) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_sheen = enabled;
     record.sheen_color = color;
     record.sheen_roughness = roughness;
     record.sheen_intensity = intensity;
@@ -1256,21 +1252,14 @@ void set_pbr_clearcoat(
     float roughness,
     float index_of_refraction,
     float normal_scale) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_clearcoat = enabled;
     record.clearcoat_intensity = intensity;
     record.clearcoat_roughness = roughness;
     record.clearcoat_index_of_refraction = index_of_refraction;
     record.clearcoat_normal_scale = normal_scale;
 }
 
-// src/material/pbr/fragments/iridescence-fragment.ts#writeIridescenceUBO:
-// a disabled layer writes no slice, and the record's zero intensity shades
-// as none. The pinned defaults are in the same writer -- intensity 1, index
-// of refraction 1.3, thickness 100..400 nm -- and the compiler resolved
-// them at the call site, so the values arrive already defaulted.
 void set_pbr_iridescence(
     Engine& engine,
     MaterialHandle material,
@@ -1279,10 +1268,8 @@ void set_pbr_iridescence(
     float index_of_refraction,
     float minimum_thickness,
     float maximum_thickness) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_iridescence = enabled;
     record.iridescence_intensity = intensity;
     record.iridescence_index_of_refraction = index_of_refraction;
     record.iridescence_minimum_thickness = minimum_thickness;
@@ -1307,21 +1294,17 @@ void set_pbr_lightmap(
 }
 
 // src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the
-// isEnabled guard is the writer's own, so a disabled layer writes no slice
-// and the record keeps the pin's defaults. Those defaults -- an intensity
-// of one and a [1, 0] direction -- are that same writer's own nullish
-// arms, resolved at the call site.
+// isEnabled guard is the writer's own, so a disabled layer writes no slice.
+// The defaults -- an intensity of one and a [1, 0] direction -- are that
+// same writer's own nullish arms, resolved at the call site.
 void set_pbr_anisotropy(
     Engine& engine,
     MaterialHandle material,
     bool enabled,
     float intensity,
     Vec2 direction) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.has_anisotropy = true;
+    record.has_anisotropy = enabled;
     record.anisotropy_intensity = intensity;
     record.anisotropy_direction = direction;
 }
@@ -1330,6 +1313,7 @@ MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options) {
     MaterialRecord material;
+${pbrMaterialRecordSeedCpp("material", "    ")}
     material.source_pbr_group_builder = true;
     // The pin's createPbrMaterial is {...props}: a solid texture IS the
     // texture -- createSolidTexture2D writes the rounded texel into a 1x1

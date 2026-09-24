@@ -227,15 +227,18 @@ test("generates scene defaults, routing, and idempotent registration", () => {
         /void on_scene_dispose\([\s\S]*scene\.disposables\.push_back\(std::move\(callback\)\);/,
     );
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
-    // Runtime removal drops the mesh and marks the topology; the
-    // material-family mask stays monotonic so built pipelines survive.
+    // Runtime removal lowers the pin's removeMeshFromScene order: the
+    // scene's task lists, the scene list and its renderables, the material
+    // groups and swap queue, the parent link, the disposal, then the
+    // mesh's children. The material-family mask stays monotonic so built
+    // pipelines survive.
     assert.match(
         lowered.source,
         /void remove_from_scene\(Scene& scene, MeshHandle mesh\)/,
     );
     assert.match(
         lowered.source,
-        /scene\.meshes\.erase\(found\);\s*std::erase_if\(scene\.state->material_outputs, \[mesh\]\(const auto& output\) \{ return output->mesh == mesh; \}\);\s*const bool last_owner = unregister_mesh_material_scene\(scene, mesh\);\s*\+\+scene\.render_topology_version;/,
+        /for \(const TaskHandle task : scene\.tasks\) \{[\s\S]{0,200}render_meshes,[\s\S]{0,300}scene\.meshes\.erase\(listed\);\s*\+\+scene\.render_topology_version;\s*\}\s*std::erase_if\(scene\.state->material_outputs,[\s\S]{0,400}erase_first_mesh\(scene\.state->pbr_material_swap_queue, mesh\);\s*clear_mesh_parent\(engine, mesh\);\s*if \(unregister_mesh_material_scene\(scene, mesh\)\) retire_mesh_record\(engine, mesh\);[\s\S]{0,200}for \(const MeshHandle child : children\) remove_from_scene\(scene, child\);/,
     );
     assert.match(
         lowered.source,
@@ -257,7 +260,6 @@ test("generates scene defaults, routing, and idempotent registration", () => {
         lowered.source,
         /AssetHandle clone_asset_root\(Engine& engine, AssetHandle asset\)/,
     );
-    assert.match(lowered.source, /record\.feature_source_mesh =/);
     assert.match(
         lowered.source,
         /record\.outer_position = root\.root_position;/,
@@ -439,7 +441,7 @@ test("generates property animation evaluation and seeking", () => {
     assert.match(lowered.source, /mesh\.has_rotation_quaternion = true/);
     assert.match(
         lowered.source,
-        /mark_mesh_runtime_transform\(engine, mesh_slot_handle\(engine, target\.index\)\);/,
+        /mark_mesh_runtime_transform\(engine, target\.mesh\);/,
     );
 });
 
@@ -447,7 +449,7 @@ test("generates the pinned glTF animation-group seek", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),
     ).lowerGroupOperations();
-    assert.match(lowered.source, /frame \/ 60\.0f/);
+    assert.match(lowered.source, /frame \/ 60\.0\)/);
     assert.match(
         lowered.source,
         /asset\.apply_clip_pose\(record\.clip, with_engine\)/,
@@ -845,10 +847,7 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /found->skin\s*==\s*std::numeric_limits<std::size_t>::max\(\)/,
     );
-    assert.match(
-        adapter.source,
-        /auto binding=\*found;binding\.mesh=clone\.value;/,
-    );
+    assert.match(adapter.source, /auto binding=\*found;binding\.mesh=clone;/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
@@ -1771,18 +1770,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     // prune; the pinned variant blocks carry the analytic lights now.
     assert.doesNotMatch(specialized.header, /extra_light_positions/);
     assert.match(lowered.source, /build_render_plan/);
-    assert.match(
-        lowered.source,
-        /void initialize_composition_feature_rows\(Engine& engine\)/,
-    );
-    assert.match(
-        lowered.source,
-        /mesh\.composition_feature_row = next_row\+\+;/,
-    );
-    assert.match(
-        lowered.source,
-        /engine\.meshes\[mesh\.feature_source_mesh\][\s\S]*?\.composition_feature_row;/,
-    );
+    // Composition rows are the stored mesh's own (store_mesh_record), so
+    // renderer startup assigns none.
+    assert.doesNotMatch(lowered.source, /composition_feature_rows_initialized/);
     assert.match(
         lowered.source,
         /item\.bucket == RenderBucket::alpha_blend \|\|\s*item\.transmissive/,

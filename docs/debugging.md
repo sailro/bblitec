@@ -98,7 +98,8 @@ GlobalCall and DeviceLoss.
 `memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
 above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
 later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
-or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. `all` selects
+or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report
+also states the occupied transform-node records. `all` selects
 the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
 `--replay`/`--replay-file` supply another and `--replay -` idles.
 

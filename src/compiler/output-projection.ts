@@ -719,7 +719,7 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const meshProfileFallback =
         projection.runtimeMeshProfiles && !features.includes("renderer:scene")
             ? `namespace bbl::upstream {
-inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t) { return mesh; }
+inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
 }`
             : "";
     if (meshProfileFallback) preambleSections.push(meshProfileFallback);

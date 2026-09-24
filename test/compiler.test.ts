@@ -4183,7 +4183,7 @@ test("fully initializes direct property-animation targets", () => {
 
     assert.match(
         result.cpp,
-        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,]+\.value, \{\}\}/,
+        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,{}]+, 0u, \{\}\}/,
     );
 });
 
@@ -12989,11 +12989,11 @@ test("folds a light include set to the meshes its ids name", () => {
     // frame's alias of the caller's handle.
     assert.match(
         result.cpp,
-        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box\.value, v_ball\.value\};/,
+        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box, v_ball\};/,
     );
     assert.match(
         result.cpp,
-        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\.value\};/,
+        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\};/,
     );
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its
@@ -13200,7 +13200,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
         /set_asset_root_position_component\([^;]+1u, \(-3\.0\)\)/,
     );
     assert.equal(result.cpp.match(/bbl::add_asset_entities\(/g)?.length, 2);
-    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0f, false\)/);
+    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0, false\)/);
 
     assert.throws(
         () =>
@@ -19059,7 +19059,7 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // setAnimationAdditive: frame zero through the pinned conversion.
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
     // The handle ternary folded per unrolled element: the additive pose
     // keeps its own time, the other group takes the seek value.
@@ -19207,11 +19207,11 @@ test("setAnimationAdditive resolves its options at generation exactly where the 
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5f\)/,
+        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
 });
 

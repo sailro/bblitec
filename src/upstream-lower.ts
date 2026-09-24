@@ -1084,6 +1084,9 @@ class GeneratedSourceWriter {
             new EngineLowerer(context).lowerCore(
                 features.includes("platform:workers"),
                 features.includes("backend:sdl"),
+                features.includes("renderer:scene")
+                    ? options.meshProfiles
+                    : undefined,
             ),
         );
         emitReached("upstream/src/gpu_task_timing.cpp", () =>

@@ -509,11 +509,11 @@ test("anchors the light-slot packing to the pinned lights-ubo module", () => {
     // non-empty, exclusion filters otherwise.
     assert.match(
         plan.source,
-        /if \(light\.included_meshes\.empty\(\)\) \{\s*\r?\n\s*return std::find\(\s*\r?\n\s*light\.excluded_meshes\.begin\(\),\s*\r?\n\s*light\.excluded_meshes\.end\(\),\s*\r?\n\s*mesh_index\) == light\.excluded_meshes\.end\(\);/,
+        /if \(light\.included_meshes\.empty\(\)\) \{\s*\r?\n\s*return std::find\(\s*\r?\n\s*light\.excluded_meshes\.begin\(\),\s*\r?\n\s*light\.excluded_meshes\.end\(\),\s*\r?\n\s*mesh\) == light\.excluded_meshes\.end\(\);/,
     );
     assert.match(
         plan.source,
-        /return std::find\(\s*\r?\n\s*light\.included_meshes\.begin\(\),\s*\r?\n\s*light\.included_meshes\.end\(\),\s*\r?\n\s*mesh_index\) != light\.included_meshes\.end\(\);/,
+        /return std::find\(\s*\r?\n\s*light\.included_meshes\.begin\(\),\s*\r?\n\s*light\.included_meshes\.end\(\),\s*\r?\n\s*mesh\) != light\.included_meshes\.end\(\);/,
     );
 });
 

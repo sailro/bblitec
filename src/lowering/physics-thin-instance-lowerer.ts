@@ -226,7 +226,7 @@ export function lowerPhysicsThinInstances(
     methodCalls.set(
         "flushThinInstances",
         (args) =>
-            `flush_thin_instances(*world.engine, mesh_slot_handle(*world.engine, ${args[0]}.value))`,
+            `flush_thin_instances(*world.engine, std::get<MeshHandle>(${args[0]}))`,
     );
     methodCalls.set(
         "raw.HP_Body_SetQTransform",
@@ -714,8 +714,9 @@ export function lowerPhysicsThinInstances(
         state: `struct ThinPhysicsState { PhysicsBody body; std::vector<pal::PhysicsBodyHandle> handles; pal::PhysicsTransform transform; std::array<double, 4> rotation; };`,
         helpers: `${quat}\n${transform}\n${compose}
 MeshRecord* thin_mesh(PhysicsWorld& world, PhysicsNodeRef node) {
-    if (node.kind != PhysicsNodeKind::mesh) return nullptr;
-    auto& mesh = ${recordAt("world.engine->meshes", "node")};
+    const auto* handle = std::get_if<MeshHandle>(&node);
+    if (!handle) return nullptr;
+    auto& mesh = ${recordAt("world.engine->meshes", "*handle")};
     return mesh.thin_instanced ? &mesh : nullptr;
 }
 std::vector<float>& thin_matrices(PhysicsWorld& world, PhysicsNodeRef node) {

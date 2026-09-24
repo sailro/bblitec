@@ -118,19 +118,19 @@ test(
             checks.push(`{
             const Matrix parent{${floats(parent)}}, child{${floats(child)}};
             record.instance_parent_matrix = native_matrix(upstream::matrix_product(parent, child));
-            const auto block = node_mesh_block(scene, engine, 0, true);
+            const auto block = node_mesh_block(scene, engine, MeshHandle{0}, true);
             same_matrix(block.world, Matrix{${floats(expected)}});
-            assert(node_mesh_block(scene, engine, 0).world == pinned_identity_world());
+            assert(node_mesh_block(scene, engine, MeshHandle{0}).world == pinned_identity_world());
             NodeMeshBlockCache cache;
-            const auto ordinary = node_mesh_block_for(cache, scene, engine, 0, false).world;
-            same_matrix(node_mesh_block_for(cache, scene, engine, 0, true).world, block.world);
-            assert(node_mesh_block_for(cache, scene, engine, 0, false).world == ordinary);
+            const auto ordinary = node_mesh_block_for(cache, scene, engine, MeshHandle{0}, false).world;
+            same_matrix(node_mesh_block_for(cache, scene, engine, MeshHandle{0}, true).world, block.world);
+            assert(node_mesh_block_for(cache, scene, engine, MeshHandle{0}, false).world == ordinary);
             Scene next_scene;
             record.instance_parent_matrix[12] += 3.0f;
-            const auto changed = node_mesh_block(scene, engine, 0, true).world;
+            const auto changed = node_mesh_block(scene, engine, MeshHandle{0}, true).world;
             assert(changed != block.world);
-            same_matrix(node_mesh_block_for(cache, next_scene, engine, 0, true).world, changed);
-            assert(node_mesh_block_for(cache, next_scene, engine, 0, false).world == ordinary);
+            same_matrix(node_mesh_block_for(cache, next_scene, engine, MeshHandle{0}, true).world, changed);
+            assert(node_mesh_block_for(cache, next_scene, engine, MeshHandle{0}, false).world == ordinary);
         }`);
         }
         const parentTrs = [1.2, -2.3, 0.4, 0.15, -0.25, 0.35, 2, 0.5, 1.7].map(
@@ -359,7 +359,7 @@ int main() {
     }
     ${checks.join("\n")}
     const auto rejects = [&] {
-        try { (void)node_mesh_block(scene, engine, 0, true); } catch (const std::runtime_error&) { return true; }
+        try { (void)node_mesh_block(scene, engine, MeshHandle{0}, true); } catch (const std::runtime_error&) { return true; }
         return false;
     };
     geometry.local_normals.clear(); assert(rejects());
@@ -372,9 +372,9 @@ int main() {
     ${setTrs("record", childTrs)}
     for (bool gpu_world : {false, true}) {
         record.gpu_world_transform = gpu_world;
-        same_matrix(node_mesh_block(scene, engine, 0, true).world, Matrix{${floats(localExpected)}});
+        same_matrix(node_mesh_block(scene, engine, MeshHandle{0}, true).world, Matrix{${floats(localExpected)}});
         record.scene_morph_targets = true;
-        same_matrix(node_mesh_block(scene, engine, 0).world, Matrix{${floats(localExpected)}});
+        same_matrix(node_mesh_block(scene, engine, MeshHandle{0}).world, Matrix{${floats(localExpected)}});
         record.scene_morph_targets = false;
         const auto local_packed = transformed_vertices(engine, geometry, record);
         assert(std::memcmp(local_packed[0].local_normal, &vertex.normal, 12) == 0);

@@ -2748,7 +2748,7 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
     }
     const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     const upstream::NodeMeshUniforms node_mesh = node_mesh_block(
-        scene, engine, draw.item.mesh.value, node_uses_local_attributes(geometry_variant));
+        scene, engine, draw.item.mesh, node_uses_local_attributes(geometry_variant));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     std::vector<std::uint8_t> captured_mesh_uniform;
 #endif
@@ -3470,7 +3470,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
     const upstream::MeshUniforms pinned_mesh = pinned_mesh_block(
         scene, engine, standard_draw_world(record, entry.uses_local_position, scene, engine),
-        item.mesh.value);
+        item.mesh);
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
@@ -7526,7 +7526,6 @@ public:
         create_background_arms(state, scene, background_base, background_target);
 #endif
         cpu_startup_mark("environment-background");
-        upstream::initialize_composition_feature_rows(engine);
         render_plan = upstream::build_render_plan(scene, engine);
         // Every item's kind and variant against the generated tables
         // before anything uploads — the same shared walk the Dawn
@@ -8487,7 +8486,7 @@ public:
                     };
                     const auto gpu_mesh_index = [&](MeshHandle handle) {
                         for (std::size_t index = 0; index < graph_plan.items.size(); ++index) {
-                            if (graph_plan.items[index].mesh.value == handle.value) {
+                            if (graph_plan.items[index].mesh == handle) {
                                 return index;
                             }
                         }

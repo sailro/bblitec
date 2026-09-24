@@ -26,7 +26,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections | Keys retained strongly |
-| Retired meshes | A mesh that left its last scene gives its record slot to a later mesh; touching it through a kept reference afterwards throws "mesh handle refers to a retired mesh", where JavaScript reaches the detached object |
+| Retired meshes | A mesh that left its last scene gives its record slot to a later mesh once no mesh is parented under it; touching it through a kept reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object, and tables that still name it (a physics body, an animation target, a light list) stop writing it |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
 | Promises outside a realm | An await reads a constructed promise's settlement in place; one still pending ends the awaiting activation without its catch or finally blocks, resuming after the statement that discarded its promise; a later settlement throws, and an entry that awaits one exits with an error |

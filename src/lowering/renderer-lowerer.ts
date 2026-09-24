@@ -47,7 +47,7 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import {
-    meshProfileBindingCpp,
+    meshProfileBeginCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
@@ -1207,8 +1207,7 @@ struct PbrUniforms {
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
-${options.meshProfiles ? "MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_t profile);\n" : ""}\
-void initialize_composition_feature_rows(Engine& engine);
+${options.meshProfiles ? "void begin_scene_mesh_profile(Engine& engine, std::uint32_t profile);\n" : ""}\
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
     const Scene& scene,
@@ -1362,7 +1361,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine);
 // per-draw mesh block need the same per-mesh light set.
 bool light_affects_mesh(
     const LightRecord& light,
-    std::uint32_t mesh_index);
+    MeshHandle mesh);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
@@ -1768,7 +1767,7 @@ ${
             items.begin(),
             items.end(),
             [&](const RenderItem& item) {
-                return item.mesh.value == entry.mesh.value;
+                return item.mesh == entry.mesh;
             });
         if (found == items.end()) {
             continue;
@@ -1875,39 +1874,7 @@ void sort_transparent_draws(
     }
 }
 
-${options.meshProfiles ? meshProfileBindingCpp(options.meshProfiles) : ""}\
-void initialize_composition_feature_rows(Engine& engine) {
-    if (engine.composition_feature_rows_initialized) {
-        return;
-    }
-    std::uint32_t next_row = 0;
-    for (std::uint32_t index = 0; index < engine.meshes.size(); ++index) {
-        MeshRecord& mesh = engine.meshes[index];
-${options.meshProfiles ? `        if (mesh.composition_feature_row != invalid_handle) continue;\n` : ""}\
-        if (mesh.feature_source_mesh == invalid_handle) {
-${
-    options.meshProfiles
-        ? `            mesh.composition_feature_row = next_row < static_mesh_profile_rows.size()
-                ? static_mesh_profile_rows[next_row]
-                : ${options.meshProfiles.rowCount}u + next_row - static_cast<std::uint32_t>(static_mesh_profile_rows.size());
-            ++next_row;`
-        : "            mesh.composition_feature_row = next_row++;"
-}\
-            continue;
-        }
-        if (
-            mesh.feature_source_mesh >= index ||
-            engine.meshes[mesh.feature_source_mesh]
-                    .composition_feature_row == invalid_handle) {
-            throw std::runtime_error(
-                "A cloned mesh has no earlier composition source.");
-        }
-        mesh.composition_feature_row =
-            engine.meshes[mesh.feature_source_mesh]
-                .composition_feature_row;
-    }
-    engine.composition_feature_rows_initialized = true;
-}
+${options.meshProfiles ? meshProfileBeginCpp : ""}\
 
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     RenderPlan result;
@@ -2223,17 +2190,17 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
 // src/render/mesh-light-selection.ts affectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
-    std::uint32_t mesh_index) {
+    MeshHandle mesh) {
     if (light.included_meshes.empty()) {
         return std::find(
                    light.excluded_meshes.begin(),
                    light.excluded_meshes.end(),
-                   mesh_index) == light.excluded_meshes.end();
+                   mesh) == light.excluded_meshes.end();
     }
     return std::find(
                light.included_meshes.begin(),
                light.included_meshes.end(),
-               mesh_index) != light.included_meshes.end();
+               mesh) != light.included_meshes.end();
 }
 
 PbrUniforms build_pbr_uniforms(
