@@ -2027,10 +2027,10 @@ template <typename T> void release_storage(std::vector<T>& storage) {
 }
 
 /**
- * Frees every array a retired geometry holds, keeping the slot (bounds,
- * topology, versions) so the handle stays valid. Measured on the voxel
- * sprint: 188 retired chunk geometries held 46.7 MB under the assignment
- * form this replaces.
+ * Frees every array a retired geometry holds, keeping its bounds, topology
+ * and versions for a retired record that still names it. Measured on the
+ * voxel sprint: 188 retired chunk geometries held 46.7 MB under the
+ * assignment form this replaces.
  */
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
