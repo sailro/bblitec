@@ -2745,7 +2745,7 @@ test("materializes static tables under runtime indices only", () => {
 
     assert.match(
         result.cpp,
-        /inline const std::array<bbl::js::Tuple<2>, 3> WEIGHTS = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};/,
+        /inline const std::array<bbl::js::Tuple<2>, 3>& WEIGHTS\(\) \{\s*static const std::array<bbl::js::Tuple<2>, 3> value = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};\s*return value;\s*\}/,
     );
     // The table's own lanes are doubles, and so is the local, so the read
     // is written at that width rather than at the default float one.
@@ -2754,7 +2754,7 @@ test("materializes static tables under runtime indices only", () => {
     // keeps the raw fast path.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\(bblscene::WEIGHTS, v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
+        /bbl::js::array_index_checked\(bblscene::WEIGHTS\(\), v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
     );
     assert.match(
         result.cpp,

@@ -308,7 +308,8 @@ int main(int argc, char** argv) {
         registry_growth_failure();
     }
     assert(managed_node_count() == nodes && outstanding_allocations == outstanding);
-    std::printf("ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; "
-                "untraced payloads unregistered; cycle edges=2/2, collected=2; registry and allocations "
-                "restored)\n");
+    std::printf(
+        "ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; "
+        "untraced payloads unregistered; cycle edges=2/2, collected=2; registry and allocations "
+        "restored)\n");
 }

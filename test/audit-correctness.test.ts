@@ -719,7 +719,8 @@ test(
         }
         int main() {
             assert(generated_record_main() == 0);
-            assert(retained_nodes == 2);
+            // The records hold a handle and scalars: no traced edge, no node.
+            assert(retained_nodes == 0);
             assert(bbl::js::managed_node_count() == 0);
         }
     `,
@@ -1240,13 +1241,19 @@ test(
             `
         #include <bblite/js_gc.hpp>
         #include <cassert>
+        struct Traced {
+            int value = 0;
+            void gc_trace(const bbl::js::TraceVisitor&) const {}
+        };
         int main() {
             using namespace bbl::js;
             const auto initial_nodes = managed_node_count();
             const auto initial_allocations = gc::registry.total_allocations;
             {
-                auto first = make_gc_shared<int>(1);
-                auto second = make_gc_shared<int>(2);
+                auto untraced = make_gc_shared<int>(0);
+                assert(*untraced == 0 && managed_node_count() == initial_nodes);
+                auto first = make_gc_shared<Traced>(Traced{1});
+                auto second = make_gc_shared<Traced>(Traced{2});
                 assert(managed_node_count() == initial_nodes + 2);
                 first.reset();
                 collect_cycles();

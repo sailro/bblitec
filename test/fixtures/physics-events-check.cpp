@@ -88,7 +88,7 @@ int main() {
     assert(world.bodies.empty() && !world.events->removed && !world.events->draining);
     for (const auto& native : native_handles) {
         assert(!native.ownership->body);
-        assert(!u::physics_events_resolve(world, native.value));
+        assert(!u::physics_events_resolve(world, *world.events, native.value));
     }
     assert(!ordinary.handle.ownership->body);
 #if TEST_THIN
