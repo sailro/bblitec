@@ -8,7 +8,8 @@ export const DEFORMATION_BONE_SLOTS = 64;
 /**
  * The shared diagnostic/depth/background stage. Colour materials use their
  * own composers; this stage projects the same pinned operations onto the
- * PAL's pre-transformed vertices, uniform palette and optional streams.
+ * PAL's local vertices, per-draw mesh world, uniform palette and optional
+ * streams.
  */
 export function materialVertexWgsl(
     gpuDeformation = false,
@@ -46,16 +47,12 @@ ${projected.morphStructs}
 }`
         : ""
 }
-${
-    gpuInstancing
-        ? `
-struct InstanceUniforms {
-    parentWorld: mat4x4<f32>,
+
+struct MeshUniforms {
+    world: mat4x4<f32>,
 }
-@group(1) @binding(${gpuDeformation ? 2 : 1}) var<uniform> instanceUniforms: InstanceUniforms;
-`
-        : ""
-}
+@group(1) @binding(${gpuDeformation ? 2 : 1}) var<uniform> mesh: MeshUniforms;
+
 
 struct VertexInput {
     @location(0) position: vec3<f32>,

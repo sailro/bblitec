@@ -1819,23 +1819,6 @@ export function pinnedPbrVariantsHeader(
         // that is emitted but never called leaves its fields zero. That is how
         // Scene 259's emissive colour rendered 128 levels dark here while the
         // transcribed path measured 0.000.
-        // The pin's refraction fragment multiplies its thickness lanes by
-        // `ts`, the mesh world's largest column -- but this backend bakes the
-        // node transform into the vertices, so its pinned mesh world carries
-        // no scale and the fragment's `ts` is 1. The product stays the pin's
-        // by moving the scale into the block here, per draw.
-        const thicknessScaled: string[] = [];
-        if (fields.some((field) => field.name === "refractionParams")) {
-            thicknessScaled.push(
-                "            block.refractionParams[2] *= thickness_scale;",
-            );
-        }
-        if (fields.some((field) => field.name === "thicknessParams")) {
-            thicknessScaled.push(
-                "            block.thicknessParams[0] *= thickness_scale;",
-                "            block.thicknessParams[1] *= thickness_scale;",
-            );
-        }
         variantMaterialCases.push(
             [
                 `        case ${table.length}: {`,
@@ -1851,7 +1834,6 @@ export function pinnedPbrVariantsHeader(
                         `                bblIdentityTransform,\n` +
                         `                block);`,
                 ),
-                ...thicknessScaled,
                 ...(variant.pluginUniformFields !== undefined
                     ? [
                           "            if (const auto plugins = material.plugin_uniform_writers) {",
@@ -1922,8 +1904,7 @@ export function pinnedPbrVariantsHeader(
                 `${colorTargetCount}, ` +
                 // The geometry LOCAL_POSITION arm's varying reads the raw
                 // `position` attribute, which this backend maps onto the
-                // vertex's local lanes with the real node world so worldPos
-                // stays the identical product.
+                // vertex's local lanes.
                 `${variantUsesLocalPosition(variant.vertexWgsl) ? "true" : "false"}, ` +
                 `${
                     bindings.some((binding) => binding.name === "shadowParams")
@@ -2070,7 +2051,7 @@ struct PbrVariantEntry {
     std::size_t color_target_count;
     /** Whether the vertex stage carries the LOCAL_POSITION varying, which
      *  reads the raw \`position\` attribute: the PAL binds the vertex's
-     *  local lanes and the real node world for such variants. */
+     *  local lanes for such variants. */
     bool uses_local_position;
     /** An ESM caster view's fragment returns the exponential depth, so its
      *  pipeline's colour target is the generator's map rather than the
@@ -2165,11 +2146,8 @@ ${cpp.function(
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
-    std::size_t bytes,
-    float thickness_scale)`,
+    std::size_t bytes)`,
     `
-    // Unused when no composed variant carries a thickness lane.
-    (void)thickness_scale;
     switch (variant) {
 ${variantMaterialCases.join("\n")}
         default:
@@ -2180,8 +2158,7 @@ ${variantMaterialCases.join("\n")}
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
-    std::size_t bytes,
-    float thickness_scale = 1.0f)`,
+    std::size_t bytes)`,
 )}
 
 /**

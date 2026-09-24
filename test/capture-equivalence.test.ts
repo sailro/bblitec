@@ -54,7 +54,7 @@ test("capture and draw paths take their matrices from one record", () => {
         (header.match(/struct ShaderDrawMatrices \{/g) ?? []).length,
         1,
     );
-    assert.match(header, /world\(shader_draw_world\(engine, mesh\)\),/);
+    assert.match(header, /world\(mesh_block_world\(scene, engine, mesh\)\),/);
     assert.match(
         header,
         /world_view_projection\(\s*upstream::matrix_product\(pass\.view_projection, world\)\),/,
@@ -77,7 +77,7 @@ test("capture and draw paths take their matrices from one record", () => {
             `${name} patches its pass matrices outside the shared record`,
         );
         assert.ok(
-            !source.includes("std::array<float, 16> shader_draw_world("),
+            !source.includes("std::array<float, 16> mesh_block_world("),
             `${name} defines a local shader-world fold`,
         );
         assert.ok(
@@ -105,27 +105,28 @@ test("PBR capture uses the resolved draw world including late root transforms", 
     assert.match(blocks, /pinned_variant_for_draw\(scene, engine, draw\)/);
     assert.match(blocks, /if \(variant == npos\)\s+continue;/);
     const builder = shared().slice(
-        shared().indexOf(
-            "inline upstream::MeshUniforms pinned_draw_mesh_block(",
-        ),
+        shared().indexOf("inline upstream::MeshUniforms pinned_mesh_block("),
     );
-    assert.match(blocks, /pinned_draw_conventions\(variant, record\)/);
-    assert.match(builder, /const PinnedDrawConventions& conventions/);
+    // One world for every variant: the mesh's worldMatrix. A palette or a
+    // VAT row composes on top of it inside the vertex stage.
     assert.match(
         builder,
-        /pinned_draw_world\(\s*conventions.identity_world,\s*conventions.world_from_palette,\s*upstream::pbr_variants\[variant\].uses_local_position,/,
+        /block\.world = mesh_block_world\(scene, engine, handle_at\(engine\.meshes, mesh\)\);/,
+    );
+    assert.match(
+        blocks,
+        /pinned_mesh_block\(scene, engine, draw\.item\.mesh\)/,
     );
     for (const [name, source] of Object.entries(consumers())) {
         assert.ok(
-            source.includes("pinned_draw_mesh_block("),
+            source.includes("pinned_mesh_block("),
             `${name} bypasses the shared PBR draw block`,
         );
         assert.doesNotMatch(
             source,
-            /pinned_draw_world\(/,
+            /mesh_world_matrix\(|mesh_world_eye_relative\(/,
             `${name} reconstructs the PBR draw world`,
         );
     }
-    assert.doesNotMatch(blocks, /pinned_mesh_world\(\)/);
     assert.match(blocks, /"worldSource", "effective-draw"/);
 });

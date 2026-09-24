@@ -25,7 +25,6 @@ export class BabylonLowerer {
      */
     public lowerLoaderAdapter(
         lightMeshLists = false,
-        meshClones = false,
         cameras = true,
     ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
@@ -114,7 +113,6 @@ export class BabylonLowerer {
                     fileTextureLoad: `load_file_texture(engine, path, ${upload.sampler}, ${upload.invertY}, ${upload.srgb}, ${upload.premultiplyAlpha})`,
                 },
                 lightMeshLists,
-                meshClones,
             ),
         };
     }

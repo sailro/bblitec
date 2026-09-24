@@ -9,6 +9,8 @@ import { lowerObjectComponents } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const boundsModule = "src/mesh/mesh-world-bounds.ts";
+const thinInstanceBoundsModule =
+    "src/mesh/enable-thin-instance-world-bounds.ts";
 
 /**
  * The `WorldAabbAcc` keys in the pin's own order, read off the literal
@@ -99,16 +101,17 @@ export function worldAabbLaneBindings(
  * `src/mesh/mesh-world-bounds.ts` lowered whole for a translation unit that
  * frames or sizes a scene: `emptyWorldAabb`, `addRange` and
  * `expandWorldAabbForMesh`, in JavaScript-number width over the pin's
- * Float32Array boxes and world matrix. `WorldAabbMesh` carries the three
- * `Mesh` members the expansion reads; each caller fills it from its native
- * record. Emitted into an anonymous namespace by every unit that needs it;
+ * Float32Array boxes and world matrix. `WorldAabbMesh` carries the `Mesh`
+ * members the expansion reads; each caller fills it from its native record.
+ * Emitted into an anonymous namespace by every unit that needs it;
  * `emptyAccumulator` adds `emptyWorldAabb` for a unit that seeds its own.
  *
  * `mesh._expandWorldBounds` is the thin-instance hook
- * `enableThinInstanceWorldBounds` installs. No native record carries one:
- * the glTF GPU-instancing feature runs the pinned expansion at generation
- * and bakes the expanded world box into the loaded geometry, and scene code
- * cannot reach the public enabler.
+ * `enableThinInstanceWorldBounds` installs -- the glTF GPU-instancing
+ * feature installs it on every mesh it instances, which the native record
+ * states as `thin_instance_world_bounds`. The hook's body,
+ * `expandThinInstanceWorldBounds`, is lowered beside the expansion and reads
+ * the live world and instance matrices, as the pin's does.
  */
 export function lowerWorldAabbHelpers(
     context: LoweringContext,
@@ -125,10 +128,17 @@ export function lowerWorldAabbHelpers(
                 lowerer: PinnedNumericLowerer,
             ) => string;
             laneKeys?: true;
+            module?: string;
+            /**
+             * Locals that only name a member the bindings already spell
+             * (`const matrices = thinInstances.matrices`): their
+             * declarations lower to nothing.
+             */
+            aliases?: ReadonlySet<string>;
         } = {},
     ): string => {
         const { file, declaration } = context.functionDeclaration(
-            boundsModule,
+            extra.module ?? boundsModule,
             symbol,
         );
         const parameters = declaration.parameters.map((parameter) =>
@@ -179,6 +189,12 @@ export function lowerWorldAabbHelpers(
                 )
                     return undefined;
                 const [local] = statement.declarationList.declarations;
+                if (
+                    local &&
+                    ts.isIdentifier(local.name) &&
+                    extra.aliases?.has(local.name.text)
+                )
+                    return [];
                 const literal =
                     local && ts.isIdentifier(local.name)
                         ? fixedLists.get(local.name.text)
@@ -249,6 +265,37 @@ export function lowerWorldAabbHelpers(
         ]),
         { laneKeys: true },
     );
+    const worldMatrix: [string, PinnedBinding] = [
+        "mesh.worldMatrix",
+        { cpp: "mesh.world_matrix", type: "f32" },
+    ];
+    const thinInstanceBounds = body(
+        "expandThinInstanceWorldBounds",
+        new Map<string, PinnedBinding>([
+            ["bounds", { cpp: "bounds", type: "f64-buffer" }],
+            ["mesh", { cpp: "mesh", type: "opaque" }],
+            ["boundMin", { cpp: "(*mesh.bound_min)", type: "f32" }],
+            ["boundMax", { cpp: "(*mesh.bound_max)", type: "f32" }],
+            ["world", { cpp: "mesh.world_matrix", type: "f32" }],
+            ["matrices", { cpp: "mesh.instance_matrices", type: "f32" }],
+            [
+                "thinInstances.count",
+                { cpp: "mesh.instance_count", type: "scalar" },
+            ],
+        ]),
+        {
+            module: thinInstanceBoundsModule,
+            aliases: new Set([
+                "boundMin",
+                "boundMax",
+                "world",
+                "thinInstances",
+                "matrices",
+            ]),
+            calls: pinnedNumericMathCalls(),
+            laneKeys: true,
+        },
+    );
     const expand = body(
         "expandWorldAabbForMesh",
         new Map<string, PinnedBinding>([
@@ -258,9 +305,9 @@ export function lowerWorldAabbHelpers(
             bound("boundMax", "bound_max"),
             [
                 "mesh._expandWorldBounds !== undefined",
-                { cpp: "false", type: "bool", staticBoolean: false },
+                { cpp: "mesh.thin_instance_world_bounds", type: "bool" },
             ],
-            ["mesh.worldMatrix", { cpp: "mesh.world_matrix", type: "f32" }],
+            worldMatrix,
         ]),
         {
             calls: new Map([
@@ -269,6 +316,11 @@ export function lowerWorldAabbHelpers(
                     "addRange",
                     (args: readonly string[]) =>
                         `world_aabb_add_range(${args.join(", ")})`,
+                ],
+                [
+                    "mesh._expandWorldBounds",
+                    (args: readonly string[]) =>
+                        `expand_thin_instance_world_bounds(${args.join(", ")})`,
                 ],
             ]),
         },
@@ -279,16 +331,36 @@ export function lowerWorldAabbHelpers(
         "expandWorldAabbForMesh",
     ];
     return `// ${context.provenance(boundsModule, symbols.join(", "))}
+// ${context.provenance(thinInstanceBoundsModule, "expandThinInstanceWorldBounds")}
 // The accumulator's keys (${lanes.join(", ")}) are lanes of one array.
 using WorldAabb = std::array<double, ${lanes.length}>;
 
 // The Mesh members expandWorldAabbForMesh reads: its object-local
-// Float32Array box, absent for a mesh without bounds, and its world matrix.
+// Float32Array box, absent for a mesh without bounds, its world matrix, and
+// for a mesh carrying the thin-instance hook its instance matrices and count.
 struct WorldAabbMesh {
     std::optional<std::array<float, 3>> bound_min;
     std::optional<std::array<float, 3>> bound_max;
     std::array<float, 16> world_matrix{};
+    bool thin_instance_world_bounds = false;
+    std::vector<float> instance_matrices;
+    double instance_count = 0.0;
 };
+
+// The hook's inputs off one native record: its flag, and the instance
+// matrices flattened the way the pin's Float32Array stores them.
+void read_thin_instance_world_bounds(WorldAabbMesh& target, const MeshRecord& mesh) {
+    target.thin_instance_world_bounds = mesh.thin_instance_world_bounds;
+    if (!target.thin_instance_world_bounds) return;
+    target.instance_matrices.reserve(mesh.instance_matrices.size() * 16u);
+    for (const std::array<float, 16>& matrix : mesh.instance_matrices)
+        target.instance_matrices.insert(target.instance_matrices.end(), matrix.begin(), matrix.end());
+    target.instance_count = static_cast<double>(mesh.instance_count);
+}
+
+void expand_thin_instance_world_bounds(WorldAabb& bounds, const WorldAabbMesh& mesh) {
+${thinInstanceBounds}
+}
 
 ${
     options.emptyAccumulator

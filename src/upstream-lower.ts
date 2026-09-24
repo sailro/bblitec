@@ -404,12 +404,6 @@ export interface UpstreamEmitOptions {
         composed: ComposedScreenSpaceTask;
     }[];
     gpuDeformation: boolean;
-    /**
-     * Whether the loader records live world boxes and default framing reads
-     * them — asset animations alone, where `gpuDeformation` also covers
-     * scene-source morph targets for the vertex layout and the define.
-     */
-    animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     /** Any loaded glTF carries packaged Gaussian-splat clouds. */
@@ -967,12 +961,10 @@ class GeneratedSourceWriter {
                 options.msaaSamples ?? 4,
             ),
         );
-        // The float world-basis multiplies restated from the pinned WGSL
-        // vertex stages, and the pin's own mirrored-basis determinant.
-        // Always emitted, because the consumers sit on both sides of the
-        // generated/PAL boundary: the PAL's CPU vertex bake compiles for
-        // every scene shape, and both geometry loaders bake node worlds
-        // through the same pair.
+        // The pinned TRS composition and the pin's own mirrored-basis
+        // determinant. Always emitted, because the consumers sit on both
+        // sides of the generated/PAL boundary: every render plan composes
+        // its mesh worlds through it, and both geometry loaders read it.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_world_transform.hpp",
             pinnedWorldTransformHeader(new LoweringContext(this.store)),
@@ -1225,7 +1217,6 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/camera_default.cpp", () =>
             new CameraLowerer(context).lowerDefaultFactory(
                 options.nodeVisibility,
-                options.animatedWorldBounds,
             ),
         );
         emitReached("upstream/src/camera_orthographic.cpp", () =>
@@ -1263,17 +1254,10 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/skeleton.cpp", () =>
             new SkeletonLowerer(context).lower(),
         );
-        this.emitLoaderGltf(
-            features,
-            context,
-            generated,
-            nodeGeometryViewList,
-            options,
-        );
+        this.emitLoaderGltf(features, context, generated, options);
         emitReached("upstream/src/babylon_loader.cpp", () =>
             new BabylonLowerer(context).lowerLoaderAdapter(
                 options.standardLightLists,
-                features.includes("mesh:clone"),
                 features.includes("camera:free"),
             ),
         );
@@ -2077,7 +2061,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
-        nodeGeometryViewList: ReturnType<typeof nodeGeometryVariants>,
         options: UpstreamEmitOptions,
     ): void {
         if (this.reaches("upstream/src/gltf_loader.cpp")) {
@@ -2091,7 +2074,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter({
-                    retainLocalNormals: nodeGeometryViewList.length > 0,
                     sourceTextureReads: features.includes(
                         "material:source-texture-read",
                     ),
@@ -2107,10 +2089,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
-                    dynamicThinInstances: features.includes(
-                        "mesh:thin-instances-dynamic",
-                    ),
-                    meshClones: features.includes("mesh:clone"),
+                    nodeTransforms: features.includes("scene:node-transforms"),
                     nonTrianglePrimitives: options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
                     compressedImages: options.compressedImages,
@@ -2120,7 +2099,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     nodeVisibility: options.gltfNodeVisibility,
                     interactivity: options.gltfInteractivity ?? false,
                     animationPointer: options.animationPointer,
-                    animatedWorldBounds: options.animatedWorldBounds,
                     animationPointerMaterials:
                         options.animationPointerMaterials,
                     selectedMaterialVariant: options.selectedMaterialVariant,
@@ -3825,7 +3803,6 @@ export function emitUpstreamGenerated(
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,

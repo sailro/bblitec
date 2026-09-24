@@ -216,8 +216,16 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         const auto& mesh=engine.meshes.at(asset.meshes[index].value);
         const auto& wanted=expected[index];
         assert(mesh.name==wanted.at("name").get<std::string>());
+        // The record's own TRS under the parent world its loader recorded is
+        // the pin's node worldMatrix.
+        auto world=upstream::trs_matrix(mesh);
+        if(mesh.parent_world) {
+            std::array<double,16> product{};
+            upstream::mat4_multiply_into_f64(product,0,*mesh.parent_world,0,world,0);
+            world=upstream::narrow_mat4(product);
+        }
         for(std::size_t cell=0;cell<16;++cell)
-            assert(std::abs(double(mesh.instance_parent_matrix[cell])-wanted.at("world")[cell].get<double>())<2e-6);
+            assert(std::abs(double(world[cell])-wanted.at("world")[cell].get<double>())<2e-6);
         const auto& geometry=engine.geometries.at(mesh.geometry);
         // load-babylon.ts builds a mesh without boundMin/boundMax.
         assert(!mesh.has_bounds);
@@ -225,17 +233,14 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         assert(!mesh.receives_shadows);
         assert(geometry.vertices.size()*3==wanted.at("positions").size());
         for(std::size_t vertex=0;vertex<geometry.vertices.size();++vertex) {
-            const auto& normal=geometry.local_normals[vertex];
+            // The pin uploads the source lanes untransformed.
+            const auto& normal=geometry.vertices[vertex].normal;
             const std::array<float,3> normal_lanes{normal.x,normal.y,normal.z};
-            for(std::size_t lane=0;lane<3;++lane)
-                assert(normal_lanes[lane]==wanted.at("normals")[vertex*3+lane].get<float>());
             const auto& position=geometry.vertices[vertex].position;
-            const std::array<double,3> actual{position.x,position.y,position.z};
+            const std::array<float,3> position_lanes{position.x,position.y,position.z};
             for(std::size_t lane=0;lane<3;++lane) {
-                double target=wanted.at("world")[12+lane].get<double>();
-                for(std::size_t component=0;component<3;++component)
-                    target+=wanted.at("positions")[vertex*3+component].get<double>()*wanted.at("world")[component*4+lane].get<double>();
-                assert(std::abs(actual[lane]-target)<2e-6);
+                assert(normal_lanes[lane]==wanted.at("normals")[vertex*3+lane].get<float>());
+                assert(position_lanes[lane]==wanted.at("positions")[vertex*3+lane].get<float>());
             }
         }
     }

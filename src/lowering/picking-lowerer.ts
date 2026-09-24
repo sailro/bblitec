@@ -99,7 +99,7 @@ const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == Picked
             info,
             mesh_cpu_indices(engine, mesh),
             detail.primitive_index,
-            detail_rest_point(detail),
+            detail.point,
             mesh_cpu_positions(engine, mesh),
             mesh_cpu_normals(engine, mesh),
             detail.world,
@@ -974,38 +974,6 @@ ${facesPickRay}
 ${populate}
 
 ${this.lowerPickedNormalImpl(calls)}
-
-/**
- * The interpolated vertex position, in the space the pin's own solve
- * expects it: the mesh's REST space.
- *
- * The pin's detailed vertex stage forwards \`position\` untouched, and so
- * does the module deployed here -- but an ordinary mesh's vertex buffer
- * is baked to WORLD space by this port (\`transformed_vertices\`; the
- * contract is stated in the picking section of \`fidelity.md\`), so the
- * varying arrives world-space and is mapped back through the same
- * draw-time world the bake used. Barycentric weights are affine
- * invariant, so this is a change of basis rather than a change of
- * answer; what needs it is the face normal, which is derived from the
- * triangle's EDGES and would otherwise be transformed by \`world\` twice.
- * A mesh whose transform travels as a matrix instead already forwards a
- * local position and takes no map.
- */
-std::array<double, 3> detail_rest_point(
-    const PickDetailReadback& detail) {
-    if (!detail.world_baked) return detail.point;
-    const auto inverse = mat4_invert(detail.world);
-    if (!inverse) return detail.point;
-    const auto& m = *inverse;
-    const double x = detail.point[0];
-    const double y = detail.point[1];
-    const double z = detail.point[2];
-    return {
-        m[0] * x + m[4] * y + m[8] * z + m[12],
-        m[1] * x + m[5] * y + m[9] * z + m[13],
-        m[2] * x + m[6] * y + m[10] * z + m[14],
-    };
-}
 `;
     }
 

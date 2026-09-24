@@ -456,7 +456,7 @@ ${
             auto& node = ${recordAt("engine.meshes", "drag.attached_node")};
             const auto delta = drag_local_delta(engine, node, step.delta);
             node.position = {node.position.x + delta.x, node.position.y + delta.y, node.position.z + delta.z};
-            mark_mesh_runtime_transform(engine, drag.attached_node);
+            mark_mesh_dirty(engine, drag.attached_node);
         }
         return;
     }

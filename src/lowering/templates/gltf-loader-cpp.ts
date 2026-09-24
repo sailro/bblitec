@@ -84,13 +84,11 @@ export interface GltfLoaderLoweredSegments {
      */
     matrixCompose: string;
     /**
-     * `native_matrix`, anchored to
-     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT`. The function itself
-     * is the record's convention (the diagonal change of basis applied at
-     * consumption instead of the pin's root-level left multiply), so only
-     * the flip axis and sign flow from the pin.
+     * `gltf_rooted_world`, the left multiply by
+     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT` that parents every
+     * hierarchy root.
      */
-    matrixNative: string;
+    rootedWorld: string;
     /**
      * The glTF `camera` node property (`_camera` feature), lowered from
      * `src/loader-gltf/gltf-feature-camera.ts#applyAsset`: the fold that
@@ -111,6 +109,44 @@ export interface GltfLoaderLoweredSegments {
     boneControlEntryPoints: string;
 }
 
+/**
+ * The node hierarchy over flattened node-transform records: a node whose
+ * parent node bears primitives composes under that node's first record, and
+ * a node's further primitives under its first, as the pin's mesh children
+ * hang under their `TransformNode`.
+ */
+function gltfNodeTransformLinksCpp(): string {
+    return `    {
+        std::unordered_map<std::size_t, MeshHandle> node_records;
+        for (const auto& [node_index, handle] : node_transform_records) node_records.try_emplace(node_index, handle);
+        const auto link = [&](MeshHandle child, MeshHandle parent) {
+            MeshRecord& record = ${recordAt("engine.meshes", "child")};
+            record.parent = parent;
+            record.parent_world.reset();
+            MeshRecord& parent_record = ${recordAt("engine.meshes", "parent")};
+            parent_record.children.push_back(child);
+            parent_record.parented_meshes.push_back(child);
+        };
+        for (const auto& [node_index, handle] : node_transform_records) {
+            const MeshHandle first = node_records.at(node_index);
+            if (first != handle) {
+                MeshRecord& record = ${recordAt("engine.meshes", "handle")};
+                record.position = Vec3d{};
+                record.rotation_quaternion = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+                record.has_rotation_quaternion = false;
+                record.scaling = Vec3{1.0f, 1.0f, 1.0f};
+                link(handle, first);
+                continue;
+            }
+            const double parent = find_gltf_parent(parents, static_cast<double>(node_index));
+            if (parent < 0.0) continue;
+            const auto found = node_records.find(static_cast<std::size_t>(parent));
+            if (found != node_records.end()) link(handle, found->second);
+        }
+    }
+`;
+}
+
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
 export function gltfLoaderCpp(
     provenance: string,
@@ -121,9 +157,7 @@ export function gltfLoaderCpp(
         vat = false,
         deformPicking = false,
         pinnedSkeletonPalette = false,
-        dynamicThinInstances = false,
-        meshClones = false,
-        retainLocalNormals = false,
+        nodeTransforms = false,
         sourceTextureReads = false,
         sourceMeshWalks = false,
         nonTrianglePrimitives = false,
@@ -131,7 +165,6 @@ export function gltfLoaderCpp(
         nodeVisibility = false,
         interactivity = false,
         animationPointer = false,
-        animatedWorldBounds = false,
         animationPointerMaterials = false,
         selectedMaterialVariant = "",
         gltfCameras = false,
@@ -305,7 +338,6 @@ struct AnimatedMeshBinding {
     std::size_t skeleton_binding = std::numeric_limits<std::size_t>::max();
     std::size_t morph_node = std::numeric_limits<std::size_t>::max();
     std::vector<Matrix> initial_joint_matrices;
-    Matrix initial_mesh_world{};
 };
 
 ${lowered.animationBindings}
@@ -460,29 +492,12 @@ ${lowered.matrixLocal}
 
 ${lowered.matrixCompose}
 
-${lowered.matrixNative}
+${lowered.rootedWorld}
 ${gltfAnimationMatrixTransportCpp()}
 
 ${lowered.deformationState}
 
 ${lowered.hierarchy}
-
-// The raw world multiplies live in the always-emitted
-// upstream::transform_position/transform_direction pair; these wrappers add
-// only the loader's RH->LH x-negation.
-Vec3 transform_point(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed = upstream::transform_position(matrix, value);
-    return Vec3{-transformed.x, transformed.y, transformed.z};
-}
-
-// Babylon Lite normalizes the object-space direction (pbr-template.ts:
-// \`finalWorld * vec4<f32>(normalize(normal), 0.0)\`) and interpolates the
-// transformed vector unnormalized; only the fragment renormalizes.
-Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed = upstream::transform_direction(
-        matrix, upstream::normalize_baked_direction(value));
-    return Vec3{-transformed.x, transformed.y, transformed.z};
-}
 
 ${
     materialVariants
@@ -621,8 +636,12 @@ ${
     const JsonArray& texture_json = array_or_empty(document, "textures");
     const JsonArray& sampler_json = array_or_empty(document, "samplers");
     const JsonArray& material_json = array_or_empty(document, "materials");
-    const JsonArray& mesh_json = array_or_empty(document, "meshes");
-    const JsonArray& node_json = array_or_empty(document, "nodes");
+${
+    animationPointerMaterials || interactivity
+        ? `    const JsonArray& mesh_json = array_or_empty(document, "meshes");
+`
+        : ""
+}    const JsonArray& node_json = array_or_empty(document, "nodes");
     const JsonArray& skin_json = array_or_empty(document, "skins");
     const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
     const auto& source_animation = required(mesh_plan, "animation");
@@ -976,11 +995,10 @@ ${
             std::move(runtime_skin));
     }
     std::vector<std::size_t> animation_mesh_indices(planned_meshes.size(), std::numeric_limits<std::size_t>::max());
-    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
+${nodeTransforms ? "    std::vector<std::pair<std::size_t, MeshHandle>> node_transform_records;\n" : ""}    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
             const auto& planned = planned_meshes[gltf_mesh_counter].as_object();
             const auto node_index = unsigned_value(required(planned, "node"));
             const auto& node = node_json.at(node_index).as_object();
-            const auto& mesh = mesh_json.at(unsigned_value(required(node, "mesh"))).as_object();
             const auto& setup = required(planned, "setup").as_object();
             const std::string topology = required(setup, "topology").as_string();
             const bool source_clockwise = required(setup, "clockwise").as_boolean();
@@ -1044,11 +1062,13 @@ ${
                 return value;
             };
             const auto& source_world = setup_accessor("world", "VEC4", 4);
-            Matrix mesh_world = read_matrix(source_world, 0);
-            // The source hierarchy includes its RH-to-LH root. Vertex baking
-            // applies that mirror separately, so recover the unmirrored world.
-            for (std::size_t column = 0; column < 4; ++column) mesh_world[column * 4] = -mesh_world[column * 4];
-            const Matrix instance_parent_matrix = native_matrix(mesh_world);
+            // The pin's own \`mesh.worldMatrix\` for this primitive, root
+            // mirror included: the vertices below keep the file's lanes as
+            // \`buildTightGltfMesh\` uploads them, and the node's world
+            // reaches the vertex stage through the mesh block.
+            const Matrix mesh_world = read_matrix(source_world, 0);
+            const bool mirrored_world =
+                upstream::pinned_mat4_determinant3(mesh_world) < 0.0;
             std::vector<Matrix> instance_matrices;
             if (const auto* instance_value = optional(setup, "instances")) {
                 if (animated || planned_skin || planned_morph)
@@ -1060,7 +1080,7 @@ ${
                     throw std::runtime_error("Invalid glTF instance matrix storage.");
                 instance_matrices.reserve(count);
                 for (std::size_t instance = 0; instance < count; ++instance)
-                    instance_matrices.push_back(native_matrix(read_matrix(matrices, instance)));
+                    instance_matrices.push_back(read_matrix(matrices, instance));
             }
             ModelGeometry geometry;${
                 nonTrianglePrimitives
@@ -1069,17 +1089,6 @@ ${
                     : ""
             }
             geometry.vertices.resize(positions.count);
-            const bool instanced =
-                !instance_matrices.empty();
-            const Matrix matrix = instanced
-                ? identity_matrix()
-                : mesh_world;
-            // The pin's own mat4Determinant3, from the shared emission --
-            // double, expanded along the same cofactor column as the
-            // run-time mirrored-mesh watcher, so the load-time and
-            // run-time answers to "is this basis mirrored" round alike.
-            const double determinant =
-                upstream::pinned_mat4_determinant3(matrix);
             const std::size_t material_index =
                 ${
                     materialVariants
@@ -1087,28 +1096,6 @@ ${
                         : `unsigned_value(required(planned, "material"))`
                 };
             if (material_index >= materials.size()) throw std::runtime_error("Invalid glTF mesh material slot.");
-            const std::string authored_name = string_or(mesh, "name");
-            const bool retains_live_wheel_vertices =
-                authored_name.rfind("wheel", 0) == 0;
-            // A hierarchy pool is attached after a static glTF has already
-            // baked this node world into geometry.vertices. Keep the loader's
-            // mirrored-local copy so that later thin-instance draws can use
-            // the same local attribute bytes the browser retained.
-            const bool retains_runtime_instance_vertices =
-                ${dynamicThinInstances || meshClones ? "true" : "false"};
-            const bool retains_local_vertices =
-                retains_live_wheel_vertices ||
-                retains_runtime_instance_vertices;
-            if (retains_local_vertices) {
-                geometry.bind_vertices.resize(positions.count);
-            }${
-                retainLocalNormals
-                    ? `
-            if (normals) {
-                geometry.local_normals.resize(positions.count);
-            }`
-                    : ""
-            }
             const bool clockwise_front_face =
                 source_clockwise &&
                 materials[material_index].value <
@@ -1117,74 +1104,24 @@ ${
                     .double_sided;
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
-                const Vec3 local_position{
+                vertex.position = Vec3{
                     read_component(buffer, container, views, positions, index, 0),
                     read_component(buffer, container, views, positions, index, 1),
                     read_component(buffer, container, views, positions, index, 2),
                 };
-                vertex.local_position = local_position;
-                vertex.position = deformed_geometry || instanced
-                    ? Vec3{
-                          -local_position.x,
-                          local_position.y,
-                          local_position.z,
-                      }
-                    : transform_point(matrix, local_position);
-                Vec3 live_local_normal = vertex.normal;
                 if (normals) {
-                    const Vec3 local_normal{
+                    vertex.normal = Vec3{
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
-                    };${
-                        retainLocalNormals
-                            ? `
-                    geometry.local_normals[index] = local_normal;`
-                            : ""
-                    }
-                    // The vertex stage's own normalize (pbr-template.ts
-                    // \`normalize(normal)\`), on the lanes the pin uploads.
-                    live_local_normal = upstream::normalize_baked_direction(Vec3{
-                        -local_normal.x,
-                        local_normal.y,
-                        local_normal.z,
-                    });
-                    vertex.normal = deformed_geometry || instanced
-                        ? upstream::normalize_baked_direction(Vec3{
-                              -local_normal.x,
-                              local_normal.y,
-                              local_normal.z,
-                          })
-                        : transform_direction(matrix, local_normal);
+                    };
                 }
-                Vec4 live_local_tangent = vertex.tangent;
                 if (tangents) {
-                    const Vec3 local_tangent{
+                    vertex.tangent = Vec4{
                         read_component(buffer, container, views, *tangents, index, 0),
                         read_component(buffer, container, views, *tangents, index, 1),
                         read_component(buffer, container, views, *tangents, index, 2),
-                    };
-                    const float local_tangent_w =
-                        read_component(buffer, container, views, *tangents, index, 3);
-                    live_local_tangent = Vec4{
-                        -local_tangent.x,
-                        local_tangent.y,
-                        local_tangent.z,
-                        -local_tangent_w,
-                    };
-                    const Vec3 tangent = deformed_geometry || instanced
-                        ? upstream::normalize_baked_direction(Vec3{
-                              -local_tangent.x,
-                              local_tangent.y,
-                              local_tangent.z,
-                          })
-                        : transform_direction(matrix, local_tangent);
-                    vertex.tangent = Vec4{
-                        tangent.x,
-                        tangent.y,
-                        tangent.z,
-                        (determinant < 0.0 ? 1.0f : -1.0f) *
-                            local_tangent_w,
+                        read_component(buffer, container, views, *tangents, index, 3),
                     };
                 }
                 vertex.uv = Vec2{
@@ -1225,17 +1162,6 @@ ${
                     };
                 }
                 geometry.vertices[index] = vertex;
-                if (retains_local_vertices) {
-                    ModelVertex local_vertex = vertex;
-                    local_vertex.position = Vec3{
-                        -local_position.x,
-                        local_position.y,
-                        local_position.z,
-                    };
-                    local_vertex.normal = live_local_normal;
-                    local_vertex.tangent = live_local_tangent;
-                    geometry.bind_vertices[index] = local_vertex;
-                }
             }
             for (std::size_t target = 0; target < morph_positions.size(); ++target) {
                 auto& position_deltas = geometry.morph_positions.emplace_back(positions.count);
@@ -1333,21 +1259,13 @@ ${
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }${
-                    retainLocalNormals || meshClones
-                        ? `
-                geometry.source_indices_reversed = true;`
-                        : ""
                 }
+                geometry.source_indices_reversed = true;
             }
             if (!normals) {
                 geometry.flat_normals = true;
                 std::vector<ModelVertex> flat_vertices;
                 flat_vertices.reserve(geometry.indices.size());
-                std::vector<ModelVertex> flat_bind_vertices;
-                if (!geometry.bind_vertices.empty()) {
-                    flat_bind_vertices.reserve(geometry.indices.size());
-                }
                 std::vector<std::vector<Vec3>> flat_morph_positions(
                     geometry.morph_positions.size());
                 std::vector<std::vector<Vec3>> flat_morph_normals(
@@ -1355,10 +1273,6 @@ ${
                 for (const std::uint32_t index : geometry.indices) {
                     flat_vertices.push_back(
                         geometry.vertices.at(index));
-                    if (!geometry.bind_vertices.empty()) {
-                        flat_bind_vertices.push_back(
-                            geometry.bind_vertices.at(index));
-                    }
                     for (std::size_t target = 0; target < flat_morph_positions.size(); ++target) {
                         flat_morph_positions[target].push_back(
                             geometry.morph_positions[target].at(index));
@@ -1367,10 +1281,6 @@ ${
                     }
                 }
                 geometry.vertices = std::move(flat_vertices);
-                if (!geometry.bind_vertices.empty()) {
-                    geometry.bind_vertices =
-                        std::move(flat_bind_vertices);
-                }
                 geometry.morph_positions =
                     std::move(flat_morph_positions);
                 geometry.morph_normals =
@@ -1400,15 +1310,20 @@ ${
                         c.position.y - a.position.y,
                         c.position.z - a.position.z,
                     };
-                    const Vec3 face{
-                        edge2.y * edge1.z - edge2.z * edge1.y,
-                        edge2.z * edge1.x - edge2.x * edge1.z,
-                        edge2.x * edge1.y - edge2.y * edge1.x,
-                    };
                     // The pin's flat normal is the fragment stage's
-                    // normalize(cross(dpdx(worldPos), dpdy(worldPos)));
-                    // its CPU stand-in normalizes the face through the
-                    // same guarded shader normalize the vertex bake uses.
+                    // normalize(cross(dpdx(worldPos), dpdy(worldPos))),
+                    // the face normal of the WORLD triangle. Its CPU
+                    // stand-in is the local face normal, which the vertex
+                    // stage's normal matrix carries to the world: a
+                    // mirrored world reverses the cross product of its
+                    // edges but not that matrix, so the local face takes
+                    // the loaded world's handedness.
+                    const float handedness = mirrored_world ? -1.0f : 1.0f;
+                    const Vec3 face{
+                        handedness * (edge2.y * edge1.z - edge2.z * edge1.y),
+                        handedness * (edge2.z * edge1.x - edge2.x * edge1.z),
+                        handedness * (edge2.x * edge1.y - edge2.y * edge1.x),
+                    };
                     const Vec3 normal =
                         upstream::normalize_baked_direction(face);
                     a.normal = normal;
@@ -1419,18 +1334,8 @@ ${
             geometry.has_tangents = tangents != nullptr;
             geometry.has_uvs = true;
             geometry.has_vertex_colors = colors != nullptr;
-            // The same fork the position store above took: a static
-            // primitive carries its mirrored node world, an animated or
-            // instanced one carries the mirror alone and receives the
-            // node matrix per draw.
-            geometry.vertex_space = deformed_geometry || instanced
-                ? VertexSpace::mirrored_local
-                : VertexSpace::world;
-            if (deformed_geometry) {
-                geometry.bind_vertices = geometry.vertices;
-            }
+            // The pin's object-local \`boundMin\`/\`boundMax\`.
             const auto& local_bounds = setup_accessor("bounds", "VEC3", 2);
-            const auto& world_bounds = setup_accessor("worldBounds", "VEC3", 2);
             const auto read_bound = [&](const AccessorInfo& value, std::size_t index) {
                 return Vec3{
                     read_component(buffer, container, views, value, index, 0),
@@ -1438,24 +1343,9 @@ ${
                     read_component(buffer, container, views, value, index, 2),
                 };
             };
-            const Vec3 world_min = read_bound(world_bounds, 0);
-            const Vec3 world_max = read_bound(world_bounds, 1);
-            if (deformed_geometry) {
-                const Vec3 local_min = read_bound(local_bounds, 0);
-                const Vec3 local_max = read_bound(local_bounds, 1);
-                geometry.bounds_min = Vec3{-local_max.x, local_min.y, local_min.z};
-                geometry.bounds_max = Vec3{-local_min.x, local_max.y, local_max.z};
-            } else {
-                geometry.bounds_min = world_min;
-                geometry.bounds_max = world_max;
-            }
-${
-    animatedWorldBounds
-        ? `            geometry.world_bounds_min = world_min;
-            geometry.world_bounds_max = world_max;
-`
-        : ""
-}            const std::uint32_t geometry_slot =
+            geometry.bounds_min = read_bound(local_bounds, 0);
+            geometry.bounds_max = read_bound(local_bounds, 1);
+            const std::uint32_t geometry_slot =
                 store_geometry_record(engine, std::move(geometry));
             MeshRecord record;
             record.scene_node_name = string_or(node, "name");
@@ -1467,61 +1357,78 @@ ${
             record.geometry = geometry_slot;
             // load-gltf.ts sets boundMin/boundMax on every primitive.
             record.has_bounds = true;
-            // src/material/pbr/fragments/refraction-rtt-fragment.ts,
-            // makeRefractionMod/thicknessScaleLine: the refraction fragment scales its
-            // thickness lanes by \`ts = max(length(mesh.world[0].xyz),
-            // max(length(mesh.world[1].xyz), length(mesh.world[2].xyz)))\`,
-            // the mesh world's longest basis column. This loader bakes the
-            // node world into the vertices, so the draw's mesh.world carries
-            // no scale and the fragment's \`ts\` is one; the pinned product is
-            // kept by reading that column length off the baked node world
-            // here and scaling the material block per draw with it.
-            record.baked_world_scale = std::max({
-                std::sqrt(
-                    matrix[0] * matrix[0] +
-                    matrix[1] * matrix[1] +
-                    matrix[2] * matrix[2]),
-                std::sqrt(
-                    matrix[4] * matrix[4] +
-                    matrix[5] * matrix[5] +
-                    matrix[6] * matrix[6]),
-                std::sqrt(
-                    matrix[8] * matrix[8] +
-                    matrix[9] * matrix[9] +
-                    matrix[10] * matrix[10]),
-            });
             record.material = materials[material_index];
+            // The mirrored-mesh watcher XORs the live world's handedness
+            // against this baseline; the loaded world already carries the
+            // root mirror, so the baseline is the loaded winding with that
+            // handedness taken back out.
             record.authored_clockwise_front_face =
-                clockwise_front_face;
+                clockwise_front_face != mirrored_world;
             record.clockwise_front_face =
                 clockwise_front_face;
-            // The node matrix's handedness. Our vertices are stored in the
-            // native mirrored convention and the tangent sign is reconciled
-            // against it at load, where the pin keeps both unmirrored and puts
-            // the mirror in the mesh block's own world matrix. A PAL feeding
-            // the pin's composed stages has to undo one to supply the other,
-            // and the sign is only known here.
-            record.mirrored_x = determinant < 0.0;
             record.visible = required(setup, "visible").as_boolean();${
                 !nodeVisibility
                     ? `
             if (!record.visible) throw std::runtime_error("Prepared glTF visibility requires visibility support.");`
                     : ""
             }
-            record.instance_parent_matrix =
-                instance_parent_matrix;
+            // The pin's glTF mesh is an identity-TRS child of its node, so
+            // the node's world is the record's parent world.
+            record.parent_world = mesh_world;${
+                nodeTransforms
+                    ? `
+            // Scene code writes node transforms, so a static primitive's
+            // record stands for its node as well: the node's own TRS under
+            // its parent's world, which packaging read off the pin's node.
+            const auto* node_transform =
+                !deformed_geometry && instance_matrices.empty()
+                    ? optional(setup, "node")
+                    : nullptr;
+            if (node_transform) {
+                const auto& transform = node_transform->as_object();
+                const auto lanes = [&](const char* key, std::size_t count) {
+                    const auto& values = required(transform, key).as_array();
+                    if (values.size() != count) throw std::runtime_error("Invalid glTF node transform.");
+                    std::array<double, 4> result{};
+                    for (std::size_t lane = 0; lane < count; ++lane) result[lane] = values[lane].as_number();
+                    return result;
+                };
+                const auto translation = lanes("translation", 3);
+                const auto rotation = lanes("rotation", 4);
+                const auto scaling = lanes("scaling", 3);
+                record.position = Vec3d{translation[0], translation[1], translation[2]};
+                record.rotation_quaternion = Vec4{static_cast<float>(rotation[0]), static_cast<float>(rotation[1]),
+                    static_cast<float>(rotation[2]), static_cast<float>(rotation[3])};
+                record.has_rotation_quaternion = true;
+                record.scaling = Vec3{static_cast<float>(scaling[0]), static_cast<float>(scaling[1]),
+                    static_cast<float>(scaling[2])};
+                const auto& parent_world = accessors.at(unsigned_value(required(transform, "parentWorld")));
+                if (parent_world.type != "VEC4" || parent_world.component_type != 5126 || parent_world.count != 4)
+                    throw std::runtime_error("Invalid glTF node parent world storage.");
+                record.parent_world = read_matrix(parent_world, 0);
+            }`
+                    : ""
+            }
             record.instance_matrices =
                 std::move(instance_matrices);
             // Loader-built pools are static: the thin-instance flag routes
-            // the draw through the shared parent-world composition and the
-            // record count, while the version/source fields stay unused so
-            // the PAL never re-uploads them.
+            // the draw through the pin's instance arm and the record count,
+            // while the version/source fields stay unused so the PAL never
+            // re-uploads them.
             record.thin_instanced =
                 !record.instance_matrices.empty();
+            // The GPU-instancing feature's enableThinInstanceWorldBounds.
+            record.thin_instance_world_bounds = record.thin_instanced;
             record.instance_count = static_cast<std::uint32_t>(
                 record.instance_matrices.size());
             const MeshHandle mesh_handle =
                 store_mesh_record(engine, std::move(record));
+${
+    nodeTransforms
+        ? `            if (node_transform) node_transform_records.push_back({node_index, mesh_handle});
+`
+        : ""
+}
             if (deformed_geometry) {
                 const std::size_t skin_index =
                     planned_skin
@@ -1564,13 +1471,13 @@ ${
                     if (palette.type != "VEC4" || palette.component_type != 5126 || palette.count != bone_count * 4)
                         throw std::runtime_error("Invalid glTF initial bone palette storage.");
                     initial_joint_matrices.reserve(bone_count);
-                    // Source computeBoneTextureData already performed both
-                    // Float32 matrix products. Fold the source mesh world into
-                    // that local palette for native's identity-world skin draw.
+                    // Source computeBoneTextureData's palette,
+                    // \`invMeshWorld * jointWorld * IBM\`, which the vertex
+                    // stage composes under \`mesh.world\`.
                     for (std::size_t bone = 0; bone < bone_count; ++bone)
-                        initial_joint_matrices.push_back(upstream::matrix_product(mesh_world, read_matrix(palette, bone)));
+                        initial_joint_matrices.push_back(read_matrix(palette, bone));
                 }
-                publish_gltf_deformation(${recordAt("engine.meshes", "mesh_handle")}, engine.geometries.at(${recordAt("engine.meshes", "mesh_handle")}.geometry),
+                publish_gltf_deformation(${recordAt("engine.meshes", "mesh_handle")},
                     mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
@@ -1600,7 +1507,6 @@ ${
                         std::numeric_limits<std::size_t>::max(),
                         std::numeric_limits<std::size_t>::max(),
                         animated ? std::move(initial_joint_matrices) : std::vector<Matrix>{},
-                        mesh_world,
                     });
             }
             asset.meshes.push_back(mesh_handle);${
@@ -1618,9 +1524,9 @@ ${
                     : ""
             }
     }
-${
-    interactivity || animationPointer
-        ? `
+${nodeTransforms ? gltfNodeTransformLinksCpp() : ""}${
+        interactivity || animationPointer
+            ? `
         asset.node_children.resize(node_json.size());
         for (std::size_t index = 0; index < node_json.size(); ++index) {
             for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
@@ -1632,8 +1538,8 @@ ${
         asset.node_visible.reserve(visibility.size());
         for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
 `
-        : ""
-}
+            : ""
+    }
 ${
     animationPointer
         ? `    if(!source_animation.is_null()) {

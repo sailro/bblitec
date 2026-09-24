@@ -56,11 +56,16 @@ function fixture(instanced = false) {
     };
 }
 
-async function packageFixture(input = fixture(), context?: LoweringContext) {
+async function packageFixture(
+    input = fixture(),
+    context?: LoweringContext,
+    nodeTransforms = false,
+) {
     const binary = await packageGltfMeshPlan(
         input.document,
         input.bin,
         context,
+        { nodeTransforms },
     );
     const mesh = packagedGltfMeshPlan(input.document).meshes[0]!;
     return {
@@ -79,10 +84,6 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
     assert.deepEqual(
         result.attribute(result.mesh.setup.bounds),
         [0, 0, 0, 1, 1, 0],
-    );
-    assert.deepEqual(
-        result.attribute(result.mesh.setup.worldBounds),
-        [-10, 20, 30, -8, 23, 30],
     );
     assert.deepEqual(
         result.attribute(result.mesh.setup.world).slice(12, 15),
@@ -107,8 +108,37 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
         ),
     );
     assert.deepEqual(
-        detached.attribute(detached.mesh.setup.worldBounds),
-        [0, 0, 0, 1, 1, 0],
+        detached.attribute(detached.mesh.setup.world),
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    );
+});
+
+test("a scene writing node transforms packages each primitive's node TRS and parent world", async () => {
+    const input = fixture();
+    asRecords(input.document.nodes)[0]!.scale = [-2, 3, 1];
+    asRecords(input.document.nodes)[0]!.translation = [10, 20, 30];
+    assert.equal((await packageFixture(input)).mesh.setup.node, undefined);
+    const withNode = fixture();
+    asRecords(withNode.document.nodes)[0]!.scale = [-2, 3, 1];
+    asRecords(withNode.document.nodes)[0]!.translation = [10, 20, 30];
+    const result = await packageFixture(withNode, undefined, true);
+    const node = result.mesh.setup.node!;
+    assert.deepEqual(node.translation, [10, 20, 30]);
+    assert.deepEqual(node.rotation, [0, 0, 0, 1]);
+    assert.deepEqual(node.scaling, [-2, 3, 1]);
+    // The node is a scene root, so its parent is the synthetic RH-to-LH root,
+    // signed zeros as the pin's composition stores them.
+    assert.deepEqual(
+        result.attribute(node.parentWorld),
+        [-1, -0, -0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    );
+    const matrixNode = fixture();
+    asRecords(matrixNode.document.nodes)[0]!.matrix = [
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1,
+    ];
+    assert.equal(
+        (await packageFixture(matrixNode, undefined, true)).mesh.setup.node,
+        undefined,
     );
 });
 
@@ -125,18 +155,6 @@ test("source bounds calculations and constructors determine packaged boxes", asy
         changed.attribute(changed.mesh.setup.bounds),
         [0, 0, 0, 3, 1, 0],
     );
-    const expanded = await packageFixture(
-        fixture(),
-        doctoredContext(
-            "src/mesh/mesh-world-bounds.ts",
-            "transformedRadius += Math.abs(coefficient) * extent[column]!;",
-            "transformedRadius += Math.abs(coefficient) * extent[column]! * 2;",
-        ),
-    );
-    assert.deepEqual(
-        expanded.attribute(expanded.mesh.setup.worldBounds),
-        [-1.5, -0.5, 0, 0.5, 1.5, 0],
-    );
 });
 
 test("source instancing hook owns matrix data, placement bounds and activation", async () => {
@@ -145,10 +163,6 @@ test("source instancing hook owns matrix data, placement bounds and activation",
     assert.equal(
         original.attribute(original.mesh.setup.instances.matrices)[12],
         1,
-    );
-    assert.deepEqual(
-        original.attribute(original.mesh.setup.worldBounds),
-        [-14, 0, 0, -11, 3, 0],
     );
     const moved = await packageFixture(
         fixture(true),
@@ -159,10 +173,6 @@ test("source instancing hook owns matrix data, placement bounds and activation",
         ),
     );
     assert.equal(moved.attribute(moved.mesh.setup.instances!.matrices)[12], 6);
-    assert.deepEqual(
-        moved.attribute(moved.mesh.setup.worldBounds),
-        [-19, 0, 0, -16, 3, 0],
-    );
     const disabled = await packageFixture(
         fixture(true),
         doctoredContext(

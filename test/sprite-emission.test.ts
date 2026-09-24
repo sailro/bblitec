@@ -46,7 +46,6 @@ function options(pure: boolean): UpstreamEmitOptions {
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,

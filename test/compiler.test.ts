@@ -12903,7 +12903,7 @@ test("lowers setParent for mesh attachment and detachment", () => {
     );
 });
 
-test("keeps setParent descendants local after parent-only runtime motion", () => {
+test("parent-only runtime motion dirties the setParent subtree", () => {
     const result = compileSource(`
         import {
             createEngine,
@@ -12926,7 +12926,7 @@ test("keeps setParent descendants local after parent-only runtime motion", () =>
 
     assert.match(
         result.cpp,
-        /\.meshes, v_parent\)\.position\.x \+= 1\.0;\s*bbl::mark_mesh_runtime_transform\([^,]+, v_parent\);/,
+        /\.meshes, v_parent\)\.position\.x \+= 1\.0;\s*bbl::mark_mesh_dirty\([^,]+, v_parent\);/,
     );
     assert.doesNotMatch(
         result.cpp,

@@ -1612,6 +1612,16 @@ struct ShadowLightMatrix {
  * PAL's, so the PAL fills this carrier and the fold stays the pin's.
  */
 struct ShadowCaster {
+    /**
+     * The caster's \`mesh.worldMatrix\`, which the fold multiplies each AABB
+     * corner through: \`mesh_world_matrix_f64\`, kept at the composition's
+     * own DOUBLE width, unlike the narrowed world every GPU consumer takes.
+     * The fit's first act is to subtract the eye from cell 12, and
+     * \`MeshRecord::position\` is a \`Vec3d\` precisely so that large-minus-
+     * large happens at full width; narrowing first would round the large
+     * coordinate, which at five million units is half a unit of
+     * shadow-volume placement.
+     */
     std::array<double, 16> world{};
     /**
      * One active thin-instance matrix for the CSM caster fold. The pin
@@ -1625,42 +1635,6 @@ struct ShadowCaster {
     std::array<float, 3> bounds_min{};
     std::array<float, 3> bounds_max{};
 };
-
-/**
- * One caster's \`mesh.worldMatrix\`, composed by the pin's own writer.
- *
- * \`computeDirectionalLightMatrix\` multiplies each caster's AABB corners
- * through it. An unparented mesh keeps the double-width local composition;
- * a parented one reads the shared scene-graph composition, because the pin's
- * world matrix includes every mesh/transform-node ancestor.
- *
- * Kept at the composition's own DOUBLE width, unlike the narrowed world every
- * GPU consumer takes: the fit's first act is to subtract the eye from cell
- * 12, and \`MeshRecord::position\` is a \`Vec3d\` precisely so that
- * large-minus-large happens at full width. Narrowing here and widening back
- * inside the fold would round the large coordinate first, which at five
- * million units is half a unit of shadow-volume placement.
- */
-inline std::array<double, 16> shadow_caster_local(
-    const MeshRecord& mesh) {
-    return trs_local_matrix(mesh);
-}
-
-inline std::array<double, 16> shadow_caster_world(
-    const Engine& engine,
-    const MeshRecord& mesh) {
-    std::array<double, 16> local{};
-    if (
-        mesh.parent.value < engine.meshes.size() ||
-        mesh.transform_parent.value < engine.transform_nodes.size()) {
-        const std::array<float, 16> parented =
-            mesh_world_matrix(engine, mesh);
-        std::copy(parented.begin(), parented.end(), local.begin());
-    } else {
-        local = shadow_caster_local(mesh);
-    }
-    return apply_mesh_outer_transform(mesh, local);
-}
 
 /** The pin's own \`mesh.boundMin ?? [...]\` fallback, for a caster with none. */
 inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_min{

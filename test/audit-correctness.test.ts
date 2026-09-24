@@ -537,12 +537,11 @@ test(
             struct Item { MeshHandle mesh; };
             struct RenderPlan { std::vector<Item> items; };
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
+            std::array<float,16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {}; }
         }
         namespace bbl::pal {
             ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
             ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
-            std::array<float,16> shader_draw_world(const Engine&, const MeshRecord&) { return {}; }
-            std::array<float,16> instance_parent_draw_world(const MeshRecord&, const Scene&, const Engine&) { return {}; }
             template<class HasGeometry>
             ${cppFunction(source, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
         }

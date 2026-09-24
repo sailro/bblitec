@@ -9,7 +9,7 @@
 
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
-void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
+void mark_mesh_dirty(Engine&, MeshHandle) {}
 } // namespace bbl
 
 int main() {

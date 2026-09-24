@@ -4027,13 +4027,6 @@ class Compiler implements LoweringServices {
     private readonly staticCallbackEvaluationIdentities: object[] =
         emissionArray([]);
 
-    public meshTransformDirtyEntry():
-        "mark_mesh_dirty" | "mark_mesh_runtime_transform" {
-        return this.frameCallbackDepth > 0
-            ? "mark_mesh_runtime_transform"
-            : "mark_mesh_dirty";
-    }
-
     /**
      * An inline callback, as the lambda the caller's entry point takes.
      *

@@ -92,7 +92,6 @@ test("node-only variant data owns its light declarations in an isolated translat
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,

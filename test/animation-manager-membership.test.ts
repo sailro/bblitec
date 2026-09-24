@@ -88,7 +88,7 @@ test("native manager keeps registered group identities during callback growth an
 #include <fstream>
 #include <functional>
 using Json=nlohmann::json;
-namespace bbl {void mark_mesh_runtime_transform(Engine&,MeshHandle){}}
+namespace bbl {void mark_mesh_dirty(Engine&,MeshHandle){}}
 int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.json")>>expected;Json actual=Json::array();
     for(bool blending:{false,true}){
         auto manager=create_animation_manager(engine);Json events=Json::array();bool added=false;

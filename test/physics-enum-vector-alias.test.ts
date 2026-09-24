@@ -26,7 +26,7 @@ function runProgram(name: string, source: string): string {
         `#include <bblite/runtime.hpp>
         namespace bbl {
         void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
-            engine.meshes.at(mesh.value).gpu_world_transform = true;
+            ++engine.meshes.at(mesh.value).transform_version;
         }
         }`,
     );
@@ -140,7 +140,7 @@ test("exact scene106 lowers enum array sinks and its physics-step vector alias",
     const { cpp } = compileSource(source, { fileName });
     assert.match(cpp, /static_cast<bbl::upstream::PhysicsMotionType>\(/);
     assert.match(cpp, /static_cast<bbl::upstream::PhysicsPrestepType>\(/);
-    assert.match(cpp, /mark_mesh_runtime_transform\([^;]*vector_owner/);
+    assert.match(cpp, /mark_mesh_dirty\([^;]*vector_owner/);
     assert.throws(
         () =>
             compileSource(source.replace("motions[motion]!", "Math.random()"), {
