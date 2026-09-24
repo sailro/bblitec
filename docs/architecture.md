@@ -50,10 +50,11 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. Pinned modules over plain records (text data) use `PinnedRecordModel`: a checked
-program over the pinned sources types every value, structs are emitted from the pinned declarations, and
-`pinned-record-transport.ts` rebuilds records the pin built at generation. WGSL uses typed IR or explicit
-reflected-source contracts.
+use `lowerPinnedBody`. Pinned modules over plain records (text data, the text GPU writers, renderer and
+alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over the pinned sources types
+every value, structs are emitted from the pinned declarations, and `pinned-record-transport.ts` rebuilds
+records the pin built at generation. The pin's WebGPU calls lower one to one onto the device interface in
+`text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
 listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have

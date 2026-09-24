@@ -751,7 +751,7 @@ struct BoundingBoxGizmoHandle {
 struct SceneState;
 struct TextRenderableState;
 struct TextLayerState;
-struct TextRendererState;
+struct TextSurface;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
@@ -4169,7 +4169,9 @@ struct Engine {
 #if BBLITE_HAS_SPRITES
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
 #endif
-    std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
+    // The text half keeps the pin's own list on the text surface the
+    // generated code registers into (`bbl::text_surface`).
+    std::shared_ptr<TextSurface> text_surface;
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;

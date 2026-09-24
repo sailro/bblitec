@@ -3,44 +3,35 @@
 #include <bblite/upstream_text_renderer.hpp>
 
 namespace bbl::pal {
-struct SdlStandaloneTextOps : SdlTextResourceOps {
-    SdlTextRenderer& renderer;
-    SDL_GPUTextureFormat format;
-    SDL_GPUTexture* target = nullptr;
-    SdlRenderPass owned_pass;
-    SdlStandaloneTextOps(SdlTextRenderer& renderer, SDL_GPUTextureFormat format)
-        : SdlTextResourceOps(renderer.owner), renderer(renderer), format(format) {
-        renderer.ensure_quad();
-        sampler = renderer.sampler;
-    }
-    TextPipelineBinding resolve_text_renderer_pipeline() {
-        auto binding = renderer.pipeline(text_pipeline_info(1, false, false, false), format,
-                                         SDL_GPU_TEXTUREFORMAT_INVALID);
-        if (text_weight_installed)
-            binding.variant_pipeline =
-                renderer
-                    .pipeline(text_pipeline_info(1, false, false, false, true), format,
-                              SDL_GPU_TEXTUREFORMAT_INVALID)
-                    .pipeline;
-        return binding;
-    }
-    std::shared_ptr<void> text_renderer_quad() { return renderer.quad; }
-    void begin_text_renderer_pass(const TextRendererState& state) {
-        SDL_GPUColorTargetInfo attachment{};
-        attachment.texture = target;
-        attachment.clear_color = gpu_clear_color(
-            owner->device, format,
-            {state.clear_value.r, state.clear_value.g, state.clear_value.b, state.clear_value.a});
-        attachment.load_op = state.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-        attachment.store_op = SDL_GPU_STOREOP_STORE;
-        owned_pass = SDL_BeginGPURenderPass(command, &attachment, 1, nullptr);
-        pass = owned_pass.get();
-        if (!pass)
-            gpu_error("SDL_BeginGPURenderPass text");
-    }
-    void end_text_renderer_pass() {
-        owned_pass.end();
-        pass = nullptr;
-    }
-};
+
+/** Point the engine surface at this frame's SDL device, size and format, then
+ *  run the pin's update for every registered text renderer. */
+inline void update_sdl_text_renderers(Engine& engine, SdlTextRenderer& text, double width,
+                                      double height) {
+    const auto& surface = bbl::text_surface(engine);
+    surface->device = text.device;
+    surface->canvas = {width, height};
+    surface->format = sdl_text_format_name(text.device->color_format);
+    const auto renderers = surface->rendering_contexts;
+    for (std::size_t index = 0; index < renderers.size(); ++index)
+        text_renderer_detail::text_renderer_update(renderers[index]);
+}
+
+/** Record every registered text renderer's pass into `target`. */
+inline void record_sdl_text_renderers(Engine& engine, SdlTextRenderer& text,
+                                      SDL_GPUCommandBuffer* command, SDL_GPUTexture* target) {
+    const auto& surface = bbl::text_surface(engine);
+    auto view = std::make_shared<SdlTextGpuView>();
+    view->target = target;
+    surface->sc_rt.color_view = std::move(view);
+    surface->current_encoder = text.command_encoder(command);
+    const auto clear = js::finally([&] {
+        surface->current_encoder.reset();
+        surface->sc_rt.color_view.reset();
+    });
+    const auto renderers = surface->rendering_contexts;
+    for (std::size_t index = 0; index < renderers.size(); ++index)
+        static_cast<void>(text_renderer_detail::text_renderer_record(renderers[index]));
+}
+
 } // namespace bbl::pal

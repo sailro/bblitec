@@ -78,9 +78,6 @@ class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
     bool canvas_only = false, capture_ui = false;
-#if BBLITE_HAS_TEXT_RENDERER
-    std::optional<SdlStandaloneTextOps> text_operations;
-#endif
 #if BBLITE_HAS_SPRITE_RENDERER
     void sync_render_textures() {
         render_textures.resize(engine.sprite_render_textures.size(), nullptr);
@@ -168,8 +165,7 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "SDL_GPU sprites", true, false);
-        canvas_only =
-            !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
+        canvas_only = !bbl::has_sprite_renderers(engine) && !bbl::has_text_renderers(engine);
         if (canvas_only
 #if BBLITE_HAS_UI
             && engine.primary_canvas.value >= engine.ui_elements.size()
@@ -185,6 +181,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer =
             std::make_unique<SdlTextRenderer>(device, !frame_options.render_capture_path.empty());
+        text_renderer->device->color_format = swapchain_format;
 #endif
         // One batch for the run: its transfer buffer persists across
         // frames, so a per-frame sprite mutation stages its dirty span
@@ -216,11 +213,6 @@ public:
         });
 #else
         RendererRun::poll_events();
-#endif
-    }
-    void discard_frame() {
-#if BBLITE_HAS_TEXT_RENDERER
-        text_operations.reset();
 #endif
     }
     FramePreparation update() {
@@ -288,10 +280,9 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         // Text contexts update right after layout and before the sprite
         // contexts, the one slot both hosts give them.
-        text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        auto& text_ops = text_operations.emplace(*text_renderer, swapchain_format);
-        for (const auto& renderer : engine.registered_text_renderers)
-            update_text_renderer(*renderer, surface_width, surface_height, device, text_ops);
+        text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        update_sdl_text_renderers(engine, *text_renderer, static_cast<double>(surface_width),
+                                  static_cast<double>(surface_height));
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -324,9 +315,6 @@ public:
             readable_surface.target(device, swapchain, swapchain_format, width, height,
                                     !ui_frame.backdrops.empty() && !(capture_frame && capture_ui));
 #endif
-#if BBLITE_HAS_TEXT_RENDERER
-        auto& text_ops = *text_operations;
-#endif
         if (canvas_only) {
             SDL_GPUColorTargetInfo target{};
             target.texture = capture_run ? color : swapchain;
@@ -336,13 +324,7 @@ public:
             pass.end();
         }
 #if BBLITE_HAS_TEXT_RENDERER
-        text_ops.command = command;
-        text_ops.target = capture_run ? color : swapchain;
-        {
-            const auto end_text_pass = js::finally([&] { text_ops.owned_pass.end(); });
-            for (const auto& renderer : engine.registered_text_renderers)
-                record_text_renderer(*renderer, text_ops);
-        }
+        record_sdl_text_renderers(engine, *text_renderer, command, capture_run ? color : swapchain);
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
         for (std::size_t first_index = 0; first_index < passes.size();) {
@@ -382,7 +364,7 @@ public:
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame
 #if BBLITE_HAS_TEXT_RENDERER
                                                        ,
-                                                       &text_renderer->owner->capture
+                                                       &text_renderer->device->owner->capture
 #endif
         );
 

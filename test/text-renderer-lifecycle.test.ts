@@ -10,6 +10,7 @@ import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
+import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -63,6 +64,10 @@ test("standalone text source and native agree on affine uploads, layer order, sh
                 "createAtlasTexture",
                 "uploadAll",
                 "ensureSharedAtlasGpu",
+            ]),
+            module("src/resource/buffer-alignment.ts", ["align"]),
+            module("src/resource/empty-uniform-buffer.ts", [
+                "createEmptyUniformBuffer",
             ]),
             module("src/text/text-renderer.ts", [
                 "createTextLayer",
@@ -133,14 +138,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
     let bundles = 0;
     const device = {
         createBuffer: ({ label, size }: { label: string; size: number }) =>
-            resource(
-                label === "text-layer-ubo"
-                    ? "text-renderable-ubo"
-                    : label === "text-layer-instances"
-                      ? "text-instance"
-                      : label,
-                size,
-            ),
+            resource(label, size),
         createTexture: ({
             label,
             size,
@@ -238,13 +236,13 @@ test("standalone text source and native agree on affine uploads, layer order, sh
     const instantiate = createJavaScriptFunction(
         "GPUBufferUsage",
         "GPUTextureUsage",
+        "BU",
         "TEXT_INSTANCE_BYTES",
         "TEXT_STYLE_BYTES",
         "TEXT_UBO_BYTES",
         "GLYPH_METADATA_BYTES",
         "TEX_WIDTH",
         "BYTES_PER_ROW",
-        "createEmptyUniformBuffer",
         "getOrCreateTextPipeline",
         "getTextPipelineCache",
         "KIND",
@@ -284,16 +282,15 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         createTextRenderer(surface: unknown, options: unknown): Renderer;
     }
     const api = instantiate(
-        { STORAGE: 1, COPY_DST: 2, VERTEX: 4 },
-        { TEXTURE_BINDING: 1, COPY_DST: 2, COPY_SRC: 4 },
+        webgpuFlagNamespaces.GPUBufferUsage,
+        webgpuFlagNamespaces.GPUTextureUsage,
+        webgpuFlagNamespaces.GPUBufferUsage,
         constants("src/text/text-data.ts", "TEXT_INSTANCE_BYTES"),
         constants("src/text/text-data.ts", "TEXT_STYLE_BYTES"),
         constants("src/text/text-renderer.ts", "TEXT_UBO_BYTES"),
         constants("src/text/glyph-storage.ts", "GLYPH_METADATA_FLOATS") * 4,
         constants("src/text/_gpu/text-textures.ts", "TEX_WIDTH"),
         constants("src/text/_gpu/text-textures.ts", "BYTES_PER_ROW"),
-        (e: typeof engine, size: number, label: string) =>
-            e._device.createBuffer({ label, size }),
         (...args: unknown[]) => {
             assert.deepEqual(args, [engine, "bgra8unorm", 1, null, false]);
             return pipelines;
@@ -401,14 +398,17 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         },
     );
     assert.equal(bundles, 2, "uniform edits preserve bundles");
-    act("width=960;height=600;a->opacity=.5;update();draw();record();", () => {
-        canvas.width = 960;
-        canvas.height = 600;
-        a.opacity = 0.5;
-        update();
-        draw();
-        record();
-    });
+    act(
+        "surface->canvas={960,600};a->opacity=.5;update();draw();record();",
+        () => {
+            canvas.width = 960;
+            canvas.height = 600;
+            a.opacity = 0.5;
+            update();
+            draw();
+            record();
+        },
+    );
     act(
         "a->visible=false;data->version=2;data->dirty_start=1;data->dirty_end=2;update();draw();record();",
         () => {
@@ -454,12 +454,15 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         },
     );
     assert.equal(bundles, 6);
-    act("ops.pipelines.pipeline=named(1005);update();draw();record();", () => {
-        pipelines._pipeline = { id: 1005 };
-        update();
-        draw();
-        record();
-    });
+    act(
+        "device->pipelines.pipeline=named(1005);update();draw();record();",
+        () => {
+            pipelines._pipeline = { id: 1005 };
+            update();
+            draw();
+            record();
+        },
+    );
     assert.equal(bundles, 8);
     act("data->groups.pop_back();update();draw();record();", () => {
         data._groups.pop();
@@ -474,7 +477,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         draw();
         record();
     });
-    act("rr.disposed=true;update();draw();", () => {
+    act("rr->disposed=true;update();draw();", () => {
         rr._disposed = true;
         update();
         draw();

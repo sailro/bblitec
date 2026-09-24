@@ -6703,9 +6703,6 @@ class SdlSceneRun {
         std::vector<upstream::RenderDrawLists> task_draw_lists;
         std::uint64_t synced_render_topology_version = 0, synced_draw_list_epoch = 0;
         std::uint32_t synced_material_family_mask = 0;
-#if BBLITE_HAS_TEXT
-        std::optional<SdlTextResourceOps> text_ops;
-#endif
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
@@ -6817,7 +6814,7 @@ class SdlSceneRun {
                                  static_cast<int>(height), frame
 #if BBLITE_HAS_TEXT
                                  ,
-                                 &state.text->owner->capture
+                                 &state.text->device->owner->capture
 #elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
                                  ,
                                  nullptr
@@ -7604,21 +7601,22 @@ public:
 #if BBLITE_HAS_TEXT
         state.text = std::make_unique<SdlTextRenderer>(
             state.device, !environment_variable("BBLITE_RENDER_CAPTURE").empty());
-        auto& text_ops = data_.text_ops.emplace(state.text->owner);
+        state.text->device->color_format = swapchain_format;
+        state.text->device->depth_format = state.depth_format;
         const std::string text_color_format =
             swapchain_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ? "bgra8unorm"
             : swapchain_format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
                 ? "rgba8unorm"
                 : throw std::runtime_error("Unrepresented default text color target.");
+        const auto& text_surface = bbl::text_surface(engine);
+        text_surface->device = state.text->device;
         state.text->scene.bind(
-            scene, state.text->owner.get(),
-            TextTargetSignature{text_color_format, gpu_sample_count_value(state.sample_count),
-                                "depth24plus-stencil8"},
-            [&](const upstream::TextPipelineInfo& info) {
-                return state.text->pipeline(info, swapchain_format, state.depth_format);
-            },
-            text_ops);
-        text_ops.sampler = state.text->sampler;
+            scene, text_surface,
+            TextTargetSignature{
+                .color_format = text_color_format,
+                .depth_format = "depth24plus-stencil8",
+                .depth_compare = std::nullopt,
+                .sample_count = static_cast<double>(gpu_sample_count_value(state.sample_count))});
 #endif
 
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
@@ -7855,9 +7853,6 @@ public:
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
         [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
         [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
-#if BBLITE_HAS_TEXT
-        [[maybe_unused]] auto& text_ops = *data_.text_ops;
-#endif
 #if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
         [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
 #endif
@@ -8264,14 +8259,15 @@ public:
         frame_pass_matrices = frame_camera.pass();
 #if BBLITE_HAS_TEXT
         validate_text_scene(scene);
-        state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        state.text->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         const std::optional<TextCameraInput> text_camera =
             camera ? std::optional<TextCameraInput>{TextCameraInput{
-                         matrix, upstream::scene_camera_change_key(*camera), aspect}}
+                         js::TypedArray<float>(matrix.begin(), matrix.end()),
+                         upstream::scene_camera_change_key(*camera), aspect}}
                    : std::nullopt;
-        state.text->scene.update(text_camera ? &*text_camera : nullptr,
+        state.text->scene.update(bbl::text_surface(engine), text_camera ? &*text_camera : nullptr,
                                  static_cast<double>(surface_extent.width),
-                                 static_cast<double>(surface_extent.height), text_ops);
+                                 static_cast<double>(surface_extent.height));
 #endif
 #if BBLITE_HAS_BILLBOARDS
         // The sorted order depends on the camera alone, so the upload
@@ -8341,9 +8337,6 @@ public:
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
         CameraRecord* const camera = active_camera();
-#if BBLITE_HAS_TEXT
-        [[maybe_unused]] auto& text_ops = *data_.text_ops;
-#endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
@@ -10210,9 +10203,7 @@ public:
                 case upstream::RenderStage::transparent:
                     draw_render_list(render_plan.draw_lists.transparent);
 #if BBLITE_HAS_TEXT
-                    text_ops.command = command;
-                    text_ops.pass = pass;
-                    state.text->scene.draw(text_ops);
+                    state.text->scene.draw(state.text->borrow_pass(command, pass));
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
                     if (has_scene_sprite_pass) {
