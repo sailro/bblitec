@@ -304,6 +304,9 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
+| opacity-alpha-write | <img src="images/scenes/regression-opacity-alpha-write.png" alt="Opacity alpha write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Opacity Alpha Write |
+| blend-alpha-write | <img src="images/scenes/regression-blend-alpha-write.png" alt="Blend alpha write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Blend Alpha Write |
+| no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | No Camera Floating Origin |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Track Clamp |
 | shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Frame Graph |

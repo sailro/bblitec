@@ -936,6 +936,65 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-opacity-alpha-write",
+        name: "Regression - Opacity Alpha Write",
+        source: "examples/regression-opacity-alpha-write.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Opacity Alpha Write",
+        buildDirectory: "native/build-regression-opacity-alpha-write-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-opacity-alpha-write/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-opacity-alpha-write",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-blend-alpha-write",
+        name: "Regression - Blend Alpha Write",
+        source: "examples/regression-blend-alpha-write.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Blend Alpha Write",
+        buildDirectory: "native/build-regression-blend-alpha-write-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-blend-alpha-write/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-blend-alpha-write",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-no-camera-floating-origin",
+        name: "Regression - No Camera Floating Origin",
+        source: "examples/regression-no-camera-floating-origin.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - No Camera Floating Origin",
+        buildDirectory:
+            "native/build-regression-no-camera-floating-origin-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-no-camera-floating-origin/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-no-camera-floating-origin",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-compiler-state",
         name: "Regression - Compiler State",
         source: "examples/regression-compiler-state.ts",
