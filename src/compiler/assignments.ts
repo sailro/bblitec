@@ -2636,12 +2636,14 @@ function emitTargetPropertyAssignment(
                     )) ||
                 (ts.isIdentifier(expression.right) &&
                     context.lookupOptional(expression.right)?.kind === "tuple");
-            if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
+            // A `{ r, g, b }` object falls through to `compileColor3`,
+            // which refuses it: the pin's `diffuseColor` is a number tuple.
+            if (legacyTuple) {
                 context.noteMaterialColorObjectWrite(
                     expression.right,
                     "diffuseColor",
                 );
-            } else {
+            } else if (!ts.isObjectLiteralExpression(shape)) {
                 // A named or returned array can also be mutated through its other
                 // owner. A fresh literal has no external alias until a getter is read.
                 if (
@@ -2727,8 +2729,8 @@ function emitTargetPropertyAssignment(
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
-            // This legacy object adapter has no numeric-array identity. Its
-            // render field must not be replaced later by the factory's array.
+            // This tuple adapter has no numeric-array identity. Its render
+            // field must not be replaced later by the factory's array.
             context.emit(`${record}.source_diffuse_color.reset();`);
         }
         return true;

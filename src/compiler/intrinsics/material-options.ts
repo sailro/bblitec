@@ -78,7 +78,6 @@ export interface MaterialOptionContext
             | "recordSceneMaterialSlot"
             | "compileValue"
             | "compileForDataSink"
-            | "noteMaterialColorObjectWrite"
             | "noteMaterialColorRead"
             | "expectKind"
             | "expectObjectLiteral"
@@ -198,26 +197,13 @@ export interface CompiledSubsurfaceOptions {
     manifest: ScenePbrSubsurfaceManifest;
 }
 
-/** A static RGB tuple in either source shape `compileColor3` accepts. */
+/** A static RGB tuple in the source shape `compileColor3` accepts. */
 export function staticColor3Value(
-    context: PositiveIntegerContext & {
-        objectProperty(
-            object: ts.ObjectLiteralExpression,
-            name: string,
-        ): ts.Expression | undefined;
-    },
+    context: PositiveIntegerContext,
     expression: ts.Expression,
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
-    let channelValues: readonly (ts.Expression | undefined)[] | undefined;
-    if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
-        channelValues = node.elements;
-    } else if (ts.isObjectLiteralExpression(node)) {
-        channelValues = ["r", "g", "b"].map((name) =>
-            context.objectProperty(node, name),
-        );
-    }
-    if (!channelValues || channelValues.some((value) => value === undefined)) {
+    if (!ts.isArrayLiteralExpression(node) || node.elements.length !== 3) {
         // Syntactic resolution follows `??`, module constants and const
         // literal initializers, and stops at a binding that has none of
         // those -- an inlined user function's parameter. The emitted half
@@ -242,8 +228,8 @@ export function staticColor3Value(
         // 20's emissive channels are runtime randoms and still refuse.
         return staticTupleChannels(context, node);
     }
-    const [r, g, b] = channelValues.map((value) =>
-        staticNumberValue(context, value!),
+    const [r, g, b] = node.elements.map((value) =>
+        staticNumberValue(context, value),
     );
     return r === undefined || g === undefined || b === undefined
         ? undefined
@@ -282,11 +268,14 @@ export function requiredStaticColor3(
     expression: ts.Expression,
     message: string,
 ): { cpp: string; channels: readonly [number, number, number] } {
+    // Compiled first, so a `{ r, g, b }` object meets the colour compiler's
+    // own refusal rather than this setter's static-channel message.
+    const cpp = context.compileColor3(expression);
     const channels = staticColor3Value(context, expression);
     if (!channels || channels.some((channel) => !Number.isFinite(channel))) {
         context.fail(expression, message);
     }
-    return { cpp: context.compileColor3(expression), channels };
+    return { cpp, channels };
 }
 
 function requiredStaticFiniteNumber(
@@ -721,8 +710,8 @@ export function compilePbrMaterialOptions(
 /**
  * The array's presence selects a UBO field; its contents remain runtime
  * numbers. Retain its storage and preserve static metadata when available.
- * Legacy color objects keep their existing renderer adapter, with numeric
- * array reads fenced because that adapter does not retain the object shape.
+ * The pin types the option as a number tuple, so a `{ r, g, b, a }` object
+ * refuses rather than lowering to a colour the browser would never read.
  */
 function compilePbrBaseColorFactor(
     context: MaterialOptionContext,
@@ -777,17 +766,10 @@ function compilePbrBaseColorFactor(
             );
         channels = resolved.elements;
     } else if (ts.isObjectLiteralExpression(resolved)) {
-        context.noteMaterialColorObjectWrite(expression, "baseColorFactor");
-        channels = ["r", "g", "b", "a"].map((name) => {
-            const channel = context.objectProperty(resolved, name);
-            if (!channel) {
-                context.fail(
-                    resolved,
-                    `PBR baseColorFactor requires a '${name}' channel.`,
-                );
-            }
-            return channel;
-        });
+        context.fail(
+            expression,
+            "PBR baseColorFactor is the pin's [r, g, b, a] number tuple; a { r, g, b, a } object is not the pinned API.",
+        );
     }
     if (!channels) {
         return {
@@ -804,11 +786,6 @@ function compilePbrBaseColorFactor(
                 channel === undefined || !Number.isFinite(channel),
         )
     ) {
-        if (ts.isObjectLiteralExpression(resolved))
-            context.fail(
-                expression,
-                "Legacy PBR color objects require finite static channels.",
-            );
         return {
             cpp: "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
             storageCpp: retainedStorage(),
@@ -817,9 +794,7 @@ function compilePbrBaseColorFactor(
     const tuple = value as [number, number, number, number];
     return {
         cpp: context.compileColor4(expression),
-        storageCpp: ts.isArrayLiteralExpression(resolved)
-            ? retainedStorage()
-            : "{}",
+        storageCpp: retainedStorage(),
         value: tuple,
     };
 }

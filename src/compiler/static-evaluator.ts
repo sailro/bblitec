@@ -304,18 +304,14 @@ export class StaticEvaluator {
                 .map((element) => this.compileNumber(element))
                 .join(", ")}}`;
         }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Color3{${this.requiredObjectNumber(
-                unwrapped,
-                "r",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "g",
-            )}, ${this.requiredObjectNumber(unwrapped, "b")}}`;
-        }
+        // Every RGB option and field of the pin is a number tuple (its
+        // `Color3` object type is flow-graph data only), so an object is a
+        // colour the browser would read as undefined channels.
         this.fail(
             unwrapped,
-            "Expected a Color3 array [r, g, b] or object { r, g, b }.",
+            ts.isObjectLiteralExpression(unwrapped)
+                ? "Babylon Lite RGB colours are [r, g, b] number tuples; a { r, g, b } object is not the pinned API."
+                : "Expected a Color3 array [r, g, b].",
         );
     }
 
