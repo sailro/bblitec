@@ -80,7 +80,9 @@ import {
 } from "./compiler/worker-modules.js";
 import { compileDomInstanceOf } from "./compiler/dom-targets.js";
 import {
+    compileClassInstanceOf,
     conditionComparison,
+    foldBooleanComparison,
     foldSettledComparison,
 } from "./compiler/comparisons.js";
 import {
@@ -1850,23 +1852,6 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * `entry(...).catch(<reporter>)`, which is how a scene whose entry is an
-     * imported async helper ends.
-     *
-     * The `main` form above erases the same wrapper by never treating it as
-     * entry text: the body becomes the program and the trailing
-     * `main().catch(console.error)` goes with the declaration. A scene with
-     * no `main` has no body to take, so the chain IS the program -- and the
-     * `.catch` on it is the browser's unhandled-rejection reporting, which a
-     * native program does by aborting. Both forms therefore record the same
-     * adaptation.
-     *
-     * This is an entry-point rule, so it is applied to entry text once per
-     * compile rather than to every `.catch` a program contains: mid-scene,
-     * a rejection handler is a recovery path and lowering it away would be
-     * a silent change of meaning.
-     */
-    /**
      * Whether a callback only reports: its body observes or mutates browser
      * state and nothing else.
      *
@@ -1879,60 +1864,6 @@ class Compiler implements LoweringServices {
      * and document so an unresolved guard stays a refusal rather than
      * swallowing a nested call. Reporting is exactly what those globals do.
      */
-    /**
-     * `<boolean> === <boolean>` where both sides settle at generation.
-     *
-     * Returns the answer as `"true"`/`"false"`, or nothing where either side
-     * is a run-time value -- in which case the comparison arms below emit
-     * one, exactly as they did before.
-     */
-    private foldBooleanComparison(
-        expression: ts.BinaryExpression,
-    ): string | undefined {
-        const equals =
-            expression.operatorToken.kind ===
-            ts.SyntaxKind.EqualsEqualsEqualsToken;
-        if (
-            !equals &&
-            expression.operatorToken.kind !==
-                ts.SyntaxKind.ExclamationEqualsEqualsToken
-        ) {
-            return undefined;
-        }
-        const booleanLike = (side: ts.Expression): boolean =>
-            (this.checker.getNonNullableType(
-                this.checker.getTypeAtLocation(side),
-            ).flags &
-                ts.TypeFlags.BooleanLike) !==
-            0;
-        if (!booleanLike(expression.left) || !booleanLike(expression.right))
-            return undefined;
-        const settled = (side: ts.Expression): string | undefined => {
-            const resolved = this.evaluator.resolveStaticExpression(side);
-            if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
-            if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
-            const value = ts.isIdentifier(resolved)
-                ? this.lookupOptional(resolved)
-                : ts.isPropertyAccessExpression(resolved)
-                  ? this.compilePropertyAccess(resolved)
-                  : undefined;
-            if (value?.kind === "json-null") return "nullish";
-            return value?.kind === "boolean" &&
-                (value.cpp === "true" || value.cpp === "false")
-                ? value.cpp
-                : undefined;
-        };
-        return this.probeEmission(() => {
-            const left = settled(expression.left);
-            const right = settled(expression.right);
-            if (left === undefined || right === undefined) return undefined;
-            // Nullable booleans can still distinguish null from undefined;
-            // only their inequality with a concrete boolean is established.
-            if (left === "nullish" && right === "nullish") return undefined;
-            return String((left === right) === equals);
-        });
-    }
-
     public isBrowserOnlyHandler(handler: ts.Expression): boolean {
         const body =
             ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
@@ -1951,6 +1882,23 @@ class Compiler implements LoweringServices {
         return this.isBrowserOnlyExpression(body ?? handler);
     }
 
+    /**
+     * `entry(...).catch(<reporter>)`, which is how a scene whose entry is an
+     * imported async helper ends.
+     *
+     * The `main` form above erases the same wrapper by never treating it as
+     * entry text: the body becomes the program and the trailing
+     * `main().catch(console.error)` goes with the declaration. A scene with
+     * no `main` has no body to take, so the chain IS the program -- and the
+     * `.catch` on it is the browser's unhandled-rejection reporting, which a
+     * native program does by aborting. Both forms therefore record the same
+     * adaptation.
+     *
+     * This is an entry-point rule, so it is applied to entry text once per
+     * compile rather than to every `.catch` a program contains: mid-scene,
+     * a rejection handler is a recovery path and lowering it away would be
+     * a silent change of meaning.
+     */
     private unwrapEntryReporter(statement: ts.Statement): ts.Statement {
         if (this.options.workers) return statement;
         if (!ts.isExpressionStatement(statement)) return statement;
@@ -6058,68 +6006,6 @@ class Compiler implements LoweringServices {
         }
     }
 
-    /**
-     * `value instanceof LocalClass` is decided at generation: a class
-     * instance is a compile-time record that names its class, and a struct
-     * stored in data names the class it was mapped from. A value that could
-     * be an instance of several classes has no representation yet.
-     */
-    private compileClassInstanceOf(
-        expression: ts.BinaryExpression,
-        className: ts.Identifier,
-    ): string | undefined {
-        const symbol = this.symbols.valueSymbol(className);
-        const declaration = symbol?.valueDeclaration;
-        if (!declaration || !ts.isClassDeclaration(declaration)) {
-            return undefined;
-        }
-        const value = this.compileValue(expression.left);
-        if (isJsonValue(value)) {
-            const type = this.dataTypes.fromSharedReturnType(
-                this.checker.getDeclaredTypeOfSymbol(symbol),
-                expression,
-            );
-            if (type?.kind !== "struct")
-                this.fail(
-                    expression,
-                    "A dynamic instanceof check requires a represented class type.",
-                );
-            return `${value.cpp}.instance_of<${this.dataTypes.cppType(type)}>()`;
-        }
-        if (value.kind === "record" && value.classDeclaration) {
-            return value.classDeclaration === declaration ? "true" : "false";
-        }
-        if (value.kind === "data" && value.dataType?.kind === "struct") {
-            const classType = this.dataTypes.fromTsType(
-                this.checker.getDeclaredTypeOfSymbol(symbol),
-                expression,
-            );
-            if (classType?.kind === "struct") {
-                return classType.name === value.dataType.name
-                    ? "true"
-                    : "false";
-            }
-        }
-        if (
-            value.kind === "json-null" ||
-            value.kind === "number" ||
-            value.kind === "string" ||
-            value.kind === "boolean" ||
-            value.kind === "tuple" ||
-            (value.kind === "data" &&
-                value.dataType !== undefined &&
-                value.dataType.kind !== "struct" &&
-                value.dataType.kind !== "optional")
-        ) {
-            // A scalar, a tuple, a collection: never an instance.
-            return "false";
-        }
-        this.fail(
-            expression,
-            `'instanceof ${className.text}' is decided for class instances and structs; this value's class is not represented.`,
-        );
-    }
-
     public emitLogicalAssignment(expression: ts.BinaryExpression): void {
         this.dataLowerer.emitLogicalAssignment(expression);
     }
@@ -9048,7 +8934,8 @@ class Compiler implements LoweringServices {
                             return `(${name.cpp} == ${this.cppString(unwrapped.right.text)})`;
                     }
                 }
-                const classInstance = this.compileClassInstanceOf(
+                const classInstance = compileClassInstanceOf(
+                    this,
                     unwrapped,
                     unwrapped.right,
                 );
@@ -9083,7 +8970,7 @@ class Compiler implements LoweringServices {
             // settle at generation the answer settles with them -- and an
             // option that decides a lowering needs that answer, not an
             // expression computing it at run time.
-            const foldedBoolean = this.foldBooleanComparison(unwrapped);
+            const foldedBoolean = foldBooleanComparison(this, unwrapped);
             if (foldedBoolean) {
                 return foldedBoolean;
             }
