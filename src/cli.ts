@@ -24,7 +24,7 @@ import type {
     CompileResult,
     CompiledNodeParticles,
 } from "./compiler/types.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { apiHash, isRecord, type ApiSnapshot } from "./api-surface.js";
 import { type ApiUse } from "./api-usage.js";
-import { contentDigest, writeJsonRecord } from "./validation-resume.js";
+import { contentDigest, writeJsonRecord } from "./tooling/records.js";
 import { scenes } from "./scene-registry.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 import { sharedUpstreamStore } from "./upstream-source.js";

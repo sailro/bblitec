@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "./repository-root.js";
+import { listFiles } from "./tooling/records.js";
 export { findRepositoryRoot } from "./repository-root.js";
 
 import {
@@ -74,16 +75,6 @@ export interface PublicExport {
     exportedName: string;
     importedName: string;
     modulePath: string;
-}
-
-function walk(directory: string): string[] {
-    const result: string[] = [];
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) result.push(...walk(path));
-        else result.push(path);
-    }
-    return result;
 }
 
 function virtualSourcePath(source: string): string | undefined {
@@ -249,7 +240,7 @@ export class UpstreamSourceStore {
 
     private loadSources(): void {
         const libRoot = join(this.packageRoot, "lib");
-        for (const mapPath of walk(libRoot).filter((path) =>
+        for (const mapPath of listFiles(libRoot).filter((path) =>
             path.endsWith(".js.map"),
         )) {
             const map = JSON.parse(
