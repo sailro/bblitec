@@ -706,8 +706,6 @@ export function compilePbrMaterialOptions(
 /**
  * The array's presence selects a UBO field; its contents remain runtime
  * numbers. Retain its storage and preserve static metadata when available.
- * The pin types the option as a number tuple, so a `{ r, g, b, a }` object
- * refuses rather than lowering to a colour the browser would never read.
  */
 function compilePbrBaseColorFactor(
     context: MaterialOptionContext,
@@ -762,10 +760,9 @@ function compilePbrBaseColorFactor(
             );
         channels = resolved.elements;
     } else if (ts.isObjectLiteralExpression(resolved)) {
-        context.fail(
-            expression,
-            "PBR baseColorFactor is the pin's [r, g, b, a] number tuple; a { r, g, b, a } object is not the pinned API.",
-        );
+        // An object carries no array storage to retain; whether it is a
+        // colour at all is the colour compiler's one shape decision.
+        return { cpp: context.compileColor4(expression), storageCpp: "{}" };
     }
     if (!channels) {
         return {

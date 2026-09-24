@@ -50,6 +50,7 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import { excludesObjectColour } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import {
     isAssignmentExpression,
@@ -313,14 +314,34 @@ export class StaticEvaluator {
                 .map((element) => this.compileNumber(element))
                 .join(", ")}}`;
         }
-        // Every RGB option and field of the pin is a number tuple (its
-        // `Color3` object type is flow-graph data only), so an object is a
-        // colour the browser would read as undefined channels.
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
+            return `bbl::Color3{${["r", "g", "b"]
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
+        }
+        this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
+    }
+
+    /**
+     * The one colour-shape decision: an object of named channels is not a
+     * colour where the position's own type rules it out
+     * (`excludesObjectColour`, from the checker's contextual type at the
+     * use). Where the pin types a number tuple -- every RGB option and
+     * field, `baseColorFactor` -- the browser would read the object as
+     * undefined channels, so it refuses.
+     */
+    private requireObjectColour(
+        expression: ts.Expression,
+        object: ts.ObjectLiteralExpression,
+        channels: readonly string[],
+    ): void {
+        if (!excludesObjectColour(this.checker.getContextualType(expression)))
+            return;
+        const names = channels.join(", ");
         this.fail(
-            unwrapped,
-            ts.isObjectLiteralExpression(unwrapped)
-                ? "Babylon Lite RGB colours are [r, g, b] number tuples; a { r, g, b } object is not the pinned API."
-                : "Expected a Color3 array [r, g, b].",
+            object,
+            `This colour is the pin's [${names}] number tuple; a { ${names} } object is not the pinned API.`,
         );
     }
 
@@ -350,16 +371,11 @@ export class StaticEvaluator {
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Color4{${this.requiredObjectNumber(
-                unwrapped,
-                "r",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "g",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "b",
-            )}, ${this.requiredObjectNumber(unwrapped, "a")}}`;
+            const channels = ["r", "g", "b", "a"];
+            this.requireObjectColour(expression, unwrapped, channels);
+            return `bbl::Color4{${channels
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
         }
         this.fail(
             unwrapped,
