@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { resolvedSymbol } from "../compiler/symbols.js";
 import { forEachAnalysisNode } from "../compiler/analysis-walk.js";
 import {
     isAssignmentExpression,
@@ -642,8 +643,7 @@ export function lowerCharacterControllerKernel(
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
-                checker.getSymbolAtLocation(node.left.name)
-                    ?.valueDeclaration === body,
+                resolvedSymbol(checker, node.left)?.valueDeclaration === body,
         );
         if (
             bodyAssignments.length !== 1 ||

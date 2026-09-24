@@ -5711,12 +5711,18 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const accessor = owner.recordGetters?.[expression.name.text];
-        if (accessor) {
-            return this.compileRecordGetter(owner, accessor);
-        }
-        const property = owner.recordProperties?.[expression.name.text];
-        if (property) {
-            return property;
+        const member = accessor
+            ? this.compileRecordGetter(owner, accessor)
+            : owner.recordProperties?.[expression.name.text];
+        if (member) {
+            // A link of an optional chain carries the chain's presence.
+            return ts.isOptionalChain(expression)
+                ? this.propertyAccess.propertyWithOwnerPresence(
+                      owner,
+                      member,
+                      expression,
+                  )
+                : member;
         }
         // A property the record was built without reads as `undefined`
         // when its type declares it optional: `{ b: 2 } as { a?: number }`

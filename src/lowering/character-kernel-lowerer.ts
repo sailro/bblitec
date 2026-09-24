@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { cppCondition } from "../cpp-expressions.js";
 import { moduleScopeVariable } from "../pinned-program.js";
@@ -281,9 +282,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 : undefined;
         const named =
             annotation && ts.isTypeReferenceNode(annotation)
-                ? this.checker
-                      .getSymbolAtLocation(annotation.typeName)
-                      ?.getName()
+                ? declaredSymbol(this.checker, annotation.typeName)?.getName()
                 : undefined;
         if (named && this.schema.records.has(named)) return named;
         const name = ts.getNameOfDeclaration(declaration) ?? declaration;
@@ -322,7 +321,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     private member(
         node: ts.PropertyAccessExpression,
     ): ts.Declaration | undefined {
-        const symbol = this.checker.getSymbolAtLocation(node.name);
+        const symbol = resolvedSymbol(this.checker, node);
         return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
     }
 
