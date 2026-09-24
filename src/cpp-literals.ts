@@ -16,44 +16,80 @@ export function floatLiteral(value: number): string {
     return text.includes(".") || /e/i.test(text) ? `${text}f` : `${text}.0f`;
 }
 
+const float32Bits = new Float32Array(1);
+const float32Word = new Uint32Array(float32Bits.buffer);
+
+/** The float32 adjacent to `value` (itself a float32) on the side of `toward`. */
+function adjacentFloat32(value: number, toward: number): number {
+    float32Bits[0] = value;
+    // Magnitude grows with the stored word for both signs, so the step
+    // direction depends on whether `toward` is further from zero.
+    const away = Math.abs(toward) > Math.abs(value);
+    float32Word[0] = float32Word[0]! + (away ? 1 : -1);
+    return float32Bits[0];
+}
+
+/** Whether `decimal` (a double) lies exactly halfway between two float32s. */
+function isFloat32Midpoint(decimal: number): boolean {
+    const nearest = Math.fround(decimal);
+    if (nearest === decimal || !Number.isFinite(nearest)) return false;
+    const other = adjacentFloat32(nearest, decimal);
+    return Math.abs(decimal - nearest) === Math.abs(other - decimal);
+}
+
 /**
- * A `float` literal that reads back as the same float32.
+ * A `float` literal that a C++ compiler reads back as `Math.fround(value)`,
+ * the float32 JavaScript stores for the number.
  *
  * `floatLiteral` spells the shortest decimal that round-trips as a
- * DOUBLE, which is right where the value is a JavaScript number whose
- * store rounds. A value read out of a `Float32Array` is already the
- * float32, so the shortest decimal that round-trips through
- * `Math.fround` names the identical float in about half the characters —
- * and a baked CSG solid emits hundreds of thousands of them.
+ * DOUBLE. A float32 needs at most nine significant digits, so the shortest
+ * decimal naming the stored float is about half the characters -- and a
+ * baked CSG solid emits hundreds of thousands of them.
+ *
+ * JavaScript rounds a decimal to a double and that double to a float32;
+ * a C++ `f` literal rounds the decimal once, straight to float. The two
+ * disagree only when the intermediate double is exactly a float32
+ * midpoint -- every other double lies strictly on the decimal's own side
+ * of every midpoint, because the midpoints are themselves doubles -- so a
+ * candidate whose double is a midpoint is passed over. The input rounds
+ * first for the same reason: a double that is itself a midpoint
+ * (`1 + 2 ** -24`) stores the even neighbour, while its own shortest
+ * decimal sits past the midpoint and would read back as the odd one.
  */
 export function float32Literal(value: number): string {
-    if (!Number.isFinite(value)) {
+    const stored = Math.fround(value);
+    if (!Number.isFinite(stored)) {
         throw new Error(
-            `A float32 literal needs a finite value, received ${value}.`,
+            `A float32 literal needs a finite value in the float32 range, received ${value}.`,
         );
     }
     // `toPrecision` drops the sign of negative zero, which `floatLiteral`
     // preserves deliberately; every other value keeps its sign through the
     // search below.
-    if (Object.is(value, -0)) return "-0.0f";
+    if (Object.is(stored, -0)) return "-0.0f";
+    const readsBack = (digits: number): boolean => {
+        const decimal = Number(stored.toPrecision(digits));
+        return Math.fround(decimal) === stored && !isFloat32Midpoint(decimal);
+    };
     // Binary search over the digit count rather than an ascending ladder:
-    // round-tripping is monotone in the count, and two thirds of a baked
-    // geometry stream needs eight or nine significant digits, so counting
-    // up from one spends five `toPrecision` calls per value to learn that.
-    // Measured over scene 90's 358,016 floats: 272 ms ascending against
-    // 137 ms here, byte-identical on every value.
+    // two thirds of a baked geometry stream needs eight or nine significant
+    // digits, so counting up from one spends five `toPrecision` calls per
+    // value to learn that. Measured over scene 90's 358,016 floats: 272 ms
+    // ascending against 137 ms here, byte-identical on every value. Nine
+    // digits always read back (their error is under a fifth of the float's
+    // half-spacing, so never at a midpoint), and the search only ever
+    // settles on a count it saw read back.
     let low = 1;
     let high = 9;
     while (low < high) {
         const middle = (low + high) >> 1;
-        if (Math.fround(Number(value.toPrecision(middle))) === value) {
+        if (readsBack(middle)) {
             high = middle;
         } else {
             low = middle + 1;
         }
     }
-    const shortened = Number(value.toPrecision(low));
-    return floatLiteral(Math.fround(shortened) === value ? shortened : value);
+    return floatLiteral(Number(stored.toPrecision(low)));
 }
 
 export function doubleLiteral(value: number): string {

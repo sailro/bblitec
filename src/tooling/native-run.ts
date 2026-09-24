@@ -152,20 +152,36 @@ export function verifyBuildIdentity(
     }
 }
 
+export interface NativeSpawnOptions {
+    /**
+     * Ambient variables scrubbed from the child's environment: a caller
+     * setting one explicitly (the capture drops `BBLITE_GPU_BACKEND` so an
+     * ambient one cannot silently pick the other backend).
+     */
+    dropVariables?: readonly string[];
+    /** Take stderr back as the result instead of streaming it. */
+    captureStderr?: boolean;
+    timeoutMs?: number;
+    /** The likely reason a timeout fired, named in its error. */
+    timeoutCause?: string;
+    arguments?: readonly string[];
+}
+
 /**
  * The one measured-run spawn: npm_* environment hygiene, the synchronous
- * child, and the exit contract. `dropVariables` scrubs ambient variables
- * a caller sets explicitly (the capture drops `BBLITE_GPU_BACKEND` so an
- * ambient one cannot silently pick the other backend).
+ * child, and the exit contract.
  */
 export function spawnNativeMeasured(
     executable: string,
     overrides: Record<string, string>,
-    dropVariables: readonly string[] = [],
-    captureStderr = false,
-    timeoutMs?: number,
-    arguments_: readonly string[] = [],
+    options: NativeSpawnOptions = {},
 ): string {
+    const {
+        dropVariables = [],
+        captureStderr = false,
+        timeoutMs,
+        arguments: arguments_ = [],
+    } = options;
     const inherited: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
         if (value === undefined) continue;
@@ -186,11 +202,16 @@ export function spawnNativeMeasured(
     const tail =
         captureStderr && result.stderr ? `\n${result.stderr.slice(-2000)}` : "";
     if (result.error) {
+        const timedOut =
+            timeoutMs !== undefined &&
+            (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
         throw new Error(
             `Native renderer did not complete: ${result.error.message}` +
-                (timeoutMs !== undefined &&
-                (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
-                    ? ` (killed after ${timeoutMs} ms)`
+                (timedOut
+                    ? ` (killed after ${timeoutMs} ms` +
+                      (options.timeoutCause !== undefined
+                          ? `: ${options.timeoutCause})`
+                          : ")")
                     : "") +
                 tail,
         );
@@ -201,6 +222,60 @@ export function spawnNativeMeasured(
         );
     }
     return captureStderr ? result.stderr : "";
+}
+
+/**
+ * Whether the generated tree's scene presents through the native Window
+ * host: its manifest carries the `platform:window` feature.
+ */
+function presentsThroughWindowHost(generatedDirectory: string): boolean {
+    const path = resolve(generatedDirectory, "manifest.json");
+    if (!existsSync(path)) {
+        throw new Error(
+            `The generated tree has no manifest.json (${path}); run 'scene -- compile' first.`,
+        );
+    }
+    const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const features =
+        typeof manifest === "object" &&
+        manifest !== null &&
+        "features" in manifest
+            ? manifest.features
+            : undefined;
+    return Array.isArray(features) && features.includes("platform:window");
+}
+
+/**
+ * The Window host paces presentation on the desktop compositor's clock,
+ * which does not tick while the Windows console session is locked or where
+ * no compositor runs; a run then waits forever instead of failing.
+ */
+const WINDOW_HOST_TIMEOUT_CAUSE =
+    "a Window-host scene (platform:window) presents on the desktop compositor's clock, " +
+    "which does not tick while the console session is locked or where no compositor runs";
+
+/**
+ * The spawn bound of a native run of `generatedDirectory` over `frames`
+ * frames: the caller's own `timeoutMs`, else none -- except for a
+ * Window-host scene, which gets two minutes of startup plus the frames
+ * paced at 20 Hz (a third of a 60 Hz display), and whose timeout names the
+ * locked-session cause.
+ */
+export function nativeRunBound(
+    generatedDirectory: string | undefined,
+    frames: number,
+    timeoutMs: number | undefined,
+): Pick<NativeSpawnOptions, "timeoutMs" | "timeoutCause"> {
+    if (
+        generatedDirectory === undefined ||
+        !presentsThroughWindowHost(generatedDirectory)
+    ) {
+        return timeoutMs === undefined ? {} : { timeoutMs };
+    }
+    return {
+        timeoutMs: timeoutMs ?? 120_000 + frames * 50,
+        timeoutCause: WINDOW_HOST_TIMEOUT_CAUSE,
+    };
 }
 
 /**
@@ -271,6 +346,7 @@ export interface MeasuredRunOptions {
     arguments?: readonly string[];
     /** Take stderr back as the returned log instead of streaming it. */
     captureLog?: boolean;
+    /** Absent, only a Window-host scene's run is bounded (`nativeRunBound`). */
     timeoutMs?: number;
 }
 
@@ -376,18 +452,23 @@ export function runMeasured(
         mkdirSync(resolve(path, ".."), { recursive: true });
         rmSync(resolve(path), { force: true });
     }
-    const log = spawnNativeMeasured(
-        executable,
-        measuredRunEnvironment(options, stampPath),
-        [
+    const environment = measuredRunEnvironment(options, stampPath);
+    const log = spawnNativeMeasured(executable, environment, {
+        dropVariables: [
             "BBLITE_LOCATION_SEARCH",
             ...(options.backend !== undefined ? ["BBLITE_GPU_BACKEND"] : []),
             ...(options.dropVariables ?? []),
         ],
-        options.captureLog ?? false,
-        options.timeoutMs,
-        options.arguments ?? [],
-    );
+        captureStderr: options.captureLog ?? false,
+        ...nativeRunBound(
+            options.generatedDirectory,
+            Number(environment.BBLITE_MAX_FRAMES),
+            options.timeoutMs,
+        ),
+        ...(options.arguments !== undefined
+            ? { arguments: options.arguments }
+            : {}),
+    });
     if (options.generatedDirectory !== undefined && stampPath !== undefined) {
         verifyBuildIdentity(executable, options.generatedDirectory, stampPath);
     }

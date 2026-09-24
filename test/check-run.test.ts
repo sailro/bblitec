@@ -10,7 +10,12 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { runCheck } from "../src/tooling/check-run.js";
 import { getScene } from "../src/scene-registry.js";
-import { measuredStampPath, runMeasured } from "../src/tooling/native-run.js";
+import {
+    measuredStampPath,
+    nativeRunBound,
+    runMeasured,
+    spawnNativeMeasured,
+} from "../src/tooling/native-run.js";
 
 // The check driver's report and plugin dispatch, over an offline check
 // (no phases) so no native run is spent; the native gate itself refuses
@@ -95,4 +100,55 @@ test("a measured run refuses a missing executable and names its stamp beside its
         resolve("out/native.json.build-stamp"),
     );
     assert.equal(measuredStampPath({}), undefined);
+});
+
+test("a Window-host run is bounded and its timeout names the locked-session cause", () => {
+    const directory = resolve("artifacts", "native-run-bound-test");
+    rmSync(directory, { recursive: true, force: true });
+    const windowTree = resolve(directory, "window");
+    const plainTree = resolve(directory, "plain");
+    mkdirSync(windowTree, { recursive: true });
+    mkdirSync(plainTree, { recursive: true });
+    writeFileSync(
+        resolve(windowTree, "manifest.json"),
+        JSON.stringify({ features: ["core", "platform:window"] }),
+    );
+    writeFileSync(
+        resolve(plainTree, "manifest.json"),
+        JSON.stringify({ features: ["core"] }),
+    );
+    try {
+        // Every other scene keeps the caller's bound, or none.
+        assert.deepEqual(nativeRunBound(undefined, 181, undefined), {});
+        assert.deepEqual(nativeRunBound(plainTree, 181, undefined), {});
+        assert.deepEqual(nativeRunBound(plainTree, 181, 5000), {
+            timeoutMs: 5000,
+        });
+        const bound = nativeRunBound(windowTree, 181, undefined);
+        assert.equal(bound.timeoutMs, 120_000 + 181 * 50);
+        assert.match(bound.timeoutCause ?? "", /console session is locked/);
+        assert.equal(nativeRunBound(windowTree, 181, 20_000).timeoutMs, 20_000);
+        assert.throws(
+            () => nativeRunBound(resolve(directory, "missing"), 1, undefined),
+            /no manifest\.json/,
+        );
+        // A fake renderer that never finishes, killed at the bound.
+        const started = Date.now();
+        assert.throws(
+            () =>
+                spawnNativeMeasured(
+                    process.execPath,
+                    {},
+                    {
+                        arguments: ["-e", "setTimeout(() => {}, 60000)"],
+                        ...bound,
+                        timeoutMs: 1000,
+                    },
+                ),
+            /killed after 1000 ms: a Window-host scene \(platform:window\) presents on the desktop compositor's clock, which does not tick while the console session is locked/,
+        );
+        assert.ok(Date.now() - started < 30_000);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });

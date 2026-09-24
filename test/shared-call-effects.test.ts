@@ -19,7 +19,7 @@ const source = `${imports}
         function make(factor: number) { createStandardMaterial(); return createPbrMaterial({metallicFactor: factor}); }
         class Loader { async load(url: string) { return await loadGltf(engine, url); } }
         const first = make(.25); setPbrUnlit(first);
-        const second = make(.75); setPbrEmissive(second, {r:1,g:0,b:0});
+        const second = make(.75); setPbrEmissive(second, [1, 0, 0]);
         const a = createBox(engine); a.material = first;
         const b = createBox(engine); b.material = second;
         const loader = new Loader();

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { float32Literal } from "../src/cpp-literals.js";
 import {
     float32TableLiteral,
     typedArrayTable,
@@ -140,6 +141,54 @@ test("float32 table literals read back as the stored float", () => {
     assert.equal(float32TableLiteral(-0), "-0.0f");
     assert.equal(float32TableLiteral(-0.1555), "-0.1555f");
     assert.equal(float32TableLiteral(1e39), undefined);
+});
+
+test("float32 literals read back in C++ as Math.fround of the number", () => {
+    // Doubles that are themselves float32 midpoints: JavaScript stores the
+    // even neighbour, while each one's shortest double decimal lies just
+    // past the midpoint and a C++ `f` literal of it reads the odd one.
+    const midpoints = [1 + 2 ** -24, -(1 + 2 ** -24), 1 + 3 * 2 ** -24];
+    for (const value of midpoints) {
+        assert.equal(String(value).length > 9, true);
+        assert.equal(
+            readsBackAs(`${String(value)}f`, Math.fround(value)),
+            false,
+            `${value} is a double-rounding case`,
+        );
+    }
+    assert.equal(float32Literal(1 + 2 ** -24), "1.0f");
+    assert.equal(float32Literal(-(1 + 2 ** -24)), "-1.0f");
+    assert.equal(float32Literal(1 + 3 * 2 ** -24), "1.0000002f");
+    // An exact decimal midpoint reads back as JavaScript's even neighbour on
+    // both paths, but no literal stands at one: 33565870 is passed over.
+    assert.equal(float32Literal(33565870), "33565872.0f");
+    assert.equal(float32Literal(33565872), "33565872.0f");
+    assert.throws(() => float32Literal(1e39), /needs a finite value/);
+    let seed = 0x2545f491;
+    const random = () => {
+        seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0;
+        return seed / 2 ** 32;
+    };
+    const values = [...midpoints, 0, -0, 0.1, 16777217, 3.4028235e38];
+    for (let index = 0; index < 20000; ++index) {
+        const scale = 10 ** Math.floor(random() * 12 - 6);
+        values.push((random() * 2 - 1) * scale);
+        const word = Math.floor(random() * 2 ** 32);
+        const float = new Float32Array(new Uint32Array([word]).buffer)[0]!;
+        if (Number.isFinite(float)) values.push(float);
+        // A double exactly halfway between this float and the next.
+        const next = new Float32Array(new Uint32Array([word + 1]).buffer)[0]!;
+        const half = (float + next) / 2;
+        if (Number.isFinite(half) && Number.isFinite(Math.fround(half)))
+            values.push(half);
+    }
+    for (const value of values) {
+        const literal = float32Literal(value);
+        assert.ok(
+            readsBackAs(literal, Math.fround(value)),
+            `${literal} does not read back as fround(${value})`,
+        );
+    }
 });
 
 test("integer tables store each element as the typed array would", () => {
