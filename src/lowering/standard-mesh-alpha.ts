@@ -4,7 +4,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericConstant } from "./pinned-numeric-constant.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
@@ -62,7 +61,7 @@ function alphaFlags(context: LoweringContext): ReadonlyMap<string, number> {
     return new Map(
         ["VERTEX_ALPHA", "MATERIAL_ALPHA_BLEND"].map((name) => [
             name,
-            pinnedNumericConstant(context, FLAG_MODULE, name),
+            context.pinnedNumber(FLAG_MODULE, name),
         ]),
     );
 }
