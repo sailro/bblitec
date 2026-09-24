@@ -22,6 +22,34 @@ import {
 
 const tools = discoverDevelopmentTools();
 
+/**
+ * `run_window_flags` reads the selected backend's window flags from the
+ * dispatch table, which needs SDL and every renderer entry. The fixture has
+ * neither, so the table's Android rule is checked here and handed to the
+ * extracted function as the backend it selects: Dawn marks its external
+ * Vulkan context, SDL_GPU adds nothing.
+ */
+function androidWindowFlagBackend(): string {
+    const dispatch = readFileSync("native/src/pal_gpu_dispatch.hpp", "utf8");
+    const dawn = cppSection(
+        dispatch,
+        "inline constexpr GpuBackend dawn_gpu_backend{",
+        "#endif",
+    );
+    assert.match(dawn, /#ifdef __ANDROID__[\s\S]*SDL_WINDOW_VULKAN,/);
+    const sdl = cppSection(
+        dispatch,
+        "inline constexpr GpuBackend sdl_gpu_backend{",
+        "};",
+    );
+    assert.match(sdl, /,\s*0,\s*$/);
+    return `struct SelectedGpuBackend { SDL_WindowFlags window_flags; };
+inline SelectedGpuBackend selected_gpu_backend() {
+    return {use_dawn_backend() ? SDL_WindowFlags{SDL_WINDOW_VULKAN} : SDL_WindowFlags{0}};
+}
+`;
+}
+
 test(
     "the Android surface-loss patch applies to the pinned Dawn sources",
     {
@@ -319,6 +347,7 @@ test("Dawn Android surfaces negotiate worker formats and retain native windows a
                 "struct DawnOffscreenImage",
             ) +
             "\n" +
+            androidWindowFlagBackend() +
             cppFunction(
                 readFileSync("native/src/pal_window.hpp", "utf8"),
                 "inline SDL_WindowFlags run_window_flags",

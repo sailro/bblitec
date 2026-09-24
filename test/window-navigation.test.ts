@@ -82,8 +82,8 @@ test("Window startup separates capture queries and retains navigation across fre
                 "https://example.test/demo?original=1#fragment",
             );
             url.search = input;
-            const bytes = Buffer.from(input);
-            return `assert(location_query(std::string(${stringLiteral(bytes.toString("utf8"))}, ${bytes.length})) == ${stringLiteral(url.search)});`;
+            // stringLiteral keeps embedded NUL bytes in the literal's length.
+            return `assert(location_query(std::string(${stringLiteral(input)})) == ${stringLiteral(url.search)});`;
         })
         .join("\n");
     const cpp = resolve(directory, "check.cpp"),

@@ -332,8 +332,11 @@ test("environment sizing constants flow slot by slot", () => {
         adapter.source,
         /upstream::mesh_world_matrix\(\*scene\.engine, mesh\)/,
     );
-    assert.match(adapter.source, /world\[12 \+ row\]/);
-    assert.match(adapter.source, /world\[column \* 4 \+ row\]/);
+    // The world-space box comes from the lowered expandWorldAabbForMesh.
+    assert.match(
+        adapter.source,
+        /void expand_world_aabb_for_mesh\(WorldAabb& acc, const WorldAabbMesh& mesh\)/,
+    );
 });
 
 test("harmonic pre-scale terms stay paired with the pinned structure", () => {
