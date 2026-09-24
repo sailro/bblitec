@@ -154,32 +154,6 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
     return texture.release();
 }
 
-/**
- * The texture-group layout entries for `pairs` sampled textures.
- *
- * Each contributes a texture then its sampler, which is the order the
- * pin's own binding lines declare them in and the order
- * {@link append_dawn_texture_pair} binds them.
- */
-inline std::vector<WGPUBindGroupLayoutEntry> dawn_texture_pair_layout_entries(std::size_t pairs) {
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(pairs * 2u);
-    for (std::size_t pair = 0; pair < pairs; ++pair) {
-        WGPUBindGroupLayoutEntry sampled = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampled.binding = static_cast<std::uint32_t>(pair * 2u);
-        sampled.visibility = WGPUShaderStage_Fragment;
-        sampled.texture.sampleType = WGPUTextureSampleType_Float;
-        sampled.texture.viewDimension = WGPUTextureViewDimension_2D;
-        WGPUBindGroupLayoutEntry sampler_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler_entry.binding = static_cast<std::uint32_t>(pair * 2u + 1u);
-        sampler_entry.visibility = WGPUShaderStage_Fragment;
-        sampler_entry.sampler.type = WGPUSamplerBindingType_Filtering;
-        entries.push_back(sampled);
-        entries.push_back(sampler_entry);
-    }
-    return entries;
-}
-
 /** Appends one texture and its sampler at the next two bindings. */
 inline void append_dawn_texture_pair(std::vector<WGPUBindGroupEntry>& into, WGPUTextureView view,
                                      WGPUSampler sampler) {
