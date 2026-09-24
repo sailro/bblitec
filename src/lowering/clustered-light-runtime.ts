@@ -376,6 +376,24 @@ function dataTextureRows(
     return rows.expression(height);
 }
 
+/** A `for (const light of <list>)` over one of the pin's light lists. */
+function lightListForOf(
+    lists: ReadonlyMap<string, string>,
+): NonNullable<PinnedNumericScope["forOf"]> {
+    return (iterated, element) => {
+        const range = lists.get(iterated);
+        return range === undefined
+            ? undefined
+            : {
+                  range,
+                  bindings: new Map<string, PinnedBinding>([
+                      [element, { cpp: element, type: "opaque" }],
+                      ...clusteredLightMembers(element, `${element}.`),
+                  ]),
+              };
+    };
+}
+
 /**
  * The build: `buildClusteredLightGpuState` from its first statement to its
  * last, over the record the container is.
@@ -557,6 +575,7 @@ function lowerBuild(context: LoweringContext): string {
     }
     return body;
 }
+
 /**
  * The per-frame half: the `refresh` closure's re-bin and payload rewrite,
  * from its `if (topologyDirty)` through its `if (lightDataDirty)`.
@@ -635,22 +654,6 @@ function lowerRefresh(context: LoweringContext): string {
         ["pointLights", "clustered_point_lights(container)"],
         ["spotLights", "clustered_spot_lights(container)"],
     ]);
-    const forOf =
-        (
-            lookup: ReadonlyMap<string, string>,
-        ): NonNullable<PinnedNumericScope["forOf"]> =>
-        (iterated, element) => {
-            const rangeCpp = lookup.get(iterated);
-            return rangeCpp === undefined
-                ? undefined
-                : {
-                      range: rangeCpp,
-                      bindings: new Map<string, PinnedBinding>([
-                          [element, { cpp: element, type: "opaque" }],
-                          ...clusteredLightMembers(element, `${element}.`),
-                      ]),
-                  };
-        };
     const isActiveList = (node: ts.Expression): boolean =>
         ts.isIdentifier(node) && bindings.get(node.text)?.cpp === "active";
 
@@ -799,7 +802,7 @@ function lowerRefresh(context: LoweringContext): string {
         arrayCopy: (receiver: string, source: string, offset: string) =>
             `std::transform(${source}.begin(), ${source}.end(), ${receiver}.begin() + static_cast<std::ptrdiff_t>(${offset}), [](double value) { return static_cast<float>(value); })`,
         booleanAnd: true,
-        forOf: forOf(lists),
+        forOf: lightListForOf(lists),
         statement,
     };
     const stride = lowerPinnedBody(file, [lightStride], {
@@ -969,18 +972,7 @@ function spotCollect(
             bindings,
             calls: pinnedNumericMathCalls(),
             booleanAnd: true,
-            forOf: (iterated, element) => {
-                const rangeCpp = lists.get(iterated);
-                return rangeCpp === undefined
-                    ? undefined
-                    : {
-                          range: rangeCpp,
-                          bindings: new Map<string, PinnedBinding>([
-                              [element, { cpp: element, type: "opaque" }],
-                              ...clusteredLightMembers(element, `${element}.`),
-                          ]),
-                      };
-            },
+            forOf: lightListForOf(lists),
             statement: (node, nested, nestedIndent) => {
                 if (
                     ts.isExpressionStatement(node) &&

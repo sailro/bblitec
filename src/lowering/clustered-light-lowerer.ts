@@ -20,7 +20,7 @@ import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
-export const clusteredSpotModule = "src/light/clustered-spot-support.ts";
+const clusteredSpotModule = "src/light/clustered-spot-support.ts";
 
 /**
  * The pin's own spot light members, as the native `ClusteredLight` spells
