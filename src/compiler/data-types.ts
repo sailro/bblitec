@@ -3717,11 +3717,20 @@ export class DataTypeRegistry {
             if (structuredClone) definition.fields.forEach(visitCloneField);
             lines.push(
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
-                // Value-initialized members: a record built field by field
-                // never exposes an indeterminate scalar.
+                // Scalar members are value-initialized, so a record built
+                // field by field never exposes an indeterminate value. Class
+                // members keep their own construction: some (a borrowed
+                // event view) have no default constructor to name.
                 ...definition.fields.map(
                     (field) =>
-                        `    ${this.cppType(field.type)} ${field.name}{};`,
+                        `    ${this.cppType(field.type)} ${field.name}${
+                            field.type.kind === "number" ||
+                            field.type.kind === "boolean" ||
+                            field.type.kind === "enum" ||
+                            field.type.kind === "numberindex"
+                                ? "{}"
+                                : ""
+                        };`,
                 ),
                 `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
                 ...definition.fields.map(

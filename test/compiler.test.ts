@@ -1875,8 +1875,8 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     assert.match(result.cpp, /enum class Tag \{/);
     assert.match(result.cpp, /struct ItemData \{/);
     assert.match(result.cpp, /using Item = bbl::js::Ref<ItemData>;/);
-    assert.match(result.cpp, /bblscene::Item current\{\};/);
-    assert.match(result.cpp, /bbl::js::Array<bblscene::Tag> tags\{\};/);
+    assert.match(result.cpp, /bblscene::Item current;/);
+    assert.match(result.cpp, /bbl::js::Array<bblscene::Tag> tags;/);
     assert.match(
         result.cpp,
         /push_back\(bbl::js::make_ref<bblscene::ItemData>\(bblscene::ItemData\{2\.0, true\}\)\)/,
@@ -1957,7 +1957,7 @@ test("owns readonly arrays stored inside native records", () => {
         const value = holders[0]!.values[1];
     `);
 
-    assert.match(result.cpp, /bbl::js::Array<double> values\{\};/);
+    assert.match(result.cpp, /bbl::js::Array<double> values;/);
     assert.doesNotMatch(result.cpp, /Span<const double> values/);
 });
 
@@ -15612,7 +15612,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // readback's nullable point, and the distance beside it.
     assert.match(
         result.cpp,
-        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system\{\};\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint\{\};\s*double distance\{\};\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
     );
     // A miss is the pin's `_spritePick ?? null`: an id no billboard
     // contributor owns leaves the payload unset.
@@ -16574,7 +16574,7 @@ test("carries pixels textures through typed records and maps", () => {
         result.cpp,
         /bbl::js::Map<std::string, bblscene::CachedImage>/,
     );
-    assert.match(result.cpp, /bbl::StoredTexture texture\{\};/);
+    assert.match(result.cpp, /bbl::StoredTexture texture;/);
     assert.match(result.cpp, /bbl::set_shader_pixels_texture\(/);
 });
 

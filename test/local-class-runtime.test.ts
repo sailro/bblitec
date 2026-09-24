@@ -193,7 +193,7 @@ test("stores a class an array element demands as a shared object", () => {
     // things generation owns -- the renderer and the workspace.
     assert.match(
         result.cpp,
-        /struct PartData \{\s*bool locked\{\};\s*bbl::js::Tuple<3> _size\{\};\s*bblscene::\w+ _position\{\};\s*bblscene::Quat _quat\{\};\s*bool _destroyed\{\};\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers\{\};\s*friend void gc_trace_edges\(/,
+        /struct PartData \{\s*bool locked\{\};\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed\{\};\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
     const trace = result.cpp.match(
         /friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/,
@@ -556,7 +556,7 @@ test("keeps two instantiations of one generic interface apart", () => {
 
     const hits = [
         ...result.cpp.matchAll(
-            /struct (Hit\d*)Data \{\s*bblscene::(\w+) part\{\};/g,
+            /struct (Hit\d*)Data \{\s*bblscene::(\w+) part;/g,
         ),
     ];
     assert.equal(hits.length, 2);
@@ -915,9 +915,7 @@ test("keeps two instantiations of one inline object type apart", () => {
     // The anonymous shape is written once, so both instantiations carry
     // one type literal's symbol; each still gets its own struct.
     const hits = [
-        ...result.cpp.matchAll(
-            /struct (\w+)Data \{\s*bblscene::(\w+) part\{\};/g,
-        ),
+        ...result.cpp.matchAll(/struct (\w+)Data \{\s*bblscene::(\w+) part;/g),
     ];
     assert.equal(hits.length, 2);
     assert.notEqual(hits[0]![1], hits[1]![1]);
@@ -956,9 +954,7 @@ test("keeps two instantiations of an intersecting inline type apart", () => {
     `);
 
     const hits = [
-        ...result.cpp.matchAll(
-            /struct (\w+)Data \{\s*bblscene::(\w+) part\{\};/g,
-        ),
+        ...result.cpp.matchAll(/struct (\w+)Data \{\s*bblscene::(\w+) part;/g),
     ];
     assert.equal(hits.length, 2);
     assert.notEqual(hits[0]![1], hits[1]![1]);
