@@ -24,9 +24,14 @@ New-Item -ItemType Directory -Path $workspacePath, $output -Force |
 $patches = @(Sync-PatchedCheckout $source $pin.repository $pin.commit "Tint" dawn $variants $CMake)
 
 # tools/tint-sdl wraps the checkout: it builds the pinned `tint` command and
-# bblite-tint, the offline compiler's SDL_GPU writer driver.
+# bblite-tint, the offline compiler's SDL_GPU writer driver. A configured build
+# records its source directory, so the wrapper is staged in the workspace, which
+# every worktree sharing it names alike: one checkout's build serves the next,
+# and only changed bytes are rewritten, so an unchanged wrapper rebuilds nothing.
+$wrapper = Join-Path $workspacePath "tint-sdl"
+Copy-ArtifactItem (Join-Path $PSScriptRoot "tint-sdl") $wrapper
 $compilerArguments = Get-PosixCompilerArguments
-& $CMake -S (Join-Path $PSScriptRoot "tint-sdl") -B $build @compilerArguments `
+& $CMake -S $wrapper -B $build @compilerArguments `
     "-DBBLITE_DAWN_SOURCE=$source" `
     -DCMAKE_BUILD_TYPE=Release `
     -DDAWN_SUPPORTS_CXX_MODULES=OFF `
