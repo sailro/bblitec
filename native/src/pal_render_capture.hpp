@@ -1319,7 +1319,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
             // 0, from the builder both backends fill it with.
             write_uniform_block(
                 json, "vertex", 0, "SceneUniforms",
-                billboard_scene_block(scene, engine, &camera, view_projection, view));
+                billboard_scene_block(scene, engine, camera, view_projection, view));
             // The per-system block, from the same builder both backends
             // push — to the fragment stage always, and to the axis-locked
             // vertex stage too, which reads its lock axis from it.

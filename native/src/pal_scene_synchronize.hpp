@@ -212,7 +212,7 @@ struct SceneSyncOutcome {
  * Synchronize one scene frame, in the one order both backends run.
  *
  * `Backend` supplies the operations only it can perform, each named for the
- * step it serves: `update_sprites()`, `release_mesh(mesh)`,
+ * step it serves: `update_sprites(delta_ms)`, `release_mesh(mesh)`,
  * `upload_mesh(item)`, `prune_shared_resources()`,
  * `reject_unbuilt_family_growth(families)`, `shared_shader_geometry_count()`,
  * `shared_shader_material_count()`, `rebuild_task_draw_lists()`,
@@ -221,7 +221,7 @@ struct SceneSyncOutcome {
  * frame's own copy of the pass, which the later steps and the encode read),
  * `stream_bone_palettes()`, `mark_capture(topology_updated)`,
  * `update_text(outcome)`,
- * `update_clustered_lights(outcome)`, `upload_billboards(outcome)`,
+ * `update_clustered_lights(outcome)`, `upload_billboards(outcome, delta_ms)`,
  * `upload_splats(outcome)`, `capture_render_state()` and
  * `write_pass_blocks(outcome)`.
  */
@@ -231,8 +231,12 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     Scene& scene = sync.scene;
     SceneSyncOutcome outcome;
     trace_dynamic_frame(engine, sync.delta_ms, sync.frame);
+    // The renderables' own clocks -- the sprite renderer's hooks, the sprite
+    // and billboard FX -- read the engine's `_currentDelta`: a scene's
+    // `fixedDeltaMs` steps its callbacks alone.
+    const double renderable_delta_ms = engine.current_delta_ms;
     // `_update` for every sprite context precedes every `_record`.
-    backend.update_sprites();
+    backend.update_sprites(renderable_delta_ms);
     const auto release = [&](Mesh& mesh) { backend.release_mesh(mesh); };
     const auto upload = [&](const upstream::RenderItem& item) { return backend.upload_mesh(item); };
     const bool draw_lists_moved = engine.draw_list_epoch != sync.synced_draw_list_epoch;
@@ -308,7 +312,7 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     // bindings' own updates.
     backend.update_clustered_lights(outcome);
     backend.update_text(outcome);
-    backend.upload_billboards(outcome);
+    backend.upload_billboards(outcome, renderable_delta_ms);
     backend.upload_splats(outcome);
     backend.capture_render_state();
     backend.write_pass_blocks(outcome);

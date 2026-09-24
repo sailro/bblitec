@@ -3,16 +3,19 @@
 // resolves through (pal_pass_camera.hpp), linked against the generated
 // upstream units and driven through recording backend hooks: the one step
 // order, the uploads a topology change keeps, the vertex writes a transform
-// does not make, and the camera-less pass the pin renders with a null
-// camera -- no transparent sort, zero pass matrices, no other scene's
-// camera, a skipped geometry task, the scene's own clear colour.
+// does not make, the renderables' own delta, and the camera-less pass the pin
+// renders with a null camera -- no transparent sort, zero pass matrices, a
+// scene block kept as it was, no other scene's camera, a skipped geometry
+// task, the scene's own clear colour and the pass viewport it sets.
 #include "pal_scene_synchronize.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,9 +77,13 @@ struct Hooks {
     SceneSyncOutcome settled{};
     const CameraRecord* text_camera = nullptr;
     bool capture_saw_topology = false;
+    double sprite_delta_ms = -1.0, billboard_delta_ms = -1.0;
 
     void note(const char* step) { steps.emplace_back(step); }
-    void update_sprites() { note("sprites"); }
+    void update_sprites(double delta_ms) {
+        note("sprites");
+        sprite_delta_ms = delta_ms;
+    }
     void release_mesh(Row& row) {
         assert(row.lease != 0);
         row.lease = 0;
@@ -112,7 +119,10 @@ struct Hooks {
         note("text");
         text_camera = outcome.pass.camera;
     }
-    void upload_billboards(const SceneSyncOutcome&) { note("billboards"); }
+    void upload_billboards(const SceneSyncOutcome&, double delta_ms) {
+        note("billboards");
+        billboard_delta_ms = delta_ms;
+    }
     void upload_splats(const SceneSyncOutcome&) { note("splats"); }
     void capture_render_state() { note("render capture"); }
     void write_pass_blocks(const SceneSyncOutcome&) { note("pass blocks"); }
@@ -222,18 +232,83 @@ void check_pass_resolution() {
     const PassCamera some = build_pass_camera(base, engine, &engine.cameras[0], 640, 480);
     assert(some.camera == &engine.cameras[0] && !all_zero(some.matrices));
     assert(some.matrices.aspect == 640.0 / 480.0);
+
+    // `_applyCameraViewport`: nothing without a camera viewport, and the
+    // pin's unclamped rectangle with one.
+    assert(!upstream::pass_camera_viewport(nullptr, 640, 480));
+    assert(!upstream::pass_camera_viewport(&engine.cameras[0], 640, 480));
+    engine.cameras[1].viewport = NormalizedViewport{0.5, 0.0, 0.5, 1.0};
+    const std::optional<PixelViewport> right =
+        upstream::pass_camera_viewport(&engine.cameras[1], 640, 480);
+    assert(right && right->x == 320 && right->y == 0 && right->width == 320 &&
+           right->height == 480);
+    engine.cameras[1].viewport = NormalizedViewport{-0.25, 0.0, 0.5, 1.0};
+    const std::optional<PixelViewport> past =
+        upstream::pass_camera_viewport(&engine.cameras[1], 640, 480);
+    assert(past && past->x == -160 && past->width == 320);
+    // A scene's own pass without a surface pane resolves the same rectangle.
+    Scene own;
+    own.camera = CameraHandle{1};
+    const std::optional<PixelViewport> scene_pass =
+        scene_camera_viewport(engine, own, &engine.cameras[1], 640, 480);
+    assert(scene_pass && scene_pass->x == -160 && scene_pass->width == 320);
+}
+
+/**
+ * The pass block the pin keeps (`task._sceneUBO`): written through a pass
+ * camera, left as it was without one, zero until first written; one entry
+ * per scene pass by identity and per frame task by handle.
+ */
+void check_retained_blocks() {
+    using Block = std::array<float, 2>;
+    const CameraRecord camera = looking_down_z();
+    unsigned writes = 0;
+    const auto writer = [&](const CameraRecord& written) {
+        ++writes;
+        return Block{static_cast<float>(written.radius), 1.0f};
+    };
+    RetainedBlock<Block> retained;
+    assert(retained.write(nullptr, writer) == Block{} && writes == 0);
+    assert(retained.write(&camera, writer) == (Block{1.0f, 1.0f}) && writes == 1);
+    assert(retained.write(nullptr, writer) == (Block{1.0f, 1.0f}) && writes == 1);
+
+    PassBlocks<RetainedBlock<Block>> blocks;
+    Scene first, second;
+    RetainedBlock<Block>& scene_block = blocks.scene(first);
+    scene_block.write(&camera, writer);
+    assert(&blocks.scene(first) == &scene_block && blocks.scene(second).block() == Block{});
+    RetainedBlock<Block>& task_block = blocks.task(TaskHandle{3});
+    task_block.write(&camera, writer);
+    blocks.task(TaskHandle{40});
+    assert(&blocks.task(TaskHandle{3}) == &task_block && task_block.block()[1] == 1.0f);
+    assert(&blocks.pass(first, std::nullopt) == &scene_block);
+    assert(&blocks.pass(first, TaskHandle{3}) == &task_block);
+    // A disposed scene's entry goes with it: a later scene starts at zero.
+    {
+        Scene gone;
+        blocks.scene(gone).write(&camera, writer);
+    }
+    Scene later;
+    assert(blocks.scene(later).block() == Block{});
 }
 
 const std::vector<std::string> steady_steps{
     "sprites", "rows",     "storage", "submit",     "uploaded", "pass",           "palettes",
     "capture", "clusters", "text",    "billboards", "splats",   "render capture", "pass blocks"};
 
-/** A camera-less scene still runs every step, through a null pass. */
+/**
+ * A camera-less scene still runs every step, through a null pass; the
+ * renderables' clocks step by the engine's `_currentDelta`, whatever the
+ * scene's `fixedDeltaMs`.
+ */
 void check_camera_less_frame() {
     Run run;
+    run.scene.fixed_delta_ms = 1000.0 / 60.0;
+    run.engine.current_delta_ms = 7.25;
     Hooks hooks;
     const SceneSyncOutcome outcome = run.synchronize(hooks);
     assert(hooks.steps == steady_steps);
+    assert(hooks.sprite_delta_ms == 7.25 && hooks.billboard_delta_ms == 7.25);
     assert(!outcome.topology_updated && !hooks.capture_saw_topology);
     assert(outcome.surface_extent.width == 640 && outcome.surface_extent.height == 480);
     assert(!outcome.pass.camera && !hooks.settled.pass.camera && !hooks.text_camera);
@@ -345,6 +420,7 @@ void check_topology_and_rows() {
 
 int main() {
     check_pass_resolution();
+    check_retained_blocks();
     check_camera_less_frame();
     check_transparent_sort();
     check_topology_and_rows();

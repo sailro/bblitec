@@ -7,16 +7,24 @@
 // `upstream::render_task_clear_color`, and every pass here -- a scene's own,
 // a swapchain overlay's, a utility layer's, a render task's -- resolves
 // through them. A null camera is the pin's camera-less pass: it still clears
-// and draws, `_writePassSceneUBO` writes no scene block, and a renderable
-// whose update needs a camera returns on its own lowered test.
+// and draws, `_writePassSceneUBO` leaves the pass's scene block as it was,
+// and a renderable whose update needs a camera returns on its own lowered
+// test.
 #pragma once
+
+#include <bblite/features/has_billboards.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
+#include <algorithm>
 #include <array>
+#include <deque>
+#include <map>
+#include <memory>
 #include <optional>
+#include <utility>
 
 #include "pal_gpu_shared.hpp"
 
@@ -78,27 +86,108 @@ inline const CameraRecord* geometry_pass_camera(Engine& engine, const Scene& sce
     return upstream::geometry_task_camera(nullptr, scene_camera(engine, scene));
 }
 
-#if BBLITE_PINNED_MATERIALS
 /**
- * A pass's scene block over `view_projection`: the pin's writer through the
- * pass camera, or -- where `_writePassSceneUBO` returns
- * (`upstream::pass_scene_block_skips`) -- the zero block the pass's buffer
- * starts with. A backend that keeps each pass's block in a buffer skips the
- * write instead, which leaves the block as the pin leaves it.
+ * One pass's block as the pin keeps it. Every render task owns its scene
+ * UBO (`task._sceneUBO`, created zeroed), and `_writePassSceneUBO` rewrites
+ * it through the pass camera or returns first without one
+ * (`upstream::pass_scene_block_skips`) -- so a camera-less pass reads what
+ * the block last held: its zeros, or its last camera's.
  */
-inline upstream::SceneUniforms pass_scene_uniforms(const Scene& scene, const Engine& engine,
-                                                   const CameraRecord* camera,
-                                                   const std::array<float, 16>& view_projection) {
-    if (upstream::pass_scene_block_skips(camera))
-        return upstream::SceneUniforms{};
-    return pinned_scene_block(scene, engine, *camera, view_projection);
+template <class Block> class RetainedBlock {
+public:
+    /** The pass's write: `writer(camera)` with a camera, nothing without. */
+    template <class Writer> const Block& write(const CameraRecord* camera, Writer&& writer) {
+        if (!upstream::pass_scene_block_skips(camera))
+            block_ = std::forward<Writer>(writer)(*camera);
+        return block_;
+    }
+
+    [[nodiscard]] const Block& block() const { return block_; }
+
+private:
+    Block block_{};
+};
+
+/**
+ * Every pass's retained entry: a scene's own pass by its scene's identity
+ * (a disposed scene's entry goes with it, so a scene allocated after it
+ * starts from zeros), a frame task by its handle -- the table only grows,
+ * so a handle names one task for the run. References stay valid as the
+ * table grows.
+ */
+template <class Entry> class PassBlocks {
+public:
+    Entry& scene(const Scene& scene) {
+        const auto found = scenes_.find(scene.state);
+        if (found != scenes_.end())
+            return found->second;
+        std::erase_if(scenes_, [](const auto& entry) { return entry.first.expired(); });
+        return scenes_[scene.state];
+    }
+
+    Entry& task(TaskHandle task) {
+        if (task.value >= tasks_.size())
+            tasks_.resize(static_cast<std::size_t>(task.value) + 1u);
+        return tasks_[task.value];
+    }
+
+    /** A frame task's entry, else the scene's own pass's. */
+    Entry& pass(const Scene& scene, std::optional<TaskHandle> task) {
+        return task ? this->task(*task) : this->scene(scene);
+    }
+
+private:
+    std::map<std::weak_ptr<SceneState>, Entry, std::owner_less<std::weak_ptr<SceneState>>> scenes_;
+    std::deque<Entry> tasks_;
+};
+
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+/**
+ * A pass's retained scene blocks: the one its materials and backgrounds
+ * bind, and the same group as a billboard program binds it -- over the
+ * matrices the pass draws billboards with. A backend that pushes blocks per
+ * draw keeps these to push; one that keeps each pass's block in its own
+ * buffer writes what these hold.
+ */
+struct RetainedSceneBlock {
+    RetainedBlock<upstream::SceneUniforms> pass;
+#if BBLITE_HAS_BILLBOARDS
+    RetainedBlock<upstream::SceneUniforms> billboard;
+#endif
+};
+
+using RetainedSceneBlocks = PassBlocks<RetainedSceneBlock>;
+
+/** `_writePassSceneUBO` over the pass camera and `view_projection`. */
+inline const upstream::SceneUniforms&
+write_pass_scene_block(RetainedSceneBlock& retained, const Scene& scene, const Engine& engine,
+                       const CameraRecord* camera, const std::array<float, 16>& view_projection) {
+    return retained.pass.write(camera, [&](const CameraRecord& written) {
+        return pinned_scene_block(scene, engine, written, view_projection);
+    });
 }
 
-/** The scene block of `pass`, over its own view-projection. */
-inline upstream::SceneUniforms pass_scene_uniforms(const Scene& scene, const Engine& engine,
-                                                   const PassCamera& pass) {
-    return pass_scene_uniforms(scene, engine, pass.camera, pass.matrices.view_projection);
+/** The same write over `pass`'s own camera and view-projection. */
+inline const upstream::SceneUniforms& write_pass_scene_block(RetainedSceneBlock& retained,
+                                                             const Scene& scene,
+                                                             const Engine& engine,
+                                                             const PassCamera& pass) {
+    return write_pass_scene_block(retained, scene, engine, pass.camera,
+                                  pass.matrices.view_projection);
 }
+
+#if BBLITE_HAS_BILLBOARDS
+/** The same write for the block a billboard program binds. */
+inline const upstream::SceneUniforms&
+write_billboard_scene_block(RetainedSceneBlock& retained, const Scene& scene, const Engine& engine,
+                            const CameraRecord* camera,
+                            const std::array<float, 16>& view_projection,
+                            const std::array<float, 16>& view) {
+    return retained.billboard.write(camera, [&](const CameraRecord& written) {
+        return billboard_scene_block(scene, engine, written, view_projection, view);
+    });
+}
+#endif
 #endif
 
 } // namespace bbl::pal

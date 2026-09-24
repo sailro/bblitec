@@ -3645,19 +3645,14 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
 // own `_writeLightUbo`, and the scene block's members are the ones the pin's
 // declaration names. Only the plumbing is here.
 // Upload the pin's per-pass blocks. Both are built by the shared builders, so
-// this backend decides only where they land.
+// this backend decides only where they land: the scene block the pass
+// retains (`pal::write_pass_scene_block`, which a camera-less pass leaves as
+// it was) and the lights.
 void write_pinned_frame_blocks(DawnState& state, const Scene& scene, const Engine& engine,
-                               const CameraRecord* camera,
-                               const std::array<float, 16>& view_projection) {
+                               const upstream::SceneUniforms& scene_block) {
     ensure_pinned_frame_buffers(state);
-    // The pin refreshes the lights before `_writePassSceneUBO`, which
-    // returns without a camera and leaves the scene block as it was.
-    if (!upstream::pass_scene_block_skips(camera)) {
-        const upstream::SceneUniforms scene_block =
-            pass_scene_uniforms(scene, engine, camera, view_projection);
-        wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
-                             sizeof(scene_block));
-    }
+    wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
+                         sizeof(scene_block));
     const std::vector<std::uint8_t> lights = pinned_lights_block(scene, engine);
     wgpuQueueWriteBuffer(state.queue, state.pinned_lights_uniforms, 0, lights.data(),
                          lights.size());
@@ -8708,6 +8703,10 @@ class DawnSceneRun {
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+        // Each pass's scene blocks, which a camera-less pass keeps.
+        RetainedSceneBlocks pass_blocks;
+#endif
         std::vector<float> shader_block_scratch;
 #if BBLITE_OFFSCREEN_SURFACES
         OffscreenRun* offscreen = nullptr;
@@ -9634,11 +9633,10 @@ public:
         DawnSceneRun& run;
         MeshRowWrites rows;
 
-        void update_sprites() {
+        void update_sprites([[maybe_unused]] double delta_ms) {
 #if BBLITE_HAS_SPRITE_RENDERER
             auto& data = run.data_;
             DawnState& state = rows.state;
-            const double delta_ms = run.current_frame().delta_ms;
             // `_update` for every sprite context precedes every `_record`.
             // Scene callbacks may have changed layer membership or instance
             // data, so every sprite context synchronizes and uploads now.
@@ -9741,7 +9739,8 @@ public:
 #endif
         }
 
-        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome) {
+        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome,
+                               [[maybe_unused]] double delta_ms) {
 #if BBLITE_HAS_BILLBOARDS
             DawnState& state = rows.state;
             const Scene& scene = run.data_.scene;
@@ -9761,12 +9760,12 @@ public:
             }
             // The scene block each program binds at its group 0: the pass's
             // own, over the matrices the frame draws billboards with.
-            const upstream::SceneUniforms billboard_block = billboard_scene_block(
-                scene, rows.engine, outcome.pass.camera, outcome.pass.matrices.view_projection,
-                outcome.pass.matrices.view);
+            const upstream::SceneUniforms& billboard_block = write_billboard_scene_block(
+                run.data_.pass_blocks.scene(scene), scene, rows.engine, outcome.pass.camera,
+                outcome.pass.matrices.view_projection, outcome.pass.matrices.view);
             for (DawnBillboardPass& billboard : state.billboard_passes) {
                 upload_dawn_billboard_pass(state.queue, scene, rows.engine, billboard,
-                                           billboard_block, run.current_frame().delta_ms);
+                                           billboard_block, delta_ms);
             }
 #endif
         }
@@ -9814,9 +9813,9 @@ public:
     /**
      * The frame's buffered pass blocks, before anything reads them: WebGPU
      * has no push constants, so every block a pass binds is a queue write
-     * here. A pass without a camera skips its scene block's write
-     * (`upstream::pass_scene_block_skips`), which leaves the block as the
-     * pin's `_writePassSceneUBO` leaves it.
+     * here. Each scene block is the one its pass retains
+     * (`pal::write_pass_scene_block`), which a pass without a camera leaves
+     * as the pin's `_writePassSceneUBO` leaves it.
      */
     void write_pass_blocks(const SceneSyncOutcome& outcome) {
         [[maybe_unused]] auto& engine = data_.engine;
@@ -9839,7 +9838,9 @@ public:
         // The pin's per-pass blocks, before anything reads them: the scene block
         // the variants' vertex and fragment stages share, and the lights array
         // their multi-light arm indexes.
-        write_pinned_frame_blocks(state, scene, engine, camera, matrix);
+        write_pinned_frame_blocks(
+            state, scene, engine,
+            write_pass_scene_block(data_.pass_blocks.scene(scene), scene, engine, camera, matrix));
         // Each overlay layer's own scene and lights blocks, written into
         // its own buffers. A queue write lands before the whole command
         // buffer runs, so the base scene's blocks cannot simply be
@@ -9859,12 +9860,10 @@ public:
             const PassCamera overlay_pass =
                 build_pass_camera(*overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
                                   overlay_surface_extent.width, overlay_surface_extent.height);
-            if (!upstream::pass_scene_block_skips(overlay_pass.camera)) {
-                const upstream::SceneUniforms overlay_scene_block =
-                    pass_scene_uniforms(*overlay_scene, engine, overlay_pass);
-                wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
-                                     sizeof(overlay_scene_block));
-            }
+            const upstream::SceneUniforms& overlay_scene_block = write_pass_scene_block(
+                data_.pass_blocks.scene(*overlay_scene), *overlay_scene, engine, overlay_pass);
+            wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
+                                 sizeof(overlay_scene_block));
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
             wgpuQueueWriteBuffer(state.queue, overlay.lights_uniforms, 0, overlay_lights.data(),
@@ -10046,9 +10045,9 @@ public:
                         task_camera_pass.view_projection = {};
                     const std::array<float, 16>& task_matrix = task_camera_pass.view_projection;
                     const ShaderPassMatrices task_pass_matrices = task_camera_pass.pass();
-                    const bool writes_scene_block =
-                        !shadow_task && !upstream::pass_scene_block_skips(task_camera);
-                    if (writes_scene_block) {
+                    // The port's own view-projection lane carries the pass's
+                    // matrix, as the frame's and the SDL_GPU push do.
+                    if (!shadow_task) {
                         wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
                                              task_matrix.data(), 64);
                     }
@@ -10103,8 +10102,10 @@ public:
                     // pass block, as the pin binds each task's scene group: the
                     // task's camera and matrices, as the SDL_GPU twin pushes.
                     if (task.render.scene_stages && target_record.has_color && !shadow_task) {
-                        const upstream::SceneUniforms billboard_block = billboard_scene_block(
-                            graph_scene, engine, task_camera, task_matrix, task_camera_pass.view);
+                        const upstream::SceneUniforms& billboard_block =
+                            write_billboard_scene_block(data_.pass_blocks.task(handle), graph_scene,
+                                                        engine, task_camera, task_matrix,
+                                                        task_camera_pass.view);
                         for (DawnBillboardPass& billboard : state.billboard_passes) {
                             write_dawn_billboard_task_scene(state.device, state.queue, billboard,
                                                             handle.value, billboard_block);
@@ -10120,11 +10121,13 @@ public:
                     // width). A caster pass writes none: its `task_matrix` is
                     // the zero matrix, and a written block would hand every
                     // receiver zeros.
-                    if (target_record.has_color && writes_scene_block) {
+                    if (target_record.has_color && !shadow_task) {
                         // The task's own pass block, in the pin's own shape: the
-                        // frame's writer over the task's camera and matrix.
-                        const upstream::SceneUniforms task_scene_block =
-                            pass_scene_uniforms(graph_scene, engine, task_camera, task_matrix);
+                        // frame's writer over the task's camera and matrix, kept
+                        // as it was by a camera-less task.
+                        const upstream::SceneUniforms& task_scene_block =
+                            write_pass_scene_block(data_.pass_blocks.task(handle), graph_scene,
+                                                   engine, task_camera, task_matrix);
                         task_pinned_frame_group(state, render_task, graph_lights);
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
                                              &task_scene_block, sizeof(task_scene_block));

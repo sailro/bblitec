@@ -28,7 +28,9 @@ shares the standalone hosts' input, clock, capture and benchmark phases.
 `pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
 instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
 colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders
-through its own camera, and a camera-less pass draws through zero matrices and writes no scene block.
+through its own camera, every render and geometry task pass applies its camera's viewport, and a
+camera-less pass draws through zero matrices and keeps the scene block it last wrote. Renderable clocks
+(sprite-renderer hooks, sprite and billboard FX) step by the engine's delta, not a scene's `fixedDeltaMs`.
 Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
 `pal_window.hpp` owns the OS window independently of renderer rebuilds.
 

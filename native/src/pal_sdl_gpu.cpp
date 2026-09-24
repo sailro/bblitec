@@ -6672,6 +6672,10 @@ class SdlSceneRun {
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+        // Each pass's scene blocks, which a camera-less pass keeps.
+        RetainedSceneBlocks pass_blocks;
+#endif
         std::vector<float> shader_block_scratch;
 #if BBLITE_HAS_PICKING
 #if BBLITE_HAS_BILLBOARDS
@@ -7860,11 +7864,10 @@ public:
         SdlSceneRun& run;
         MeshRowUploads rows;
 
-        void update_sprites() {
+        void update_sprites([[maybe_unused]] double delta_ms) {
 #if BBLITE_HAS_SPRITE_RENDERER
             auto& data = run.data_;
             auto& resources = data.resources;
-            const double delta_ms = run.current_frame().delta_ms;
             // `_update` for every sprite context precedes every `_record`,
             // sharing the scene's one batched upload submission.
             // Registration controls drawing, not whether its layer data
@@ -8067,14 +8070,14 @@ public:
 #endif
         }
 
-        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome) {
+        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome,
+                               [[maybe_unused]] double delta_ms) {
 #if BBLITE_HAS_BILLBOARDS
             // Uploaded here because the upload submits a command buffer of
             // its own; the draw reads the same view.
             for (BillboardPass& billboard : rows.state.billboard_passes) {
                 upload_billboard_pass(rows.state.device, run.data_.scene, run.data_.engine,
-                                      billboard, outcome.pass.matrices.view,
-                                      run.current_frame().delta_ms);
+                                      billboard, outcome.pass.matrices.view, delta_ms);
             }
 #endif
         }
@@ -8141,6 +8144,9 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] const bool transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+        [[maybe_unused]] auto& pass_blocks = data_.pass_blocks;
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
@@ -8319,19 +8325,20 @@ public:
 #if BBLITE_PINNED_BACKGROUNDS
                     // A compiler-owned scene-stage task draws the background
                     // arms around its mirrored lists, each over the task's
-                    // own scene block -- the zero block for a camera-less
-                    // task, through which an arm reaches no fragment. The
-                    // mesh paths read slot zero as the task matrix, so it is
-                    // restored after.
+                    // own scene block -- which a camera-less task keeps as it
+                    // was. The mesh paths read slot zero as the task matrix,
+                    // so it is restored after.
                     const auto draw_task_background =
-                        [&](SDL_GPURenderPass* task_pass, const std::array<float, 16>& task_matrix,
+                        [&](SDL_GPURenderPass* task_pass, TaskHandle task_handle,
+                            const std::array<float, 16>& task_matrix,
                             const CameraRecord* task_camera,
                             std::optional<upstream::PinnedBackgroundArmKind> kind) {
                             if (!kind)
                                 return;
                             draw_background_arm(
                                 command, task_pass, state.background_arm(*kind),
-                                pass_scene_uniforms(graph_scene, engine, task_camera, task_matrix));
+                                write_pass_scene_block(pass_blocks.task(task_handle), graph_scene,
+                                                       engine, task_camera, task_matrix));
                             SDL_PushGPUVertexUniformData(command, 0, task_matrix.data(),
                                                          sizeof(task_matrix));
                         };
@@ -8367,6 +8374,11 @@ public:
                                                 // or either of its factors.
                                                 [[maybe_unused]] const ShaderPassMatrices&
                                                     draw_pass_matrices,
+                                                // The frame task this pass is, or
+                                                // none for a scene's own pass:
+                                                // whose scene block it keeps.
+                                                [[maybe_unused]] std::optional<TaskHandle>
+                                                    pass_task,
                                                 const upstream::RenderDrawLists& draw_lists,
                                                 [[maybe_unused]] const FrameTaskRecord*
                                                     geometry_task,
@@ -8446,15 +8458,15 @@ public:
                                 "A shadow caster pass fills its scene block's camera lanes from "
                                 "the scene's active camera; a scene without one is not reached.");
                         }
-                        // A pass without a camera pushes the zero block the pin
-                        // never writes (`pass_scene_uniforms`).
+                        // A pass without a camera pushes the block it last
+                        // wrote, as the pin's task keeps its scene UBO.
                         upstream::SceneUniforms pass_scene_block =
 #if BBLITE_HAS_TAA
-                            deferred_scene
-                                ? temporal_clean_scene_block(*deferred_scene)
-                                :
+                            deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
 #endif
-                                pass_scene_uniforms(draw_context, engine, draw_camera, draw_matrix);
+                                           write_pass_scene_block(
+                                               pass_blocks.pass(draw_context, pass_task),
+                                               draw_context, engine, draw_camera, draw_matrix);
 #if BBLITE_SHADOW_RECEIVERS
                         // The pin installs the light-space matrices on a camera
                         // facade whose caches it pins, so its caster pass reads
@@ -8737,9 +8749,10 @@ public:
                                 throw std::runtime_error(
                                     "Billboard scene stages require a view matrix.");
                             draw_task_billboards(task_pass, BillboardDepthMode::cutout,
-                                                 billboard_scene_block(draw_context, engine,
-                                                                       draw_camera, draw_matrix,
-                                                                       *draw_pass_matrices.view));
+                                                 write_billboard_scene_block(
+                                                     pass_blocks.pass(draw_context, pass_task),
+                                                     draw_context, engine, draw_camera, draw_matrix,
+                                                     *draw_pass_matrices.view));
                         }
 #endif
                         draw_list(draw_lists.transparent);
@@ -8929,7 +8942,7 @@ public:
                                 draw_scene(graph_scene, graph_meshes, shadow_pass,
                                            state.shader_shadow_pipelines,
                                            state.shader_shadow_pipelines, caster_view_projection,
-                                           task_camera, caster_pass_matrices,
+                                           task_camera, caster_pass_matrices, handle,
                                            handle_at(task_draw_lists, handle), nullptr, nullptr,
                                            nullptr, nullptr, &generator);
                                 shadow_pass.end();
@@ -9139,7 +9152,8 @@ public:
                                         "Compiler-owned scene stages require the frame attachment formats and sample count.");
 #if BBLITE_PINNED_BACKGROUNDS
                                 for (const SkyboxLayer layer : skybox_stage_order) {
-                                    draw_task_background(task_pass, task_matrix, task_camera,
+                                    draw_task_background(task_pass, handle, task_matrix,
+                                                         task_camera,
                                                          state.background_draws.skybox(layer));
                                 }
 #endif
@@ -9147,8 +9161,9 @@ public:
                             draw_scene(
                                 graph_scene, graph_meshes, task_pass, state.shader_pipelines,
                                 state.shader_a2c_pipelines, task_matrix, task_camera,
-                                task_pass_matrices, handle_at(task_draw_lists, handle), nullptr,
-                                nullptr, nullptr, nullptr, nullptr, task.render.scene_stages
+                                task_pass_matrices, handle, handle_at(task_draw_lists, handle),
+                                nullptr, nullptr, nullptr, nullptr, nullptr,
+                                task.render.scene_stages
 #if BBLITE_HAS_TAA
                                 ,
                                 nullptr, {}, {}
@@ -9164,14 +9179,15 @@ public:
                                                  task_sample_count(state, target_record.samples)});
                             if (task.render.scene_stages) {
 #if BBLITE_PINNED_BACKGROUNDS
-                                draw_task_background(task_pass, task_matrix, task_camera,
+                                draw_task_background(task_pass, handle, task_matrix, task_camera,
                                                      state.background_draws.ground);
 #endif
 #if BBLITE_HAS_BILLBOARDS
-                                draw_task_billboards(task_pass, BillboardDepthMode::transparent,
-                                                     billboard_scene_block(graph_scene, engine,
-                                                                           task_camera, task_matrix,
-                                                                           task_view));
+                                draw_task_billboards(
+                                    task_pass, BillboardDepthMode::transparent,
+                                    write_billboard_scene_block(pass_blocks.task(handle),
+                                                                graph_scene, engine, task_camera,
+                                                                task_matrix, task_view));
 #endif
                             }
                             task_pass.end();
@@ -9205,7 +9221,7 @@ public:
                                     draw_scene(utility, state.overlay_meshes[layer], utility_pass,
                                                state.shader_pipelines, state.shader_a2c_pipelines,
                                                utility_matrix, utility_pass_camera.camera,
-                                               utility_pass_camera.pass(),
+                                               utility_pass_camera.pass(), std::nullopt,
                                                overlay_plans[layer].draw_lists, nullptr, nullptr,
                                                nullptr, nullptr);
                                     utility_pass.end();
@@ -9328,8 +9344,8 @@ public:
 #endif
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {},
                                        geometry_matrix, geometry_pass.camera, geometry_pass.pass(),
-                                       handle_at(task_draw_lists, handle), &task, &geometry_params,
-                                       geometry.params, &geometry.velocity);
+                                       handle, handle_at(task_draw_lists, handle), &task,
+                                       &geometry_params, geometry.params, &geometry.velocity);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                             // The previous view-projection is a property of the
                             // TASK, tracked only when a composed family reads it.
@@ -9771,9 +9787,9 @@ public:
             // The frame's scene and lights blocks, once per frame rather
             // than per draw — the same hoist the Dawn backend's
             // write_pinned_frame_blocks already makes. A scene without a
-            // camera pushes the zero block the pin never writes.
+            // camera pushes the block its pass last wrote.
             upstream::SceneUniforms pass_scene_block =
-                pass_scene_uniforms(scene, engine, camera, matrix);
+                write_pass_scene_block(pass_blocks.scene(scene), scene, engine, camera, matrix);
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
 #endif
             const auto draw_render_list = [&](const upstream::RenderDrawList& list) {
@@ -10008,8 +10024,8 @@ public:
             // depth and everything after has to see it, and 200 after the
             // scene's own stages for the transparent modes.
             const auto draw_billboards = [&](BillboardDepthMode mode) {
-                const upstream::SceneUniforms billboard_block =
-                    billboard_scene_block(scene, engine, camera, matrix, frame_view);
+                const upstream::SceneUniforms billboard_block = write_billboard_scene_block(
+                    pass_blocks.scene(scene), scene, engine, camera, matrix, frame_view);
                 for (const BillboardPass& billboard : state.billboard_passes) {
                     if (handle_at(engine.billboard_systems, billboard.system).depth_mode != mode) {
                         continue;
@@ -10109,7 +10125,8 @@ public:
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
 #if BBLITE_PINNED_MATERIALS
-                pass_scene_block = pass_scene_uniforms(*overlay_scene, engine, overlay_pass);
+                pass_scene_block = write_pass_scene_block(pass_blocks.scene(*overlay_scene),
+                                                          *overlay_scene, engine, overlay_pass);
                 pass_lights_block = pinned_lights_block(*overlay_scene, engine);
 #endif
                 color_info.load_op = SDL_GPU_LOADOP_LOAD;

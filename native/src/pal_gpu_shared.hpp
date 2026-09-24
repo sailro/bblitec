@@ -2957,16 +2957,14 @@ inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engi
 /**
  * The scene block a billboard program binds at its group 0: the pin's
  * block for the pass, over the view projection and view the pass draws
- * billboards with. A pass without a camera carries the zero block the pin
- * never writes, as every composed family's does.
+ * billboards with. A pass without a camera writes none and keeps what its
+ * block last held (`pal::write_billboard_scene_block`).
  */
 inline upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& engine,
-                                                     const CameraRecord* camera,
+                                                     const CameraRecord& camera,
                                                      const std::array<float, 16>& view_projection,
                                                      const std::array<float, 16>& view) {
-    upstream::SceneUniforms block =
-        camera ? pinned_scene_block(scene, engine, *camera, view_projection)
-               : upstream::SceneUniforms{};
+    upstream::SceneUniforms block = pinned_scene_block(scene, engine, camera, view_projection);
     block.viewProjection = view_projection;
     block.view = view;
     return block;

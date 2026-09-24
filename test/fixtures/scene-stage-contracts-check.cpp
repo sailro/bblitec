@@ -215,14 +215,20 @@ struct SdlGraph : Graph {
     }
     std::vector<int> task_draw_lists{1};
     MeshHandle handle{0};
-    static void draw_task_background(int, int, const int*, BackgroundKind kind) {
+    static void draw_task_background(int, MeshHandle, int, const int*, BackgroundKind kind) {
         record_background(kind);
     }
-    // The pass's scene block a billboard program binds, built from the
-    // pass's scene, camera and matrices; the stages only order the draw.
+    // The pass's retained scene block a billboard program binds, written
+    // from the pass's scene, camera and matrices; the stages only order the
+    // draw.
+    struct {
+        static int pass(int, std::optional<TaskHandle>) { return 0; }
+        static int task(MeshHandle) { return 0; }
+    } pass_blocks;
     int draw_context = 0, draw_camera = 0, engine = 0;
-    static int billboard_scene_block(int, int, const int*, int, int) { return 0; }
-    static int billboard_scene_block(int, int, int, int, int) { return 0; }
+    std::optional<TaskHandle> pass_task;
+    static int write_billboard_scene_block(int, int, int, const int*, int, int) { return 0; }
+    static int write_billboard_scene_block(int, int, int, int, int, int) { return 0; }
     static void draw_task_billboards(int, BillboardDepthMode mode, int) {
         Graph::draw_task_billboards(mode);
     }
