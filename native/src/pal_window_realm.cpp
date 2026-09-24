@@ -691,7 +691,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         if (!presenter)
             throw std::runtime_error("Requested Window GPU backend is unavailable.");
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
-        WindowFrameClock compositor_clock(cpu_profile);
+        // A frame budget or capture bounds the run: a clock that stops ticking fails it.
+        WindowFrameClock compositor_clock(cpu_profile, capture_frame_count != 0 ||
+                                                           frame_options.frame_budget() > 0);
         presenter->set_display_paced(compositor_clock.available());
         // Reload replaces realm-owned state while keeping the native window and device.
         const auto location = std::make_shared<WindowLocation>();
@@ -1150,9 +1152,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         std::cerr << trace.str();
                     }
                     ++presented;
-                    if (capture_frame_count
-                            ? capture
-                            : frame_options.max_frames > 0 && presented >= frame_options.max_frames)
+                    if (capture_frame_count ? capture
+                                            : frame_options.frame_budget() > 0 &&
+                                                  presented >= frame_options.frame_budget())
                         running = false;
                 }
                 if (compositor_clock.available()) {

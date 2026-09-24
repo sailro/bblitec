@@ -51,8 +51,8 @@ the browser compositor, never offline PNG resizing.
 
 `BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
 they must not appear on the user's desktop. A `platform:window` scene paces on the desktop compositor
-clock, which stops while the console session is locked: its measured runs without their own bound are
-killed after two minutes plus 50 ms per frame.
+clock, which stops while the console session is locked: a run with a frame budget or capture fails after
+30 s without a heartbeat, naming the clock's last status; an unbounded run waits for the display.
 
 ## Captured state and its limits
 
@@ -93,7 +93,8 @@ Scene149 browser live resize throws error #84; its resized reference uses unchan
 `<entry>*<n>` repeats entries. Recovery tapes include Dataset, GlobalCall and DeviceLoss.
 
 `memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
-above `--max-slope-mb` (MB per 1,000 frames, default 2), occupied mesh records the scene does not draw
+above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
+later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
 or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. `all` selects
 the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
 `--replay`/`--replay-file` supply another and `--replay -` idles.
