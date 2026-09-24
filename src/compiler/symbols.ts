@@ -236,6 +236,56 @@ const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether an identifier resolves to the checker's own global binding of its
+ * name, the one a program reaches when nothing it declares shadows that
+ * name. The checker models `globalThis` and `undefined` as intrinsics with
+ * no declaration, so this, not a declaration's origin, is what tells the
+ * library's binding of them from a program's own.
+ */
+function isCheckerGlobal(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): boolean {
+    return (
+        checker.getSymbolAtLocation(identifier) ===
+        checker.resolveName(
+            identifier.text,
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        )
+    );
+}
+
+/**
+ * Whether an expression is the global `undefined`, grouping and type-only
+ * wrappers seen through. The one answer to "is this the absent value": a
+ * local, parameter or import a program names `undefined` is not.
+ */
+export function isGlobalUndefined(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const node = unwrapExpression(expression);
+    return (
+        ts.isIdentifier(node) &&
+        node.text === "undefined" &&
+        isCheckerGlobal(checker, node)
+    );
+}
+
+/** Whether an expression is a literal `null` or the global `undefined`. */
+export function isNullishLiteral(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return (
+        unwrapExpression(expression).kind === ts.SyntaxKind.NullKeyword ||
+        isGlobalUndefined(checker, expression)
+    );
+}
+
+/**
  * The default-library global an expression names, or undefined.
  *
  * An identifier names one when it resolves to a declaration of
@@ -258,14 +308,7 @@ export function libraryGlobal(
     const node = unwrapExpression(expression);
     if (ts.isIdentifier(node)) {
         return declaredInDefaultLibrary(resolvedSymbol(checker, node)) ||
-            (node.text === "globalThis" &&
-                checker.getSymbolAtLocation(node) ===
-                    checker.resolveName(
-                        node.text,
-                        undefined,
-                        ts.SymbolFlags.Value,
-                        false,
-                    ))
+            (node.text === "globalThis" && isCheckerGlobal(checker, node))
             ? node.text
             : undefined;
     }
@@ -288,6 +331,16 @@ export class CompilerSymbols {
     /** See {@link libraryGlobal}. */
     public libraryGlobal(expression: ts.Expression): string | undefined {
         return libraryGlobal(this.checker, expression);
+    }
+
+    /** See {@link isGlobalUndefined}. */
+    public isGlobalUndefined(expression: ts.Expression): boolean {
+        return isGlobalUndefined(this.checker, expression);
+    }
+
+    /** See {@link isNullishLiteral}. */
+    public isNullishLiteral(expression: ts.Expression): boolean {
+        return isNullishLiteral(this.checker, expression);
     }
 
     /** Resolve a generation-known enum value through its pinned declaration,

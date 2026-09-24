@@ -608,7 +608,7 @@ export class ExpressionLowerer {
                     dataType: { kind: "number" },
                 };
             }
-            if (unwrapped.text === "undefined") {
+            if (this.context.symbols.isGlobalUndefined(unwrapped)) {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
             const numeric = this.context.libraryGlobal(unwrapped);
@@ -1187,13 +1187,13 @@ export class ExpressionLowerer {
                 };
             }
             if (
-                ts.isIdentifier(expression) &&
-                (expression.text === "undefined" ||
+                this.context.symbols.isGlobalUndefined(expression) ||
+                (ts.isIdentifier(expression) &&
                     isAbsentTypeofIdentifier(
                         this.context.checker,
                         expression,
-                    )) &&
-                !this.context.bindings.lookupOptional(expression)
+                    ) &&
+                    !this.context.bindings.lookupOptional(expression))
             ) {
                 return {
                     kind: "string",
@@ -2678,11 +2678,7 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             }
-            if (
-                ts.isIdentifier(argument) &&
-                argument.text === "undefined" &&
-                !this.context.bindings.lookupOptional(argument)
-            ) {
+            if (this.context.symbols.isGlobalUndefined(argument)) {
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
                 );
@@ -3897,11 +3893,9 @@ export class ExpressionLowerer {
             // needing a per-kind truthiness rule. Scene 140 writes
             // `const sg = noShadows ? null : createPcf(...)` and then
             // `if (sg)`, with `noShadows` folded from its query.
-            const droppedNode = this.context.unwrap(dropped);
-            const droppedIsNullish =
-                droppedNode.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(droppedNode) &&
-                    droppedNode.text === "undefined");
+            const droppedIsNullish = this.context.symbols.isNullishLiteral(
+                this.context.unwrap(dropped),
+            );
             // Only for a RESOURCE, because `optionalFoundCpp` means
             // presence and the consumers read it as truthiness. Those
             // two agree for a handle -- a mesh that exists is truthy
@@ -4058,15 +4052,10 @@ export class ExpressionLowerer {
                 guard.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsToken;
             if ((!equal && !unequal) || truth === equal) return value;
-            const absent = (node: ts.Expression): boolean => {
-                const operand = this.context.unwrap(node);
-                return (
-                    operand.kind === ts.SyntaxKind.NullKeyword ||
-                    (ts.isIdentifier(operand) &&
-                        operand.text === "undefined" &&
-                        !this.context.bindings.lookupOptional(operand))
+            const absent = (node: ts.Expression): boolean =>
+                this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(node),
                 );
-            };
             const tested = absent(guard.left)
                 ? this.context.unwrap(guard.right)
                 : absent(guard.right)

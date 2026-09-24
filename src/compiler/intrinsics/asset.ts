@@ -37,6 +37,7 @@ export interface AssetIntrinsicContext
         Pick<
             LoweringServices,
             | "options"
+            | "checker"
             | "dataLowerer"
             | "expectObjectLiteral"
             | "compileStringLiteral"

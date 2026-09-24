@@ -41,10 +41,6 @@ import {
 // asserts each discarded pinned default against this table, and the
 // defaults below read the same entries, so the record seed IS the number
 // the assert pins.
-// The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
-// asserts each discarded pinned default against this table, and the
-// defaults below read the same entries, so the record seed IS the number
-// the assert pins.
 import {
     pinnedDefaultColor3,
     pinnedDefaultColor3Cpp,
@@ -55,6 +51,7 @@ import {
     type PinnedMaterialDefaultName,
 } from "../../lowering/pinned-material-defaults.js";
 import { floatLiteral } from "../../cpp-literals.js";
+import { isGlobalUndefined } from "../symbols.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(name: PinnedMaterialDefaultName): {
@@ -74,6 +71,7 @@ export interface MaterialOptionContext
         Pick<
             LoweringServices,
             | "sceneManifest"
+            | "checker"
             | "compileValue"
             | "compileForDataSink"
             | "noteMaterialColorRead"
@@ -804,11 +802,7 @@ function optionalRecordOption(
 ): Value | undefined {
     if (!expression) return undefined;
     const resolved = context.resolveStaticExpression(expression);
-    if (
-        ts.isIdentifier(resolved) &&
-        resolved.text === "undefined" &&
-        !context.bindings.lookupOptional(resolved)
-    ) {
+    if (isGlobalUndefined(context.checker, resolved)) {
         return undefined;
     }
     if (

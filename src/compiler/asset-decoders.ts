@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { isGlobalUndefined } from "./symbols.js";
 import type { Value } from "./types.js";
 
 type Context = Pick<
@@ -9,7 +10,7 @@ type Context = Pick<
     | "compileValue"
     | "emitDiscardedValue"
     | "unwrap"
-    | "lookupIdentifierValue"
+    | "checker"
     | "resolveBundledAsset"
     | "setAssetDecoderConfiguration"
     | "fail"
@@ -69,11 +70,7 @@ export function compileAssetDecoderConfiguration(
     if (
         source &&
         source.kind !== ts.SyntaxKind.NullKeyword &&
-        !(
-            ts.isIdentifier(source) &&
-            source.text === "undefined" &&
-            !context.lookupIdentifierValue(source)
-        )
+        !isGlobalUndefined(context.checker, source)
     ) {
         const read = (
             expression: ts.Expression,

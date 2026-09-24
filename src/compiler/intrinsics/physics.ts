@@ -541,11 +541,8 @@ function compileImpulsePoint(
         unwrapped = unwrapped.expression;
     }
     if (ts.isConditionalExpression(unwrapped)) {
-        let absent = unwrapped.whenFalse;
-        while (ts.isParenthesizedExpression(absent)) {
-            absent = absent.expression;
-        }
-        if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
+        const absent = unwrapped.whenFalse;
+        if (!context.symbols.isGlobalUndefined(absent)) {
             context.fail(
                 absent,
                 "An optional physics impulse point must use undefined for its absent arm.",

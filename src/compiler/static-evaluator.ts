@@ -34,7 +34,11 @@ import ts from "typescript";
 import { isStringValue, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
-import { libraryGlobal, type LibraryGlobal } from "./symbols.js";
+import {
+    isGlobalUndefined,
+    libraryGlobal,
+    type LibraryGlobal,
+} from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -1463,12 +1467,7 @@ export class StaticEvaluator {
     public staticTextValue(expression: ts.Expression): string | undefined {
         const unwrapped = this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
-        if (
-            ts.isIdentifier(unwrapped) &&
-            unwrapped.text === "undefined" &&
-            !this.lookupOptional(unwrapped)
-        )
-            return "undefined";
+        if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)

@@ -3,6 +3,7 @@ import { EmissionMap } from "../emission-transaction.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import { isStringValue, optionalPresentCpp, type Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
+import { isNullishLiteral } from "../symbols.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -93,10 +94,7 @@ function expressionStruct(
     }
     if (
         lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
-        (unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !lowerer.context.lookupIdentifierValue(unwrapped)))
+        isNullishLiteral(lowerer.context.checker, unwrapped)
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }

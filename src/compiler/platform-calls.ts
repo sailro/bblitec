@@ -223,9 +223,9 @@ export class PlatformCalls {
             const value = this.compileUiCall(call, callee);
             if (value) return value;
         }
-        const global = ts.isIdentifier(callee)
-            ? this.context.libraryGlobal(callee)
-            : undefined;
+        // Bare or through the global object (`window.clearTimeout`): the
+        // same library function either way.
+        const global = this.context.libraryGlobal(callee);
         if (global !== undefined) {
             if (global === "isFinite") {
                 this.context.expectArgumentCount(call, 1, 1);

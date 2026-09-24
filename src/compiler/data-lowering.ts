@@ -22,7 +22,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
-import { CompilerSymbols } from "./symbols.js";
+import {
+    CompilerSymbols,
+    isGlobalUndefined,
+    isNullishLiteral,
+} from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
@@ -547,8 +551,7 @@ export class DataLowerer {
                         ((argumentType.flags &
                             (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
                             0 ||
-                            (unwrapped.text === "undefined" &&
-                                !this.context.lookupIdentifierValue(unwrapped)))
+                            isGlobalUndefined(this.context.checker, unwrapped))
                     )) {
                         this.context.fail(
                             argument,
@@ -2131,12 +2134,7 @@ export class DataLowerer {
                 expression.left,
             ).cpp;
             const right = this.context.unwrap(expression.right);
-            if (
-                right.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(right) &&
-                    right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(right))
-            ) {
+            if (isNullishLiteral(this.context.checker, right)) {
                 return {
                     kind: "data",
                     cpp: temp,
@@ -3841,12 +3839,7 @@ export class DataLowerer {
      */
     public objectIdentity(expression: ts.Expression): string | undefined {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return "nullptr";
         }
         if (ts.isConditionalExpression(unwrapped)) {
@@ -6015,10 +6008,7 @@ export class DataLowerer {
             nullableLogicalSink &&
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
-            (unwrapped.right.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(unwrapped.right) &&
-                    unwrapped.right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(unwrapped.right)))
+            isNullishLiteral(this.context.checker, unwrapped.right)
         ) {
             const left = this.context.unwrap(unwrapped.left);
             if (
@@ -8221,12 +8211,10 @@ export class DataLowerer {
                                 : this.dataTypeAt(element);
                     // A generic AST can still say T after its argument has an owned
                     // native representation. Read that value once to obtain its type.
-                    const node = this.context.unwrap(element);
-                    const absence =
-                        node.kind === ts.SyntaxKind.NullKeyword ||
-                        (ts.isIdentifier(node) &&
-                            node.text === "undefined" &&
-                            !this.context.lookupIdentifierValue(node));
+                    const absence = isNullishLiteral(
+                        this.context.checker,
+                        this.context.unwrap(element),
+                    );
                     const compiled =
                         !elementType || absence
                             ? this.context.compileValue(element)
@@ -9138,19 +9126,11 @@ export class DataLowerer {
                 return equal !== negated ? "true" : "false";
             }
         }
-        const isNullish = (candidate: ts.Expression): boolean => {
-            if (candidate.kind === ts.SyntaxKind.NullKeyword) {
-                return true;
-            }
-            if (!ts.isIdentifier(candidate)) {
-                return false;
-            }
-            const bound = this.context.bindings.lookupOptional(candidate);
-            return (
-                bound?.kind === "json-null" ||
-                (candidate.text === "undefined" && bound === undefined)
-            );
-        };
+        const isNullish = (candidate: ts.Expression): boolean =>
+            isNullishLiteral(this.context.checker, candidate) ||
+            (ts.isIdentifier(candidate) &&
+                this.context.bindings.lookupOptional(candidate)?.kind ===
+                    "json-null");
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
         if (
             !loose &&
@@ -10357,12 +10337,7 @@ export class DataLowerer {
         },
     ): string {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return "std::nullopt";
         }
         const optional =

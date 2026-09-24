@@ -5,7 +5,10 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import { isGlobalUndefined } from "../src/compiler/symbols.js";
 
 /** A scene running `body` in `main`, with `declarations` at module scope. */
 const scene = (body: string, declarations = ""): string => `
@@ -89,6 +92,61 @@ test("a class named Map is the scene's own class", () => {
     );
     assert.match(result.cpp, /bblscene::Map_get\(/);
     assert.doesNotMatch(result.cpp, /bbl::js::Map</);
+});
+
+test("a timer called through window lowers as the bare call", () => {
+    const timers = (qualifier: string): string[] =>
+        compileSource(
+            scene(
+                `const timer = ${qualifier}setTimeout(() => { box.position.x = 1; }, 100);\n` +
+                    `${qualifier}clearTimeout(timer);\n` +
+                    `const interval = ${qualifier}setInterval(() => { box.position.y = 2; }, 50);\n` +
+                    `${qualifier}clearInterval(interval);`,
+            ),
+            { fileName: `timers-${qualifier || "bare"}.ts` },
+        ).cpp.match(/bbl::(?:set|clear)_(?:timeout|interval)\(.*$/gm) ?? [];
+    const bare = timers("");
+    assert.deepEqual(
+        bare.map((line) => /bbl::\w+/.exec(line)![0]),
+        [
+            "bbl::set_timeout",
+            "bbl::clear_timeout",
+            "bbl::set_interval",
+            "bbl::clear_interval",
+        ],
+    );
+    assert.deepEqual(timers("window."), bare);
+});
+
+test("only the global undefined is the absent value", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        export const absent = undefined;
+        export const cast = (undefined as unknown);
+        export function shadowed(undefined: number): number { return undefined; }
+        `,
+        "undefined-global.ts",
+    );
+    const judged: boolean[] = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isIdentifier(node) &&
+            node.text === "undefined" &&
+            !ts.isParameter(node.parent)
+        )
+            judged.push(isGlobalUndefined(checker, node));
+        ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    assert.deepEqual(judged, [true, true, false]);
+    const cast = sourceFile.statements[1] as ts.VariableStatement;
+    assert.equal(
+        isGlobalUndefined(
+            checker,
+            cast.declarationList.declarations[0]!.initializer!,
+        ),
+        true,
+    );
 });
 
 test("a class named Object keeps its own static methods", () => {

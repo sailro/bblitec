@@ -15,7 +15,7 @@ import {
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
-import { libraryGlobal, resolvedSymbol } from "./symbols.js";
+import { isNullishLiteral, libraryGlobal, resolvedSymbol } from "./symbols.js";
 import {
     dataTypesEqual,
     isTypedArrayType,
@@ -694,10 +694,7 @@ export class NativeFunctionLowerer {
             return true;
         }
         const unwrapped = this.context.unwrap(argument);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined")
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return true;
         }
         const argumentType = this.context.dataTypes.fromTsType(

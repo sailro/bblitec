@@ -4,6 +4,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import type { AssignmentContext } from "./assignments.js";
 import type { Value } from "./types.js";
 import { compileStaticNumber } from "./option-helpers.js";
+import { isGlobalUndefined } from "./symbols.js";
 import {
     frozenParticleBuffer,
     requireParticleBakeWritable,
@@ -115,10 +116,7 @@ export function emitFrozenParticleSheetAssignment(
         : body;
     if (
         result === null ||
-        (result !== undefined &&
-            (!ts.isIdentifier(result) ||
-                result.text !== "undefined" ||
-                context.bindings.lookupOptional(result)))
+        (result !== undefined && !isGlobalUndefined(context.checker, result))
     ) {
         context.fail(
             update,

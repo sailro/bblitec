@@ -166,7 +166,7 @@ function staticArgumentJson(
     expression: ts.Expression,
 ): unknown {
     const node = context.unwrap(expression);
-    if (ts.isIdentifier(node) && node.text === "undefined") {
+    if (context.symbols.isGlobalUndefined(node)) {
         return undefined;
     }
     if (ts.isObjectLiteralExpression(node)) {
