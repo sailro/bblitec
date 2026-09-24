@@ -230,6 +230,7 @@ import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import type { AssetDecoderConfiguration } from "./asset-decoders.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
+import { declarationThrough } from "./pinned-program.js";
 import {
     CompilerSymbols,
     declaredIn,
@@ -5331,30 +5332,6 @@ class Compiler implements LoweringServices {
             const owner = propertyPath(node.expression);
             return owner ? [...owner, node.name.text] : undefined;
         };
-        const moduleScopeConstant = (
-            file: ts.SourceFile,
-            name: string,
-        ): ts.Expression | undefined => {
-            for (const statement of file.statements) {
-                if (
-                    !ts.isVariableStatement(statement) ||
-                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-                ) {
-                    continue;
-                }
-                for (const declaration of statement.declarationList
-                    .declarations) {
-                    if (
-                        ts.isIdentifier(declaration.name) &&
-                        declaration.name.text === name &&
-                        declaration.initializer
-                    ) {
-                        return declaration.initializer;
-                    }
-                }
-            }
-            return undefined;
-        };
         return {
             sourceFile,
             contractError: (node, message) => this.fail(node, message),
@@ -5388,29 +5365,8 @@ class Compiler implements LoweringServices {
                 return { file, declaration };
             },
             propertyPath,
-            moduleOfImport: (modulePath, importedName) => {
-                const file = sourceFile(modulePath);
-                for (const statement of file.statements) {
-                    if (
-                        !ts.isImportDeclaration(statement) ||
-                        !statement.importClause?.namedBindings ||
-                        !ts.isNamedImports(statement.importClause.namedBindings)
-                    ) {
-                        continue;
-                    }
-                    const imported =
-                        statement.importClause.namedBindings.elements.find(
-                            (element) => element.name.text === importedName,
-                        );
-                    if (!imported) continue;
-                    return resolvedSymbol(
-                        this.checker,
-                        imported.name,
-                    )?.declarations?.[0]?.getSourceFile().fileName;
-                }
-                return undefined;
-            },
-            moduleScopeConstant,
+            declarationOf: (identifier) =>
+                declarationThrough(this.checker, identifier),
             unwrapExpression,
         };
     }

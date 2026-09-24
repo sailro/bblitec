@@ -61,9 +61,6 @@ export class CameraLowerer {
             this.context.unwrapExpression(call.arguments[index]!);
         const parentOperand = operand(2);
         const localOperand = operand(4);
-        let composition: ts.Node = call;
-        while (composition.parent && !ts.isMethodDeclaration(composition))
-            composition = composition.parent;
         if (
             call.arguments.length !== 6 ||
             !ts.isIdentifier(parentOperand) ||
@@ -76,18 +73,12 @@ export class CameraLowerer {
         }
         if (
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(
-                    composition,
-                    parentOperand.text,
-                ),
+                this.context.initializerOf(parentOperand),
                 "_parent.worldMatrix",
             ) ||
             !this.context.expressionMatchesShape(
                 this.context.unwrapExpression(
-                    this.context.variableInitializer(
-                        composition,
-                        localOperand.text,
-                    ),
+                    this.context.initializerOf(localOperand),
                 ),
                 "_cachedLocal ??= getLocalMatrix()",
             )

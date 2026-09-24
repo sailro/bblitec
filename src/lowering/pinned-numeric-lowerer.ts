@@ -42,7 +42,7 @@ import {
     type RenderedCpp,
 } from "./pinned-numeric-expression.js";
 import { cppCondition } from "../cpp-expressions.js";
-import { moduleScopeConstant, unwrapExpression } from "./context.js";
+import { constantOf, unwrapExpression } from "./context.js";
 import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
@@ -521,9 +521,9 @@ export class PinnedNumericLowerer {
         this.callerBindings = new Set(scope.bindings.keys());
     }
 
-    /** Module-scope constants resolved so far, undefined while resolving. */
+    /** Module-scope constants resolved so far, by initializer; undefined while resolving. */
     private readonly moduleConstants = new Map<
-        string,
+        ts.Expression,
         PinnedBinding | undefined
     >();
 
@@ -2319,14 +2319,18 @@ export class PinnedNumericLowerer {
      * stays the pin's; one this translator cannot lower fails by the name
      * that reads it, naming the constant rather than the reader.
      */
-    private moduleConstant(name: string): PinnedBinding | undefined {
-        const cached = this.moduleConstants.get(name);
-        if (cached !== undefined) return cached;
-        const initializer = moduleScopeConstant(this.file, name);
+    private moduleConstant(
+        identifier: ts.Identifier,
+    ): PinnedBinding | undefined {
+        const initializer = constantOf(identifier, {
+            sameFile: true,
+        })?.initializer;
         if (!initializer) return undefined;
+        const cached = this.moduleConstants.get(initializer);
+        if (cached !== undefined) return cached;
         // A binding under its own name first, so a constant that names
         // itself recurses no further than one step and fails there.
-        this.moduleConstants.set(name, undefined);
+        this.moduleConstants.set(initializer, undefined);
         // A literal constant is also a value generation knows, which is
         // what lets a serialized enumerator compare against it at
         // generation (`lockMode === LOCK_PER_PARTICLE`).
@@ -2338,7 +2342,7 @@ export class PinnedNumericLowerer {
                 ? { staticNumber: Number(literal.text) }
                 : {}),
         };
-        this.moduleConstants.set(name, binding);
+        this.moduleConstants.set(initializer, binding);
         return binding;
     }
 
@@ -2388,8 +2392,7 @@ export class PinnedNumericLowerer {
                 return "std::numeric_limits<double>::infinity()";
             }
             const binding =
-                this.scope.bindings.get(node.text) ??
-                this.moduleConstant(node.text);
+                this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
             // A view is a pointer; naming it bare would be an address.
             return binding.cpp;
@@ -2713,8 +2716,7 @@ export class PinnedNumericLowerer {
         }
         if (!ts.isIdentifier(node)) return undefined;
         const bound =
-            this.scope.bindings.get(node.text) ??
-            this.moduleConstant(node.text);
+            this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
         return bound?.staticNumber;
     }
 

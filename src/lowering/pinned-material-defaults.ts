@@ -272,7 +272,7 @@ function constantDefault(
     if (
         ts.isPropertyAccessExpression(node) ||
         ts.isPropertyAccessChain(node) ||
-        (ts.isIdentifier(node) && !reader.pinnedConstant(file, node.text))
+        (ts.isIdentifier(node) && !reader.constantOf(node))
     ) {
         return undefined;
     }

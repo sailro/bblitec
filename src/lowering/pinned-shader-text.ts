@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { moduleScopeVariable } from "../pinned-program.js";
 import { syntaxKindName } from "../source-location.js";
 
 /** The source-navigation surface shared by pinned and application builders. */
@@ -14,14 +15,8 @@ export interface ShaderTextContext {
         declaration: ts.FunctionDeclaration;
     };
     propertyPath(expression: ts.Expression): string[] | undefined;
-    moduleOfImport(
-        modulePath: string,
-        importedName: string,
-    ): string | undefined;
-    moduleScopeConstant(
-        file: ts.SourceFile,
-        name: string,
-    ): ts.Expression | undefined;
+    /** The declaration an identifier in builder source names, through its imports. */
+    declarationOf(identifier: ts.Identifier): ts.Declaration | undefined;
     unwrapExpression(expression: ts.Expression): ts.Expression;
 }
 
@@ -723,7 +718,7 @@ export class PinnedShaderText {
             // A module-scope `const` in the module being evaluated is the
             // pin's own text and is read straight off its declaration. A
             // name the module does NOT declare — an import — refuses.
-            const declared = this.moduleConstant(node.text, modulePath);
+            const declared = this.moduleConstant(node, modulePath);
             if (declared !== undefined) {
                 return this.evaluateValue(declared, scope, modulePath);
             }
@@ -736,24 +731,28 @@ export class PinnedShaderText {
     }
 
     /**
-     * The initializer of a module-scope `const` the evaluated module
-     * declares, or undefined when it declares no such name.
+     * The initializer of the module-scope `const` of the evaluated module an
+     * identifier names, or undefined when it names anything else.
      *
-     * The scan is the context's, so a name this evaluator resolves and a
-     * name a lowerer folds are the same question asked once. What stays
-     * here is the deliberate half: only the evaluated module's own top
-     * level is consulted, never the module it imports a name FROM — an
-     * unbound import is a permutation this evaluator does not serve, and it
-     * refuses by that name rather than reaching for a value.
+     * The declaration is the context's checker's, so a name this evaluator
+     * resolves and a name a lowerer folds are the same question asked once.
+     * What stays here is the deliberate half: only the evaluated module's
+     * own constants are read, never one it imports — an unbound import is a
+     * permutation this evaluator does not serve, and it refuses by that name
+     * rather than reaching for a value.
      */
     private moduleConstant(
-        name: string,
+        identifier: ts.Identifier,
         modulePath: string,
     ): ts.Expression | undefined {
-        return this.context.moduleScopeConstant(
-            this.context.sourceFile(modulePath),
-            name,
+        const declaration = moduleScopeVariable(
+            this.context.declarationOf(identifier),
         );
+        return declaration?.initializer &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            declaration.getSourceFile().fileName === modulePath
+            ? declaration.initializer
+            : undefined;
     }
 
     /**
@@ -850,15 +849,26 @@ export class PinnedShaderText {
             }
         }
         // A builder called by name, whose parameters bind positionally from
-        // the arguments evaluated here. It is looked for in this module and
-        // then in the one this module imports it from, so a composer the pin
-        // splits across modules -- its prologue in the pipeline module, its
-        // binding lines in the shared custom-shader core -- is read where the
-        // pin declares it, without a table naming either.
+        // the arguments evaluated here. The callee resolves to its own
+        // declaration, so a composer the pin splits across modules -- its
+        // prologue in the pipeline module, its binding lines in the shared
+        // custom-shader core -- is read where the pin declares it, without a
+        // table naming either.
         if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-            const callee = node.expression.text;
-            const home =
-                this.context.moduleOfImport(modulePath, callee) ?? modulePath;
+            const resolved = this.context.declarationOf(node.expression);
+            if (
+                !resolved ||
+                !ts.isFunctionDeclaration(resolved) ||
+                !resolved.name ||
+                !resolved.body
+            ) {
+                return this.context.contractError(
+                    node.expression,
+                    `Pinned shader text calls '${node.expression.text}', which names no function with a body.`,
+                );
+            }
+            const callee = resolved.name.text;
+            const home = resolved.getSourceFile().fileName;
             const { declaration } = this.context.functionDeclaration(
                 home,
                 callee,

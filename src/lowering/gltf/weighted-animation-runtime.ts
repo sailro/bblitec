@@ -11,10 +11,7 @@ export function lowerGltfWeightedAnimationRuntime(
     context: LoweringContext,
 ): string {
     const file = context.sourceFile(module);
-    if (
-        context.numericValue(ts.factory.createIdentifier("GLTF_CLIP"), file) !==
-        0
-    )
+    if (context.pinnedNumber(file, "GLTF_CLIP") !== 0)
         context.contractError(
             file,
             "Weighted clip tuple slot changed; establish its native identity transport.",
@@ -77,12 +74,7 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
         for (const name of ["PATH_TRANSLATION", "PATH_ROTATION", "PATH_SCALE"])
             bind(
                 name,
-                context.doubleLiteral(
-                    context.numericValue(
-                        ts.factory.createIdentifier(name),
-                        types,
-                    ),
-                ),
+                context.doubleLiteral(context.pinnedNumber(types, name)),
             );
         for (const name of [
             "target",

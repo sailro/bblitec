@@ -1387,7 +1387,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             if (!ts.isIdentifier(callee)) continue;
             const value =
                 env.lookup(callee.text) ??
-                this.evaluator.findFree(callee.text, file, module);
+                this.evaluator.findFree(callee, module);
             if (value?.k === "function") {
                 this.bindFunctionCall(
                     callee.text,

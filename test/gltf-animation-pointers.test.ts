@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import { asRecords, type JsonObject } from "../src/gltf-document.js";
 import {
@@ -154,8 +153,7 @@ test("source clip order, converted sampler bytes, controller bindings and group 
         clip = receipt.clips[0]!;
     const context = new LoweringContext(),
         types = context.sourceFile("src/animation/types.ts");
-    const path = (name: string) =>
-        context.numericValue(ts.factory.createIdentifier(name), types);
+    const path = (name: string) => context.pinnedNumber(types, name);
     assert.deepEqual(
         clip.channels.map((channel) => channel.path),
         [

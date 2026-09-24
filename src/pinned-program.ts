@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import ts from "typescript";
-import { compilerPackageTypings } from "./compiler/symbols.js";
+import { compilerPackageTypings, resolvedSymbol } from "./compiler/symbols.js";
 import { sourceLocation } from "./source-location.js";
 import {
     isLibraryTyping,
@@ -52,18 +52,12 @@ function refuse(node: ts.Node, message: string): never {
     throw new Error(`${file.fileName}:${line}:${character}: ${message}`);
 }
 
-/** `getSymbolAtLocation` for a name, taking a shorthand member as the value it reads. */
-function declarationThrough(
+/** The declaration of the symbol a name resolves to, through its aliases. */
+export function declarationThrough(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): ts.Declaration | undefined {
-    const parent = identifier.parent;
-    let symbol =
-        ts.isShorthandPropertyAssignment(parent) && parent.name === identifier
-            ? checker.getShorthandAssignmentValueSymbol(parent)
-            : checker.getSymbolAtLocation(identifier);
-    if (symbol && symbol.flags & ts.SymbolFlags.Alias)
-        symbol = checker.getAliasedSymbol(symbol);
+    const symbol = resolvedSymbol(checker, identifier);
     return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
 }
 
@@ -148,6 +142,7 @@ export class PinnedProgram implements PinnedNames {
                           };
                 },
             );
+        this.host = host;
         this.program = ts.createProgram({
             rootNames: [...sources.listSources(), webGpu],
             options: PINNED_PROGRAM_OPTIONS,
@@ -156,29 +151,52 @@ export class PinnedProgram implements PinnedNames {
         this.checker = this.program.getTypeChecker();
     }
 
-    /** Whether a node lies in one of this program's own files. */
-    public contains(node: ts.Node): boolean {
-        const file = ts.getOriginalNode(node).getSourceFile();
-        return this.program.getSourceFile(file.fileName) === file;
-    }
+    private readonly host: ts.CompilerHost;
+    private readonly overlays = new WeakMap<ts.SourceFile, ts.TypeChecker>();
 
-    /** A node the checker may be asked about; a node from any other tree refuses. */
-    private member<T extends ts.Node>(node: T): T {
-        if (!this.contains(node)) {
+    /**
+     * The checker that answers for a node: this program's, or, for a module
+     * the store served again as a different tree (an edited copy), this
+     * program with that one module replaced, sharing every other file.
+     * A node of no pinned module refuses.
+     */
+    public checkerFor(node: ts.Node): ts.TypeChecker {
+        const file = ts.getOriginalNode(node).getSourceFile();
+        const own = this.program.getSourceFile(file.fileName);
+        if (own === file) return this.checker;
+        if (!own)
             refuse(node, "The node is not part of the typed pinned program.");
+        let checker = this.overlays.get(file);
+        if (!checker) {
+            const getSourceFile = this.host.getSourceFile.bind(this.host);
+            checker = ts
+                .createProgram({
+                    rootNames: this.program.getRootFileNames(),
+                    options: PINNED_PROGRAM_OPTIONS,
+                    host: {
+                        ...this.host,
+                        getSourceFile: (path, ...rest) =>
+                            path === file.fileName
+                                ? file
+                                : getSourceFile(path, ...rest),
+                    },
+                    oldProgram: this.program,
+                })
+                .getTypeChecker();
+            this.overlays.set(file, checker);
         }
-        return node;
+        return checker;
     }
 
     public declarationOf(
         identifier: ts.Identifier,
     ): ts.Declaration | undefined {
-        return declarationThrough(this.checker, this.member(identifier));
+        return declarationThrough(this.checkerFor(identifier), identifier);
     }
 
     /** The type the checker gives a pinned node. */
     public typeOf(node: ts.Node): ts.Type {
-        return this.checker.getTypeAtLocation(this.member(node));
+        return this.checkerFor(node).getTypeAtLocation(node);
     }
 }
 

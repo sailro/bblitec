@@ -8,7 +8,8 @@ TypeScript + reached modules → typed lowering + asset/shader composition
 ```
 
 The source pin is [upstream/babylon-lite.json](../upstream/babylon-lite.json).
-`upstream-source.ts` reads package source maps; `pinned-wgsl-build.ts` applies the shader transform.
+`upstream-source.ts` reads package source maps; `pinned-program.ts` checks those sources as one TypeScript
+program, through which lowerers resolve pinned names and types; `pinned-wgsl-build.ts` applies the shader transform.
 
 ## Ownership
 

@@ -11,6 +11,7 @@ import {
 import {
     moduleScopeVariable,
     pinnedNamesOf,
+    registerPinnedSource,
     type PinnedProgram,
 } from "../pinned-program.js";
 import {
@@ -414,6 +415,46 @@ export class LoweringContext {
         return constantOf(identifier, options);
     }
 
+    /** The initializer of the variable a pinned identifier names, wherever declared. */
+    public initializerOf(identifier: ts.Identifier): ts.Expression {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a variable with an initializer.`,
+            );
+        }
+        return declaration.initializer;
+    }
+
+    /** The function with a body a pinned identifier names, wherever declared. */
+    public functionOf(identifier: ts.Identifier): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration & { body: ts.Block };
+    } {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !declaration.body
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a function with a body.`,
+            );
+        }
+        return {
+            file: declaration.getSourceFile(),
+            declaration: declaration as ts.FunctionDeclaration & {
+                body: ts.Block;
+            },
+        };
+    }
+
     public provenance(
         modulePath: string,
         symbolName: string,
@@ -425,8 +466,15 @@ export class LoweringContext {
         return `${base}${extra ? ` and ${extra}` : ""}.`;
     }
 
+    /**
+     * A pinned module as this context's store serves it, owned by that
+     * store's typed program: a store that serves an edited module resolves
+     * that module's names through its own program.
+     */
     public sourceFile(modulePath: string): ts.SourceFile {
-        return this.store.getSourceFile(modulePath);
+        const file = this.store.getSourceFile(modulePath);
+        registerPinnedSource(file, () => this.store.program);
+        return file;
     }
 
     public contractError(node: ts.Node, message: string): never {
