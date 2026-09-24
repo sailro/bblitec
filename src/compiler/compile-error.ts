@@ -21,7 +21,9 @@ export class CompileError extends Error {
         column: number,
         message: string,
         public readonly reason:
-            "unsupported" | "static-value-required" = "unsupported",
+            | "unsupported"
+            | "static-value-required"
+            | "entry-scope-required" = "unsupported",
         subject?: ts.Node,
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);

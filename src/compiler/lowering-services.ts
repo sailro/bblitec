@@ -73,6 +73,8 @@ export type NativeReturnValueCompiler = (
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
+    /** A namespace-scope definition: the entry's bindings, its engine among them, are out of scope. */
+    namespaceScope?: boolean;
     runtimeDataLoops?: boolean;
     callSiteEffects?: boolean;
     compileReturn?: (expression: ts.Expression, type: DataType) => string;

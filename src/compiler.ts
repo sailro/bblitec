@@ -9867,6 +9867,16 @@ class Compiler implements LoweringServices {
                 "This intrinsic requires createEngine to run first.",
             );
         }
+        if (
+            this.returnFrames.some(
+                (frame) => frame.kind === "native" && frame.namespaceScope,
+            )
+        )
+            this.fail(
+                node,
+                "A namespace-scope function has no binding for the entry's engine.",
+                "entry-scope-required",
+            );
         this.trackRetainedCaptureName(this.defaultEngineCpp);
         return this.defaultEngineCpp;
     }

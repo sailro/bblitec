@@ -177,6 +177,8 @@ export function captureDataFunctionBody(
         /** Runs after parameter binding, before the body capture (a
          *  method's synthetic `this` record). */
         beforeBody?: () => void;
+        /** The definition is emitted at namespace scope. */
+        namespaceScope?: boolean;
     },
 ): { parameterDeclarations: string[]; lines: string[] } {
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
@@ -210,7 +212,11 @@ export function captureDataFunctionBody(
             }),
         ];
         channels?.beforeBody?.();
-        context.beginNativeFunctionBody(returnType);
+        context.beginNativeFunctionBody(
+            returnType,
+            false,
+            channels?.namespaceScope ? { namespaceScope: true } : {},
+        );
         try {
             return {
                 parameterDeclarations,
@@ -444,28 +450,30 @@ export class NativeFunctionLowerer {
                 value.staticBoolean !== undefined
             );
         });
-        if (!this.emitted.has(signature.declaration) && canSpecialize) {
-            try {
-                this.context.probeEmission(() => {
-                    this.ensureEmitted(signature.declaration, () =>
-                        this.emitDefinition(signature),
-                    );
-                    return true;
-                });
-            } catch (error) {
-                if (
-                    !(error instanceof CompileError) ||
-                    error.reason !== "static-value-required"
-                )
-                    throw error;
-                // A body may need facts unavailable to generic parameters.
-                // Let specialization bind actual arguments before diagnosing it.
+        try {
+            this.context.probeEmission(() => {
+                this.ensureEmitted(signature.declaration, () =>
+                    this.emitDefinition(signature),
+                );
+                return true;
+            });
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            if (error.reason === "entry-scope-required") {
+                // The body reaches the entry's engine; the inliner keeps it.
+                this.signatures.delete(signature.declaration);
+                this.rejected.add(signature.declaration);
                 return undefined;
             }
-        } else {
-            this.ensureEmitted(signature.declaration, () =>
-                this.emitDefinition(signature),
-            );
+            // A body may need facts unavailable to generic parameters.
+            // Let specialization bind actual arguments before diagnosing it.
+            if (
+                canSpecialize &&
+                !this.emitted.has(signature.declaration) &&
+                error.reason === "static-value-required"
+            )
+                return undefined;
+            throw error;
         }
         const argumentsCpp = signature.parameters.map((parameter, index) => {
             const argument = call.arguments[index];
@@ -571,9 +579,24 @@ export class NativeFunctionLowerer {
         if (!fieldArguments) {
             return undefined;
         }
-        this.ensureEmitted(signature.method, () =>
-            this.emitMethodDefinition(signature),
-        );
+        try {
+            this.context.probeEmission(() => {
+                this.ensureEmitted(signature.method, () =>
+                    this.emitMethodDefinition(signature),
+                );
+                return true;
+            });
+        } catch (error) {
+            if (
+                !(error instanceof CompileError) ||
+                error.reason !== "entry-scope-required"
+            )
+                throw error;
+            // The body reaches the entry's engine; the class inliner keeps it.
+            this.methodSignatures.delete(signature.method);
+            this.rejectedMethods.add(signature.method);
+            return undefined;
+        }
         const argumentsCpp = signature.parameters.map((parameter, index) =>
             this.compileArgument(
                 argumentExpressions[index]!,
@@ -1732,6 +1755,7 @@ export class NativeFunctionLowerer {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
                 {
+                    namespaceScope: true,
                     bindLeading: () =>
                         signature.fields.map((field) => {
                             const cppName = this.context.bindings.cppIdentifier(
@@ -2232,6 +2256,7 @@ export class NativeFunctionLowerer {
                 () => {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
+                { namespaceScope: true },
             ),
             signature.declaration,
         );
