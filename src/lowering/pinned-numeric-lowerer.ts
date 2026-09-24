@@ -299,8 +299,10 @@ export interface PinnedBinding {
     staticallyAbsent?: true;
     /**
      * Which JavaScript value a `staticallyAbsent` binding is, where the
-     * caller knows it: a strict `=== undefined` or `=== null` against it
-     * then folds as well. A loose `== undefined` folds without it.
+     * caller knows it: a strict `=== undefined` or `=== null` against it,
+     * and a `typeof` test for `"undefined"` or `"object"`, then fold as
+     * well. A loose `== undefined`, and a `typeof` test for any other name,
+     * fold without it.
      */
     absentValue?: "undefined" | "null";
     /**
@@ -3613,14 +3615,14 @@ export class PinnedNumericLowerer {
               ? { test: right, expected: left }
               : undefined;
         if (typeofSide) {
-            const name = this.typeofName(typeofSide.test.expression);
-            if (
-                name === undefined ||
-                !ts.isStringLiteral(typeofSide.expected)
-            ) {
+            const names = this.typeofNames(typeofSide.test.expression);
+            if (!names || !ts.isStringLiteral(typeofSide.expected)) {
                 return undefined;
             }
-            return (name === typeofSide.expected.text) === equality;
+            // A name the value can never have decides the test; one it may
+            // or may not have is the run time's to answer.
+            if (!names.includes(typeofSide.expected.text)) return !equality;
+            return names.length === 1 ? equality : undefined;
         }
         const leftNumber = this.staticNumberOf(left);
         const rightNumber = this.staticNumberOf(right);
@@ -3630,16 +3632,31 @@ export class PinnedNumericLowerer {
         return (leftNumber === rightNumber) === equality;
     }
 
-    /** JavaScript's `typeof` of a bound value, where the binding fixes it. */
-    private typeofName(expression: ts.Expression): string | undefined {
+    /**
+     * The names JavaScript's `typeof` may give a bound value, where the
+     * binding fixes them. A value the reached slice never supplies is its
+     * absence, whatever type stands in for it: `"undefined"`, `"object"`
+     * for a null, and either where the binding does not say which.
+     */
+    private typeofNames(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
         const bound = this.scope.bindings.get(
             unwrapExpression(expression).getText(this.file),
         );
         if (!bound) return undefined;
+        if (bound.staticallyAbsent) {
+            return bound.absentValue === "undefined"
+                ? ["undefined"]
+                : bound.absentValue === "null"
+                  ? ["object"]
+                  : ["undefined", "object"];
+        }
         if (isRecordType(bound.type) || isListShape(bound.type))
-            return "object";
-        if (bound.type === "bool") return "boolean";
-        if (bound.type === "scalar" || bound.type === "index") return "number";
+            return ["object"];
+        if (bound.type === "bool") return ["boolean"];
+        if (bound.type === "scalar" || bound.type === "index")
+            return ["number"];
         return undefined;
     }
 
