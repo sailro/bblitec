@@ -53,10 +53,10 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
-| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C \| undefined`; unsupported field storage |
+| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`) | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; recursion through stored instances; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
-| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations | Custom thenables; general async iteration |
+| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created and is not settled from a timer or frame callback, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
@@ -75,10 +75,10 @@ left-to-right target writes. Defaults requiring distinct null/undefined states r
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
 
-Dynamic JSON preserves actual fields and object identity through typed locals, arguments, conditionals
-and represented generic returns. Source-backed record ownership can trigger compiler replay, preserving
-earlier aliases and initializer counts. Getters permit statements before a final return; early returns
-refuse.
+Dynamic JSON preserves actual fields and object identity through typed locals, arguments (members
+included), conditionals, represented generic returns and record-typed function returns. Source-backed
+record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
+permit statements before a final return; early returns refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
 
 | Promise operation | Contract |
@@ -95,9 +95,11 @@ Arbitrary rejection values, heterogeneous race results and unrepresented aggrega
 `all` excludes literal spreads, other iterables and stored void/value-only arrays. `allSettled` excludes
 literal spreads and other iterables. Async collection callbacks start synchronously and retain
 suspension; predicate promises are truthy.
-Timers/microtasks need no engine. RAF needs a Window repaint source. Unhandled rejections are reported
-in a subsequent task after microtasks. MessageChannel and runtime compression streams refuse; gzip/base64
-JSON decoded through `DecompressionStream` folds at generation.
+Outside a realm the executor runs in place and an await reads the settlement; one still pending ends the
+awaiting activation ([fidelity](fidelity.md#semantic-contract)). Timers/microtasks need no engine. RAF
+needs a Window repaint source. Unhandled rejections are reported in a subsequent task after microtasks.
+MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded through
+`DecompressionStream` folds at generation.
 
 ### Core TypeScript library
 
@@ -213,7 +215,8 @@ other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliar
 own extent refresh.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
-before startup and observations require one scene. Failure callbacks expose `Error.message`.
+before startup and observations require one scene. Failure callbacks expose `Error.message`. As
+upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing.
 Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery. On Windows, application iteration
@@ -324,6 +327,9 @@ environment rotation and wider metallic-reflectance fields remain limited.
 
 Shader materials admit bounded 2D/array samplers, float/depth/comparison sampling, storage buffers and
 selected uniform/system matrices. Wider descriptors, pipeline state and live composition profiles refuse.
+A source or plugin `getCustomCode` a scene builds with a function is run at generation over
+generation-known arguments; one reaching a host or engine API, a module `let`/`var`, `this` or a runtime
+value refuses. Alpha to coverage reaches shader materials; Standard and PBR targets refuse.
 
 ### Node materials
 
@@ -430,7 +436,8 @@ Generator enable changes retain resources and update receiver darkness; CSM call
 ## Navigation
 
 Recast/Detour supports solo and obstacle tile-cache builds, debug geometry, bounded queries, crowds,
-agents and obstacles. Tiled builds without obstacles and unimplemented query/disposal APIs refuse.
+agents and obstacles. Tiled builds without obstacles, tile-cache builds with off-mesh connections and
+unimplemented query/disposal APIs refuse.
 
 ## Frame graph
 
@@ -463,9 +470,12 @@ toneMapping and toneMappingEnabled. Tone mapping participates in composition.
 
 ## Text
 
-Static font parsing/shaping/packing runs at generation. Live default text retains one run, packaged font,
-palette, dimensions and static layout options. Alignment is left/center/right. Retained run color replacement
-and setFontWeightOffset are bounded; arbitrary run edits/live color arguments refuse.
+Static font parsing/shaping/packing runs at generation. Text data keeps the pin's runs, draw groups, style
+palette and slot allocator: updateTextData reset/addRun/removeRun/replaceRun, updateDefaultTextData with or
+without a color and per-run setFontWeightOffset are live. Live text lays out over the font's packaged
+repertoire with static layout options; alignment is left/center/right. Runs are retained runs or copies
+(`{ ...run, defaultColor, pixelsPerFontUnit }`); literal glyph lists, replacement storages and user glyph
+storages (createGlyphStorage, extractGlyphCurves, createTextData) refuse.
 
 Renderable text needs one text-only default scene with a static FreeCamera or supported ArcRotate controls.
 Transforms/opacity are live; membership/order/depth precede attachment. Late attachment, reflective writes,

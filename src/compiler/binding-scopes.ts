@@ -26,6 +26,8 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionWeakSet,
+    journaled,
+    writable,
 } from "./emission-transaction.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -36,6 +38,7 @@ import { retainTextValue } from "./text-surface.js";
 import {
     isCompileTimeOnlyValue,
     isStringValue,
+    presenceFlagCpp,
     valueForKind,
     type Value,
     type VariableBinding,
@@ -140,10 +143,10 @@ export class BindingScopes {
      * returned, so naming one of those locals would emit a reference to
      * dead storage -- which is why `deferredCaptureScopes` refuses it.
      */
-    public frameCallbackScopeFloor: number | undefined;
+    @journaled public accessor frameCallbackScopeFloor: number | undefined;
 
     /** Expired frame scopes, tracked by identity across lexical scope restoration. */
-    public deferredCaptureScopes:
+    @journaled public accessor deferredCaptureScopes:
         ReadonlySet<Map<ts.Symbol, VariableBinding>> | undefined;
 
     /**
@@ -151,7 +154,8 @@ export class BindingScopes {
      * objects are borrowed from the dispatch stack, so only bindings introduced
      * at or below this callback may refer to one.
      */
-    public escapingPlatformEventCaptureFloor: number | undefined;
+    @journaled public accessor escapingPlatformEventCaptureFloor:
+        number | undefined;
 
     constructor(private readonly context: BindingScopesContext) {}
 
@@ -570,7 +574,7 @@ export class BindingScopes {
                 // A successful generation-only binding is a present object,
                 // including when its annotation still admits undefined.
                 optionalFoundCpp:
-                    value.optionalFoundCpp ??
+                    presenceFlagCpp(value) ??
                     (value.kind === "json-null" ? "false" : "true"),
             },
         });
@@ -606,16 +610,16 @@ export class BindingScopes {
         const innermost = this.variableScopes.at(-1)!;
         const binding = owner.get(symbol)!;
         const destination: Value = { ...value, cpp: binding.value.cpp };
-        delete destination.ownedCpp;
-        delete destination.stableOwnerCpp;
-        delete destination.nativeOwnedRvalue;
+        delete writable(destination).ownedCpp;
+        delete writable(destination).stableOwnerCpp;
+        delete writable(destination).nativeOwnedRvalue;
         for (const property of [
             "sharedStorageCpp",
             "optionalStorageCpp",
         ] as const) {
             const storage = binding.value[property];
             if (storage === undefined) delete destination[property];
-            else destination[property] = storage;
+            else writable(destination)[property] = storage;
         }
         if (binding.value.kind === "audio-engine") {
             this.context.assignAudioMainBus(binding.value, value, identifier);
@@ -625,9 +629,9 @@ export class BindingScopes {
             ] as const) {
                 const storage = binding.value[property];
                 if (storage === undefined) delete destination[property];
-                else destination[property] = storage;
+                else writable(destination)[property] = storage;
             }
-            destination.nativeCompanionCaptures = {
+            writable(destination).nativeCompanionCaptures = {
                 ...destination.nativeCompanionCaptures,
                 audioMainBusCpp:
                     binding.value.nativeCompanionCaptures?.audioMainBusCpp ??
@@ -661,7 +665,7 @@ export class BindingScopes {
         const immutable = this.isImmutableVariable(identifier.parent);
         if (value.nativeOwnedRvalue) {
             value = { ...value };
-            delete value.nativeOwnedRvalue;
+            delete writable(value).nativeOwnedRvalue;
         }
         if (
             (value.ownedCpp !== undefined ||
@@ -669,8 +673,8 @@ export class BindingScopes {
             cppIdentifierPattern.test(value.cpp)
         ) {
             value = { ...value };
-            delete value.ownedCpp;
-            delete value.stableOwnerCpp;
+            delete writable(value).ownedCpp;
+            delete writable(value).stableOwnerCpp;
         }
         if (
             immutable &&
@@ -978,20 +982,21 @@ export class BindingScopes {
                   }
                 : {}),
         };
-        delete stored.nativeOwnedRvalue;
-        if (!sharedStorage) delete stored.sharedStorageCpp;
+        delete writable(stored).nativeOwnedRvalue;
+        if (!sharedStorage) delete writable(stored).sharedStorageCpp;
         if (
             value.kind === "data" &&
             value.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(value.dataType.name)
         ) {
-            stored.objectIdentityCpp = `${storedCpp}.get()`;
-            stored.optionalFoundCpp = `static_cast<bool>(${storedCpp})`;
-            stored.truthinessCpp = stored.optionalFoundCpp;
+            const reference = writable(stored);
+            reference.objectIdentityCpp = `${storedCpp}.get()`;
+            reference.optionalFoundCpp = `static_cast<bool>(${storedCpp})`;
+            reference.truthinessCpp = reference.optionalFoundCpp;
         }
         if (value.kind === "animation-clip") {
-            stored.animationFrameRate = `${storedCpp}.frame_rate`;
-            stored.animationDuration = `${storedCpp}.duration`;
+            writable(stored).animationFrameRate = `${storedCpp}.frame_rate`;
+            writable(stored).animationDuration = `${storedCpp}.duration`;
         }
         this.defineVariable(identifier, stored);
         if (
@@ -1036,8 +1041,8 @@ export class BindingScopes {
         const cardinality =
             owner.collectionCardinality ?? value.collectionCardinality;
         if (cardinality && !preserveCardinality) {
-            cardinality.count = undefined;
-            delete cardinality.keys;
+            writable(cardinality).count = undefined;
+            delete writable(cardinality).keys;
         }
         const invalidate = (candidate: Value): void => {
             if (
@@ -1050,12 +1055,13 @@ export class BindingScopes {
                     candidate.staticElements === elements)
             ) {
                 if (owner.runtimeElementTemplate) {
-                    candidate.runtimeElementTemplate =
+                    writable(candidate).runtimeElementTemplate =
                         owner.runtimeElementTemplate;
                 }
-                if (cardinality) candidate.collectionCardinality = cardinality;
-                delete candidate.staticElements;
-                delete candidate.staticElementsOwner;
+                if (cardinality)
+                    writable(candidate).collectionCardinality = cardinality;
+                delete writable(candidate).staticElements;
+                delete writable(candidate).staticElementsOwner;
             }
         };
         this.visitScopedValues(invalidate);
@@ -1069,7 +1075,7 @@ export class BindingScopes {
         if (!properties) return;
         const invalidate = (candidate: Value): void => {
             if (candidate.recordProperties === properties) {
-                delete candidate.recordProperties;
+                delete writable(candidate).recordProperties;
             }
         };
         this.visitScopedValues(invalidate);
@@ -1150,9 +1156,9 @@ export class BindingScopes {
             // Writable parameters retain initial metadata for other lowering
             // decisions; a snapshot must read their current native value.
             value = { ...value };
-            delete value.staticNumber;
-            delete value.staticString;
-            delete value.staticBoolean;
+            delete writable(value).staticNumber;
+            delete writable(value).staticString;
+            delete writable(value).staticBoolean;
         }
         if (this.context.hasStableNativeBinding(value)) {
             this.context.useNativeValue(value);
@@ -1308,14 +1314,14 @@ export class BindingScopes {
                 cpp,
                 nativeBinding: true as const,
             };
-            delete pinned.ownedCpp;
+            delete writable(pinned).ownedCpp;
             for (const key of [
                 "objectIdentityCpp",
                 "optionalFoundCpp",
             ] as const) {
                 const spelling = fresh[key];
                 if (spelling !== undefined && pinned[key] === derived[key])
-                    pinned[key] = spelling;
+                    writable(pinned)[key] = spelling;
             }
             this.context.registerNativeConstBinding(cpp);
             this.context.describeNativeValue(pinned);
@@ -1488,7 +1494,7 @@ export class BindingScopes {
         );
         // This expression constructs an object; it cannot be a missing
         // element. Do not snapshot a redundant presence bit at each binding.
-        delete projected.optionalFoundCpp;
+        delete writable(projected).optionalFoundCpp;
         return { ...projected, freshData: true };
     }
 
@@ -1804,7 +1810,10 @@ export class BindingScopes {
         if (preserveIdentity) {
             // Aliases (including native proxy dispatchers) key runtime identity
             // by this table. Materializing its leaves must not replace it.
-            Object.assign((record.recordProperties ??= {}), properties);
+            Object.assign(
+                writable((writable(record).recordProperties ??= {})),
+                properties,
+            );
             return record;
         }
         return valueForKind(record.kind, {

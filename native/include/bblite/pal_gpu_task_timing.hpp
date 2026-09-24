@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #include <bblite/pal_offscreen.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/js_promise.hpp>

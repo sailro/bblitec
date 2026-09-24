@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #include <bblite/js_gc.hpp>
 #if BBLITE_WORKERS
 #include <bblite/js_realm_state.hpp>

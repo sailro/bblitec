@@ -1,7 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
-#define BBLITE_HAS_AUDIO_BUFFER_SOURCE 1
-#define BBLITE_HAS_AUDIO_OSCILLATOR 1
 #include "pal_audio_labsound.cpp"
 #define main generated_main
 #include "../../artifacts/audio-events-check/program.hpp"

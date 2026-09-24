@@ -184,6 +184,8 @@ const noArms: PinnedMaterialArms = {
 
 /** The pin's own bits the arms that have no fragment id of their own read. */
 interface PinnedArmBits {
+    /** PBR2_CC_F0_REMAP_OFF: the coat keeps its base F0 unremapped. */
+    clearcoatF0RemapOff: number;
     sheenAlbedoScaling: number;
     specGloss: number;
     occlusionUv2: number;
@@ -200,7 +202,12 @@ function pinnedArmBits(): Promise<PinnedArmBits> {
         importPinnedModule<{ PBR_HAS_SPEC_GLOSS: number }>(
             "material/pbr/pbr-flag-bits.js",
         ),
-    ]).then(([sheen, core]) => ({
+        importPinnedModuleWithExports<{ PBR2_CC_F0_REMAP_OFF: number }>(
+            "material/pbr/fragments/clearcoat-fragment.js",
+            ["PBR2_CC_F0_REMAP_OFF"],
+        ),
+    ]).then(([sheen, core, coat]) => ({
+        clearcoatF0RemapOff: coat.PBR2_CC_F0_REMAP_OFF,
         sheenAlbedoScaling: sheen.PBR_HAS_SHEEN_ALBEDO_SCALING,
         specGloss: core.PBR_HAS_SPEC_GLOSS,
         occlusionUv2: pinnedOcclusionUv2Bit(),
@@ -227,9 +234,10 @@ function pinnedVariantArms(
     const coat = key.includes("clearcoat");
     return {
         clearcoat: coat,
-        // `-X` in the coat's own key is PBR2_CC_F0_REMAP_OFF, which
-        // every glTF coat sets; a coat without it wants the remap.
-        clearcoatF0Remap: coat && !/clearcoat-[A-Z]*X/.test(key),
+        // PBR2_CC_F0_REMAP_OFF, which every glTF coat sets; a coat
+        // without it wants the remap.
+        clearcoatF0Remap:
+            coat && (variant.features2 & bits.clearcoatF0RemapOff) === 0,
         sheen: key.includes("sheen"),
         // The two sheen models live inside one `sheen` arm, so the key
         // does not separate them and the bit has to be read. A glTF

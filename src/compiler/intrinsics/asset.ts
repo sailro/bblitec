@@ -1,4 +1,4 @@
-import { EmissionMap } from "../emission-transaction.js";
+import { EmissionMap, writable } from "../emission-transaction.js";
 import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -37,6 +37,7 @@ export interface AssetIntrinsicContext
         Pick<
             LoweringServices,
             | "options"
+            | "checker"
             | "dataLowerer"
             | "expectObjectLiteral"
             | "compileStringLiteral"
@@ -443,7 +444,7 @@ function compileLoadBabylon(
             : loadTextures === "false"
               ? [false]
               : [false, true];
-    asset.babylonTextureModes = [
+    writable(asset).babylonTextureModes = [
         ...new Set([...(asset.babylonTextureModes ?? []), ...textureModes]),
     ];
     // The pin imports its camera parser only when `loadCamera !== false`
@@ -773,7 +774,8 @@ function compileLoadEnvironment(
             "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
         );
     }
-    scene.sceneEnvironmentState!.hasTexturedSkybox ||= hasEnvironmentSkybox;
+    writable(scene.sceneEnvironmentState!).hasTexturedSkybox ||=
+        hasEnvironmentSkybox;
     if (solidSkybox) {
         context.reachFeature("background:solid-skybox", call);
     }
@@ -824,7 +826,7 @@ function compileAddDdsEnvironmentBackground(
             "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
         );
     }
-    scene.sceneEnvironmentState!.hasTexturedSkybox = true;
+    writable(scene.sceneEnvironmentState!).hasTexturedSkybox = true;
     return {
         kind: "void",
         cpp:
@@ -900,7 +902,8 @@ function compileLoadHdrEnvironment(
             "Loading a visible HDR environment skybox after setEnvironmentRotation requires native skybox rotation support.",
         );
     }
-    scene.sceneEnvironmentState!.hasTexturedSkybox ||= options.useCubemapSkybox;
+    writable(scene.sceneEnvironmentState!).hasTexturedSkybox ||=
+        options.useCubemapSkybox;
     const environmentAsset = context.registerAsset(
         source,
         "hdr-environment",

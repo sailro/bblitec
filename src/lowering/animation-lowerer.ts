@@ -1458,10 +1458,7 @@ void enable_animation_blending(
             name: "INTERP_LINEAR" | "INTERP_STEP",
         ): string =>
             this.context.doubleLiteral(
-                this.context.numericValue(
-                    ts.factory.createIdentifier(name),
-                    interpolationTypes,
-                ),
+                this.context.pinnedNumber(interpolationTypes, name),
             );
         // The seek conversion, paired with the emitted `go_to_frame`
         // (`frame / group->clip.frame_rate`). The pinned

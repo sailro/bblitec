@@ -1,18 +1,18 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
-    type ReferenceSchema,
-    type ReferenceValue,
-    PinnedReferenceLowerer,
-    referenceTuple,
-} from "./pinned-reference-lowerer.js";
+    type CharacterKernelLowerer,
+    type KernelSchema,
+    type KernelValue,
+    kernelTuple,
+} from "./character-kernel-lowerer.js";
 
-export const queryResultType = referenceTuple([
+export const queryResultType = kernelTuple([
     "number",
     "QueryPoint",
     "QueryPoint",
 ]);
-export const massPropertiesType = referenceTuple([
+export const massPropertiesType = kernelTuple([
     "number[]",
     "number",
     "number[]",
@@ -23,12 +23,12 @@ export const massPropertiesType = referenceTuple([
  * manifold and body-kinematics expressions remain ordinary pinned AST lowering. */
 export function characterTransportSchema(
     context: LoweringContext,
-): Pick<ReferenceSchema, "expression" | "statement"> {
+): Pick<KernelSchema, "expression" | "statement"> {
     const bodyArgument = (
         expression: ts.Expression,
-        lowerer: PinnedReferenceLowerer,
-    ): ReferenceValue => {
-        const body = lowerer.expression(expression);
+        lowerer: CharacterKernelLowerer,
+    ): KernelValue => {
+        const body = lowerer.value(expression);
         if (body.type !== "NativeBody")
             return context.contractError(
                 expression,
@@ -80,8 +80,12 @@ export function characterTransportSchema(
         },
         expression(node, _expected, lowerer) {
             if (ts.isPropertyAccessExpression(node)) {
+                if (
+                    node.getText(node.getSourceFile()) === "this._world._bodies"
+                )
+                    return { cpp: "_world_bodies()", type: "PhysicsBody[]" };
                 if (node.name.text === "_hkBody") {
-                    const body = lowerer.expression(node.expression);
+                    const body = lowerer.value(node.expression);
                     if (body.type === "PhysicsBody")
                         return {
                             cpp: `_native_body(${body.cpp})`,
@@ -89,7 +93,7 @@ export function characterTransportSchema(
                         };
                 }
                 if (node.name.text === "motionType") {
-                    const body = lowerer.expression(node.expression);
+                    const body = lowerer.value(node.expression);
                     if (body.type === "PhysicsBody")
                         return node.questionDotToken
                             ? {
@@ -106,7 +110,7 @@ export function characterTransportSchema(
                     ts.isPropertyAccessExpression(node.expression) &&
                     node.expression.name.text === "node"
                 ) {
-                    const body = lowerer.expression(node.expression.expression);
+                    const body = lowerer.value(node.expression.expression);
                     if (body.type === "PhysicsBody")
                         return {
                             cpp: `_body_world_matrix(${body.cpp})`,
@@ -124,7 +128,7 @@ export function characterTransportSchema(
                     node.argumentExpression.text === "0"
                 )
                     return {
-                        cpp: `_body_identity(${lowerer.expression(node.expression.expression).cpp})`,
+                        cpp: `_body_identity(${lowerer.value(node.expression.expression).cpp})`,
                         type: "optional:number",
                     };
                 if (
@@ -147,7 +151,7 @@ export function characterTransportSchema(
                         call.arguments.length === 1
                     )
                         return {
-                            cpp: `_create_collector(${lowerer.expression(call.arguments[0]!).cpp})`,
+                            cpp: `_create_collector(${lowerer.value(call.arguments[0]!).cpp})`,
                             type: "QueryCollector",
                         };
                     if (
@@ -166,7 +170,7 @@ export function characterTransportSchema(
                         call.arguments.length === 2
                     )
                         return {
-                            cpp: `${collector(call.arguments[0]!)}.at(js::array_index(${lowerer.expression(call.arguments[1]!).cpp}))`,
+                            cpp: `${collector(call.arguments[0]!)}.at(js::array_index(${lowerer.value(call.arguments[1]!).cpp}))`,
                             type: queryResultType,
                         };
                     const bodyGetters = new Map([
@@ -190,7 +194,7 @@ export function characterTransportSchema(
                             type: getter[1]!,
                         };
                 }
-                const owner = lowerer.expression(node.expression);
+                const owner = lowerer.value(node.expression);
                 if (owner.type === "QueryPoint") {
                     const field = new Map([
                         ["0", ["identity", "number[]"]],
@@ -212,7 +216,7 @@ export function characterTransportSchema(
                         "this._world._thin?.resolve",
                         [
                             "_thin_resolve",
-                            `optional:${referenceTuple(["PhysicsBody", "NativeBody", "number"])}`,
+                            `optional:${kernelTuple(["PhysicsBody", "NativeBody", "number"])}`,
                         ],
                     ],
                     ["this._world._thin?.com", ["_thin_com", "Vec3"]],
@@ -223,7 +227,7 @@ export function characterTransportSchema(
                 ]).get(path);
                 if (thin)
                     return {
-                        cpp: `${thin[0]}(${node.arguments.map((argument) => lowerer.expression(argument).cpp).join(", ")})`,
+                        cpp: `${thin[0]}(${node.arguments.map((argument) => lowerer.value(argument).cpp).join(", ")})`,
                         type: thin[1]!,
                     };
                 if (
@@ -238,7 +242,7 @@ export function characterTransportSchema(
                     node.arguments.length === 3
                 )
                     return {
-                        cpp: `_apply_impulse(${bodyArgument(node.arguments[0]!, lowerer).cpp}, ${lowerer.expression(node.arguments[1]!, "number[]").cpp}, ${lowerer.expression(node.arguments[2]!, "number[]").cpp})`,
+                        cpp: `_apply_impulse(${bodyArgument(node.arguments[0]!, lowerer).cpp}, ${lowerer.value(node.arguments[1]!, "number[]").cpp}, ${lowerer.value(node.arguments[2]!, "number[]").cpp})`,
                         type: "void",
                     };
                 if (
@@ -250,7 +254,7 @@ export function characterTransportSchema(
                 ) {
                     collector(node.arguments[0]!);
                     return {
-                        cpp: `_release_collector(${lowerer.expression(node.arguments[0]!).cpp})`,
+                        cpp: `_release_collector(${lowerer.value(node.arguments[0]!).cpp})`,
                         type: "void",
                     };
                 }
@@ -270,7 +274,7 @@ export function characterTransportSchema(
                             handle,
                             "Character release requires its shape handle.",
                         );
-                    const shape = lowerer.expression(handle.expression);
+                    const shape = lowerer.value(handle.expression);
                     if (shape.type !== "PhysicsShape")
                         return context.contractError(
                             handle,
@@ -291,7 +295,7 @@ export function characterTransportSchema(
 export function lowerCharacterCollectorCasts(
     context: LoweringContext,
     declaration: ts.MethodDeclaration,
-    lowerer: PinnedReferenceLowerer,
+    lowerer: CharacterKernelLowerer,
 ): string {
     context.assertStatementShapes(
         declaration,
@@ -318,10 +322,10 @@ export function lowerCharacterCollectorCasts(
             .statements[0]!,
     ) as ts.ArrayLiteralExpression;
     const cast = initializer(source[7]!) as ts.ArrayLiteralExpression;
-    return `    const auto start = ${lowerer.expression(initializer(source[3]!), "number[]").cpp};
-    const auto orientation = ${lowerer.expression(initializer(source[4]!), "number[]").cpp};
-    if (${lowerer.expression((source[6] as ts.IfStatement).expression).cpp}) {
-        _collect_proximity(start, orientation, ${lowerer.expression(proximity.elements[3]!).cpp}, ${lowerer.expression(proximity.elements[4]!).cpp});
+    return `    const auto start = ${lowerer.value(initializer(source[3]!), "number[]").cpp};
+    const auto orientation = ${lowerer.value(initializer(source[4]!), "number[]").cpp};
+    if (${lowerer.value((source[6] as ts.IfStatement).expression).cpp}) {
+        _collect_proximity(start, orientation, ${lowerer.value(proximity.elements[3]!).cpp}, ${lowerer.value(proximity.elements[4]!).cpp});
     }
-    _collect_cast(orientation, start, ${lowerer.expression(cast.elements[3]!, "number[]").cpp}, ${lowerer.expression(cast.elements[4]!).cpp});`;
+    _collect_cast(orientation, start, ${lowerer.value(cast.elements[3]!, "number[]").cpp}, ${lowerer.value(cast.elements[4]!).cpp});`;
 }

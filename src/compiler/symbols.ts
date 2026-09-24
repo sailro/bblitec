@@ -168,7 +168,7 @@ export function isAbsentTypeofIdentifier(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(identifier);
+    const symbol = declaredSymbol(checker, identifier);
     if (!symbol) return true;
     if (
         (symbol.flags & ts.SymbolFlags.Alias) !== 0 ||
@@ -196,6 +196,23 @@ export function isAbsentTypeofIdentifier(
                     0,
         )
     );
+}
+
+/**
+ * The symbol a node names where it is written, an import alias NOT
+ * followed: a declaration's own symbol (a variable, parameter, function or
+ * class name), a module's symbol (its source file or a module specifier),
+ * or for a use, the binding its scope resolves. It is the identity names
+ * are compared by: a use agrees with its declaration, an imported name
+ * with its import specifier, and two distinct locals never do. A reader
+ * after the declaration a use stands for, or a member's own declaration,
+ * reads {@link resolvedSymbol}.
+ */
+export function declaredSymbol(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): ts.Symbol | undefined {
+    return checker.getSymbolAtLocation(node);
 }
 
 /** The binding an import alias stands for; any other symbol is itself. */
@@ -236,6 +253,56 @@ const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether an identifier resolves to the checker's own global binding of its
+ * name, the one a program reaches when nothing it declares shadows that
+ * name. The checker models `globalThis` and `undefined` as intrinsics with
+ * no declaration, so this, not a declaration's origin, is what tells the
+ * library's binding of them from a program's own.
+ */
+function isCheckerGlobal(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): boolean {
+    return (
+        declaredSymbol(checker, identifier) ===
+        checker.resolveName(
+            identifier.text,
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        )
+    );
+}
+
+/**
+ * Whether an expression is the global `undefined`, grouping and type-only
+ * wrappers seen through. The one answer to "is this the absent value": a
+ * local, parameter or import a program names `undefined` is not.
+ */
+export function isGlobalUndefined(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const node = unwrapExpression(expression);
+    return (
+        ts.isIdentifier(node) &&
+        node.text === "undefined" &&
+        isCheckerGlobal(checker, node)
+    );
+}
+
+/** Whether an expression is a literal `null` or the global `undefined`. */
+export function isNullishLiteral(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return (
+        unwrapExpression(expression).kind === ts.SyntaxKind.NullKeyword ||
+        isGlobalUndefined(checker, expression)
+    );
+}
+
+/**
  * The default-library global an expression names, or undefined.
  *
  * An identifier names one when it resolves to a declaration of
@@ -258,14 +325,7 @@ export function libraryGlobal(
     const node = unwrapExpression(expression);
     if (ts.isIdentifier(node)) {
         return declaredInDefaultLibrary(resolvedSymbol(checker, node)) ||
-            (node.text === "globalThis" &&
-                checker.getSymbolAtLocation(node) ===
-                    checker.resolveName(
-                        node.text,
-                        undefined,
-                        ts.SymbolFlags.Value,
-                        false,
-                    ))
+            (node.text === "globalThis" && isCheckerGlobal(checker, node))
             ? node.text
             : undefined;
     }
@@ -288,6 +348,16 @@ export class CompilerSymbols {
     /** See {@link libraryGlobal}. */
     public libraryGlobal(expression: ts.Expression): string | undefined {
         return libraryGlobal(this.checker, expression);
+    }
+
+    /** See {@link isGlobalUndefined}. */
+    public isGlobalUndefined(expression: ts.Expression): boolean {
+        return isGlobalUndefined(this.checker, expression);
+    }
+
+    /** See {@link isNullishLiteral}. */
+    public isNullishLiteral(expression: ts.Expression): boolean {
+        return isNullishLiteral(this.checker, expression);
     }
 
     /** Resolve a generation-known enum value through its pinned declaration,
@@ -331,9 +401,10 @@ export class CompilerSymbols {
         ) {
             return undefined;
         }
-        const declaration = this.checker
-            .getSymbolAtLocation(expression.name)
-            ?.declarations?.find(ts.isPropertySignature);
+        const declaration = resolvedSymbol(
+            this.checker,
+            expression,
+        )?.declarations?.find(ts.isPropertySignature);
         if (
             !declaration?.modifiers?.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
@@ -363,7 +434,7 @@ export class CompilerSymbols {
             ts.isIdentifier(parameter.name) &&
             ts.isParameterPropertyDeclaration(parameter, parameter.parent)
         ) {
-            return this.checker.getSymbolAtLocation(parameter.name) ?? resolved;
+            return declaredSymbol(this.checker, parameter.name) ?? resolved;
         }
         return resolved;
     }
@@ -385,7 +456,8 @@ export class CompilerSymbols {
         const value = this.valueSymbol(identifier);
         const declaration = value?.declarations?.[0];
         if (!value || !declaration) return false;
-        const sourceSymbol = this.checker.getSymbolAtLocation(
+        const sourceSymbol = declaredSymbol(
+            this.checker,
             declaration.getSourceFile(),
         );
         for (const exported of sourceSymbol?.exports?.values() ?? []) {
@@ -408,8 +480,10 @@ export class CompilerSymbols {
               typeOnly?: true;
           }
         | undefined {
-        const declarations =
-            this.checker.getSymbolAtLocation(identifier)?.declarations;
+        const declarations = declaredSymbol(
+            this.checker,
+            identifier,
+        )?.declarations;
         const named = declarations?.find(ts.isImportSpecifier);
         const namespace = declarations?.find(ts.isNamespaceImport);
         const clause =

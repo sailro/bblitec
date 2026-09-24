@@ -1,3 +1,6 @@
+#include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/physics_viewer.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 

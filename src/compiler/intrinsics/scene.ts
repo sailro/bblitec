@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -372,7 +373,7 @@ export function compileSceneIntrinsic(
                     "setEnvironmentRotation is currently lowered without a textured environment skybox; rotating one requires native skybox rotation support.",
                 );
             }
-            scene.sceneEnvironmentState!.rotationSet = true;
+            writable(scene.sceneEnvironmentState!).rotationSet = true;
             return {
                 kind: "void",
                 cpp:

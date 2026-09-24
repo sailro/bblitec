@@ -20,6 +20,8 @@ import { metallicReflectanceCapabilityDefines } from "../src/upstream-lower.js";
 
 const noFeatures: MaterialTextureSlotFeatures = {
     transmission: false,
+    transmissionMap: false,
+    thicknessMap: false,
     clearcoat: false,
     sheen: false,
     iridescence: false,
@@ -121,6 +123,8 @@ test("extension rows append in the pinned registration order", () => {
         materialTextureSlotsHeader(
             {
                 transmission: true,
+                transmissionMap: true,
+                thicknessMap: true,
                 clearcoat: true,
                 sheen: true,
                 iridescence: true,
@@ -145,7 +149,7 @@ test("extension rows append in the pinned registration order", () => {
         ),
     );
     rowOrder(header, [
-        // The transmission pair follows the base five...
+        // The transmission and thickness maps follow the base five...
         `    {5, MaterialTextureSource::transmission, ` +
             `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
             `"refractionMapTexture", "refractionMapSampler"},`,
@@ -289,6 +293,40 @@ test("each metallic-reflectance map defines only its own native capability", () 
         assert.match(defines, new RegExp(expected));
         assert.doesNotMatch(defines, new RegExp(absent));
     }
+});
+
+test("a translucency-only scene binds the thickness map without the grab", () => {
+    // The translucency fragment declares the refraction fragment's
+    // thickness pair and nothing else of it, so the slot follows that
+    // binding while the transmission renderer's rows stay absent.
+    const header = inlineCpp(
+        materialTextureSlotsHeader(
+            { ...noFeatures, thicknessMap: true },
+            [
+                variantWith([
+                    ["baseColorTexture", "texture_2d<f32>"],
+                    ["baseColorSampler", "sampler"],
+                    ["thicknessTexture_", "texture_2d<f32>"],
+                    ["thicknessSampler_", "sampler"],
+                ]),
+            ],
+            "test",
+        ),
+    );
+    assert.ok(
+        header.includes(
+            `    {5, MaterialTextureSource::thickness, ` +
+                `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
+                `"thicknessTexture_", "thicknessSampler_"},`,
+        ),
+    );
+    assert.ok(!header.includes(`"refractionMapTexture"`));
+    assert.ok(!header.includes(`"refractionTexture"`));
+    const defines = metallicReflectanceCapabilityDefines(
+        new Set(["thicknessTexture_"]),
+    );
+    assert.match(defines, /BBLITE_MATERIAL_THICKNESS_MAP 1/);
+    assert.match(defines, /BBLITE_MATERIAL_TRANSMISSION_MAP 0/);
 });
 
 test("a scene-37-shaped scene appends occlusion straight after the base five", () => {

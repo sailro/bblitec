@@ -1,4 +1,4 @@
-import { EmissionMap } from "../emission-transaction.js";
+import { EmissionMap, writable } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
     type StorageBufferIntrinsicContext,
@@ -19,7 +19,11 @@ import {
 } from "../material-plugin.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { enclosingLoopControl } from "../loop-control.js";
-import { requiredStaticColor3, staticColor3Value } from "./material-options.js";
+import {
+    gridMaterialOptionsCpp,
+    requiredStaticColor3,
+    staticColor3Value,
+} from "./material-options.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
 import {
@@ -82,7 +86,6 @@ export interface MaterialIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "compileNodeMaterialOptions"
-            | "expectShaderVariant"
             | "resolveShaderUniform"
             | "resolveShaderTextureSlot"
             | "resolveShaderStorageBufferSlot"
@@ -662,20 +665,7 @@ function compileCreateGridMaterial(
     const engine = context.requireDefaultEngine(call);
     const options = call.arguments[0]
         ? context.compileGridMaterialOptions(call.arguments[0])
-        : [
-              "bbl::Color3{0.0f, 0.0f, 0.0f}",
-              "bbl::Color3{0.0f, 0.5f, 0.5f}",
-              "1.0f",
-              "bbl::Vec3{}",
-              "10.0f",
-              "0.33f",
-              "1.0f",
-              "1.0f",
-              "true",
-              "false",
-              "false",
-              "true",
-          ];
+        : gridMaterialOptionsCpp({});
     context.reachFeature("material:grid", call);
     context.reachFeature("renderer:scene", call);
     return {
@@ -1089,7 +1079,7 @@ function compileSetPbrEmissive(
     );
     const bindings =
         material.materialUboArrayFields ??
-        (material.materialUboArrayFields = new EmissionMap());
+        (writable(material).materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
     context.sceneManifest.recordScenePbrEmissive(
         channels,
@@ -1636,7 +1626,19 @@ function compileSetAlphaToCoverage(
         // turn, so yielding is how a shared name reaches it.
         return undefined;
     }
-    context.expectShaderVariant(material, "alpha-card", argumentAt(call, 0));
+    // Every reached shader-material program takes the flag at its pipeline;
+    // the Standard/PBR targets the pin also accepts are not reached here.
+    if (!material.shaderVariant) {
+        context.fail(
+            argumentAt(call, 0),
+            "setAlphaToCoverage reaches shader materials; a Standard or " +
+                "PBR target is not supported.",
+        );
+    }
+    context.sceneManifest.reachedShaderProgram(
+        material.shaderVariant,
+        argumentAt(call, 0),
+    );
     const enabled = context.compileBoolean(argumentAt(call, 1));
     return {
         kind: "void",

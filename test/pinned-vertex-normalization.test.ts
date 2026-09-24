@@ -11,16 +11,19 @@ import {
 } from "../src/lowering/pinned-vertex-normalization.js";
 import { emitShaderCppExpression } from "../src/shader-cpp-emitter.js";
 import { parseWgslExpression } from "../src/shader-ir.js";
+import { pinnedLibraryRoot } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+const templateModule = "src/material/pbr/pbr-template.ts";
+
 class EditedStore extends UpstreamSourceStore {
     public edit?: (source: string) => string;
     public override getSourceFile(module: string): ts.SourceFile {
-        return this.edit && module === "src/material/pbr/pbr-template.ts"
+        return this.edit && module === templateModule
             ? ts.createSourceFile(
                   module,
                   this.edit(super.getSource(module)),
@@ -28,6 +31,24 @@ class EditedStore extends UpstreamSourceStore {
                   true,
               )
             : super.getSourceFile(module);
+    }
+}
+
+/** The doctored template's executed half: its packaged module, edited alike. */
+class EditedContext extends LoweringContext {
+    public constructor(private readonly edited: EditedStore) {
+        super(edited);
+    }
+    public packagedModuleText(module: string): string | undefined {
+        const edit = this.edited.edit;
+        if (!edit || module !== templateModule) return undefined;
+        const packaged = readFileSync(
+            join(pinnedLibraryRoot(), this.edited.packagedModulePath(module)),
+            "utf8",
+        );
+        const changed = edit(packaged);
+        assert.notEqual(changed, packaged, "edit missed the packaged template");
+        return changed;
     }
 }
 
@@ -54,10 +75,7 @@ test("vertex normalization tolerates formatting and local shader aliases", () =>
         source
             .replaceAll("normalize(", "normalize( /* normalization */ ")
             .replaceAll("T_local", "localTangent");
-    assert.equal(
-        pinnedVertexNormalization(new LoweringContext(store)),
-        expected,
-    );
+    assert.equal(pinnedVertexNormalization(new EditedContext(store)), expected);
 });
 
 test("CPU normalization shares resolved output and world alias chains with the vertex stage", () => {
@@ -66,7 +84,8 @@ test("CPU normalization shares resolved output and world alias chains with the v
     store.edit = (source) =>
         source
             .replace("var out:VertexOutput", "var result:VertexOutput")
-            .replaceAll("out.", "result.")
+            .replaceAll(";out.", ";result.")
+            .replaceAll(" out.", " result.")
             .replaceAll("return out;", "return result;")
             .replace(
                 "var finalWorld=mesh.world;",
@@ -76,10 +95,7 @@ test("CPU normalization shares resolved output and world alias chains with the v
                 "let T_local=normalize(tangent.xyz);",
                 "let firstTangent=normalize(tangent.xyz);let secondTangent=firstTangent;let T_local=secondTangent;",
             );
-    assert.equal(
-        pinnedVertexNormalization(new LoweringContext(store)),
-        expected,
-    );
+    assert.equal(pinnedVertexNormalization(new EditedContext(store)), expected);
 });
 
 test("vertex normalization follows common expression changes and refuses mismatched directions", () => {
@@ -92,7 +108,7 @@ test("vertex normalization follows common expression changes and refuses mismatc
                 "normalize(tangent.xyz * 2.0)",
             );
     assert.match(
-        pinnedVertexNormalization(new LoweringContext(store)),
+        pinnedVertexNormalization(new EditedContext(store)),
         /value\.x \* 2\.0f/,
     );
     store.edit = (source) =>
@@ -101,21 +117,22 @@ test("vertex normalization follows common expression changes and refuses mismatc
             "normalize(tangent.xyz * 2.0)",
         );
     assert.throws(
-        () => pinnedVertexNormalization(new LoweringContext(store)),
+        () => pinnedVertexNormalization(new EditedContext(store)),
         /normalization contract changed/,
     );
+    // An unnormalized normal is no longer the transport the stage reads.
     store.edit = (source) =>
         source.replaceAll("normalize(${normVar})", "${normVar}");
     assert.throws(
-        () => pinnedVertexNormalization(new LoweringContext(store)),
-        /normalization contract changed/,
+        () => pinnedVertexNormalization(new EditedContext(store)),
+        /homogeneous normal transport changed/,
     );
     store.edit = (source) =>
         source
             .replaceAll("normalize(${normVar})", "normalize(unbound)")
             .replaceAll("normalize(tangent.xyz)", "normalize(unbound)");
     assert.throws(
-        () => pinnedVertexNormalization(new LoweringContext(store)),
+        () => pinnedVertexNormalization(new EditedContext(store)),
         /unbound input/,
     );
 });

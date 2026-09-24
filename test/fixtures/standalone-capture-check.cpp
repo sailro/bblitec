@@ -1,6 +1,3 @@
-#define BBLITE_HAS_TEXT_RENDERER 0
-#define BBLITE_HAS_UI 0
-#define BBLITE_HAS_SPRITE_RENDERER 1
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"

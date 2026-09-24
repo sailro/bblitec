@@ -257,8 +257,7 @@ test(
             executable = join(output, "check.exe");
         writeFileSync(
             file,
-            `#define BBLITE_HAS_PBR_RENDERER 1
-#define BBLITE_GPU_INSTANCING 1
+            `#define BBLITE_GPU_INSTANCING 1
 #define BBLITE_FLOATING_ORIGIN 0
 #include "matrix.hpp"
 #include "world.hpp"
@@ -290,6 +289,7 @@ int main() {
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
             "/W4",
             "/WX",
             "/permissive-",
@@ -354,6 +354,7 @@ test(
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PICKING=1",
             "/W4",
             "/WX",
             "/permissive-",

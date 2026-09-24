@@ -1,4 +1,4 @@
-import { emissionArray } from "./emission-transaction.js";
+import { emissionArray, journaled } from "./emission-transaction.js";
 import type ts from "typescript";
 
 const MAX_STATIC_ITERATIONS = 4096;
@@ -10,10 +10,10 @@ const MAX_COMPOSITION_RECORDS = 65536;
  * too: an unsuccessful fold must not allocate unbounded speculative output.
  */
 export class StaticExpansionBudget {
-    private iterations = 0;
-    private bytes = 0;
+    @journaled private accessor iterations = 0;
+    @journaled private accessor bytes = 0;
     private readonly sites: ts.IterationStatement[] = emissionArray([]);
-    private exceeded:
+    @journaled private accessor exceeded:
         { site: ts.IterationStatement; message: string } | undefined;
 
     public constructor(

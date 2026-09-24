@@ -26,10 +26,6 @@ import type {
 } from "./compiler/types.js";
 import { writeJsonRecord } from "./tooling/records.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "./shader-material-programs.js";
-import {
     emitUpstreamGenerated,
     readPinnedMaxLights,
     type UpstreamEmitOptions,
@@ -42,6 +38,7 @@ import {
     featureActivationPath,
     featureActivationRows,
 } from "./feature-activation.js";
+import { featureMacroHeaders } from "./feature-macros.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageGltfLoadPlan } from "./gltf-load-plan.js";
@@ -90,7 +87,6 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
-import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import {
     composeDefaultTextPipelines,
@@ -1084,20 +1080,14 @@ async function main(): Promise<void> {
             const custom = result.manifest.customShaderPrograms.find(
                 (program) => program.name === name,
             );
-            if (custom) {
-                return custom;
-            }
-            const predeclared = shaderMaterialPrograms.find(
-                (program) => program.name === name,
-            );
-            if (!predeclared) {
+            if (!custom) {
                 refuseGeneration(
                     "material:shader",
                     `Unknown shader variant '${name}'.`,
                     result.manifest.featureSites,
                 );
             }
-            return predeclaredShaderProgram(predeclared);
+            return custom;
         });
     // The SPZ container, recorded here rather than in the adaptation table:
     // `compileAdaptations` runs over the entry AST, and the VALUE this
@@ -1198,14 +1188,7 @@ async function main(): Promise<void> {
     // composition decides: whether the transmission renderer compiles.
     const activationPlan: ActivationPlan = {
         ...assetJoin.plan,
-        transmission: sceneTransmission(
-            result.manifest.features,
-            composedArms,
-            composedMaterialCapabilities(
-                pinnedVariants,
-                standardComposition?.variants ?? [],
-            ).pbrBindingNames.has("thicknessTexture_"),
-        ),
+        transmission: sceneTransmission(result.manifest.features, composedArms),
     };
     const gpuDeformation = activationPlan.gpuDeformation.value;
     const morphStorage = activationPlan.morphStorage.value;
@@ -1542,6 +1525,11 @@ ${imageCodecLines || '    ""'}
 )
 `,
     );
+    for (const [include, text] of featureMacroHeaders({
+        features: result.manifest.features,
+        imageCodecs,
+    }))
+        tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the
     // compiler) plus what this run read beside them -- the host-UI
     // companion and every asset materialized from a repository path. A

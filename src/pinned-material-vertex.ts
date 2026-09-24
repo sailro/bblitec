@@ -1,9 +1,6 @@
-import ts from "typescript";
+import type ts from "typescript";
 import { LoweringContext } from "./lowering/context.js";
-import {
-    PinnedShaderText,
-    type ShaderTextBinding,
-} from "./lowering/pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import {
     expressionUsesPath,
     mapShaderExpression,
@@ -77,64 +74,124 @@ function substitute(
     );
 }
 
-/** Raw pinned vertex computation, shared by GPU transport and CPU projections. */
-export function pinnedPbrVertexTemplate(
+/**
+ * Raw pinned vertex computation, shared by GPU transport and CPU projections:
+ * the `_vertexTemplate` `createPbrTemplate` builds for a tangent-space
+ * normal, with or without the morph fragment's inputs.
+ */
+function pinnedPbrVertexTemplate(
     context: LoweringContext,
-    morph = false,
+    morph: boolean,
 ): {
     declaration: ts.FunctionDeclaration;
     module: ShaderModule;
-    position: string;
-    normal: string;
+    /** The vertex attributes the template declares, by name. */
+    attributes: string[];
 } {
-    const text = new PinnedShaderText(context);
     const { declaration } = context.functionDeclaration(
         templateModule,
         "createPbrTemplate",
     );
-    const parameters = new Map<string, ShaderTextBinding>([
-        ["_hasMorph", morph],
-        ["hasNormal", true],
-        ["_ext", false],
+    const builders = new PinnedShaderBuilders(context);
+    const template = builders.call(templateModule, "createPbrTemplate", [
+        { _hasMorph: morph, _normalMode: "tangent" },
     ]);
-    for (const name of ["posVar", "normVar", "tangentBlock"]) {
-        parameters.set(
-            name,
-            text.text(
-                templateModule,
-                context.variableInitializer(declaration, name),
-                parameters,
-            ),
-        );
-    }
-    const position = parameters.get("posVar"),
-        normal = parameters.get("normVar");
-    if (typeof position !== "string" || typeof normal !== "string") {
-        context.contractError(
-            declaration,
-            "Pinned vertex template inputs must resolve to shader text.",
-        );
-    }
+    const declared: unknown =
+        typeof template === "object" && template !== null
+            ? Reflect.get(template, "_baseVertexAttributes")
+            : undefined;
+    const attributes = Array.isArray(declared)
+        ? declared.map((attribute: unknown) =>
+              builders.text(
+                  attribute,
+                  ["_name"],
+                  declaration,
+                  "createPbrTemplate",
+              ),
+          )
+        : context.contractError(
+              declaration,
+              "Pinned createPbrTemplate no longer lists its vertex attributes.",
+          );
     return {
         declaration,
+        attributes,
         module: parseWgslModule(
-            text.text(
-                templateModule,
-                context.variableInitializer(declaration, "_vertexTemplate"),
-                parameters,
+            builders.text(
+                template,
+                ["_vertexTemplate"],
+                declaration,
+                "createPbrTemplate",
             ),
             "vertex",
         ),
-        position,
-        normal,
     };
+}
+
+/**
+ * The attribute a world output transports homogeneously, as the template
+ * writes it: `(mesh.world * vec4<f32>(input, w)).xyz`, the input normalized
+ * first for a direction.
+ */
+function homogeneousInput(
+    value: ShaderExpression | undefined,
+    w: number,
+    direction: boolean,
+): string | undefined {
+    if (
+        value?.kind !== "member" ||
+        value.member !== "xyz" ||
+        value.expression.kind !== "binary" ||
+        value.expression.operator !== "*" ||
+        !isPath(value.expression.left, "mesh", "world")
+    )
+        return undefined;
+    const vector = value.expression.right;
+    if (
+        vector.kind !== "construct" ||
+        vector.type !== "vec4<f32>" ||
+        vector.arguments.length !== 2 ||
+        !isNumber(vector.arguments[1], w)
+    )
+        return undefined;
+    const input = vector.arguments[0]!;
+    if (!direction) {
+        return input.kind === "path" && input.parts.length === 1
+            ? input.parts[0]
+            : undefined;
+    }
+    if (
+        input.kind !== "call" ||
+        input.name !== "normalize" ||
+        input.arguments.length !== 1
+    )
+        return undefined;
+    // The direction the pin normalizes may be any expression over the one
+    // attribute it reads; that attribute is the input.
+    const read = new Set<string>();
+    let single = true;
+    mapShaderExpression(input.arguments[0]!, (node) => {
+        if (node.kind === "path") {
+            read.add(node.parts[0]!);
+            single &&= node.parts.length === 1;
+        }
+        return node;
+    });
+    return single && read.size === 1 ? [...read][0] : undefined;
 }
 
 /** Resolve the pin's local aliases and output identity before choosing a transport. */
 export function pinnedPbrVertexOutputs(
     context: LoweringContext,
     morph = false,
-): ReturnType<typeof pinnedPbrVertexTemplate> & {
+): {
+    declaration: ts.FunctionDeclaration;
+    module: ShaderModule;
+    attributes: string[];
+    /** The position the template transforms: the attribute or the morphed one. */
+    position: string;
+    /** The normal the template transforms: the attribute or the morphed one. */
+    normal: string;
     outputs: ReadonlyMap<string, ShaderExpression>;
 } {
     const template = pinnedPbrVertexTemplate(context, morph);
@@ -145,18 +202,6 @@ export function pinnedPbrVertexOutputs(
                 `Pinned shared vertex ${what} changed.`,
             );
     };
-    checkReferences(
-        template.module.entryPoint.statements,
-        new Set([
-            "mesh",
-            "scene",
-            template.position,
-            template.normal,
-            "tangent",
-            "uv",
-        ]),
-        requireShape,
-    );
     const locals = new Map<string, ShaderExpression>();
     const outputs = new Map<string, ShaderExpression>();
     let outputName: string | undefined;
@@ -210,7 +255,23 @@ export function pinnedPbrVertexOutputs(
             outputFields.every((name) => outputs.has(name)),
         "template outputs",
     );
-    return { ...template, outputs };
+    const position = homogeneousInput(outputs.get("worldPos"), 1, false);
+    const normal = homogeneousInput(outputs.get("worldNormal"), 0, true);
+    requireShape(position, "homogeneous position transport");
+    requireShape(normal, "homogeneous normal transport");
+    checkReferences(
+        template.module.entryPoint.statements,
+        // The morph fragment declares the morphed inputs; without it the
+        // template reads only the attributes it declares.
+        new Set([
+            "mesh",
+            "scene",
+            ...template.attributes,
+            ...(morph ? [position, normal] : []),
+        ]),
+        requireShape,
+    );
+    return { ...template, position, normal, outputs };
 }
 
 /**
@@ -227,7 +288,7 @@ export function pinnedMaterialVertex(
         morphStorage: boolean;
     },
 ): { body: string; helpers: string; morphStructs: string; provenance: string } {
-    const text = new PinnedShaderText(context);
+    const builders = new PinnedShaderBuilders(context);
     const pinnedTemplate = pinnedPbrVertexOutputs(context, options.deformation);
     const { declaration, outputs } = pinnedTemplate;
     const requireShape: RequireShape = (condition, what) => {
@@ -237,32 +298,25 @@ export function pinnedMaterialVertex(
                 `Pinned shared vertex ${what} changed.`,
             );
     };
+    /** A slot text of the record a pinned fragment factory returns. */
     const fragmentText = (
         module: string,
         factory: string,
+        args: readonly unknown[],
         ...properties: string[]
-    ): string => {
-        const { declaration: factoryDeclaration } = context.functionDeclaration(
-            module,
+    ): string =>
+        builders.text(
+            builders.call(module, factory, args),
+            properties,
+            context.functionDeclaration(module, factory).declaration,
             factory,
         );
-        let value: ts.Expression = context.returnObject(factoryDeclaration);
-        for (const property of properties) {
-            const object = context.unwrapExpression(value);
-            if (!ts.isObjectLiteralExpression(object))
-                context.contractError(
-                    value,
-                    "Expected a pinned vertex fragment record.",
-                );
-            value = context.propertyInitializer(object, property);
-        }
-        return text.text(module, value, new Map());
-    };
     const morph = options.deformation
         ? parseWgslStatements(
               fragmentText(
                   morphModule,
                   "createMorphFragment",
+                  [],
                   "_vertexSlots",
                   "VR",
               ),
@@ -379,6 +433,7 @@ export function pinnedMaterialVertex(
         const structs = fragmentText(
             morphModule,
             "createMorphFragment",
+            [],
             "_vertexHelperFunctions",
         );
         const declarations = parseWgslStructDeclarations(structs);
@@ -421,7 +476,7 @@ export function pinnedMaterialVertex(
             deformation.push(...attributeMorph(projectedMorph));
         }
         const skin = parseWgslStatements(
-            text.evaluate(
+            builders.evaluate(
                 skeletonModule,
                 "makeSkinningCode",
                 new Map([["has8Bones", false]]),
@@ -501,19 +556,13 @@ export function pinnedMaterialVertex(
             },
             statements: deformation,
         });
-        const helperSource = context.moduleScopeConstant(
-            context.sourceFile(skeletonModule),
-            "SKELETON_HELPERS",
-        );
-        if (!helperSource)
+        const helperSource = builders.value(skeletonModule, "SKELETON_HELPERS");
+        if (typeof helperSource !== "string")
             context.contractError(
                 declaration,
                 "Pinned skeleton helper is missing.",
             );
-        helpers = paletteReader(
-            text.text(skeletonModule, helperSource, new Map()),
-            requireShape,
-        );
+        helpers = paletteReader(helperSource, requireShape);
         origins.push(
             context.provenance(
                 skeletonModule,
@@ -523,10 +572,13 @@ export function pinnedMaterialVertex(
         );
     }
     if (options.instancing) {
+        // This stage transports the instance world columns only; an
+        // instance colour rides the composed families, not this stage.
         const instance = parseWgslStatements(
             fragmentText(
                 instanceModule,
                 "createThinInstanceFragment",
+                [false],
                 "_vertexSlots",
                 "VW",
             ),

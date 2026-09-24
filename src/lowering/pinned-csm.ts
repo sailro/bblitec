@@ -112,33 +112,14 @@ const casterShape = record({
     },
 });
 
-const sourceCheckers = new WeakMap<ts.SourceFile, ts.TypeChecker>();
-
-function sourceChecker(source: ts.SourceFile): ts.TypeChecker {
-    const existing = sourceCheckers.get(source);
-    if (existing) return existing;
-    const host = ts.createCompilerHost({ noLib: true, noResolve: true });
-    host.getSourceFile = (name) =>
-        name === source.fileName ? source : undefined;
-    const checker = ts
-        .createProgram({
-            rootNames: [source.fileName],
-            options: { noLib: true, noResolve: true, types: [] },
-            host,
-        })
-        .getTypeChecker();
-    sourceCheckers.set(source, checker);
-    return checker;
-}
-
 /**
  * CSM's record/array representation seam. Scalar expressions, stores, loops
  * and branches still go through PinnedNumericLowerer. Object aliases are
- * resolved by declaration symbols, never by a local's spelling or source text.
+ * resolved by the declarations the typed program binds them to, never by a
+ * local's spelling or source text.
  */
 class CsmNumericAdapter extends PinnedNumericLowerer {
-    private readonly values = new Map<ts.Symbol, Value>();
-    private readonly checker: ts.TypeChecker;
+    private readonly values = new Map<ts.Declaration, Value>();
 
     public constructor(
         private readonly context: LoweringContext,
@@ -156,12 +137,11 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                 type: "scalar",
             });
         }
-        this.checker = sourceChecker(source);
     }
 
-    private symbol(node: ts.Identifier): ts.Symbol {
+    private declaration(node: ts.Identifier): ts.Declaration {
         return (
-            this.checker.getSymbolAtLocation(node) ??
+            this.context.declarationOf(node) ??
             this.context.contractError(
                 node,
                 "Expected a resolved pinned CSM declaration.",
@@ -170,7 +150,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
     }
 
     public bind(name: ts.Identifier, value: Value): void {
-        this.values.set(this.symbol(name), value);
+        this.values.set(this.declaration(name), value);
         this.bindNumeric(name, value);
     }
 
@@ -211,8 +191,8 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
     private value(expression: ts.Expression): Value | undefined {
         const node = this.context.unwrapExpression(expression);
         if (ts.isIdentifier(node)) {
-            const symbol = this.checker.getSymbolAtLocation(node);
-            return symbol ? this.values.get(symbol) : undefined;
+            const declaration = this.context.declarationOf(node);
+            return declaration ? this.values.get(declaration) : undefined;
         }
         if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
             const call = this.aggregateCalls.get(node.expression.text);

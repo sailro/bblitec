@@ -92,8 +92,6 @@ export type JoinedActivationPlan = Omit<ActivationPlan, "transmission">;
 export function sceneTransmission(
     features: readonly string[],
     composedArms: Pick<PinnedMaterialArms, "transmission">,
-    /** A composed variant binds the pin's thickness pair. */
-    thicknessBinding: boolean,
 ): Activation {
     return activation([
         [
@@ -103,13 +101,6 @@ export function sceneTransmission(
         [
             composedArms.transmission,
             "a composed PBR variant carries the pin's refraction fragment",
-        ],
-        // The translucency fragment binds the refraction fragment's thickness
-        // pair, and both PALs size that slot pair under this define.
-        [
-            thicknessBinding,
-            "a composed PBR variant binds the thickness pair both PALs size " +
-                "under the transmission renderer",
         ],
     ]);
 }
@@ -280,8 +271,7 @@ export async function joinAssetFeatures({
             morphStorage: activation([
                 [
                     specialization.morphStorage,
-                    "a glTF primitive carries morph targets " +
-                        "(maxMorphTargets > 0)",
+                    "a glTF asset runs the pinned morph feature",
                 ],
                 [
                     has("mesh:morph-targets"),

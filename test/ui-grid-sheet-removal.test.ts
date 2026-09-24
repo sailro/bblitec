@@ -34,7 +34,9 @@ test("stylesheet removal updates native grids while preserving element identity"
         fileName: join(directory, "entry.ts"),
     });
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-grid-sheet-removal");
+    runRmlUiFixture(t, "ui-grid-sheet-removal", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });
 
 test("removing a geometry override retains the remaining native grid cascade", () => {

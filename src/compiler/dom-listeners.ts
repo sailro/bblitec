@@ -121,7 +121,7 @@ export function listenerOptions(
         ] as const) {
             const property = properties[name];
             if (!property) continue;
-            const value = context.dataLowerer.conditionFromValue(property);
+            const value = context.dataLowerer.truthinessCondition(property);
             if (value === undefined)
                 context.fail(
                     expression,

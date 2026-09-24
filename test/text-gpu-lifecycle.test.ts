@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import {
@@ -17,6 +18,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 // Real pinned function bodies with only device resources and pipeline resolution
 // replaced by recorders. No fixture reimplementation of resource state decisions.
@@ -112,7 +114,11 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     }
     const context = new LoweringContext(),
         directory = resolve("artifacts/test-text-gpu-lifecycle");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     writeFileSync(
         resolve(directory, "upstream_text.hpp"),
         new TextLowerer(context).header(),
@@ -528,7 +534,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         record();
     });
     act(
-        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;payload->atlases[0].curves.used_texels=4097;payload->atlases[0].bands.used_texels=4098;payload->atlases[0].metadata.count=6;payload->atlases[0].version=2;update();record();",
+        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;atlas->curve_texels_used=4097;atlas->band_texels_used=4098;atlas->slot_count=6;atlas->version=2;update();record();",
         () => {
             data._instanceCount = 9;
             data._version = 4;
@@ -610,27 +616,6 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         () => statementProbe("unknownOperation(1);"),
         /Unsupported pinned call 'unknownOperation'/,
     );
-    class ChangedContext extends LoweringContext {
-        private changed: ts.SourceFile | undefined;
-        constructor(
-            private readonly path: string,
-            private readonly before: string,
-            private readonly after: string,
-        ) {
-            super();
-        }
-        override sourceFile(path: string): ts.SourceFile {
-            const source = super.sourceFile(path);
-            if (path !== this.path) return source;
-            assert.ok(source.text.includes(this.before), this.before);
-            return (this.changed ??= ts.createSourceFile(
-                path,
-                source.text.replace(this.before, this.after),
-                ts.ScriptTarget.Latest,
-                true,
-            ));
-        }
-    }
     const module = "src/text/text-renderable.ts";
     for (const [path, before, after, reason] of [
         [
@@ -667,14 +652,14 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         assert.throws(
             () =>
                 new TextGpuLowerer(
-                    new ChangedContext(path, before, after),
+                    doctoredContext(path, before, after),
                 ).header(),
             reason,
         );
     assert.throws(
         () =>
             new TextLowerer(
-                new ChangedContext(
+                doctoredContext(
                     "src/render/alpha-to-coverage.ts",
                     "_enabledTargets.add(target)",
                     "_enabledTargets.delete(target)",
@@ -683,7 +668,7 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         /enabled membership/,
     );
     const changed = new TextGpuLowerer(
-        new ChangedContext(module, "cap *= 2;", "cap *= 3;"),
+        doctoredContext(module, "cap *= 2;", "cap *= 3;"),
     ).header();
     assert.match(
         changed,

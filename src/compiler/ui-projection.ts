@@ -1,10 +1,17 @@
-import { isStringValue, optionalPresentCpp, valueForKind } from "./types.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    presenceFlagCpp,
+    valueForKind,
+} from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     emissionArray,
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    journaled,
+    writable,
 } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -59,6 +66,7 @@ import { documentEngine } from "./window-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import { primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
 import {
@@ -89,23 +97,24 @@ interface UiStaticMarkupNode {
     children: UiStaticMarkupNode[];
 }
 
+/** Compiler state: written in place only through `writable()`; its sets are journaled. */
 interface UiStaticElement {
-    tag: string;
+    readonly tag: string;
     /** Every exact class set the element can have at a projected boundary. */
-    classAlternatives: Set<string>[];
-    classMayMutateDynamically: boolean;
-    ids: Set<string>;
-    children: Set<number>;
-    markupChildren: UiStaticMarkupNode[];
+    readonly classAlternatives: readonly Set<string>[];
+    readonly classMayMutateDynamically: boolean;
+    readonly ids: Set<string>;
+    readonly children: Set<number>;
+    readonly markupChildren: readonly UiStaticMarkupNode[];
     /** Reachable complete inline declaration lists, not assignment history. */
-    styles: string[];
-    styleShapeKnown: boolean;
-    styleMayMutateDynamically: boolean;
-    mutableClasses: Set<string>;
-    classShapeKnown: boolean;
+    readonly styles: readonly string[];
+    readonly styleShapeKnown: boolean;
+    readonly styleMayMutateDynamically: boolean;
+    readonly mutableClasses: Set<string>;
+    readonly classShapeKnown: boolean;
     /** False when known child construction sites can occur a runtime number of times. */
-    childCardinalityKnown: boolean;
-    childShapeKnown: boolean;
+    readonly childCardinalityKnown: boolean;
+    readonly childShapeKnown: boolean;
 }
 
 /** What `uiElementValue` knows of the element an expression names. */
@@ -144,6 +153,8 @@ interface UiProjectionContext extends Pick<
     | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
+    | "compilePlatformCallback"
+    | "hoistForwardCallbackBindings"
     | "compileStringLiteral"
     | "compileValue"
     | "compileVoidCallback"
@@ -282,7 +293,7 @@ export class UiProjection {
             if (!value) return undefined;
             if (this.presentsPrimaryCanvas(value)) {
                 return Object.assign(
-                    value,
+                    writable(value),
                     this.primaryPresentationCanvas(owner),
                 );
             }
@@ -355,7 +366,7 @@ export class UiProjection {
                     cpp: `(*${value.cpp})`,
                     dataType: value.dataType.inner,
                     optionalFoundCpp:
-                        value.optionalFoundCpp ?? optionalPresentCpp(value.cpp),
+                        presenceFlagCpp(value) ?? optionalPresentCpp(value.cpp),
                     engineCpp: value.engineCpp ?? this.documentEngine(owner),
                 }),
             );
@@ -820,10 +831,10 @@ export class UiProjection {
             unique.set(UiProjection.uiClassSetKey(stored), stored);
         }
         if (unique.size > 32) {
-            element.classShapeKnown = false;
+            writable(element).classShapeKnown = false;
             return;
         }
-        element.classAlternatives = [...unique.values()];
+        writable(element).classAlternatives = [...unique.values()];
     }
 
     public recordUiStaticAttribute(
@@ -849,7 +860,7 @@ export class UiProjection {
         if (!element) return;
         if (name === "class") {
             if (!candidates) {
-                element.classShapeKnown = false;
+                writable(element).classShapeKnown = false;
                 return;
             }
             const alternatives: Set<string>[] = [];
@@ -859,13 +870,13 @@ export class UiProjection {
                     if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) {
                         classes.add(token);
                     } else {
-                        element.classShapeKnown = false;
+                        writable(element).classShapeKnown = false;
                     }
                 }
                 alternatives.push(classes);
             }
             const dynamic = this.uiStaticMutationIsDynamic();
-            if (dynamic) element.classMayMutateDynamically = true;
+            if (dynamic) writable(element).classMayMutateDynamically = true;
             this.setUiClassAlternatives(
                 element,
                 dynamic || element.classMayMutateDynamically
@@ -891,7 +902,7 @@ export class UiProjection {
         const element = this.uiStaticElement(value);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.classMayMutateDynamically = true;
+            writable(element).classMayMutateDynamically = true;
         }
         element.mutableClasses.add(name);
         const alternatives: Set<string>[] = [...element.classAlternatives];
@@ -927,14 +938,14 @@ export class UiProjection {
         const wasKnown = element.styleShapeKnown;
         const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
         if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
         const mayReplaceLater =
             currentMutationIsDynamic || element.styleMayMutateDynamically;
-        element.styles = mayReplaceLater
+        writable(element).styles = mayReplaceLater
             ? [...new EmissionSet([...element.styles, ...styles])]
             : [...new EmissionSet(styles)];
-        element.styleShapeKnown = mayReplaceLater ? wasKnown : true;
+        writable(element).styleShapeKnown = mayReplaceLater ? wasKnown : true;
     }
 
     public recordUiStaticStyle(value: Value, style: string): void {
@@ -947,9 +958,9 @@ export class UiProjection {
         const element = this.uiStaticElement(value);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
-        element.styleShapeKnown = false;
+        writable(element).styleShapeKnown = false;
     }
 
     private static uiStyleWithProperty(
@@ -991,9 +1002,9 @@ export class UiProjection {
         );
         const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
         if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
-        element.styles =
+        writable(element).styles =
             currentMutationIsDynamic || element.styleMayMutateDynamically
                 ? [...new EmissionSet([...element.styles, ...updated])]
                 : [...new EmissionSet(updated)];
@@ -1003,16 +1014,16 @@ export class UiProjection {
         const parentElement = this.uiStaticElement(parent);
         if (!parentElement) return;
         if (child.uiStaticId === undefined) {
-            parentElement.childCardinalityKnown = false;
-            parentElement.childShapeKnown = false;
+            writable(parentElement).childCardinalityKnown = false;
+            writable(parentElement).childShapeKnown = false;
             return;
         }
         if (this.uiStaticMutationIsDynamic()) {
             parentElement.children.add(child.uiStaticId);
-            parentElement.childCardinalityKnown = false;
+            writable(parentElement).childCardinalityKnown = false;
             for (const element of this.uiStaticElements.values()) {
                 if (element.children.has(child.uiStaticId)) {
-                    element.childCardinalityKnown = false;
+                    writable(element).childCardinalityKnown = false;
                 }
             }
             return;
@@ -1029,11 +1040,11 @@ export class UiProjection {
         const element = this.uiStaticElement(parent);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.childCardinalityKnown = false;
+            writable(element).childCardinalityKnown = false;
             return;
         }
         element.children.clear();
-        element.markupChildren = [];
+        writable(element).markupChildren = [];
     }
 
     private uiStaticMutationIsDynamic(): boolean {
@@ -1070,7 +1081,7 @@ export class UiProjection {
         const dynamic = this.uiStaticMutationIsDynamic();
         for (const parent of this.uiStaticElements.values()) {
             if (!parent.children.has(id)) continue;
-            if (dynamic) parent.childCardinalityKnown = false;
+            if (dynamic) writable(parent).childCardinalityKnown = false;
             else parent.children.delete(id);
         }
         if (dynamic) {
@@ -1089,7 +1100,7 @@ export class UiProjection {
     ): void {
         if (ownerId === undefined) return;
         const owner = this.uiStaticElements.get(ownerId);
-        if (owner) owner.markupChildren.push(...children);
+        if (owner) writable(owner.markupChildren).push(...children);
     }
 
     /**
@@ -1400,7 +1411,7 @@ export class UiProjection {
     private readonly uiDocumentRootIds = new EmissionMap<string, number>();
     private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
-    private uiElementIds = 0;
+    @journaled private accessor uiElementIds = 0;
 
     /**
      * Logical sizes that reached `scale()` calls map exactly onto a retained
@@ -1426,7 +1437,7 @@ export class UiProjection {
     >();
 
     /** Mints `uiCanvasId` for each created retained canvas element. */
-    public uiCanvasIds = 0;
+    @journaled public accessor uiCanvasIds = 0;
 
     private uiStyleRefusal(
         site: ts.Node | undefined,
@@ -1834,10 +1845,12 @@ export class UiProjection {
     ): boolean {
         let target = this.context.unwrap(expression);
         if (ts.isIdentifier(target)) {
-            const declaration =
-                this.context.checker.getSymbolAtLocation(
-                    target,
-                )?.valueDeclaration;
+            // The alias the read's own scope declares: its initializer is
+            // compiled here, so an import's is not one to follow.
+            const declaration = declaredSymbol(
+                this.context.checker,
+                target,
+            )?.valueDeclaration;
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
@@ -2964,7 +2977,7 @@ export class UiProjection {
             if (!owner) return;
             const candidates = this.uiStringCandidates(candidate);
             if (!candidates) {
-                owner.styleShapeKnown = false;
+                writable(owner).styleShapeKnown = false;
                 return;
             }
             this.recordUiStaticStyles(
@@ -3558,6 +3571,47 @@ export class UiProjection {
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
+    /**
+     * `input.onchange = handler` on a retained file input: the handler the
+     * change after a selection dispatches, as `addEventListener("change")`
+     * registers it. The attribute is one slot, so it is assigned once.
+     * Every other event-handler property refuses by name.
+     */
+    private emitUiEventHandlerProperty(
+        element: Value,
+        engine: string,
+        property: string,
+        assignment: ts.BinaryExpression,
+    ): void {
+        if (property !== "onchange" || !element.uiFileInput)
+            this.context.fail(
+                assignment.left,
+                `Native UI event handler property '${property}' is not lowered; register the handler with addEventListener.`,
+            );
+        if (element.uiFileChangeHandler)
+            this.context.fail(
+                assignment,
+                "A file input's onchange handler is assigned once; replacing it is not lowered.",
+            );
+        writable(element).uiFileChangeHandler = true;
+        this.context.hoistForwardCallbackBindings(
+            assignment.right,
+            assignment.pos,
+        );
+        const handler = this.context.compilePlatformCallback(
+            assignment.right,
+            undefined,
+            [],
+            undefined,
+            true,
+            false,
+        );
+        this.context.reachFeature("browser:file", assignment);
+        this.context.emit(
+            `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
+        );
+    }
+
     public compileUiBrowserFileAttribute(
         element: Value,
         engine: string,
@@ -3599,7 +3653,7 @@ export class UiProjection {
                         `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
-                element.uiFileInput = true;
+                writable(element).uiFileInput = true;
                 this.context.reachFeature("browser:file", site);
                 return `bbl::ui_set_file_input(${engine}, ${element.cpp})`;
             }
@@ -3775,6 +3829,15 @@ export class UiProjection {
                 this.context.emit(`${browserFile};`);
                 return true;
             }
+            if (/^on[a-z]+$/.test(property)) {
+                this.emitUiEventHandlerProperty(
+                    directElement,
+                    engine,
+                    property,
+                    expression,
+                );
+                return true;
+            }
             if (
                 directElement.uiCanvas &&
                 !directElement.uiCanvasContext &&
@@ -3797,7 +3860,7 @@ export class UiProjection {
                     const sizes = this.uiCanvasStaticSizes.get(
                         directElement.uiCanvasId,
                     ) ?? { pairs: new EmissionSet<string>() };
-                    sizes[property] = staticSize;
+                    writable(sizes)[property] = staticSize;
                     if (
                         sizes.width !== undefined &&
                         sizes.height !== undefined
@@ -4112,9 +4175,9 @@ export class UiProjection {
         return this.presentationCanvasValue;
     }
 
-    public presentationCanvasValue: Value | undefined;
+    @journaled public accessor presentationCanvasValue: Value | undefined;
 
-    public primaryCanvasReadyGate = false;
+    @journaled public accessor primaryCanvasReadyGate = false;
 
     private readonly canvasDatasetReads = new EmissionWeakMap<
         ts.SourceFile,
@@ -4164,7 +4227,8 @@ export class UiProjection {
             : undefined;
     }
 
-    public nativeHostUiTagsCache: ReadonlyMap<string, string> | undefined;
+    @journaled public accessor nativeHostUiTagsCache:
+        ReadonlyMap<string, string> | undefined;
 
     public nativeHostUiTags(): ReadonlyMap<string, string> {
         if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;

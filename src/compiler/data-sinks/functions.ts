@@ -1,6 +1,7 @@
 import ts from "typescript";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
+import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -11,12 +12,7 @@ function expressionFunction(
     _expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
-    if (
-        unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(unwrapped) &&
-            unwrapped.text === "undefined" &&
-            !lowerer.context.bindings.lookupOptional(unwrapped))
-    ) {
+    if (isNullishLiteral(lowerer.context.checker, unwrapped)) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
     if (ts.isIdentifier(unwrapped)) {

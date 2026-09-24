@@ -1,5 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
 #define main generated_main
 #include "../../artifacts/ui-optional-calls/program.hpp"
 #undef main

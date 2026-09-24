@@ -75,11 +75,7 @@ function lowerSamplerKey(context: LoweringContext): string {
         if (!name)
             context.contractError(property, "Expected named sampler field.");
         let value = context.unwrapExpression(property.initializer);
-        if (ts.isIdentifier(value))
-            value = context.variableInitializer(
-                context.sourceFile(poolModule),
-                value.text,
-            );
+        if (ts.isIdentifier(value)) value = context.initializerOf(value);
         const defaultValue = value;
         const result = ts.transform(loopStatements[1]!, [
             (transformation) => (root) => {

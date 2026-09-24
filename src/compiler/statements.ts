@@ -4,6 +4,7 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionWeakSet,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -12,12 +13,7 @@ import { activeSurvey } from "./survey.js";
 import { syntaxKindName } from "../source-location.js";
 import { cppIdentifierPattern, doubleLiteral } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
-import {
-    isHandleKind,
-    isDataTuple,
-    tupleComponents,
-    type DataType,
-} from "./data-types.js";
+import { isHandleKind, isDataTuple, tupleComponents } from "./data-types.js";
 import type { Value } from "./types.js";
 import { lightSetter } from "./assignments.js";
 import {
@@ -49,7 +45,6 @@ import {
 import { emitStringAppend } from "./expressions.js";
 import { commonResourceValue, isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
-import { rejectClassStaticBlocks } from "./classes.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -63,10 +58,13 @@ import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 
 export interface StatementLoweringContext extends Pick<
     LoweringServices,
+    | "classLowerer"
     | "resolveRecordValue"
     | "noteCameraVectorSet"
     | "workerCheckpointCpp"
     | "workerAbortCpp"
+    | "options"
+    | "emitActivationBoundary"
     | "speculating"
     | "transaction"
     | "checker"
@@ -403,7 +401,7 @@ export class StatementLowerer {
     ): boolean {
         const frame = this.staticIterationForControl(statement);
         if (!frame) return false;
-        frame.completion = ts.isBreakStatement(statement)
+        writable(frame).completion = ts.isBreakStatement(statement)
             ? "break"
             : "continue";
         return true;
@@ -490,7 +488,11 @@ export class StatementLowerer {
         }
         if (ts.isExpressionStatement(statement)) {
             this.loweredTerminators.delete(statement);
-            if (this.emitExpression(context, statement.expression)) {
+            if (
+                context.emitActivationBoundary(statement, () =>
+                    this.emitExpression(context, statement.expression),
+                )
+            ) {
                 this.loweredTerminators.add(statement);
             }
             return;
@@ -628,10 +630,10 @@ export class StatementLowerer {
         }
         if (ts.isClassDeclaration(statement)) {
             // Classes lower lazily too: construction expands the
-            // fields and each method inlines at its call site. Nothing
-            // is emitted here, so work the declaration itself runs
-            // refuses rather than vanishing.
-            rejectClassStaticBlocks(context, statement);
+            // fields and each method inlines at its call site. What the
+            // declaration itself runs -- static fields and blocks -- runs
+            // here.
+            context.classLowerer.emitDeclaration(statement);
             return;
         }
         context.fail(
@@ -820,9 +822,7 @@ export class StatementLowerer {
                 : enumSwitch
                   ? context.compileEnumSwitchLabel(
                         clause.expression,
-                        value.dataType as DataType & {
-                            kind: "enum";
-                        },
+                        value.dataType,
                     )
                   : context.compileNumber(clause.expression, "double");
             // An inlined function may receive a narrower string-literal
@@ -1349,6 +1349,10 @@ export class StatementLowerer {
                 context.emit(
                     "} catch (const bbl::pal::WorkerTerminated&) { throw;",
                 );
+            else if (context.options.pendingActivations && !catchCpp)
+                context.emit(
+                    "} catch (const bbl::js::PendingActivation&) { throw;",
+                );
             context.emit(
                 suspendedCatch
                     ? `} catch (...) { ${suspendedCatch} = std::current_exception(); }\nif (${suspendedCatch}) {`
@@ -1480,7 +1484,8 @@ export class StatementLowerer {
             frame,
             completion: frame.completion,
         }));
-        for (const { frame } of completions) frame.completion = "normal";
+        for (const { frame } of completions)
+            writable(frame).completion = "normal";
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
             return context.captureHoistedLines(
@@ -1501,7 +1506,7 @@ export class StatementLowerer {
             context.bindings.popScope();
             for (const { frame, completion } of completions) {
                 if (frame.completion === "normal")
-                    frame.completion = completion;
+                    writable(frame).completion = completion;
             }
         }
     }
@@ -2537,7 +2542,8 @@ export class StatementLowerer {
         if (!ts.isIdentifier(declaration.name) || elements.length === 0)
             return false;
         const binding = declaration.name;
-        const kind = elements[0]!.kind;
+        const first = elements[0]!;
+        const kind = first.kind;
         if (
             kind !== "mesh" &&
             kind !== "material" &&
@@ -2545,7 +2551,7 @@ export class StatementLowerer {
             kind !== "animation-group"
         )
             return false;
-        const engineCpp = elements[0]!.engineCpp;
+        const engineCpp = first.engineCpp;
         if (
             !engineCpp ||
             elements.some(

@@ -277,10 +277,12 @@ means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_
 
 Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
 `native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
-Each native macro has one owner and is defined in every unit that tests it: CMake derives the
-feature-keyed ones, generation writes its own decisions to `render_capabilities.hpp`. Guards are plain
-`#if X`; an undefined name in a project unit's `#if` is a compile error (`-Wundef`, MSVC `/we4668` with
-SDK and dependency headers external).
+Each native macro has one owner and is defined, 0 or 1, wherever it is tested: CMake defines build options,
+generation writes each feature-keyed macro to its own `bblite/features/<name>.hpp` (`src/feature-macros.ts`),
+which every file testing it includes, and its composition decisions to `render_capabilities.hpp`. Guards are
+plain `#if X`; an undefined name in a project unit's `#if` is a compile error (`-Wundef`, MSVC `/we4668` with
+SDK and dependency headers external). Native test fixtures (`test/native-fixture.ts`) build the same way:
+their `/D` feature macros become those headers, and `/we4668` applies.
 
 Development shares `artifacts/vcpkg-installed/development-full`; `BBLITE_VCPKG_INSTALLED_ROOT` relocates
 it. Each `scene build` reconciles it once, before any configure (configures never run vcpkg), when the
@@ -301,8 +303,10 @@ before removing a worktree.
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
 Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`, 25 GiB);
 `BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits, and Clang
-builds keep the precompiled header under the cache. Identical generated headers share cache storage;
-debug keys retain directory identity.
+builds keep the precompiled header under the cache. Each repository unit reads a content-addressed folder
+holding exactly the generated headers its include closure names (`native/native-header-cache.cmake`), so a
+generated header rebuilds only its includers and a unit hits across scenes whose inputs to it agree; debug
+keys retain directory identity.
 
 ## Shader compilation
 

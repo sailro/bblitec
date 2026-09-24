@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -6,7 +7,7 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { recordAt } from "../record-access.js";
 
@@ -143,10 +144,10 @@ export function noteCameraRecordWrite(
     if (!camera?.cameraProgram) return;
     const written = value ? staticNumberValue(context, value) : undefined;
     if (!simple || written === undefined) {
-        delete camera.cameraProgram;
+        delete writable(camera).cameraProgram;
         return;
     }
-    camera.cameraProgram.properties.push([property, written]);
+    writable(camera.cameraProgram.properties).push([property, written]);
 }
 
 export function compileCameraIntrinsic(
@@ -444,7 +445,7 @@ export function compileCameraIntrinsic(
             const camera = context.compileValue(cameraExpression);
             context.expectKind(camera, "camera", cameraExpression);
             if (
-                camera.optionalFoundCpp !== undefined &&
+                presenceFlagCpp(camera) !== undefined &&
                 typeMayBeAbsent(context.checker, cameraExpression)
             ) {
                 context.fail(

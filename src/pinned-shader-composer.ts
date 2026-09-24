@@ -593,8 +593,11 @@ let observationCount = 0;
  * `release` removes it. An observer whose shim outlives the call keeps the
  * hook; a stand-in that runs once releases it.
  */
-export function installPinnedImportHook<Arguments extends unknown[]>(
-    callback: (...args: Arguments) => void,
+export function installPinnedImportHook<
+    Arguments extends unknown[],
+    Result = void,
+>(
+    callback: (...args: Arguments) => Result,
 ): { hook: string; release: () => void } {
     const hook = `__bblitecPinnedImport${observationCount++}`;
     const globals = globalThis as Record<string, unknown>;
@@ -718,49 +721,62 @@ function anchorPinnedSpecifiers(
     );
 }
 
+/** The index of the first non-whitespace character at or after `index`. */
+function afterWhitespace(text: string, index: number): number {
+    let end = index;
+    while (end < text.length && text[end]!.trim() === "") end += 1;
+    return end;
+}
+
 /**
- * Strips the given keywords (and their trailing whitespace) from module
- * text — everywhere except inside string, template, or regex literals,
- * because the stripped text is *executed* and a pinned literal that happens
- * to contain a word must survive byte-for-byte. Literal spans come from
- * parsing the text once, so an escape or a nested `${}` cannot fool the
- * filter; the keyword matches are disjoint, so one combined replace keeps
- * every offset valid against that single parse.
+ * Module text with every `async` modifier and every `await` operator
+ * removed, each with the space that separates it from what follows. The
+ * keywords are located as syntax -- a modifier on a function, an await
+ * expression -- so a word inside a literal, a comment or a property name is
+ * never touched, and the text around them is executed byte for byte.
  */
-function stripKeywordsOutsideLiterals(
-    text: string,
-    keywords: readonly ["async", "await"],
-): string {
+function stripAsyncAndAwait(text: string): string {
     const source = ts.createSourceFile(
         "pinned-module.js",
         text,
         ts.ScriptTarget.ES2022,
-        false,
+        true,
         ts.ScriptKind.JS,
     );
-    const literals: Array<readonly [number, number]> = [];
-    const collect = (node: ts.Node): void => {
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node) ||
-            ts.isTemplateHead(node) ||
-            ts.isTemplateMiddle(node) ||
-            ts.isTemplateTail(node) ||
-            ts.isRegularExpressionLiteral(node)
-        ) {
-            literals.push([node.getStart(source), node.end]);
-            return;
+    const removed: Array<readonly [number, number]> = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.canHaveModifiers(node)) {
+            for (const modifier of ts.getModifiers(node) ?? []) {
+                if (modifier.kind === ts.SyntaxKind.AsyncKeyword) {
+                    removed.push([
+                        modifier.getStart(source),
+                        afterWhitespace(text, modifier.end),
+                    ]);
+                }
+            }
         }
-        ts.forEachChild(node, collect);
+        if (ts.isAwaitExpression(node)) {
+            removed.push([
+                node.getStart(source),
+                node.expression.getStart(source),
+            ]);
+        }
+        if (ts.isForOfStatement(node) && node.awaitModifier) {
+            removed.push([
+                node.awaitModifier.getStart(source),
+                afterWhitespace(text, node.awaitModifier.end),
+            ]);
+        }
+        ts.forEachChild(node, visit);
     };
-    collect(source);
-    return text.replace(
-        new RegExp(`\\b(?:${keywords.join("|")})\\s+`, "g"),
-        (match: string, offset: number) =>
-            literals.some(([start, end]) => offset >= start && offset < end)
-                ? match
-                : "",
-    );
+    visit(source);
+    let stripped = text;
+    for (const [start, end] of removed.sort(
+        (left, right) => right[0] - left[0],
+    )) {
+        stripped = stripped.slice(0, start) + stripped.slice(end);
+    }
+    return stripped;
 }
 
 /**
@@ -826,7 +842,7 @@ export async function importPinnedModuleUnasynced(
                 : undefined;
         },
     );
-    const text = stripKeywordsOutsideLiterals(anchored, ["async", "await"]);
+    const text = stripAsyncAndAwait(anchored);
     const augmented = [
         ...hoisted,
         "const Promise = { all: (values) => values };",

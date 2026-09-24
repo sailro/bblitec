@@ -8,14 +8,16 @@ import { compileSource } from "../src/compiler.js";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import {
     composeStandaloneWgsl,
-    predeclaredShaderProgram,
     shaderSamplerDeclarations,
 } from "../src/shader-material-programs.js";
+import {
+    fixtureShaderProgram,
+    reachedFixtureProgram,
+} from "./shader-program-fixtures.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
-import { predeclaredProgram } from "./shader-program-fixture.js";
 
 test("storage creation and update accept typed arrays and refuse plain arrays", () => {
     const source = (createData: string, updateData: string) => `
@@ -43,7 +45,7 @@ test("storage creation and update accept typed arrays and refuse plain arrays", 
 
 test("bare shader samplers normalize identically for programs, prelude and IR", () => {
     const bare = {
-        ...predeclaredProgram("alpha-card"),
+        ...fixtureShaderProgram("alpha-card"),
         samplers: ["surface"],
     };
     const explicit = {
@@ -59,8 +61,8 @@ test("bare shader samplers normalize identically for programs, prelude and IR", 
         },
     ]);
     assert.deepEqual(
-        predeclaredShaderProgram(bare),
-        predeclaredShaderProgram(explicit),
+        reachedFixtureProgram(bare),
+        reachedFixtureProgram(explicit),
     );
     assert.deepEqual(
         lowerWgslShaderProgram(bare),
@@ -87,6 +89,7 @@ test(
         runNativeFixtureCompiler(nativeTools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_SHADOWS_CSM=1",
             "/W4",
             "/WX",
             "/permissive-",

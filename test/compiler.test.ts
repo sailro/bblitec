@@ -3381,22 +3381,19 @@ test("folds static readonly class scalars", () => {
     assert.doesNotMatch(result.cpp, /class_field_GRAVITY/);
 });
 
-test("rejects class inheritance", () => {
+test("rejects inheritance from something other than a local class", () => {
     assert.throws(
         () =>
             compileSource(`
-                class Base {
-                    protected n = 1;
-                }
-                class Derived extends Base {
+                class Derived extends Map<string, number> {
                     bump(): void {
-                        this.n += 1;
+                        this.set("n", 1);
                     }
                 }
                 const derived = new Derived();
                 derived.bump();
             `),
-        /inheritance is outside the supported subset/,
+        /extends 'Map', which is not a local class with a body/,
     );
 });
 
@@ -15780,7 +15777,7 @@ test("lowers the Sprite2D handle and Y-sort entry points", () => {
     assert.ok(result.manifest.features.includes("sprite:2d-y-sort"));
     assert.match(
         result.cpp,
-        /bbl::enable_sprite_2d_y_sort\(\w+, \w+, static_cast<double>\(3\.0\)\)/,
+        /bbl::enable_sprite_2d_y_sort\(\w+, \w+, std::optional<double>\{static_cast<double>\(3\.0\)\}\)/,
     );
     assert.match(
         result.cpp,
@@ -16288,8 +16285,12 @@ test("compiles Babylon Lite scene 274 alpha to coverage", () => {
     assert.match(result.cpp, /bbl::create_shader_material/);
     assert.match(result.cpp, /bbl::set_alpha_to_coverage/);
     assert.match(result.cpp, /bbl::create_plane/);
-    assert.deepEqual(result.manifest.shaderVariants, ["alpha-card"]);
-    assert.deepEqual(result.manifest.customShaderPrograms, []);
+    // A reached program is the scene's own, named by its `name`.
+    assert.deepEqual(result.manifest.shaderVariants, ["a2c-card"]);
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map(({ name }) => name),
+        ["a2c-card"],
+    );
     assert.match(result.cpp, /bbl::create_shader_material\(v_engine, 0u\)/);
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -16311,8 +16312,11 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("mesh:plane"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
-    assert.deepEqual(result.manifest.customShaderPrograms, []);
+    assert.deepEqual(result.manifest.shaderVariants, ["scene163-shader"]);
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map(({ name }) => name),
+        ["scene163-shader"],
+    );
     assert.match(result.cpp, /bbl::create_shader_material\(v_engine, 0u\)/);
     assert.match(result.cpp, /bbl::PlaneOptions\{3\.0f, 3\.0f\}/);
     assert.ok(
@@ -16733,7 +16737,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
     );
 });
 
-test("matches shader variants through parsed WGSL IR", () => {
+test("compiles shader variants through parsed WGSL IR", () => {
     const source = readFileSync(
         resolve("corpus/babylon-lite/lab/lite/src/lite/scene163.ts"),
         "utf8",
@@ -16745,7 +16749,7 @@ test("matches shader variants through parsed WGSL IR", () => {
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
     });
 
-    assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
+    assert.deepEqual(result.manifest.shaderVariants, ["scene163-shader"]);
 });
 
 test("reports invalid reached WGSL at the shader options", () => {
@@ -16775,8 +16779,8 @@ test("compiles shader materials inside a frame-graph render task", () => {
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("renderer:geometry-output"));
     assert.deepEqual(result.manifest.shaderVariants, [
-        "alpha-card",
-        "circular-cutout",
+        "audit-card",
+        "audit-cutout",
     ]);
     assert.match(result.cpp, /create_render_task/);
     assert.match(result.cpp, /add_task/);
@@ -18006,7 +18010,7 @@ test("refuses a promise executor that does more than let resolve escape", () => 
                 ),
                 frameYieldFile,
             ),
-        /Unsupported constructor expression/,
+        /no pending promise value to store/,
     );
 });
 
@@ -18589,7 +18593,7 @@ test("does not erase a bounded wait through a shadowed RAF", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+        /Argument 1 of 'requestAnimationFrame' is \(value: void \| PromiseLike<void>\) => void/,
     );
 });
 
@@ -18602,7 +18606,7 @@ test("refuses a nested frame yield whose result is retained", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported constructor expression/,
+        /settled from a timer or frame callback/,
     );
 });
 

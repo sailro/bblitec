@@ -130,33 +130,13 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         ],
         [
             "device-lost-recovery",
-            "state._armedDevice === device || state._recovering",
-            "state._armedDevice === device && state._recovering",
-        ],
-        [
-            "device-lost-recovery",
-            'info.reason === "destroyed" && !state._forceNextLoss',
-            'info.reason === "destroyed" && state._forceNextLoss',
-        ],
-        [
-            "device-lost-recovery",
             "const registrations = [...state._registrations]",
             "const registrations = state._registrations",
         ],
         [
             "device-lost-recovery",
-            "registration._onLost?.(info)",
-            "registration._onRecovered?.()",
-        ],
-        [
-            "device-lost-recovery",
             "arm(engine, state);\n                    for",
             "arm(engine, getState(engine));\n                    for",
-        ],
-        [
-            "device-lost-recovery",
-            "registration._onRecoveryFailed?.(error)",
-            "arm(engine, state); registration._onRecoveryFailed?.(error)",
         ],
         [
             "device-lost-recovery-testing",
@@ -167,11 +147,6 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "device-lost-scene-recovery",
             "options: DeviceLostRecoveryCallbacks = {}",
             "options: DeviceLostRecoveryCallbacks = { onLost() {} }",
-        ],
-        [
-            "device-lost-scene-recovery",
-            "_recoverOrder: 100",
-            "_recoverOrder: 0",
         ],
         [
             "device-lost-scene-recovery",
@@ -266,10 +241,34 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         const store = new EditedStore(module, from, to);
         assert.throws(
             () => lowerDeviceRecovery(new LoweringContext(store)),
-            /native recovery contract/,
+            /native recovery contract|Expected|Unsupported pinned|splices exactly one/,
             `${module}: ${from}`,
         );
     }
+    // The coordinator's own bodies are lowered, so a pinned change to one
+    // of them is followed rather than refused.
+    const lowered = (from: string, to: string): string =>
+        lowerDeviceRecovery(
+            new LoweringContext(
+                new EditedStore("device-lost-recovery", from, to),
+            ),
+        ).source;
+    const pinned = lowerDeviceRecovery(new LoweringContext()).source;
+    assert.match(pinned, /if \(!state\.requested\) \{\n\s*return;/);
+    assert.match(
+        lowered(
+            'info.reason === "destroyed" && !state._forceNextLoss',
+            'info.reason === "destroyed" && state._forceNextLoss',
+        ),
+        /if \(state\.requested\) \{\n\s*return;/,
+    );
+    assert.match(
+        lowered(
+            "registration._onRecoveryFailed?.(error)",
+            "arm(engine, state); registration._onRecoveryFailed?.(error)",
+        ),
+        /arm_device_recovery\(engine, state\);\n\s*\(registration->on_failed/,
+    );
 });
 
 test("whole-function recovery contracts ignore documentation but retain executable structure", () => {

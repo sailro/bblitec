@@ -16,11 +16,14 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    type PinnedBinding,
+    type PinnedRecordShape,
+} from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
-const clusteredSpotModule = "src/light/clustered-spot-support.ts";
+export const clusteredSpotModule = "src/light/clustered-spot-support.ts";
 
 /**
  * The pin's own spot light members, as the native `ClusteredLight` spells
@@ -51,6 +54,25 @@ export function clusteredLightMembers(
         `${pinned}.${member}`,
         { cpp: `${access}${member}`, type },
     ]);
+}
+
+/**
+ * The pin's light record as the native `ClusteredLight` struct: a light a
+ * pinned body indexes or iterates reads its members through this, in the
+ * struct's own member order.
+ */
+export function clusteredLightShape(): PinnedRecordShape {
+    return {
+        cpp: "ClusteredLight",
+        members: [...LIGHT_MEMBERS].map(([name, type]) => ({
+            name,
+            read: (owner: string) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.${name}`, type }],
+                ]),
+            store: (value: string) => value,
+        })),
+    };
 }
 
 /**

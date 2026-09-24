@@ -1,4 +1,4 @@
-import { valueForKind } from "../types.js";
+import { presenceFlagCpp, valueForKind } from "../types.js";
 import type { LoweringServices } from "../lowering-services.js";
 // Utility layers host display and editing gizmos over a shared camera.
 // Explicit pointer-drag registration reaches native axis/plane translation,
@@ -539,9 +539,10 @@ function compileCompositeDispose(
  * parity run never clicks.
  */
 function attachedNodeCpp(node: Value): string {
-    return node.optionalFoundCpp === undefined
+    const found = presenceFlagCpp(node);
+    return found === undefined
         ? node.cpp
-        : `(${node.optionalFoundCpp} ? ${node.cpp} : ${handleCppType("mesh")}{})`;
+        : `(${found} ? ${node.cpp} : ${handleCppType("mesh")}{})`;
 }
 
 /** `attach<Widget>GizmoToNode(gizmo, node)`. */

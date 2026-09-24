@@ -59,6 +59,9 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_UI=0",
+        "/DBBLITE_DEVICE_RECOVERY=0",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/W4",
         "/WX",
         "/EHsc",

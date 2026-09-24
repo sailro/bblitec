@@ -3,6 +3,7 @@ import {
     isStringValue,
     optionalPresentCpp,
     presenceCpp,
+    presenceFlagCpp,
     valueForKind,
 } from "./compiler/types.js";
 import {
@@ -13,10 +14,13 @@ import {
 import {
     emissionArray,
     EmissionMap,
+    emissionRecord,
     EmissionSet,
     EmissionTransaction,
     EmissionWeakMap,
     EmissionWeakSet,
+    journaled,
+    writable,
 } from "./compiler/emission-transaction.js";
 import type {
     LoweringServices,
@@ -53,6 +57,7 @@ import {
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { PendingActivations } from "./compiler/pending-activations.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
     compileTextModuleValue,
@@ -77,7 +82,7 @@ import {
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
-import { AsyncLowerer } from "./compiler/async.js";
+import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
     cppIdentifierPattern,
@@ -180,10 +185,9 @@ import {
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
-    PinnedShaderText,
-    type ShaderTextBinding,
-    type ShaderTextContext,
-} from "./lowering/pinned-shader-text.js";
+    executeApplicationFunction,
+    type ExecutedScalar,
+} from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
 import {
     compileShaderMaterialOptions,
@@ -304,7 +308,8 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
-import { ClassLowerer, rejectClassStaticBlocks } from "./compiler/classes.js";
+import { ClassLowerer } from "./compiler/classes.js";
+import { ClassHierarchy } from "./compiler/class-members.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -622,6 +627,11 @@ function compileSourceApplication(
                 ) {
                     resolved.runtimeSearchParams = true;
                     if (error.location) resolved.runtimeLocationSearch = true;
+                } else if (
+                    error instanceof PendingActivationsRequired &&
+                    !resolved.pendingActivations
+                ) {
+                    resolved.pendingActivations = true;
                 } else throw error;
             }
         }
@@ -693,7 +703,8 @@ class Compiler implements LoweringServices {
         ts.Node,
         SharedClosureBindings
     >();
-    private staticAssetUrlCandidateCache: readonly string[] | undefined;
+    @journaled private accessor staticAssetUrlCandidateCache:
+        readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
     private readonly nativeDefinitions =
         emissionArray<NativeFunctionDefinition>();
@@ -721,12 +732,12 @@ class Compiler implements LoweringServices {
     private readonly deferredResourceCaptureDepths = new EmissionSet<number>();
     private readonly collectionCardinalities =
         new EmissionSet<CollectionCardinality>();
-    public jsDataReached = false;
+    @journaled public accessor jsDataReached = false;
+    @journaled public accessor fileReaderReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
-    public imageDecodeReached = false;
-    public jsRandomReached = false;
-    private audioSessionReached = false;
-    public voxelFileStorageReached = false;
+    @journaled public accessor imageDecodeReached = false;
+    @journaled public accessor jsRandomReached = false;
+    @journaled private accessor audioSessionReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -736,7 +747,7 @@ class Compiler implements LoweringServices {
     public readonly browserTextureFunctions = new EmissionSet<string>();
     public readonly canvasReadbackFunctions = new EmissionSet<string>();
     /** Whether a scene threw one of its own preconditions. */
-    public throwReached = false;
+    @journaled public accessor throwReached = false;
     public readonly staticConstants = new EmissionMap<
         ts.Symbol,
         ts.Expression
@@ -752,7 +763,8 @@ class Compiler implements LoweringServices {
     >();
     private readonly decoderBootstrapDepths: number[] = emissionArray([]);
     /** The source-keyed record for the most recent `loadGltf` call. */
-    private lastGltfContainerAsset: CompileAsset | undefined;
+    @journaled private accessor lastGltfContainerAsset:
+        CompileAsset | undefined;
     /**
      * Pixels-texture locals already handed to a material slot.
      *
@@ -763,7 +775,7 @@ class Compiler implements LoweringServices {
      * hold across scopes.
      */
     public readonly boundPixelsTextures = new EmissionSet<string>();
-    private thisInstance: Value | undefined;
+    @journaled private accessor thisInstance: Value | undefined;
     private readonly classInstances = new EmissionMap<
         Value,
         ts.ClassDeclaration
@@ -776,8 +788,8 @@ class Compiler implements LoweringServices {
         ts.Node,
         Map<object, number>
     >();
-    private nextCallbackIdentity = 0;
-    private nextNativeBindingSequence = 0;
+    @journaled private accessor nextCallbackIdentity = 0;
+    @journaled private accessor nextNativeBindingSequence = 0;
     private readonly nativeBindings = new EmissionMap<
         string,
         NativeCaptureBinding
@@ -805,7 +817,7 @@ class Compiler implements LoweringServices {
         emissionArray([]);
     private readonly continuationUses = new EmissionMap<string, Set<number>>();
     private readonly continuationLocals = new EmissionMap<string, number>();
-    private continuationSequence = 0;
+    @journaled private accessor continuationSequence = 0;
     /**
      * Collision listeners are registered before every startup assignment has
      * necessarily run. Their native bodies are specialized only after the
@@ -842,30 +854,31 @@ class Compiler implements LoweringServices {
     private readonly materialColorReads: Array<
         "baseColorFactor" | "diffuseColor"
     > = emissionArray([]);
-    private temporalSceneRegistration: ts.Node | undefined;
+    @journaled private accessor temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<
         Value["sceneTopologyState"]
     > = emissionArray([]);
-    private temporalControlAttachment: ts.Node | undefined;
-    public readonly localCubemapState: { maxCandidates?: number } = {};
+    @journaled private accessor temporalControlAttachment: ts.Node | undefined;
+    public readonly localCubemapState: { maxCandidates?: number } =
+        emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
-    public hasMainEntry = false;
-    public defaultEngineCpp: string | undefined;
+    @journaled public accessor hasMainEntry = false;
+    @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
-    public presentationHostCpp: string | undefined;
+    @journaled public accessor presentationHostCpp: string | undefined;
     /** First statement after the one engine is created. */
-    private engineCreationInsertion: number | undefined;
+    @journaled private accessor engineCreationInsertion: number | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
-    private engineMsaaSamples: 1 | 4 | undefined;
+    @journaled private accessor engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
-    public platformDocumentHiddenCpp: string | undefined;
-    private indentLevel = 2;
+    @journaled public accessor platformDocumentHiddenCpp: string | undefined;
+    @journaled private accessor indentLevel = 2;
     private readonly emissionBlocks = emissionArray([0]);
-    private nextEmissionBlock = 1;
-    private temporaryIndex = 0;
-    public defaultRenderTaskAdapted = false;
-    private sceneRegistrationSite: ts.Node | undefined;
+    @journaled private accessor nextEmissionBlock = 1;
+    @journaled private accessor temporaryIndex = 0;
+    @journaled public accessor defaultRenderTaskAdapted = false;
+    @journaled private accessor sceneRegistrationSite: ts.Node | undefined;
 
     public constructor(
         private readonly program: ts.Program,
@@ -886,6 +899,7 @@ class Compiler implements LoweringServices {
         this.dataTypes = new DataTypeRegistry(
             checker,
             (node, message) => this.fail(node, message),
+            new ClassHierarchy(checker, program),
             options.workers !== undefined,
         );
         this.dataLowerer = new DataLowerer(this);
@@ -926,6 +940,7 @@ class Compiler implements LoweringServices {
             () => this.reachJsData(),
             (value, arity) => this.bindings.bindDataTuple(value, arity),
             (expression) => this.symbols.pinnedWgslTemplate(expression),
+            (value) => this.dataLowerer.truthinessCondition(value),
         );
     }
 
@@ -1172,18 +1187,6 @@ class Compiler implements LoweringServices {
         }
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (node) => {
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression)
-                ) {
-                    // The file adapter stores both its input and result as object
-                    // references. Fix that representation before earlier literals.
-                    const file = this.voxelFileContract(node, node.expression);
-                    if (file?.dataType)
-                        this.dataTypes.markStoredObjectReferences(
-                            file.dataType,
-                        );
-                }
                 const target = retainedNativeMutationTarget(this.symbols, node);
                 if (target) {
                     const targetType = this.checker.getTypeAtLocation(target);
@@ -1368,7 +1371,7 @@ class Compiler implements LoweringServices {
             const moduleScope = this.bindings.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
-                    if (isModuleInitializerStatement(statement)) {
+                    if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);
                     }
                 }
@@ -1481,13 +1484,6 @@ class Compiler implements LoweringServices {
         );
         if (main) {
             this.hasMainEntry = true;
-            // Module scope beside `main` is not the program, but a class
-            // static block there still runs when the module evaluates.
-            for (const statement of this.sourceFile.statements) {
-                if (ts.isClassDeclaration(statement)) {
-                    rejectClassStaticBlocks(this, statement);
-                }
-            }
             return main.body!.statements;
         }
 
@@ -1796,9 +1792,10 @@ class Compiler implements LoweringServices {
         });
     }
 
-    private textAttachmentReached = false;
-    private reachedRenderContextRegistrations = new EmissionSet<string>();
-    private textCameraMutation: ts.Node | undefined;
+    @journaled private accessor textAttachmentReached = false;
+    private readonly reachedRenderContextRegistrations =
+        new EmissionSet<string>();
+    @journaled private accessor textCameraMutation: ts.Node | undefined;
 
     public noteTextCameraControl(
         node: ts.Node,
@@ -2049,7 +2046,7 @@ class Compiler implements LoweringServices {
         );
     }
 
-    private nativeParticleProviderUse: boolean | undefined;
+    @journaled private accessor nativeParticleProviderUse: boolean | undefined;
 
     /** Closure ownership is decided before the first resource is emitted. */
     private sourceUsesNativeParticleProvider(): boolean {
@@ -2524,8 +2521,8 @@ class Compiler implements LoweringServices {
             sourceValue?.staticElements;
         const sourceOwner = sourceValue?.staticElementsOwner ?? sourceValue;
         if (binding && sourceState && previousState === sourceState) {
-            target.collectionCardinality = sourceState;
-            binding.collectionCardinality = sourceState;
+            writable(target).collectionCardinality = sourceState;
+            writable(binding).collectionCardinality = sourceState;
             return;
         }
         if (sourceValue?.kind === "tuple" && !fresh) {
@@ -2538,9 +2535,9 @@ class Compiler implements LoweringServices {
         const taint = (state: CollectionCardinality | undefined): void => {
             if (!state) return;
             tainted = true;
-            state.untrackedAliases = true;
-            state.count = undefined;
-            delete state.keys;
+            writable(state).untrackedAliases = true;
+            writable(state).count = undefined;
+            delete writable(state).keys;
         };
         if (!definite) taint(previousState);
         if (!sourceState && !fresh) {
@@ -2557,9 +2554,9 @@ class Compiler implements LoweringServices {
                     value.collectionCardinality ??
                     value.staticElementsOwner?.collectionCardinality;
                 if (state?.untrackedAliases) {
-                    delete value.staticElements;
-                    delete value.staticElementsOwner;
-                    delete value.runtimeElementTemplate;
+                    delete writable(value).staticElements;
+                    delete writable(value).staticElementsOwner;
+                    delete writable(value).runtimeElementTemplate;
                 }
             });
         }
@@ -2567,20 +2564,20 @@ class Compiler implements LoweringServices {
         if (owner === previous || owner === target)
             this.bindings.invalidateStaticElements(previous, true);
         for (const value of new EmissionSet([target, previous])) {
-            delete value.staticElements;
-            delete value.staticElementsOwner;
-            delete value.runtimeElementTemplate;
-            delete value.collectionCardinality;
+            delete writable(value).staticElements;
+            delete writable(value).staticElementsOwner;
+            delete writable(value).runtimeElementTemplate;
+            delete writable(value).collectionCardinality;
         }
         let state: CollectionCardinality;
         if (definite && binding && sourceState) {
             state = sourceState;
             if (!state.untrackedAliases && sourceElements && sourceOwner) {
-                binding.staticElements = sourceElements;
-                binding.staticElementsOwner = sourceOwner;
+                writable(binding).staticElements = sourceElements;
+                writable(binding).staticElementsOwner = sourceOwner;
             }
             if (!state.untrackedAliases && template)
-                binding.runtimeElementTemplate = template;
+                writable(binding).runtimeElementTemplate = template;
         } else {
             let count: number | undefined;
             if (definite && binding && fresh) {
@@ -2614,8 +2611,8 @@ class Compiler implements LoweringServices {
             };
         }
         this.collectionCardinalities.add(state);
-        target.collectionCardinality = state;
-        if (binding) binding.collectionCardinality = state;
+        writable(target).collectionCardinality = state;
+        if (binding) writable(binding).collectionCardinality = state;
     }
 
     public recordDataAssignmentMetadata(
@@ -2672,9 +2669,9 @@ class Compiler implements LoweringServices {
                     : { staticId: retainedStaticId }),
             });
         }
-        target.uiTag = tag;
+        writable(target).uiTag = tag;
         if (staticId !== undefined) {
-            target.uiStaticId = staticId;
+            writable(target).uiStaticId = staticId;
         }
         return false;
     }
@@ -2796,7 +2793,7 @@ class Compiler implements LoweringServices {
             }
         }
         if (retained.size && !this.nativeStoredValues.has(value))
-            value.nativeCaptures = [...retained];
+            writable(value).nativeCaptures = [...retained];
         if (this.options.workers && value.engineCpp) {
             if (value.kind === "engine" && value.ownedEngineCpp) {
                 const owner = this.nativeBindings.get(value.ownedEngineCpp);
@@ -2805,7 +2802,7 @@ class Compiler implements LoweringServices {
             }
             const owners = this.realmEngineCaptures.get(value.engineCpp);
             if (owners)
-                value.nativeCompanionCaptures = {
+                writable(value).nativeCompanionCaptures = {
                     ...value.nativeCompanionCaptures,
                     engineCpp: owners,
                 };
@@ -2864,6 +2861,57 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    public compileSynchronousPromise(node: ts.NewExpression): Value {
+        return this.asyncLowerer.compileSynchronousConstructor(node);
+    }
+
+    private pendingActivationAnalysis: PendingActivations | undefined;
+
+    /** Built once a reached constructed promise sets `pendingActivations`. */
+    public pendingActivations(): PendingActivations {
+        this.pendingActivationAnalysis ??= new PendingActivations(
+            this.checker,
+            this.sourceFiles(),
+            (construction) =>
+                this.browserErasure.isFrameYield(construction) ||
+                this.browserErasure.isBoundedNestedFrameYield(construction) ||
+                this.browserErasure.frameDrainCondition(construction) !==
+                    undefined ||
+                framePollExecutor(construction, this.checker, (expression) =>
+                    this.libraryGlobal(expression),
+                ) !== undefined,
+            (node, message) => this.fail(node, message),
+        );
+        return this.pendingActivationAnalysis;
+    }
+
+    /**
+     * An expression statement that discards the promise of an activation
+     * which can end at a pending await is where that ending stops: the
+     * statements after it run, as they do after JavaScript's suspension.
+     */
+    public emitActivationBoundary(
+        statement: ts.ExpressionStatement,
+        emit: () => boolean | void,
+    ): boolean | void {
+        if (
+            !this.options.pendingActivations ||
+            !this.pendingActivations().discards(statement)
+        )
+            return emit();
+        const lines = this.captureEmittedLines(() => {
+            emit();
+        });
+        this.emit("try {");
+        this.increaseIndent();
+        for (const line of lines) this.emit(line);
+        this.decreaseIndent();
+        this.emit("} catch (const bbl::js::PendingActivation&) {");
+        this.emit("    bbl::js::end_abandoned_activation();");
+        this.emit("}");
+        return false;
+    }
+
     public withEngineBootstrap<T>(
         declaration: SupportedFunction,
         work: () => T,
@@ -2915,7 +2963,7 @@ class Compiler implements LoweringServices {
         }
     }
 
-    private awaitedSetupDepth = 0;
+    @journaled private accessor awaitedSetupDepth = 0;
 
     /** Immediately awaited helpers preserve their new engine's resource order. */
     public withAsyncInvocation<T>(node: ts.Node, body: () => T): T {
@@ -3294,9 +3342,10 @@ class Compiler implements LoweringServices {
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
             this.sceneManifest.recordRuntimeMeshProfile(index);
-            value.sceneMeshProfileIndex = index;
-            delete value.sceneMeshIndex;
-            value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+            writable(value).sceneMeshProfileIndex = index;
+            delete writable(value).sceneMeshIndex;
+            writable(value).cpp =
+                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
         }
         return value;
     }
@@ -3334,13 +3383,15 @@ class Compiler implements LoweringServices {
         return !this.definiteCollectionMutation();
     }
 
-    private engineCreationExecution?: {
-        callback: number;
-        control: number;
-        iteration: number;
-        native: number;
-        awaited: number;
-    };
+    @journaled private accessor engineCreationExecution:
+        | {
+              callback: number;
+              control: number;
+              iteration: number;
+              native: number;
+              awaited: number;
+          }
+        | undefined;
 
     /**
      * Some applications update an established thin-instance pool
@@ -3934,11 +3985,11 @@ class Compiler implements LoweringServices {
     }
 
     /** Nonzero while a frame callback's statements are being lowered. */
-    private frameCallbackDepth = 0;
+    @journaled private accessor frameCallbackDepth = 0;
     /** Native path-dependent bodies currently being lowered. */
-    private runtimeControlFlowDepth = 0;
+    @journaled private accessor runtimeControlFlowDepth = 0;
     /** Native loop expressions/bodies currently being lowered. */
-    private runtimeIterationDepth = 0;
+    @journaled private accessor runtimeIterationDepth = 0;
     private readonly parameterizedResourceIterations: Array<{
         statement: ResourceLoop;
         iterations: number;
@@ -4997,7 +5048,7 @@ class Compiler implements LoweringServices {
         const engineCpp = this.options.workers ? `(*${cppName})` : cppName;
         this.defaultEngineCpp = engineCpp;
         for (const lookup of this.pendingHostUiLookups) {
-            lookup.engineCpp = engineCpp;
+            writable(lookup).engineCpp = engineCpp;
             this.emit({
                 kind: "declaration",
                 type: "const auto",
@@ -5147,41 +5198,9 @@ class Compiler implements LoweringServices {
             body &&
             ts.isBlock(body)
         ) {
-            const parameters = new EmissionMap<string, ShaderTextBinding>();
-            // Application shader builders may splice a generation-known
-            // constant imported from a sibling module (Antigravity Racer's
-            // RING_COUNT/SHADOW_CASCADES are the reached case). The whole
-            // application module graph is already pinned input here, so
-            // carry those immutable bindings into the text evaluator just
-            // like literal call arguments. Imported functions remain owned
-            // by the evaluator's module traversal below.
-            for (const statement of declaration.getSourceFile().statements) {
-                if (
-                    !ts.isImportDeclaration(statement) ||
-                    !statement.importClause?.namedBindings ||
-                    !ts.isNamedImports(statement.importClause.namedBindings)
-                ) {
-                    continue;
-                }
-                for (const imported of statement.importClause.namedBindings
-                    .elements) {
-                    const target = resolvedSymbol(this.checker, imported.name);
-                    const variable = target?.declarations?.find(
-                        (candidate): candidate is ts.VariableDeclaration =>
-                            ts.isVariableDeclaration(candidate) &&
-                            candidate.initializer !== undefined,
-                    );
-                    if (!variable?.initializer) continue;
-                    const value = this.compileValue(variable.initializer);
-                    const binding: ShaderTextBinding | undefined =
-                        value.staticString ??
-                        value.staticBoolean ??
-                        value.staticNumber;
-                    if (binding !== undefined) {
-                        parameters.set(imported.name.text, binding);
-                    }
-                }
-            }
+            // A builder called with generation-known arguments is run: its
+            // text is what the browser compiles.
+            const args: Array<ExecutedScalar | undefined> = [];
             let allStatic = true;
             declaration.parameters.forEach((parameter, index) => {
                 if (!ts.isIdentifier(parameter.name)) {
@@ -5191,29 +5210,36 @@ class Compiler implements LoweringServices {
                 const argument =
                     resolved.arguments[index] ?? parameter.initializer;
                 if (!argument) {
+                    args.push(undefined);
                     return;
                 }
-                const value = this.compileValue(
+                const value = this.staticScalar(
                     this.alwaysUsedParameterDefault(argument) ?? argument,
                 );
-                const binding: ShaderTextBinding | undefined =
-                    value.staticString ??
-                    value.staticBoolean ??
-                    value.staticNumber;
-                if (binding === undefined) {
+                if (value === undefined) {
                     allStatic = false;
                     return;
                 }
-                parameters.set(parameter.name.text, binding);
+                args.push(value);
             });
             if (allStatic) {
-                const source = new PinnedShaderText(
-                    this.applicationShaderTextContext(),
-                ).evaluateDeclaration(
-                    declaration.getSourceFile().fileName,
+                const source = executeApplicationFunction(
+                    {
+                        checker: this.checker,
+                        fail: (node, message) => this.fail(node, message),
+                        foldEnclosing: (identifier) =>
+                            this.staticScalar(identifier),
+                    },
                     declaration,
-                    parameters,
+                    args,
+                    `Shader builder '${callee.text}'`,
                 );
+                if (typeof source !== "string") {
+                    this.fail(
+                        resolved,
+                        `Shader builder '${callee.text}' returned ${typeof source}, not WGSL text.`,
+                    );
+                }
                 return { source, dynamicUniforms: [] };
             }
         }
@@ -5289,115 +5315,12 @@ class Compiler implements LoweringServices {
         };
     }
 
-    /** Source navigation for bounded shader builders declared by the app. */
-    private applicationShaderTextContext(): ShaderTextContext {
-        const sourceFile = (modulePath: string): ts.SourceFile => {
-            const file =
-                this.program.getSourceFile(modulePath) ??
-                this.sourceFiles().find(
-                    (candidate) => candidate.fileName === modulePath,
-                );
-            if (!file) {
-                this.fail(
-                    this.sourceFile,
-                    `Shader builder module '${modulePath}' is not in the compilation program.`,
-                );
-            }
-            return file;
-        };
-        const unwrapExpression = (expression: ts.Expression): ts.Expression =>
-            this.unwrap(expression);
-        const propertyPath = (
-            expression: ts.Expression,
-        ): string[] | undefined => {
-            const node = unwrapExpression(expression);
-            if (ts.isIdentifier(node)) return [node.text];
-            if (!ts.isPropertyAccessExpression(node)) return undefined;
-            const owner = propertyPath(node.expression);
-            return owner ? [...owner, node.name.text] : undefined;
-        };
-        const moduleScopeConstant = (
-            file: ts.SourceFile,
-            name: string,
-        ): ts.Expression | undefined => {
-            for (const statement of file.statements) {
-                if (
-                    !ts.isVariableStatement(statement) ||
-                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-                ) {
-                    continue;
-                }
-                for (const declaration of statement.declarationList
-                    .declarations) {
-                    if (
-                        ts.isIdentifier(declaration.name) &&
-                        declaration.name.text === name &&
-                        declaration.initializer
-                    ) {
-                        return declaration.initializer;
-                    }
-                }
-            }
-            return undefined;
-        };
-        return {
-            sourceFile,
-            contractError: (node, message) => this.fail(node, message),
-            hasNode: (root, predicate) => {
-                let found = false;
-                const visit = (root: ts.Node): void =>
-                    forEachAnalysisNode(root, (node) => {
-                        if (found) return "skip";
-                        if (predicate(node)) {
-                            found = true;
-                            return "skip";
-                        }
-                    });
-                visit(root);
-                return found;
-            },
-            functionDeclaration: (modulePath, symbolName) => {
-                const file = sourceFile(modulePath);
-                const declaration = file.statements.find(
-                    (statement): statement is ts.FunctionDeclaration =>
-                        ts.isFunctionDeclaration(statement) &&
-                        statement.name?.text === symbolName &&
-                        statement.body !== undefined,
-                );
-                if (!declaration) {
-                    this.fail(
-                        file,
-                        `Expected shader builder function '${symbolName}' with a body.`,
-                    );
-                }
-                return { file, declaration };
-            },
-            propertyPath,
-            moduleOfImport: (modulePath, importedName) => {
-                const file = sourceFile(modulePath);
-                for (const statement of file.statements) {
-                    if (
-                        !ts.isImportDeclaration(statement) ||
-                        !statement.importClause?.namedBindings ||
-                        !ts.isNamedImports(statement.importClause.namedBindings)
-                    ) {
-                        continue;
-                    }
-                    const imported =
-                        statement.importClause.namedBindings.elements.find(
-                            (element) => element.name.text === importedName,
-                        );
-                    if (!imported) continue;
-                    return resolvedSymbol(
-                        this.checker,
-                        imported.name,
-                    )?.declarations?.[0]?.getSourceFile().fileName;
-                }
-                return undefined;
-            },
-            moduleScopeConstant,
-            unwrapExpression,
-        };
+    /** The generation-known scalar an expression folds to, if any. */
+    private staticScalar(
+        expression: ts.Expression,
+    ): ExecutedScalar | undefined {
+        const value = this.compileValue(expression);
+        return value.staticString ?? value.staticBoolean ?? value.staticNumber;
     }
 
     public resolveStaticExpression(
@@ -5590,9 +5513,8 @@ class Compiler implements LoweringServices {
         return this.classLowerer.resolveClass(expression) !== undefined;
     }
 
-    public reachVoxelFileStorage(site: ts.Node): void {
-        this.voxelFileStorageReached = true;
-        this.reachFeature("browser:file", site);
+    public reachFileReader(): void {
+        this.fileReaderReached = true;
     }
 
     public reachJson(): void {
@@ -5601,82 +5523,6 @@ class Compiler implements LoweringServices {
 
     public reachLocalStorage(): void {
         this.reachFeature("storage:local");
-    }
-
-    private voxelFileContract(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ):
-        | {
-              name: "saveToFile" | "loadFromFile";
-              dataType: DataType | undefined;
-          }
-        | undefined {
-        const declaration = tryResolveFunctionDeclaration(this.checker, callee);
-        const name =
-            declaration?.name && ts.isIdentifier(declaration.name)
-                ? declaration.name.text
-                : undefined;
-        if (name !== "saveToFile" && name !== "loadFromFile") {
-            return undefined;
-        }
-        if (!declaration) {
-            return undefined;
-        }
-        const fileName = declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/");
-        if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
-            return undefined;
-        }
-        const parameter = declaration.parameters[0];
-        const signature = this.checker.getResolvedSignature(call);
-        const type =
-            name === "saveToFile"
-                ? parameter && this.checker.getTypeAtLocation(parameter)
-                : signature &&
-                  this.checker.getAwaitedType(
-                      this.checker.getReturnTypeOfSignature(signature),
-                  );
-        return {
-            name,
-            dataType: type ? this.dataTypes.fromTsType(type, call) : undefined,
-        };
-    }
-
-    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
-    public compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined {
-        const contract = this.voxelFileContract(call, callee);
-        if (!contract) return undefined;
-        const { name, dataType } = contract;
-        if (!dataType) {
-            this.fail(
-                call,
-                "Voxel file calls require a SaveData record or nullable load result.",
-            );
-        }
-        const stored = this.dataTypes.markStoredObjectReferences(dataType);
-        this.reachVoxelFileStorage(call);
-        this.reachJsData();
-        if (name === "saveToFile") {
-            this.expectArgumentCount(call, 1, 1);
-            return {
-                kind: "boolean",
-                cpp:
-                    `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), stored)})`,
-                dataType: { kind: "boolean" },
-            };
-        }
-        this.expectArgumentCount(call, 0, 0);
-        return this.dataValue(
-            `bbl::js::load_voxel_world<${this.dataTypes.cppType(stored)}>` +
-                `(${this.requireDefaultEngine(call)})`,
-            stored,
-        );
     }
 
     public reachImageDecode(): void {
@@ -5980,6 +5826,13 @@ class Compiler implements LoweringServices {
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
     ): Value {
+        const dispatched = this.classLowerer.dispatchGetter(
+            owner,
+            accessor,
+            (receiver, selected) =>
+                this.compileRecordGetter(receiver, selected),
+        );
+        if (dispatched) return dispatched;
         const statements = accessor.body?.statements ?? [];
         const only = statements.at(-1);
         if (!only || !ts.isReturnStatement(only) || !only.expression) {
@@ -6177,8 +6030,8 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer.registerLocal(storage, "owned");
         const value = this.dataLowerer.leafValue(storage, dataType);
-        value.nativeLvalue = true;
-        if (sharedStorage) value.sharedStorageCpp = cppName;
+        writable(value).nativeLvalue = true;
+        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6251,8 +6104,8 @@ class Compiler implements LoweringServices {
         // Leaves use the same surface as a container read: numbers stay
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(storage, dataType);
-        value.nativeLvalue = true;
-        if (sharedStorage) value.sharedStorageCpp = cppName;
+        writable(value).nativeLvalue = true;
+        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6271,7 +6124,7 @@ class Compiler implements LoweringServices {
         instance: Value,
         declaration: ts.ClassDeclaration,
     ): void {
-        instance.classDeclaration = declaration;
+        writable(instance).classDeclaration = declaration;
         this.classInstances.set(instance, declaration);
     }
 
@@ -6471,7 +6324,7 @@ class Compiler implements LoweringServices {
     }
 
     /** How many speculative probes are open; a probe decides its own refusals. */
-    private probeDepth = 0;
+    @journaled private accessor probeDepth = 0;
 
     public get speculating(): boolean {
         return this.probeDepth > 0;
@@ -6498,12 +6351,7 @@ class Compiler implements LoweringServices {
         probe: () => T,
         answered: (result: T) => boolean,
     ): T {
-        return new EmissionTransaction(this, [
-            this.program,
-            this.checker,
-            this.sourceFile,
-            this.options,
-        ]).run(probe, answered);
+        return new EmissionTransaction().run(probe, answered);
     }
 
     /**
@@ -6543,8 +6391,8 @@ class Compiler implements LoweringServices {
      * Captured callback/IIFE bodies get their own identity so a lazily
      * materialized local cannot be reused by code emitted outside that body.
      */
-    private activeEmissionScope = 0;
-    private nextEmissionScope = 1;
+    @journaled private accessor activeEmissionScope = 0;
+    @journaled private accessor nextEmissionScope = 1;
 
     public recordAccessor(
         owner: Value,
@@ -6557,12 +6405,12 @@ class Compiler implements LoweringServices {
                 !owner.runtimeRecordCpp ||
                 owner.runtimeRecordScope !== this.activeEmissionScope
             ) {
-                owner.runtimeRecordCpp =
-                    this.allocateTemporaryCppName("record_table");
-                owner.runtimeRecordScope = this.activeEmissionScope;
-                this.emit(
-                    `${mapType} ${owner.runtimeRecordCpp}{${entries.join(", ")}};`,
-                );
+                const table = writable(owner);
+                const cppName = this.allocateTemporaryCppName("record_table");
+                table.runtimeRecordCpp = cppName;
+                table.runtimeRecordScope = this.activeEmissionScope;
+                this.emit(`${mapType} ${cppName}{${entries.join(", ")}};`);
+                return cppName;
             }
             return owner.runtimeRecordCpp;
         }
@@ -6886,7 +6734,7 @@ class Compiler implements LoweringServices {
                     ? `std::shared_ptr<${cppType}>`
                     : cppType,
             );
-        value.nativeCaptures = [
+        writable(value).nativeCaptures = [
             this.registerNativeBinding(
                 storage,
                 value.kind === "engine" && !value.ownedEngineCpp,
@@ -7093,20 +6941,18 @@ class Compiler implements LoweringServices {
         );
         for (const checkpoint of this.resourceConstructionCheckpoints) {
             if (checkpoint.callbackDepth >= before.callbackDepth) continue;
-            for (const [
-                index,
-                baseline,
-            ] of checkpoint.state.counters.entries()) {
-                checkpoint.state.counters[index] =
+            const state = writable(checkpoint.state);
+            const counters = writable(state.counters);
+            for (const [index, baseline] of counters.entries()) {
+                counters[index] =
                     baseline +
                     after.counters[index]! -
                     before.state.counters[index]!;
             }
-            checkpoint.state.lightIdentities =
-                checkpoint.state.lightIdentities.filter(
-                    (value) => !removed.has(value),
-                );
-            checkpoint.state.lightIdentities.push(...added);
+            state.lightIdentities = [
+                ...state.lightIdentities.filter((value) => !removed.has(value)),
+                ...added,
+            ];
         }
     }
 
@@ -7523,11 +7369,11 @@ class Compiler implements LoweringServices {
                   ? `[[maybe_unused]] auto& ${name} = ${initial};`
                   : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`,
         );
-        value.audioMainBusCpp = shared ? `(*${name})` : name;
-        value.audioMainBusOwnerCpp = owner;
+        writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
+        writable(value).audioMainBusOwnerCpp = owner;
         const binding = this.registerNativeBinding(name, false, !shared);
         if (borrows) this.nativeConstBindings.add(binding);
-        value.nativeCompanionCaptures = {
+        writable(value).nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
             audioMainBusCpp: [binding],
         };
@@ -7573,9 +7419,9 @@ class Compiler implements LoweringServices {
      */
     public optionalResourceCpp(value: Value): string {
         const cpp = value.ownedEngineCpp ?? value.cpp;
-        return value.optionalFoundCpp !== undefined &&
-            value.optionalFoundCpp !== "true"
-            ? `(${value.optionalFoundCpp} ? std::optional{${cpp}} : std::nullopt)`
+        const found = presenceFlagCpp(value);
+        return found !== undefined && found !== "true"
+            ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
             : cpp;
     }
 
@@ -7613,7 +7459,7 @@ class Compiler implements LoweringServices {
         this.emit(`${storage} = ${this.optionalResourceCpp(value)};`);
         this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined && target.kind !== "engine") {
-            target.engineCpp = value.engineCpp;
+            writable(target).engineCpp = value.engineCpp;
         }
         // A declaration without an initializer is represented by optional
         // native storage, but assigning into that storage must still make the
@@ -7624,19 +7470,20 @@ class Compiler implements LoweringServices {
         // silently describes a different mesh.
         if (target.kind === "mesh") {
             if (value.sceneMeshIndex === undefined) {
-                delete target.sceneMeshIndex;
+                delete writable(target).sceneMeshIndex;
             } else {
-                target.sceneMeshIndex = value.sceneMeshIndex;
+                writable(target).sceneMeshIndex = value.sceneMeshIndex;
             }
             if (value.runtimeMeshStreams === undefined) {
-                delete target.runtimeMeshStreams;
+                delete writable(target).runtimeMeshStreams;
             } else {
-                target.runtimeMeshStreams = value.runtimeMeshStreams;
+                writable(target).runtimeMeshStreams = value.runtimeMeshStreams;
             }
             if (value.directMorphCompatible === undefined) {
-                delete target.directMorphCompatible;
+                delete writable(target).directMorphCompatible;
             } else {
-                target.directMorphCompatible = value.directMorphCompatible;
+                writable(target).directMorphCompatible =
+                    value.directMorphCompatible;
             }
         }
         // The same alias rule applies when a material itself is first filled
@@ -7644,66 +7491,71 @@ class Compiler implements LoweringServices {
         // identity and composition state paired with its native handle.
         if (target.kind === "material") {
             if (value.scenePbrMaterialIndex === undefined) {
-                delete target.scenePbrMaterialIndex;
+                delete writable(target).scenePbrMaterialIndex;
             } else {
-                target.scenePbrMaterialIndex = value.scenePbrMaterialIndex;
+                writable(target).scenePbrMaterialIndex =
+                    value.scenePbrMaterialIndex;
             }
             if (value.assetPbrMaterial === undefined) {
-                delete target.assetPbrMaterial;
+                delete writable(target).assetPbrMaterial;
             } else {
-                target.assetPbrMaterial = value.assetPbrMaterial;
+                writable(target).assetPbrMaterial = value.assetPbrMaterial;
             }
             if (value.standardMaterial === undefined) {
-                delete target.standardMaterial;
+                delete writable(target).standardMaterial;
             } else {
-                target.standardMaterial = value.standardMaterial;
+                writable(target).standardMaterial = value.standardMaterial;
             }
             if (value.standardMaterialPluginIndex === undefined) {
-                delete target.standardMaterialPluginIndex;
+                delete writable(target).standardMaterialPluginIndex;
             } else {
-                target.standardMaterialPluginIndex =
+                writable(target).standardMaterialPluginIndex =
                     value.standardMaterialPluginIndex;
             }
             if (value.standardMaterialInput === undefined) {
-                delete target.standardMaterialInput;
+                delete writable(target).standardMaterialInput;
             } else {
-                target.standardMaterialInput = value.standardMaterialInput;
+                writable(target).standardMaterialInput =
+                    value.standardMaterialInput;
             }
             if (value.nodeMaterialIndex === undefined) {
-                delete target.nodeMaterialIndex;
+                delete writable(target).nodeMaterialIndex;
             } else {
-                target.nodeMaterialIndex = value.nodeMaterialIndex;
+                writable(target).nodeMaterialIndex = value.nodeMaterialIndex;
             }
             if (value.sceneShaderVariant === undefined) {
-                delete target.sceneShaderVariant;
+                delete writable(target).sceneShaderVariant;
             } else {
-                target.sceneShaderVariant = value.sceneShaderVariant;
+                writable(target).sceneShaderVariant = value.sceneShaderVariant;
             }
         }
-        if (value.asset === undefined) delete target.asset;
-        else target.asset = value.asset;
-        if (value.assetRootState === undefined) delete target.assetRootState;
-        else target.assetRootState = value.assetRootState;
-        if (value.assetRootClone === undefined) delete target.assetRootClone;
-        else target.assetRootClone = value.assetRootClone;
+        if (value.asset === undefined) delete writable(target).asset;
+        else writable(target).asset = value.asset;
+        if (value.assetRootState === undefined)
+            delete writable(target).assetRootState;
+        else writable(target).assetRootState = value.assetRootState;
+        if (value.assetRootClone === undefined)
+            delete writable(target).assetRootClone;
+        else writable(target).assetRootClone = value.assetRootClone;
         if (target.kind === "ui-element") {
-            if (value.uiStaticId === undefined) delete target.uiStaticId;
-            else target.uiStaticId = value.uiStaticId;
-            if (value.uiTag === undefined) delete target.uiTag;
-            else target.uiTag = value.uiTag;
+            if (value.uiStaticId === undefined)
+                delete writable(target).uiStaticId;
+            else writable(target).uiStaticId = value.uiStaticId;
+            if (value.uiTag === undefined) delete writable(target).uiTag;
+            else writable(target).uiTag = value.uiTag;
         }
         if (value.spriteDepthMode === undefined) {
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
         } else {
-            target.spriteDepthMode = value.spriteDepthMode;
+            writable(target).spriteDepthMode = value.spriteDepthMode;
         }
         if (value.textureStorage !== undefined) {
-            target.textureStorage = value.textureStorage;
+            writable(target).textureStorage = value.textureStorage;
             if (value.textureWidth !== undefined) {
-                target.textureWidth = value.textureWidth;
+                writable(target).textureWidth = value.textureWidth;
             }
             if (value.textureHeight !== undefined) {
-                target.textureHeight = value.textureHeight;
+                writable(target).textureHeight = value.textureHeight;
             }
         }
     }
@@ -7718,14 +7570,14 @@ class Compiler implements LoweringServices {
         if (right.kind === ts.SyntaxKind.NullKeyword) {
             this.emit(`${storage}.reset();`);
             this.assignAudioMainBus(target, undefined, right);
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
             this.emit(`${storage}.reset();`);
             this.assignAudioMainBus(target, undefined, right);
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
             return true;
         }
         this.assignOptionalResourceValue(target, value, right);
@@ -7924,7 +7776,8 @@ class Compiler implements LoweringServices {
     ): CompileAsset {
         const asset = registerAsset(this, source, kind, faceSize);
         const decoders = this.assetDecoders.get("configuration");
-        if (kind === "gltf" && decoders) asset.assetDecoders = decoders;
+        if (kind === "gltf" && decoders)
+            writable(asset).assetDecoders = decoders;
         return asset;
     }
 
@@ -7941,7 +7794,7 @@ class Compiler implements LoweringServices {
             );
         }
         for (const state of assetRootMutationStates(root))
-            state.reparented = true;
+            writable(state).reparented = true;
     }
 
     /**
@@ -7997,8 +7850,9 @@ class Compiler implements LoweringServices {
         // by source. A fact generation stamps on the record reaches all of
         // them, so the count is also what lets such a fact refuse instead of
         // widening silently.
-        asset.containerCount = (asset.containerCount ?? 0) + 1;
-        if (this.hasFeature("loader:gltf-cameras")) asset.gltfCameras = true;
+        writable(asset).containerCount = (asset.containerCount ?? 0) + 1;
+        if (this.hasFeature("loader:gltf-cameras"))
+            writable(asset).gltfCameras = true;
         this.lastGltfContainerAsset = asset;
     }
 
@@ -8082,7 +7936,7 @@ class Compiler implements LoweringServices {
                     "run-time variant table.",
             );
         }
-        asset.selectedVariant = variantName;
+        writable(asset).selectedVariant = variantName;
     }
 
     /**
@@ -8122,7 +7976,7 @@ class Compiler implements LoweringServices {
                     "per-material record read.",
             );
         }
-        asset.sceneUnlit = tint ? { tint } : {};
+        writable(asset).sceneUnlit = tint ? { tint } : {};
     }
 
     public resolveBundledAsset(source: string): string {
@@ -9569,18 +9423,24 @@ class Compiler implements LoweringServices {
                   !initializer.elements.some(ts.isSpreadElement)
                       ? initializer.elements.length
                       : undefined));
-            value.collectionCardinality = owner.collectionCardinality ??
-                value.collectionCardinality ?? {
-                    kind: keyed ? "keyed" : "array",
-                    count,
-                    ...(emptyKeys
-                        ? { keys: new EmissionSet<string | number | boolean>() }
-                        : {}),
-                    createdIn: [...this.parameterizedResourceIterations],
-                    varyingIn: new EmissionSet(),
-                };
-            owner.collectionCardinality = value.collectionCardinality;
-            this.collectionCardinalities.add(value.collectionCardinality);
+            const cardinality: CollectionCardinality =
+                owner.collectionCardinality ??
+                    value.collectionCardinality ?? {
+                        kind: keyed ? "keyed" : "array",
+                        count,
+                        ...(emptyKeys
+                            ? {
+                                  keys: new EmissionSet<
+                                      string | number | boolean
+                                  >(),
+                              }
+                            : {}),
+                        createdIn: [...this.parameterizedResourceIterations],
+                        varyingIn: new EmissionSet(),
+                    };
+            writable(value).collectionCardinality = cardinality;
+            writable(owner).collectionCardinality = cardinality;
+            this.collectionCardinalities.add(cardinality);
         }
     }
 
@@ -9686,20 +9546,20 @@ class Compiler implements LoweringServices {
         const owner = value.staticElementsOwner ?? value;
         const state =
             owner.collectionCardinality ?? value.collectionCardinality;
-        if (state) value.collectionCardinality = state;
+        if (state) writable(value).collectionCardinality = state;
         if (
             added === undefined ||
             !this.definiteCollectionMutation() ||
             state?.untrackedAliases
         ) {
             if (state) {
-                state.count = undefined;
+                writable(state).count = undefined;
                 if (
                     this.frameCallbackDepth > 0 ||
                     (!this.parameterizedResourceIterations.length &&
                         this.isInNativeFunctionBody())
                 ) {
-                    state.untrackedAliases = true;
+                    writable(state).untrackedAliases = true;
                 }
             }
             return false;
@@ -9714,7 +9574,9 @@ class Compiler implements LoweringServices {
         }
         if (state.count !== undefined) {
             const count = state.count + added * repetitions;
-            state.count = Number.isSafeInteger(count) ? count : undefined;
+            writable(state).count = Number.isSafeInteger(count)
+                ? count
+                : undefined;
         }
         return true;
     }
@@ -9733,14 +9595,14 @@ class Compiler implements LoweringServices {
             !this.definiteCollectionMutation() ||
             state.untrackedAliases
         ) {
-            state.count = undefined;
-            delete state.keys;
+            writable(state).count = undefined;
+            delete writable(state).keys;
             if (
                 this.frameCallbackDepth > 0 ||
                 (!this.parameterizedResourceIterations.length &&
                     this.isInNativeFunctionBody())
             ) {
-                state.untrackedAliases = true;
+                writable(state).untrackedAliases = true;
             }
             return;
         }
@@ -9750,7 +9612,7 @@ class Compiler implements LoweringServices {
             : !state.keys.has(scalar);
         if (removed) state.keys.delete(scalar);
         else state.keys.add(scalar);
-        state.count = state.keys.size;
+        writable(state).count = state.keys.size;
         if (changed) {
             for (const current of this.parameterizedResourceIterations) {
                 if (
@@ -9766,30 +9628,17 @@ class Compiler implements LoweringServices {
         const state = value.collectionCardinality;
         if (!state || state.kind !== "keyed") return;
         if (this.definiteCollectionMutation() && !state.untrackedAliases) {
-            state.keys = new EmissionSet();
-            state.count = 0;
+            writable(state).keys = new EmissionSet();
+            writable(state).count = 0;
         } else {
-            delete state.keys;
-            state.count = undefined;
+            delete writable(state).keys;
+            writable(state).count = undefined;
         }
     }
 
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (value.kind !== kind) {
             this.fail(node, `Expected ${kind}, received ${value.kind}.`);
-        }
-    }
-
-    public expectShaderVariant(
-        value: Value,
-        variant: string,
-        node: ts.Node,
-    ): void {
-        if (value.shaderVariant !== variant) {
-            this.fail(
-                node,
-                `Shader operation requires the '${variant}' reached variant.`,
-            );
         }
     }
 
@@ -9837,6 +9686,16 @@ class Compiler implements LoweringServices {
                 "This intrinsic requires createEngine to run first.",
             );
         }
+        if (
+            this.returnFrames.some(
+                (frame) => frame.kind === "native" && frame.namespaceScope,
+            )
+        )
+            this.fail(
+                node,
+                "A namespace-scope function has no binding for the entry's engine.",
+                "entry-scope-required",
+            );
         this.trackRetainedCaptureName(this.defaultEngineCpp);
         return this.defaultEngineCpp;
     }
@@ -10119,7 +9978,7 @@ class Compiler implements LoweringServices {
      * queue `finish_frame` drains at the end of each frame, after that
      * frame's uploads and render.
      */
-    private engineStartMark:
+    @journaled private accessor engineStartMark:
         | {
               index: number;
               engine: string;
@@ -10128,7 +9987,7 @@ class Compiler implements LoweringServices {
           }
         | undefined;
 
-    private continuationStorageReached = false;
+    @journaled private accessor continuationStorageReached = false;
 
     private readonly deviceRecoveryCallbacks: Array<{
         cpp: string;
@@ -10311,6 +10170,8 @@ class Compiler implements LoweringServices {
         this.increaseIndent();
         const workerAbort = this.workerAbortCpp();
         if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        else if (this.options.pendingActivations)
+            this.emit("if (bbl::js::activation_abandoned()) return;");
         for (const line of cleanup) this.emit(line);
         this.decreaseIndent();
         this.emit("});");
@@ -10344,7 +10205,7 @@ class Compiler implements LoweringServices {
             )
                 return;
             const properties = ts.isPropertyAccessExpression(node)
-                ? [this.checker.getSymbolAtLocation(node.name)]
+                ? [resolvedSymbol(this.checker, node)]
                 : ts.isElementAccessExpression(node)
                   ? this.checker
                         .getTypeAtLocation(node.expression)
@@ -10392,8 +10253,9 @@ class Compiler implements LoweringServices {
             ? this.emitFinallyGuard(cleanupLines)
             : undefined;
         for (const line of body.slice(0, start)) this.emit(line);
-        mark.index = this.body.length;
-        mark.indentLevel = this.indentLevel;
+        const started = writable(mark);
+        started.index = this.body.length;
+        started.indentLevel = this.indentLevel;
         this.emit(body[start]!);
         if (!guard) {
             for (const line of body.slice(start + 1)) this.emit(line);
@@ -10646,6 +10508,7 @@ class Compiler implements LoweringServices {
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
             continuationStorageReached: this.continuationStorageReached,
+            pendingActivations: !!this.options.pendingActivations,
             throwReached: this.throwReached,
             postProcessCompositeCount:
                 this.sceneManifest.postProcessComposites.length,
@@ -10654,7 +10517,6 @@ class Compiler implements LoweringServices {
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
-            voxelFileStorageReached: this.voxelFileStorageReached,
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),

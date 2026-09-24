@@ -7,6 +7,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { textRecordModel } from "./text-records.js";
 
 const module = "src/text/layout.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -44,7 +45,7 @@ export class TextLayoutLowerer {
                     "_yOffset",
                 ],
             ],
-            ["TextPlacedGlyph", ["glyphId", "x", "y"]],
+            ["PlacedGlyph", ["glyphId", "x", "y"]],
         ]);
         const fields: Readonly<Record<string, string>> = {
             _glyphId: "glyph_id",
@@ -60,20 +61,9 @@ export class TextLayoutLowerer {
             xOffset: "x_offset",
             yOffset: "y_offset",
         };
-        const optionFields: Readonly<Record<string, string>> = {
-            maxWidth: "max_width",
-            lineHeight: "line_height",
-            align: "align",
-            letterSpacing: "letter_spacing",
-            tabSize: "tab_size",
-        };
-        const optionDefaults: Readonly<Record<string, string>> = {
-            maxWidth: "Infinity",
-            lineHeight: "1.2",
-            align: '"left"',
-            letterSpacing: "0",
-            tabSize: "4",
-        };
+        // The options record is the pin's own `TextLayoutOptions`: each
+        // member optional, each default the pin's own `??` operand.
+        const layoutRecords = textRecordModel(c);
         const containers = new Set([
             "input",
             "paragraphs",
@@ -125,15 +115,12 @@ export class TextLayoutLowerer {
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.expression.getText(file) === "options"
             ) {
-                const field = optionFields[node.left.name.text];
-                if (!field)
-                    c.contractError(node, "Unrepresented text layout option.");
-                c.assertExpressionShape(
-                    node.right,
-                    optionDefaults[node.left.name.text]!,
-                    "Text layout native option default",
-                );
-                return `options.${field}`;
+                const field = layoutRecords.member(
+                    "TextLayoutOptions",
+                    node.left.name.text,
+                    node.left,
+                ).field;
+                return `(options && options->${field} ? *options->${field} : ${lowerer.expression(node.right)})`;
             }
             if (ts.isPropertyAccessExpression(node)) {
                 const owner = c.unwrapExpression(node.expression);
@@ -308,7 +295,7 @@ export class TextLayoutLowerer {
                             name === "lines"
                                 ? "std::vector<std::vector<LayoutGlyph>>"
                                 : name === "placed"
-                                  ? "std::vector<TextPlacedGlyph>"
+                                  ? "bbl::js::Array<PlacedGlyph>"
                                   : "std::vector<LayoutGlyph>";
                         return emit(`${type} ${name};`);
                     }
@@ -416,6 +403,7 @@ export class TextLayoutLowerer {
             .join("\n");
         return `#pragma once
 #include <bblite/text_layout.hpp>
+#include <bblite/upstream_text_records.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -446,11 +434,11 @@ inline std::vector<std::u32string> text_paragraphs(const std::u32string& source)
     return result;
 }
 // ${c.provenance(module, "layoutText", "HarfBuzz replaces the text-shaper library; the layout body is translated")}
-inline TextLayoutResult layout(const TextLayoutFont& font, std::string_view text, double font_size, const TextLayoutOptions& options) {
+inline TextLayoutResult layout(const TextLayoutFont& font, std::string_view text, double font_size, const std::optional<TextLayoutOptions>& options) {
 ${body}
 }
 } // namespace text_layout_detail
-inline TextLayoutResult layout_text(const TextLayoutFont& font, std::string_view text, double font_size, const TextLayoutOptions& options = {}) {
+inline TextLayoutResult layout_text(const TextLayoutFont& font, std::string_view text, double font_size, const std::optional<TextLayoutOptions>& options = std::nullopt) {
     return text_layout_detail::layout(font, text, font_size, options);
 }
 } // namespace bbl

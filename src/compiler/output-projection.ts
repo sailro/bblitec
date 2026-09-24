@@ -533,14 +533,14 @@ interface MainCppProjection {
     jsRandomReached: boolean;
     audioSessionReached?: boolean;
     continuationStorageReached?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
     renderDataPreamble: () => DataPreamble;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
-    /** Whether the scene reaches the voxel save/load file boundary. */
-    voxelFileStorageReached: boolean;
     /** The emitted entry-body lines; the render marks unused locals in place. */
     body: string[];
     /** The admitted entry statements before the sole top-level startEngine. */
@@ -559,7 +559,6 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         renderDataPreamble,
         nativeFunctions,
         staticNativeDeclarations,
-        voxelFileStorageReached,
         body,
     } = projection;
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
@@ -701,9 +700,6 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("browser:file")
             ? "#include <bblite/js_file.hpp>\n"
-            : "") +
-        (voxelFileStorageReached
-            ? "#include <bblite/js_voxel_file.hpp>\n"
             : "");
     // A composite's factory is generated, so the scene calls it by a name
     // only its own generated header declares; a screen-space task's is the
@@ -811,7 +807,7 @@ ${(
     .filter(([feature]) => features.includes(feature))
     .map(([, header]) => `#include <bblite/${header}.hpp>\n`)
     .join("")}\
-${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}#include <bblite/pal.hpp>
+${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}${projection.pendingActivations ? "#include <bblite/js_synchronous_promise.hpp>\n" : ""}#include <bblite/pal.hpp>
 ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""}${workerInclude}${textInclude}${jsDataInclude}${cameraMathInclude}${cameraGeospatialInclude}${cameraProjectionInclude}${clusteredInclude}${normalizeVec3Include}${lookDirectionInclude}${mat4InvertInclude}${spriteInclude}${billboardInclude}${spriteAnimationInclude}${nodeParticleInclude}${physicsInclude}${navigationInclude}${audioInclude}${imageInclude}${bakedMeshInclude}${uiInclude}${shadowInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
@@ -889,7 +885,7 @@ ${
 }\
 ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
-    } catch (const std::exception& error) {
+    }${projection.pendingActivations ? ' catch (const bbl::js::PendingActivation&) {\n        std::cerr << "Babylon Lite native error: the entry awaited a constructed promise still pending, which the synchronous lowering cannot resume.\\n";\n        return 1;\n    }' : ""} catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\\n';
         return 1;
     }

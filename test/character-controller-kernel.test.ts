@@ -16,6 +16,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 type Vector = { x: number; y: number; z: number };
 type Constraint = {
@@ -120,25 +121,6 @@ function pinnedKernel() {
 
 const nativeTools = optionalNativeFixtureTools(false);
 test("controller arithmetic is read from the pin and unrepresented statements refuse", () => {
-    class EditedStore extends UpstreamSourceStore {
-        public constructor(
-            private readonly from: string,
-            private readonly to: string,
-        ) {
-            super();
-        }
-        public override getSourceFile(module: string): ts.SourceFile {
-            const source = super.getSource(module);
-            return ts.createSourceFile(
-                module,
-                module === characterControllerModule
-                    ? source.replace(this.from, this.to)
-                    : source,
-                ts.ScriptTarget.Latest,
-                true,
-            );
-        }
-    }
     const original = lowerCharacterControllerKernel(new LoweringContext());
     const full = lowerCharacterControllerKernel(new LoweringContext(), true);
     assert.match(full, /local_sci = js::snapshot_value\(constraints\.at\(/);
@@ -173,11 +155,10 @@ test("controller arithmetic is read from the pin and unrepresented statements re
         /_set_body_shape\(js::snapshot_value\(_world\), js::snapshot_value\(_body\), local_newShape\)/,
     );
     const changed = lowerCharacterControllerKernel(
-        new LoweringContext(
-            new EditedStore(
-                "this.maxAcceleration * deltaTime",
-                "this.maxAcceleration * deltaTime * 2",
-            ),
+        doctoredContext(
+            characterControllerModule,
+            "this.maxAcceleration * deltaTime",
+            "this.maxAcceleration * deltaTime * 2",
         ),
     );
     assert.notEqual(original, changed);
@@ -185,14 +166,13 @@ test("controller arithmetic is read from the pin and unrepresented statements re
     assert.throws(
         () =>
             lowerCharacterControllerKernel(
-                new LoweringContext(
-                    new EditedStore(
-                        "const eps = 1e-6;",
-                        "throw new Error('new control flow'); const eps = 1e-6;",
-                    ),
+                doctoredContext(
+                    characterControllerModule,
+                    "const eps = 1e-6;",
+                    "outer: for (;;) { break outer; } const eps = 1e-6;",
                 ),
             ),
-        /Pinned reference statement has no native representation/,
+        /Unsupported pinned statement/,
     );
 });
 

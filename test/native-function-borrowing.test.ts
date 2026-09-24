@@ -139,3 +139,33 @@ test("numeric-buffer writers borrow Ref arguments without admitting owning array
         /(?:auto|bblscene::Ray) v_bblite_function_argument_\d+/,
     );
 });
+
+test("a plain-data function that reaches the entry engine stays on the inliner", () => {
+    const result = compileSource(
+        `
+        import { createEngine, startEngine } from "@babylonjs/lite";
+        function addBadge(): void {
+            const badge = document.createElement("div");
+            badge.textContent = "saved";
+            document.body.appendChild(badge);
+        }
+        function countSaved(): number {
+            addBadge();
+            return 1;
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let count = 0;
+            window.addEventListener("keydown", () => {
+                count += countSaved();
+            });
+            await startEngine(engine);
+        }
+        void main();
+        `,
+        { fileName: "examples/engine-data-function.ts" },
+    );
+    // A namespace-scope function has no binding for the entry's engine.
+    assert.doesNotMatch(result.cpp, /double countSaved\(|void addBadge\(/);
+    assert.match(result.cpp, /bbl::ui_create_element\(v_engine, "div"\)/);
+});

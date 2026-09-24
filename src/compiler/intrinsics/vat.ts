@@ -1,7 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { Value } from "../types.js";
+import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 /** What the handle's own methods need. The expression compiler satisfies it. */
@@ -167,9 +167,10 @@ export function compileVatMethodCall(
     const engine = context.requireEngine(receiver, call);
     // `a?.f(x)` never evaluates `x` when `a` is null, so the arguments are
     // compiled inside the guard rather than before it.
-    const guarded = receiver.optionalFoundCpp !== undefined;
+    const found = presenceFlagCpp(receiver);
+    const guarded = found !== undefined;
     if (guarded) {
-        context.emit(`if (${receiver.optionalFoundCpp!}) {`);
+        context.emit(`if (${found}) {`);
         context.increaseIndent();
     }
     try {

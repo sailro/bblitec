@@ -69,7 +69,6 @@ test(
         runCpp(
             "canvas-pane-density",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
@@ -85,6 +84,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -319,7 +319,7 @@ test(
 );
 
 test(
-    "clustered uploads use the pinned payload extents and publish a version only after success",
+    "clustered uploads cover the pinned writes and publish each count only after success",
     { skip: !nativeTools },
     () => {
         const source = readFileSync(
@@ -333,45 +333,54 @@ test(
         #include <cassert>
         namespace bbl::upstream {
             int refreshes = 0;
-            void refresh_clustered_lights(ClusteredLightContainer&, const std::array<float,16>&,
-                const std::array<float,16>&, double near_plane, double far_plane) {
-                assert(near_plane == 0.1 && far_plane == 100); ++refreshes;
+            void refresh_clustered_lights(ClusteredLightContainer&, CameraRecord* camera,
+                double target_width, double target_height) {
+                assert(camera == nullptr && target_width == 640 && target_height == 480); ++refreshes;
             }
         }
         namespace bbl::pal {
             ${cppFunction(source, "enum class ClusteredTexture {")};
+            ${cppFunction(source, "struct ClusteredUploads {")};
             template<class Params, class Texture> ${cppFunction(source, "void sync_clustered_payloads(")}
         }
         int main() {
             bbl::ClusteredLightContainer container;
-            container.data_texture_width = 4;
-            container.light_texels = 3; container.light_data.resize(12);
-            container.slice_count = 8; container.slice_rows = 2; container.slice_data.resize(32);
-            container.mask_texels = 2; container.mask_data.resize(2);
-            container.upload_version = 1;
-            std::uint64_t version = 0;
+            container.light_data.resize(12);
+            container.slice_data.resize(32);
+            container.mask_data.resize(2);
+            // One params write, and one pinned write per texture, each with the
+            // region its own writeDataTexture stated.
+            container.params_write = 1;
+            container.light_write = {3, 1, 48, 1, 1};
+            container.slice_write = {4, 2, 64, 2, 1};
+            container.mask_write = {2, 1, 8, 1, 1};
+            bbl::pal::ClusteredUploads uploaded;
             std::string events;
             bool fail = true;
             const auto sync = [&] {
-                bbl::pal::sync_clustered_payloads(container, version, {}, {}, 0.1, 100,
+                bbl::pal::sync_clustered_payloads(container, uploaded, nullptr, 640, 480,
                     [&](const void* bytes, std::size_t size) { assert(bytes == container.params.data() && size == 32); events += 'p'; },
                     [&](bbl::pal::ClusteredTexture slot, const void* bytes, std::size_t size,
-                        unsigned texel_bytes, unsigned width, unsigned height) {
+                        const bbl::ClusteredTextureWrite& write) {
                         using Slot = bbl::pal::ClusteredTexture;
                         if (slot == Slot::lights) {
-                            assert(bytes == container.light_data.data() && size == 48 && texel_bytes == 16 && width == 3 && height == 1); events += 'l';
+                            assert(bytes == container.light_data.data() && size == 48 && write.width == 3 && write.height == 1 && write.bytes_per_row == 48); events += 'l';
                         } else if (slot == Slot::cells) {
-                            assert(bytes == container.slice_data.data() && size == 128 && texel_bytes == 16 && width == 4 && height == 2); events += 'c';
+                            assert(bytes == container.slice_data.data() && size == 128 && write.width == 4 && write.height == 2 && write.bytes_per_row == 64); events += 'c';
                         } else {
-                            assert(bytes == container.mask_data.data() && size == 8 && texel_bytes == 4 && width == 2 && height == 1); events += 'i';
+                            assert(bytes == container.mask_data.data() && size == 8 && write.width == 2 && write.height == 1 && write.bytes_per_row == 8); events += 'i';
                             if (fail) throw std::runtime_error("upload");
                         }
                     });
             };
             try { sync(); assert(false); } catch (const std::runtime_error&) {}
-            assert(version == 0 && events == "plci");
-            fail = false; events.clear(); sync(); assert(version == 1 && events == "plci");
+            // What uploaded is published; the failed one retries alone.
+            assert(uploaded.params == 1 && uploaded.lights == 1 && uploaded.cells == 1 && uploaded.indices == 0 && events == "plci");
+            fail = false; events.clear(); sync(); assert(uploaded.indices == 1 && events == "i");
             events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 3);
+            // A later write re-uploads only its own texture.
+            container.light_write.version = 2;
+            sync(); assert(events == "l");
         }
     `,
         );
@@ -386,7 +395,6 @@ test(
         runCpp(
             "effect-pass-plans",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include "${resolve("native/src/pal_ui_backdrop.hpp").replaceAll("\\", "/")}"
         #include <cassert>
@@ -429,6 +437,7 @@ test(
             record(true); assert(events == "ihptsc");
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -442,8 +451,6 @@ test(
             runCpp(
                 `pick-contributor-admission-${floating}`,
                 `
-            #define BBLITE_HAS_BILLBOARDS 1
-            #define BBLITE_HAS_SPLATS 1
             #define BBLITE_FLOATING_ORIGIN ${floating}
             #include <bblite/runtime.hpp>
             #include <cassert>
@@ -495,6 +502,7 @@ test(
                 }
             }
         `,
+                ["/DBBLITE_HAS_BILLBOARDS=1", "/DBBLITE_HAS_SPLATS=1"],
             );
         }
     },
@@ -515,7 +523,6 @@ test(
             `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
-        #define BBLITE_HAS_PICKING 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {
@@ -560,6 +567,7 @@ test(
             assert(refused);
         }
     `,
+            ["/DBBLITE_HAS_PICKING=1"],
         );
     },
 );
@@ -572,7 +580,6 @@ test(
         runCpp(
             "text-scene-admission",
             `
-        #define BBLITE_HAS_TEXT 1
         #define BBLITE_FLOATING_ORIGIN 0
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -606,6 +613,7 @@ test(
             bbl::pal::validate_text_scene(scene);
         }
     `,
+            ["/DBBLITE_HAS_TEXT=1"],
         );
     },
 );
@@ -763,7 +771,11 @@ test(
     },
 );
 
-function runCpp(name: string, cpp: string): void {
+function runCpp(
+    name: string,
+    cpp: string,
+    definitions: readonly string[] = [],
+): void {
     assert.ok(nativeTools);
     const output = resolve("artifacts/audit-correctness", name);
     mkdirSync(output, { recursive: true });
@@ -777,6 +789,7 @@ function runCpp(name: string, cpp: string): void {
         "/WX",
         "/permissive-",
         "/EHsc",
+        ...definitions,
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",
@@ -793,7 +806,6 @@ test(
         runCpp(
             "checked-handles",
             `
-        #define BBLITE_CHECKED_HANDLES 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         int main() {
@@ -816,6 +828,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_CHECKED_HANDLES=1"],
         );
     },
 );
@@ -980,7 +993,6 @@ test(
         runCpp(
             "style-revision",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
         ${uiTextMutationFixture(source)}
@@ -1026,6 +1038,7 @@ test(
             assert(engine.ui_style_revision == after_remove + 1);
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -1057,8 +1070,6 @@ test(
         runCpp(
             "window-style-revision",
             `
-        #define BBLITE_HAS_UI 1
-        #define BBLITE_WORKERS 1
         #include <bblite/runtime.hpp>
         #include <bblite/pal_event_loop.hpp>
         #include <bblite/pal_dom_events.hpp>
@@ -1152,6 +1163,7 @@ test(
             assert(delivered == 4);
         }
     `,
+            ["/DBBLITE_HAS_UI=1", "/DBBLITE_WORKERS=1"],
         );
     },
 );

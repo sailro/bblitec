@@ -1,5 +1,9 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { sharedUpstreamStore } from "../upstream-source.js";
+
+/** The pinned module that declares the error helper. */
+const liteErrorModule = "src/lite-error.ts";
 
 /** Match the imported error helper, including local aliases. */
 export function isPinnedErrorCall(
@@ -12,7 +16,10 @@ export function isPinnedErrorCall(
         if (
             !ts.isImportDeclaration(statement) ||
             !ts.isStringLiteral(statement.moduleSpecifier) ||
-            !/^(?:\.\.?\/)+lite-error\.js$/.test(statement.moduleSpecifier.text)
+            sharedUpstreamStore().resolveImport(
+                file.fileName,
+                statement.moduleSpecifier.text,
+            ) !== liteErrorModule
         )
             return false;
         const bindings = statement.importClause?.namedBindings;

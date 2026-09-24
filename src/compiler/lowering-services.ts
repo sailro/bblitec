@@ -73,6 +73,8 @@ export type NativeReturnValueCompiler = (
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
+    /** A namespace-scope definition: the entry's bindings, its engine among them, are out of scope. */
+    namespaceScope?: boolean;
     runtimeDataLoops?: boolean;
     callSiteEffects?: boolean;
     compileReturn?: (expression: ts.Expression, type: DataType) => string;
@@ -87,6 +89,12 @@ export interface LoweringServices {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined;
+    compileSynchronousPromise(node: ts.NewExpression): Value;
+    pendingActivations(): import("./pending-activations.js").PendingActivations;
+    emitActivationBoundary(
+        statement: ts.ExpressionStatement,
+        emit: () => boolean | void,
+    ): boolean | void;
     compileAsyncReturn(
         expression: ts.Expression,
         type: DataType | undefined,
@@ -129,8 +137,8 @@ export interface LoweringServices {
     readonly classLowerer: ClassLowerer;
     readonly nativeFunctions: NativeFunctionLowerer;
     jsDataReached: boolean;
+    fileReaderReached: boolean;
     jsRandomReached: boolean;
-    voxelFileStorageReached: boolean;
     readonly browserTextureFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
@@ -479,11 +487,8 @@ export interface LoweringServices {
     reachJsData(): void;
     constructsLocalClass(expression: ts.NewExpression): boolean;
     reachJson(): void;
+    reachFileReader(): void;
     reachLocalStorage(): void;
-    compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
     reachImageDecode(): void;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
@@ -514,6 +519,10 @@ export interface LoweringServices {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined;
     resolveRecordValue(expression: ts.Expression): Value | undefined;
+    compileRecordGetter(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration,
+    ): Value;
     compileRecordSetter(
         owner: Value,
         setter: ts.SetAccessorDeclaration,
@@ -836,7 +845,6 @@ export interface LoweringServices {
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
-    expectShaderVariant(value: Value, variant: string, node: ts.Node): void;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     requireEngine(value: Value, node: ts.Node): string;
     engineFor(value: Value, node: ts.Node): string;
@@ -877,5 +885,9 @@ export interface LoweringServices {
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;
-    fail(node: ts.Node, message: string): never;
+    fail(
+        node: ts.Node,
+        message: string,
+        reason?: import("./compile-error.js").CompileError["reason"],
+    ): never;
 }

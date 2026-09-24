@@ -126,7 +126,7 @@ export function readTextProperty(
             context.promoteTextData(site);
             return {
                 kind: "data",
-                cpp: `bbl::text_data_runs(${owner.cpp})`,
+                cpp: `(${owner.cpp})->runs`,
                 dataType: {
                     kind: "vector",
                     element: { kind: "handle", handle: "text-run" },
@@ -137,7 +137,7 @@ export function readTextProperty(
         if (name === "width" || name === "height")
             return {
                 kind: "number",
-                cpp: `(${owner.cpp})->payload->${name}`,
+                cpp: `(${owner.cpp})->${name}`,
                 dataType: { kind: "number" },
                 freshData: true,
             };

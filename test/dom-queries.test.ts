@@ -66,7 +66,9 @@ test("retained DOM queries observe authored tree changes and return ordered snap
     assert.match(result.cpp, /bbl::ui_query_elements\(/);
     assert.match(result.cpp, /bbl::ui_matches_element\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "dom-queries");
+    runRmlUiFixture(t, "dom-queries", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });
 
 test("retained queries refuse unrepresented selector and interaction forms", () => {

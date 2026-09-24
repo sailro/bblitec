@@ -1,4 +1,20 @@
 #pragma once
+#include <bblite/features/has_animation.hpp>
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_camera_gizmos.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/has_gizmos.hpp>
+#include <bblite/features/has_light_gizmos.hpp>
+#include <bblite/features/has_picking.hpp>
+#include <bblite/features/has_shadows.hpp>
+#include <bblite/features/has_sprite_animation.hpp>
+#include <bblite/features/has_sprites.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/pal_storage_buffer.hpp>
@@ -742,17 +758,36 @@ struct GpuPickerRecord {
 };
 
 #endif
-/** One light in a clustered container, at the pin's own resolved defaults. */
+/**
+ * One light in a clustered container: the pin's `ClusteredPointLight`, and
+ * the direction and cone its `ClusteredSpotLight` adds. The factories
+ * resolve every option, so the members carry no defaults of their own.
+ */
 struct ClusteredLight {
     std::array<double, 3> position{};
     std::array<double, 3> diffuse{};
-    double range = 1.0;
-    double intensity = 1.0;
+    double range = 0.0;
+    double intensity = 0.0;
     /** Spot only; a point light leaves the cone unset. */
     std::array<double, 3> direction{};
     double angle = 0.0;
-    bool spot = false;
 };
+
+/**
+ * One `writeDataTexture` the last refresh made: the region of the payload it
+ * covers and its row layout, as the pin's own `queue.writeTexture` states
+ * them, and a count that moves with every write.
+ */
+struct ClusteredTextureWrite {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t bytes_per_row = 0;
+    std::uint32_t rows_per_image = 0;
+    std::uint64_t version = 0;
+};
+
+/** The pin's refresh closure state, generated beside the refresh (clustered_light.hpp). */
+struct ClusteredRefreshState;
 
 /**
  * A clustered light field: a large point/spot set binned into screen tiles
@@ -763,12 +798,16 @@ struct ClusteredLight {
  * its own refresh throws rather than growing either.
  */
 struct ClusteredLightContainer {
-    double horizontal_tiles = 64.0;
-    double vertical_tiles = 64.0;
-    double z_slices = 16.0;
-    std::vector<ClusteredLight> lights;
-    /** Set when any light in the container is a spot. */
+    double horizontal_tiles = 0.0;
+    double vertical_tiles = 0.0;
+    double z_slices = 0.0;
+    /** The pin's two light lists, each in creation order. */
+    std::vector<ClusteredLight> point_lights;
+    std::vector<ClusteredLight> spot_lights;
+    /** `_spotSupport`: installed by the first spot light. */
     bool has_spots = false;
+    /** `_version`: bumped by every light the factories add. */
+    double version = 0.0;
 
     std::uint32_t tile_count_x = 1;
     std::uint32_t tile_count_y = 1;
@@ -781,52 +820,25 @@ struct ClusteredLightContainer {
     std::uint32_t slice_rows = 1;
     std::uint32_t mask_rows = 1;
 
-    /** The extent one payload's upload covers. */
-    struct UploadRegion {
-        std::uint32_t width;
-        std::uint32_t height;
-    };
-
-    /**
-     * The pin's own `writeDataTexture` region, so neither backend invents one.
-     *
-     * A payload that fits in a single row is uploaded only as wide as it is
-     * long; past that the rows are full width. Nothing outside the region is
-     * read -- the fragment's `textureLoad` never walks past the active texel
-     * count -- so this is the pin's rule kept rather than a correctness
-     * requirement, and keeping it is what makes a backend's upload comparable
-     * to a browser capture of the same frame.
-     */
-    [[nodiscard]] UploadRegion upload_region(std::uint32_t texels, std::uint32_t rows) const {
-        const std::uint32_t height = std::max(1u, rows);
-        return {
-            height > 1 ? data_texture_width : std::max(1u, std::min(texels, data_texture_width)),
-            height,
-        };
-    }
-
     /** The three data-texture payloads and the params block. */
     std::vector<float> light_data;
     std::vector<std::uint32_t> slice_data;
     std::vector<std::uint32_t> mask_data;
     /** Six u32 lanes and two f32 ones: the pin's ArrayBuffer(32), both ways. */
     std::array<std::uint32_t, 8> params{};
-    /** Bumped whenever a refresh rewrote a payload. */
-    std::uint64_t upload_version = 0;
 
     /**
-     * The pin's own dirty key, in the terms this port has for it.
-     *
-     * Upstream compares camera identity, `_cameraChangeKey`, the target
-     * extent and the effective aspect -- four proxies for one question: does
-     * this frame project lights into different tiles than the last did. The
-     * two matrices the cull reads answer it directly, and the light half of
-     * that key folds away because nothing here can mutate a light after
-     * creating it.
+     * The pin's GPU writes, as the backend uploads them: each data texture's
+     * last `writeDataTexture`, and a count of the params block's
+     * `writeBuffer`s (its creation's initial write among them).
      */
-    std::array<float, 16> last_view{};
-    std::array<float, 16> last_proj{};
-    bool binned = false;
+    ClusteredTextureWrite light_write;
+    ClusteredTextureWrite slice_write;
+    ClusteredTextureWrite mask_write;
+    std::uint64_t params_write = 0;
+
+    /** The locals `buildClusteredLightGpuState`'s refresh closes over. */
+    std::shared_ptr<ClusteredRefreshState> refresh;
 };
 
 /**
@@ -1946,6 +1958,27 @@ struct MeshPrimitiveState {
     MeshTopology topology = MeshTopology::triangles;
     std::optional<bool> cull_none;
     std::optional<bool> clockwise_front_face;
+};
+
+/**
+ * One morph target of `ModelGeometry::morph_positions`/`morph_normals`, read
+ * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`) in native
+ * vertex space: the x lane carries the mirror the vertex attributes carry.
+ */
+struct MorphTargetLanes {
+    const std::vector<std::vector<Vec3>>& targets;
+    std::size_t target;
+    [[nodiscard]] float operator[](std::size_t lane) const {
+        const Vec3& delta = targets.at(target).at(lane / 3);
+        switch (lane % 3) {
+        case 0:
+            return -delta.x;
+        case 1:
+            return delta.y;
+        default:
+            return delta.z;
+        }
+    }
 };
 
 struct ModelGeometry {
@@ -4155,7 +4188,7 @@ struct Engine {
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
     if (reference.source != RenderTextureSource::render_target)
         throw std::runtime_error("Stored render textures require a render-target owner.");
-    const auto& target = engine.render_targets.at(reference.target.value);
+    const auto& target = handle_at(engine.render_targets, reference.target);
     if (!target.has_color)
         reference.depth_only = true;
     for (const auto& facade : engine.render_texture_facades) {
@@ -4196,7 +4229,11 @@ struct Engine::DeviceRecoveryState {
     GpuTextureIdentity fallback;
     /** The last ordinal `publish_gpu_texture_identity` handed out. */
     std::uint64_t published_textures = 0;
+    /** `_armedDevice`: the generation whose loss the handler recovers, 0 for none. */
+    double armed_device = 0.0;
+    /** `_forceNextLoss`. */
     bool requested = false;
+    /** `_recovering`. */
     bool recovering = false;
     bool resources_ready = false;
     bool disposed = false;
@@ -4242,8 +4279,7 @@ void register_managed_resource_disposer(Engine& engine, std::function<void()> di
  * retirement fails this once `store_mesh_record` has reused the slot.
  */
 inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
-    return mesh.value < engine.meshes.size() &&
-           engine.meshes[mesh.value].generation == mesh.generation;
+    return handle_names_record(engine.meshes, mesh);
 }
 
 /**
@@ -4292,6 +4328,20 @@ inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
 }
 
 /**
+ * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
+ * parent `record` names, a transform node or a mesh. The traversal
+ * `children` lists are the pin's own arrays and keep their entries.
+ */
+inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
+    if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
+        std::erase(node->parented_meshes, mesh);
+    }
+    if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
+        std::erase(parent->parented_meshes, mesh);
+    }
+}
+
+/**
  * Stores a new mesh record and returns its handle.
  *
  * The pin's JavaScript collector frees a disposed mesh once nothing
@@ -4309,14 +4359,7 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
         const std::uint32_t slot = engine.free_mesh_slots.back();
         engine.free_mesh_slots.pop_back();
         MeshRecord& retired = engine.meshes[slot];
-        const MeshHandle stale{slot, retired.generation};
-        if (retired.transform_parent.value < engine.transform_nodes.size()) {
-            std::erase(engine.transform_nodes[retired.transform_parent.value].parented_meshes,
-                       stale);
-        }
-        if (retired.parent.value < engine.meshes.size()) {
-            std::erase(engine.meshes[retired.parent.value].parented_meshes, stale);
-        }
+        unregister_from_parents(engine, retired, MeshHandle{slot, retired.generation});
         record.generation = retired.generation + 1;
         retired = std::move(record);
         engine.mesh_material_scenes.erase(slot);
@@ -4339,24 +4382,31 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
  * drops its geometry link at once.
  */
 inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = handle_at(engine.meshes, mesh);
     const std::uint32_t geometry = record.geometry;
     if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
         return;
     }
     record.retired = true;
-    bool reserved =
-        record.asset_indexed || !record.children.empty() || !record.parented_meshes.empty();
-    for (const MeshRecord& other : engine.meshes) {
-        reserved = reserved || std::find(other.children.begin(), other.children.end(), mesh) !=
-                                   other.children.end();
-    }
-    for (const TransformNodeRecord& node : engine.transform_nodes) {
-        for (const TransformNodeChild& child : node.children) {
-            const auto* listed = std::get_if<MeshHandle>(&child);
-            reserved = reserved || (listed && *listed == mesh);
+    const auto listed_as_child = [&engine, mesh] {
+        for (const MeshRecord& other : engine.meshes) {
+            if (std::find(other.children.begin(), other.children.end(), mesh) !=
+                other.children.end()) {
+                return true;
+            }
         }
-    }
+        for (const TransformNodeRecord& node : engine.transform_nodes) {
+            for (const TransformNodeChild& child : node.children) {
+                const auto* listed = std::get_if<MeshHandle>(&child);
+                if (listed && *listed == mesh) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const bool reserved = record.asset_indexed || !record.children.empty() ||
+                          !record.parented_meshes.empty() || listed_as_child();
     ModelGeometry& shared = engine.geometries[geometry];
     if (reserved) {
         shared.slot_reserved = true;
@@ -4372,12 +4422,12 @@ inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
 }
 
 inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {
-    return entry.follows_material ? engine.meshes.at(entry.mesh.value).material : entry.material;
+    return entry.follows_material ? handle_at(engine.meshes, entry.mesh).material : entry.material;
 }
 
 inline std::vector<MeshHandle> asset_mesh_walk(const Engine& engine, AssetHandle asset,
                                                std::size_t walk_index) {
-    const auto& record = engine.assets.at(asset.value);
+    const auto& record = handle_at(engine.assets, asset);
     if (!record.source_mesh_walks) {
         throw std::runtime_error("Source mesh walk metadata is missing.");
     }
@@ -4453,19 +4503,20 @@ template <typename Data>
 template <typename Data>
 inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, const Data& data,
                                   double byte_offset) {
-    if (handle.value < engine.storage_buffers.size() && engine.storage_buffers[handle.value].gpu) {
+    Engine::StorageBufferRecord* found = handle_find(engine.storage_buffers, handle);
+    if (found && found->gpu) {
         using Element = typename Data::value_type;
-        engine.storage_buffers[handle.value].gpu->update(
+        found->gpu->update(
             engine, handle.value,
             {reinterpret_cast<const std::uint8_t*>(data.data()), data.size() * sizeof(Element)},
             byte_offset);
         return;
     }
-    if (handle.value >= engine.storage_buffers.size() || !std::isfinite(byte_offset) ||
-        byte_offset < 0.0 || std::floor(byte_offset) != byte_offset) {
+    if (!found || !std::isfinite(byte_offset) || byte_offset < 0.0 ||
+        std::floor(byte_offset) != byte_offset) {
         throw std::runtime_error("Invalid storage-buffer update.");
     }
-    auto& record = engine.storage_buffers[handle.value];
+    auto& record = *found;
     if (record.disposed) {
         throw std::runtime_error("Cannot update a disposed storage buffer.");
     }
@@ -4482,9 +4533,10 @@ inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, co
 }
 
 inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
-    if (handle.value >= engine.storage_buffers.size())
+    Engine::StorageBufferRecord* found = handle_find(engine.storage_buffers, handle);
+    if (!found)
         return;
-    auto& record = engine.storage_buffers[handle.value];
+    auto& record = *found;
     if (record.gpu) {
         record.gpu->dispose(engine, handle.value);
         return;
@@ -4502,12 +4554,9 @@ inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
 template <typename Callback>
 [[nodiscard]] inline auto on_csm_receiver_update(Engine& engine, ShadowGeneratorHandle generator,
                                                  Callback callback) {
-    if (generator.value >= engine.shadow_generators.size()) {
-        throw std::runtime_error("Invalid CSM shadow generator.");
-    }
     using Registry = PlatformEventListeners<void(const js::F32Array&)>;
     std::shared_ptr<Registry>& registry =
-        engine.shadow_generators[generator.value].csm_receiver_callbacks;
+        handle_at(engine.shadow_generators, generator).csm_receiver_callbacks;
     if (!registry)
         registry = std::make_shared<Registry>();
     const std::size_t identity = js::next_callback_identity();
@@ -4562,7 +4611,7 @@ inline void project_material_source_colors(MaterialRecord& material) {
 template <typename Array = js::Array<double>>
 [[nodiscard]] js::Nullable<Array> material_color(const Engine& engine, MaterialHandle material,
                                                  MaterialColorSlot slot) {
-    const auto& record = engine.materials.at(material.value);
+    const auto& record = handle_at(engine.materials, material);
     const auto& values = slot == MaterialColorSlot::base_color_factor
                              ? record.source_base_color_factor
                              : record.source_diffuse_color;
@@ -4578,7 +4627,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
     if (values.size() != 3) {
         throw std::runtime_error("Material diffuseColor requires three numeric channels.");
     }
-    auto& record = engine.materials.at(material.value);
+    auto& record = handle_at(engine.materials, material);
     if (record.source_colors_registered || material_color_has_bound_group(engine, material)) {
         throw std::runtime_error(
             "Replacing a registered material color requires per-group UBO snapshots.");
@@ -4590,7 +4639,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
 
 [[nodiscard]] inline bool material_texture_present(const Engine& engine, MaterialHandle material,
                                                    MaterialTextureSlot slot) {
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     if (slot == MaterialTextureSlot::base_color) {
         return !record.standard_material && record.has_public_base_color_texture;
     }
@@ -4605,7 +4654,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
 material_source_texture(const Engine& engine, MaterialHandle material, MaterialTextureSlot slot) {
     if (!material_texture_present(engine, material, slot))
         return FileTexture{};
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     if (!record.source_albedo_texture) {
         throw std::runtime_error("This material texture producer has no retained source identity.");
     }
@@ -4621,7 +4670,7 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
  */
 [[nodiscard]] inline FileTexture material_texture(const Engine& engine, MaterialHandle material,
                                                   MaterialTextureSlot slot) {
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     FileTexture texture;
     switch (slot) {
     case MaterialTextureSlot::base_color:
@@ -5037,8 +5086,8 @@ static_assert(std::is_nothrow_move_constructible_v<Scene>);
         [&](const std::shared_ptr<Scene>& scene) {
             return scene &&
                    std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
-                       return mesh.value < engine.meshes.size() &&
-                              engine.meshes[mesh.value].material.value == material.value;
+                       const MeshRecord* record = handle_find(engine.meshes, mesh);
+                       return record && record->material.value == material.value;
                    });
         });
 }
@@ -6146,7 +6195,7 @@ void update_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_
  * also what the state's own live reads are keyed by here.
  */
 Sprite2DLayerHandle enable_sprite_2d_y_sort(Engine& engine, Sprite2DLayerHandle layer,
-                                            double default_bias);
+                                            std::optional<double> default_bias);
 bool sprite_2d_y_sort_enabled(const Engine& engine, Sprite2DLayerHandle layer);
 void set_sprite_2d_y_sort_bias_id(Engine& engine, Sprite2DLayerHandle layer,
                                   std::uint32_t sprite_id, double bias);

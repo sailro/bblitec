@@ -43,7 +43,7 @@ import {
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
 import { handleCppType, type DataType } from "./data-types.js";
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
@@ -61,6 +61,7 @@ import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import {
     optionalPresentCpp,
+    presenceFlagCpp,
     valueForKind,
     type Feature,
     type GeometryOutputTaskManifest,
@@ -1500,7 +1501,7 @@ export function readProperty(
             property,
         ]).find((entry) => entry.property === property);
         if (accessor) {
-            composite.scalarAccesses = [
+            writable(composite).scalarAccesses = [
                 ...new Set([...(composite.scalarAccesses ?? []), property]),
             ];
             const engineCpp = context.requireEngine(owner, expression);
@@ -1880,6 +1881,12 @@ export class PropertyAccessLowerer {
         if (staticField?.initializer) {
             return this.context.compileValue(staticField.initializer);
         }
+        const staticStorage =
+            this.context.classLowerer.readStaticField(expression);
+        if (staticStorage) return staticStorage;
+        if (ownerExpression.kind === ts.SyntaxKind.SuperKeyword) {
+            return this.context.classLowerer.compileSuperProperty(expression);
+        }
         if (
             ts.isPropertyAccessExpression(ownerExpression) &&
             ownerExpression.name.text === "style"
@@ -1995,7 +2002,9 @@ export class PropertyAccessLowerer {
         // gives the ordinary record path its fields, getters and setters,
         // so `part.locked` and `part.size` read the same way whether the
         // receiver was just constructed or came out of an array.
-        const owner = this.context.classLowerer.hydrate(rawOwner) ?? rawOwner;
+        const owner =
+            this.context.classLowerer.hydrate(rawOwner, ownerExpression) ??
+            rawOwner;
         const httpProperty = httpResponseProperty(
             this.context.dataLowerer,
             owner,
@@ -2474,8 +2483,8 @@ export class PropertyAccessLowerer {
                     owner.textureFile.entryFileName,
                 );
                 if (dimensions) {
-                    owner.textureWidth = dimensions.width;
-                    owner.textureHeight = dimensions.height;
+                    writable(owner).textureWidth = dimensions.width;
+                    writable(owner).textureHeight = dimensions.height;
                     size =
                         property === "width"
                             ? dimensions.width
@@ -2684,7 +2693,9 @@ export class PropertyAccessLowerer {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const hydrated = this.context.classLowerer.hydrate(owner) ?? owner;
+        const hydrated =
+            this.context.classLowerer.hydrate(owner, expression.expression) ??
+            owner;
         const value = this.readOwnerProperty(hydrated, expression);
         return value &&
             (hydrated.kind === "record" || expression.questionDotToken)
@@ -2698,17 +2709,18 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value {
         const ownerPresent =
-            owner.optionalFoundCpp ??
+            presenceFlagCpp(owner) ??
             (expression.questionDotToken &&
             owner.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(owner.dataType.name)
                 ? `static_cast<bool>(${owner.cpp})`
                 : undefined);
         if (ownerPresent === undefined) return value;
+        const valuePresent = presenceFlagCpp(value);
         const present =
-            value.optionalFoundCpp === undefined
+            valuePresent === undefined
                 ? ownerPresent
-                : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+                : `(${ownerPresent} && ${valuePresent})`;
         return { ...value, optionalFoundCpp: present };
     }
 

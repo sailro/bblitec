@@ -1,4 +1,3 @@
-#define BBLITE_PHYSICS_VIEWER 1
 #include "pal_physics_bullet.cpp"
 #include <cassert>
 #include <iostream>

@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -101,7 +102,7 @@ function associateManagerEngine(
             "Animation manager and group/scene belong to different engines.",
         );
     }
-    manager.engineCpp ??= engineCpp;
+    writable(manager).engineCpp ??= engineCpp;
 }
 
 export function compileAnimationIntrinsic(

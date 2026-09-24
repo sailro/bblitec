@@ -8,7 +8,8 @@ import {
     gltfAssetDocuments,
     specializeGltf,
 } from "../src/asset-specializer.js";
-import { parseGlbJson } from "../src/gltf-document.js";
+import { BinaryBuilder } from "../src/glb-binary-builder.js";
+import { parseGlbJson, type JsonObject } from "../src/gltf-document.js";
 import { writeGlbFixture } from "./glb-fixture.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packageGltfTransmissionPlan } from "../src/pinned-material-arms.js";
@@ -60,17 +61,9 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
         assert.deepEqual(specialization.extensionsUsed, [
             "KHR_texture_transform",
         ]);
-        assert.equal(specialization.features.morphTargets, true);
-        // The pinned skeleton predicate needs BOTH conjuncts —
-        // `!!j.skins?.length && anyPrimitive(j, p.attributes?.JOINTS_0 !==
-        // void 0)` (gltf-feature-registry.ts) — so a skins array with no
-        // skinned primitive imports nothing upstream and records nothing.
-        assert.equal(specialization.features.skins, false);
-        assert.equal(specialization.features.animations, true);
-        // The same predicate gates the generated loader's topology
-        // handling, so a document that pulls upstream's primitive feature
-        // must also report the flag the emitter reads.
-        assert.equal(specialization.features.nonTrianglePrimitives, true);
+        // Which loader features ran is packaging's record of the pin's own
+        // run; an unpackaged document has none to read.
+        assert.equal(specialization.loader, null);
         assert.deepEqual(specialization.renderItems, [
             {
                 drawId: 1,
@@ -219,36 +212,120 @@ test("accepts the pin-implemented material extensions and records the loader fac
     }
 });
 
-test("the skeleton module needs skins and a JOINTS_0 primitive", () => {
-    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
-    try {
-        const path = join(directory, "skinned.glb");
-        writeGlb(path, {
-            accessors: [{ count: 3 }],
-            meshes: [
-                {
-                    primitives: [
-                        {
-                            attributes: {
-                                POSITION: 0,
-                                JOINTS_0: 0,
-                                WEIGHTS_0: 0,
-                            },
-                        },
-                    ],
-                },
-            ],
-            nodes: [{ mesh: 0 }],
-            skins: [{}],
+/**
+ * A one-triangle document packaged the way generation packages every asset,
+ * specialized from the record of the pin's own loader run.
+ */
+async function packagedLoader(options: {
+    skinned?: boolean;
+    skins?: boolean;
+    morph?: boolean;
+    mode?: number;
+    scale?: number[];
+}): Promise<NonNullable<ReturnType<typeof specializeGltf>["loader"]>> {
+    const binary = new BinaryBuilder(Buffer.alloc(0));
+    const accessors: JsonObject[] = [],
+        bufferViews: JsonObject[] = [];
+    const append = (
+        data: Float32Array | Uint8Array,
+        type: string,
+        normalized = false,
+    ): number => {
+        bufferViews.push({
+            buffer: 0,
+            byteOffset: binary.append(data),
+            byteLength: data.byteLength,
         });
-        const specialization = specializeGltf(
-            parseGlbJson(path),
-            "skinned.glb",
+        accessors.push({
+            bufferView: bufferViews.length - 1,
+            componentType: data instanceof Float32Array ? 5126 : 5121,
+            count: data.length / (type === "VEC3" ? 3 : 4),
+            type,
+            normalized,
+        });
+        return accessors.length - 1;
+    };
+    const attributes: JsonObject = {
+        POSITION: append(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), "VEC3"),
+    };
+    if (options.skinned) {
+        attributes.JOINTS_0 = append(new Uint8Array(12), "VEC4");
+        attributes.WEIGHTS_0 = append(
+            new Uint8Array([255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0]),
+            "VEC4",
+            true,
         );
-        assert.equal(specialization.features.skins, true);
-    } finally {
-        rmSync(directory, { recursive: true, force: true });
     }
+    const primitive: JsonObject = {
+        attributes,
+        ...(options.mode !== undefined ? { mode: options.mode } : {}),
+        ...(options.morph
+            ? {
+                  targets: [
+                      {
+                          POSITION: append(
+                              new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+                              "VEC3",
+                          ),
+                      },
+                  ],
+              }
+            : {}),
+    };
+    const document: JsonObject = {
+        asset: { version: "2.0" },
+        buffers: [{ byteLength: binary.byteLength }],
+        bufferViews,
+        accessors,
+        ...(options.skins ? { skins: [{ joints: [1] }] } : {}),
+        nodes: [
+            {
+                mesh: 0,
+                ...(options.skins && options.skinned ? { skin: 0 } : {}),
+                ...(options.scale ? { scale: options.scale } : {}),
+            },
+            {},
+        ],
+        meshes: [{ primitives: [primitive] }],
+        scenes: [{ nodes: [0, 1] }],
+    };
+    const bytes = binary.build();
+    await packageGltfMeshPlan(
+        document,
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    );
+    const { loader } = specializeGltf(document, "asset.glb");
+    assert.ok(loader);
+    return loader;
+}
+
+test("reads the features the pinned loader ran from the packaged record", async () => {
+    const skinned = await packagedLoader({
+        skins: true,
+        skinned: true,
+        morph: true,
+    });
+    assert.equal(skinned.skins, true);
+    assert.equal(skinned.morphTargets, true);
+    assert.equal(skinned.animations, false);
+    assert.equal(skinned.nonTrianglePrimitives, false);
+    // The registry's skeleton row needs both a skin and a JOINTS_0
+    // primitive, so a skins array over unskinned geometry runs nothing.
+    const unskinned = await packagedLoader({ skins: true });
+    assert.equal(unskinned.skins, false);
+    assert.equal(unskinned.morphTargets, false);
+});
+
+test("topology handling follows the topology the pin's primitive feature set", async () => {
+    const lines = await packagedLoader({ mode: 1 });
+    assert.equal(lines.nonTrianglePrimitives, true);
+    assert.equal(lines.pointOrLinePrimitives, true);
+    // A mirrored node runs the primitive feature too, for its winding
+    // alone; the generated loader answers the winding inline, so a triangle
+    // list keeps no topology handling.
+    const mirrored = await packagedLoader({ scale: [-1, 1, 1] });
+    assert.equal(mirrored.nonTrianglePrimitives, false);
+    assert.equal(mirrored.pointOrLinePrimitives, false);
 });
 
 test("records the largest skin, which bounds the palette transport", () => {

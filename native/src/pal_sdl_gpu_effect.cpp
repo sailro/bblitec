@@ -8,6 +8,8 @@
 // translation unit exists because a scene registering no `SceneContext`
 // generates no camera math and no render plan, so `pal_sdl_gpu.cpp` cannot be
 // compiled for it at all.
+#include <bblite/features/has_effect_renderer.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>

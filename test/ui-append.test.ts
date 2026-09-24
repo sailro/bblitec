@@ -51,5 +51,7 @@ test("DOM append preserves text, element order and argument evaluation", (t) => 
     });
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     assert.equal((result.cpp.match(/ui_append_text\(/g) ?? []).length, 3);
-    runRmlUiFixture(t, "ui-append");
+    runRmlUiFixture(t, "ui-append", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });

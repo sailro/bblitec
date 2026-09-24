@@ -17,6 +17,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 type Vector = { x: number; y: number; z: number };
 const vector = (x = 0, y = 0, z = 0): Vector => ({ x, y, z });
@@ -608,25 +609,6 @@ test(
 );
 
 test("character collector mappings reject changed ownership, result slots and query order", () => {
-    class EditedStore extends UpstreamSourceStore {
-        public constructor(
-            private readonly from: string,
-            private readonly to: string,
-        ) {
-            super();
-        }
-        public override getSourceFile(module: string): ts.SourceFile {
-            const source = super.getSource(module);
-            return ts.createSourceFile(
-                module,
-                module === characterControllerModule
-                    ? source.replace(this.from, this.to)
-                    : source,
-                ts.ScriptTarget.Latest,
-                true,
-            );
-        }
-    }
     for (const [from, to] of [
         [
             "const ignoreSelf = [this._body._hkBody[0]];",
@@ -646,7 +628,7 @@ test("character collector mappings reject changed ownership, result slots and qu
         assert.throws(
             () =>
                 lowerCharacterControllerKernel(
-                    new LoweringContext(new EditedStore(from!, to!)),
+                    doctoredContext(characterControllerModule, from!, to!),
                     true,
                 ),
             { message: /.+/ },

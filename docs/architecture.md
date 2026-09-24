@@ -8,7 +8,8 @@ TypeScript + reached modules → typed lowering + asset/shader composition
 ```
 
 The source pin is [upstream/babylon-lite.json](../upstream/babylon-lite.json).
-`upstream-source.ts` reads package source maps; `pinned-wgsl-build.ts` applies the shader transform.
+`upstream-source.ts` reads package source maps; `pinned-program.ts` checks those sources as one TypeScript
+program, through which lowerers resolve pinned names and types; `pinned-wgsl-build.ts` applies the shader transform.
 
 ## Ownership
 
@@ -36,9 +37,10 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `properties.ts` | Property rules and property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
+| `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
-| `emission-transaction.ts` | Rollback on declined or failed lowering |
+| `emission-transaction.ts` | Undo journal of compiler state (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a declined or failed lowering replays it |
 | `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
 | `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
 | `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
@@ -48,7 +50,10 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts.
+use `lowerPinnedBody`. Pinned modules over plain records (text data) use `PinnedRecordModel`: a checked
+program over the pinned sources types every value, structs are emitted from the pinned declarations, and
+`pinned-record-transport.ts` rebuilds records the pin built at generation. WGSL uses typed IR or explicit
+reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
 listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have
@@ -79,7 +84,8 @@ belong to scene identity. Property and glTF animation retain separate playback c
 ## Runtime and memory
 
 - Handles reach engine records only through `bbl::handle_at`, which checks the table bound and, for meshes,
-  the slot generation; resolve them again after storage growth.
+  the slot generation, or `bbl::handle_find` where a missing record is an expected state (null where
+  `handle_at` refuses); resolve them again after storage growth.
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.

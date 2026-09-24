@@ -523,9 +523,10 @@ void check_layer(Gpu& gpu, bbl::Engine& engine, Upload upload, Record record) {
            write->values == std::vector<float>{90});
     assert((gpu.instances->data == std::vector<float>{10, 20, 90, 40}));
     const std::array<float, 4> sorted{40, 90, 20, 10};
-    engine.sprite_y_sort_hook.stage = [&](Sprite2DLayerRecord&, Uint32 begin, Uint32 end) {
-        assert(begin == 0 && end == 4);
-        return SpriteInstanceUpload{sorted.data(), 1, 3};
+    engine.sprite_y_sort_hook.upload = [&](Sprite2DLayerRecord&,
+                                           double version) -> std::optional<SpriteInstanceUpload> {
+        assert(version == static_cast<double>(gpu.uploaded_version));
+        return SpriteInstanceUpload{reinterpret_cast<const std::uint8_t*>(sorted.data()), 4, 4, 8};
     };
     ++layer.version;
     layer.dirty_sprite_begin = 0;
@@ -537,7 +538,7 @@ void check_layer(Gpu& gpu, bbl::Engine& engine, Upload upload, Record record) {
                      [&](const auto& item) { return item.buffer == original; });
     assert(sorted_write != capture::writes.end() && sorted_write->offset == 4 &&
            (sorted_write->values == std::vector<float>{90, 20}));
-    engine.sprite_y_sort_hook.stage = {};
+    engine.sprite_y_sort_hook.upload = {};
     layer.instance_data.push_back(50);
     layer.count = 5;
     ++layer.version;

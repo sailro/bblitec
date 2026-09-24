@@ -1,5 +1,13 @@
 #pragma once
 
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_effect_renderer.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+#include <bblite/features/offscreen_surfaces.hpp>
+
 #include <bblite/pal_gpu.hpp>
 #include "pal_gpu_backend.hpp"
 #if BBLITE_OFFSCREEN_SURFACES
@@ -29,8 +37,8 @@ struct GpuBackend {
     SDL_WindowFlags window_flags;
 };
 
-// A family's units are compiled exactly when CMake defines its macro to 1
-// (`featureSources` selects the SDL_GPU unit, CMake derives the Dawn twin).
+// A family's units are compiled exactly when its macro is 1 (`featureSources`
+// selects the SDL_GPU unit, CMake derives the Dawn twin).
 #if BBLITE_HAS_PBR_RENDERER
 #define BBLITE_GPU_SCENE_ENTRY(entry) &entry
 #else

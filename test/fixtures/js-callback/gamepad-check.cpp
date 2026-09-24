@@ -1,4 +1,3 @@
-#define BBLITE_HAS_GAMEPAD 1
 #include "pal_sdl.cpp"
 namespace bbl::pal {
 void apply_canvas_cursor(Engine&);

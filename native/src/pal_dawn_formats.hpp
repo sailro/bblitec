@@ -6,6 +6,8 @@
 // renderer enums (cull mode, ESM and ShaderMaterial sampler shapes) stay
 // with the one unit that includes their generated header.
 
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/runtime.hpp>
 
 #include <stdexcept>
