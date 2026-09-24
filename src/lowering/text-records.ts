@@ -8,8 +8,9 @@
  *
  * The platform boundaries, each named by the declaration it replaces:
  *
- *  - `layoutText` is `bbl::layout_text`, lowered separately from the pin's
- *    layout body over HarfBuzz shaping (`text-layout-lowerer.ts`);
+ *  - text-shaper, the library `layoutText` shapes with, is HarfBuzz: its
+ *    `Font` methods, its `UnicodeBuffer` and `GlyphBuffer` and its
+ *    `shapeInto` are native (`text_layout.hpp`);
  *  - glyph outlines are extracted and packed at generation into the
  *    packaged repertoire every live `Font` carries, so the storage a
  *    `DefaultTextData` creates is fresh records over that repertoire's
@@ -31,6 +32,7 @@
  * state, binding and attachment are lowered as the pin's classes and
  * closures.
  */
+import ts from "typescript";
 import { type LoweringContext, sharedPinnedContext } from "./context.js";
 import {
     type CallAdapter,
@@ -54,6 +56,7 @@ const DEFAULT_TEXT_DATA = "src/text/default-text-data.ts";
 const GLYPH_STORAGE = "src/text/glyph-storage.ts";
 const WEIGHT = "src/text/set-font-weight-offset.ts";
 const LAYOUT = "src/text/layout.ts";
+const LOAD_WEIGHT = "src/text/load-font-weight-offset.ts";
 
 const TEXT_ROOTS = [
     TEXT_DATA,
@@ -61,6 +64,7 @@ const TEXT_ROOTS = [
     GLYPH_STORAGE,
     WEIGHT,
     LAYOUT,
+    LOAD_WEIGHT,
     "src/text/font.ts",
     "src/text/_gpu/text-textures.ts",
     "src/text/_gpu/text-style-gpu.ts",
@@ -368,7 +372,7 @@ const records: readonly RecordSpec[] = [
         cpp: "TextLayoutFont",
         reference: true,
         native: true,
-        members: new Map([
+        members: new Map<string, MemberSpec>([
             [
                 "numGlyphs",
                 {
@@ -376,16 +380,131 @@ const records: readonly RecordSpec[] = [
                     access: (owner: string) => `${owner}->num_glyphs`,
                 },
             ],
+            [
+                "scaleForSize",
+                {
+                    shape: {
+                        kind: "function",
+                        parameters: [number],
+                        result: number,
+                    },
+                    call: (owner, [size]) =>
+                        `bbl::text_scale_for_size(*${owner}, ${size})`,
+                },
+            ],
+            [
+                "glyphId",
+                {
+                    shape: {
+                        kind: "function",
+                        parameters: [number],
+                        result: number,
+                    },
+                    call: (owner, [codepoint]) =>
+                        `bbl::pal::text_glyph_id(*${owner}, ${codepoint})`,
+                },
+            ],
+        ]),
+    },
+    { pinned: ["LayoutGlyph"], cpp: "LayoutGlyph", reference: false },
+    {
+        // text-shaper's `UnicodeBuffer`: the codepoints `shapeInto` shapes.
+        pinned: ["TextShapeInput"],
+        cpp: "TextShapeInput",
+        reference: true,
+        native: true,
+        members: new Map<string, MemberSpec>([
+            [
+                "length",
+                {
+                    shape: number,
+                    access: (owner: string) =>
+                        `static_cast<double>(${owner}->codepoints.size())`,
+                },
+            ],
+            [
+                "clear",
+                {
+                    shape: {
+                        kind: "function",
+                        parameters: [],
+                        result: { kind: "void" },
+                    },
+                    call: (owner) => `${owner}->clear()`,
+                },
+            ],
+            [
+                "addStr",
+                {
+                    shape: {
+                        kind: "function",
+                        parameters: [{ kind: "string" }, number],
+                        result: { kind: "void" },
+                    },
+                    call: (owner, [text, cluster]) =>
+                        `${owner}->add_str(${text}, ${cluster})`,
+                },
+            ],
+        ]),
+    },
+    {
+        // text-shaper's `GlyphBuffer`: the glyphs `shapeInto` wrote.
+        pinned: ["TextShapeOutput"],
+        cpp: "TextShapeOutput",
+        reference: true,
+        native: true,
+        members: new Map([
+            [
+                "infos",
+                {
+                    shape: {
+                        kind: "array",
+                        element: { kind: "record", name: "TextShapeInfo" },
+                    },
+                },
+            ],
+            [
+                "positions",
+                {
+                    shape: {
+                        kind: "array",
+                        element: { kind: "record", name: "TextShapePosition" },
+                    },
+                },
+            ],
+        ]),
+    },
+    {
+        pinned: ["TextShapeInfo"],
+        cpp: "TextShapeInfo",
+        reference: false,
+        native: true,
+        members: new Map([
+            ["glyphId", { shape: number }],
+            ["codepoint", { shape: number }],
+            ["cluster", { shape: number }],
+        ]),
+    },
+    {
+        pinned: ["TextShapePosition"],
+        cpp: "TextShapePosition",
+        reference: false,
+        native: true,
+        members: new Map([
+            ["xAdvance", { shape: number }],
+            ["xOffset", { shape: number }],
+            ["yOffset", { shape: number }],
         ]),
     },
 ];
 
 const adapters = new Map<string, CallAdapter>([
     [
-        `${LAYOUT}#layoutText`,
+        // The one shaping seam: text-shaper's shaping pass is HarfBuzz's.
+        "text-shaper#shapeInto",
         {
-            cpp: (argument, call) =>
-                `bbl::layout_text(*${argument(0)}, ${argument(1)}, ${argument(2)}${call.arguments.length > 3 ? `, ${argument(3)}` : ""})`,
+            cpp: (argument) =>
+                `bbl::pal::text_shape(*${argument(0)}, *${argument(1)}, *${argument(2)})`,
         },
     ],
     ["src/text/glyph-extraction.ts#extractGlyphCurves", { cpp: () => null }],
@@ -444,6 +563,7 @@ const EXPORTED: ReadonlySet<string> = new Set(
         [DEFAULT_TEXT_DATA, "updateDefaultTextData"],
         [DEFAULT_TEXT_DATA, "disposeDefaultTextData"],
         [WEIGHT, "setFontWeightOffset"],
+        [LAYOUT, "layoutText"],
         [TEXT_RENDERABLE, "disposeTextRenderable"],
         [TEXT_RENDERABLE, "createTextRenderable"],
         [TEXT_RENDERABLE, "addTextRenderable"],
@@ -510,6 +630,9 @@ export function textRecordModel(context: LoweringContext): PinnedRecordModel {
                     { kind: "record", name: "IWorldMatrixProvider" },
                 ],
                 ["DrawBinding", { kind: "record", name: "DrawBinding" }],
+                // text-shaper is bundled, so its types are erased.
+                ["UnicodeBuffer", { kind: "record", name: "TextShapeInput" }],
+                ["GlyphBuffer", { kind: "record", name: "TextShapeOutput" }],
             ]),
             moduleValues: new Map([
                 [
@@ -553,6 +676,7 @@ export const TEXT_RECORDS = [
     "TextRendererOptions",
     "TextLayerOptions",
     "TextLayoutOptions",
+    "LayoutGlyph",
     "PlacedGlyph",
     "TextLayoutResult",
     "GlyphRun",
@@ -572,6 +696,8 @@ export interface TextFunction {
     name: string;
     /** A class member of `name`, the class. */
     member?: { name: string; kind: "method" | "get" | "set" };
+    /** `name` is a lazy loader: the root is the export it returns. */
+    lazy?: true;
 }
 
 /** The accessors and bulk setter the compiler's transform writes call. */
@@ -599,7 +725,8 @@ export const TEXT_HEADER_ROOTS: Readonly<
         | "gpu"
         | "renderer"
         | "coverage"
-        | "renderable",
+        | "renderable"
+        | "layout",
         readonly TextFunction[]
     >
 > = {
@@ -617,7 +744,9 @@ export const TEXT_HEADER_ROOTS: Readonly<
         { module: DEFAULT_TEXT_DATA, name: "createDefaultTextData" },
         { module: DEFAULT_TEXT_DATA, name: "updateDefaultTextData" },
     ],
-    weight: [{ module: WEIGHT, name: "setFontWeightOffset" }],
+    // The opt-in setter is what the pin's lazy loader returns.
+    weight: [{ module: LOAD_WEIGHT, name: "loadFontWeightOffset", lazy: true }],
+    layout: [{ module: LAYOUT, name: "layoutText" }],
     gpu: [
         { module: TEXT_TEXTURES, name: "ensureSharedAtlasGpu" },
         { module: TEXT_STYLE_GPU, name: "ensureStyleGpu" },
@@ -653,6 +782,7 @@ function rootDeclaration(
     model: PinnedRecordModel,
     root: TextFunction,
 ): PinnedCallable {
+    if (root.lazy) return lazyExport(model, root.module, root.name);
     return root.member
         ? model.classMember(
               root.module,
@@ -661,6 +791,63 @@ function rootDeclaration(
               root.member.kind,
           )
         : model.functionDeclaration(root.module, root.name);
+}
+
+/**
+ * The module function a lazy loader returns, read from its return
+ * statement: `(await import(specifier)).name`. Any other loader refuses.
+ */
+function lazyExport(
+    model: PinnedRecordModel,
+    module: string,
+    name: string,
+): ts.FunctionDeclaration {
+    const loader = model.functionDeclaration(module, name);
+    const unwrap = (node: ts.Expression): ts.Expression =>
+        ts.isParenthesizedExpression(node) ? unwrap(node.expression) : node;
+    const statements = loader.body?.statements ?? [];
+    const returned =
+        statements.length === 1 && ts.isReturnStatement(statements[0]!)
+            ? statements[0].expression
+            : undefined;
+    const access = returned ? unwrap(returned) : undefined;
+    const loaded =
+        access && ts.isPropertyAccessExpression(access)
+            ? unwrap(access.expression)
+            : undefined;
+    const imported =
+        loaded && ts.isAwaitExpression(loaded)
+            ? unwrap(loaded.expression)
+            : undefined;
+    const declaration =
+        access &&
+        ts.isPropertyAccessExpression(access) &&
+        imported &&
+        ts.isCallExpression(imported) &&
+        imported.expression.kind === ts.SyntaxKind.ImportKeyword
+            ? model.declarationOf(access.name)
+            : undefined;
+    if (
+        !declaration ||
+        !ts.isFunctionDeclaration(declaration) ||
+        !ts.isSourceFile(declaration.parent)
+    )
+        return model.fail(
+            loader,
+            "A pinned lazy loader returns one module function of a dynamic import.",
+        );
+    return declaration;
+}
+
+/**
+ * The native function the pin's lazy weight loader resolves to: scene code
+ * holding `await loadFontWeightOffset()` calls it.
+ */
+export function lazyWeightSetterCpp(): string {
+    const model = sharedTextRecordModel();
+    return model.qualified(
+        model.lowered(lazyExport(model, LOAD_WEIGHT, "loadFontWeightOffset")),
+    );
 }
 
 /**

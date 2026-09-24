@@ -147,7 +147,7 @@ export class TextDataUpdateLowerer {
         const { declarations, definitions } = lowerTextFunctions(
             this.context,
             "update",
-            ["records"],
+            ["records", "layout"],
         );
         return `#pragma once
 #include <bblite/upstream_text_layout.hpp>

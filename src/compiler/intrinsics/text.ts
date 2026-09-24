@@ -25,7 +25,10 @@ import {
 } from "../../cpp-literals.js";
 import type { TransportSchema } from "../../pinned-record-transport.js";
 import { LoweringContext } from "../../lowering/context.js";
-import { textRecordModel } from "../../lowering/text-records.js";
+import {
+    lazyWeightSetterCpp,
+    textRecordModel,
+} from "../../lowering/text-records.js";
 import { sharedUpstreamStore } from "../../upstream-source.js";
 
 export interface TextIntrinsicContext
@@ -67,7 +70,8 @@ export function compileTextIntrinsic(
         context.reachFeature("text:weight", call);
         return {
             kind: "data",
-            cpp: "bbl::set_font_weight_offset",
+            // The function the pin's lazy loader resolves to.
+            cpp: lazyWeightSetterCpp(),
             dataType: {
                 kind: "function",
                 parameters: [
