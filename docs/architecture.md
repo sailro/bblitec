@@ -57,7 +57,7 @@ records the pin built at generation. The pin's WebGPU calls lower one to one ont
 `text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
-listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumBytes` compiles as
+listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumWeight` compiles as
 several `.part<N>.cpp` units. `main.cpp` owns entry execution; worker entries have separate units and
 namespaces. `sources/application.hpp` (one per realm) holds the includes; each unit declares only the
 types, functions and tables its code reaches, with the overloads their signatures name, and template

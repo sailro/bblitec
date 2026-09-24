@@ -73,24 +73,35 @@ export function sourceUnitStem(root: string, source: string): string {
 }
 
 /**
- * The most generated code one translation unit holds. A source whose
- * definitions exceed it compiles as several units, so no one unit bounds an
- * application's parallel build; a definition larger than it is a unit alone.
+ * The most generated code one translation unit holds, counted in identifier
+ * tokens: the code a compiler analyses and optimizes, where literal data
+ * tables cost little. A source whose definitions exceed it compiles as
+ * several units, so no one unit bounds an application's parallel build; each
+ * further unit repeats the instantiations its code shares with the others,
+ * so the budget keeps parts few. A definition larger than it is a unit alone.
  */
-export const unitMaximumBytes = 64 * 1024;
+export const unitMaximumWeight = 12_000;
+
+function codeWeight(code: string): number {
+    let identifiers = 0;
+    for (const token of cppTokens(code))
+        if (token.kind === "identifier") identifiers++;
+    return identifiers;
+}
 
 /** Splits a unit's pieces, in order, into parts of at most the unit budget. */
 function packUnitParts(pieces: readonly string[]): string[][] {
     const parts: string[][] = [[]];
-    let bytes = 0;
+    let weight = 0;
     for (const piece of pieces) {
         const current = parts.at(-1)!;
-        if (current.length > 0 && bytes + piece.length > unitMaximumBytes) {
+        const pieceWeight = codeWeight(piece);
+        if (current.length > 0 && weight + pieceWeight > unitMaximumWeight) {
             parts.push([piece]);
-            bytes = piece.length;
+            weight = pieceWeight;
         } else {
             current.push(piece);
-            bytes += piece.length;
+            weight += pieceWeight;
         }
     }
     return parts;

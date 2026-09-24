@@ -663,6 +663,12 @@ export class BindingScopes {
     }
 
     public defineVariable(identifier: ts.MemberName, value: Value): void {
+        // A resource whose native value has one type declares it for the
+        // local holding it, whichever declaration emitted that local, so a
+        // closure capturing it has a concrete environment.
+        const resourceType = resourceValueCppType(value.kind);
+        if (resourceType && cppIdentifierPattern.test(value.cpp))
+            this.context.registerNativeBindingType(value.cpp, resourceType);
         const immutable = this.isImmutableVariable(identifier.parent);
         if (value.nativeOwnedRvalue) {
             value = { ...value };
@@ -975,14 +981,13 @@ export class BindingScopes {
                 `std::shared_ptr<${handleType}>`,
             );
         }
-        // So does a resource whose native value has one type.
+        // So does a shared cell of a resource whose native value has one type
+        // (`defineVariable` types the plain local).
         const resourceType = resourceValueCppType(value.kind);
-        if (resourceType)
+        if (resourceType && sharedStorage)
             this.context.registerNativeBindingType(
                 cppName,
-                sharedStorage
-                    ? `std::shared_ptr<${resourceType}>`
-                    : resourceType,
+                `std::shared_ptr<${resourceType}>`,
             );
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
         const constantParameter =

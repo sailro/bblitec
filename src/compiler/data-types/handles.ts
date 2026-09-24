@@ -129,13 +129,29 @@ export function handleCppType(kind: HandleKind): string {
 
 /**
  * Resource values outside the data model whose native value has exactly one
- * type: the one intrinsic that produces the kind returns it (`bbl::create_sprite_renderer`,
- * `bbl::create_animation_manager`). A local holding one declares that type,
- * so a closure capturing it has a concrete environment.
+ * type: every intrinsic that produces the kind returns it
+ * (`bbl::create_sprite_renderer`, `bbl::create_animation_manager`,
+ * `bbl::create_surface`, `bbl::create_gpu_picker`, each gizmo factory and a
+ * composite gizmo's parts), and an asset's root is its `bbl::AssetHandle`.
+ * A local holding one declares that type, so a closure capturing it has a
+ * concrete environment.
  */
 const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
     ["sprite-renderer", "bbl::SpriteRendererHandle"],
     ["animation-manager", "bbl::PropertyAnimationManager"],
+    ["surface", "bbl::Surface"],
+    ["gpu-picker", "bbl::GpuPickerHandle"],
+    ["axis-drag-gizmo", "bbl::EditGizmoHandle"],
+    ["axis-scale-gizmo", "bbl::EditGizmoHandle"],
+    ["plane-drag-gizmo", "bbl::EditGizmoHandle"],
+    ["plane-rotation-gizmo", "bbl::EditGizmoHandle"],
+    ["position-gizmo", "bbl::CompositeGizmoHandle"],
+    ["rotation-gizmo", "bbl::CompositeGizmoHandle"],
+    ["scale-gizmo", "bbl::CompositeGizmoHandle"],
+    ["bounding-box-gizmo", "bbl::BoundingBoxGizmoHandle"],
+    ["camera-gizmo", "bbl::CameraGizmoHandle"],
+    ["light-gizmo", "bbl::LightGizmoHandle"],
+    ["asset-root", "bbl::AssetHandle"],
 ]);
 
 export function resourceValueCppType(kind: string): string | undefined {

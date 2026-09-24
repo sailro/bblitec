@@ -110,20 +110,6 @@ const expressionKeywords: ReadonlySet<string> = new Set([
 const openers: ReadonlySet<string> = new Set(["(", "[", "{"]);
 const closers: ReadonlySet<string> = new Set([")", "]", "}"]);
 
-/** Tokens after a closing `}` at statement level that continue an expression. */
-const expressionContinuations: ReadonlySet<string> = new Set([
-    ";",
-    ")",
-    ",",
-    ".",
-    "->",
-    "(",
-    "[",
-    "=",
-    "?",
-    ":",
-]);
-
 /**
  * Splits the text between a block's braces into its top-level statements.
  * A compound statement ends at its closing `}` unless an `else`, a `catch`
@@ -168,16 +154,15 @@ export function splitCppStatements(body: string): CppStatement[] {
             depth--;
             if (depth < 0)
                 throw new Error("Unbalanced emitted C++ block: stray closer.");
-            if (depth !== 0 || token.text !== "}" || !compound()) continue;
-            const next = tokens[index + 1];
+            // A brace closing at statement level inside any other statement
+            // (a braced initializer, a called lambda) runs on to its `;`.
             if (
-                next?.kind === "punctuation" &&
-                expressionContinuations.has(next.text) &&
-                next.text !== "(" &&
-                next.text !== "["
+                depth === 0 &&
+                token.text === "}" &&
+                compound() &&
+                !continued(index)
             )
-                continue;
-            if (!continued(index)) finish(index);
+                finish(index);
         } else if (token.text === ";" && depth === 0 && !continued(index)) {
             finish(index);
         }
