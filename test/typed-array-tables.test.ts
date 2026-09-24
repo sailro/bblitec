@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { float32Literal, floatLiteral } from "../src/cpp-literals.js";
-import {
-    float32TableLiteral,
-    typedArrayTable,
-} from "../src/compiler/typed-array-tables.js";
+import type { TypedArrayKind } from "../src/compiler/data-types.js";
+import { float32TableLiteral } from "../src/compiler/data-types/typed-arrays.js";
+import { typedArrayTable } from "../src/compiler/typed-array-tables.js";
 
 /** A finite double as an exact rational `numerator / denominator`. */
 function exactRational(value: number): {
@@ -206,29 +205,29 @@ test("integer tables store each element as the typed array would", () => {
         "1e+21",
     ];
     const values = text.map(Number);
-    const kinds: [string, (values: number[]) => ArrayLike<number>][] = [
-        ["u32", (v) => Uint32Array.from(v)],
-        ["i32", (v) => Int32Array.from(v)],
-        ["u16", (v) => Uint16Array.from(v)],
-        ["i16", (v) => Int16Array.from(v)],
-        ["u8", (v) => Uint8Array.from(v)],
-        ["i8", (v) => Int8Array.from(v)],
+    const kinds: [TypedArrayKind, (values: number[]) => ArrayLike<number>][] = [
+        ["u32array", (v) => Uint32Array.from(v)],
+        ["i32array", (v) => Int32Array.from(v)],
+        ["u16array", (v) => Uint16Array.from(v)],
+        ["i16array", (v) => Int16Array.from(v)],
+        ["u8array", (v) => Uint8Array.from(v)],
+        ["i8array", (v) => Int8Array.from(v)],
     ];
-    for (const [stem, store] of kinds) {
-        const table = typedArrayTable(stem, text);
-        assert.ok(table, stem);
+    for (const [kind, store] of kinds) {
+        const table = typedArrayTable(kind, text);
+        assert.ok(table, kind);
         const expected = Array.from(store(values), (value) =>
-            stem.startsWith("u") ? `${value}u` : `${value}`,
+            kind.startsWith("u") ? `${value}u` : `${value}`,
         );
-        assert.deepEqual(table.elements, expected, stem);
+        assert.deepEqual(table.elements, expected, kind);
     }
-    assert.deepEqual(typedArrayTable("i8", ["(-3.0)", "2"])?.elements, [
+    assert.deepEqual(typedArrayTable("i8array", ["(-3.0)", "2"])?.elements, [
         "-3",
         "2",
     ]);
-    assert.equal(typedArrayTable("u32", ["1.0", "count"]), undefined);
-    assert.equal(typedArrayTable("u32", ["(1.0 / 3.0)"]), undefined);
-    assert.deepEqual(typedArrayTable("f64", ["0.1", "count"])?.elements, [
+    assert.equal(typedArrayTable("u32array", ["1.0", "count"]), undefined);
+    assert.equal(typedArrayTable("u32array", ["(1.0 / 3.0)"]), undefined);
+    assert.deepEqual(typedArrayTable("f64array", ["0.1", "count"])?.elements, [
         "0.1",
         "count",
     ]);

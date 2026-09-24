@@ -4603,9 +4603,9 @@ export class DataLowerer {
             );
         }
         const source = this.typedArrayFromSource(
-            typedArrayStem(kind),
-            this.context.unwrap(argumentAt(call, 0)),
             kind,
+            this.context.unwrap(argumentAt(call, 0)),
+            true,
         );
         if (source === undefined) {
             this.context.fail(
@@ -5655,7 +5655,7 @@ export class DataLowerer {
             );
         }
         const converted = this.context.probeEmission(() =>
-            this.typedArrayFromSource(prefix, unwrapped),
+            this.typedArrayFromSource(kind, unwrapped),
         );
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
@@ -5668,9 +5668,9 @@ export class DataLowerer {
     }
 
     /**
-     * One numeric sequence converted into a typed array of `prefix`'s
-     * kind, or undefined where the expression is not a sequence at all --
-     * which is how the constructor tells a source from a length.
+     * One numeric sequence converted into a typed array of `kind`, or
+     * undefined where the expression is not a sequence at all -- which is
+     * how the constructor tells a source from a length.
      *
      * Every conversion the spec performs when a typed array is BUILT from
      * a sequence is the conversion it performs when one is FILLED from the
@@ -5682,13 +5682,14 @@ export class DataLowerer {
      * `keepKind` is where the two callers part: a constructor must produce
      * a NEW array even from a source of its own kind, so it converts
      * unconditionally, while `set` copies such a source straight into the
-     * target and names its kind here to say so.
+     * target and says so here.
      */
     private typedArrayFromSource(
-        prefix: string,
+        kind: TypedArrayKind,
         unwrapped: ts.Expression,
-        keepKind?: TypedArrayKind,
+        keepKind = false,
     ): string | undefined {
+        const prefix = typedArrayStem(kind);
         if (ts.isArrayLiteralExpression(unwrapped)) {
             const elements = unwrapped.elements.map((element) =>
                 this.context.compileNumber(element, "double"),
@@ -5702,7 +5703,7 @@ export class DataLowerer {
                     staticNumberValue(this.context, element) !== undefined,
             );
             return this.typedArrayFromElements(
-                prefix,
+                kind,
                 elements,
                 constant,
                 unwrapped,
@@ -5726,9 +5727,9 @@ export class DataLowerer {
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
         }
         if (
-            keepKind !== undefined &&
+            keepKind &&
             staticSource?.kind === "data" &&
-            staticSource.dataType?.kind === keepKind
+            staticSource.dataType?.kind === kind
         ) {
             return staticSource.cpp;
         }
@@ -5746,7 +5747,7 @@ export class DataLowerer {
                 ),
             );
             return this.typedArrayFromElements(
-                prefix,
+                kind,
                 elements,
                 staticSource.tupleElements.every(
                     (entry) => entry.staticNumber !== undefined,
@@ -5803,11 +5804,12 @@ export class DataLowerer {
      * hoists.
      */
     private typedArrayFromElements(
-        prefix: string,
+        kind: TypedArrayKind,
         elements: readonly string[],
         constant: boolean,
         source: ts.Node,
     ): string {
+        const prefix = typedArrayStem(kind);
         if (
             elements.length < DataLowerer.HOISTED_TYPED_ARRAY_MIN_ELEMENTS ||
             !constant
@@ -5816,12 +5818,12 @@ export class DataLowerer {
         }
         // An element that is not a plain literal keeps the double table
         // the runtime store converts.
-        const table = typedArrayTable(prefix, elements) ?? {
-            elementCppType: prefix === "f32" ? "float" : "double",
+        const table = typedArrayTable(kind, elements) ?? {
+            elementCppType: kind === "f32array" ? "float" : "double",
             elements:
-                prefix === "f32"
+                kind === "f32array"
                     ? elements.map((element) =>
-                          typedArrayStoreExpression("f32array", element),
+                          typedArrayStoreExpression(kind, element),
                       )
                     : [...elements],
         };
