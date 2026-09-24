@@ -139,8 +139,6 @@ function expressionStruct(
             lowerer.markEscaped(known);
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
         }
-        if (isJsonValue(known))
-            return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
     }
     const value = lowerer.requireDataValue(unwrapped, dataType);
     lowerer.markEscaped(value);
@@ -215,12 +213,6 @@ function valueStruct(
     value: Value,
     node: ts.Node,
 ): string | undefined {
-    if (isJsonValue(value))
-        return lowerer.context.dataTypes.jsonDecodeCpp(
-            dataType,
-            value.cpp,
-            node,
-        );
     if (
         value.dataType?.kind === "optional" &&
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)

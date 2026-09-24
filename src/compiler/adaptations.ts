@@ -13,7 +13,6 @@ export interface AdaptationContext extends Pick<
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
     | "fileReaderReached"
-    | "dataTypes"
     | "options"
     | "jsRandomReached"
     | "browserTextureFunctions"
@@ -275,20 +274,6 @@ export function compileAdaptations(
             validation: [
                 "native FileReader Blob-decoding fixture",
                 "native File read and error contract check",
-            ],
-        });
-    }
-    if (context.dataTypes.readsParsedDocuments()) {
-        adaptations.push({
-            id: "typed-json-read",
-            category: "language",
-            sourceSemantics:
-                "A parsed document asserted to a record type keeps whatever members it holds.",
-            nativeSemantics:
-                "Stored as the record, the document is read member by member; a member of another type throws a TypeError naming it where the document is stored.",
-            risk: "low",
-            validation: [
-                "native typed-read fixture against a JavaScript oracle",
             ],
         });
     }
