@@ -56,6 +56,10 @@ import {
     type NativeBackend,
 } from "./tooling/backends.js";
 import { readMemoryTape } from "./tooling/check-spec.js";
+import {
+    readCompiledSceneManifest,
+    type CompiledSceneManifest,
+} from "./tooling/generated-readers.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
     nativeRunBound,
@@ -75,44 +79,14 @@ import {
  * the instrumented capture and the geometry diagnostics — so a seeded
  * scene renders the same particle set on all of them.
  */
-interface CompiledSceneManifest {
-    adaptations?: Array<{ id?: string }>;
-    features?: unknown;
-}
-
-function readCompiledSceneManifest(
-    scene: SceneDefinition,
-): CompiledSceneManifest | undefined {
-    const manifestPath = resolve(scene.output, "manifest.json");
-    if (!existsSync(manifestPath)) {
-        return undefined;
-    }
-    try {
-        const manifest: unknown = JSON.parse(
-            readFileSync(manifestPath, "utf8"),
-        );
-        if (typeof manifest !== "object" || manifest === null) {
-            return undefined;
-        }
-        return manifest;
-    } catch {
-        return undefined;
-    }
-}
-
-function manifestUsesSeededRandom(
-    manifest: CompiledSceneManifest | undefined,
-): boolean {
-    return (
-        Array.isArray(manifest?.adaptations) &&
-        manifest.adaptations.some(
-            (adaptation) => adaptation.id === "deterministic-seeded-random",
-        )
-    );
+function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
+    return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
 export function usesSeededRandom(scene: SceneDefinition): boolean {
-    return manifestUsesSeededRandom(readCompiledSceneManifest(scene));
+    return manifestUsesSeededRandom(
+        readCompiledSceneManifest(scene.output, scene.id),
+    );
 }
 
 /** Whether the compiled scene actually carries the retained native UI.
@@ -120,8 +94,9 @@ export function usesSeededRandom(scene: SceneDefinition): boolean {
  *  golden capture composed (`runParity` derives the same predicate from
  *  its already-read manifest at its `retainedUiCapture` binding). */
 export function usesRetainedUi(scene: SceneDefinition): boolean {
-    const features = readCompiledSceneManifest(scene)?.features;
-    return Array.isArray(features) && features.includes("ui:rml");
+    return readCompiledSceneManifest(scene.output, scene.id).features.includes(
+        "ui:rml",
+    );
 }
 
 /**
@@ -894,11 +869,9 @@ async function runSceneParity(
         { ...scene, parity: config },
         pose,
     );
-    const compiledManifest = readCompiledSceneManifest(scene);
+    const compiledManifest = readCompiledSceneManifest(scene.output, scene.id);
     const retainedUiCapture =
-        captureUi &&
-        Array.isArray(compiledManifest?.features) &&
-        compiledManifest.features.includes("ui:rml");
+        captureUi && compiledManifest.features.includes("ui:rml");
     const reference =
         canvasOnly || seekedPose
             ? resolve(
