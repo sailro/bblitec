@@ -166,61 +166,34 @@ export interface PayloadMismatch {
     reason: "missing" | "changed" | "unexpected";
 }
 
-/** The renderer set a build directory compiles, as `BBLITE_BACKEND` names it. */
-export type CompiledBackend = "SDL_GPU" | "DAWN" | "BOTH";
-
 /**
- * The shader files a build's compiled renderers read, by name suffix. The
- * deploy step in `native/CMakeLists.txt` copies by the same table:
- * SDL_GPU loads the platform's offline binary (`.dxil`, Metal `.msl`,
- * otherwise SPIR-V `.spv`) plus the `.slots` sidecars naming each variant's
- * register order; Dawn compiles the `.native.wgsl` text in-process. HLSL,
- * reflection dumps, WGSL sources and tool manifests stay in the generated
- * tree as development artifacts.
+ * The shader files the build that produced the executable in
+ * `executableDirectory` deploys, by name suffix: the list
+ * `native/CMakeLists.txt` derives from its compiled renderers and records
+ * as `BBLITE_DEPLOYED_SHADER_SUFFIXES`, read from the CMake cache -- the
+ * directory itself under Ninja, its parent under a multi-configuration
+ * generator.
  */
-export function deployedShaderSuffixes(
-    backend: CompiledBackend,
-    platform: NodeJS.Platform = process.platform,
-): readonly string[] {
-    const sdlGpu = [
-        platform === "win32"
-            ? ".dxil"
-            : platform === "darwin"
-              ? ".msl"
-              : ".spv",
-        ".slots",
-    ];
-    const dawn = [".native.wgsl"];
-    return backend === "SDL_GPU"
-        ? sdlGpu
-        : backend === "DAWN"
-          ? dawn
-          : [...sdlGpu, ...dawn];
-}
-
-/**
- * The renderer set recorded in the CMake cache of the build that produced
- * the executable in `executableDirectory` -- the directory itself under
- * Ninja, its parent under a multi-configuration generator.
- */
-export function executableBuildBackend(
+export function executableDeployedShaderSuffixes(
     executableDirectory: string,
-): CompiledBackend {
+): readonly string[] {
     for (const directory of [
         executableDirectory,
         resolve(executableDirectory, ".."),
     ]) {
-        const backend = readCacheConfiguration(directory)?.BBLITE_BACKEND;
-        if (backend === undefined) continue;
-        if (backend === "SDL_GPU" || backend === "DAWN" || backend === "BOTH") {
-            return backend;
+        const suffixes =
+            readCacheConfiguration(directory)?.BBLITE_DEPLOYED_SHADER_SUFFIXES;
+        if (suffixes === undefined) continue;
+        const list = suffixes.split(";").filter((suffix) => suffix !== "");
+        if (list.length === 0) {
+            throw new Error(
+                `${directory}/CMakeCache.txt records no BBLITE_DEPLOYED_SHADER_SUFFIXES.`,
+            );
         }
-        throw new Error(
-            `${directory}/CMakeCache.txt names an unknown BBLITE_BACKEND '${backend}'.`,
-        );
+        return list;
     }
     throw new Error(
-        `No CMake cache with BBLITE_BACKEND beside ${executableDirectory}; ` +
+        `No CMake cache with BBLITE_DEPLOYED_SHADER_SUFFIXES beside ${executableDirectory}; ` +
             "the deployed shader payload depends on the compiled backends. " +
             "Build the scene with 'scene -- process' first.",
     );
@@ -247,16 +220,18 @@ export function deployedPayloads(
     executableDirectory: string,
     generatedDirectory: string,
 ): DeployedPayload[] {
-    const shaderSuffixes = deployedShaderSuffixes(
-        executableBuildBackend(executableDirectory),
-    );
+    // Read on first use: a tree without shaders configures no suffix list.
+    let shaderSuffixes: readonly string[] | undefined;
     return [
         {
             label: "shaders",
             source: resolve(generatedDirectory, "upstream/shaders"),
             deployed: resolve(executableDirectory, "shaders"),
             deploys: (path) =>
-                shaderSuffixes.some((suffix) => path.endsWith(suffix)),
+                (shaderSuffixes ??=
+                    executableDeployedShaderSuffixes(executableDirectory)).some(
+                    (suffix) => path.endsWith(suffix),
+                ),
         },
         {
             label: "assets",
