@@ -1238,27 +1238,71 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     public body(): string {
-        const lines = this.statements(
+        return this.statements(
             this.entry.declaration.body!.statements,
             "    ",
-        );
-        // A local only an adapted platform call read is still the pin's
-        // declaration; keep it and say it may be unused.
-        return lines
-            .map((line) =>
-                line.replace(
-                    /@@unused:([A-Za-z_0-9]+)@@/g,
-                    (_, name: string) =>
-                        lines.some(
-                            (other) =>
-                                other !== line &&
-                                new RegExp(`\\b${name}\\b`).test(other),
-                        )
-                            ? ""
-                            : "[[maybe_unused]] ",
-                ),
+        ).join("\n");
+    }
+
+    /**
+     * Whether a local may end up unread: every read of it in the pinned
+     * body is an argument of an adapted platform call, which may drop it.
+     * The pin's declaration is still emitted, marked as possibly unused.
+     */
+    private mayBeUnread(name: ts.Identifier): boolean {
+        const symbol = this.checker.getSymbolAtLocation(name);
+        let unread = true;
+        const visit = (node: ts.Node): void => {
+            if (!unread) return;
+            if (ts.isIdentifier(node) && node !== name) {
+                const read =
+                    ts.isShorthandPropertyAssignment(node.parent) &&
+                    node.parent.name === node
+                        ? this.checker.getShorthandAssignmentValueSymbol(
+                              node.parent,
+                          )
+                        : this.checker.getSymbolAtLocation(node);
+                if (read === symbol && !this.adaptedArgument(node))
+                    unread = false;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(this.entry.declaration.body!);
+        return unread;
+    }
+
+    /** Whether `node` sits in an argument of an adapted platform call. */
+    private adaptedArgument(node: ts.Node): boolean {
+        for (
+            let child = node, parent = node.parent;
+            parent !== this.entry.declaration;
+            child = parent, parent = parent.parent
+        )
+            if (
+                ts.isCallExpression(parent) &&
+                parent.expression !== child &&
+                this.adapterOf(parent)
             )
-            .join("\n");
+                return true;
+        return false;
+    }
+
+    /** The platform adapter standing in for a pinned call, if one does. */
+    private adapterOf(node: ts.CallExpression): CallAdapter | undefined {
+        const callee = this.skipParentheses(node.expression);
+        const declaration =
+            ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
+                ? this.model.declarationOf(
+                      ts.isPropertyAccessExpression(callee)
+                          ? callee.name
+                          : callee,
+                  )
+                : undefined;
+        const key = declaration ? this.model.keyOf(declaration) : undefined;
+        return (
+            (key ? this.model.schema.adapters.get(key) : undefined) ??
+            this.model.schema.adapters.get(callee.getText(this.source))
+        );
     }
 
     // ── Names and locals ────────────────────────────────────────────────
@@ -2142,10 +2186,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                           : callee,
                   )
                 : undefined;
-        const key = declaration ? this.model.keyOf(declaration) : undefined;
-        const adapter =
-            (key ? this.model.schema.adapters.get(key) : undefined) ??
-            this.model.schema.adapters.get(callee.getText(this.source));
+        const adapter = this.adapterOf(node);
         if (adapter) {
             const spelled = adapter.cpp(
                 (index) => this.value(node.arguments[index]!),
@@ -2761,7 +2802,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
               : `${this.cpp(storage)}{}`;
         const cpp = this.declare(declaration.name, storage);
         return [
-            `${indent}@@unused:${cpp}@@${this.cpp(storage)} ${cpp} = ${value};`,
+            `${indent}${this.mayBeUnread(declaration.name) ? "[[maybe_unused]] " : ""}${this.cpp(storage)} ${cpp} = ${value};`,
         ];
     }
 
@@ -2770,48 +2811,45 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         indent: string,
     ): string[] {
         const expression = this.skipParentheses(statement.expression);
+        if (
+            ts.isCallExpression(expression) &&
+            isPinnedErrorCall(this.source, expression)
+        )
+            return super.statement(statement, indent);
+        const effect = this.effect(expression);
+        return effect === null ? [] : [`${indent}${effect};`];
+    }
+
+    /**
+     * An expression evaluated for its effect, spelled without a statement
+     * terminator (a statement or a for-loop incrementor); null for an
+     * adapted platform call with no native effect.
+     */
+    private effect(expression: ts.Expression): string | null {
         if (ts.isCallExpression(expression)) {
-            if (isPinnedErrorCall(this.source, expression))
-                return super.statement(statement, indent);
-            const callee = this.skipParentheses(expression.expression);
-            const declaration =
-                ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
-                    ? this.model.declarationOf(
-                          ts.isPropertyAccessExpression(callee)
-                              ? callee.name
-                              : callee,
-                      )
-                    : undefined;
-            const key = declaration ? this.model.keyOf(declaration) : undefined;
-            const adapter =
-                (key ? this.model.schema.adapters.get(key) : undefined) ??
-                this.model.schema.adapters.get(callee.getText(this.source));
-            if (adapter) {
-                const spelled = adapter.cpp(
+            const adapter = this.adapterOf(expression);
+            if (adapter)
+                return adapter.cpp(
                     (index) => this.value(expression.arguments[index]!),
                     expression,
                     (name) => this.localNamed(name, expression),
                 );
-                return spelled === null ? [] : [`${indent}${spelled};`];
-            }
             const value = this.value(expression);
             const type = this.typeAt(expression);
-            return [
-                `${indent}${type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined) ? value : `static_cast<void>(${value})`};`,
-            ];
+            return type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)
+                ? value
+                : `static_cast<void>(${value})`;
         }
         if (ts.isBinaryExpression(expression)) {
             const kind = expression.operatorToken.kind;
             if (kind === ts.SyntaxKind.EqualsToken) {
                 const place = this.place(expression.left);
-                return [
-                    `${indent}${place.store(this.convert(expression.right, place.storage))};`,
-                ];
+                return place.store(
+                    this.convert(expression.right, place.storage),
+                );
             }
             if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken)
-                return [
-                    `${indent}static_cast<void>(${this.nullishAssign(expression)});`,
-                ];
+                return `static_cast<void>(${this.nullishAssign(expression)})`;
             if (
                 kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
                 kind === ts.SyntaxKind.BarBarEqualsToken
@@ -2822,9 +2860,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         expression,
                         "Pinned logical assignment of a non-flag.",
                     );
-                return [
-                    `${indent}${place.cpp} = ${place.cpp} ${kind === ts.SyntaxKind.BarBarEqualsToken ? "||" : "&&"} ${this.truthy(expression.right)};`,
-                ];
+                return `${place.cpp} = ${place.cpp} ${kind === ts.SyntaxKind.BarBarEqualsToken ? "||" : "&&"} ${this.truthy(expression.right)}`;
             }
             const compound = new Map<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.PlusEqualsToken, "+="],
@@ -2833,9 +2869,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 [ts.SyntaxKind.SlashEqualsToken, "/="],
             ]).get(kind);
             if (compound)
-                return [
-                    `${indent}${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)};`,
-                ];
+                return `${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)}`;
         }
         if (
             ts.isPrefixUnaryExpression(expression) ||
@@ -2845,12 +2879,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 expression.operator === ts.SyntaxKind.PlusPlusToken ||
                 expression.operator === ts.SyntaxKind.MinusMinusToken
             )
-                return [
-                    `${indent}${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${this.numericPlace(expression.operand)};`,
-                ];
+                return `${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${this.numericPlace(expression.operand)}`;
         }
         return this.refuse(
-            statement,
+            expression,
             "Unsupported pinned expression statement.",
         );
     }
@@ -2892,12 +2924,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? this.statementCondition(statement.condition)
                 : "";
             const incrementor = statement.incrementor
-                ? this.expressionLines(
-                      ts.factory.createExpressionStatement(
-                          statement.incrementor,
-                      ),
-                      "",
-                  )[0]!.replace(/;$/, "")
+                ? (this.effect(this.skipParentheses(statement.incrementor)) ??
+                  this.refuse(
+                      statement.incrementor,
+                      "Pinned loop incrementor without a native effect.",
+                  ))
                 : "";
             return [
                 `${indent}for (${declared}; ${condition}; ${incrementor}) {`,

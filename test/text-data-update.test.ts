@@ -103,6 +103,23 @@ test("text data bodies are lowered from the pin's own statements", () => {
         ).header(),
         /\*options->line_height : 1\.5\)/,
     );
+    // A local only an adapted platform call reads keeps its declaration
+    // (its initializer's effects are the pin's) and may be unread.
+    const unread = /\[\[maybe_unused\]\] [^\n]* ids = /;
+    assert.doesNotMatch(
+        new TextDataUpdateLowerer(new LoweringContext()).header(),
+        unread,
+    );
+    assert.match(
+        new TextDataUpdateLowerer(
+            changed(
+                "src/text/default-text-data.ts",
+                "if (ids) {",
+                "if (text) {",
+            ),
+        ).header(),
+        unread,
+    );
     // A construct the record model has no native form for refuses by name.
     assert.throws(
         () =>
