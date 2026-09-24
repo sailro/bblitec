@@ -284,6 +284,15 @@ endif()
 # the backend selection decides which API draws it, and the two are
 # independent -- a build with either backend removed must still compile
 # every feature the scene reached.
+# The scene renderer is its driver unit (pal_sdl_gpu.cpp) and one unit per
+# feature family it draws through; the families follow the driver the
+# feature table selects, and their Dawn twins follow them below.
+set(BBLITE_SCENE_RENDERER_FAMILIES meshes variants shadows textures targets post_process picking)
+if("${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp" IN_LIST BBLITE_RUNTIME_SOURCES)
+    foreach(bblite_family IN LISTS BBLITE_SCENE_RENDERER_FAMILIES)
+        list(APPEND BBLITE_RUNTIME_SOURCES "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_scene_${bblite_family}.cpp")
+    endforeach()
+endif()
 set(BBLITE_SDL_GPU_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 set(BBLITE_DAWN_SOURCES "")

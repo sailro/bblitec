@@ -8,6 +8,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
 
@@ -39,11 +40,11 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
             "inline bool acquire_dawn_surface_texture",
         ).replace("DawnDevice& state", "DawnState& state"),
     );
-    for (const [backend, file] of [
-        ["Sdl", "pal_sdl_gpu.cpp"],
-        ["Dawn", "pal_dawn.cpp"],
+    for (const [backend, name] of [
+        ["Sdl", "sdl"],
+        ["Dawn", "dawn"],
     ] as const) {
-        const source = readFileSync(`native/src/${file}`, "utf8");
+        const source = sceneBackendSource(name);
         writeFileSync(
             join(directory, `${backend}Scene.hpp`),
             [

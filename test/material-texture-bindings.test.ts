@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -16,7 +17,7 @@ test(
     () => {
         const output = resolve("artifacts/material-texture-bindings");
         mkdirSync(output, { recursive: true });
-        const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+        const source = sceneBackendSource("sdl");
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");
         writeFileSync(

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -18,6 +18,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
 
@@ -249,7 +250,7 @@ test(
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
         const pal = sharedGpuSource();
-        const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+        const dawn = sceneBackendSource("dawn");
         const output = resolve("artifacts/node-geometry-transport-check");
         mkdirSync(output, { recursive: true });
         writeFileSync(

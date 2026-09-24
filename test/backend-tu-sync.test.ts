@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { featureSources } from "../src/compiler/output-projection.js";
-import { sharedGpuSource } from "./native-fixture.js";
+import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
 
 // `featureSources` decides which SDL_GPU translation units a feature
 // compiles into BBLITE_RUNTIME_SOURCES; the CMake backend arm derives the
@@ -77,7 +77,7 @@ test("the CMake backend arm derives the Dawn twins from the SDL_GPU units featur
 });
 
 test("the SDL scene driver releases run resources before its device", () => {
-    const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const source = sceneBackendSource("sdl");
     const driver = source.slice(source.indexOf("class SdlSceneRun {"));
     const state = driver.slice(
         driver.indexOf("struct State : FrameSession"),
@@ -124,10 +124,7 @@ test("the run end finishes only its engine's audio session", () => {
 test("scene replacement restarts both backends without retaining a dead root", () => {
     const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
     const dispatch = readFileSync("native/src/pal_sdl.cpp", "utf8");
-    const backends = [
-        readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
-        readFileSync("native/src/pal_dawn.cpp", "utf8"),
-    ];
+    const backends = [sceneBackendSource("sdl"), sceneBackendSource("dawn")];
     assert.match(runtime, /bool renderer_restart_requested = false;/);
     assert.match(
         dispatch,
@@ -212,11 +209,8 @@ test("auxiliary surface scenes render in independent panes", () => {
         /scene_surface_extent\(\s*engine, scene, sync\.width, sync\.height\)/,
         "the scene synchronization builds the primary projection at the full target aspect",
     );
-    for (const file of [
-        "native/src/pal_sdl_gpu.cpp",
-        "native/src/pal_dawn.cpp",
-    ]) {
-        const backend = readFileSync(file, "utf8");
+    for (const file of ["sdl", "dawn"] as const) {
+        const backend = sceneBackendSource(file);
         assert.match(
             backend,
             /scene_surface_extent\(\s*engine, \*overlay_scene, width, height\)/,
@@ -231,7 +225,7 @@ test("auxiliary surface scenes render in independent panes", () => {
 });
 
 test("Dawn caches thin-pick bindings and invalidates them with their buffers", () => {
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     assert.match(
         dawn,
         /mesh\.thin_pick_uniform_buffer == state\.pick_mesh_buffer/,
@@ -257,7 +251,7 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
 });
 
 test("Dawn completes canvas readback before post-copy UI", () => {
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     const capture = dawn.indexOf("const bool capture_frame");
     const copy = dawn.indexOf(
         "wgpuCommandEncoderCopyTextureToBuffer(",

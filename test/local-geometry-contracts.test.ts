@@ -13,6 +13,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
 
@@ -75,12 +76,11 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
     }`,
     );
     const consumers: string[] = [];
-    for (const file of [
-        "pal_sdl_gpu.cpp",
-        "pal_dawn.cpp",
-        "pal_render_capture.hpp",
+    for (const source of [
+        sceneBackendSource("sdl"),
+        sceneBackendSource("dawn"),
+        readFileSync("native/src/pal_render_capture.hpp", "utf8"),
     ]) {
-        const source = readFileSync(`native/src/${file}`, "utf8");
         let offset = 0;
         while (true) {
             const start = source.indexOf(

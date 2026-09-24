@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
@@ -11,6 +11,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
 
@@ -22,10 +23,10 @@ test(
     () => {
         const shared = sharedGpuSource();
         const sdl = cppFunction(
-            readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
+            sceneBackendSource("sdl"),
             "SDL_GPUTextureFormat compressed_texture_format(",
         );
-        const dawnSource = readFileSync("native/src/pal_dawn.cpp", "utf8");
+        const dawnSource = sceneBackendSource("dawn");
         const dawn = cppFunction(
             dawnSource,
             "WGPUTextureFormat compressed_texture_format(",

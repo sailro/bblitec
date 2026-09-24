@@ -8,7 +8,7 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "../src/lowering/shadow-lowerer.js";
-import { sharedGpuSource } from "./native-fixture.js";
+import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
 
 /**
  * The pinned render gate: `renderEsmShadowMap`, `renderPcfShadowMap` and
@@ -172,8 +172,8 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // Both backends' shadow arms skip their pass on a gated frame, and a
     // frame-graph texture recreation clears the rendered sentinels.
     for (const backend of [
-        readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
-        readFileSync("native/src/pal_dawn.cpp", "utf8"),
+        sceneBackendSource("sdl"),
+        sceneBackendSource("dawn"),
     ]) {
         assert.match(
             backend,
@@ -217,7 +217,7 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
 });
 
 test("builds vertex-only custom shader pipelines for shadow targets", () => {
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
     assert.match(
         sdl,
         /std::vector<SDL_GPUGraphicsPipeline\*> shader_shadow_pipelines;/,
@@ -235,7 +235,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         /draw_scene\(\s*graph_scene, graph_meshes,\s*shadow_pass,[\s\S]{0,300}state\.shader_shadow_pipelines,\s*state\.shader_shadow_pipelines/,
     );
 
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     assert.match(
         dawn,
         /std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;/,

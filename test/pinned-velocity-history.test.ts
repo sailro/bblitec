@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -8,6 +8,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
 
@@ -63,8 +64,8 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
         "upstream::MeshUniforms pinned_mesh_block(",
     );
     assert.doesNotMatch(block, /previousWorld|velocityEnabled/);
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
+    const dawn = sceneBackendSource("dawn");
     for (const [backend, text] of [
         ["SDL", sdl],
         ["Dawn", dawn],

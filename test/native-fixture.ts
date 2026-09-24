@@ -99,6 +99,28 @@ export function cppFunction(source: string, signature: string): string {
 }
 
 /**
+ * Isolate a function's declaration (through its `;`), which carries the
+ * default arguments its out-of-line definition does not repeat.
+ */
+export function cppDeclaration(source: string, signature: string): string {
+    let from = source.indexOf(signature);
+    while (from >= 0) {
+        let parameters = source.indexOf("(", from),
+            depth = 1;
+        while (depth && ++parameters < source.length) {
+            if (source[parameters] === "(") ++depth;
+            if (source[parameters] === ")") --depth;
+        }
+        const semicolon = source.indexOf(";", parameters),
+            brace = source.indexOf("{", parameters);
+        if (semicolon >= 0 && (brace < 0 || semicolon < brace))
+            return source.slice(from, semicolon + 1);
+        from = source.indexOf(signature, from + signature.length);
+    }
+    assert.fail(signature);
+}
+
+/**
  * The GPU backends' shared concerns as one text, in the order
  * `pal_gpu_shared.hpp` includes them, then the units holding their bodies:
  * what a fixture that lifts the shared helpers by name reads, whichever
@@ -116,6 +138,40 @@ export function sharedGpuSource(): string {
         parts.push(readFileSync(unit, "utf8"));
     }
     return parts.join("\n");
+}
+
+/** The feature families each scene renderer backend compiles as its own unit. */
+export const sceneRendererFamilies = [
+    "meshes",
+    "variants",
+    "shadows",
+    "textures",
+    "targets",
+    "post_process",
+    "picking",
+] as const;
+
+/** A scene renderer backend's files: its state header, family units and driver. */
+export function sceneBackendFiles(backend: "sdl" | "dawn"): string[] {
+    const stem = backend === "sdl" ? "pal_sdl_gpu" : "pal_dawn";
+    return [
+        `native/src/${stem}_scene.hpp`,
+        ...sceneRendererFamilies.map(
+            (family) => `native/src/${stem}_scene_${family}.cpp`,
+        ),
+        `native/src/${stem}.cpp`,
+    ];
+}
+
+/**
+ * A scene renderer backend as one text, header first and driver last: what
+ * a fixture that lifts the backend's code by name reads, whichever of its
+ * units holds it.
+ */
+export function sceneBackendSource(backend: "sdl" | "dawn"): string {
+    return sceneBackendFiles(backend)
+        .map((file) => readFileSync(file, "utf8"))
+        .join("\n");
 }
 
 /** The units holding the shared GPU helpers' bodies, for a fixture to link. */
