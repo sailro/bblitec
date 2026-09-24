@@ -52,6 +52,10 @@ function listFiles(directory, prefix, out) {
  * compiler API used by bblitec itself. An `npm install` can move either
  * dependency without a source edit. Returns undefined when anything
  * cannot be statted, which the caller treats as "rebuild".
+ *
+ * Mtimes make it a fast reuse key, not the compiler's identity: a checkout
+ * rewrites them without changing a byte, so a record naming the compiler
+ * digests `dist/src` by content instead.
  */
 function computeStamp() {
     /** @type {Array<{ path: string, relative: string }>} */
