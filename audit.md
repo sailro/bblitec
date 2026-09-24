@@ -17,7 +17,7 @@ and performance.
 | FA-6 | med | Camera/light gizmo factories and morph-shadow bounds emitted without reach. | `gizmo:camera`/`gizmo:light` and `shadow:morph-bounds` gate emission and native records. | fixed |
 | FA-7 | low | `loadBabylon` reached `camera:free` with `loadCamera: false`. | Camera parser emitted only when cameras load. | fixed |
 | FA-8 | low | Activation records embedded absolute checkout paths. | Repository-relative POSIX paths. | fixed |
-| FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | Gate both on `BBLITE_SHADOW_MORPH_BOUNDS`. | open |
+| FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | `morph_bounds` and its release compile under `BBLITE_SHADOW_MORPH_BOUNDS`; builders clear it only when `shadow:morph-bounds` is reached. | fixed |
 | FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Key the slots on the composed arms. | open |
 
 ## Re-derivation in TypeScript (RDT)
@@ -45,7 +45,7 @@ and performance.
 | RDN-1 | high | The PAL bakes TRS into vertices and re-picks each draw's world matrix instead of uploading the pin's `worldMatrix`. | Feed generated `MeshUniforms.world`; upload local vertices. | open |
 | RDN-2 | high | Camera input dispatch diverged from the pinned handlers. | Handlers and key map lowered; real frame delta; SDL only translates events. | fixed |
 | RDN-3 | med | Camera/billboard/sprite/text templates transcribed pinned formulas. | Camera, billboard and sprite lowered; text remains (RDT-1). | partial |
-| RDN-4 | med | 61 record defaults copied or invented pinned values. | Option structs written whole by generation carry none; records zeroed; explicit no-camera origin. Remaining: glTF material fallbacks, frame-loop no-camera arm, render-task `clrColor` fallback. | partial |
+| RDN-4 | med | 61 record defaults copied or invented pinned values. | Option structs written whole by generation carry none; records zeroed; render tasks without `clrColor` (the default task included) clear to the scene's live colour; a scene without a camera clears and draws through a zero scene block and skips what the pin skips; glTF projection writes each absent key's pinned default. Remaining: `create_pbr_material` and the `set_pbr_*` setters still rely on `MaterialRecord` initializers, and an absent clearcoat/sheen/iridescence layer is encoded as zero intensity. | partial |
 | RDN-5 | med | Invented environment fallback face. | Measured unused; zero cube bound. | fixed |
 | RDN-6 | med | Render bucket rule lacked the pin's opacity/blend arms. | Bucket from the pinned `isTransparent` predicates (fixtures: 0.373 → 0.000, 0.121 → 0.000). | fixed |
 | RDN-7 | med | Small pinned functions hand-copied. | Generated from the pin except `pack_morph_deltas`. | partial |
@@ -57,8 +57,10 @@ and performance.
 | RDN-13 | low | The pin sorts sprite `_layers` in place; native builds a fresh permutation each frame, so ties after an order change differ. | Stable in-place sort. | open |
 | RDN-14 | low | Billboard sorting under a floating origin and Sprite2D pivots use float where the pin uses numbers (205/206 identical today). | Double lanes. | open |
 | RDN-15 | low | `update_surface_cameras` gives every scene the primary frame delta, wrong for a scene with its own `fixedDeltaMs`. | Per-scene delta. | open |
-| RDN-16 | low | Property-animation records store float lanes (`animation-records.hpp`). | Double lanes. | open |
+| RDN-16 | low | Property-animation records store float lanes (`animation-records.hpp`). | Group times, speed, weights, fades and clip rates are double end to end; key times, values, samples and blend buckets stay float where the pin stores into a Float32Array. | fixed |
 | RDN-17 | med | Mesh removal leaves physics node poses, property-animation targets, light include/exclude lists, shadow casters, render-task mesh lists and node-material groups naming the mesh; the pin prunes render tasks and material groups and clears `parent`. | Lower the pin's removal pruning. | open |
+| RDN-18 | low | A camera-less overlay or utility layer projects through the base camera on Dawn and the SDL_GPU swapchain overlay, and through none on SDL_GPU graph layers; the pin uses each layer's `cfg.cam ?? scene.camera`. | Align both backends on the pin. | open |
+| RDN-19 | low | Animation seek harness and glTF group operations (`set_animation_current_time`, `set_animation_speed_ratio`, `go_to_frame`, additive setters) take float where the pin passes numbers. | Double parameters. | open |
 
 ## Compiler core (CC)
 
@@ -67,7 +69,7 @@ and performance.
 | CC-1 | high | Nullable resource kinds classified by bare type name. | Declaration-origin checks; user `class Mesh`/`interface Material` compile. | fixed |
 | CC-2 | high | `compiler.ts` holds 18.7k lines behind a 437-member interface. | Extract recorder, scopes, declarations, property access, conditions, browser predicates. | open |
 | CC-3 | high | Minecraft save/load matched by path regex and replaced by native code. | Needs generic support first: absent file-picker globals, escaping Promise `resolve`, `FileReader`, `JSON.parse(text) as T`. | open |
-| CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared. Remaining: pinned `Math.max/min` via `math_extreme`. | partial |
+| CC-4 | high | Pinned lowerers diverged from JS semantics; folding written 7 times. | One operator module; `<<`, `^`, `\|0` via `bbl::js`; comparisons shared; pinned and scene-code `Math.max/min` lower through one `math_extreme` at any arity (float writer lanes `math_extreme_lane`; camera controls included); pinned Uint32Array stores use `to_uint32`. Remaining: hand templates that spell `std::max`/`std::min` (RDT-1). | fixed |
 | CC-5 | med | Library-global recognition has 4 spellings. | One `libraryGlobal()` (bare names, `globalThis`, `window.`/`self.` members) at 185 sites; user declarations named `Number`, `String`, `Object` or `Map` lower as user code. Remaining: the platform timer arm accepts only bare names, and `undefined` has 12 hand checks. | partial |
 | CC-6 | med | Declaration origin decided 8 ways. | One `declarationOrigin()`. | fixed |
 | CC-7 | med | Nullable-union rule had no owner. | `presentMembers()`/`nullability()`. | fixed |
@@ -150,7 +152,7 @@ and performance.
 | DEAD-9 | low | 258 exports used only in their own file. | Drop exports; `ts-prune -u`. | open |
 | DEAD-10 | low | Unused parameters, duplicated helpers, silently passing tests. | Fixed; the tooling `isRecord` copy stays (importing it would load TypeScript into `scene show`). | fixed |
 | DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Writer and type fields deleted; only the 35 PBR manifests moved. | fixed |
-| DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | Delete. | open |
+| DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | The four kinds and `dimensions` deleted; the default camera skips a mesh without bounds, as the pin does. | fixed |
 | DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | `{r,g,b}` and `{r,g,b,a}` refuse wherever the pin types a number tuple (every Color3 site, `baseColorFactor`); Color4 objects stay where pinned (clear colours, lines). | fixed |
 
 ## Documentation (DOC)
