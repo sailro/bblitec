@@ -411,16 +411,8 @@ inline const char* primitive_name(PrimitiveKind kind) {
     switch (kind) {
     case PrimitiveKind::babylon:
         return "babylon";
-    case PrimitiveKind::box:
-        return "box";
     case PrimitiveKind::gltf:
         return "gltf";
-    case PrimitiveKind::ground:
-        return "ground";
-    case PrimitiveKind::sphere:
-        return "sphere";
-    case PrimitiveKind::torus:
-        return "torus";
     }
     return "unknown";
 }
@@ -820,7 +812,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
     json.field("rotationQuaternion", mesh.rotation_quaternion);
     json.field("hasRotationQuaternion", mesh.has_rotation_quaternion);
     json.field("scaling", mesh.scaling);
-    json.field("dimensions", mesh.dimensions);
     json.handle("material", mesh.material.value);
     json.handle("geometry", mesh.geometry);
     json.field("visible", mesh.visible);

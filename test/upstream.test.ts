@@ -1353,8 +1353,15 @@ test("default camera framing consumes scene mesh bound overrides", () => {
     ).lowerDefaultFactory();
     assert.match(
         lowered.source,
-        /apply_mesh_bound_overrides\(mesh, local_min, local_max\);/,
+        /if \(mesh\.has_bounds_min_override\) result\.bound_min = lanes\(mesh\.bounds_min_override\);/,
     );
+    assert.match(
+        lowered.source,
+        /if \(mesh\.has_bounds_max_override\) result\.bound_max = lanes\(mesh\.bounds_max_override\);/,
+    );
+    // A mesh without bounds upstream (a .babylon mesh) frames nothing;
+    // no box is invented for it.
+    assert.doesNotMatch(lowered.source, /dimensions/);
 });
 
 test("keeps generated light colors available to typed entry assignments", () => {

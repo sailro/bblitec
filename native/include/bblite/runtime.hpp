@@ -829,13 +829,14 @@ struct ClusteredLightContainer {
     bool binned = false;
 };
 
+/**
+ * Which producer's vertex convention a mesh record carries: `babylon` for
+ * a .babylon loader mesh, `gltf` for the glTF loader's primitives and for
+ * `createMeshFromData`, through which every procedural factory finishes.
+ */
 enum class PrimitiveKind {
     babylon,
-    box,
     gltf,
-    ground,
-    sphere,
-    torus,
 };
 
 enum class CameraKind {
@@ -1898,9 +1899,9 @@ struct LineSystemData {
 /**
  * Which space a geometry's `vertices[].position` lane is already in.
  *
- * `PrimitiveKind` does not answer this — it says whether a mesh has real
- * geometry rather than parametric dimensions, and `createPlane` and
- * `createMeshFromData` both record `gltf` while keeping local vertices.
+ * `PrimitiveKind` does not answer this — it names the producer's vertex
+ * convention, and `createMeshFromData` records `gltf` while keeping local
+ * vertices.
  * A consumer that needs each vertex's world position has to compose what
  * is missing, so the producer records what it baked:
  *
@@ -2104,7 +2105,7 @@ struct MeshRecord {
      * lookup checks this lane before the mesh's independently authored name.
      */
     std::string scene_node_name;
-    PrimitiveKind primitive = PrimitiveKind::box;
+    PrimitiveKind primitive = PrimitiveKind::gltf;
     // The pin holds a node's translation as three JavaScript numbers, and
     // at large-world coordinates the float32 ULP is half a unit -- enough
     // to move a silhouette before the eye-relative subtraction can recover
@@ -2114,7 +2115,6 @@ struct MeshRecord {
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
-    Vec3 dimensions{1.0f, 1.0f, 1.0f};
     // `mesh.receiveShadows`. A composition key for the Standard and PBR
     // families, whose variants carry the sampling code -- and a per-draw
     // VALUE for the node family, whose receiver mixes its factor by the

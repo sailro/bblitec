@@ -173,6 +173,8 @@ int main() {
     std::apply([](auto&... values) { (values.resize(4), ...); }, arrays);
     geometry.bounds_min = {-1,-2,-3}; geometry.position_version = 17;
     geometry.source_indices_reversed = true;
+    // A factory mesh: createMeshFromData's record over its own packed streams.
+    geometry.owned_packed_geometry = true;
     bbl::MeshRecord source;
     source.geometry = 0;
     engine.meshes.push_back(source);
@@ -215,7 +217,9 @@ int main() {
     assert(engine.free_geometry_slots.size() == 1 && engine.free_geometry_slots[0] == 0);
     assert(engine.free_mesh_slots.size() == 3);
     engine.composition_feature_rows_initialized = true;
-    const auto reused = bbl::clone_mesh_node(engine, empty);
+    // Every record a scene can create names its geometry, so the slot
+    // reuse is driven through the store every creator ends in.
+    const auto reused = bbl::store_mesh_record(engine, bbl::MeshRecord{});
     assert(reused.value == third.value && reused.generation == 1 && engine.meshes.size() == 4);
     assert(!bbl::mesh_handle_current(engine, third) && bbl::mesh_handle_current(engine, reused));
     assert(engine.meshes[reused.value].creation_ordinal == 2);
@@ -223,8 +227,8 @@ int main() {
     try { bbl::add_to_scene(scene, third); } catch (const std::runtime_error&) { stale_refused = true; }
     assert(stale_refused && scene.meshes.empty());
     bbl::remove_from_scene(scene, third);
-    std::ignore = bbl::clone_mesh_node(engine, empty);
-    std::ignore = bbl::clone_mesh_node(engine, empty);
+    std::ignore = bbl::store_mesh_record(engine, bbl::MeshRecord{});
+    std::ignore = bbl::store_mesh_record(engine, bbl::MeshRecord{});
     assert(engine.meshes.size() == 4 && engine.free_mesh_slots.empty());
     assert(bbl::store_geometry_record(engine, bbl::ModelGeometry{}) == 0 && engine.geometries.size() == 1);
 }
