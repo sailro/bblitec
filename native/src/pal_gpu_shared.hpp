@@ -122,6 +122,7 @@
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif
+#include <atomic>
 #include <cstdio>
 
 namespace bbl::pal {
@@ -6440,13 +6441,46 @@ inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_
  * allocated (a retired mesh's are released by removeFromScene), and the
  * backend's live GPU meshes and shared-geometry cache. A loop without a
  * scene or a geometry cache (the sprite renderers) prints zeros there.
+ *
+ * A process can run several engines at once (a Window host's canvases,
+ * each on its realm's thread). Every loop counts its own frames and reads
+ * its own thread's GC registry, so each prints one ordered stream under
+ * its own `engine=` number, assigned in start order.
  */
 inline constexpr long memory_profile_frames = 30;
 
-inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
-                                       std::size_t scene_meshes, std::size_t gpu_meshes,
-                                       std::size_t shared_geometries,
-                                       std::size_t shared_geometry_bytes) {
+class MemoryProfile {
+public:
+    [[nodiscard]] bool due(long frame) const {
+        return stream_ != 0 && frame % memory_profile_frames == 0;
+    }
+    void print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
+               std::size_t gpu_meshes, std::size_t shared_geometries,
+               std::size_t shared_geometry_bytes) const;
+    /** The scene-loop form: the backend's mesh list and shared-geometry cache. */
+    template <typename GpuMesh, typename SharedGeometry>
+    void print(long frame, const bbl::Engine& engine, const bbl::Scene& scene,
+               const std::vector<GpuMesh>& gpu_meshes,
+               const std::vector<std::unique_ptr<SharedGeometry>>& cache) const {
+        std::size_t bytes = 0;
+        for (const auto& geometry : cache) {
+            bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
+                     geometry->identity.index_count * sizeof(std::uint32_t);
+        }
+        print(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(), bytes);
+    }
+
+private:
+    static std::uint32_t start() {
+        static std::atomic<std::uint32_t> started = 0;
+        return environment_variable("BBLITE_MEM_PROFILE") == "1" ? ++started : 0;
+    }
+    const std::uint32_t stream_ = start();
+};
+
+inline void MemoryProfile::print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
+                                 std::size_t gpu_meshes, std::size_t shared_geometries,
+                                 std::size_t shared_geometry_bytes) const {
     std::size_t live_geometries = 0;
     std::size_t geometry_bytes = 0;
     for (const bbl::ModelGeometry& geometry : engine.geometries) {
@@ -6465,8 +6499,8 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
     }
     constexpr double mb = 1024.0 * 1024.0;
     std::ostringstream line;
-    line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
-         << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
+    line << std::fixed << std::setprecision(1) << "[mem][frame] engine=" << stream_
+         << " frame=" << frame << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size() - engine.free_mesh_slots.size()
          << " scene_meshes=" << scene_meshes << " transform_node_records="
          << engine.transform_nodes.size() - engine.free_transform_node_slots.size()
@@ -6477,21 +6511,6 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
          << " gpu_meshes=" << gpu_meshes << " shared_geometries=" << shared_geometries
          << " shared_geometry_mb=" << shared_geometry_bytes / mb << '\n';
     std::fputs(line.str().c_str(), stderr);
-}
-
-/** The scene-loop form: the backend's mesh list and shared-geometry cache. */
-template <typename GpuMesh, typename SharedGeometry>
-inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
-                                       const bbl::Scene& scene,
-                                       const std::vector<GpuMesh>& gpu_meshes,
-                                       const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
-    std::size_t bytes = 0;
-    for (const auto& geometry : cache) {
-        bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
-                 geometry->identity.index_count * sizeof(std::uint32_t);
-    }
-    print_memory_frame_profile(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(),
-                               bytes);
 }
 
 /**

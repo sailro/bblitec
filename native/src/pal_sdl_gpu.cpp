@@ -6680,7 +6680,7 @@ class SdlSceneRun {
 
     struct State : FrameSession {
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
-        const bool mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
+        const MemoryProfile mem_profile;
         CpuStartupMark cpu_startup_mark{cpu_profile, "sdl"};
         const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
             engine.registered_scenes;
@@ -10596,9 +10596,9 @@ public:
                                     end - uploaded, render_plan.items.size(), draw_commands,
                                     profile_transformed_meshes, profile_transformed_vertices);
         }
-        if (mem_profile && completed_frame % memory_profile_frames == 0) {
-            print_memory_frame_profile(completed_frame, engine, scene, state.meshes,
-                                       state.shared_shader_geometries);
+        if (mem_profile.due(completed_frame)) {
+            mem_profile.print(completed_frame, engine, scene, state.meshes,
+                              state.shared_shader_geometries);
         }
         if (benchmark && completed_frame >= warmup) {
             samples.push_back(end - start);

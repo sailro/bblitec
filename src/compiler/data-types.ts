@@ -3783,7 +3783,7 @@ export class DataTypeRegistry {
                 ...(untraced.has(definition.name)
                     ? []
                     : [
-                          `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
+                          `    friend void gc_trace_edges(const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, const bbl::js::TraceVisitor& visitor) {`,
                           ...definition.fields
                               .filter((field) =>
                                   ownsTracedEdge(

@@ -99,7 +99,8 @@ GlobalCall and DeviceLoss.
 above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
 later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
 or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report
-also states the occupied transform-node records. `all` selects
+also states the occupied transform-node records. Each engine prints its own numbered stream (a Window host runs one
+per canvas) and every stream is judged. `all` selects
 the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
 `--replay`/`--replay-file` supply another and `--replay -` idles.
 

@@ -8,6 +8,8 @@ import { getFileInfo } from "prettier";
 import {
     nativeCompilationFiles,
     nativeFormatFiles,
+    newerPrecompiledHeaderInput,
+    precompiledHeaderOutputs,
 } from "../src/code-quality.js";
 import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import {
@@ -256,4 +258,64 @@ test("native lint refuses malformed compilation databases rather than skipping e
             /compilation database entry|must contain an array/,
         );
     }
+});
+
+test("native lint finds each precompiled header a build creates and its stale inputs", () => {
+    const build = resolve("native", "build-example");
+    const outputs = precompiledHeaderOutputs(
+        [
+            {
+                directory: build,
+                file: "CMakeFiles/pal.dir/cmake_pch.cxx",
+                command:
+                    'clang-cl.exe /nologo /YcCMakeFiles/pal.dir/cmake_pch.hxx "/FpC:/Program Files/build/cmake_pch.cxx.pch" /FoCMakeFiles/pal.dir/cmake_pch.cxx.obj -c cmake_pch.cxx',
+            },
+            {
+                directory: build,
+                file: "src/pal.cpp",
+                arguments: [
+                    "clang-cl.exe",
+                    "/YuCMakeFiles/pal.dir/cmake_pch.hxx",
+                    "-c",
+                    "src/pal.cpp",
+                ],
+            },
+            {
+                directory: build,
+                file: "CMakeFiles/app.dir/cmake_pch.hxx.cxx",
+                arguments: [
+                    "clang++",
+                    "-Xclang",
+                    "-emit-pch",
+                    "-o",
+                    "CMakeFiles/app.dir/cmake_pch.hxx.pch",
+                    "-c",
+                    "x.cxx",
+                ],
+            },
+        ],
+        build,
+    );
+    assert.deepEqual(outputs, [
+        {
+            target: "CMakeFiles/pal.dir/cmake_pch.cxx.obj",
+            header: resolve(build, "C:/Program Files/build/cmake_pch.cxx.pch"),
+        },
+        {
+            target: "CMakeFiles/app.dir/cmake_pch.hxx.pch",
+            header: resolve(build, "CMakeFiles/app.dir/cmake_pch.hxx.pch"),
+        },
+    ]);
+    const inputs = [
+        { path: "old.hpp", modified: 10 },
+        { path: "new.hpp", modified: 30 },
+    ];
+    assert.equal(newerPrecompiledHeaderInput(20, inputs), "new.hpp");
+    assert.equal(newerPrecompiledHeaderInput(30, inputs), undefined);
+    assert.equal(
+        newerPrecompiledHeaderInput(30, [
+            { path: "gone.hpp", modified: undefined },
+        ]),
+        "gone.hpp",
+    );
 });
