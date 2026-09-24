@@ -936,11 +936,8 @@ export class NativeFunctionLowerer {
         active: Set<SupportedFunction>,
     ): boolean {
         if (allowPureMath) {
-            const math = mathMemberCall(
-                call,
-                (identifier) =>
-                    libraryGlobal(this.context.checker, identifier) !==
-                    undefined,
+            const math = mathMemberCall(call, (expression) =>
+                libraryGlobal(this.context.checker, expression),
             );
             const member =
                 math === undefined ? undefined : MATH_MEMBERS.get(math.name);

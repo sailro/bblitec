@@ -27,6 +27,14 @@ test("the library's Math folds an exact member at generation", () => {
     assert.doesNotMatch(result.cpp, /std::floor/);
 });
 
+test("globalThis.Math is the library's Math", () => {
+    const result = compileSource(
+        scene("box.position.x = globalThis.Math.floor(3.7);"),
+        { fileName: "global-this-math.ts" },
+    );
+    assert.match(result.cpp, /position\.x = 3\.0;/);
+});
+
 test("a scene binding named Math is the scene's own value", () => {
     const result = compileSource(
         scene(

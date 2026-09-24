@@ -21,6 +21,7 @@
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
+import type { LibraryGlobal } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
@@ -217,12 +218,10 @@ export const FORMATTED_MATH_FOLDS: ReadonlyMap<
  */
 export function mathMemberAccess(
     expression: ts.Expression,
-    isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): ts.PropertyAccessExpression | undefined {
     return ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Math" &&
-        isDefaultLibraryIdentifier(expression.expression)
+        libraryGlobal(expression.expression) === "Math"
         ? expression
         : undefined;
 }
@@ -230,13 +229,10 @@ export function mathMemberAccess(
 /** A call of one such member, with the member's name. */
 export function mathMemberCall(
     expression: ts.Expression,
-    isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): { readonly name: string; readonly call: ts.CallExpression } | undefined {
     if (!ts.isCallExpression(expression)) return undefined;
-    const access = mathMemberAccess(
-        expression.expression,
-        isDefaultLibraryIdentifier,
-    );
+    const access = mathMemberAccess(expression.expression, libraryGlobal);
     return access ? { name: access.name.text, call: expression } : undefined;
 }
 
@@ -245,7 +241,7 @@ export function mathFunctionValue(
     context: Pick<
         LoweringServices,
         | "checker"
-        | "isDefaultLibraryIdentifier"
+        | "libraryGlobal"
         | "dataLowerer"
         | "dataTypes"
         | "callbackIdentity"
@@ -255,8 +251,8 @@ export function mathFunctionValue(
     >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
+    const access = mathMemberAccess(expression, (candidate) =>
+        context.libraryGlobal(candidate),
     );
     if (!access) return undefined;
     const member = MATH_MEMBERS.get(access.name.text);

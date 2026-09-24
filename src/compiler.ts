@@ -8276,11 +8276,6 @@ class Compiler implements LoweringServices {
         return this.symbols.libraryGlobal(expression);
     }
 
-    /** The identifier form of {@link libraryGlobal}. */
-    public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
-        return this.libraryGlobal(identifier) !== undefined;
-    }
-
     /** The value symbol an expression names once unwrapped, or undefined. */
     private unwrappedValueSymbol(
         expression: ts.Expression,

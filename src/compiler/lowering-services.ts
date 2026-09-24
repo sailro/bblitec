@@ -417,7 +417,6 @@ export interface LoweringServices {
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
     isNativeUiHelperCall(call: ts.CallExpression): boolean;
     isBrowserOnlyNullableClassFactoryCall(call: ts.CallExpression): boolean;

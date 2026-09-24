@@ -144,10 +144,6 @@ export class StaticEvaluator {
     private readonly libraryGlobal: LibraryGlobal = (expression) =>
         libraryGlobal(this.checker, expression);
 
-    /** The identifier form of {@link libraryGlobal} the `Math` readers take. */
-    private readonly isLibraryIdentifier = (identifier: ts.Identifier) =>
-        this.libraryGlobal(identifier) !== undefined;
-
     /**
      * `precision` selects the native vector the components land in. The
      * camera is the one sink that asks for `double`: upstream keeps its
@@ -691,10 +687,7 @@ export class StaticEvaluator {
         // The constants a float sink has a single-precision spelling for
         // are spelled that way; every other `Math` constant reads at
         // double width through the property arm below.
-        const mathConstant = mathMemberAccess(
-            unwrapped,
-            this.isLibraryIdentifier,
-        );
+        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
         const numericConstant = numberConstant(unwrapped, this.libraryGlobal);
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
@@ -707,7 +700,7 @@ export class StaticEvaluator {
                 ? constant.floatCpp
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(unwrapped, this.isLibraryIdentifier);
+        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -881,11 +874,8 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathConstant = mathMemberAccess(
-            unwrapped,
-            this.isLibraryIdentifier,
-        );
-        const mathCall = mathMemberCall(unwrapped, this.isLibraryIdentifier);
+        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         return (
             ts.isNumericLiteral(unwrapped) ||
             ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||

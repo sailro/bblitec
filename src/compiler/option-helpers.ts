@@ -367,15 +367,15 @@ export function staticNumberValue(
         const element = target.elements[index];
         return element ? staticNumberValue(context, element) : undefined;
     }
-    const isLibraryIdentifier = (identifier: ts.Identifier): boolean =>
-        context.libraryGlobal(identifier) !== undefined;
-    const constant = mathMemberAccess(node, isLibraryIdentifier);
+    const libraryGlobal = (expression: ts.Expression): string | undefined =>
+        context.libraryGlobal(expression);
+    const constant = mathMemberAccess(node, libraryGlobal);
     if (constant) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
         // one of these as text; a Math CALL is folded by the arm below.
         return MATH_CONSTANTS.get(constant.name.text)?.value;
     }
-    const mathCall = mathMemberCall(node, isLibraryIdentifier);
+    const mathCall = mathMemberCall(node, libraryGlobal);
     if (mathCall) {
         const { name, call } = mathCall;
         if (call.arguments.length === 1) {

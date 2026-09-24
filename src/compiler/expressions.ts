@@ -224,7 +224,6 @@ export interface ExpressionContext
             | "cppString"
             | "isBrowserOnlyExpression"
             | "isBrowserOnlyHandler"
-            | "isDefaultLibraryIdentifier"
             | "libraryGlobal"
             | "isDeferredCallbackCall"
             | "compileFrameCallback"
@@ -711,8 +710,8 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathMemberAccess(unwrapped, (identifier) =>
-                    this.context.isDefaultLibraryIdentifier(identifier),
+                mathMemberAccess(unwrapped, (expression) =>
+                    this.context.libraryGlobal(expression),
                 ) &&
                 (unwrapped.name.text === "PI" ||
                     unwrapped.name.text === "SQRT1_2")
@@ -1404,8 +1403,8 @@ export class ExpressionLowerer {
             const resolved = this.generationTimeNumber(node);
             if (resolved !== undefined) return resolved;
         }
-        const mathCall = mathMemberCall(node, (identifier) =>
-            this.context.isDefaultLibraryIdentifier(identifier),
+        const mathCall = mathMemberCall(node, (expression) =>
+            this.context.libraryGlobal(expression),
         );
         const formatted = mathCall && FORMATTED_MATH_FOLDS.get(mathCall.name);
         if (!mathCall || !formatted) {

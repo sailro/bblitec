@@ -173,7 +173,6 @@ export interface DataLoweringContext
             | "expectArgumentCount"
             | "sourceFile"
             | "noteCameraVectorCopy"
-            | "isDefaultLibraryIdentifier"
             | "libraryGlobal"
             | "useNativeValue"
             | "registerNativeBinding"
@@ -4398,7 +4397,7 @@ export class DataLowerer {
         // the library object, however the compiler came to know it.
         const callee = mathMemberAccess(
             this.context.unwrap(call.expression),
-            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+            (expression) => this.context.libraryGlobal(expression),
         );
         if (!callee) {
             return undefined;
