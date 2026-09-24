@@ -1718,6 +1718,8 @@ export class ExpressionLowerer {
                 };
             case "null":
                 return { kind: "json-null", cpp: "" };
+            case "undefined":
+                return { kind: "json-null", cpp: "std::nullopt" };
             case "dom-rect":
             case "object":
             case "search-params":

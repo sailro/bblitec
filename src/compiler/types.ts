@@ -2528,6 +2528,7 @@ export interface ValueFields {
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
+        | { kind: "undefined" }
         | { kind: "dom-rect" }
         | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
         | { kind: "search-params"; search: string }
