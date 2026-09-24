@@ -184,6 +184,26 @@ export function absentBinding(): PinnedBinding {
 }
 
 /**
+ * `name` bound as one record of `shape` spelled `cpp`, and every member
+ * path the body may read through it (`light`, `light.position`).
+ */
+export function recordBindings(
+    name: string,
+    cpp: string,
+    shape: PinnedRecordShape,
+): Map<string, PinnedBinding> {
+    const bindings = new Map<string, PinnedBinding>([
+        [name, { cpp, type: "opaque", record: shape }],
+    ]);
+    for (const member of shape.members) {
+        for (const [path, binding] of member.read(cpp)) {
+            bindings.set(`${name}.${member.name}${path}`, binding);
+        }
+    }
+    return bindings;
+}
+
+/**
  * The shape a call returns, by the caller's `callShapes`: the whole call's
  * text first (an instantiated helper is keyed by its call), then the
  * callee's text (`getter`, `system.createColor`).
@@ -281,9 +301,23 @@ export interface PinnedBinding {
          * A record the body only aliases and reads members off by their
          * dotted text (`const buffer = system.buffer`): it has no members
          * of its own here, so every read resolves through a text-keyed
-         * binding the caller supplied.
+         * binding the caller supplied -- or through `record`, where the
+         * caller named the native struct it is.
          */
-        | "opaque";
+        | "opaque"
+        /**
+         * A growable list of the pin's object records
+         * (`_ClusteredActiveLight[]`): indexed, iterated, truncated,
+         * pushed onto and sorted as JavaScript's own array, with `record`
+         * naming the native struct each element is.
+         */
+        | "record-list";
+    /**
+     * The native struct a `record-list`'s elements are, or the one an
+     * `opaque` binding is: its members read through it, and a literal
+     * pushed onto the list is built member by member from it.
+     */
+    record?: PinnedRecordShape;
     /**
      * A value generation already knows. A `===` against a literal or a
      * module constant, a `typeof` test, a `switch` or a guard over one
@@ -312,6 +346,31 @@ export interface PinnedBinding {
 
 /** One pinned callee's C++ spelling, over its already-lowered arguments. */
 export type PinnedCallSpelling = (args: readonly string[]) => string;
+
+/**
+ * A native struct one of the pin's object records lands on: the caller owns
+ * the struct, so it names how each member reads and stores.
+ */
+export interface PinnedRecordShape {
+    /** The native struct. */
+    readonly cpp: string;
+    /** The pin's members, in the struct's own declaration order. */
+    readonly members: readonly PinnedRecordMember[];
+}
+
+export interface PinnedRecordMember {
+    readonly name: string;
+    /**
+     * What a read of this member off an element spelled `owner` binds,
+     * keyed by the path under the member: `""` is the member itself, and
+     * `".position"` one of its own members the body reads through it.
+     */
+    readonly read: (owner: string) => ReadonlyMap<string, PinnedBinding>;
+    /** A literal's lowered value for this member, as its field initializer. */
+    readonly store: (value: string) => string;
+    /** The initializer an optional member a literal leaves out takes. */
+    readonly absent?: string;
+}
 
 export interface PinnedNumericScope {
     /** Domain-owned records and library values; arithmetic still recurses through this lowerer. */
@@ -874,7 +933,11 @@ export class PinnedNumericLowerer {
                 this.file,
             );
             const iterated = statement.expression.getText(this.file);
-            const resolved = this.scope.forOf?.(iterated, element);
+            const resolved =
+                this.scope.forOf?.(iterated, element) ??
+                (ts.isIdentifier(initializer.declarations[0]!.name)
+                    ? this.recordListForOf(iterated, element)
+                    : undefined);
             if (!resolved) {
                 this.fail(statement, `for-of over '${iterated}'`);
             }
@@ -1152,6 +1215,37 @@ export class PinnedNumericLowerer {
                     this.fail(declaration, "binding pattern");
                 }
                 const temporary = this.temporaryName(declaration, lines.length);
+                // `const { light, depth } = activeLights[i]!` -- members of
+                // one element of a record list, read in place through the
+                // struct the list's elements are.
+                const record = this.recordElement(declaration.initializer);
+                if (record) {
+                    lines.push(
+                        `${indent}const auto& ${temporary} = ${record.cpp};`,
+                    );
+                    for (const element of declaration.name.elements) {
+                        const member = record.shape.members.find(
+                            (candidate) =>
+                                ts.isIdentifier(element.name) &&
+                                candidate.name === element.name.text,
+                        );
+                        if (
+                            !member ||
+                            element.propertyName ||
+                            element.dotDotDotToken ||
+                            element.initializer
+                        ) {
+                            this.fail(element, "record binding element");
+                        }
+                        for (const [path, binding] of member.read(temporary)) {
+                            this.scope.bindings.set(
+                                `${member.name}${path}`,
+                                binding,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 lines.push(
                     `${indent}const auto ${temporary} = ` +
                         `${this.expression(declaration.initializer)};`,
@@ -1350,6 +1444,7 @@ export class PinnedNumericLowerer {
                     alias.type === "f64-buffer" ||
                     alias.type === "function-list" ||
                     alias.type === "opaque" ||
+                    alias.type === "record-list" ||
                     isRecordType(alias.type) ||
                     alias.absentCpp !== undefined)
             ) {
@@ -1422,6 +1517,13 @@ export class PinnedNumericLowerer {
             const rowSource = unwrapExpression(source);
             if (ts.isElementAccessExpression(rowSource)) {
                 const element = this.elementBinding(rowSource);
+                if (element?.record) {
+                    // One record of a record list, bound by reference with
+                    // its members read through the list's struct.
+                    lines.push(`${indent}const auto& ${cpp} = ${element.cpp};`);
+                    this.bindRecord(name, cpp, element.record);
+                    continue;
+                }
                 if (element) {
                     this.scope.bindings.set(name, element);
                     continue;
@@ -1580,9 +1682,10 @@ export class PinnedNumericLowerer {
                 );
                 continue;
             }
-            const isBoolean =
-                initializer.kind === ts.SyntaxKind.TrueKeyword ||
-                initializer.kind === ts.SyntaxKind.FalseKeyword;
+            // A local the pin initializes with a truth (a literal, a
+            // comparison, a join of truths) is a boolean, and stays one:
+            // `||=` onto it is a logical store, not a value selection.
+            const isBoolean = this.booleanValue(initializer);
             const value = this.expression(source);
             this.scope.bindings.set(name, {
                 cpp,
@@ -1773,28 +1876,10 @@ export class PinnedNumericLowerer {
             // around it is the identity and only the mutation is emitted.
             const inPlace = this.inPlaceSelfStore(expression);
             if (inPlace) return inPlace;
-            // `v >>= r`: the bitwise operator's `ToInt32` result stored back
-            // as the number it is. Only a scalar local qualifies -- an
-            // integer index or a typed-array element would narrow it again.
-            const bitwise = PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(
-                expression.operatorToken.kind,
-            );
-            if (bitwise !== undefined) {
-                const target = unwrapExpression(expression.left);
-                if (
-                    !ts.isIdentifier(target) ||
-                    this.scope.bindings.get(target.text)?.type !== "scalar"
-                ) {
-                    this.fail(
-                        expression,
-                        "compound bitwise assignment to a non-scalar",
-                    );
-                }
-                return (
-                    `${this.assignmentTarget(target)} = static_cast<double>(` +
-                    `${jsBitwiseCall(bitwise, this.expression(target), this.expression(expression.right))})`
-                );
-            }
+            const truncated = this.lengthStore(expression);
+            if (truncated) return truncated;
+            const logical = this.logicalAssignment(expression);
+            if (logical) return logical;
             const operator = PINNED_ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
             );
@@ -1884,6 +1969,239 @@ export class PinnedNumericLowerer {
             return undefined;
         }
         return this.expression(call);
+    }
+
+    /**
+     * `list.length = 0`: JavaScript's own truncation of a growable list,
+     * which empties it in place. Any other length store would either
+     * truncate to a run-time count or extend the list with holes, neither
+     * of which a pinned body reached so far writes, so it refuses.
+     */
+    private lengthStore(expression: ts.BinaryExpression): string | undefined {
+        const target = unwrapExpression(expression.left);
+        if (
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(target) ||
+            target.name.text !== "length"
+        ) {
+            return undefined;
+        }
+        const list = this.scope.bindings.get(
+            unwrapExpression(target.expression).getText(this.file),
+        );
+        if (!list || (list.type !== "record-list" && !isListShape(list.type))) {
+            return undefined;
+        }
+        if (this.staticNumberOf(expression.right) !== 0) {
+            this.fail(expression, "list length store other than 0");
+        }
+        return `${list.cpp}.clear()`;
+    }
+
+    /**
+     * `a ||= b`, `a &&= b` and the bitwise compound stores (`flags |= 1`).
+     *
+     * The logical forms assign only where the left side does not already
+     * decide, and evaluate the right side only then -- which C++'s own
+     * `a = a || b` does too, over a boolean local. A numeric local's
+     * `||=` selects a value rather than a truth, so it refuses. The
+     * bitwise forms go through the same `bbl::js` helpers the plain
+     * operators do, so the ToInt32 coercion is JavaScript's.
+     */
+    private logicalAssignment(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        const kind = expression.operatorToken.kind;
+        const logical =
+            kind === ts.SyntaxKind.BarBarEqualsToken
+                ? "||"
+                : kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
+                  ? "&&"
+                  : undefined;
+        const bitwise = PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(kind);
+        if (!logical && bitwise === undefined) return undefined;
+        const target = unwrapExpression(expression.left);
+        if (!ts.isIdentifier(target)) {
+            return this.fail(expression, "compound assignment target");
+        }
+        const cpp = this.assignmentTarget(target);
+        if (logical) {
+            if (
+                this.scope.bindings.get(target.text)?.type !== "bool" ||
+                !this.booleanValue(expression.right)
+            ) {
+                this.fail(expression, `'${logical}=' over a non-boolean`);
+            }
+            return `${cpp} = ${cpp} ${logical} (${this.expression(expression.right)})`;
+        }
+        // The operator's `ToInt32` result is a number again; only a scalar
+        // local holds it -- an integer index would narrow it.
+        if (this.scope.bindings.get(target.text)?.type !== "scalar") {
+            this.fail(
+                expression,
+                "compound bitwise assignment to a non-scalar",
+            );
+        }
+        return `${cpp} = static_cast<double>(${jsBitwiseCall(bitwise!, cpp, this.expression(expression.right))})`;
+    }
+
+    /** A `for (const x of list)` over a record list, element by element. */
+    private recordListForOf(
+        iterated: string,
+        element: string,
+    ):
+        | { range: string; bindings: ReadonlyMap<string, PinnedBinding> }
+        | undefined {
+        const list = this.scope.bindings.get(iterated);
+        if (list?.type !== "record-list" || !list.record) return undefined;
+        return {
+            range: list.cpp,
+            bindings: recordBindings(element, element, list.record),
+        };
+    }
+
+    /** One element of a record list, or a bound record, and its struct. */
+    private recordElement(
+        expression: ts.Expression,
+    ): { cpp: string; shape: PinnedRecordShape } | undefined {
+        const node = unwrapExpression(expression);
+        const binding = ts.isElementAccessExpression(node)
+            ? this.elementBinding(node)
+            : this.scope.bindings.get(node.getText(this.file));
+        return binding?.type === "opaque" && binding.record
+            ? { cpp: binding.cpp, shape: binding.record }
+            : undefined;
+    }
+
+    /** Bind `name` as one record of `shape`, with every member path. */
+    private bindRecord(
+        name: string,
+        cpp: string,
+        shape: PinnedRecordShape,
+    ): void {
+        for (const [path, binding] of recordBindings(name, cpp, shape)) {
+            this.scope.bindings.set(path, binding);
+        }
+    }
+
+    /**
+     * `list.push({...})` and `list.sort((a, b) => ...)` on a record list.
+     *
+     * Taken before the call's arguments lower, because an object literal is
+     * not a value on its own: it is the list's struct, member by member.
+     * `Array.prototype.sort` has been stable since ES2019, so the order
+     * ties keep is the order they were pushed in, and the comparator's
+     * `< 0` is the "a before b" its spec reads.
+     */
+    private recordListCall(node: ts.CallExpression): string | undefined {
+        const callee = unwrapExpression(node.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return undefined;
+        const list = this.scope.bindings.get(
+            unwrapExpression(callee.expression).getText(this.file),
+        );
+        if (list?.type !== "record-list" || !list.record) return undefined;
+        const shape = list.record;
+        if (callee.name.text === "push") {
+            if (node.arguments.length === 0) {
+                this.fail(node, "push with no arguments");
+            }
+            const pushes = node.arguments.map(
+                (argument) =>
+                    `${list.cpp}.push_back(${this.recordValueOf(argument, shape)})`,
+            );
+            return pushes.length === 1 ? pushes[0]! : `(${pushes.join(", ")})`;
+        }
+        if (callee.name.text === "sort") {
+            const comparator = node.arguments[0]
+                ? unwrapExpression(node.arguments[0])
+                : undefined;
+            const names =
+                comparator && ts.isArrowFunction(comparator)
+                    ? comparator.parameters.map((parameter) =>
+                          ts.isIdentifier(parameter.name)
+                              ? parameter.name.text
+                              : undefined,
+                      )
+                    : [];
+            const [a, b] = names;
+            if (
+                !comparator ||
+                !ts.isArrowFunction(comparator) ||
+                ts.isBlock(comparator.body) ||
+                node.arguments.length !== 1 ||
+                names.length !== 2 ||
+                !a ||
+                !b ||
+                !ts.isExpressionStatement(node.parent)
+            ) {
+                return this.fail(
+                    node,
+                    "record list sort (one two-parameter expression comparator, as a statement)",
+                );
+            }
+            const body = comparator.body;
+            const compare = this.withBindings(() => {
+                this.bindRecord(a, cppIdentifier(a), shape);
+                this.bindRecord(b, cppIdentifier(b), shape);
+                return this.expression(body);
+            });
+            return (
+                `std::stable_sort(${list.cpp}.begin(), ${list.cpp}.end(), ` +
+                `[&](const ${shape.cpp}& ${cppIdentifier(a)}, ` +
+                `const ${shape.cpp}& ${cppIdentifier(b)}) { ` +
+                `return (${compare}) < 0.0; })`
+            );
+        }
+        return undefined;
+    }
+
+    /**
+     * One record value of `shape`: an object literal built member by
+     * member in the struct's order -- a member it leaves out takes its
+     * absent spelling, and one the struct does not have refuses -- or a
+     * record of the same struct, copied.
+     */
+    private recordValueOf(
+        argument: ts.Expression,
+        shape: PinnedRecordShape,
+    ): string {
+        const node = unwrapExpression(argument);
+        if (!ts.isObjectLiteralExpression(node)) {
+            const record = this.recordElement(node);
+            return record?.shape === shape
+                ? record.cpp
+                : this.fail(node, `${shape.cpp} value`);
+        }
+        const values = new Map<string, ts.Expression>();
+        for (const property of node.properties) {
+            const name =
+                property.name && ts.isIdentifier(property.name)
+                    ? property.name.text
+                    : undefined;
+            if (
+                !name ||
+                !shape.members.some((member) => member.name === name)
+            ) {
+                this.fail(property, `${shape.cpp} member`);
+            }
+            values.set(
+                name,
+                ts.isShorthandPropertyAssignment(property)
+                    ? property.name
+                    : ts.isPropertyAssignment(property)
+                      ? property.initializer
+                      : this.fail(property, `${shape.cpp} member value`),
+            );
+        }
+        const fields = shape.members.map((member) => {
+            const value = values.get(member.name);
+            if (value) return member.store(this.expression(value));
+            return (
+                member.absent ??
+                this.fail(node, `${shape.cpp} literal without '${member.name}'`)
+            );
+        });
+        return `${shape.cpp}{${fields.join(", ")}}`;
     }
 
     /**
@@ -1999,6 +2317,11 @@ export class PinnedNumericLowerer {
             return `{${literal.elements
                 .map((element) => this.expression(element))
                 .join(", ")}}`;
+        }
+        // A boolean local takes truths only: a number stored into one would
+        // convert silently where JavaScript would retype the variable.
+        if (binding?.type === "bool" && !this.booleanValue(value)) {
+            this.fail(value, "non-boolean store into a boolean local");
         }
         const text = this.expression(value);
         if (binding?.type === "index") {
@@ -2213,6 +2536,14 @@ export class PinnedNumericLowerer {
         access: ts.ElementAccessExpression,
     ): PinnedBinding | undefined {
         const owner = this.elementOwner(access);
+        // One record of a record list is the struct itself, read in place.
+        if (owner?.type === "record-list" && owner.record) {
+            return {
+                cpp: this.elementAccess(access),
+                type: "opaque",
+                record: owner.record,
+            };
+        }
         const type = elementType(owner?.type ?? "scalar");
         return owner && type
             ? { cpp: this.elementAccess(access), type }
@@ -3180,10 +3511,19 @@ export class PinnedNumericLowerer {
                 binding.type === "u8" ||
                 binding.type === "f64-buffer" ||
                 binding.type === "function-list" ||
+                binding.type === "record-list" ||
                 isListShape(binding.type)
             ) {
                 return `static_cast<double>(${binding.cpp}.size())`;
             }
+        }
+        // The global `Number.NaN`, the one quiet NaN JavaScript has.
+        if (
+            ts.isIdentifier(owner) &&
+            owner.text === "Number" &&
+            node.name.text === "NaN"
+        ) {
+            return "std::numeric_limits<double>::quiet_NaN()";
         }
         // `pathArray[0].length` -- the length of a ROW read in place. The
         // same question as a bound list's, asked of an element.
@@ -3203,6 +3543,8 @@ export class PinnedNumericLowerer {
     }
 
     private call(node: ts.CallExpression): string {
+        const recordListCall = this.recordListCall(node);
+        if (recordListCall !== undefined) return recordListCall;
         const callee = node.expression;
         // A lowered callee takes its numbers as double; a counted loop's
         // `std::int64_t` index is the one binding that is not one yet.

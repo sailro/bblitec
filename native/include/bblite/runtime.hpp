@@ -742,17 +742,36 @@ struct GpuPickerRecord {
 };
 
 #endif
-/** One light in a clustered container, at the pin's own resolved defaults. */
+/**
+ * One light in a clustered container: the pin's `ClusteredPointLight`, and
+ * the direction and cone its `ClusteredSpotLight` adds. The factories
+ * resolve every option, so the members carry no defaults of their own.
+ */
 struct ClusteredLight {
     std::array<double, 3> position{};
     std::array<double, 3> diffuse{};
-    double range = 1.0;
-    double intensity = 1.0;
+    double range = 0.0;
+    double intensity = 0.0;
     /** Spot only; a point light leaves the cone unset. */
     std::array<double, 3> direction{};
     double angle = 0.0;
-    bool spot = false;
 };
+
+/**
+ * One `writeDataTexture` the last refresh made: the region of the payload it
+ * covers and its row layout, as the pin's own `queue.writeTexture` states
+ * them, and a count that moves with every write.
+ */
+struct ClusteredTextureWrite {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t bytes_per_row = 0;
+    std::uint32_t rows_per_image = 0;
+    std::uint64_t version = 0;
+};
+
+/** The pin's refresh closure state, generated beside the refresh (clustered_light.hpp). */
+struct ClusteredRefreshState;
 
 /**
  * A clustered light field: a large point/spot set binned into screen tiles
@@ -763,12 +782,16 @@ struct ClusteredLight {
  * its own refresh throws rather than growing either.
  */
 struct ClusteredLightContainer {
-    double horizontal_tiles = 64.0;
-    double vertical_tiles = 64.0;
-    double z_slices = 16.0;
-    std::vector<ClusteredLight> lights;
-    /** Set when any light in the container is a spot. */
+    double horizontal_tiles = 0.0;
+    double vertical_tiles = 0.0;
+    double z_slices = 0.0;
+    /** The pin's two light lists, each in creation order. */
+    std::vector<ClusteredLight> point_lights;
+    std::vector<ClusteredLight> spot_lights;
+    /** `_spotSupport`: installed by the first spot light. */
     bool has_spots = false;
+    /** `_version`: bumped by every light the factories add. */
+    double version = 0.0;
 
     std::uint32_t tile_count_x = 1;
     std::uint32_t tile_count_y = 1;
@@ -781,52 +804,25 @@ struct ClusteredLightContainer {
     std::uint32_t slice_rows = 1;
     std::uint32_t mask_rows = 1;
 
-    /** The extent one payload's upload covers. */
-    struct UploadRegion {
-        std::uint32_t width;
-        std::uint32_t height;
-    };
-
-    /**
-     * The pin's own `writeDataTexture` region, so neither backend invents one.
-     *
-     * A payload that fits in a single row is uploaded only as wide as it is
-     * long; past that the rows are full width. Nothing outside the region is
-     * read -- the fragment's `textureLoad` never walks past the active texel
-     * count -- so this is the pin's rule kept rather than a correctness
-     * requirement, and keeping it is what makes a backend's upload comparable
-     * to a browser capture of the same frame.
-     */
-    [[nodiscard]] UploadRegion upload_region(std::uint32_t texels, std::uint32_t rows) const {
-        const std::uint32_t height = std::max(1u, rows);
-        return {
-            height > 1 ? data_texture_width : std::max(1u, std::min(texels, data_texture_width)),
-            height,
-        };
-    }
-
     /** The three data-texture payloads and the params block. */
     std::vector<float> light_data;
     std::vector<std::uint32_t> slice_data;
     std::vector<std::uint32_t> mask_data;
     /** Six u32 lanes and two f32 ones: the pin's ArrayBuffer(32), both ways. */
     std::array<std::uint32_t, 8> params{};
-    /** Bumped whenever a refresh rewrote a payload. */
-    std::uint64_t upload_version = 0;
 
     /**
-     * The pin's own dirty key, in the terms this port has for it.
-     *
-     * Upstream compares camera identity, `_cameraChangeKey`, the target
-     * extent and the effective aspect -- four proxies for one question: does
-     * this frame project lights into different tiles than the last did. The
-     * two matrices the cull reads answer it directly, and the light half of
-     * that key folds away because nothing here can mutate a light after
-     * creating it.
+     * The pin's GPU writes, as the backend uploads them: each data texture's
+     * last `writeDataTexture`, and a count of the params block's
+     * `writeBuffer`s (its creation's initial write among them).
      */
-    std::array<float, 16> last_view{};
-    std::array<float, 16> last_proj{};
-    bool binned = false;
+    ClusteredTextureWrite light_write;
+    ClusteredTextureWrite slice_write;
+    ClusteredTextureWrite mask_write;
+    std::uint64_t params_write = 0;
+
+    /** The locals `buildClusteredLightGpuState`'s refresh closes over. */
+    std::shared_ptr<ClusteredRefreshState> refresh;
 };
 
 /**

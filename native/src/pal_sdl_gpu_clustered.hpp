@@ -9,8 +9,8 @@
 // a sampler binding; its textureLoad never consults the nearest/clamp sampler.
 //
 // Every extent here comes off the container: `size_clustered_light_state` sized
-// the payloads through the pin's own `textureElementCount`, and
-// `upload_region` is the pin's own `writeDataTexture` rule. Neither backend
+// the payloads through the pin's own `textureElementCount`, and each upload
+// covers the region the pin's own `writeDataTexture` stated. Neither backend
 // derives one, so the two cannot disagree.
 
 #include <bblite/pal_gpu.hpp>
@@ -32,7 +32,7 @@ struct ClusteredLightGpuResources {
     SDL_GPUTexture* cells = nullptr;
     SDL_GPUTexture* indices = nullptr;
     SDL_GPUSampler* sampler = nullptr;
-    std::uint64_t uploaded_version = 0;
+    ClusteredUploads uploaded;
     bool created = false;
 };
 inline void release_clustered_lights_resources(SDL_GPUDevice*,
@@ -88,26 +88,28 @@ inline void create_clustered_textures(SDL_GPUDevice* device,
 }
 
 /**
- * Re-bin against this frame's own two matrices and upload whatever moved.
+ * Run the pin's refresh for this frame's camera and target, and upload what
+ * it wrote.
  *
- * `refresh_clustered_lights` is the pin's per-frame pass and bumps the version
- * only when it rewrote a payload, so a still camera costs one matrix
- * comparison and no upload at all.
+ * The refresh returns before touching anything while its own dirty key
+ * holds, so a still frame uploads nothing. The params block needs no upload
+ * here: the draw pushes the container's own lanes as its uniform block.
  */
 inline void upload_clustered_lights(SDL_GPUDevice* device, ClusteredLightContainer& container,
-                                    const std::array<float, 16>& view,
-                                    const std::array<float, 16>& projection, double near_plane,
-                                    double far_plane, ClusteredLightGpu& gpu) {
+                                    CameraRecord* camera, double target_width, double target_height,
+                                    ClusteredLightGpu& gpu) {
     create_clustered_textures(device, container, gpu);
     sync_clustered_payloads(
-        container, gpu.uploaded_version, view, projection, near_plane, far_plane,
+        container, gpu.uploaded, camera, target_width, target_height,
         [](const void*, std::size_t) {},
-        [&](ClusteredTexture slot, const void* bytes, std::size_t size, std::uint32_t,
-            std::uint32_t width, std::uint32_t height) {
+        [&](ClusteredTexture slot, const void* bytes, std::size_t size,
+            const ClusteredTextureWrite& write) {
             const auto texture = slot == ClusteredTexture::lights  ? gpu.lights
                                  : slot == ClusteredTexture::cells ? gpu.cells
                                                                    : gpu.indices;
-            upload_2d_texture_into(device, texture, bytes, size, width, height,
+            // SDL reads the region's rows tightly packed, which is the
+            // pitch the pin's own `bytesPerRow` states.
+            upload_2d_texture_into(device, texture, bytes, size, write.width, write.height,
                                    "clustered payload upload");
         });
 }

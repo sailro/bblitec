@@ -1,19 +1,29 @@
 #pragma once
 // Included within namespace bbl by runtime.hpp.
 
+/**
+ * `loadSpriteAtlas`'s options. Generation states every member, an unnamed
+ * option as the loader's own default read from the pin, so the members
+ * carry no initializers of their own.
+ */
 struct LoadSpriteAtlasOptions {
-    float grid_width_px = 0.0f;
-    float grid_height_px = 0.0f;
-    TextureFilter sampling = TextureFilter::linear;
-    bool premultiplied_alpha = false;
-    bool premultiply_on_load = false;
-    // `...options.textureOptions` spreads over the atlas defaults, so a
-    // caller's address mode replaces the clamp the loader stamps. A tiling
-    // scroll wants repeat on both axes.
-    TextureAddressMode address_u = TextureAddressMode::clamp;
-    TextureAddressMode address_v = TextureAddressMode::clamp;
+    float grid_width_px;
+    float grid_height_px;
+    TextureFilter sampling;
+    bool premultiplied_alpha;
+    bool premultiply_on_load;
+    // `...options.textureOptions` spreads over the loader's own address
+    // modes, so a caller's mode replaces the one the loader stamps. A
+    // tiling scroll wants repeat on both axes.
+    TextureAddressMode address_u;
+    TextureAddressMode address_v;
 };
 
+/**
+ * `createGridSpriteAtlas`'s options. Each optional member carries its
+ * presence: an omitted one is absent, and the lowered partition resolves
+ * it through the factory's own `??`.
+ */
 struct GridSpriteAtlasOptions {
     double cell_width_px = 0.0;
     double cell_height_px = 0.0;
@@ -21,9 +31,13 @@ struct GridSpriteAtlasOptions {
     double columns = 0.0;
     bool has_rows = false;
     double rows = 0.0;
+    bool has_margin_px = false;
     double margin_px = 0.0;
+    bool has_spacing_px = false;
     double spacing_px = 0.0;
-    Vec2 pivot{0.5f, 0.5f};
+    bool has_pivot = false;
+    Vec2 pivot{};
+    bool has_premultiplied_alpha = false;
     bool premultiplied_alpha = false;
 };
 
@@ -54,20 +68,21 @@ struct SpriteAtlasPackOptions {
 };
 
 /**
- * `createSprite2DLayer`'s options. The intrinsic writes every member; the
- * node-particle Sprite2D bridge writes the capacity and keeps the layer
- * factory's own defaults below for the options its system leaves unnamed.
+ * `createSprite2DLayer`'s options. The intrinsic and the node-particle
+ * Sprite2D bridge both state every member, an unnamed option as the
+ * factory's own default read from the pin, so the members carry no
+ * initializers of their own.
  */
 struct Sprite2DLayerOptions {
-    float capacity = 0.0f;
-    SpriteBlendDescriptor blend_mode{};
-    float opacity = 1.0f;
-    bool visible = true;
-    float order = 0.0f;
-    Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
-    float layer_z = 0.5f;
-    Vec2 pivot{0.5f, 0.5f};
-    std::uint32_t custom_shader = 0;
+    float capacity;
+    SpriteBlendDescriptor blend_mode;
+    float opacity;
+    bool visible;
+    float order;
+    Sprite2DDepthMode depth_mode;
+    float layer_z;
+    Vec2 pivot;
+    std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
     std::vector<std::string> custom_texture_names;
 };

@@ -86,7 +86,6 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
-import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import {
     composeDefaultTextPipelines,
@@ -1188,14 +1187,7 @@ async function main(): Promise<void> {
     // composition decides: whether the transmission renderer compiles.
     const activationPlan: ActivationPlan = {
         ...assetJoin.plan,
-        transmission: sceneTransmission(
-            result.manifest.features,
-            composedArms,
-            composedMaterialCapabilities(
-                pinnedVariants,
-                standardComposition?.variants ?? [],
-            ).pbrBindingNames.has("thicknessTexture_"),
-        ),
+        transmission: sceneTransmission(result.manifest.features, composedArms),
     };
     const gpuDeformation = activationPlan.gpuDeformation.value;
     const morphStorage = activationPlan.morphStorage.value;

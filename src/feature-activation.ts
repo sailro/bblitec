@@ -1752,23 +1752,36 @@ function capabilityRows(
         ),
         ...(
             [
+                // Both follow the composed binding rather than the
+                // transmission renderer: the translucency fragment binds
+                // the thickness map without the scene-colour grab.
+                [
+                    "BBLITE_MATERIAL_TRANSMISSION_MAP",
+                    "refractionMapTexture",
+                    ["refraction-rtt"],
+                ],
+                [
+                    "BBLITE_MATERIAL_THICKNESS_MAP",
+                    "thicknessTexture_",
+                    ["refraction-rtt", "subsurface"],
+                ],
                 [
                     "BBLITE_MATERIAL_ANISOTROPY_MAP",
                     "anisotropyTexture_",
-                    "anisotropy",
+                    ["anisotropy"],
                 ],
                 [
                     "BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP",
                     "translucencyColorTexture_",
-                    "subsurface",
+                    ["subsurface"],
                 ],
                 [
                     "BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP",
                     "translucencyIntensityTexture_",
-                    "subsurface",
+                    ["subsurface"],
                 ],
             ] as const
-        ).map(([name, binding, fragment]) =>
+        ).map(([name, binding, fragments]) =>
             checkedRow(
                 name,
                 "capability",
@@ -1780,7 +1793,7 @@ function capabilityRows(
                     ],
                 ],
                 `no composed PBR variant binds ${binding}`,
-                `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
+                `${fragments.map((fragment) => `src/material/pbr/fragments/${fragment}-fragment.ts`).join(", ")}; the pinned glTF extension mapper and feature detection select this texture arm`,
                 [
                     "render_capabilities.hpp",
                     "material_texture_slots.hpp",

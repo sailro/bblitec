@@ -34,6 +34,7 @@ import {
     pinnedDefaultNumber,
     pinnedDefaultVec2,
 } from "./pinned-material-defaults.js";
+import { sprite2DLayerDefaults } from "./pinned-factory-defaults.js";
 import { pixelsTextureOptionsCpp } from "../pinned-address-modes.js";
 import type { NodeParticleSystemBake } from "../pinned-node-particle.js";
 import {
@@ -520,10 +521,14 @@ export class NodeParticleLowerer {
      * The mirror of `assertBillboardRules`, and needed for the same reason:
      * the bridge has its OWN cell rule and its OWN layer options, so a port
      * that reused the billboard's answers would keep agreeing only while the
-     * two pinned expressions happened to match. Returns the pivot the layer
-     * takes, which the generated registrar emits rather than restating.
+     * two pinned expressions happened to match. Returns the depth and pivot
+     * the bridge's own layer literal names, which the generated registrar
+     * emits rather than restating.
      */
-    private sprite2dBridgeRules(): readonly [number, number] {
+    private sprite2dBridgeRules(): {
+        depth: string;
+        pivot: readonly [number, number];
+    } {
         const { declaration } = this.context.functionDeclaration(
             sprite2dModule,
             "createParticleSprite2DBridge",
@@ -553,10 +558,10 @@ export class NodeParticleLowerer {
             "system.buffer.capacity",
             "pure-2D bridge layer capacity",
         );
-        this.context.assertExpressionShape(
+        const file = declaration.getSourceFile();
+        const depth = this.context.stringValue(
             this.context.propertyInitializer(layerOptions, "depth"),
-            '"none"',
-            "pure-2D bridge layer depth",
+            file,
         );
         const pivot = this.context.unwrapExpression(
             this.context.propertyInitializer(layerOptions, "pivot"),
@@ -570,11 +575,13 @@ export class NodeParticleLowerer {
                 "The pure-2D bridge's layer pivot changed.",
             );
         }
-        const file = declaration.getSourceFile();
-        return [
-            this.context.numericValue(pivot.elements[0]!, file),
-            this.context.numericValue(pivot.elements[1]!, file),
-        ];
+        return {
+            depth,
+            pivot: [
+                this.context.numericValue(pivot.elements[0]!, file),
+                this.context.numericValue(pivot.elements[1]!, file),
+            ],
+        };
     }
 
     /**
@@ -951,10 +958,8 @@ export class NodeParticleLowerer {
         if (registered) {
             this.assertRegistrationRules();
         }
-        const sprite2dPivot =
-            sprite2d.length > 0
-                ? this.sprite2dBridgeRules()
-                : ([0, 0] as const);
+        const sprite2dLayer =
+            sprite2d.length > 0 ? this.sprite2dBridgeRules() : undefined;
         if (sprite2d.length > 0) {
             this.assertSprite2dSyncRules();
         }
@@ -1359,24 +1364,30 @@ ${
 /**
  * The layer options a bridge builds its layer with. The bridge owns
  * capacity, depth, blend and pivot; only the presentation fields come from
- * the caller, and an unnamed one keeps the layer factory's own default.
- * Modes 3 and 4 draw the pin's own Multiply fragment on the primary layer;
- * mode 4's second layer keeps the stock one.
+ * the caller, and an unnamed one takes createSprite2DLayer's own default,
+ * as does the layer depth the bridge leaves out. Modes 3 and 4 draw the
+ * pin's own Multiply fragment on the primary layer; mode 4's second layer
+ * keeps the stock one.
  */
 Sprite2DLayerOptions bridge_layer_options(
     const Sprite2DBridge& bridge,
     const BakedSystem& system) {
-    Sprite2DLayerOptions options;
-    options.capacity = static_cast<float>(system.capacity);
-    options.blend_mode = bridge.exact
+    const SpriteBlendDescriptor blend = bridge.exact
         ? create_particle_blend(system.blend_mode)
         : sprite_2d_blend_for_mode(system.blend_mode);
-    if (bridge.has_opacity) options.opacity = bridge.opacity;
-    if (bridge.has_visible) options.visible = bridge.visible;
-    if (bridge.has_order) options.order = bridge.order;
-    options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
-    options.custom_shader = options.blend_mode.particle_passes >= 1;
-    return options;
+    return Sprite2DLayerOptions{
+        .capacity = static_cast<float>(system.capacity),
+        .blend_mode = blend,
+        .opacity = bridge.has_opacity ? bridge.opacity : ${floatLiteral(sprite2DLayerDefaults().opacity)},
+        .visible = bridge.has_visible ? bridge.visible : ${String(sprite2DLayerDefaults().visible)},
+        .order = bridge.has_order ? bridge.order : ${floatLiteral(sprite2DLayerDefaults().order)},
+        .depth_mode = Sprite2DDepthMode::${sprite2dDepthMode(sprite2dLayer!.depth)},
+        .layer_z = ${floatLiteral(sprite2DLayerDefaults().layerZ)},
+        .pivot = Vec2{${bakedFloatLiteral(sprite2dLayer!.pivot[0])}, ${bakedFloatLiteral(sprite2dLayer!.pivot[1])}},
+        .custom_shader = blend.particle_passes >= 1,
+        .custom_textures = {},
+        .custom_texture_names = {},
+    };
 }
 
 /**
@@ -2468,6 +2479,22 @@ function pixelsTextureCpp(texture: PixelsTextureSource): string {
  * Infinity in its columns is a broken bake, not a value to silently emit
  * as `0.0f`.
  */
+/** A pinned Sprite2D `depth` string as the native layer's depth mode. */
+function sprite2dDepthMode(depth: string): string {
+    const modes: Readonly<Record<string, string>> = {
+        none: "none",
+        test: "test",
+        "test-write": "test_write",
+    };
+    const mode = modes[depth];
+    if (mode === undefined) {
+        throw new Error(
+            `The pure-2D bridge names Sprite2D depth '${depth}', which is not lowered.`,
+        );
+    }
+    return mode;
+}
+
 function bakedFloatLiteral(value: number): string {
     if (!Number.isFinite(value)) {
         throw new Error(

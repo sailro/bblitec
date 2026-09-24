@@ -10,6 +10,7 @@ import {
     addressModeByPin,
     pixelsTexture2DOptionFields,
     pixelsTextureOptionsCpp,
+    textureFilterByPin,
 } from "../../pinned-address-modes.js";
 import {
     staticNumberValue,
@@ -21,7 +22,13 @@ import {
     numberField,
     type HitRecordContext,
 } from "./hit-record.js";
-import { stringLiteral } from "../../cpp-literals.js";
+import { floatLiteral, stringLiteral } from "../../cpp-literals.js";
+import {
+    billboardSystemDefaults,
+    loadSpriteAtlasDefaults,
+    sprite2DLayerDefaults,
+    spriteAtlasPackDefaults,
+} from "../../lowering/pinned-factory-defaults.js";
 
 export interface SpriteIntrinsicContext
     extends
@@ -77,7 +84,8 @@ export function compileSpriteConstant(importedName: string): Value | undefined {
 }
 
 /**
- * The native factory a `blendMode` option names, or the family's default.
+ * The native factory a `blendMode` option names, or the one the factory's
+ * own `opts.blendMode ?? <export>` falls back to.
  *
  * The family is checked because the two sets are not interchangeable: a 2D
  * descriptor at a billboard system would otherwise compile straight through
@@ -88,10 +96,18 @@ function blendOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
+    fallbackExport: string,
 ): string {
     const blendMode = property(options, "blendMode");
     if (!blendMode) {
-        return `bbl::${family}_blend_alpha()`;
+        const fallback = parseBlendExport(fallbackExport);
+        if (fallback?.family !== family) {
+            context.fail(
+                node,
+                `The pinned ${family} factory defaults its blend to '${fallbackExport}', which is not a ${family} descriptor.`,
+            );
+        }
+        return `bbl::${fallback.symbol}()`;
     }
     const named =
         blendMode.kind === "sprite-blend" && blendMode.staticString
@@ -697,10 +713,12 @@ function compileCreateSpriteAtlasFromFrames(
         );
         return `${source}${arrow ? "->" : "."}${field.name}`;
     };
+    const packDefaults = spriteAtlasPackDefaults();
     const optionalUnsigned = (name: string, fallback: string): string => {
         const value = access(name);
         return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
     };
+    const unsigned = (value: number): string => `${value}u`;
     const pivot = access("pivot");
     const options = optionsRecord(
         context,
@@ -756,17 +774,17 @@ function compileCreateSpriteAtlasFromFrames(
             `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
             `bbl::js::to_uint32(${access("width")}), ` +
             `bbl::js::to_uint32(${access("height")}), ` +
-            `${optionalUnsigned("srcX", "0u")}, ` +
-            `${optionalUnsigned("srcY", "0u")}, ` +
+            `${optionalUnsigned("srcX", unsigned(packDefaults.srcX))}, ` +
+            `${optionalUnsigned("srcY", unsigned(packDefaults.srcY))}, ` +
             `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
             `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
-            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{0.5f, 0.5f})}); } ` +
+            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{${packDefaults.pivot.map(floatLiteral).join(", ")}})}); } ` +
             `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
             `bbl::SpriteAtlasPackOptions{` +
-            `${numberOption("paddingPx", "1u")}, ` +
-            `${numberOption("maxWidthPx", "1024u")}, ` +
-            `bbl::TextureFilter::${sampling?.staticString === "linear" ? "linear" : "nearest"}, ` +
-            `${premultiplied?.cpp ?? "false"}, ` +
+            `${numberOption("paddingPx", unsigned(packDefaults.paddingPx))}, ` +
+            `${numberOption("maxWidthPx", unsigned(packDefaults.maxWidthPx))}, ` +
+            `bbl::${textureFilterByPin[sampling?.staticString ?? packDefaults.sampling] ?? context.fail(argumentAt(call, 2), `createSpriteAtlasFromFrames sampling '${packDefaults.sampling}' is not a pinned filter.`)}, ` +
+            `${premultiplied?.cpp ?? String(packDefaults.premultipliedAlpha)}, ` +
             `${capacityLanes ? "true" : "false"}, ` +
             `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
             `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
@@ -824,21 +842,32 @@ function compileCreateGridSpriteAtlas(
         return value.cpp;
     };
     context.reachFeature("sprite:2d", call);
+    // Only the options the scene named: each carries its presence, and an
+    // absent one takes createGridSpriteAtlas's own `??` in the lowered
+    // partition (pinned-grid-atlas.ts), which is where the pin resolves it.
+    const named: string[] = [
+        `.cell_width_px = ${numberValue(cellWidth, "cellWidthPx")}`,
+        `.cell_height_px = ${numberValue(cellHeight, "cellHeightPx")}`,
+    ];
+    const present = (member: string, value: string): void => {
+        named.push(`.has_${member} = true`, `.${member} = ${value}`);
+    };
+    if (columns) present("columns", numberValue(columns, "columns"));
+    if (rows) present("rows", numberValue(rows, "rows"));
+    if (margin) present("margin_px", numberValue(margin, "marginPx"));
+    if (spacing) present("spacing_px", numberValue(spacing, "spacingPx"));
+    if (pivot) {
+        present(
+            "pivot",
+            `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}`,
+        );
+    }
+    if (premultiplied) present("premultiplied_alpha", premultiplied.cpp);
     return {
         kind: "sprite-atlas",
         cpp:
             `bbl::create_grid_sprite_atlas(${engine}, ${texture.cpp}, ` +
-            `bbl::GridSpriteAtlasOptions{` +
-            `${numberValue(cellWidth, "cellWidthPx")}, ` +
-            `${numberValue(cellHeight, "cellHeightPx")}, ` +
-            `${columns ? "true" : "false"}, ` +
-            `${columns ? numberValue(columns, "columns") : "0.0"}, ` +
-            `${rows ? "true" : "false"}, ` +
-            `${rows ? numberValue(rows, "rows") : "0.0"}, ` +
-            `${margin ? numberValue(margin, "marginPx") : "0.0"}, ` +
-            `${spacing ? numberValue(spacing, "spacingPx") : "0.0"}, ` +
-            `${pivot ? `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}` : "bbl::Vec2{0.5f, 0.5f}"}, ` +
-            `${premultiplied ? premultiplied.cpp : "false"}})`,
+            `bbl::GridSpriteAtlasOptions{${named.join(", ")}})`,
         engineCpp: engine,
     };
 }
@@ -886,19 +915,18 @@ function compileLoadSpriteAtlas(
             }
         }
     }
-    // Each axis is read by name: the loader stamps clamp and the
-    // caller's spread replaces it, so an option naming only one axis
-    // must not land on the other.
+    // Each axis is read by name: the loader stamps its own texture
+    // options literal's mode and the caller's spread replaces it, so an
+    // option naming only one axis must not land on the other.
     const addressMode = (name: "addressModeU" | "addressModeV"): string => {
-        const mode = property(textureOptions, name);
-        if (!mode?.staticString) {
-            return "bbl::TextureAddressMode::clamp";
-        }
-        const mapped = addressModeByPin[mode.staticString];
+        const pinned =
+            property(textureOptions, name)?.staticString ??
+            loadSpriteAtlasDefaults()[name];
+        const mapped = addressModeByPin[pinned];
         if (!mapped) {
             context.fail(
                 argumentAt(call, 2),
-                `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`,
+                `loadSpriteAtlas ${name} '${pinned}' is not a pinned address mode.`,
             );
         }
         return `bbl::${mapped}`;
@@ -928,8 +956,8 @@ function compileLoadSpriteAtlas(
             `bbl::TextureFilter::${
                 sampling?.staticString === "nearest" ? "nearest" : "linear"
             }, ` +
-            `${premultipliedAlpha?.cpp ?? "false"}, ` +
-            `${premultiplyOnLoad?.cpp ?? "false"}, ` +
+            `${premultipliedAlpha?.cpp ?? String(loadSpriteAtlasDefaults().premultipliedAlpha)}, ` +
+            `${premultiplyOnLoad?.cpp ?? String(loadSpriteAtlasDefaults().premultiplyOnLoad)}, ` +
             `${addressMode("addressModeU")}, ` +
             `${addressMode("addressModeV")}})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
@@ -970,11 +998,13 @@ function compileCreateSprite2DLayer(
     // name the scene imported. `spriteBlendOpaque` names no colour
     // blend at all, which the 2D pipeline expresses by disabling
     // blending.
+    const defaults = sprite2DLayerDefaults();
     const blendCpp = blendOption(
         context,
         options,
         "sprite",
         call.arguments[1] ?? call,
+        defaults.blendMode,
     );
     const pivot = tupleOption(context, options, "pivot", call, 2);
     const custom = customShaderOption(
@@ -984,26 +1014,36 @@ function compileCreateSprite2DLayer(
         call.arguments[1] ?? call,
     );
     const engineCpp = context.engineFor(atlas, call);
-    const depthMode = (depth?.staticString ?? "none") as NonNullable<
-        Value["spriteDepthMode"]
-    >;
+    const depthMode = depth?.staticString ?? defaults.depth;
+    if (
+        depthMode !== "none" &&
+        depthMode !== "test" &&
+        depthMode !== "test-write"
+    ) {
+        return context.fail(
+            call,
+            `createSprite2DLayer defaults its depth to '${depthMode}', which is not lowered.`,
+        );
+    }
     context.reachFeature("sprite:2d", call);
     return {
         kind: "sprite-layer",
         cpp:
             `bbl::create_sprite_2d_layer(${engineCpp}, ` +
             `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
-            `${numberOption(options, "capacity", "16.0f")}, ` +
+            `${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
             `${blendCpp}, ` +
-            `${numberOption(options, "opacity", "1.0f")}, ` +
-            `${property(options, "visible")?.cpp ?? "true"}, ` +
-            `${numberOption(options, "order", "0.0f")}, ` +
+            `${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
+            `${numberOption(options, "order", floatLiteral(defaults.order))}, ` +
             `bbl::Sprite2DDepthMode::${
                 depthMode === "test-write" ? "test_write" : depthMode
             }, ` +
-            `${numberOption(options, "layerZ", "0.5f")}, ` +
+            `${numberOption(options, "layerZ", floatLiteral(defaults.layerZ))}, ` +
             `bbl::Vec2{${
-                pivot ? `${pivot[0]!}, ${pivot[1]!}` : "0.5f, 0.5f"
+                pivot
+                    ? `${pivot[0]!}, ${pivot[1]!}`
+                    : defaults.pivot.map(floatLiteral).join(", ")
             }}, ` +
             `${custom.program}, ${custom.textures}, ` +
             `${custom.textureNames}})`,
@@ -1434,11 +1474,13 @@ function compileCreateFacingBillboardSystem(
     // is `billboard_blend_alpha()`. `cutout` carries no colour blend
     // and drives an alpha-test depth-write path this slice does not
     // render, so it refuses rather than drawing the wrong one.
+    const defaults = billboardSystemDefaults();
     const blendCpp = blendOption(
         context,
         options,
         "billboard",
         optionsArg ?? call,
+        defaults.blendMode,
     );
     const custom = customShaderOption(
         context,
@@ -1464,7 +1506,7 @@ function compileCreateFacingBillboardSystem(
     // than recomputed at the call site.
     const axisCpp = locked
         ? context.compileVec3(argumentAt(call, 1))
-        : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
+        : `bbl::Vec3{${defaults.facingAxis.map(floatLiteral).join(", ")}}`;
     const engineCpp = context.engineFor(atlas, call);
     context.reachFeature("sprite:billboard", call);
     if (locked) {
@@ -1485,10 +1527,10 @@ function compileCreateFacingBillboardSystem(
             `${atlas.cpp}, bbl::BillboardOrientation::` +
             `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
             `bbl::BillboardSystemOptions{` +
-            `.capacity = ${numberOption(options, "capacity", "16.0f")}, ` +
+            `.capacity = ${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
             `.blend = ${blendCpp}, ` +
-            `.opacity = ${numberOption(options, "opacity", "1.0f")}, ` +
-            `.visible = ${property(options, "visible")?.cpp ?? "true"}, ` +
+            `.opacity = ${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `.visible = ${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
             // resolveAlphaCutoff and the order default both follow
             // the descriptor's own depth mode, so they are resolved
             // beside it rather than from the name at this call site.
