@@ -8,8 +8,6 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedQuaternionMath } from "./pinned-euler-proxy.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
-import type { CompiledTextData, TextBlob } from "../pinned-text-data.js";
-import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 import { assertAsyncSceneBuilder } from "./scene-deferred.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
@@ -21,58 +19,9 @@ const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
 export class TextLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    /** Each source construction calls this expression once; identical blobs may
-     * share package files, but never the mutable TextData identity. */
-    public dataExpression(
-        data: CompiledTextData,
-        readBlob: (blob: TextBlob) => string,
-    ): string {
-        const stream = (value: CompiledTextData["instances"]) =>
-            `{${readBlob(value.bytes)}, ${value.count}, ${value.strideBytes}, ${value.capacityBytes}}`;
-        const texture = (
-            value: CompiledTextData["atlases"][number]["curves"],
-        ) =>
-            `{${readBlob(value.bytes)}, ${value.width}, ${value.height}, ${value.usedTexels}}`;
-        const expression =
-            `bbl::create_text_data(bbl::TextDataPayload{${data.width}, ${data.height}, ` +
-            `${data.versions.data}, ${data.versions.style}, ${data.versions.layout}, ${data.dirtyRange.start}, ${data.dirtyRange.end}, ` +
-            `${stream(data.instances)}, ${stream(data.styles)}, {` +
-            data.atlases
-                .map(
-                    (atlas) =>
-                        `{${cppStringLiteral(atlas.curveSetId)}, ${atlas.version}, ${texture(atlas.curves)}, ${texture(atlas.bands)}, ${stream(atlas.metadata)}}`,
-                )
-                .join(", ") +
-            `}, {${data.groups.map((group) => `{${group.atlasIndex}, ${cppStringLiteral(group.groupKey)}, ${group.slotStart}, ${group.slotCount}, ${group.liveCount}, {}}`).join(", ")}}})`;
-        if (!data.live) return expression;
-        const options = data.layout.options;
-        return `[&] {
-            auto result = ${expression};
-            auto live = std::make_shared<bbl::TextLiveData>();
-            live->font = bbl::pal::create_text_layout_font(bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(data.font.assetOutput)})));
-            live->font_size = ${data.layout.fontSizePx};
-            live->initial_text = ${cppStringLiteral(data.layout.text)};
-            live->options = {${options?.maxWidth ?? "std::numeric_limits<double>::infinity()"}, ${options?.lineHeight ?? 1.2}, ${cppStringLiteral(options?.align ?? "left")}, ${options?.letterSpacing ?? 0}, ${options?.tabSize ?? 4}};
-            live->glyph_slots = {${data.live.glyphSlots.join(",")}};
-            live->slots = {${data.live.slots.join(",")}};
-            live->free_slots = {${data.live.freeSlots.join(",")}};
-            live->color = {${(data.layout.color ?? [1, 1, 1, 1]).join(",")}};
-            live->instances.resize(${data.instances.capacityBytes}/sizeof(float));
-            if(!result->payload->instances.bytes.empty())std::memcpy(live->instances.data(),result->payload->instances.bytes.data(),result->payload->instances.bytes.size());
-            live->styles.resize(${data.styles.capacityBytes}/sizeof(float));
-            if(!result->payload->styles.bytes.empty())std::memcpy(live->styles.data(),result->payload->styles.bytes.data(),result->payload->styles.bytes.size());
-            live->instance_count=${data.instances.count}; live->style_count=${data.styles.count};
-            live->slot_count=${data.groups[0]!.slotCount};
-            live->version=${data.versions.data}; live->style_version=${data.versions.style}; live->layout_version=${data.versions.layout};
-            live->dirty_start=${data.dirtyRange.start}; live->dirty_end=${data.dirtyRange.end};
-            result->live = std::move(live);
-            return result;
-        }()`;
-    }
-
     public header(): string {
         return `#pragma once
-#include <bblite/text.hpp>
+#include <bblite/upstream_text_records.hpp>
 #include <bblite/js_data.hpp>
 #include <cmath>
 #include <cstring>
@@ -85,7 +34,6 @@ ${this.factory()}
 ${this.alphaToCoverage()}
 ${this.transforms()}
 ${this.uniforms()}
-${this.disposal()}
 ${this.attachment()}
 } // namespace bbl
 `;
@@ -356,20 +304,6 @@ inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.
             "Text Euler proxy",
         );
         return `// ${c.provenance(module, "createTextRenderable")}
-inline TextData create_text_data(TextDataPayload payload) {
-    auto data = std::make_shared<TextDataState>();
-    data->payload = std::make_shared<TextDataPayload>(std::move(payload));
-    data->groups = data->payload->groups;
-    data->instance_count = data->payload->instances.count;
-    data->style_count = data->payload->styles.count;
-    data->version = data->payload->version;
-    data->style_version = data->payload->style_version;
-    data->layout_version = data->payload->layout_version;
-    data->dirty_start = data->payload->dirty_start;
-    data->dirty_end = data->payload->dirty_end;
-    data->atlas_gpu.resize(data->payload->atlases.size());
-    return data;
-}
 inline TextRenderable create_text_renderable(TextData data, const TextRenderableOptions& options = {}) {
     auto result = std::make_shared<TextRenderableState>();
     result->data = std::move(data);
@@ -779,127 +713,6 @@ ${tail.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
 `;
     }
 
-    private disposal(): string {
-        const c: LoweringContext = this.context;
-        const renderable = c.functionDeclaration(
-            module,
-            "disposeTextRenderable",
-        );
-        c.expectShapeCount(
-            renderable.declaration,
-            "renderable._gpu._textU.destroy()",
-            "Text uniform disposal",
-        );
-        c.expectShapeCount(
-            renderable.declaration,
-            "renderable._gpu._instanceBuf.destroy()",
-            "Text instance disposal",
-        );
-        c.expectShapeCount(
-            renderable.declaration,
-            "renderable._gpu._styleBuf.destroy()",
-            "Text style disposal",
-        );
-        c.expectShapeCount(
-            renderable.declaration,
-            "renderable._gpu = null",
-            "Text lease release",
-        );
-        const data = c.functionDeclaration(
-            "src/text/text-data.ts",
-            "disposeTextData",
-        );
-        c.assertStatementInventory(
-            data.declaration,
-            data.declaration.body!.statements,
-            "disposeTextData",
-            "static-data disposal",
-            [
-                "other statement",
-                "expression statement",
-                "expression statement",
-                "expression statement",
-                "expression statement",
-                "expression statement",
-                "expression statement",
-            ],
-        );
-        for (const shape of [
-            "g._bindGroup = null",
-            "data._groups = []",
-            "data._instanceCount = 0",
-            "data._styleCount = 0",
-            "data._freeStyleSlots.length = 0",
-            "data._runs.length = 0",
-            "data._runRecords.clear()",
-        ])
-            c.expectShapeCount(data.declaration, shape, "Text data disposal");
-        const storage = c.functionDeclaration(
-            "src/text/glyph-storage.ts",
-            "disposeGlyphStorage",
-        );
-        for (const shape of [
-            "gpu._curveTex.destroy()",
-            "gpu._bandTex.destroy()",
-            "gpu._metaBuf.destroy()",
-            "cs._atlas._gpu = null",
-            "storage._curveSets.clear()",
-        ])
-            c.expectShapeCount(
-                storage.declaration,
-                shape,
-                "Default text atlas disposal",
-            );
-        const defaults = c.functionDeclaration(
-            "src/text/default-text-data.ts",
-            "disposeDefaultTextData",
-        );
-        c.assertStatementInventory(
-            defaults.declaration,
-            defaults.declaration.body!.statements,
-            "disposeDefaultTextData",
-            "owned storage disposal",
-            ["expression statement", "expression statement"],
-        );
-        c.expectShapeCount(
-            defaults.declaration,
-            "disposeTextData(data)",
-            "Default text disposal",
-        );
-        c.expectShapeCount(
-            defaults.declaration,
-            "disposeGlyphStorage(data._storage)",
-            "Default text owned storage",
-        );
-        return `inline void dispose_text_renderable(const TextRenderable& renderable) {
-    if (renderable->gpu) {
-        auto& gpu = *renderable->gpu;
-        if (gpu.destroy_uniform) gpu.destroy_uniform();
-        if (gpu.destroy_instances) gpu.destroy_instances();
-        if (gpu.destroy_styles) gpu.destroy_styles();
-        renderable->gpu.reset();
-    }
-}
-inline void dispose_text_data(const TextData& data) {
-    for (auto& group : data->groups) group.bind_group.reset();
-    data->groups.clear();
-    data->instance_count = 0;
-    data->style_count = 0;
-}
-inline void dispose_default_text_data(const TextData& data) {
-    dispose_text_data(data);
-    for (auto& gpu : data->atlas_gpu) {
-        if (gpu) {
-            if (gpu->destroy_curves) gpu->destroy_curves();
-            if (gpu->destroy_bands) gpu->destroy_bands();
-            if (gpu->destroy_metadata) gpu->destroy_metadata();
-            gpu.reset();
-        }
-    }
-    data->atlas_gpu.clear();
-}
-`;
-    }
     private attachment(): string {
         const c: LoweringContext = this.context;
         const add = c.functionDeclaration(

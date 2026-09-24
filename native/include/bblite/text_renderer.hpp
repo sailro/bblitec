@@ -2,13 +2,12 @@
 #include <bblite/text.hpp>
 
 namespace bbl {
-struct TextLayerOptions {
-    Vec2d position_px{};
-    double rotation_rad = 0, scale = 1, order = 0, opacity = 1, coverage_gamma = 1;
-    bool visible = true;
-};
-struct TextLayerState : TextLayerOptions {
+/** The pin's `TextLayer`; `createTextLayer` (lowered) writes every field. */
+struct TextLayerState {
     TextData data;
+    Vec2d position_px{};
+    double rotation_rad = 0, scale = 0, order = 0, opacity = 0, coverage_gamma = 0;
+    bool visible = false;
     double version = 0;
 };
 using TextLayer = std::shared_ptr<TextLayerState>;

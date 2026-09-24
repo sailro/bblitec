@@ -22,30 +22,12 @@ struct RendererOps : Ops {
 int main() {
     RendererOps ops;
     int device = 0;
-    auto payload = std::make_shared<TextDataPayload>();
-    payload->instances = {pattern(192, 1), 5, 12, 192};
-    payload->styles = {pattern(128, 2), 1, 32, 128};
-    TextAtlas atlas;
-    atlas.curve_set_id = "atlas";
-    atlas.version = 1;
-    atlas.curves = {pattern(131072, 3), 4096, 2, 3};
-    atlas.bands = {pattern(131072, 4), 4096, 2, 7};
-    atlas.metadata = {pattern(384, 5), 3, 48, 384};
-    payload->atlases.push_back(atlas);
-    TextDrawGroup plain;
-    plain.group_key = "atlas";
-    plain.slot_count = 3;
-    plain.live_count = 2;
-    auto variant = plain;
-    variant.group_key = "variant";
-    variant.slot_start = 3;
-    variant.slot_count = 2;
-    auto empty = plain;
-    empty.slot_count = 0;
+    auto atlas = text_atlas();
     auto data = std::make_shared<TextDataState>();
-    data->payload = payload;
-    data->groups = {plain, variant, empty};
-    data->atlas_gpu.resize(1);
+    data->instances = pattern_floats(192, 1);
+    data->styles = pattern_floats(128, 2);
+    data->groups = {text_group(atlas, "atlas", 0, 3), text_group(atlas, "variant", 3, 2),
+                    text_group(atlas, "atlas", 0, 0)};
     data->instance_count = 5;
     data->style_count = 1;
     data->version = 1;

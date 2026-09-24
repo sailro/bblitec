@@ -463,9 +463,12 @@ toneMapping and toneMappingEnabled. Tone mapping participates in composition.
 
 ## Text
 
-Static font parsing/shaping/packing runs at generation. Live default text retains one run, packaged font,
-palette, dimensions and static layout options. Alignment is left/center/right. Retained run color replacement
-and setFontWeightOffset are bounded; arbitrary run edits/live color arguments refuse.
+Static font parsing/shaping/packing runs at generation. Text data keeps the pin's runs, draw groups, style
+palette and slot allocator: updateTextData reset/addRun/removeRun/replaceRun, updateDefaultTextData with or
+without a color and per-run setFontWeightOffset are live. Live text lays out over the font's packaged
+repertoire with static layout options; alignment is left/center/right. Runs are retained runs or copies
+(`{ ...run, defaultColor, pixelsPerFontUnit }`); literal glyph lists, replacement storages and user glyph
+storages (createGlyphStorage, extractGlyphCurves, createTextData) refuse.
 
 Renderable text needs one text-only default scene with a static FreeCamera or supported ArcRotate controls.
 Transforms/opacity are live; membership/order/depth precede attachment. Late attachment, reflective writes,

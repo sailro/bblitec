@@ -146,3 +146,31 @@ std::vector<std::uint8_t> pattern(std::size_t count, std::size_t seed) {
         bytes[i] = static_cast<std::uint8_t>((i * 37 + seed) & 255);
     return bytes;
 }
+// The pin's records, filled as the fixtures' JavaScript twins are.
+js::TypedArray<float> pattern_floats(std::size_t count, std::size_t seed) {
+    return js::TypedArray<float>(js::ArrayBuffer(pattern(count, seed)));
+}
+std::shared_ptr<SharedAtlas> text_atlas() {
+    auto atlas = std::make_shared<SharedAtlas>();
+    atlas->curve_tex_data = pattern_floats(131072, 3);
+    atlas->band_tex_data = pattern_floats(131072, 4);
+    atlas->meta_data = pattern_floats(384, 5);
+    atlas->curve_texels_used = 3;
+    atlas->band_texels_used = 7;
+    atlas->slot_count = 3;
+    atlas->version = 1;
+    return atlas;
+}
+std::shared_ptr<TextDataDrawGroup> text_group(const std::shared_ptr<SharedAtlas>& atlas,
+                                              const char* key, double start, double count) {
+    auto group = std::make_shared<TextDataDrawGroup>();
+    group->curve_set = std::make_shared<GlyphStorageCurveSet>();
+    group->curve_set->atlas = atlas;
+    group->curve_set_id = "atlas";
+    group->group_key = TextGroupKey(key);
+    group->slot_start = start;
+    group->slot_count = count;
+    group->live_count = 2;
+    group->bind_group_version = -1;
+    return group;
+}

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
@@ -24,6 +25,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         directory = resolve("artifacts/test-text-renderer-lifecycle");
     mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const headers: { [key: string]: string } = {
+        upstream_text_records: textRecordsHeader(c),
         upstream_text: new TextLowerer(c).header(),
         upstream_text_gpu: new TextGpuLowerer(c).header(),
         upstream_text_renderer: new TextRendererLowerer(c).header(),
@@ -427,7 +429,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         record();
     });
     act(
-        "data->layout_version=1;data->groups[0].slot_count=2;update();draw();record();",
+        "data->layout_version=1;data->groups[0]->slot_count=2;update();draw();record();",
         () => {
             data._layoutVersion = 1;
             data._groups[0]!._slotCount = 2;
@@ -438,7 +440,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
     );
     assert.equal(bundles, 4);
     act(
-        "data->instance_count=9;data->version=3;data->style_count=3;data->style_version=2;payload->atlases[0].curves.used_texels=4097;payload->atlases[0].version=2;update();draw();record();",
+        "data->instance_count=9;data->version=3;data->style_count=3;data->style_version=2;atlas->curve_texels_used=4097;atlas->version=2;update();draw();record();",
         () => {
             data._instanceCount = 9;
             data._version = 3;

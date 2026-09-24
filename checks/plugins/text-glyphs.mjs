@@ -25,8 +25,17 @@ export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const manifest = readManifest(context);
+    // The packaged repertoire is the pin's GlyphStorage graph: its atlas's
+    // `_glyphSlots` map names each glyph id's atlas slot.
+    const storage = manifest.textData[0].repertoire.storage;
+    const atlas = storage.records.find(
+        (record) => record.name === "SharedAtlas",
+    );
+    assert(atlas, "the packaged repertoire has an atlas");
     const ids = new Map(
-        manifest.textData[0].live.glyphSlots.map((slot, id) => [slot, id]),
+        storage.containers[atlas.fields._glyphSlots.container].entries.map(
+            ([id, slot]) => [slot.value._index, id],
+        ),
     );
     const { background, gates } = context.options;
     const details = {};

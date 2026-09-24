@@ -14,7 +14,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
     "text-layer": "std::shared_ptr<bbl::TextLayerState>",
     "text-renderer": "std::shared_ptr<bbl::TextRendererState>",
-    "text-run": "std::shared_ptr<bbl::TextRunState>",
+    "text-run": "bbl::TextRun",
     "text-run-ref": "bbl::TextRunRef",
     "picking-info": "bbl::PickingInfo",
     "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",

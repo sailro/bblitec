@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import {
@@ -112,7 +113,11 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     }
     const context = new LoweringContext(),
         directory = resolve("artifacts/test-text-gpu-lifecycle");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     writeFileSync(
         resolve(directory, "upstream_text.hpp"),
         new TextLowerer(context).header(),
@@ -528,7 +533,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         record();
     });
     act(
-        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;payload->atlases[0].curves.used_texels=4097;payload->atlases[0].bands.used_texels=4098;payload->atlases[0].metadata.count=6;payload->atlases[0].version=2;update();record();",
+        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;atlas->curve_texels_used=4097;atlas->band_texels_used=4098;atlas->slot_count=6;atlas->version=2;update();record();",
         () => {
             data._instanceCount = 9;
             data._version = 4;
