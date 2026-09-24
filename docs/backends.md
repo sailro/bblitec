@@ -25,6 +25,10 @@ backend requests fail.
 holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
 shares the standalone hosts' input, clock, capture and benchmark phases.
 `pal_gpu_shared.hpp` owns clocks, capture gates, callbacks and upload records.
+`pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
+instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
+colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders
+through its own camera, and a camera-less pass draws through zero matrices and writes no scene block.
 Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
 `pal_window.hpp` owns the OS window independently of renderer rebuilds.
 

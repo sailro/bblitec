@@ -14,46 +14,6 @@ enum class RenderMaterialKind { standard, shader };
 }
 namespace bbl::pal {
 #include "shader-consumers.hpp"
-unsigned writes = 0;
-struct Buffer {
-    std::vector<GpuVertex> vertices;
-};
-void write(Buffer* buffer, const void* data, std::size_t size) {
-    assert(size % sizeof(GpuVertex) == 0);
-    ++writes;
-    buffer->vertices.resize(size / sizeof(GpuVertex));
-    std::memcpy(buffer->vertices.data(), data, size);
-}
-void wgpuQueueWriteBuffer(int, Buffer* buffer, std::size_t offset, const void* data,
-                          std::size_t size) {
-    assert(offset == 0);
-    write(buffer, data, size);
-}
-struct Uploads {
-    void update(Buffer* buffer, const void* data, std::size_t size) { write(buffer, data, size); }
-};
-struct Uploaded {
-    Buffer* vertices;
-    std::uint64_t position_version = 0;
-};
-struct Driver {
-    Engine engine;
-    std::vector<Uploaded> uploaded;
-    struct Item {
-        std::size_t geometry = 0;
-    };
-    std::vector<Item> items;
-    struct {
-        int queue = 0;
-    } state;
-    Uploads frame_buffer_uploads;
-};
-struct Sdl : Driver {
-#include "SdlTransforms.hpp"
-};
-struct Dawn : Driver {
-#include "DawnTransforms.hpp"
-};
 void check_position(const GpuVertex& vertex, float x, float y, float z) {
     assert(vertex.position[0] == x && vertex.position[1] == y && vertex.position[2] == z);
 }
@@ -135,42 +95,6 @@ void check_shader_blocks() {
     block.gather = {{16, 0, 1}};
     assert(!block_is_shared_scene_matrix(block));
 }
-template <class Backend> void check_uploads() {
-    Backend driver;
-    writes = 0;
-    ModelGeometry geometry;
-    ModelVertex vertex;
-    vertex.position = {1, 2, 3};
-    vertex.normal = {0, 1, 0};
-    geometry.vertices.push_back(vertex);
-    driver.engine.geometries.push_back(geometry);
-    driver.engine.meshes.resize(2);
-    std::array<Buffer, 2> buffers;
-    for (std::size_t index = 0; index < 2; ++index) {
-        driver.uploaded.push_back({&buffers[index]});
-        driver.items.emplace_back();
-        driver.engine.meshes[index].position = {10, 20, 30};
-    }
-    driver.synchronize();
-    assert(writes == 0);
-    // A transform reaches the draw through the mesh block alone.
-    for (std::size_t index = 0; index < 2; ++index) {
-        driver.engine.meshes[index].position.x += 5;
-        set_mesh_rotation_quaternion(driver.engine, MeshHandle{static_cast<std::uint32_t>(index)},
-                                     {0, 0.6f, 0, 0.8f});
-    }
-    driver.synchronize();
-    assert(writes == 0);
-    // A position update re-uploads the geometry's lanes, untransformed.
-    driver.engine.geometries[0].vertices[0].position = {4, 5, 6};
-    ++driver.engine.geometries[0].position_version;
-    driver.synchronize();
-    assert(writes == 2);
-    check_position(buffers[0].vertices[0], 4, 5, 6);
-    check_position(buffers[1].vertices[0], 4, 5, 6);
-    driver.synchronize();
-    assert(writes == 2);
-}
 } // namespace bbl::pal
 int main() {
     using namespace bbl;
@@ -217,8 +141,6 @@ int main() {
     assert(named.scaling.x == 2 && named.scaling.y == 3 && named.scaling.z == 4);
     assert(named.transform_version == version + 1 &&
            engine.meshes[1].transform_version == child_version + 1);
-    check_uploads<Sdl>();
-    check_uploads<Dawn>();
     check_shared_geometry();
     check_shader_blocks();
 }

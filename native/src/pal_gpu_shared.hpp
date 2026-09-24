@@ -382,24 +382,29 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
         });
 }
 
-/** Final viewport/scissor after composing a camera viewport into its pane. */
+/**
+ * Final viewport/scissor after composing the pass camera's viewport into its
+ * pane: `_applyCameraViewport` reads `camera?.viewport`, so a camera-less
+ * pass, like one whose camera has no viewport, keeps the whole pane.
+ */
 #if BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
-                                                          const CameraRecord& camera,
+                                                          const CameraRecord* camera,
                                                           std::uint32_t target_width,
                                                           std::uint32_t target_height) {
     const std::optional<PixelViewport> pane =
         scene_surface_pane(engine, scene, target_width, target_height);
+    const bool has_viewport = camera && camera->viewport.has_value();
     if (!pane.has_value()) {
-        if (!camera.viewport.has_value())
+        if (!has_viewport)
             return std::nullopt;
-        return upstream::resolve_camera_viewport(camera, static_cast<double>(target_width),
+        return upstream::resolve_camera_viewport(*camera, static_cast<double>(target_width),
                                                  static_cast<double>(target_height));
     }
-    if (!camera.viewport.has_value())
+    if (!has_viewport)
         return pane;
     PixelViewport viewport = upstream::resolve_camera_viewport(
-        camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
+        *camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
     viewport.x += pane->x;
     viewport.y += pane->y;
     return viewport;
@@ -424,18 +429,6 @@ inline std::string sprite_fragment_shader_name(std::uint32_t program) {
  */
 inline CameraRecord* scene_camera(Engine& engine, const Scene& scene) {
     return handle_find(engine.cameras, scene.camera);
-}
-
-/**
- * A render task's camera, the pin's `cfg.cam ?? scene.camera`: the task's
- * own when it was given one, else `scene`'s, the camera of the scene it
- * renders. Null is the no-camera pass `scene_camera` describes.
- */
-inline const CameraRecord* render_task_camera(const Engine& engine, const FrameTaskRecord& task,
-                                              const CameraRecord* scene) {
-    const CameraRecord* own =
-        task.render.has_camera ? handle_find(engine.cameras, task.render.camera) : nullptr;
-    return own ? own : scene;
 }
 
 /**
@@ -4875,54 +4868,6 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
 }
 
 /**
- * Reconcile one backend's uploaded mesh rows with a rebuilt render plan.
- *
- * Plans preserve scene order, so a forward scan moves surviving rows,
- * releases removed rows, and uploads only new rows. The GPU resource type and
- * its release/upload operations remain backend-owned.
- */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline std::vector<GpuMesh>
-rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
-                      const std::vector<upstream::RenderItem>& updated_items,
-                      std::vector<GpuMesh>& uploaded_meshes, ReleaseMesh&& release_mesh,
-                      UploadItem&& upload_item) {
-    if (previous_items.size() != uploaded_meshes.size()) {
-        throw std::runtime_error("Render plan and uploaded mesh rows are out of sync.");
-    }
-    // The whole mesh handle: a row uploaded for a retired mesh must not
-    // survive into the mesh that reused its slot (and possibly its
-    // geometry slot) before this rebuild.
-    const auto same_source = [](const upstream::RenderItem& left,
-                                const upstream::RenderItem& right) {
-        return left.mesh == right.mesh && left.geometry == right.geometry &&
-               left.material.value == right.material.value;
-    };
-    std::vector<GpuMesh> result;
-    result.reserve(updated_items.size());
-    std::size_t previous_index = 0;
-    for (const upstream::RenderItem& item : updated_items) {
-        std::size_t scan = previous_index;
-        while (scan < previous_items.size() && !same_source(previous_items[scan], item)) {
-            ++scan;
-        }
-        if (scan < previous_items.size()) {
-            for (std::size_t dropped = previous_index; dropped < scan; ++dropped) {
-                release_mesh(uploaded_meshes[dropped]);
-            }
-            result.push_back(std::move(uploaded_meshes[scan]));
-            previous_index = scan + 1;
-            continue;
-        }
-        result.push_back(upload_item(item));
-    }
-    for (std::size_t dropped = previous_index; dropped < uploaded_meshes.size(); ++dropped) {
-        release_mesh(uploaded_meshes[dropped]);
-    }
-    return result;
-}
-
-/**
  * A material family appearing after registration must have composed
  * artifacts to draw with: generation composes variants from the whole
  * scene, so a family the tables never saw is a compiler contract broken,
@@ -4948,36 +4893,6 @@ inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
     }
 }
 
-/** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
-template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::RenderPlan>& plans,
-                                         std::vector<std::vector<GpuMesh>>& meshes,
-                                         std::vector<std::uint64_t>& versions,
-                                         bool draw_lists_changed, ReleaseMesh&& release_mesh,
-                                         UploadItem&& upload_item) {
-    if (plans.size() != meshes.size() || plans.size() != versions.size() ||
-        plans.size() + 1 != engine.registered_scenes.size()) {
-        throw std::runtime_error("Overlay registration changed after renderer initialization.");
-    }
-    bool changed = false;
-    for (std::size_t layer = 0; layer < plans.size(); ++layer) {
-        Scene& scene = *engine.registered_scenes[layer + 1];
-        if (scene.render_topology_version != versions[layer]) {
-            reject_uncomposed_family_growth(scene.material_family_mask);
-            upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated);
-            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items, meshes[layer],
-                                                  release_mesh, upload_item);
-            plans[layer] = std::move(updated);
-            versions[layer] = scene.render_topology_version;
-            changed = true;
-        } else if (draw_lists_changed) {
-            plans[layer].draw_lists = upstream::build_render_draw_lists(plans[layer].items, engine);
-            changed = true;
-        }
-    }
-    return changed;
-}
 #endif
 
 /**
@@ -5333,11 +5248,6 @@ inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine&
     matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
     matrices.camera_position = shader_camera_position(scene, engine, *camera);
     return matrices;
-}
-
-/** A render task's clear colour, the pin's `cfg.clrColor ?? sc.clearColor`, read live at the pass. */
-inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
-    return task.render.clear_color ? *task.render.clear_color : task.source_scene->clear_color;
 }
 
 /**

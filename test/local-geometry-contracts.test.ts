@@ -15,7 +15,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("geometry stays local: shader draws share one world record and a transform uploads no vertices", (t) => {
+test("geometry stays local: shader draws share one world record and a mesh uploads its geometry's own lanes", (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("A native fixture compiler is required.");
@@ -110,40 +110,9 @@ test("geometry stays local: shader draws share one world record and a transform 
         consumers.join("\n") +
             `\nconst std::array packers{${consumers.map((_, index) => `pack_${index}`).join(",")}};`,
     );
-    for (const [backend, file, gpu] of [
-        ["Sdl", "pal_sdl_gpu.cpp", "gpu_mesh"],
-        ["Dawn", "pal_dawn.cpp", "dawn_mesh"],
-    ] as const) {
-        const synchronize = cppFunction(
-            readFileSync(`native/src/${file}`, "utf8"),
-            "void synchronize()",
-        );
-        // The only vertex write the per-frame sync makes: the position
-        // update's re-upload of the geometry's lanes.
-        const start = synchronize.indexOf(
-            "const ModelGeometry& geometry = engine.geometries[item.geometry];",
-        );
-        const stamp = synchronize.indexOf(
-            `${gpu}.position_version = geometry.position_version;`,
-            start,
-        );
-        const end = synchronize.indexOf("}", stamp) + 1;
-        assert.ok(start >= 0 && stamp > start && end > stamp);
-        assert.doesNotMatch(
-            synchronize,
-            /transform_version/,
-            `${backend} keys a vertex upload on a transform`,
-        );
-        writeFileSync(
-            join(output, `${backend}Transforms.hpp`),
-            `void synchronize() {
-            for (std::size_t index = 0; index < engine.meshes.size(); ++index) {
-                const auto& mesh = engine.meshes[index]; auto& ${gpu} = uploaded[index]; const auto& item = items[index];
-                ${synchronize.slice(start, end)}
-            }
-        }`,
-        );
-    }
+    // The per-frame row sync that makes no vertex write for a transform is
+    // the shared one both backends instantiate; scene-topology-sync links
+    // and runs it.
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
         "/nologo",

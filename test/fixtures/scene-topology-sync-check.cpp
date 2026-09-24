@@ -1,143 +1,352 @@
-#include <bblite/runtime.hpp>
+// The scene-frame synchronization both scene backends instantiate
+// (pal_scene_synchronize.hpp) and the pass-camera resolution every pass
+// resolves through (pal_pass_camera.hpp), linked against the generated
+// upstream units and driven through recording backend hooks: the one step
+// order, the uploads a topology change keeps, the vertex writes a transform
+// does not make, and the camera-less pass the pin renders with a null
+// camera -- no transparent sort, zero pass matrices, no other scene's
+// camera, a skipped geometry task, the scene's own clear colour.
+#include "pal_scene_synchronize.hpp"
+
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <memory>
+#include <numbers>
+#include <string>
 #include <utility>
+#include <vector>
 
-namespace bbl::upstream {
-enum class RenderMaterialKind { standard, shader };
-struct RenderItem {
-    MeshHandle mesh;
-    std::size_t geometry;
-    MaterialHandle material;
-    RenderMaterialKind material_kind = RenderMaterialKind::standard;
-};
-struct RenderPlan {
-    std::vector<RenderItem> items;
-    unsigned draw_lists = 0;
-};
-RenderPlan next_plan;
-unsigned plans = 0, lists = 0;
-RenderPlan build_render_plan(const Scene&, const Engine&) {
-    ++plans;
-    return next_plan;
+// The free controls ask SDL which keys are down; none are.
+const bool* SDL_GetKeyboardState(int* count) {
+    static const bool none[1]{false};
+    if (count)
+        *count = 0;
+    return none;
 }
-unsigned build_render_draw_lists(const std::vector<RenderItem>&, const Engine&) { return ++lists; }
-} // namespace bbl::upstream
-namespace bbl::pal {
-unsigned uploads = 0, releases = 0, prunes = 0;
-struct GpuMesh {
-    unsigned lease;
-    explicit GpuMesh(unsigned value) : lease(value) {}
-    GpuMesh(GpuMesh&& source) noexcept : lease(std::exchange(source.lease, 0u)) {}
-    GpuMesh& operator=(GpuMesh&& source) noexcept {
+
+// The harness runs with no runtime trace requested.
+std::string bbl::pal::environment_variable(const char*) { return {}; }
+
+// The row sync's vertex write is compiled in, as a position-updating scene's.
+static_assert(BBLITE_MESH_POSITION_UPDATE);
+
+namespace {
+
+using namespace bbl;
+using namespace bbl::pal;
+
+unsigned next_lease = 0;
+
+/** One uploaded row; the rematch moves a lease and never copies one. */
+struct Row {
+    unsigned lease = 0;
+    std::uint64_t position_version = 0;
+    explicit Row(unsigned value) : lease(value) {}
+    Row(Row&& other) noexcept
+        : lease(std::exchange(other.lease, 0u)), position_version(other.position_version) {}
+    Row& operator=(Row&& other) noexcept {
         assert(lease == 0);
-        lease = std::exchange(source.lease, 0u);
+        lease = std::exchange(other.lease, 0u);
+        position_version = other.position_version;
         return *this;
     }
-    void reset() {
-        assert(lease);
-        lease = 0;
+};
+
+/** The per-row GPU writes `sync_plan_mesh_rows` asks for. */
+struct RowWrites {
+    unsigned blocks = 0, vertex_uploads = 0;
+    std::vector<GpuVertex> vertices;
+    void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&, Row&) {
+        ++blocks;
+    }
+    void upload_vertices(Row&, const std::vector<GpuVertex>& uploaded) {
+        ++vertex_uploads;
+        vertices = uploaded;
+    }
+};
+
+/** A backend whose every operation records the step it serves. */
+struct Hooks {
+    std::vector<std::string> steps;
+    RowWrites rows;
+    unsigned uploads = 0, releases = 0;
+    SceneSyncOutcome settled{};
+    const CameraRecord* text_camera = nullptr;
+    bool capture_saw_topology = false;
+
+    void note(const char* step) { steps.emplace_back(step); }
+    void update_sprites() { note("sprites"); }
+    void release_mesh(Row& row) {
+        assert(row.lease != 0);
+        row.lease = 0;
         ++releases;
     }
-};
-using DawnMesh = GpuMesh;
-struct State {
-    std::vector<GpuMesh> meshes;
-    std::vector<int> shader_pipelines{1}, shared_shader_geometries, shared_shader_material_textures;
-    void prune_shared_shader_geometries() { ++prunes; }
-    void prune_shared_shader_material_textures() { ++prunes; }
-    void prune_shared_composed_material_textures() { ++prunes; }
-};
-constexpr unsigned material_family_shader = 1;
-void reject_uncomposed_family_growth(unsigned added) { assert(added == 0); }
-void validate_render_plan_items(const upstream::RenderPlan&) {}
-void release_gpu_mesh(State&, GpuMesh& mesh) { mesh.reset(); }
-GpuMesh upload_dawn_scene_mesh(State&, Engine&, const upstream::RenderItem&) {
-    return GpuMesh{++uploads + 100};
-}
-GpuMesh upload_sdl_scene_mesh(State& state, Engine& engine, const upstream::RenderItem& item,
-                              int*) {
-    return upload_dawn_scene_mesh(state, engine, item);
-}
-void prune_shared_shader_geometries(State& state) { state.prune_shared_shader_geometries(); }
-void prune_shared_shader_material_textures(State& state) {
-    state.prune_shared_shader_material_textures();
-}
-void prune_shared_composed_material_textures(State& state) {
-    state.prune_shared_composed_material_textures();
-}
-void trace_scene_topology(const Scene&, const Engine&, std::size_t, std::size_t, std::size_t,
-                          std::size_t, std::size_t, unsigned) {}
-#include "rematch.hpp"
-struct Driver {
-    Scene scene;
-    Engine engine;
-    State state;
-    upstream::RenderPlan render_plan;
-    std::uint64_t synced_render_topology_version = 0, synced_draw_list_epoch = 0;
-    unsigned synced_material_family_mask = 0, frame = 0, tasks = 0;
-    int frame_buffer_uploads = 0;
-    bool topology_updated = false;
-    void rebuild_task_draw_lists() { ++tasks; }
-};
-struct Sdl : Driver {
-#include "SdlSync.hpp"
-};
-struct Dawn : Driver {
-#include "DawnSync.hpp"
-};
-template <class Backend> void check() {
-    uploads = releases = prunes = upstream::plans = upstream::lists = 0;
-    Backend driver;
-    driver.engine.draw_list_epoch = driver.synced_draw_list_epoch = 0;
-    driver.render_plan.items = {{MeshHandle{1}, 1, MaterialHandle{1}},
-                                {MeshHandle{2}, 2, MaterialHandle{2}},
-                                {MeshHandle{3}, 3, MaterialHandle{3}}};
-    for (unsigned id : {1u, 2u, 3u})
-        driver.state.meshes.emplace_back(id);
-    driver.synchronize();
-    assert(uploads == 0 && releases == 0 && driver.tasks == 0);
-    // Remove the middle row and append a new row. Existing leases survive.
-    upstream::next_plan.items = {driver.render_plan.items[0],
-                                 driver.render_plan.items[2],
-                                 {MeshHandle{4}, 4, MaterialHandle{4}}};
-    ++driver.scene.render_topology_version;
-    driver.synchronize();
-    assert(uploads == 1 && releases == 1 && prunes == 3 && upstream::plans == 1 &&
-           driver.tasks == 1);
-    assert(driver.state.meshes[0].lease == 1 && driver.state.meshes[1].lease == 3 &&
-           driver.state.meshes[2].lease == 101);
-    driver.topology_updated = false;
-    ++driver.engine.draw_list_epoch;
-    driver.synchronize();
-    assert(upstream::lists == 1 && driver.tasks == 2 && uploads == 1 && releases == 1);
-    assert(driver.synced_draw_list_epoch == driver.engine.draw_list_epoch);
-    driver.synchronize();
-    assert(driver.tasks == 2 && upstream::lists == 1);
-    // A material change replaces only its row, even with the same mesh handle.
-    upstream::next_plan.items[0].material = MaterialHandle{9};
-    ++driver.scene.render_topology_version;
-    driver.synchronize();
-    assert(uploads == 2 && releases == 2 && driver.state.meshes[1].lease == 3 &&
-           driver.state.meshes[2].lease == 101);
-    // Clear the scene while earlier submitted leases may still be in flight.
-    upstream::next_plan.items.clear();
-    ++driver.scene.render_topology_version;
-    driver.synchronize();
-    assert(driver.state.meshes.empty() && uploads == 2 && releases == 5);
-    bool refused = false;
-    try {
-        std::vector<GpuMesh> empty;
-        rematch_render_meshes(
-            std::vector<upstream::RenderItem>{{MeshHandle{0}, 0, MaterialHandle{0}}}, {}, empty,
-            [](GpuMesh& mesh) { mesh.reset(); }, [](const auto&) { return GpuMesh{1}; });
-    } catch (const std::runtime_error&) {
-        refused = true;
+    Row upload_mesh(const upstream::RenderItem&) {
+        ++uploads;
+        return Row{++next_lease};
     }
-    assert(refused);
+    void prune_shared_resources() { note("prune"); }
+    void reject_unbuilt_family_growth(std::uint32_t) { note("families"); }
+    std::size_t shared_shader_geometry_count() const { return 0; }
+    std::size_t shared_shader_material_count() const { return 0; }
+    void rebuild_task_draw_lists() { note("task lists"); }
+    RowWrites& mesh_rows() {
+        note("rows");
+        return rows;
+    }
+    void publish_storage() { note("storage"); }
+    void submit_uploads() { note("submit"); }
+    void mark_uploaded() { note("uploaded"); }
+    void settle_pass(const SceneSyncOutcome& outcome) {
+        note("pass");
+        settled = outcome;
+    }
+    void stream_bone_palettes() { note("palettes"); }
+    void mark_capture(bool topology_updated) {
+        note("capture");
+        capture_saw_topology = topology_updated;
+    }
+    void update_clustered_lights(const SceneSyncOutcome&) { note("clusters"); }
+    void update_text(const SceneSyncOutcome& outcome) {
+        note("text");
+        text_camera = outcome.pass.camera;
+    }
+    void upload_billboards(const SceneSyncOutcome&) { note("billboards"); }
+    void upload_splats(const SceneSyncOutcome&) { note("splats"); }
+    void capture_render_state() { note("render capture"); }
+    void write_pass_blocks(const SceneSyncOutcome&) { note("pass blocks"); }
+};
+
+/** One scene's run state, as a backend's frame session keeps it. */
+struct Run {
+    Engine engine;
+    Scene scene;
+    upstream::RenderPlan render_plan;
+    std::vector<upstream::RenderPlan> overlay_plans;
+    std::vector<std::uint64_t> overlay_versions;
+    std::vector<Row> meshes;
+    std::vector<std::vector<Row>> overlay_meshes;
+    std::uint64_t synced_topology = 0, synced_epoch = 0;
+    std::uint32_t synced_families = 0;
+    CameraTraceState trace;
+    long frame = 0;
+
+    Run() { engine.registered_scenes.push_back(std::make_shared<Scene>(scene)); }
+
+    SceneSyncOutcome synchronize(Hooks& hooks) {
+        SceneSyncState<Row> sync{engine,
+                                 scene,
+                                 ++frame,
+                                 16.0,
+                                 640,
+                                 480,
+                                 render_plan,
+                                 overlay_plans,
+                                 overlay_versions,
+                                 meshes,
+                                 overlay_meshes,
+                                 synced_topology,
+                                 synced_epoch,
+                                 synced_families,
+                                 trace};
+        return synchronize_scene(sync, hooks);
+    }
+};
+
+bool all_zero(const CameraPassMatrices& matrices) {
+    const auto zero = [](const auto& lanes) {
+        return std::all_of(lanes.begin(), lanes.end(), [](float lane) { return lane == 0.0f; });
+    };
+    return matrices.aspect == 0.0 && zero(matrices.view_projection) && zero(matrices.view) &&
+           zero(matrices.projection) && zero(matrices.camera_position);
 }
-} // namespace bbl::pal
+
+/** A camera on the origin's near side, looking down +Z. */
+CameraRecord looking_down_z() {
+    CameraRecord camera;
+    camera.kind = CameraKind::arc_rotate;
+    camera.alpha = -std::numbers::pi / 2.0;
+    camera.beta = std::numbers::pi / 2.0;
+    camera.radius = 1.0;
+    camera.fov = 0.8;
+    camera.near_plane = 0.1;
+    camera.far_plane = 100.0;
+    return camera;
+}
+
+bool same_color(const Color4& left, const Color4& right) {
+    return left.r == right.r && left.g == right.g && left.b == right.b && left.a == right.a;
+}
+
+/**
+ * The pass resolution: each scene's own pass renders through its own
+ * camera and clears to its own colour, with no fallback to another scene's
+ * camera; a task through its configured camera, else its scene's; a pass
+ * without a camera builds the zero matrices and writes no scene block.
+ */
+void check_pass_resolution() {
+    Engine engine;
+    engine.cameras.push_back(looking_down_z());
+    engine.cameras.push_back(looking_down_z());
+    Scene base, layer;
+    base.camera = CameraHandle{0};
+    base.clear_color = Color4{0.25f, 0.5f, 0.75f, 1.0f};
+    layer.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
+    assert(scene_pass_camera(engine, base) == &engine.cameras[0]);
+    assert(scene_pass_camera(engine, layer) == nullptr);
+    assert(same_color(scene_pass_clear_color(base), base.clear_color));
+    assert(same_color(scene_pass_clear_color(layer), layer.clear_color));
+    assert(geometry_pass_camera(engine, base) == &engine.cameras[0]);
+    assert(!upstream::geometry_task_skips(geometry_pass_camera(engine, base)));
+    assert(!geometry_pass_camera(engine, layer));
+    assert(upstream::geometry_task_skips(geometry_pass_camera(engine, layer)));
+
+    FrameTaskRecord task;
+    task.source_scene = layer.state;
+    assert(task_pass_camera(engine, task) == nullptr);
+    assert(same_color(task_pass_clear_color(task), layer.clear_color));
+    task.render.has_camera = true;
+    task.render.camera = CameraHandle{1};
+    task.render.clear_color = Color4{1.0f, 0.0f, 0.0f, 1.0f};
+    assert(task_pass_camera(engine, task) == &engine.cameras[1]);
+    assert(same_color(task_pass_clear_color(task), *task.render.clear_color));
+    task.source_scene = base.state;
+    task.render.has_camera = false;
+    assert(task_pass_camera(engine, task) == &engine.cameras[0]);
+
+    assert(upstream::pass_scene_block_skips(nullptr));
+    assert(!upstream::pass_scene_block_skips(&engine.cameras[0]));
+    const PassCamera none = build_pass_camera(layer, engine, nullptr, 640, 480);
+    assert(!none.camera && all_zero(none.matrices));
+    const PassCamera some = build_pass_camera(base, engine, &engine.cameras[0], 640, 480);
+    assert(some.camera == &engine.cameras[0] && !all_zero(some.matrices));
+    assert(some.matrices.aspect == 640.0 / 480.0);
+}
+
+const std::vector<std::string> steady_steps{
+    "sprites", "rows",     "storage", "submit",     "uploaded", "pass",           "palettes",
+    "capture", "clusters", "text",    "billboards", "splats",   "render capture", "pass blocks"};
+
+/** A camera-less scene still runs every step, through a null pass. */
+void check_camera_less_frame() {
+    Run run;
+    Hooks hooks;
+    const SceneSyncOutcome outcome = run.synchronize(hooks);
+    assert(hooks.steps == steady_steps);
+    assert(!outcome.topology_updated && !hooks.capture_saw_topology);
+    assert(outcome.surface_extent.width == 640 && outcome.surface_extent.height == 480);
+    assert(!outcome.pass.camera && !hooks.settled.pass.camera && !hooks.text_camera);
+    assert(all_zero(outcome.pass.matrices) && all_zero(hooks.settled.pass.matrices));
+}
+
+/**
+ * `sortTransparentBindings` returns without a camera: the list keeps the
+ * order it was built in, and a camera sorts it back to front.
+ */
+void check_transparent_sort() {
+    Run run;
+    run.engine.meshes.resize(3);
+    run.engine.meshes[0].position = {0, 0, 5};
+    run.engine.meshes[1].position = {0, 0, 10};
+    run.engine.meshes[2].position = {0, 0, 20};
+    run.engine.meshes[2].visible = false;
+    auto& transparent = run.render_plan.draw_lists.transparent;
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        upstream::RenderDrawCommand command{};
+        command.item.mesh = MeshHandle{index};
+        command.item.order = index;
+        command.item_index = index;
+        transparent.visibility_candidates.push_back(command);
+    }
+    Hooks camera_less;
+    run.synchronize(camera_less);
+    // The hidden mesh leaves the drawn list whether or not the pass sorted.
+    assert(transparent.commands.size() == 2 && transparent.commands[0].item.mesh.value == 0 &&
+           transparent.commands[1].item.mesh.value == 1);
+    run.engine.cameras.push_back(looking_down_z());
+    run.scene.camera = CameraHandle{0};
+    Hooks sorted;
+    const SceneSyncOutcome outcome = run.synchronize(sorted);
+    assert(outcome.pass.camera == &run.engine.cameras[0]);
+    assert(sorted.text_camera == outcome.pass.camera && !all_zero(outcome.pass.matrices));
+    assert(transparent.commands.size() == 2 && transparent.commands[0].item.mesh.value == 1 &&
+           transparent.commands[1].item.mesh.value == 0);
+}
+
+/**
+ * A topology change rebuilds the plan and keeps each surviving row's
+ * upload; a moved visibility epoch rebuilds only the draw lists; a
+ * transform uploads no vertices, and a position update uploads the
+ * geometry's own lanes.
+ */
+void check_topology_and_rows() {
+    next_lease = 0;
+    Run run;
+    run.engine.geometries.resize(1);
+    ModelVertex vertex;
+    vertex.position = {1, 2, 3};
+    run.engine.geometries[0].vertices.push_back(vertex);
+    run.engine.meshes.resize(4);
+    for (MeshRecord& mesh : run.engine.meshes)
+        mesh.geometry = 0;
+    for (std::uint32_t index = 0; index < 3; ++index)
+        run.scene.meshes.push_back(MeshHandle{index});
+    ++run.scene.render_topology_version;
+    Hooks built;
+    const SceneSyncOutcome first = run.synchronize(built);
+    assert(first.topology_updated && built.capture_saw_topology && built.uploads == 3);
+    assert(run.meshes.size() == 3 && run.meshes[0].lease == 1 && run.meshes[2].lease == 3);
+    assert(std::count(built.steps.begin(), built.steps.end(), "task lists") == 1);
+    assert(built.rows.blocks == 3);
+
+    // Remove the middle mesh and add another: the other two leases survive.
+    run.scene.meshes = {MeshHandle{0}, MeshHandle{2}, MeshHandle{3}};
+    ++run.scene.render_topology_version;
+    Hooks rebuilt;
+    run.synchronize(rebuilt);
+    assert(rebuilt.uploads == 1 && rebuilt.releases == 1);
+    assert(run.meshes.size() == 3 && run.meshes[0].lease == 1 && run.meshes[1].lease == 3 &&
+           run.meshes[2].lease == 4);
+
+    // A visibility epoch rebuilds the lists and the task lists, no rows.
+    ++run.engine.draw_list_epoch;
+    Hooks epoch;
+    const SceneSyncOutcome moved = run.synchronize(epoch);
+    assert(!moved.topology_updated && epoch.uploads == 0 && epoch.releases == 0);
+    assert(std::count(epoch.steps.begin(), epoch.steps.end(), "task lists") == 1);
+    assert(run.synced_epoch == run.engine.draw_list_epoch);
+    Hooks steady;
+    run.synchronize(steady);
+    assert(steady.steps == steady_steps);
+
+    // The first sync above uploaded every row's lanes once; a transform
+    // reaches the draw through the mesh block alone.
+    for (Row& row : run.meshes)
+        row.position_version = run.engine.geometries[0].position_version;
+    run.engine.meshes[0].position.x += 5;
+    set_mesh_rotation_quaternion(run.engine, MeshHandle{0}, {0, 0.6f, 0, 0.8f});
+    Hooks transformed;
+    run.synchronize(transformed);
+    assert(transformed.rows.vertex_uploads == 0 && transformed.rows.blocks == 3);
+    run.engine.geometries[0].vertices[0].position = {4, 5, 6};
+    ++run.engine.geometries[0].position_version;
+    Hooks updated;
+    run.synchronize(updated);
+    assert(updated.rows.vertex_uploads == 3 && updated.rows.vertices.size() == 1);
+    const GpuVertex& lane = updated.rows.vertices[0];
+    assert(lane.position[0] == 4 && lane.position[1] == 5 && lane.position[2] == 6);
+    Hooks settled;
+    run.synchronize(settled);
+    assert(settled.rows.vertex_uploads == 0);
+}
+
+} // namespace
+
 int main() {
-    bbl::pal::check<bbl::pal::Sdl>();
-    bbl::pal::check<bbl::pal::Dawn>();
+    check_pass_resolution();
+    check_camera_less_frame();
+    check_transparent_sort();
+    check_topology_and_rows();
+    std::cout << "scene-topology-sync-check: ok\n";
 }

@@ -52,6 +52,11 @@ import {
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 import { lowerRenderBucket } from "./render-bucket.js";
+import {
+    geometryTaskCameraCpp,
+    renderTaskPassCpp,
+    transparentSortSkipCpp,
+} from "./render-task-pass.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -946,9 +951,14 @@ ${options.standardVertexAlpha ? "#include <bblite/js_data.hpp>\n" : ""}\
 #include <bblite/upstream/camera_math.hpp>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
+
+${renderTaskPassCpp(this.context)}
+
+${geometryTaskCameraCpp(this.context)}
 
 // ${this.context.provenance(transmissionFrameGraphModule, "executeRenderTaskLinear")}
 // The value the pin writes over toneMappingEnabled while a transmission
@@ -1224,10 +1234,13 @@ struct CameraBasis {
     Vec3 up;
 };
 CameraBasis camera_basis(const CameraRecord& camera);
+/** The transparent list's per-frame refresh: its visible candidates, sorted
+ *  back to front under the pass camera (\`sortTransparentBindings\`), which
+ *  a camera-less pass skips as the pin's own early return does. */
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
-    const CameraRecord& camera);
+    const CameraRecord* camera);
 RenderItem bind_render_item(
     RenderItem item,
     const Engine& engine,
@@ -1395,6 +1408,7 @@ PbrUniforms build_pbr_uniforms(
             orthoWriter,
             cameraViewport,
         } = inputs;
+        const transparentSortSkip = transparentSortSkipCpp(this.context);
         return `// ${this.context.provenance(
             renderTaskModule,
             "_buildBindings",
@@ -1798,37 +1812,42 @@ CameraBasis camera_basis(const CameraRecord& camera) {
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
-    const CameraRecord& camera) {
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& eye = basis.eye;
-    const Vec3& forward = basis.forward;
+    const CameraRecord* camera) {
     auto& commands = transparent.visibility_candidates;
-    for (RenderDrawCommand& command : commands) {
-        if (command.item.mesh.value >= engine.meshes.size()) {
-            command.sort_distance = 0.0f;
-            continue;
+    // sortTransparentBindings' own early return.
+    if (!(${transparentSortSkip})) {
+        const CameraBasis basis = camera_basis(*camera);
+        const Vec3& eye = basis.eye;
+        const Vec3& forward = basis.forward;
+        for (RenderDrawCommand& command : commands) {
+            if (command.item.mesh.value >= engine.meshes.size()) {
+                command.sort_distance = 0.0f;
+                continue;
+            }
+            const MeshRecord& mesh = ${recordAt("engine.meshes", "command.item.mesh")};
+            // pin-adopted(sort-center): both pinned families store sortCenter =
+            // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
+            // the draw world's translation -- never the bounds center.
+            const std::array<float, 16> world = mesh_world_matrix(engine, mesh);
+            const Vec3 center{world[12], world[13], world[14]};
+            const Vec3 delta{
+                center.x - eye.x,
+                center.y - eye.y,
+                center.z - eye.z,
+            };
+            command.sort_distance = dot(delta, forward);
         }
-        const MeshRecord& mesh = ${recordAt("engine.meshes", "command.item.mesh")};
-        // pin-adopted(sort-center): both pinned families store sortCenter =
-        // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
-        // the draw world's translation -- never the bounds center.
-        const std::array<float, 16> world = mesh_world_matrix(engine, mesh);
-        const Vec3 center{world[12], world[13], world[14]};
-        const Vec3 delta{
-            center.x - eye.x,
-            center.y - eye.y,
-            center.z - eye.z,
-        };
-        command.sort_distance = dot(delta, forward);
+        std::stable_sort(
+            commands.begin(),
+            commands.end(),
+            [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+                return left.sort_distance > right.sort_distance ||
+                    (left.sort_distance == right.sort_distance &&
+                     left.item.order < right.item.order);
+            });
     }
-    std::stable_sort(
-        commands.begin(),
-        commands.end(),
-        [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
-            return left.sort_distance > right.sort_distance ||
-                (left.sort_distance == right.sort_distance &&
-                 left.item.order < right.item.order);
-        });
+    // The pin's drawList skips a hidden mesh at the draw; this list is this
+    // port's per-frame answer to it, refreshed whether or not it sorted.
     transparent.commands.clear();
     for (const RenderDrawCommand& command : commands) {
         if (mesh_draws(${recordAt("engine.meshes", "command.item.mesh")}) && render_item_material_draws(command.item, engine)) {

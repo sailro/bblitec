@@ -283,7 +283,10 @@ inline void sync_splat_data(SDL_GPUDevice* device, const SplatMeshRecord& record
  * backend, so only the order lands here.
  */
 inline void upload_splat_pass(SDL_GPUDevice* device, const Engine& engine, SplatPass& pass,
-                              const std::array<float, 16>& view) {
+                              const CameraRecord* camera, const std::array<float, 16>& view) {
+    // The renderable's own update returns before its work without a camera.
+    if (upstream::splat_update_returns(camera))
+        return;
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_splat_data(device, record, pass);
 

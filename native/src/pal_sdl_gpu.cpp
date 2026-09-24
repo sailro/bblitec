@@ -67,6 +67,8 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_pass_camera.hpp"
+#include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
 #include "pal_sdl_compute_texture.hpp"
 #include "pal_frame_session.hpp"
@@ -155,10 +157,8 @@ namespace {
 void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene, const Engine& engine,
                               const CameraRecord* camera, std::uint32_t target_width,
                               std::uint32_t target_height) {
-    // A pass without a camera keeps the whole target, the nullish camera's
-    // answer (`no_camera_record`).
-    const std::optional<PixelViewport> resolved = scene_camera_viewport(
-        engine, scene, camera ? *camera : no_camera_record, target_width, target_height);
+    const std::optional<PixelViewport> resolved =
+        scene_camera_viewport(engine, scene, camera, target_width, target_height);
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -6708,9 +6708,6 @@ class SdlSceneRun {
     /** The run scene's `scene_camera`. */
     CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
-    /** A registered layer's own camera, null when it has none. */
-    CameraRecord* layer_camera(const Scene& layer) { return scene_camera(data_.engine, layer); }
-
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -7762,271 +7759,181 @@ public:
         return FramePreparation::ready;
     }
 
-    void synchronize() {
-        [[maybe_unused]] auto& engine = data_.engine;
-        [[maybe_unused]] auto& captures = data_.captures;
-        [[maybe_unused]] auto& frame = data_.frame;
-        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
-        [[maybe_unused]] auto& scene = data_.scene;
-        [[maybe_unused]] auto& render_plan = data_.render_plan;
-        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
-        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
-        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
-        [[maybe_unused]] auto& synced_render_topology_version =
-            data_.synced_render_topology_version;
-        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
-        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
-        [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
-        [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
-        [[maybe_unused]] auto& state = data_.resources.state;
-#if BBLITE_HAS_SPRITE_RENDERER
-        [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
-#endif
-#if BBLITE_HAS_SPRITE_RENDERER
-        [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
-#endif
-#if BBLITE_HAS_SPRITE_RENDERER
-        [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
-#endif
-#if BBLITE_HAS_SPRITE_RENDERER
-        [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
-#endif
-        CameraRecord* const camera = active_camera();
-        [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
-        [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
-        [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
-        [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
-        [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
-        [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
-        [[maybe_unused]] auto& uploaded = current_frame().uploaded;
-        [[maybe_unused]] auto& width = current_frame().width;
-        [[maybe_unused]] auto& height = current_frame().height;
-        [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
-        [[maybe_unused]] auto& frame_camera = current_frame().frame_camera;
-        [[maybe_unused]] const auto& aspect = frame_camera.aspect;
-        [[maybe_unused]] const auto& matrix = frame_camera.view_projection;
-        [[maybe_unused]] const auto& frame_view = frame_camera.view;
-        [[maybe_unused]] const auto& frame_projection = frame_camera.projection;
-        [[maybe_unused]] const auto& frame_camera_position = frame_camera.camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
-        [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
-        [[maybe_unused]] auto& capture_frame = current_frame().capture_frame;
-        [[maybe_unused]] auto& capture_ids = current_frame().capture_ids;
-        [[maybe_unused]] auto& capture_clusters = current_frame().capture_clusters;
-        trace_dynamic_frame(engine, delta_ms, frame);
-#if BBLITE_HAS_SPRITE_RENDERER
-        // `_update` for every sprite context precedes every `_record`,
-        // sharing the scene's one batched upload submission. Registration
-        // controls drawing, not whether its layer data stays current.
-        sync_sdl_scene_sprites(state, engine, sprite_passes, sprite_render_textures,
-                               swapchain_format);
-        for (SpritePass& sprite_pass : sprite_passes) {
-            // `spriteRendererUpdate` runs the renderer's own hooks
-            // before it reads its layers, so an overlay HUD's hook is
-            // seen by this frame rather than the next.
-            begin_sprite_renderer_update(engine, sprite_pass.renderer, delta_ms);
-            sync_sprite_pass_layers(state.device, engine, sprite_pass, sprite_render_textures);
-            upload_sprite_pass(state.device, engine, sprite_pass, delta_ms, frame_buffer_uploads);
-        }
-        if (has_scene_sprite_pass) {
-            upload_scene_sprite_pass(state.device, engine, scene_sprite_pass, delta_ms,
-                                     frame_buffer_uploads);
-        }
-#endif
-        // One scene's plan synced against the meshes uploaded for it.
-        // A swapchain overlay layer is a second (plan, mesh array)
-        // pair, so this takes them rather than closing over the base
-        // scene's -- the per-frame republish is the same work either
-        // way.
-        const auto sync_plan_meshes = [&](const upstream::RenderPlan& sync_plan,
-                                          std::vector<GpuMesh>& sync_meshes) {
-            for (std::size_t index = 0;
-                 index < sync_plan.items.size() && index < sync_meshes.size(); ++index) {
-                const upstream::RenderItem& item = sync_plan.items[index];
-                [[maybe_unused]] const MeshRecord& mesh = handle_at(engine.meshes, item.mesh);
-                [[maybe_unused]] GpuMesh& gpu_mesh = sync_meshes[index];
+    /**
+     * The GPU writes one plan row's refresh makes (`sync_plan_mesh_rows`),
+     * staged into the frame's upload batch. The mesh world and deformation
+     * blocks are pushed per draw on this backend, so a row writes none.
+     */
+    struct MeshRowUploads {
+        GpuState& state;
+        GpuBufferUploadBatch& uploads;
+
 #if BBLITE_GPU_INSTANCING
-                if (mesh.thin_instanced && gpu_mesh.instance_version != mesh.instance_version) {
-                    // A pool that grew past what registration allocated
-                    // cannot be filled by an update: the instance
-                    // buffers are recreated at the new capacity, which is
-                    // also a full upload, so the dirty-range write below is
-                    // skipped for that frame. The old buffers are released
-                    // here because SDL retires one only once the command
-                    // buffers still holding it have finished. Nothing
-                    // caches these handles -- every pass reads GpuMesh live
-                    // at the draw -- so a shadow or depth task later this
-                    // frame binds the new buffers.
-                    const bool recreated =
-                        thin_instance_pool_grew(mesh, gpu_mesh.instance_capacity);
-                    if (recreated) {
-                        const std::size_t rows = mesh.instance_matrices.size();
-                        SDL_ReleaseGPUBuffer(state.device, gpu_mesh.instances);
-                        gpu_mesh.instances = frame_buffer_uploads.upload(
-                            SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                            mesh.instance_matrices.data(),
-                            rows * sizeof(mesh.instance_matrices.front()));
+        void recreate_instances(GpuMesh& gpu, const MeshRecord& mesh) {
+            // SDL retires a released buffer only once the command buffers
+            // still holding it have finished.
+            const std::size_t rows = mesh.instance_matrices.size();
+            SDL_ReleaseGPUBuffer(state.device, gpu.instances);
+            gpu.instances = uploads.upload(
+                SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                mesh.instance_matrices.data(), rows * sizeof(mesh.instance_matrices.front()));
 #if BBLITE_GPU_INSTANCE_COLORS
-                        if (gpu_mesh.instance_colors) {
-                            // The colour mirror is the scene's own array
-                            // and may still be the shorter one; pad to the
-                            // pool the way registration does.
-                            std::vector<float> instance_colors = instance_colors_for_upload(mesh);
-                            instance_colors.resize(rows * 4, 1.0f);
-                            SDL_ReleaseGPUBuffer(state.device, gpu_mesh.instance_colors);
-                            gpu_mesh.instance_colors = frame_buffer_uploads.upload(
-                                SDL_GPU_BUFFERUSAGE_VERTEX, instance_colors.data(),
-                                instance_colors.size() * sizeof(float));
-                        }
-#endif
-                        gpu_mesh.instance_capacity = static_cast<std::uint32_t>(rows);
-                    }
-                    // Re-upload the dirty range [0, count) from the record
-                    // pool; slots past the active count keep their previous
-                    // contents and are never drawn.
-                    const std::size_t active_count = thin_instance_active_count(mesh);
-                    if (!recreated && active_count > 0) {
-                        frame_buffer_uploads.update(
-                            gpu_mesh.instances, mesh.instance_matrices.data(),
-                            active_count * sizeof(mesh.instance_matrices.front()));
-#if BBLITE_GPU_INSTANCE_COLORS
-                        if (gpu_mesh.instance_colors) {
-                            const auto colors = instance_colors_for_upload(mesh);
-                            if (colors.size() >= active_count * 4) {
-                                frame_buffer_uploads.update(gpu_mesh.instance_colors, colors.data(),
-                                                            active_count * 4 * sizeof(float));
-                            }
-                        }
-#endif
-                    }
-                    gpu_mesh.instance_count = static_cast<std::uint32_t>(active_count);
-                    gpu_mesh.instance_version = mesh.instance_version;
-                }
-#endif
-                // The vertex buffer holds the geometry's local lanes, so only
-                // a position update rewrites it; a transform reaches the
-                // draw through its mesh block.
-#if BBLITE_MESH_POSITION_UPDATE
-                const ModelGeometry& geometry = engine.geometries[item.geometry];
-                if (gpu_mesh.position_version != geometry.position_version) {
-                    const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh);
-                    frame_buffer_uploads.update(gpu_mesh.vertices, vertices.data(),
-                                                vertices.size() * sizeof(GpuVertex));
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                    state.node_capture.update(gpu_mesh.vertices, vertices.data(),
-                                              vertices.size() * sizeof(GpuVertex));
-#endif
-                    gpu_mesh.position_version = geometry.position_version;
-                }
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-                if (mesh.gpu_deformation) {
-                    sync_morph_weights(frame_buffer_uploads, gpu_mesh,
-                                       engine.geometries[item.geometry], mesh);
-                }
-#endif
+            if (gpu.instance_colors) {
+                // The colour mirror is the scene's own array and may still
+                // be the shorter one; pad to the pool the way registration
+                // does.
+                std::vector<float> instance_colors = instance_colors_for_upload(mesh);
+                instance_colors.resize(rows * 4, 1.0f);
+                SDL_ReleaseGPUBuffer(state.device, gpu.instance_colors);
+                gpu.instance_colors =
+                    uploads.upload(SDL_GPU_BUFFERUSAGE_VERTEX, instance_colors.data(),
+                                   instance_colors.size() * sizeof(float));
             }
-        };
-        const bool overlays_updated = refresh_overlay_render_plans(
-            engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
-            engine.draw_list_epoch != synced_draw_list_epoch,
-            [&](GpuMesh& mesh) { release_gpu_mesh(state, mesh); },
-            [&](const upstream::RenderItem& item) {
-                return upload_sdl_scene_mesh(state, engine, item, &frame_buffer_uploads);
-            });
-        if (overlays_updated) {
-            prune_shared_shader_geometries(state);
-            prune_shared_shader_material_textures(state);
-            prune_shared_composed_material_textures(state);
+#endif
         }
-        bool topology_updated = overlays_updated;
-        if (scene.render_topology_version != synced_render_topology_version) {
-            const std::size_t previous_item_count = render_plan.items.size();
-            // SDL releases GPU resources only when pending command
-            // buffers are finished with them. The rematch below can
-            // therefore retire removed entries immediately without
-            // stalling every runtime topology update on the whole GPU.
-            const std::uint32_t added_families =
-                scene.material_family_mask & ~synced_material_family_mask;
-            // The table half of the guard is shared with Dawn; the
-            // built-pipeline checks below are this backend's own
-            // residue — its modules are built eagerly at startup, so
-            // a family the initial plan never reached has none.
-            reject_uncomposed_family_growth(added_families);
-            if ((added_families & material_family_shader) != 0 && state.shader_pipelines.empty()) {
+
+        void update_instances(GpuMesh& gpu, const MeshRecord& mesh, std::size_t active_count) {
+            uploads.update(gpu.instances, mesh.instance_matrices.data(),
+                           active_count * sizeof(mesh.instance_matrices.front()));
+#if BBLITE_GPU_INSTANCE_COLORS
+            if (gpu.instance_colors) {
+                const auto colors = instance_colors_for_upload(mesh);
+                if (colors.size() >= active_count * 4) {
+                    uploads.update(gpu.instance_colors, colors.data(),
+                                   active_count * 4 * sizeof(float));
+                }
+            }
+#endif
+        }
+#endif
+
+        void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&,
+                               GpuMesh&) {}
+
+#if BBLITE_MESH_POSITION_UPDATE
+        void upload_vertices(GpuMesh& gpu, const std::vector<GpuVertex>& vertices) {
+            uploads.update(gpu.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            state.node_capture.update(gpu.vertices, vertices.data(),
+                                      vertices.size() * sizeof(GpuVertex));
+#endif
+        }
+#endif
+
+#if BBLITE_GPU_MORPH_STORAGE
+        void upload_morph_weights(GpuMesh& gpu, const ModelGeometry& geometry,
+                                  const MeshRecord& mesh) {
+            sync_morph_weights(uploads, gpu, geometry, mesh);
+        }
+#endif
+    };
+
+    /** The SDL_GPU operations `synchronize_scene` orders. */
+    struct SceneSync {
+        SdlSceneRun& run;
+        MeshRowUploads rows;
+
+        void update_sprites() {
+#if BBLITE_HAS_SPRITE_RENDERER
+            auto& data = run.data_;
+            auto& resources = data.resources;
+            const double delta_ms = run.current_frame().delta_ms;
+            // `_update` for every sprite context precedes every `_record`,
+            // sharing the scene's one batched upload submission.
+            // Registration controls drawing, not whether its layer data
+            // stays current.
+            sync_sdl_scene_sprites(rows.state, data.engine, resources.sprite_passes,
+                                   resources.sprite_render_textures, data.swapchain_format);
+            for (SpritePass& sprite_pass : resources.sprite_passes) {
+                // `spriteRendererUpdate` runs the renderer's own hooks
+                // before it reads its layers, so an overlay HUD's hook is
+                // seen by this frame rather than the next.
+                begin_sprite_renderer_update(data.engine, sprite_pass.renderer, delta_ms);
+                sync_sprite_pass_layers(rows.state.device, data.engine, sprite_pass,
+                                        resources.sprite_render_textures);
+                upload_sprite_pass(rows.state.device, data.engine, sprite_pass, delta_ms,
+                                   rows.uploads);
+            }
+            if (resources.has_scene_sprite_pass) {
+                upload_scene_sprite_pass(rows.state.device, data.engine,
+                                         resources.scene_sprite_pass, delta_ms, rows.uploads);
+            }
+#endif
+        }
+
+        void release_mesh(GpuMesh& mesh) { release_gpu_mesh(rows.state, mesh); }
+
+        GpuMesh upload_mesh(const upstream::RenderItem& item) {
+            return upload_sdl_scene_mesh(rows.state, run.data_.engine, item, &rows.uploads);
+        }
+
+        // SDL releases GPU resources only once pending command buffers are
+        // finished with them, so a rematch retires removed entries at once
+        // without stalling every topology update on the whole GPU.
+        void prune_shared_resources() {
+            prune_shared_shader_geometries(rows.state);
+            prune_shared_shader_material_textures(rows.state);
+            prune_shared_composed_material_textures(rows.state);
+        }
+
+        // This backend's residue beside the shared table guard: its modules
+        // are built eagerly at startup, so a family the initial plan never
+        // reached has none.
+        void reject_unbuilt_family_growth(std::uint32_t added_families) const {
+            if ((added_families & material_family_shader) != 0 &&
+                rows.state.shader_pipelines.empty()) {
                 throw std::runtime_error(
                     "Post-registration shader material family has no reached pipeline.");
             }
-            upstream::RenderPlan updated_plan = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated_plan);
-            std::vector<GpuMesh> updated_meshes = rematch_render_meshes(
-                render_plan.items, updated_plan.items, state.meshes,
-                [&](GpuMesh& mesh) { release_gpu_mesh(state, mesh); },
-                [&](const upstream::RenderItem& item) {
-                    return upload_sdl_scene_mesh(state, engine, item, &frame_buffer_uploads);
-                });
-            prune_shared_shader_geometries(state);
-            prune_shared_shader_material_textures(state);
-            prune_shared_composed_material_textures(state);
-            state.meshes = std::move(updated_meshes);
-            render_plan = std::move(updated_plan);
-            synced_render_topology_version = scene.render_topology_version;
-            synced_material_family_mask = scene.material_family_mask;
-            const std::size_t shader_item_count = static_cast<std::size_t>(
-                std::count_if(render_plan.items.begin(), render_plan.items.end(),
-                              [](const upstream::RenderItem& item) {
-                                  return item.material_kind == upstream::RenderMaterialKind::shader;
-                              }));
-            trace_scene_topology(scene, engine, previous_item_count, render_plan.items.size(),
-                                 shader_item_count, state.shared_shader_geometries.size(),
-                                 state.shared_shader_material_textures.size(), frame);
-            topology_updated = true;
-        } else if (engine.draw_list_epoch != synced_draw_list_epoch) {
-            // The pin's visibility epoch re-records the cached opaque
-            // render bundles; the draw lists are this port's bundles,
-            // so only they and the task lists rebuild -- mesh GPU
-            // state is untouched. A culling-enabled thin-instance pool
-            // moves the second epoch only when its live count crosses
-            // zero, matching the pin's direct-bucket membership.
-            render_plan.draw_lists = upstream::build_render_draw_lists(render_plan.items, engine);
         }
-        if (topology_updated || engine.draw_list_epoch != synced_draw_list_epoch) {
-            rebuild_task_draw_lists();
+
+        std::size_t shared_shader_geometry_count() const {
+            return rows.state.shared_shader_geometries.size();
         }
-        synced_draw_list_epoch = engine.draw_list_epoch;
-        // After the rebuild, as on Dawn: the previous plan can still list a
-        // mesh this frame retired, whose slot a new mesh may already hold.
-        sync_plan_meshes(render_plan, state.meshes);
-        for (std::size_t layer = 0;
-             layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-            sync_plan_meshes(overlay_plans[layer], state.overlay_meshes[layer]);
+        std::size_t shared_shader_material_count() const {
+            return rows.state.shared_shader_material_textures.size();
         }
-        sync_shader_storage_buffers(state, engine, frame_buffer_uploads);
-        frame_buffer_uploads.submit();
-        uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera);
-        if (camera) {
-            trace_camera_state(*camera, camera_trace_state, frame);
-            // `sortTransparentBindings` sorts only with a camera
-            // (render-task-base.ts).
-            upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
+
+        void rebuild_task_draw_lists() { run.rebuild_task_draw_lists(); }
+
+        MeshRowUploads& mesh_rows() { return rows; }
+
+        void publish_storage() {
+            sync_shader_storage_buffers(rows.state, run.data_.engine, rows.uploads);
         }
+
+        void submit_uploads() { rows.uploads.submit(); }
+
+        void mark_uploaded() {
+            run.current_frame().uploaded = run.data_.cpu_profile ? monotonic_milliseconds() : 0.0;
+        }
+
+        void settle_pass(const SceneSyncOutcome& outcome) {
+            Frame& frame = run.current_frame();
+            frame.surface_extent = outcome.surface_extent;
+            frame.frame_camera = outcome.pass.matrices;
+            frame.frame_pass_matrices = frame.frame_camera.pass();
+        }
+
+        void stream_bone_palettes() {
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-        // The pin's bone palettes for every draw the gate resolves,
-        // streamed here because a copy pass cannot open inside the render
-        // pass. The draw branch below keys its skinned handling on the
-        // texture this leaves behind.
-        {
-            // A palette is per PLAN ITEM, not per draw, and the same
-            // item is drawn by the main lists and again by every task
-            // that names it as a caster -- a cascaded generator alone
-            // draws each of its casters once per cascade. Each upload
-            // is a transfer buffer, a copy pass and its own submit, so
-            // the sweep streams an item once and the later sightings of
-            // it cost one lookup.
+            // The pin's bone palettes for every draw the gate resolves,
+            // streamed here because a copy pass cannot open inside the
+            // render pass. The draw branch keys its skinned handling on the
+            // texture this leaves behind.
+            //
+            // A palette is per PLAN ITEM, not per draw, and the same item
+            // is drawn by the main lists and again by every task that names
+            // it as a caster -- a cascaded generator alone draws each of its
+            // casters once per cascade. Each upload is a transfer buffer, a
+            // copy pass and its own submit, so the sweep streams an item
+            // once and the later sightings of it cost one lookup.
+            auto& data = run.data_;
+            Engine& engine = data.engine;
+            GpuState& state = rows.state;
             std::vector<bool>& streamed = state.streamed_palettes;
             streamed.assign(state.meshes.size(), false);
-            const auto stream_palettes = [&](const Scene& palette_scene,
+            const auto stream_palettes = [&]([[maybe_unused]] const Scene& palette_scene,
                                              std::vector<GpuMesh>& meshes,
                                              const upstream::RenderDrawList& list) {
                 for (const upstream::RenderDrawCommand& draw : list.commands) {
@@ -8052,8 +7959,8 @@ public:
                         pinned_variant_for_draw(palette_scene, engine, draw);
                     if (palette_variant != npos) {
 #if BBLITE_VAT
-                        // Copy passes must precede render passes for
-                        // baked palettes as well as live palettes.
+                        // Copy passes must precede render passes for baked
+                        // palettes as well as live palettes.
                         if (pinned_variant_vat(palette_variant)) {
                             write_pinned_vat_texture(state, meshes[draw.item_index],
                                                      handle_at(engine.meshes, draw.item.mesh),
@@ -8072,92 +7979,127 @@ public:
                     streamed[draw.item_index] = true;
                 }
             };
-            stream_palettes(scene, state.meshes, render_plan.draw_lists.opaque);
-            stream_palettes(scene, state.meshes, render_plan.draw_lists.transparent);
-            for (const upstream::RenderDrawLists& task_lists : task_draw_lists) {
-                stream_palettes(scene, state.meshes, task_lists.opaque);
-                stream_palettes(scene, state.meshes, task_lists.transparent);
+            stream_palettes(data.scene, state.meshes, data.render_plan.draw_lists.opaque);
+            stream_palettes(data.scene, state.meshes, data.render_plan.draw_lists.transparent);
+            for (const upstream::RenderDrawLists& task_lists : data.task_draw_lists) {
+                stream_palettes(data.scene, state.meshes, task_lists.opaque);
+                stream_palettes(data.scene, state.meshes, task_lists.transparent);
             }
             for (std::size_t layer = 0;
-                 layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
+                 layer < data.overlay_plans.size() && layer < state.overlay_meshes.size();
+                 ++layer) {
                 const Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 auto& meshes = state.overlay_meshes[layer];
                 streamed.assign(meshes.size(), false);
-                stream_palettes(*overlay_scene, meshes, overlay_plans[layer].draw_lists.opaque);
                 stream_palettes(*overlay_scene, meshes,
-                                overlay_plans[layer].draw_lists.transparent);
+                                data.overlay_plans[layer].draw_lists.opaque);
+                stream_palettes(*overlay_scene, meshes,
+                                data.overlay_plans[layer].draw_lists.transparent);
             }
+#endif
         }
-#endif
-        capture_ready =
-            frame >= screenshot_frame && !topology_updated && captures.drains_resolved();
-        capture_frame = capture_ready && !captures.screenshot_saved && !screenshot_path.empty();
-        capture_ids = capture_ready && !captures.id_buffer_saved && !id_buffer_path.empty();
-        capture_clusters =
-            capture_ready && !captures.cluster_buffer_saved && !cluster_buffer_path.empty();
-        // The frame's product and its two factors, built once: a shader
-        // material may declare either factor beside the product, the pin's
-        // splat UBO stores them separately, and the billboard sort reads the
-        // view.
-        surface_extent = scene_surface_extent(engine, scene, width, height);
-        frame_camera = camera_pass_matrices(scene, engine, camera, surface_extent.width,
-                                            surface_extent.height);
-        frame_pass_matrices = frame_camera.pass();
-#if BBLITE_HAS_TEXT
-        validate_text_scene(scene);
-        state.text->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        const std::optional<TextCameraInput> text_camera =
-            camera ? std::optional<TextCameraInput>{TextCameraInput{
-                         js::TypedArray<float>(matrix.begin(), matrix.end()),
-                         upstream::scene_camera_change_key(*camera), aspect}}
-                   : std::nullopt;
-        state.text->scene.update(bbl::text_surface(engine), text_camera ? &*text_camera : nullptr,
-                                 static_cast<double>(surface_extent.width),
-                                 static_cast<double>(surface_extent.height));
-#endif
-#if BBLITE_HAS_BILLBOARDS
-        // The sorted order depends on the camera alone, so the upload
-        // happens here -- before the frame's command buffer is acquired,
-        // because it submits one of its own -- and the draw below reads
-        // the same matrix.
-        for (BillboardPass& billboard : state.billboard_passes) {
-            upload_billboard_pass(state.device, scene, engine, billboard, frame_view, delta_ms);
-        }
-#endif
-#if BBLITE_HAS_SPLATS
-        // The sort runs on this thread before the draw that reads it,
-        // which is the state `firstSortReady` waits for. The view and
-        // projection are built once for the frame here and the draw
-        // below reads the same matrices, as the billboard pass does. The
-        // splat renderable's update returns without a camera
-        // (gaussian-splatting-pipeline.ts), leaving its block unwritten.
-        for (SplatPass& splat : state.splat_passes) {
-            if (camera)
-                upload_splat_pass(state.device, engine, splat, frame_view);
-        }
-#endif
-#if BBLITE_HAS_CLUSTERED_LIGHTS
-        // The cluster binning, in the same place the splat sort runs and
-        // for the same reason: it reads this frame's camera and the draw
-        // below reads what it wrote. The pin's updater runs for every
-        // colour pass over its camera and target, and its refresh returns
-        // without a camera (render-task-base.ts, clustered.ts).
-        if (ClusteredLightContainer* clustered =
-                upstream::clustered_container(engine, scene.clustered_lights)) {
-            upload_clustered_lights(state.device, engine, *clustered, scene.camera,
-                                    static_cast<double>(surface_extent.width),
-                                    static_cast<double>(surface_extent.height), state.clustered);
-        }
-#endif
 
+        void mark_capture(bool topology_updated) {
+            auto& data = run.data_;
+            const FrameOptions& options = data.frame_options;
+            Frame& frame = run.current_frame();
+            frame.capture_ready = data.frame >= options.screenshot_frame && !topology_updated &&
+                                  data.captures.drains_resolved();
+            frame.capture_frame = frame.capture_ready && !data.captures.screenshot_saved &&
+                                  !options.screenshot_path.empty();
+            frame.capture_ids = frame.capture_ready && !data.captures.id_buffer_saved &&
+                                !options.id_buffer_path.empty();
+            frame.capture_clusters = frame.capture_ready && !data.captures.cluster_buffer_saved &&
+                                     !options.cluster_buffer_path.empty();
+        }
+
+        void update_clustered_lights([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_CLUSTERED_LIGHTS
+            // The cluster binning reads this frame's camera and the draws
+            // read what it wrote. The pin's updater runs for every colour
+            // pass over its camera and target, and its refresh returns
+            // without a camera (render-task-base.ts, clustered.ts).
+            Engine& engine = run.data_.engine;
+            const Scene& scene = run.data_.scene;
+            if (ClusteredLightContainer* clustered =
+                    upstream::clustered_container(engine, scene.clustered_lights)) {
+                upload_clustered_lights(rows.state.device, engine, *clustered, scene.camera,
+                                        static_cast<double>(outcome.surface_extent.width),
+                                        static_cast<double>(outcome.surface_extent.height),
+                                        rows.state.clustered);
+            }
+#endif
+        }
+
+        void update_text([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_TEXT
+            update_scene_text(*rows.state.text, run.data_.engine, run.data_.scene, run.data_.frame,
+                              outcome.surface_extent, outcome.pass);
+#endif
+        }
+
+        void upload_billboards([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_BILLBOARDS
+            // Uploaded here because the upload submits a command buffer of
+            // its own; the draw reads the same view.
+            for (BillboardPass& billboard : rows.state.billboard_passes) {
+                upload_billboard_pass(rows.state.device, run.data_.scene, run.data_.engine,
+                                      billboard, outcome.pass.matrices.view,
+                                      run.current_frame().delta_ms);
+            }
+#endif
+        }
+
+        void upload_splats([[maybe_unused]] const SceneSyncOutcome& outcome) {
+#if BBLITE_HAS_SPLATS
+            // The sort runs on this thread before the draw that reads it,
+            // which is the state `firstSortReady` waits for. The renderable
+            // tests `scene.camera`, not the pass's.
+            Engine& engine = run.data_.engine;
+            GpuState& state = rows.state;
+            const CameraPassMatrices& matrices = outcome.pass.matrices;
+            const CameraRecord* const camera = scene_camera(engine, run.data_.scene);
+            for (SplatPass& splat : state.splat_passes) {
+                upload_splat_pass(state.device, engine, splat, camera, matrices.view);
+            }
+#endif
+        }
+
+        void capture_render_state() {
 #if !BBLITE_HAS_TAA && !BBLITE_HAS_TEXT
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-        if (!state.node_capture.capture.enabled())
+            if (!rows.state.node_capture.capture.enabled())
 #endif
-            capture_render_state();
+                run.capture_render_state();
 #endif
+        }
+
+        // This backend pushes each pass's blocks at its draws.
+        void write_pass_blocks(const SceneSyncOutcome&) {}
+    };
+
+    void synchronize() {
+        State& data = data_;
+        Frame& frame = current_frame();
+        SceneSync hooks{*this, MeshRowUploads{data.resources.state, *data.frame_buffer_uploads}};
+        SceneSyncState<GpuMesh> sync{data.engine,
+                                     data.scene,
+                                     data.frame,
+                                     frame.delta_ms,
+                                     frame.width,
+                                     frame.height,
+                                     data.render_plan,
+                                     data.overlay_plans,
+                                     data.overlay_topology_versions,
+                                     data.resources.state.meshes,
+                                     data.resources.state.overlay_meshes,
+                                     data.synced_render_topology_version,
+                                     data.synced_draw_list_epoch,
+                                     data.synced_material_family_mask,
+                                     data.camera_trace_state};
+        static_cast<void>(synchronize_scene(sync, hooks));
     }
 
     void encode() {
@@ -8184,7 +8126,9 @@ public:
 #if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
-        CameraRecord* const camera = active_camera();
+        // The scene's own pass camera, the one the frame's matrices were
+        // settled from.
+        const CameraRecord* const camera = scene_pass_camera(engine, scene);
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
@@ -8241,13 +8185,18 @@ public:
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
-                    const CameraRecord* const graph_camera = layer_camera(graph_scene);
                     const PixelViewport graph_extent =
                         scene_surface_extent(engine, graph_scene, width, height);
-                    const CameraPassMatrices graph_camera_pass = camera_pass_matrices(
-                        graph_scene, engine, graph_camera, graph_extent.width, graph_extent.height);
-                    const std::array<float, 16>& graph_matrix = graph_camera_pass.view_projection;
-                    const ShaderPassMatrices graph_pass_matrices = graph_camera_pass.pass();
+                    // The layer's own scene pass, whose matrix the slot-zero
+                    // push carries between tasks.
+                    const PassCamera graph_pass = build_pass_camera(
+                        graph_scene, engine, scene_pass_camera(engine, graph_scene),
+                        graph_extent.width, graph_extent.height);
+                    const std::array<float, 16>& graph_matrix = graph_pass.matrices.view_projection;
+                    // A geometry task renders through its scene's camera.
+                    const PassCamera geometry_pass = build_pass_camera(
+                        graph_scene, engine, geometry_pass_camera(engine, graph_scene),
+                        graph_extent.width, graph_extent.height);
 #if BBLITE_SHADOW_RECEIVERS
                     update_shadow_generators(state, graph_scene, engine);
                     // CSM receiver-data callbacks can rewrite a shader storage
@@ -8343,17 +8292,19 @@ public:
 #if BBLITE_PINNED_BACKGROUNDS
                     // A compiler-owned scene-stage task draws the background
                     // arms around its mirrored lists, each over the task's
-                    // own scene block. The mesh paths read slot zero as the
-                    // task matrix, so it is restored after.
+                    // own scene block -- the zero block for a camera-less
+                    // task, through which an arm reaches no fragment. The
+                    // mesh paths read slot zero as the task matrix, so it is
+                    // restored after.
                     const auto draw_task_background =
                         [&](SDL_GPURenderPass* task_pass, const std::array<float, 16>& task_matrix,
-                            const CameraRecord& task_camera,
+                            const CameraRecord* task_camera,
                             std::optional<upstream::PinnedBackgroundArmKind> kind) {
                             if (!kind)
                                 return;
                             draw_background_arm(
                                 command, task_pass, state.background_arm(*kind),
-                                pinned_scene_block(graph_scene, engine, task_camera, task_matrix));
+                                pass_scene_uniforms(graph_scene, engine, task_camera, task_matrix));
                             SDL_PushGPUVertexUniformData(command, 0, task_matrix.data(),
                                                          sizeof(task_matrix));
                         };
@@ -8466,14 +8417,14 @@ public:
                                 "the scene's active camera; a scene without one is not reached.");
                         }
                         // A pass without a camera pushes the zero block the pin
-                        // never writes (see `scene_camera`).
+                        // never writes (`pass_scene_uniforms`).
                         upstream::SceneUniforms pass_scene_block =
 #if BBLITE_HAS_TAA
-                            deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
+                            deferred_scene
+                                ? temporal_clean_scene_block(*deferred_scene)
+                                :
 #endif
-                            draw_camera ? pinned_scene_block(draw_context, engine, *draw_camera,
-                                                             draw_matrix)
-                                        : upstream::SceneUniforms{};
+                                pass_scene_uniforms(draw_context, engine, draw_camera, draw_matrix);
 #if BBLITE_SHADOW_RECEIVERS
                         // The pin installs the light-space matrices on a camera
                         // facade whose caches it pins, so its caster pass reads
@@ -8834,30 +8785,26 @@ public:
                                     "Temporal source requires a prepared Standard color pass in its owning scene.");
                             }
 #endif
-                            const CameraRecord* const task_camera =
-                                render_task_camera(engine, task, graph_camera);
+                            CameraRecord* const task_camera = task_pass_camera(engine, task);
 #if BBLITE_HAS_TAA
-                            CameraRecord* source_camera =
-                                task.render.has_camera
-                                    ? &handle_at(engine.cameras, task.render.camera)
-                                    : handle_find(engine.cameras, task.source_scene->camera);
-                            validate_temporal_source(engine, task, source_camera,
+                            validate_temporal_source(engine, task, task_camera,
                                                      handle_at(task_draw_lists, handle));
-                            prepare_temporal_scene_uniforms(task, source_camera, target.width,
-                                                            target.height, graph_extent.width,
-                                                            graph_extent.height,
-                                                            [](const float*, std::size_t) {});
+                            prepare_temporal_scene_uniforms(
+                                task, task_camera, target.width, target.height, graph_extent.width,
+                                graph_extent.height, [](const float*, std::size_t) {});
 #endif
                             // `_writePassSceneUBO` folds the camera's own
                             // viewport into whichever extent the task was
                             // configured for -- the canvas or the target.
                             const bool canvas_extent = task.render.canvas_size;
-                            CameraPassMatrices task_camera_pass = camera_pass_matrices(
-                                graph_scene, engine, task_camera,
-                                canvas_extent ? graph_extent.width
-                                              : static_cast<double>(target.width),
-                                canvas_extent ? graph_extent.height
-                                              : static_cast<double>(target.height));
+                            CameraPassMatrices task_camera_pass =
+                                build_pass_camera(graph_scene, engine, task_camera,
+                                                  canvas_extent ? graph_extent.width
+                                                                : static_cast<double>(target.width),
+                                                  canvas_extent
+                                                      ? graph_extent.height
+                                                      : static_cast<double>(target.height))
+                                    .matrices;
                             // A shadow task renders from the light, not from
                             // a camera: the generator's own matrices replace
                             // the product below, which stays the zero matrix
@@ -9057,7 +9004,7 @@ public:
                             SDL_GPUColorTargetInfo target_info{};
                             target_info.texture =
                                 target_record.swapchain ? swapchain : target.color;
-                            const Color4 task_clear_color = render_task_clear_color(task);
+                            const Color4 task_clear_color = task_pass_clear_color(task);
                             target_info.clear_color = SDL_FColor{
                                 task_clear_color.r,
                                 task_clear_color.g,
@@ -9114,7 +9061,9 @@ public:
                             prepared.target = target_info;
                             if (task_depth_pointer)
                                 prepared.depth = *task_depth_pointer;
-                            if (source_camera && task_camera && task_camera->viewport) {
+                            // `validate_temporal_source` refused a task
+                            // without a camera above.
+                            if (task_camera->viewport) {
                                 const auto rectangle = upstream::resolve_camera_viewport(
                                     *task_camera, target.width, target.height);
                                 prepared.viewport =
@@ -9127,10 +9076,9 @@ public:
                                 prepared.scissor = SDL_Rect{rectangle.x, rectangle.y,
                                                             rectangle.width, rectangle.height};
                             }
-                            if (source_camera && task_camera)
-                                upstream::sort_transparent_draws(
-                                    handle_at(task_draw_lists, handle).transparent, engine,
-                                    *task_camera);
+                            upstream::sort_transparent_draws(
+                                handle_at(task_draw_lists, handle).transparent, engine,
+                                task_camera);
                             draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
                                        task_camera, task_pass_matrices,
                                        handle_at(task_draw_lists, handle), nullptr, nullptr,
@@ -9142,11 +9090,9 @@ public:
 #endif
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(command, &target_info, 1,
                                                                            task_depth_pointer)};
-                            if (task_camera) {
-                                upstream::sort_transparent_draws(
-                                    handle_at(task_draw_lists, handle).transparent, engine,
-                                    *task_camera);
-                            }
+                            upstream::sort_transparent_draws(
+                                handle_at(task_draw_lists, handle).transparent, engine,
+                                task_camera);
                             if (task.render.scene_stages) {
                                 if (!task_depth_pointer ||
                                     target.color_format != state.frame_color_format ||
@@ -9155,15 +9101,10 @@ public:
                                         state.sample_count)
                                     throw std::runtime_error(
                                         "Compiler-owned scene stages require the frame attachment formats and sample count.");
-                                // Without a camera the environment stages project
-                                // through the unwritten zero block and reach no
-                                // fragment, so there is nothing to draw.
 #if BBLITE_PINNED_BACKGROUNDS
-                                if (task_camera) {
-                                    for (const SkyboxLayer layer : skybox_stage_order) {
-                                        draw_task_background(task_pass, task_matrix, *task_camera,
-                                                             state.background_draws.skybox(layer));
-                                    }
+                                for (const SkyboxLayer layer : skybox_stage_order) {
+                                    draw_task_background(task_pass, task_matrix, task_camera,
+                                                         state.background_draws.skybox(layer));
                                 }
 #endif
                             }
@@ -9187,10 +9128,8 @@ public:
                                                  task_sample_count(state, target_record.samples)});
                             if (task.render.scene_stages) {
 #if BBLITE_PINNED_BACKGROUNDS
-                                if (task_camera) {
-                                    draw_task_background(task_pass, task_matrix, *task_camera,
-                                                         state.background_draws.ground);
-                                }
+                                draw_task_background(task_pass, task_matrix, task_camera,
+                                                     state.background_draws.ground);
 #endif
 #if BBLITE_HAS_BILLBOARDS
                                 draw_task_billboards(task_pass, BillboardDepthMode::transparent,
@@ -9205,35 +9144,30 @@ public:
                                     const Scene& utility = *engine.registered_scenes[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
-                                    const CameraRecord* const own_utility_camera =
-                                        layer_camera(utility);
-                                    const CameraRecord* const utility_camera =
-                                        own_utility_camera ? own_utility_camera : task_camera;
-                                    const CameraPassMatrices utility_camera_pass =
-                                        camera_pass_matrices(utility, engine, utility_camera,
-                                                             target.width, target.height);
+                                    // The layer's own scene pass: its camera,
+                                    // with no fallback to the base scene's.
+                                    const PassCamera utility_pass_camera = build_pass_camera(
+                                        utility, engine, scene_pass_camera(engine, utility),
+                                        target.width, target.height);
                                     const std::array<float, 16>& utility_matrix =
-                                        utility_camera_pass.view_projection;
-                                    const ShaderPassMatrices utility_matrices =
-                                        utility_camera_pass.pass();
+                                        utility_pass_camera.matrices.view_projection;
                                     target_info.load_op = SDL_GPU_LOADOP_LOAD;
                                     if (task_depth_pointer)
                                         task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
                                     SdlRenderPass utility_pass{SDL_BeginGPURenderPass(
                                         command, &target_info, 1, task_depth_pointer)};
                                     set_pass_camera_viewport(utility_pass, utility, engine,
-                                                             utility_camera, target.width,
-                                                             target.height);
+                                                             utility_pass_camera.camera,
+                                                             target.width, target.height);
                                     SDL_PushGPUVertexUniformData(command, 0, utility_matrix.data(),
                                                                  sizeof(utility_matrix));
-                                    if (utility_camera) {
-                                        upstream::sort_transparent_draws(
-                                            overlay_plans[layer].draw_lists.transparent, engine,
-                                            *utility_camera);
-                                    }
+                                    upstream::sort_transparent_draws(
+                                        overlay_plans[layer].draw_lists.transparent, engine,
+                                        utility_pass_camera.camera);
                                     draw_scene(utility, state.overlay_meshes[layer], utility_pass,
                                                state.shader_pipelines, state.shader_a2c_pipelines,
-                                               utility_matrix, utility_camera, utility_matrices,
+                                               utility_matrix, utility_pass_camera.camera,
+                                               utility_pass_camera.pass(),
                                                overlay_plans[layer].draw_lists, nullptr, nullptr,
                                                nullptr);
                                     utility_pass.end();
@@ -9243,10 +9177,11 @@ public:
                         }
                         if (task.kind == FrameTaskKind::geometry) {
                             // Without a camera the task does not execute, not
-                            // even its clears (geometry-renderer-task.ts
-                            // executeTask returns 0).
-                            if (!graph_camera)
+                            // even its clears.
+                            if (upstream::geometry_task_skips(geometry_pass.camera))
                                 continue;
+                            const std::array<float, 16>& geometry_matrix =
+                                geometry_pass.matrices.view_projection;
                             GpuGeometryTask& geometry = handle_at(state.geometry_tasks, handle);
                             const SDL_GPUSampleCount task_samples =
                                 task_sample_count(state, task.geometry.samples);
@@ -9297,14 +9232,14 @@ public:
                             // current one on the first frame) and the camera's
                             // near/far planes.
                             if (!geometry.has_previous_view_projection) {
-                                geometry.previous_view_projection = graph_matrix;
+                                geometry.previous_view_projection = geometry_matrix;
                                 geometry.has_previous_view_projection = true;
                             }
                             const PinnedGeometryParams geometry_params{
                                 geometry.previous_view_projection,
                                 {
-                                    static_cast<float>(graph_camera->near_plane),
-                                    static_cast<float>(graph_camera->far_plane),
+                                    static_cast<float>(geometry_pass.camera->near_plane),
+                                    static_cast<float>(geometry_pass.camera->far_plane),
                                     0.0f,
                                     0.0f,
                                 },
@@ -9340,19 +9275,19 @@ public:
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(
                                 command, target_infos.data(),
                                 static_cast<Uint32>(target_infos.size()), &task_depth)};
-                            SDL_PushGPUVertexUniformData(command, 0, graph_matrix.data(),
-                                                         sizeof(graph_matrix));
+                            SDL_PushGPUVertexUniformData(command, 0, geometry_matrix.data(),
+                                                         sizeof(geometry_matrix));
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
-                                *graph_camera);
-                            draw_scene(graph_scene, graph_meshes, task_pass, {}, {}, graph_matrix,
-                                       graph_camera, graph_pass_matrices,
+                                geometry_pass.camera);
+                            draw_scene(graph_scene, graph_meshes, task_pass, {}, {},
+                                       geometry_matrix, geometry_pass.camera, geometry_pass.pass(),
                                        handle_at(task_draw_lists, handle), &task, &geometry_params,
                                        geometry.params);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                             // The previous view-projection is a property of the
                             // TASK, tracked only when a composed family reads it.
-                            geometry.previous_view_projection = graph_matrix;
+                            geometry.previous_view_projection = geometry_matrix;
 #endif
                             task_pass.end();
                             continue;
@@ -9710,26 +9645,27 @@ public:
             color_info.texture = multisampled                            ? state.msaa_color
                                  : capture_frame || transmission_enabled ? state.color
                                                                          : swapchain;
+            // The scene's own pass configures no clear colour.
+            const Color4 clear_color = scene_pass_clear_color(scene);
             // The pin's inverse runs in f64 and WebGPU's clear value stays
             // double; SDL_FColor is the one store that narrows, so the cast
             // sits at the store exactly like the pin's own f32 boundaries.
             color_info.clear_color =
                 transmission_enabled
                     ? SDL_FColor{static_cast<float>(upstream::inverse_image_processed_channel(
-                                     scene.clear_color.r, scene.environment.exposure,
+                                     clear_color.r, scene.environment.exposure,
                                      scene.environment.contrast,
                                      scene.environment.tone_mapping_enabled)),
                                  static_cast<float>(upstream::inverse_image_processed_channel(
-                                     scene.clear_color.g, scene.environment.exposure,
+                                     clear_color.g, scene.environment.exposure,
                                      scene.environment.contrast,
                                      scene.environment.tone_mapping_enabled)),
                                  static_cast<float>(upstream::inverse_image_processed_channel(
-                                     scene.clear_color.b, scene.environment.exposure,
+                                     clear_color.b, scene.environment.exposure,
                                      scene.environment.contrast,
                                      scene.environment.tone_mapping_enabled)),
-                                 scene.clear_color.a}
-                    : SDL_FColor{scene.clear_color.r, scene.clear_color.g, scene.clear_color.b,
-                                 scene.clear_color.a};
+                                 clear_color.a}
+                    : SDL_FColor{clear_color.r, clear_color.g, clear_color.b, clear_color.a};
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
             // Resolve opaque color for transmission sampling while preserving
             // the multisample attachment so transmissive draws can resume it.
@@ -9791,8 +9727,7 @@ public:
             // write_pinned_frame_blocks already makes. A scene without a
             // camera pushes the zero block the pin never writes.
             upstream::SceneUniforms pass_scene_block =
-                camera ? pinned_scene_block(scene, engine, *camera, matrix)
-                       : upstream::SceneUniforms{};
+                pass_scene_uniforms(scene, engine, camera, matrix);
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
 #endif
             const auto draw_render_list = [&](const upstream::RenderDrawList& list) {
@@ -10014,7 +9949,7 @@ public:
             // the mesh paths read as the scene matrix.
             const auto draw_background =
                 [&](std::optional<upstream::PinnedBackgroundArmKind> kind) {
-                    if (!kind || !camera)
+                    if (!kind)
                         return;
                     draw_background_arm(command, pass, state.background_arm(*kind),
                                         pass_scene_block);
@@ -10111,41 +10046,28 @@ public:
                     gpu_error(
                         "A swapchain overlay changed its renderables after resource synchronization.");
                 }
-                // The layer's own camera, or the base scene's for a layer
-                // without one; null when neither has one, which draws
-                // through the zero block (see `scene_camera`).
-                const CameraRecord* const own_overlay_camera = layer_camera(*overlay_scene);
-                const CameraRecord* const overlay_camera =
-                    own_overlay_camera ? own_overlay_camera : camera;
-                std::array<float, 16> overlay_matrix{};
-                if (overlay_camera) {
-                    // A layer's own camera answers `getEffectiveAspectRatio`
-                    // for itself: upstream each scene's render task writes
-                    // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
-                    // two scenes splitting one target by viewport project
-                    // at two different ratios.
-                    const PixelViewport overlay_surface_extent =
-                        scene_surface_extent(engine, *overlay_scene, width, height);
-                    const double overlay_aspect = upstream::effective_aspect_ratio(
-                        *overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                        static_cast<double>(overlay_surface_extent.height));
-                    overlay_matrix =
-                        upstream::build_view_projection(*overlay_camera, overlay_aspect);
-                }
+                // The layer's own scene pass: upstream each scene's render
+                // task resolves `cfg.cam ?? scene.camera` over its OWN scene
+                // and projects at its own extent's aspect, so two scenes
+                // splitting one target by viewport project at two ratios. A
+                // layer without a camera draws through the zero block.
+                const PixelViewport overlay_surface_extent =
+                    scene_surface_extent(engine, *overlay_scene, width, height);
+                const PassCamera overlay_pass = build_pass_camera(
+                    *overlay_scene, engine, scene_pass_camera(engine, *overlay_scene),
+                    overlay_surface_extent.width, overlay_surface_extent.height);
+                const std::array<float, 16>& overlay_matrix = overlay_pass.matrices.view_projection;
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
 #if BBLITE_PINNED_MATERIALS
-                pass_scene_block = overlay_camera
-                                       ? pinned_scene_block(*overlay_scene, engine, *overlay_camera,
-                                                            overlay_matrix)
-                                       : upstream::SceneUniforms{};
+                pass_scene_block = pass_scene_uniforms(*overlay_scene, engine, overlay_pass);
                 pass_lights_block = pinned_lights_block(*overlay_scene, engine);
 #endif
                 color_info.load_op = SDL_GPU_LOADOP_LOAD;
                 depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
                 depth_info.clear_depth = upstream::pinned_depth_clear;
                 pass = SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
-                set_pass_camera_viewport(pass, *overlay_scene, engine, overlay_camera, width,
+                set_pass_camera_viewport(pass, *overlay_scene, engine, overlay_pass.camera, width,
                                          height);
                 SDL_PushGPUVertexUniformData(command, 0, overlay_matrix.data(),
                                              sizeof(overlay_matrix));

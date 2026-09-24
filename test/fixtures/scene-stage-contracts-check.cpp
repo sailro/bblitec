@@ -88,6 +88,9 @@ struct BackgroundDraws {
                    : std::nullopt;
     }
 };
+// The scene's own pass configures no clear colour; its resolution is
+// pal_pass_camera.hpp's, which scene-topology-sync runs.
+Color4 scene_pass_clear_color(const Scene& scene) { return scene.clear_color; }
 void record_background(BackgroundKind kind) {
     if (kind)
         draws.push_back(*kind == upstream::PinnedBackgroundArmKind::ground ? "ground" : "skybox");
@@ -212,7 +215,7 @@ struct SdlGraph : Graph {
     }
     std::vector<int> task_draw_lists{1};
     MeshHandle handle{0};
-    static void draw_task_background(int, int, int, BackgroundKind kind) {
+    static void draw_task_background(int, int, const int*, BackgroundKind kind) {
         record_background(kind);
     }
     static void draw_task_billboards(int, BillboardDepthMode mode, int, int) {
