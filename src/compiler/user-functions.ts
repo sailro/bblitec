@@ -1052,9 +1052,8 @@ function reassignedRecordFields(
                 } else if (ts.isDeleteExpression(node)) {
                     reassigns(node.expression);
                 } else if (ts.isPropertyAccessExpression(node)) {
-                    for (const accessor of checker.getSymbolAtLocation(
-                        node.name,
-                    )?.declarations ?? []) {
+                    for (const accessor of declaredSymbol(checker, node.name)
+                        ?.declarations ?? []) {
                         if (
                             ts.isGetAccessorDeclaration(accessor) ||
                             ts.isSetAccessorDeclaration(accessor)
@@ -3135,7 +3134,7 @@ export class UserFunctionLowerer {
         if (scopes && declaration?.body)
             forEachAnalysisNode(declaration.body, (node) => {
                 const symbol = ts.isIdentifier(node)
-                    ? this.checker.getSymbolAtLocation(node)
+                    ? declaredSymbol(this.checker, node)
                     : undefined;
                 if (symbol) read.add(symbol);
             });
