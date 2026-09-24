@@ -642,6 +642,7 @@ test(
             "temporal-pass-admission",
             `
         #include <bblite/runtime.hpp>
+        #include <bblite/text_gpu.hpp>
         #include <cassert>
         namespace bbl::upstream {
             ${cppFunction(renderer, "enum class RenderMaterialKind {")};

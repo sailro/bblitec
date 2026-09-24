@@ -276,7 +276,7 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
     // registrations' kinds, refused with the pin's own sorted message.
     assert.match(
         pinned,
-        /kinds\.insert\(kinds\.end\(\), engine\.registered_text_renderers\.size\(\), std::string\("text-renderer"\)\);/,
+        /kinds\.insert\(kinds\.end\(\), bbl::text_renderer_count\(engine\), std::string\("text-renderer"\)\);/,
     );
     assert.match(pinned, /registration->kind = "scene";/);
     assert.match(

@@ -217,7 +217,7 @@ test("a large data-only static nest keeps its outer loop native", () => {
     // body; the 96-iteration leaf already exceeds the per-loop ceiling.
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_x < 16\.0; v_block\d+_x\+\+\) \{/,
+        /for \(; v_block\d+_x < 16; \+\+v_block\d+_x\) \{/,
     );
     assert.equal(result.cpp.match(/push_back\(1\.0\)/g)?.length, 1);
 });

@@ -655,39 +655,39 @@ std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(En
 }
 
 /**
- * Each native rendering-context registry, and where the pin gives its
- * contexts their `_kind`: a `_kind` property of the context the module
+ * How many contexts of each kind the engine holds, and where the pin gives
+ * those contexts their `_kind`: a `_kind` property of the context the module
  * creates, or the module's own `KIND` constant.
  */
 const contextRegistries: readonly {
-    registry: string;
+    count: string;
     module: string;
     kind: "property" | "KIND";
     macro?: string;
 }[] = [
     {
-        registry: "registered_scenes",
+        count: "engine.registered_scenes.size()",
         module: "src/scene/scene-core.ts",
         kind: "property",
     },
     {
-        registry: "registered_sprite_renderers",
+        count: "engine.registered_sprite_renderers.size()",
         module: "src/sprite/sprite-renderer.ts",
         kind: "KIND",
         macro: "BBLITE_HAS_SPRITES",
     },
     {
-        registry: "registered_text_renderers",
+        count: "bbl::text_renderer_count(engine)",
         module: "src/text/text-renderer.ts",
         kind: "KIND",
     },
     {
-        registry: "registered_effect_renderers",
+        count: "engine.registered_effect_renderers.size()",
         module: "src/effect/effect-renderer.ts",
         kind: "property",
     },
     {
-        registry: "registered_frame_graph_contexts",
+        count: "engine.registered_frame_graph_contexts.size()",
         module: "src/frame-graph/frame-graph-context.ts",
         kind: "property",
     },
@@ -720,7 +720,7 @@ function contextKindAssertionCpp(context: LoweringContext): string {
     });
     const registries = contextRegistries
         .map((entry, index) => {
-            const line = `    kinds.insert(kinds.end(), engine.${entry.registry}.size(), std::string(${JSON.stringify(kinds[index])}));`;
+            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${JSON.stringify(kinds[index])}));`;
             return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
         })
         .join("\n");
@@ -911,6 +911,7 @@ export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/text_gpu.hpp>
 #include <algorithm>
 #include <iostream>
 #include <ranges>

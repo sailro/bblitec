@@ -218,9 +218,14 @@ using TextSurfaceHandle = std::shared_ptr<TextSurface>;
     return {color.r, color.g, color.b, color.a};
 }
 
+/** The standalone text renderers registered on the engine. */
+[[nodiscard]] inline std::size_t text_renderer_count(const Engine& engine) {
+    return engine.text_surface ? engine.text_surface->rendering_contexts.size() : 0;
+}
+
 /** Whether a standalone text renderer is registered on the engine. */
 [[nodiscard]] inline bool has_text_renderers(const Engine& engine) {
-    return engine.text_surface && engine.text_surface->rendering_contexts.size() != 0;
+    return text_renderer_count(engine) != 0;
 }
 
 /** The engine's text surface, created on first use. */
