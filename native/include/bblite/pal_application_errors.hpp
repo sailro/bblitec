@@ -2,6 +2,7 @@
 
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/uncaught_error.hpp>
 
 #include <iostream>
 
@@ -42,10 +43,8 @@ private:
             std::rethrow_exception(error);
         } catch (const WorkerTerminated&) {
             throw;
-        } catch (const std::exception& problem) {
-            event.message = problem.what();
         } catch (...) {
-            event.message = "Unknown native exception";
+            event.message = exception_message(std::current_exception());
         }
         // Error listeners can themselves throw. Report those failures without
         // recursively dispatching the same listener list.
@@ -58,8 +57,8 @@ private:
             dispatch_platform_event(loop_, listeners(rejection), event);
         }
         if (!event.default_prevented)
-            std::cerr << (rejection ? "Unhandled promise rejection: "
-                                    : "Uncaught application error: ")
+            std::cerr << (rejection ? std::string_view("Unhandled promise rejection: ")
+                                    : uncaught_error_prefix)
                       << event.message << '\n';
     }
     EventLoop& loop_;

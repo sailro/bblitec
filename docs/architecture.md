@@ -89,15 +89,16 @@ belong to scene identity. Property and glTF animation retain separate playback c
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
-- Records, callbacks and containers whose elements can own a traced edge participate in cycle collection at
-  frame boundaries and teardown; other container storage is released by reference counting alone. Only
-  complete payloads enter the registry; they detach before destruction.
+- References, shared cells, records, callbacks and containers that can own a traced edge participate in
+  cycle collection at frame boundaries and teardown; other payloads are released by reference counting
+  alone. Only complete payloads enter the registry; they detach before destruction.
 - Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
 - Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
-  terminate.
+  terminate. An exception escaping an application entry (generated `main`, the Window application, a
+  platform entry) is reported through `bblite/uncaught_error.hpp` with the realm reporter's wording.
 
 ## Renderer
 

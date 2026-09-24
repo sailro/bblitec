@@ -102,6 +102,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
+import { integerCounterRead } from "./integer-loops.js";
 
 /** Container length mutations, isolated by checker and source file. */
 const resizedSymbolsByChecker = new EmissionWeakMap<
@@ -1480,7 +1481,7 @@ export class DataLowerer {
                 freshData: true,
             };
         }
-        const name = this.context.dataTypes.registerConstantArray(
+        const reference = this.context.dataTypes.registerConstantArray(
             declaration,
             ts.isIdentifier(unwrapped) ? unwrapped.text : "static_values",
             this.context.dataTypes.cppType(element),
@@ -1491,11 +1492,12 @@ export class DataLowerer {
                     expression,
                 ),
             ),
+            this.context.dataTypes.constantAllocates(element),
         );
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${name}`,
+            cpp: reference,
             dataType: { kind: "span", element },
         };
     }
@@ -2957,7 +2959,11 @@ export class DataLowerer {
             ? this.context.allocateTemporaryCppName("indexed_owner")
             : owner.cpp;
         this.context.reachJsData();
-        const nativeIndex = `bbl::js::array_index(${index})`;
+        // Only proven arms use it: a proven counter is a non-negative integer.
+        const counter = this.integerCounterIndex(access.argumentExpression);
+        const nativeIndex = counter
+            ? `static_cast<std::size_t>(${counter})`
+            : `bbl::js::array_index(${index})`;
         // Index provenance decides the emission arm. An index the
         // compiler proves in bounds — a static index against a
         // statically known length, or the induction variable of a
@@ -3130,6 +3136,19 @@ export class DataLowerer {
             }
         }
         return this.indexBoundByCanonicalLoop(access);
+    }
+
+    /** The native counter an index names when it is a counted loop's own counter. */
+    private integerCounterIndex(expression: ts.Expression): string | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : undefined;
+        const counter = value?.integerCounterCpp;
+        return counter !== undefined &&
+            value!.cpp === integerCounterRead(counter)
+            ? counter
+            : undefined;
     }
 
     /**
@@ -3982,16 +4001,17 @@ export class DataLowerer {
         }
         // An inlined parameter can bind different constants at each call.
         // Share storage only when the element type and contents match.
-        const name = this.context.dataTypes.registerSharedConstantArray(
+        const reference = this.context.dataTypes.registerSharedConstantArray(
             unwrapped.text,
             this.context.dataTypes.cppType(element),
             elements,
+            this.context.dataTypes.constantAllocates(element),
             literal ?? unwrapped,
         );
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${name}`,
+            cpp: reference,
             dataType: { kind: "span", element },
         };
     }
@@ -4038,7 +4058,7 @@ export class DataLowerer {
         this.context.reachJsData();
         return {
             kind: "data",
-            cpp: `bblscene::${table.name}`,
+            cpp: table.reference,
             dataType: {
                 kind: "table",
                 dimensions: table.dimensions,
@@ -5835,13 +5855,14 @@ export class DataLowerer {
                       )
                     : [...elements],
         };
-        const name = this.context.dataTypes.registerSharedConstantArray(
+        const reference = this.context.dataTypes.registerSharedConstantArray(
             `${prefix}_values`,
             table.elementCppType,
             table.elements,
+            false,
             source,
         );
-        return `bbl::js::${prefix}_array_from(bblscene::${name})`;
+        return `bbl::js::${prefix}_array_from(${reference})`;
     }
 
     /**
@@ -5855,15 +5876,16 @@ export class DataLowerer {
         source: ts.Node,
     ): string {
         const entryType = "std::pair<std::string_view, std::string_view>";
-        return `bblscene::${this.context.dataTypes.registerSharedConstantArray(
+        return this.context.dataTypes.registerSharedConstantArray(
             preferredName,
             entryType,
             pairs.map(
                 ([first, second]) =>
                     `${entryType}{${this.context.cppString(first)}, ${this.context.cppString(second)}}`,
             ),
+            false,
             source,
-        )}`;
+        );
     }
 
     private compileDataViewNew(

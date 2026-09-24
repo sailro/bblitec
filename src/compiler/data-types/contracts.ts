@@ -30,5 +30,12 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
         readonly byReference: boolean;
         /** Opaque Ref<T> leaf: copies retain identity, assignment reseats it, and get() exposes it. */
         readonly opaqueReference?: true;
+        /**
+         * Whether the native value can own an edge the cycle collector
+         * traces (`bbl::js::gc_traceable`): always, never, through its
+         * stored children, or decided by the payload.
+         */
+        readonly tracedEdges:
+            "always" | "never" | "children" | ((type: DataType<P>) => boolean);
     };
 };

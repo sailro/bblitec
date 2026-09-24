@@ -7,6 +7,7 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
         equal: (left, right) => left.name === right.name,
         children: (type, fields) => fields(type.name),
         byReference: false,
+        tracedEdges: "children",
     },
     enum: {
         cpp: (type, context) => context.namedType(type.name),
@@ -14,6 +15,7 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
         equal: (left, right) => left.name === right.name,
         children: () => [],
         byReference: false,
+        tracedEdges: "never",
     },
     function: {
         cpp: (type, context) =>
@@ -41,5 +43,6 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
                 ? [...type.parameters, ...(type.result ? [type.result] : [])]
                 : [],
         byReference: false,
+        tracedEdges: "always",
     },
 };

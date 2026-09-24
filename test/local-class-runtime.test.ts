@@ -196,22 +196,17 @@ test("stores a class an array element demands as a shared object", () => {
         /struct PartData \{\s*bool locked\{\};\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed\{\};\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
     const trace = result.cpp.match(
-        /friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/,
+        /friend void gc_trace_edges\(const PartData& record,[^]*?\n\s*\}/,
     )?.[0];
     assert.ok(trace);
-    for (const field of [
-        "locked",
-        "_size",
-        "_position",
-        "_quat",
-        "_destroyed",
-        "_changeHandlers",
-    ]) {
+    // Only the callback set can own a traced edge; scalars, the tuple and
+    // the edge-free vector records are released by reference counting.
+    assert.ok(trace.includes("visitor(record._changeHandlers);"));
+    for (const field of ["locked", "_size", "_position", "_quat", "_destroyed"])
         assert.ok(
-            trace.includes(`visitor(record.${field});`),
-            `${field} participates in managed ownership tracing`,
+            !trace.includes(`visitor(record.${field});`),
+            `${field} owns no traced edge`,
         );
-    }
     assert.match(result.cpp, /using Part = bbl::js::Ref<PartData>;/);
     assert.match(
         result.cpp,

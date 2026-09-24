@@ -2,6 +2,7 @@
 
 #include <bblite/pal_async_engine.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/uncaught_error.hpp>
 #include <unordered_set>
 
 namespace bbl {
@@ -122,6 +123,8 @@ allocate_compute_texture(const std::shared_ptr<OffscreenRun>& run,
                 creation.validation_error = error.what();
                 creation.creation_error = {};
             } catch (...) {
+                // Any other failure remains the creation error.
+                discard_exception();
             }
         }
         result.resolve(std::move(creation));

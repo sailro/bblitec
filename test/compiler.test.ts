@@ -611,6 +611,47 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     assert.match(result.cpp, /-2\.6/);
 });
 
+test("captures an integer loop counter a shared helper body reads", () => {
+    // The helper's material argument chooses between two handles by the
+    // counter, so its shared body reads the caller's counter through the
+    // captured environment: the capture is the native 64-bit counter.
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        import type { EngineContext, Mesh, StandardMaterialProps } from "@babylonjs/lite";
+
+        function createBar(engine: EngineContext, material: StandardMaterialProps, x: number): Mesh {
+            const bar = createBox(engine, 1);
+            bar.position.x = x;
+            bar.material = material;
+            return bar;
+        }
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const cyan = createStandardMaterial();
+            const white = createStandardMaterial();
+            for (let i = 0; i < 24; i++) {
+                addToScene(scene, createBar(engine, i % 3 === 0 ? cyan : white, i));
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /std::int64_t v_\w+_i = 0;/);
+    assert.match(result.cpp, /std::reference_wrapper<std::int64_t>/);
+    assert.match(
+        result.cpp,
+        /auto& (v_\w+_i) = std::get<\d+>\(v_bblite_environment_\d+\)\.get\(\);[^]*std::fmod\(static_cast<double>\(\1\), 3\.0\)/,
+    );
+});
+
 test("keeps a handle annotation on an object literal as a data record", () => {
     // The other half of the same rule, and the one a bare `handle` exemption
     // broke: freeciv and the platformer spell their atlas as an annotated
@@ -2073,14 +2114,15 @@ test("keeps canonical length-bound loop indices raw and checks the rest", () => 
     // The canonical loops (plain and with a pure Math call) keep the
     // raw fast path over their own induction variable.
     const rawReads =
-        result.cpp.match(/v_values\[bbl::js::array_index\(v_\w+\)\]/g) ?? [];
+        result.cpp.match(/v_values\[static_cast<std::size_t>\(v_\w+\)\]/g) ??
+        [];
     assert.equal(rawReads.length, 2);
     // The stride loop's condition no longer proves the read, and the
     // pop() in the third loop's body could shrink the array mid-walk,
     // so both read through the located checked accessor.
     const checkedReads =
         result.cpp.match(
-            /bbl::js::array_index_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\)/g,
+            /bbl::js::array_index_checked\(v_values, static_cast<double>\(v_\w+\), "[^"]+:\d+:\d+"\)/g,
         ) ?? [];
     assert.equal(checkedReads.length, 2);
 });
@@ -2104,12 +2146,12 @@ test("splits array writes between growth-proven and checked arms", () => {
     // are untouched either way.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_write\(v_values, bbl::js::array_index\(v_\w+\)\) = /,
+        /bbl::js::array_index_write\(v_values, static_cast<std::size_t>\(v_\w+\)\) = /,
     );
     // The unproven stride index writes through the checked grower.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_write_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\) = /,
+        /bbl::js::array_index_write_checked\(v_values, static_cast<double>\(v_\w+\), "[^"]+:\d+:\d+"\) = /,
     );
 });
 
@@ -2134,7 +2176,7 @@ test("emits a checked read for a dead-guarded static out-of-bounds index", () =>
 
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\([^,]+, \(v_\w+_s - 1\.0\), "[^"]+:\d+:\d+"\)/,
+        /bbl::js::array_index_checked\([^,]+, \(static_cast<double>\(v_\w+_s\) - 1\.0\), "[^"]+:\d+:\d+"\)/,
     );
 });
 
@@ -2703,7 +2745,7 @@ test("materializes static tables under runtime indices only", () => {
 
     assert.match(
         result.cpp,
-        /inline const std::array<bbl::js::Tuple<2>, 3> WEIGHTS = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};/,
+        /inline const std::array<bbl::js::Tuple<2>, 3>& WEIGHTS\(\) \{\s*static const std::array<bbl::js::Tuple<2>, 3> value = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};\s*return value;\s*\}/,
     );
     // The table's own lanes are doubles, and so is the local, so the read
     // is written at that width rather than at the default float one.
@@ -2712,7 +2754,7 @@ test("materializes static tables under runtime indices only", () => {
     // keeps the raw fast path.
     assert.match(
         result.cpp,
-        /bbl::js::array_index_checked\(bblscene::WEIGHTS, v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
+        /bbl::js::array_index_checked\(bblscene::WEIGHTS\(\), v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
     );
     assert.match(
         result.cpp,
@@ -6459,7 +6501,9 @@ test("lowers numeric for and while loops", () => {
     );
 
     const writes = [
-        ...result.cpp.matchAll(/(v_fn\d+)_samples \+= v_\w+_index;/g),
+        ...result.cpp.matchAll(
+            /(v_fn\d+)_samples \+= static_cast<double>\(v_\w+_index\);/g,
+        ),
     ];
     assert.equal(writes.length, 1);
     const scope = writes[0]![1];
@@ -6540,7 +6584,7 @@ test("keeps the for incrementor reachable from continue", () => {
 
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_index < bblscene::count\(\); v_block\d+_index\+\+\) \{/,
+        /for \(; static_cast<double>\(v_block\d+_index\) < bblscene::count\(\); \+\+v_block\d+_index\) \{/,
     );
     assert.match(result.cpp, /continue;/);
 });
@@ -6727,10 +6771,12 @@ test("keeps large constant-count data loops at runtime", () => {
 
     assert.match(
         result.cpp,
-        /for \(; v_block\d+_i < 256\.0; v_block\d+_i\+\+\) \{/,
+        /for \(; v_block\d+_i < 256; \+\+v_block\d+_i\) \{/,
     );
     assert.equal(
-        result.cpp.match(/bbl::js::to_uint8\(v_block\d+_i\)/g)?.length,
+        result.cpp.match(
+            /bbl::js::to_uint8\(static_cast<double>\(v_block\d+_i\)\)/g,
+        )?.length,
         1,
     );
 });
@@ -6749,7 +6795,7 @@ test("keeps helper construction loops native with every composition row", () => 
         }
     `);
 
-    assert.match(result.cpp, /for \(; \w+ < 40\.0; \w+\+\+\)/);
+    assert.match(result.cpp, /for \(; \w+ < 40; \+\+\w+\)/);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 40);
     assert.ok(
@@ -6871,7 +6917,10 @@ test("keeps the run-time length where the container is resized", () => {
         rows.push([7, 8]);
     `);
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < bbl::js::array_length/,
+    );
 });
 
 test("withdraws the length fold from a container handed to a call", () => {
@@ -6892,7 +6941,10 @@ test("withdraws the length fold from a container handed to a call", () => {
         }
     `);
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < bbl::js::array_length/,
+    );
     assert.match(
         result.cpp,
         /void grow\(bbl::js::Array<double>& v_fn\d+_list\)/,
@@ -8286,7 +8338,10 @@ test("keeps a resolved browser number in a native counted loop", () => {
         { search: "?count=40" },
     );
 
-    assert.match(result.cpp, /for \(; v_block\d+_i < 40\.0;/);
+    assert.match(
+        result.cpp,
+        /for \(; static_cast<double>\(v_block\d+_i\) < 40\.0;/,
+    );
     assert.doesNotMatch(result.cpp, /Browser-dependent condition/);
 });
 
@@ -13548,7 +13603,10 @@ test("stringifies a native exception through a catch binding", () => {
     `);
 
     assert.match(result.cpp, /catch \(const std::exception&/);
-    assert.match(result.cpp, /\.what\(\)/);
+    assert.match(
+        result.cpp,
+        /bbl::js::error_message\(v_bblite_caught_error_\d+\)/,
+    );
     assert.match(result.cpp, /std::rethrow_exception\(bbl::js::make_error/);
     assert.doesNotMatch(result.cpp, /std::string v_[\w]*cause =/);
 });
@@ -15671,7 +15729,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // readback's nullable point, and the distance beside it.
     assert.match(
         result.cpp,
-        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*\};/,
     );
     // A miss is the pin's `_spritePick ?? null`: an id no billboard
     // contributor owns leaves the payload unset.

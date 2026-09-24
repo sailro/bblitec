@@ -1175,9 +1175,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 return 0;
             location->commit_reload();
         }
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite Window error: " << error.what() << '\n';
-        return 1;
+    } catch (...) {
+        return report_uncaught_error(std::current_exception());
     }
 }
 } // namespace bbl::pal

@@ -24,7 +24,7 @@ for (const [name, fixture, expected] of [
     [
         "GC preserves exact ownership and unwinds failed registry growth",
         "ref-gc-ownership-check",
-        "ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; cycle edges=2/2, collected=2; registry and allocations restored)",
+        "ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; untraced payloads unregistered; cycle edges=2/2, collected=2; registry and allocations restored)",
     ],
 ] as const)
     test(name, (t) => {

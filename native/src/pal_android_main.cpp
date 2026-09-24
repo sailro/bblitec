@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <jni.h>
 #include <SDL3/SDL.h>
+#include <bblite/uncaught_error.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -84,8 +85,8 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** 
                             static_cast<int>(backend.size()), backend.data(),
                             run_id ? run_id : "interactive");
         result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite native error: " << error.what() << '\n';
+    } catch (...) {
+        result = bbl::report_uncaught_error(std::current_exception());
     }
     std::cout.rdbuf(output);
     std::cerr.rdbuf(errors);

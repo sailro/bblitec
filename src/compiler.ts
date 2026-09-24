@@ -6694,6 +6694,7 @@ class Compiler implements LoweringServices {
         this.nativeStoredValues.add(value);
         const storage =
             value.sharedStorageCpp ??
+            value.integerCounterCpp ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
                 : (value.optionalStorageCpp ?? value.cpp));
@@ -6704,29 +6705,30 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
-        const cppType =
-            value.kind === "engine"
-                ? value.ownedEngineCpp
-                    ? "std::shared_ptr<bbl::Engine>"
-                    : "bbl::Engine"
-                : value.kind === "texture" && value.textureStorage === "solid"
-                  ? "bbl::SolidTexture"
-                  : value.kind === "texture" && value.textureStorage === "file"
-                    ? "bbl::FileTexture"
-                    : value.kind === "texture" &&
-                        value.textureStorage === "pixels"
-                      ? "bbl::PixelsTexture"
-                      : value.dataType
-                        ? this.dataTypes.cppType(value.dataType)
-                        : isHandleKind(value.kind)
-                          ? handleCppType(value.kind)
-                          : value.kind === "number"
-                            ? "double"
-                            : value.kind === "boolean"
-                              ? "bool"
-                              : value.kind === "string"
-                                ? "std::string"
-                                : undefined;
+        const cppType = value.integerCounterCpp
+            ? "std::int64_t"
+            : value.kind === "engine"
+              ? value.ownedEngineCpp
+                  ? "std::shared_ptr<bbl::Engine>"
+                  : "bbl::Engine"
+              : value.kind === "texture" && value.textureStorage === "solid"
+                ? "bbl::SolidTexture"
+                : value.kind === "texture" && value.textureStorage === "file"
+                  ? "bbl::FileTexture"
+                  : value.kind === "texture" &&
+                      value.textureStorage === "pixels"
+                    ? "bbl::PixelsTexture"
+                    : value.dataType
+                      ? this.dataTypes.cppType(value.dataType)
+                      : isHandleKind(value.kind)
+                        ? handleCppType(value.kind)
+                        : value.kind === "number"
+                          ? "double"
+                          : value.kind === "boolean"
+                            ? "bool"
+                            : value.kind === "string"
+                              ? "std::string"
+                              : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -8897,8 +8899,12 @@ class Compiler implements LoweringServices {
             );
         }
         const cppName = this.bindings.cppIdentifier(identifier.text);
-        this.staticNativeDeclarations.push(`auto ${cppName} = ${value.cpp};`);
-        const stored = { ...value, cpp: cppName };
+        // A function-local static: its construction can throw, which a
+        // namespace-scope initializer would turn into termination.
+        this.staticNativeDeclarations.push(
+            `auto& ${cppName}() {\n    static auto value = ${value.cpp};\n    return value;\n}`,
+        );
+        const stored = { ...value, cpp: `${cppName}()` };
         this.bindings.variableScopes[0]!.set(symbol, {
             name: identifier.text,
             value: stored,
