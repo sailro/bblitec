@@ -154,9 +154,6 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
 ]);
 
-/** Native min/max calls share the same range and list overloads. */
-export { mathExtremeCpp };
-
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(
     name: string,
