@@ -113,7 +113,6 @@ export interface BrowserErasureContext extends Pick<
     | "checker"
     | "dataTypes"
     | "erasedBrowserExpressions"
-    | "isNativeUiHelperCall"
     | "isNativeHostUiLookup"
     | "isNativeUiValueExpression"
     | "platformDocumentHidden"

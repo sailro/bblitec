@@ -378,7 +378,6 @@ export interface LoweringServices {
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
-    isNativeUiHelperCall(call: ts.CallExpression): boolean;
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;

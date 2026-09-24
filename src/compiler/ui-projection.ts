@@ -4224,7 +4224,7 @@ export class UiProjection {
      * helpers deliberately do not qualify: live Canvas2D belongs to its own
      * bounded IR rather than the retained element tree.
      */
-    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
+    private isNativeUiHelperCall(call: ts.CallExpression): boolean {
         const declaration =
             this.context.checker.getResolvedSignature(call)?.declaration;
         if (

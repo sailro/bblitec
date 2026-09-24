@@ -3835,16 +3835,6 @@ class Compiler implements LoweringServices {
         return identifier && this.symbols.valueSymbol(identifier);
     }
 
-    /**
-     * A local helper returning a scene-created retained element must be
-     * inlined before DOM erasure gets to classify its result type. Canvas
-     * helpers deliberately do not qualify: live Canvas2D belongs to its own
-     * bounded IR rather than the retained element tree.
-     */
-    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
-        return this.ui.isNativeUiHelperCall(call);
-    }
-
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
